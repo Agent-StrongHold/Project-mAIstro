@@ -2,10 +2,22 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 
 router = APIRouter(tags=["evolution"])
+
+
+def _actor_principal_id(request: Request) -> str | None:
+    explicit = getattr(request.state, "user_id", None)
+    if explicit:
+        return str(explicit)
+    user = getattr(request.state, "user", None) or {}
+    if isinstance(user, dict):
+        value = user.get("id") or user.get("username")
+        if value:
+            return str(value)
+    return None
 
 
 @router.get("/status")
@@ -21,6 +33,7 @@ def evolution_status() -> dict:
             "cycle_count": 0,
             "population_size": 0,
             "last_error": None,
+            "last_run_id": None,
             "tournament": {},
         }
 
@@ -154,13 +167,13 @@ async def seed_population(body: SeedPopulationBody) -> dict:
 
 
 @router.post("/cycle")
-async def trigger_cycle() -> dict:
+async def trigger_cycle(request: Request) -> dict:
     try:
         from services.evolution import get_evolution_service
 
         svc = get_evolution_service()
-        await svc._run_one_cycle()
-        return {"status": "completed", "cycle_count": svc.cycle_count}
+        run_id = await svc._run_one_cycle(actor_principal_id=_actor_principal_id(request))
+        return {"status": "completed", "cycle_count": svc.cycle_count, "run_id": run_id}
     except RuntimeError:
         raise HTTPException(status_code=503, detail="evolution service not started") from None
     except Exception as exc:

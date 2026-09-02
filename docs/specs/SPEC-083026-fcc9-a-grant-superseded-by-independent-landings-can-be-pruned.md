@@ -37,6 +37,8 @@ ac-modules:
   AC-4: '@tool/check_ac_state_impl'
   AC-5: '@tool/check_ac_state_impl'
   AC-6: '@tool/check_ac_state_impl'
+  AC-7: '@tool/check_ac_state_impl'
+  AC-8: '@tool/check_ac_state_impl'
 layer: Governance
 owners:
   - '@BlakeMatthews-dev'
@@ -109,16 +111,17 @@ touched anything the grant corrects.
 ## Decision
 
 A grant is **superseded** for a floored counter when at least
-`MIN_SUPERSEDING_NOTES` (3) notes at the base revision *individually* — not
-via the fold's `max` — carry a value for that counter above the grant. Three
-is deliberate: a single contributor can add at most one note per PR, so this
-cannot be satisfied by the change that wants to prune it, or by any run of
-PRs from one author; it takes that many separately-reviewed landings, each
-already trusted enough to merge, independently agreeing the floor no longer
+`MIN_SUPERSEDING_NOTES` (3) notes, each **landed in its own commit strictly
+after the commit that last touched the grants file**, individually — not via
+the fold's `max` — carry a value for that counter above the grant. Three is
+deliberate: it takes that many separately-reviewed landings, each already
+trusted enough to merge, independently agreeing the floor no longer
 describes the repository.
 
 ```python
-def _superseded_grants(notes: list[Note], floors: dict[str, float]) -> dict[str, list[str]]:
+def _superseded_grants(
+    notes: list[Note], floors: dict[str, float], *, base_sha: str | None
+) -> dict[str, list[str]]:
     ...  # counter -> the note names that, on their own, clear its floor
 ```
 
@@ -126,6 +129,37 @@ Computed from `notes` at the base revision — the same source `floors` itself
 comes from — so it answers a base question exactly like permission does, and
 carries the same self-approval guarantee: nothing the candidate does can
 manufacture supersession, only what is already merged and reviewed can.
+
+**Landing order, not merely "already merged" (Codex, #720, on the first
+version).** A first cut counted any base note above the floor, which counted
+the note the grant itself corrects: that note, by construction, still records
+the value the correction proved wrong, and is *above* the corrected floor —
+or there would have been nothing to correct. `_grants_file_landing_commit`
+finds the most recent commit, as of the base revision, that touched
+`quality/ratchet-authorizations.json`, and only a note whose own landing
+commit (`_note_landing_commits`) has a *later* commit timestamp counts. This
+is a deliberately imprecise proxy — the file also carries the unrelated
+`wiring-reads` ratchet, so an edit to that section shifts the cutoff later
+than this counter's own grant actually landed — but only in the conservative
+direction: a note landing between the grant and that unrelated later edit
+reads as pre-dating the grant and is not counted, which costs slack rather
+than granting it.
+
+**Distinct commits, not distinct filenames (Codex, #720, on the first
+version).** The first cut's own "a single contributor can add at most one
+note per PR" claim was true only if a PR is one note. A batch commit adding
+three note files is one review, not three, and this repository's own
+squash-merge convention (`docs/ci/REQUIRED-CHECKS.md`) makes "one commit" and
+"one merged PR" the same fact — so the count is of distinct landing commits,
+collapsing several notes from one commit to one.
+
+**Both refinements read from `base_sha`, and refuse to guess without one.**
+A synthetic tree outside a real repository, or the worktree-origin case
+`ac_state_notes.bounds()` can return, has no landing history to resolve;
+`_superseded_grants` returns nothing counted rather than falling back to
+treating every note as equally provenanced. That is the same safe-default
+posture the rest of this mechanism already takes: an unresolved question
+about whether a fall is authorized answers "no", not "probably".
 
 **Two call sites, two readings of the file, matching `SPEC-082926-6f49`'s own
 split.** `superseded_by_floor` (against `authorized_floors`, the base's file)
@@ -166,8 +200,8 @@ Feature: A grant independent landings have durably superseded can be pruned
     And removing it while it is still binding is still refused
 
   @AC-2
-  Scenario: Three independent already-merged notes supersede a grant
-    Given at least three already-merged notes, none the note the grant corrects, each individually above it
+  Scenario: Three independently landed notes supersede a grant
+    Given at least three notes, each landed in its own commit after the grant, each individually above it
     When the ratchet runs with the grant still present in the candidate file
     Then the run fails
     And the failure names the grant and the notes that superseded it
@@ -196,6 +230,19 @@ Feature: A grant independent landings have durably superseded can be pruned
     Given a grant with no independent notes above it
     When the ratchet runs
     Then removing it while it is still binding is refused exactly as before
+
+  @AC-7
+  Scenario: A note landed with the grant does not count toward supersession
+    Given a note in the same commit as the grant itself, above the floor
+    When counting notes for supersession
+    Then that note is excluded regardless of its value
+
+  @AC-8
+  Scenario: Notes bundled into one commit count as one landing
+    Given three note files added in a single commit, each above the floor
+    When counting notes for supersession
+    Then they count as one landing, not three
+    And two more notes in their own later commits are needed to reach three
 ```
 
 ## Testing

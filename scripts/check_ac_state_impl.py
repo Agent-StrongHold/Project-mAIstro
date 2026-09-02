@@ -1791,7 +1791,121 @@ def _stale_grants(counters: dict[str, float], floors: dict[str, float]) -> list[
 MIN_SUPERSEDING_NOTES = 3
 
 
-def _superseded_grants(notes: list[Any], floors: dict[str, float]) -> dict[str, list[str]]:
+def _note_landing_commits(notes_dir: Path, at: str, *, root: Path | None = None) -> dict[str, str]:
+    """The most recent commit, as of `at`, that touched each note file.
+
+    One `git log --name-only` walk over the notes directory, not one call per
+    note: a PR touching dozens of notes should not multiply this into dozens
+    of subprocesses. `git log` lists newest first, so the first commit seen
+    for a given filename is its most recent touch; later mentions of the same
+    name are older and ignored.
+
+    `root` resolved inside the body, not as a default argument: a default of
+    `ac_state_notes.ROOT` would bind once, at import time, before any test's
+    `monkeypatch.setattr(ac_state_notes, "ROOT", ...)` runs, and every call
+    afterwards would keep running git against the real repository regardless.
+    """
+    root = ac_state_notes.ROOT if root is None else root
+    try:
+        proc = subprocess.run(
+            ["git", "log", "--format=commit %H", "--name-only", at, "--", str(notes_dir)],
+            capture_output=True,
+            text=True,
+            cwd=root,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    if proc.returncode != 0:
+        return {}
+    landing: dict[str, str] = {}
+    current: str | None = None
+    for line in proc.stdout.splitlines():
+        if line.startswith("commit "):
+            current = line.removeprefix("commit ").strip()
+            continue
+        name = line.strip()
+        if name and current is not None:
+            landing.setdefault(Path(name).name, current)
+    return landing
+
+
+def _grants_file_landing_commit(at: str, *, root: Path | None = None) -> str | None:
+    """The most recent commit, as of `at`, that touched the grants file.
+
+    A cheap, deliberately imprecise stand-in for "when this specific grant
+    entry was authorized": the file also carries the unrelated `wiring-reads`
+    ratchet, so an edit to that section shifts this later than the counter's
+    own grant actually landed. That only ever makes the exclusion *more*
+    conservative -- a note landing between the grant and the unrelated later
+    edit reads as pre-dating the grant and is not counted -- which is the safe
+    direction for a check whose job is to refuse pruning it is not sure about.
+
+    `root` resolved inside the body -- see `_note_landing_commits` for why a
+    default argument would not track a test's monkeypatched `ac_state_notes.ROOT`.
+    """
+    root = ac_state_notes.ROOT if root is None else root
+    try:
+        proc = subprocess.run(
+            [
+                "git",
+                "log",
+                "-1",
+                "--format=%H",
+                at,
+                "--",
+                "quality/ratchet-authorizations.json",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=root,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    sha = proc.stdout.strip()
+    return sha or None
+
+
+def _commit_timestamps(shas: set[str], *, root: Path | None = None) -> dict[str, int]:
+    """Unix commit time for each of `shas`, one call per distinct commit.
+
+    Bounded by how many *distinct* commits are actually involved -- typically
+    a handful, since several notes sharing one bulk landing collapse to the
+    same sha -- not by how many notes exist.
+
+    `root` resolved inside the body -- see `_note_landing_commits` for why a
+    default argument would not track a test's monkeypatched `ac_state_notes.ROOT`.
+    """
+    root = ac_state_notes.ROOT if root is None else root
+    timestamps: dict[str, int] = {}
+    for sha in shas:
+        try:
+            proc = subprocess.run(
+                ["git", "show", "-s", "--format=%ct", sha],
+                capture_output=True,
+                text=True,
+                cwd=root,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if proc.returncode != 0:
+            continue
+        text = proc.stdout.strip()
+        if text.isdigit():
+            timestamps[sha] = int(text)
+    return timestamps
+
+
+def _superseded_grants(
+    notes: list[Any], floors: dict[str, float], *, base_sha: str | None, root: Path | None = None
+) -> dict[str, list[str]]:
     """Grants that independent, already-landed work has grown past and stayed
     past, mapped to the note names that did it.
 
@@ -1817,18 +1931,61 @@ def _superseded_grants(notes: list[Any], floors: dict[str, float]) -> dict[str, 
     The count is deliberately per-note, not "the fold exceeds the floor":
     `max`-folding already means one high note is enough to raise the fold, and
     that one note could be wrong, or unrelated to what the grant corrects, or
-    -- worst case -- written specifically to game this check. Multiple
-    independent notes, each clearing the floor without any help from the
-    others or from a grant, is a claim collusion cannot manufacture as
-    cheaply: it costs as many separately-reviewed merges as the threshold
-    names.
+    -- worst case -- written specifically to game this check. Two refinements
+    close the gaps Codex found in the first version, on #720:
+
+    A note counts only if its own landing commit is strictly *later* than the
+    grant's (`_grants_file_landing_commit`), by commit timestamp, not merely
+    "already merged". Without this, the note the grant itself corrects --
+    which by construction still records a value the correction proved wrong,
+    and by construction is *above* the corrected floor, or there would have
+    been nothing to correct -- counted as evidence against the very grant it
+    motivated.
+
+    The count is also of *distinct landing commits*, not distinct filenames.
+    `SPEC-082926-6f49` and the docstring above both lean on "a single
+    contributor can add at most one note per PR" for why this cannot be
+    self-served -- true only if a PR is one note. A batch commit adding three
+    note files in one landing is one review, not three, and this repository's
+    own squash-merge convention (`docs/ci/REQUIRED-CHECKS.md`) makes "one
+    commit" and "one merged PR" the same fact, so collapsing by commit is
+    exactly collapsing by review.
+
+    Both refinements are keyed off `base_sha`: with none given (a synthetic
+    tree outside a real repository, or the worktree-origin case `bounds()`
+    can return), landing history cannot be resolved and this refuses to guess
+    -- no notes are ever counted, which is the safe direction for a check
+    whose whole job is deciding whether a correction is safe to let go.
     """
+    if base_sha is None:
+        return {}
+    grant_commit = _grants_file_landing_commit(base_sha, root=root)
+    if grant_commit is None:
+        return {}
+    note_landing = _note_landing_commits(ac_state_notes.NOTES_DIR, base_sha, root=root)
+    relevant = {note_landing[n.name] for n in notes if n.name in note_landing}
+    timestamps = _commit_timestamps({grant_commit, *relevant}, root=root)
+    grant_time = timestamps.get(grant_commit)
+    if grant_time is None:
+        return {}
+
     supersede_by: dict[str, list[str]] = {counter: [] for counter in floors}
+    seen_commits: dict[str, set[str]] = {counter: set() for counter in floors}
     for note in notes:
+        commit = note_landing.get(note.name)
+        if commit is None:
+            continue
+        time = timestamps.get(commit)
+        if time is None or time <= grant_time:
+            continue
         for counter, floor in floors.items():
             value = note.counters.get(counter)
-            if value is not None and value > floor:
-                supersede_by[counter].append(note.name)
+            if value is None or value <= floor:
+                continue
+            if commit in seen_commits[counter]:
+                continue
+            seen_commits[counter].add(commit)
+            supersede_by[counter].append(note.name)
     return {
         counter: sorted(names)
         for counter, names in supersede_by.items()
@@ -2046,8 +2203,8 @@ def ratchet(totals: dict[str, Any], measured: bool, bank: bool) -> int:
     # where `by_present` is correctly empty, because there is nothing left in
     # the file to report on.
     notes, _origin, _base_sha = ac_state_notes.load_notes(base=bound.base_sha)
-    superseded_by_floor = _superseded_grants(notes, floors)
-    superseded_by_present = _superseded_grants(notes, present)
+    superseded_by_floor = _superseded_grants(notes, floors, base_sha=bound.base_sha)
+    superseded_by_present = _superseded_grants(notes, present, base_sha=bound.base_sha)
     removed = _removed_binding_grants(bound.counters, floors, present, superseded_by_floor)
 
     # A superseded grant is excluded from every comparison, not only from the

@@ -74,8 +74,8 @@ Phases A–D run sequentially-ish in the substrate. Phase E (per-variant v1.0) r
 
 | Item | Part | Status | Detail |
 |---|---|---|---|
-| `[engine-010]` Copier template `single-tenant-multi-user` | substrate | Accepted; `gap-impl` | Knobs: `users_max`, `auth_backend`, `channels`, `host_target`. Round-trips against the Conductor variant |
-| `[engine-011]` Copier template `autonoetic` | substrate | Accepted; `gap-impl` | Knobs: `awareness_loop_hz`, `self_model`, `memory_consolidator`, `dossier_store`. Round-trips against the autonoetic variant |
+| `[engine-010]` Copier template `single-tenant-multi-user` | substrate | Implemented | Default/alternate render and update evidence: `tests/templates/test_single_tenant_multi_user_renders.py` |
+| `[engine-011]` Copier template `autonoetic` | substrate | Implemented | Default/alternate render and update evidence: `tests/templates/test_autonoetic_renders.py` |
 | `[engine-012]` Copier template `multi-tenant` | substrate | Accepted; `gap-impl` | Knobs: `tenants_max`, `policy_engine`, `deploy_target`, `compliance_pack`. Round-trips against the multi-tenant variant |
 | `[engine-013]` Two-stream release pipeline | substrate | Proposed | `pkg/v*` + `template/v*` tags |
 | `[conductor-095]` Copier bootstrap | conductor | Proposed; `gap-impl` | `copier copy` against fresh dir; close diff over 1–2 PRs |
@@ -168,12 +168,12 @@ Detail in `BACKLOG.md` `[engine-100]`–`[engine-105]`.
 
 | Item | Status | Detail |
 |---|---|---|
-| `[engine-100]` Hosted curl installer + web wizard | Proposed | `get.sh`/`install.sh` already resolve a GitHub release and verify SHA256SUMS; only DNS/hosting is outstanding |
-| `[engine-101]` GHCR image publishing pipeline | Implemented | Workflow ships (`release.yml`, push + cosign + SBOM); never exercised — no tag cut yet |
-| `[engine-102]` Frontend completion vs. archived PRODUCT-SPEC | Proposed; `gap-impl` | Page-by-page coverage unverified |
+| `[engine-100]` Hosted curl installer + web wizard | Proposed | Release-aware `get.sh` and local interactive `install.sh` ship; checksum verification is opt-in, and the historical hosted endpoint/browser wizard are not established |
+| `[engine-101]` GHCR image publishing pipeline | Implemented | `release.yml` pushes both images, emits SBOMs, and signs/verifies digests; no tag or release has exercised it, with proof owned by [#84](https://github.com/Agent-StrongHold/Project-mAIstro/issues/84) |
+| `[engine-102]` Frontend completion vs. archived PRODUCT-SPEC | Proposed; `gap-impl` | Shared components exist, but no page-by-page verification establishes complete archived-spec coverage |
 | `[engine-103]` MCP server implementations | Proposed | Decide wrap-existing-tools vs. build-new |
-| `[engine-104]` Port remaining legacy experimental features | Proposed | Shipped: Bouncer, Agent Factory, Spawner, Skill Forge, Message Board. Superseded: Heartbeat (replaced by `reactor.py`). Outstanding: APM, Red Team |
-| `[engine-105]` Wire Master Orchestrator security gate + API dispatch | Accepted; `gap-impl` | J1–J5 shipped (`orchestrator/master.py`, `planner.py`; security gate tested); J6 (API dispatch) open |
+| `[engine-104]` Port remaining legacy experimental features | Proposed | Bouncer, Agent Factory, Spawner, Skill Forge, and Message Board shipped; Heartbeat was replaced by `reactor.py`; generic APM is superseded by vendor-neutral [ADR-037](docs/adr/ADR-037-observability-taxonomy.md)/[ADR-055](docs/adr/ADR-055-observability-replay-and-pii-tiers.md) architecture; Red Team remains the historical port candidate |
+| `[engine-105]` Wire Master Orchestrator security gate + API dispatch | Accepted; `gap-impl` | J1–J5 shipped; J5 is the production fail-closed Warden + Sentinel output gate on canonical Run projection (accept, reject, and exception behavior implemented and tested). `MasterOrchestrator` is a canonical-execution compatibility projection per [#548](https://github.com/Agent-StrongHold/Project-mAIstro/issues/548); archived J6 means remaining canonical dispatch under [#53](https://github.com/Agent-StrongHold/Project-mAIstro/issues/53)/[#736](https://github.com/Agent-StrongHold/Project-mAIstro/issues/736), not a second HTTP API |
 
 ### Phase F — Contracts as the bar (weeks 6–12)
 

@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS outcomes (
     run_id TEXT,
     node_run_id TEXT,
     attempt_id TEXT,
-    usage_reported_calls INTEGER
+    usage_reported_calls INTEGER,
+    session_id TEXT
 )
 """
 
@@ -70,6 +71,11 @@ _ADDED_COLUMNS = (
     # written before migration 027 did not count, and `0` would say it counted
     # and found none (#717).
     ("usage_reported_calls", "INTEGER"),
+    # Nullable, like the provenance columns and for the same reason: an
+    # outcome recorded outside a conversation names no session, which is not
+    # the same as naming a session whose id is empty. Migration 028 in
+    # PostgreSQL (#748).
+    ("session_id", "TEXT"),
 )
 
 _ALLOWED_GROUP_COLUMNS = frozenset({"user_id", "team_id", "model_used", "agent_id", "provider"})
@@ -119,8 +125,9 @@ class SqliteOutcomeStore:
                 input_tokens, output_tokens, charged_microchips, pricing_version, created_at,
                 org_id, project_id, dag_id, dag_run_id, node_id,
                 thumb, thumb_comment, eval_judge_score,
-                run_id, node_run_id, attempt_id, usage_reported_calls)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                run_id, node_run_id, attempt_id, usage_reported_calls,
+                session_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 outcome.request_id,
                 outcome.task_type,
@@ -162,6 +169,8 @@ class SqliteOutcomeStore:
                 # it counted and found none, which is the conflation the
                 # column exists to end (#717).
                 outcome.usage_reported_calls,
+                # NULL rather than "", as in `pg_outcomes` (#748).
+                outcome.session_id or None,
             ),
         )
         await self._conn.commit()
@@ -439,6 +448,10 @@ def _row_to_outcome(r: dict[str, Any]) -> Outcome:
     return Outcome(
         id=r["id"],
         request_id=r.get("request_id", ""),
+        # `or ""` because the column is nullable and the field is not: a store
+        # file from before this column, or a row written outside a
+        # conversation, reads back as an outcome naming no session.
+        session_id=r.get("session_id") or "",
         task_type=r.get("task_type", ""),
         model_used=r.get("model_used", ""),
         provider=r.get("provider", ""),

@@ -30,17 +30,39 @@ jobs:
   exact-debt-ledger:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      # A PR is checked out as GitHub's synthetic base+candidate merge. Name the
+      # current target ref, not github.event.pull_request.base.sha: a long-lived
+      # PR's event SHA can still name its original branch-cut commit after the
+      # target has absorbed independent ratchets. The shared resolver takes the
+      # merge-base with the checked-out synthetic merge, yielding the exact
+      # target state this candidate is being integrated into. For stacked PRs,
+      # github.base_ref names the parent branch rather than assuming develop.
+      # Merge groups already provide their integration base SHA. Pushes compare
+      # to the previous SHA so the pushed commit cannot bless its own ledger.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.event.before }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          # Trusted-base resolution uses git merge-base and git show. A depth-1
+          # PR checkout has no readable oracle and must never silently become a
+          # candidate-tree comparison.
+          fetch-depth: 0
       - uses: ./.github/actions/setup-uv
-      - name: Install pinned analyzer
-        run: uv pip install --system vulture==2.16
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: Restore locked repository environment
+        run: uv sync --locked --all-extras
+      - name: Require enforced ratchet provenance policy
+        run: uv run python scripts/check-ratchet-provenance.py
       - name: Require exact reviewed Vulture identities
         run: >-
-          python scripts/check-vulture-baseline.py
+          uv run python scripts/check-vulture-baseline.py
           packages/*/src
           --min-confidence 60
           --exclude '*/third_party/*'

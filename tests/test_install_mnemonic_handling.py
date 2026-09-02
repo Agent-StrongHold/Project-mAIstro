@@ -69,35 +69,31 @@ class TestThePhraseIsNeverReadableByOthers:
         """`umask 0000` is the condition under test, not an environment
         detail: it is what the old `curl -o` path would have produced 666
         under, and 644 under the usual 022."""
+        response = tmp_path / ".setup-response.json"
         result = _run(
             tmp_path,
             """
 umask 0000
 secret_file_run reserve .setup-response.json
-stat -c '%a' .setup-response.json
 """,
         )
         assert result.returncode == 0, result.stderr
-        # `ensure_python` announces itself through the harness's `ok`, so the
-        # mode is the last line rather than the only one.
-        assert result.stdout.strip().splitlines()[-1] == "600", result.stdout
+        assert stat.S_IMODE(response.lstat().st_mode) == 0o600
 
     def test_a_writer_that_truncates_does_not_widen_it(self, tmp_path: Path) -> None:
         """What curl actually does to a path that already exists. If this were
         not true, reserving the file first would buy nothing."""
+        response = tmp_path / ".setup-response.json"
         result = _run(
             tmp_path,
             f"""
 umask 0000
 secret_file_run reserve .setup-response.json
 printf '{{"mnemonic": "{PHRASE}"}}' > .setup-response.json
-stat -c '%a' .setup-response.json
 """,
         )
         assert result.returncode == 0, result.stderr
-        # `ensure_python` announces itself through the harness's `ok`, so the
-        # mode is the last line rather than the only one.
-        assert result.stdout.strip().splitlines()[-1] == "600", result.stdout
+        assert stat.S_IMODE(response.lstat().st_mode) == 0o600
 
     def test_a_leftover_from_a_previous_run_is_narrowed_and_emptied(self, tmp_path: Path) -> None:
         """The state an interrupted pre-#360 run left behind. Reserving has to
@@ -110,7 +106,7 @@ stat -c '%a' .setup-response.json
         result = _run(tmp_path, "secret_file_run reserve .setup-response.json")
 
         assert result.returncode == 0, result.stderr
-        assert stat.S_IMODE(stale.stat().st_mode) == 0o600
+        assert stat.S_IMODE(stale.lstat().st_mode) == 0o600
         assert stale.read_text(encoding="utf-8") == ""
 
 
@@ -301,6 +297,6 @@ class TestTheModeChecksApplyToARealUser:
         """Stated as the property rather than as a mode number: no group or
         other bit is set, so no other unprivileged user has a way in."""
         _run(tmp_path, "umask 0000; secret_file_run reserve .setup-response.json")
-        mode = (tmp_path / ".setup-response.json").stat().st_mode
+        mode = (tmp_path / ".setup-response.json").lstat().st_mode
 
         assert not mode & (stat.S_IRWXG | stat.S_IRWXO)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from hypothesis import given, settings
+from hypothesis import given
 from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
 from maistro.auth._types import Scope, ServiceIdentity
@@ -116,7 +116,6 @@ def test_extra_headers_override_base():
     key=st.text(min_size=1, max_size=30),
     name=st.text(min_size=1, max_size=30),
 )
-@settings(max_examples=20)
 def test_key_and_name_reflect_in_headers(key, name):
     identity = ServiceIdentity(name=name, key_hash="h", scopes=frozenset())
     client = ServiceKeyClient(identity=identity, key=key)
@@ -125,7 +124,6 @@ def test_key_and_name_reflect_in_headers(key, name):
 
 
 @given(scopes=st.sets(st.sampled_from(Scope), min_size=1, max_size=5))
-@settings(max_examples=20)
 def test_scopes_in_header(scopes):
     identity = ServiceIdentity(name="svc", key_hash="h", scopes=frozenset(scopes))
     client = ServiceKeyClient(identity=identity, key="k")
