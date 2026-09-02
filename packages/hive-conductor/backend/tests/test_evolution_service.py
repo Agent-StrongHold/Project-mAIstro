@@ -1,17 +1,18 @@
-"""Boy Scout coverage: services/evolution.py (was 0% line/branch).
+"""Coverage for the Conductor Evolve service and its canonical cycle dispatch.
 
 Covers:
 - start_evolution / stop_evolution singleton lifecycle
 - get_evolution_service: raises when not started, returns service when started
 - _EvolutionService.stop flips _running flag
 - cycle_count / population / tournament properties
-- run_loop: maistro_evolve import failure → log + early return
+- run_loop: maistro_evolve import failure -> log + early return
 - run_loop: successful init then graceful stop
 - run_loop: _run_one_cycle exception captured into _last_cycle_error
-- _run_one_cycle: invokes EvolutionCycle.run_cycle + increments counter
-- _build_llm_call: no settings → None; with settings → callable
-- _build_llm_call inner _llm_call: posts to base_url + parses content
-- status: returns running, cycle_count, population_size, last_error, tournament
+- _run_one_cycle: dispatches to canonical graph runner + increments counter
+- _run_one_cycle: failed canonical Run is surfaced and not counted as a cycle
+- _build_llm_call: no settings -> None; with settings -> callable
+- _build_llm_call inner call: posts to base_url + parses content
+- status: returns running, cycle_count, canonical run id, population, error, tournament
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import pathlib
 import sys
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -103,6 +105,7 @@ def test_service_properties_initial_state() -> None:
     assert s.cycle_count == 0
     assert s.population is None
     assert s.tournament is None
+    assert s.last_run_id is None
     assert s._running is True
     s.stop()
     assert s._running is False
@@ -114,12 +117,9 @@ def test_service_properties_initial_state() -> None:
 def test_run_loop_logs_and_returns_when_maistro_evolve_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When maistro_evolve.population is missing, run_loop logs +
-    returns without entering the sleep loop."""
+    """When maistro_evolve.population is missing, run_loop returns instead of hanging."""
     from services.evolution import _EvolutionService
 
-    # Sabotage the import — sys.modules trick: insert a Module whose
-    # attribute access raises.
     class _Broken:
         def __getattr__(self, name: str) -> Any:
             raise ImportError(f"synthetic: no {name}")
@@ -127,9 +127,7 @@ def test_run_loop_logs_and_returns_when_maistro_evolve_missing(
     monkeypatch.setitem(sys.modules, "maistro_evolve.population", _Broken())
 
     s = _EvolutionService()
-    # run_loop is async; running it must NOT hang
     asyncio.run(asyncio.wait_for(s.run_loop(), timeout=2.0))
-    # No population was set (early-return path)
     assert s.population is None
 
 
@@ -140,6 +138,8 @@ def test_run_loop_initializes_and_stops_cleanly(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Initialize population + tournament, take one short sleep, stop."""
+    import types
+
     import services.evolution as evo
     from services.evolution import _EvolutionService
 
@@ -154,8 +154,6 @@ def test_run_loop_initializes_and_stops_cleanly(
         def get_stats(self) -> dict[str, Any]:
             return {"n": 0}
 
-    import types
-
     pop_mod = types.ModuleType("maistro_evolve.population")
     pop_mod.PopulationStore = _StubPop  # type: ignore[attr-defined]
     tour_mod = types.ModuleType("maistro_evolve.tournament")
@@ -163,11 +161,10 @@ def test_run_loop_initializes_and_stops_cleanly(
     monkeypatch.setitem(sys.modules, "maistro_evolve.population", pop_mod)
     monkeypatch.setitem(sys.modules, "maistro_evolve.tournament", tour_mod)
 
-    # Short-circuit sleep so the loop stops after one iteration
     s = _EvolutionService()
 
     async def _no_sleep(_: float) -> None:
-        s.stop()  # stops the loop right after the first sleep
+        s.stop()
 
     monkeypatch.setattr(evo.asyncio, "sleep", _no_sleep)
     asyncio.run(asyncio.wait_for(s.run_loop(), timeout=2.0))
@@ -178,8 +175,7 @@ def test_run_loop_initializes_and_stops_cleanly(
 def test_run_loop_captures_cycle_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """If _run_one_cycle raises, run_loop stores the message in
-    _last_cycle_error and continues."""
+    """If _run_one_cycle raises, run_loop stores the message and continues."""
     import types
 
     import services.evolution as evo
@@ -202,11 +198,12 @@ def test_run_loop_captures_cycle_exception(
     s = _EvolutionService()
     calls = [0]
 
-    async def _flaky_cycle(self_: Any) -> None:
+    async def _flaky_cycle(self_: Any, **_: Any) -> str:
         calls[0] += 1
         if calls[0] == 1:
             raise RuntimeError("synthetic cycle error")
-        self_.stop()  # second pass — stop
+        self_.stop()
+        return "run-2"
 
     monkeypatch.setattr(_EvolutionService, "_run_one_cycle", _flaky_cycle)
 
@@ -223,14 +220,15 @@ def test_run_loop_captures_cycle_exception(
 # --- _run_one_cycle --------------------------------------------------
 
 
-def test_run_one_cycle_invokes_evolution_cycle(
+def test_run_one_cycle_dispatches_canonical_graph(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import types
-
+    import services.evolution_graph as evolution_graph
     from services.evolution import _EvolutionService
 
-    captured_kwargs: dict[str, Any] = {}
+    from maistro.runs.model import RunStatus
+
+    captured: dict[str, Any] = {}
 
     class _StubPop:
         def list_all(self) -> list[Any]:
@@ -239,39 +237,61 @@ def test_run_one_cycle_invokes_evolution_cycle(
     class _StubTour:
         pass
 
-    class _StubCycle:
-        def __init__(self, harness: Any, tournament: Any) -> None:
-            self.harness = harness
-            self.tournament = tournament
+    async def _canonical(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return SimpleNamespace(
+            run_id="canonical-evolve-run",
+            run=SimpleNamespace(status=RunStatus.COMPLETED, error=None),
+        )
 
-        async def run_cycle(self, **kw: Any) -> None:
-            captured_kwargs.update(kw)
-
-    class _StubConfig:
-        def __init__(self, **kw: Any) -> None:
-            for k, v in kw.items():
-                setattr(self, k, v)
-
-    class _StubHarness:
-        def __init__(self, **kw: Any) -> None:
-            self.kw = kw
-
-    cycle_mod = types.ModuleType("maistro_evolve.cycle")
-    cycle_mod.EvolutionCycle = _StubCycle  # type: ignore[attr-defined]
-    cycle_mod.EvolutionConfig = _StubConfig  # type: ignore[attr-defined]
-    harness_mod = types.ModuleType("maistro_evolve.harness")
-    harness_mod.EvalHarness = _StubHarness  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "maistro_evolve.cycle", cycle_mod)
-    monkeypatch.setitem(sys.modules, "maistro_evolve.harness", harness_mod)
+    monkeypatch.setattr(evolution_graph, "run_canonical_evolution_cycle", _canonical)
 
     s = _EvolutionService()
     s._population = _StubPop()
     s._tournament = _StubTour()
-    asyncio.run(s._run_one_cycle())
+    run_id = asyncio.run(s._run_one_cycle(actor_principal_id="user-1"))
+
+    assert run_id == "canonical-evolve-run"
     assert s.cycle_count == 1
-    # config + llm_call + population were passed to run_cycle
-    assert "config" in captured_kwargs
-    assert captured_kwargs["population"] is s._population
+    assert s.last_run_id == "canonical-evolve-run"
+    assert captured["population"] is s._population
+    assert captured["tournament"] is s._tournament
+    assert captured["actor_principal_id"] == "user-1"
+    assert captured["cycle_number"] == 1
+
+
+def test_run_one_cycle_does_not_count_failed_canonical_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.evolution_graph as evolution_graph
+    from services.evolution import _EvolutionService
+
+    from maistro.runs.model import RunStatus
+
+    class _StubPop:
+        def list_all(self) -> list[Any]:
+            return [1]
+
+    class _StubTour:
+        pass
+
+    async def _canonical(**kwargs: Any) -> Any:
+        return SimpleNamespace(
+            run_id="failed-evolve-run",
+            run=SimpleNamespace(status=RunStatus.FAILED, error="evaluation failed"),
+        )
+
+    monkeypatch.setattr(evolution_graph, "run_canonical_evolution_cycle", _canonical)
+
+    s = _EvolutionService()
+    s._population = _StubPop()
+    s._tournament = _StubTour()
+
+    with pytest.raises(RuntimeError, match=r"failed-evolve-run.*evaluation failed"):
+        asyncio.run(s._run_one_cycle())
+
+    assert s.cycle_count == 0
+    assert s.last_run_id == "failed-evolve-run"
 
 
 # --- _build_llm_call ----------------------------------------------------
@@ -289,7 +309,6 @@ def test_build_llm_call_returns_none_without_base_url(
         litellm_api_key = ""
         chat_default_model = "stub"
 
-    monkeypatch.setattr("services.evolution.__name__", "services.evolution")
     import config
 
     monkeypatch.setattr(config, "get_settings", lambda: _NoBase())
@@ -300,7 +319,6 @@ def test_build_llm_call_returns_none_without_base_url(
 def test_build_llm_call_swallows_exceptions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """If `from config import get_settings` raises, returns None."""
     import config
     from services.evolution import _EvolutionService
 
@@ -315,8 +333,7 @@ def test_build_llm_call_swallows_exceptions(
 async def test_build_llm_call_real_call_posts_and_extracts_content(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When settings have a base URL, _build_llm_call returns an
-    async fn that posts to /v1/chat/completions and returns content."""
+    """When settings have a base URL, _build_llm_call posts and returns content."""
     import httpx
     from services.evolution import _EvolutionService
 
@@ -341,10 +358,12 @@ async def test_build_llm_call_real_call_posts_and_extracts_content(
 
     class _Client:
         def __init__(self, *a: Any, **kw: Any) -> None: ...
+
         async def __aenter__(self) -> _Client:
             return self
 
         async def __aexit__(self, *a: Any) -> None: ...
+
         async def post(self, url: str, *, json: Any, headers: Any) -> _Resp:
             captured["url"] = url
             captured["headers"] = headers
@@ -373,10 +392,11 @@ def test_status_reports_zero_state_when_nothing_running() -> None:
     assert out["cycle_count"] == 0
     assert out["population_size"] == 0
     assert out["last_error"] is None
+    assert out["last_run_id"] is None
     assert out["tournament"] == {}
 
 
-def test_status_reports_population_size_and_tournament_stats() -> None:
+def test_status_reports_population_size_tournament_and_run() -> None:
     from services.evolution import _EvolutionService
 
     class _Pop:
@@ -392,8 +412,10 @@ def test_status_reports_population_size_and_tournament_stats() -> None:
     s._tournament = _Tour()
     s._cycle_count = 7
     s._last_cycle_error = "prev error"
+    s._last_run_id = "run-7"
     out = s.status()
     assert out["cycle_count"] == 7
     assert out["population_size"] == 4
     assert out["last_error"] == "prev error"
+    assert out["last_run_id"] == "run-7"
     assert out["tournament"] == {"matches": 10}

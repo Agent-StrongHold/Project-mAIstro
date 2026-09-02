@@ -23,6 +23,9 @@ dependencies = [
     # reachable rather than silently degrading to the `re` fallback.
     # Date-based versioning, hence the year upper bound.
     "regex>=2024.5.15,<2027",
+    # OIDC production verification must never depend on mcp/llm extras
+    # happening to install PyJWT transitively.
+    "pyjwt[crypto]>=2.10,<3",
 ]
 
 [project.scripts]

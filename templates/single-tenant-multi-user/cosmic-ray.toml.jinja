@@ -1,0 +1,11 @@
+[cosmic-ray]
+module-path = "src/{{ project_slug | replace('-', '_') }}/config.py"
+timeout = 60.0
+excluded-modules = []
+test-command = "python -m pytest tests/test_config.py --timeout=20 -q -x"
+
+[cosmic-ray.distributor]
+name = "local"
+
+[cosmic-ray.distributor.local]
+worker-count = 4

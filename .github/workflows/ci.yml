@@ -667,6 +667,7 @@ jobs:
       github.event.merge_group.base_ref != 'refs/heads/develop' ||
       needs.workflow-lint.outputs.docker_build == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 

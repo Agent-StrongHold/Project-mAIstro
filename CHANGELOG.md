@@ -10,6 +10,14 @@ the same version as the root `VERSION` file.
 
 ## [Unreleased]
 
+### Changed
+
+- **HALF_OPEN circuit-breaker success is now caller-bound.** `record_success()`
+  closes a HALF_OPEN circuit only when called by the thread or asyncio task
+  whose `allow_request()` call acquired the current exclusive probe lease;
+  successes from other callers are ignored. A probe owner can call
+  `release_probe()` to let another caller claim the probe.
+
 ## [1.0.0] - TBD
 
 First tagged release. Prior to this, the repository had no tags, no release
@@ -136,10 +144,12 @@ register:
 
 > v1.0.0 ships with an in-memory task queue, so a restart loses queued and
 > active tasks. Canvas jobs require an external runner; Canvas publish and
-> some export formats are not implemented. Conductor can run in degraded mode
-> when optional services are unavailable. Canvas Studio has not completed its
-> `/v2/canvas` cutover, and API-wide HTTP content negotiation from ADR-076 is
-> deferred to v1.1.
+> some export formats are not implemented. The mounted Canvas data routes are
+> unconfigured in the default shipped service and return `503`. Design Studio
+> can discover resources and select artifact modes, but visual generation,
+> editing/preview, and publish/export are not available. Conductor can run in
+> degraded mode when optional services are unavailable, and API-wide HTTP
+> content negotiation from ADR-076 is deferred to v1.1.
 
 [Unreleased]: https://github.com/Agent-StrongHold/Project-mAIstro/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/Agent-StrongHold/Project-mAIstro/releases/tag/v1.0.0

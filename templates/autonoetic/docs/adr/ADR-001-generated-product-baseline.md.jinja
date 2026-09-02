@@ -1,0 +1,59 @@
+---
+id: ADR-001
+title: Generated autonoetic product baseline
+repo: {{ project_slug }}
+kind: adr
+status: Accepted
+created: 2026-08-31
+accepted: 2026-08-31
+substrate:
+  - maistro-engine#ADR-019
+  - maistro-engine#ADR-032
+  - maistro-engine#ADR-033
+implements: []
+related: []
+supersedes: []
+blocks: []
+blocked-by: []
+contracts:
+  - boundary
+  - behavioral
+tests:
+  - tests/test_config.py::test_rendered_contract
+  - tests/test_config.py::test_readiness_and_tick_period
+layer: Foundation
+owners:
+  - '@maintainers'
+history:
+  - status: Proposed
+    date: 2026-08-31
+  - status: Accepted
+    date: 2026-08-31
+---
+
+# ADR-001: Generated autonoetic product baseline
+
+## Context
+
+This product is a downstream overlay on Maistro's Turing package. Autonoetic
+choices must remain explicit without copying engine internals.
+
+## Decision
+
+Adopt an awareness loop of `{{ awareness_loop_hz }} Hz`, the `{{ self_model }}`
+self model, memory consolidation `{{ memory_consolidator }}`, and the
+`{{ dossier_store }}` dossier adapter. Identity and external path values are
+supplied only through the runtime environment.
+
+## Acceptance criteria
+
+- Rendered values are importable as a typed, immutable configuration.
+- Awareness period remains the reciprocal of the positive configured rate.
+- Missing identity or selected storage variables fail readiness without
+  retaining their values.
+- Engine dependencies remain pinned to the reviewed substrate ref.
+
+## Out of scope
+
+Model-provider setup and an unbounded autonomous loop are deliberately not
+started by this scaffold.
