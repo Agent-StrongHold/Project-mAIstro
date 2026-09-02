@@ -1,14 +1,9 @@
-"""Event bus: cross-service communication for the unified platform.
+"""Event bus: compatibility delivery for cross-service triggers.
 
-Services (conductor, CoinSwarm, Turing, HA) emit events.
-Triggers subscribe to event patterns and fire actions.
-
-Example flow:
-  CoinSwarm emits FitnessThresholdEvent →
-  Trigger matches (agent_id=X, fitness<0.3) →
-  Action: POST to conductor /v1/chat/completions with "review agent X"
-
-No multi-tenant. No org_id. Single-instance, local-network only.
+Services (conductor, CoinSwarm, Turing, HA) historically emit ``Event`` objects
+here. Canonical event identity and Workspace ordering now belong to
+``EventEnvelope``; this bus remains a compatibility consumer and may accept a
+domain fact only when that fact explicitly projects itself to legacy ``Event``.
 """
 
 from __future__ import annotations
@@ -18,7 +13,7 @@ import time
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import Any, Protocol
 from uuid import uuid4
 
 logger = logging.getLogger("maistro.events")
@@ -35,6 +30,8 @@ class EventCategory(StrEnum):
 
 @dataclass
 class Event:
+    """Legacy trigger-delivery projection, not canonical Event identity."""
+
     event_id: str = field(default_factory=lambda: uuid4().hex[:12])
     category: EventCategory = EventCategory.SYSTEM
     event_type: str = ""
@@ -42,6 +39,12 @@ class Event:
     payload: dict[str, Any] = field(default_factory=dict)
     timestamp: float = field(default_factory=time.time)
     correlation_id: str = ""
+
+
+class LegacyEventProjector(Protocol):
+    """Domain fact that can be projected onto the legacy trigger bus."""
+
+    def to_legacy_event(self) -> Event: ...
 
 
 @dataclass
@@ -101,8 +104,21 @@ class Trigger:
 ActionHandler = Callable[[Trigger, Event], Coroutine[Any, Any, None]]
 
 
+def _project_legacy_event(event: Event | LegacyEventProjector) -> Event:
+    """Return the trigger-bus projection without treating it as canonical."""
+    if isinstance(event, Event):
+        return event
+    projector = getattr(event, "to_legacy_event", None)
+    if not callable(projector):
+        raise TypeError("legacy EventBus requires Event or explicit to_legacy_event() projection")
+    projected = projector()
+    if not isinstance(projected, Event):
+        raise TypeError("to_legacy_event() must return maistro.events.bus.Event")
+    return projected
+
+
 class EventBus:
-    """In-memory event bus with trigger matching."""
+    """In-memory compatibility event bus with trigger matching."""
 
     def __init__(self, max_history: int = 1000) -> None:
         self._triggers: list[Trigger] = []
@@ -123,27 +139,28 @@ class EventBus:
     def subscribe(self, callback: Callable[[Event], Coroutine[Any, Any, None]]) -> None:
         self._subscribers.append(callback)
 
-    async def emit(self, event: Event) -> list[Trigger]:
-        self._history.append(event)
+    async def emit(self, event: Event | LegacyEventProjector) -> list[Trigger]:
+        projected = _project_legacy_event(event)
+        self._history.append(projected)
         if len(self._history) > self._max_history:
             self._history = self._history[-self._max_history :]
 
         fired: list[Trigger] = []
         for trigger in self._triggers:
             try:
-                matched = trigger.matches(event)
+                matched = trigger.matches(projected)
             except Exception:
                 logger.exception(
                     "Trigger %s match evaluation failed for event %s",
                     trigger.trigger_id,
-                    event.event_id,
+                    projected.event_id,
                 )
                 continue
             if matched:
                 handler = self._handlers.get(trigger.action_type)
                 if handler:
                     try:
-                        await handler(trigger, event)
+                        await handler(trigger, projected)
                     except Exception:
                         logger.exception("Trigger %s action failed", trigger.trigger_id)
                 trigger.fire_count += 1
@@ -152,15 +169,15 @@ class EventBus:
 
         for sub in self._subscribers:
             try:
-                await sub(event)
+                await sub(projected)
             except Exception:
-                logger.exception("Subscriber failed for event %s", event.event_id)
+                logger.exception("Subscriber failed for event %s", projected.event_id)
 
         if fired:
             logger.info(
                 "Event %s/%s fired %d triggers",
-                event.category,
-                event.event_type,
+                projected.category,
+                projected.event_type,
                 len(fired),
             )
 

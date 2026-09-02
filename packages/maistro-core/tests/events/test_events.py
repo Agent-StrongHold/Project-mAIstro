@@ -94,6 +94,29 @@ class TestEventBus:
         fired = await bus.emit(Event(event_type="test"))
         assert fired == []
 
+    async def test_emit_rejects_a_fact_that_cannot_project_itself(self):
+        """The bus is a compatibility consumer, not a universal Event sink."""
+        bus = EventBus()
+
+        with pytest.raises(TypeError) as exc:
+            await bus.emit(object())
+
+        assert "explicit to_legacy_event() projection" in str(exc.value)
+        assert bus.get_history() == []
+
+    async def test_emit_rejects_a_projection_that_is_not_a_legacy_event(self):
+        class _LyingProjector:
+            def to_legacy_event(self) -> Any:
+                return {"event_type": "not an Event"}
+
+        bus = EventBus()
+
+        with pytest.raises(TypeError) as exc:
+            await bus.emit(_LyingProjector())
+
+        assert "maistro.events.bus.Event" in str(exc.value)
+        assert bus.get_history() == []
+
     @pytest.mark.ac("SPEC-228/AC-4")
     async def test_emit_fires_trigger(self):
         bus = EventBus()
