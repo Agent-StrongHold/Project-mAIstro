@@ -146,9 +146,7 @@ def test_exception_plan_reads_pull_request_body(
 ) -> None:
     checker = _module()
     event = tmp_path / "event.json"
-    event.write_text(
-        json.dumps({"pull_request": {"body": "reviewed body"}}), encoding="utf-8"
-    )
+    event.write_text(json.dumps({"pull_request": {"body": "reviewed body"}}), encoding="utf-8")
     monkeypatch.delenv("M1_CONVERGENCE_EXCEPTION_PLAN", raising=False)
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
 
