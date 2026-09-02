@@ -95,7 +95,11 @@ def load_matrix(path: Path) -> dict[str, Any]:
 
 def _excluded(path: Path, root: Path) -> bool:
     rel = path.relative_to(root)
-    return any(part in EXCLUDED_PARTS for part in rel.parts) or ".test." in path.name or ".spec." in path.name
+    return (
+        any(part in EXCLUDED_PARTS for part in rel.parts)
+        or ".test." in path.name
+        or ".spec." in path.name
+    )
 
 
 def _literal_methods(call: ast.Call) -> list[str]:
@@ -300,14 +304,8 @@ def _coverage_errors(
     unclassified_label: str,
     stale_label: str,
 ) -> list[str]:
-    errors = [
-        f"{unclassified_label}: {key}"
-        for key in sorted(discovered_keys - entry_keys)
-    ]
-    errors.extend(
-        f"{stale_label}: {key}"
-        for key in sorted(entry_keys - discovered_keys)
-    )
+    errors = [f"{unclassified_label}: {key}" for key in sorted(discovered_keys - entry_keys)]
+    errors.extend(f"{stale_label}: {key}" for key in sorted(entry_keys - discovered_keys))
     return errors
 
 

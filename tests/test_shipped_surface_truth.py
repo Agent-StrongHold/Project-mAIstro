@@ -33,7 +33,7 @@ def _matrix() -> dict:
 def test_discovers_mutating_route_decorators_and_api_route_methods(tmp_path: Path) -> None:
     _write(
         tmp_path / "backend/routes.py",
-        '''
+        """
 from fastapi import APIRouter
 router = APIRouter()
 @router.post("/run")
@@ -42,7 +42,7 @@ def run(): return {"id": "r"}
 def cancel(): return None
 @router.get("/status")
 def status(): return {}
-''',
+""",
     )
     surfaces = discover_backend_surfaces(tmp_path, ["backend"])
     assert [(item.method, item.route) for item in surfaces] == [
@@ -55,41 +55,50 @@ def status(): return {}
 def test_repo_wide_backend_discovery_excludes_tests_and_examples(tmp_path: Path) -> None:
     route = 'from fastapi import APIRouter\nrouter=APIRouter()\n@router.post("/run")\ndef run(): return execute()\n'
     _write(tmp_path / "backend/live.py", route)
-    _write(tmp_path / "backend/tests/test_fake.py", route.replace('/run', '/test-run'))
-    _write(tmp_path / "backend/examples/demo.py", route.replace('/run', '/demo-run'))
+    _write(tmp_path / "backend/tests/test_fake.py", route.replace("/run", "/test-run"))
+    _write(tmp_path / "backend/examples/demo.py", route.replace("/run", "/demo-run"))
     assert [s.route for s in discover_backend_surfaces(tmp_path, ["backend"])] == ["/run"]
 
 
 def test_deliberately_planted_production_fake_success_is_rejected(tmp_path: Path) -> None:
     _write(
         tmp_path / "backend/routes.py",
-        '''
+        """
 from fastapi import APIRouter
 router = APIRouter()
 @router.post("/build")
 def build():
     return {"status": "completed", "id": "fixture-123"}
-''',
+""",
     )
     (tmp_path / "frontend").mkdir()
     matrix = _matrix()
-    matrix["backend_surfaces"] = [{
-        "source": "backend/routes.py", "method": "POST", "route": "/build", "handler": "build",
-        "disposition": "canonical", "production_enabled": True,
-        "effect_owner": "fake.fixture", "reason": "deliberately planted fake-success fixture"
-    }]
+    matrix["backend_surfaces"] = [
+        {
+            "source": "backend/routes.py",
+            "method": "POST",
+            "route": "/build",
+            "handler": "build",
+            "disposition": "canonical",
+            "production_enabled": True,
+            "effect_owner": "fake.fixture",
+            "reason": "deliberately planted fake-success fixture",
+        }
+    ]
     errors = validate_matrix(tmp_path, matrix)
     assert any("production success-shaped no-op" in error for error in errors)
 
 
-def test_frontend_timer_detector_rejects_only_success_callback_not_request_timeout(tmp_path: Path) -> None:
+def test_frontend_timer_detector_rejects_only_success_callback_not_request_timeout(
+    tmp_path: Path,
+) -> None:
     _write(
         tmp_path / "frontend/Page.tsx",
-        '''
+        """
 const timeout = setTimeout(() => controller.abort(), 120000);
 const progressLabel = "progress";
 setTimeout(() => setStatus("completed"), 500);
-''',
+""",
     )
     surfaces = discover_frontend_surfaces(tmp_path, ["frontend"])
     assert [s.signal for s in surfaces] == ["timer-status-simulation"]
@@ -109,7 +118,11 @@ def test_discovers_literal_mutating_frontend_api_call(tmp_path: Path) -> None:
         'await fetch("/v1/runs", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(x) });\n',
     )
     [surface] = discover_frontend_surfaces(tmp_path, ["frontend"])
-    assert (surface.signal, surface.method, surface.route) == ("mutating-api-call", "POST", "/v1/runs")
+    assert (surface.signal, surface.method, surface.route) == (
+        "mutating-api-call",
+        "POST",
+        "/v1/runs",
+    )
 
 
 def test_missing_new_route_disposition_fails_closed(tmp_path: Path) -> None:
@@ -133,11 +146,16 @@ def test_production_timer_success_cannot_be_classified_truthful(tmp_path: Path) 
     (tmp_path / "backend").mkdir()
     _write(tmp_path / "frontend/Page.tsx", 'setTimeout(() => setStatus("completed"), 500);\n')
     matrix = _matrix()
-    matrix["frontend_surfaces"] = [{
-        "source": "frontend/Page.tsx", "signal": "timer-status-simulation",
-        "disposition": "local-only", "production_enabled": True,
-        "truth_contract": "client animation", "reason": "planted client-timer success"
-    }]
+    matrix["frontend_surfaces"] = [
+        {
+            "source": "frontend/Page.tsx",
+            "signal": "timer-status-simulation",
+            "disposition": "local-only",
+            "production_enabled": True,
+            "truth_contract": "client animation",
+            "reason": "planted client-timer success",
+        }
+    ]
     errors = validate_matrix(tmp_path, matrix)
     assert any("production timer-driven execution state" in error for error in errors)
 
@@ -149,23 +167,40 @@ def test_strict_gate_blocks_owned_unresolved_production_surface(tmp_path: Path) 
     )
     (tmp_path / "frontend").mkdir()
     matrix = _matrix()
-    matrix["backend_surfaces"] = [{
-        "source": "backend/routes.py", "method": "POST", "route": "/run", "handler": "run",
-        "disposition": "unresolved", "production_enabled": True, "owner_issue": 999,
-        "reason": "owned convergence gap"
-    }]
+    matrix["backend_surfaces"] = [
+        {
+            "source": "backend/routes.py",
+            "method": "POST",
+            "route": "/run",
+            "handler": "run",
+            "disposition": "unresolved",
+            "production_enabled": True,
+            "owner_issue": 999,
+            "reason": "owned convergence gap",
+        }
+    ]
     assert validate_matrix(tmp_path, matrix, strict=False) == []
     assert any("blocks Gate D" in error for error in validate_matrix(tmp_path, matrix, strict=True))
 
 
 def test_disabled_surface_requires_owner_and_is_not_production_enabled(tmp_path: Path) -> None:
-    _write(tmp_path / "backend/routes.py", 'from fastapi import APIRouter\nrouter=APIRouter()\n@router.post("/x")\ndef x(): return work()\n')
+    _write(
+        tmp_path / "backend/routes.py",
+        'from fastapi import APIRouter\nrouter=APIRouter()\n@router.post("/x")\ndef x(): return work()\n',
+    )
     (tmp_path / "frontend").mkdir()
     matrix = _matrix()
-    matrix["backend_surfaces"] = [{
-        "source": "backend/routes.py", "method": "POST", "route": "/x", "handler": "x",
-        "disposition": "disabled", "production_enabled": True, "reason": "contained"
-    }]
+    matrix["backend_surfaces"] = [
+        {
+            "source": "backend/routes.py",
+            "method": "POST",
+            "route": "/x",
+            "handler": "x",
+            "disposition": "disabled",
+            "production_enabled": True,
+            "reason": "contained",
+        }
+    ]
     errors = validate_matrix(tmp_path, matrix)
     assert any("must name owner_issue" in error for error in errors)
     assert any("cannot be production_enabled" in error for error in errors)
