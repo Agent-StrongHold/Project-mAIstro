@@ -1,6 +1,6 @@
 """Adapters that implement AgentPort.
 
-StubAgentPort  — placeholder response when maistro-core is not configured.
+StubAgentPort  — explicit unavailable response when maistro-core is not configured.
 MaistroCoreBridge — embeds maistro-core in-process; chat routes through Container.route_request().
 HttpOpenAILLMClient — thin httpx wrapper implementing maistro.protocols.llm.LLMClient.
 """
@@ -10,7 +10,6 @@ from __future__ import annotations
 import contextlib
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
-from uuid import uuid4
 
 from maistro.http import shared_client
 
@@ -19,7 +18,12 @@ if TYPE_CHECKING:
 
 
 class StubAgentPort:
-    """Returned when maistro-core is not configured. Preserves dev-mode startup."""
+    """Explicit degraded-mode port used when maistro-core is unavailable.
+
+    This object deliberately does not manufacture an assistant completion. A
+    caller may keep the process alive for diagnostics/demo support, but chat
+    cannot report success when the canonical Agent runtime failed to start.
+    """
 
     async def route(
         self,
@@ -28,22 +32,8 @@ class StubAgentPort:
         session_id: str | None = None,
         intent_hint: str = "",
     ) -> dict[str, Any]:
-        return {
-            "id": str(uuid4()),
-            "model": "stub",
-            "choices": [
-                {
-                    "message": {
-                        "role": "assistant",
-                        "content": (
-                            "(stub) Set MAISTRO_ROUTER_API_KEY and MAISTRO_LLM_BASE_URL "
-                            "to route through real agents."
-                        ),
-                    },
-                    "finish_reason": "stop",
-                }
-            ],
-        }
+        del messages, session_id, intent_hint
+        raise RuntimeError("maistro-core Agent runtime is unavailable")
 
 
 class _HttpOpenAILLMClient:
@@ -186,6 +176,7 @@ class MaistroCoreBridge:
             session_store=self._container.session_store,
             quota_tracker=self._container.quota_tracker,
             tracer=None,
+            require_agents=True,
         )
         self._container.agents = agents
 

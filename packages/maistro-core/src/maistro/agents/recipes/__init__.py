@@ -79,6 +79,14 @@ def agent_recipe_to_node_template(
 
 
 class RecipeRegistry:
+    """Read-only durable compatibility adapter for legacy AgentRecipe definitions.
+
+    Legacy YAML may still be consumed while callers migrate, and Persona
+    expansion may register transient recipes in memory for the legacy spawner.
+    Durable reusable definitions are canonical NodeTemplates/Personas, so this
+    adapter intentionally has no YAML write API.
+    """
+
     def __init__(self, recipes_dir: str | Path | None = None) -> None:
         self._dir = Path(recipes_dir) if recipes_dir else _DEFAULT_RECIPES_DIR
         self._cache: dict[str, AgentRecipe] = {}
@@ -93,17 +101,9 @@ class RecipeRegistry:
         return list(self._cache.values())
 
     def register(self, recipe: AgentRecipe) -> None:
-        self._cache[recipe.name] = recipe
+        """Register transient compatibility state; this never persists a definition."""
 
-    def save(self, recipe: AgentRecipe) -> Path:
-        self._dir.mkdir(parents=True, exist_ok=True)
-        filename = recipe.name.replace(".", "_") + ".yaml"
-        path = self._dir / filename
-        data = recipe.model_dump(exclude_defaults=True)
-        data["role"] = recipe.role.value
-        path.write_text(yaml.dump(data, default_flow_style=False), encoding="utf-8")
         self._cache[recipe.name] = recipe
-        return path
 
     def _load_from_disk(self, name: str) -> AgentRecipe | None:
         if not self._dir.exists():

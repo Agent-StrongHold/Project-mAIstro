@@ -7,7 +7,11 @@ from pathlib import Path
 
 import yaml
 
-from maistro.agents.recipes import AgentRecipe, RecipeRegistry
+from maistro.agents.recipes import (
+    AgentRecipe,
+    RecipeRegistry,
+    agent_recipe_to_node_template,
+)
 from maistro.agents.spec.agent_spec import AgentRole
 from maistro.agents.spec.schemas import resolve_schema
 
@@ -82,20 +86,31 @@ class TestRecipeRegistry:
         found = registry.get("my.special")
         assert found is recipe
 
-    def test_save_roundtrip(self, tmp_path: Path) -> None:
-        registry = RecipeRegistry(recipes_dir=tmp_path)
+    def test_custom_recipe_projects_to_canonical_template(self, tmp_path: Path) -> None:
         recipe = AgentRecipe(
             name="saved.recipe",
             role=AgentRole.REVIEWER,
             prompt_name="saved.prompt",
             result_schema="schemas.ReviewOutput",
         )
-        registry.save(recipe)
+        data = recipe.model_dump(exclude_defaults=True)
+        data["role"] = recipe.role.value
+        (tmp_path / "saved_recipe.yaml").write_text(yaml.dump(data), encoding="utf-8")
 
-        registry2 = RecipeRegistry(recipes_dir=tmp_path)
-        restored = registry2.get("saved.recipe")
-        assert restored is not None
-        assert restored.result_schema == "schemas.ReviewOutput"
+        registry = RecipeRegistry(recipes_dir=tmp_path)
+        resolved = registry.get("saved.recipe")
+        assert resolved is not None
+        template = agent_recipe_to_node_template(
+            resolved,
+            workspace_id="workspace-1",
+            node_type="agent.compatibility",
+        )
+
+        assert template.workspace_id == "workspace-1"
+        assert template.metadata["source_import_provenance"]["source_format"] == "agent_recipe"
+        assert (
+            template.metadata["legacy_recipe_snapshot"]["result_schema"] == "schemas.ReviewOutput"
+        )
 
     def test_list_recipes_returns_all(self) -> None:
         registry = RecipeRegistry()
