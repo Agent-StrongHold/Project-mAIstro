@@ -18,6 +18,8 @@ they asserted nothing. 1008 (RFC 6455 "policy violation") is only reachable via
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
@@ -137,6 +139,40 @@ def test_dag_run_stream_accepts_admin(admin_client: TestClient) -> None:
 
 @pytest.mark.contract("behavioral")
 @pytest.mark.scope("integration")
+def test_dag_run_stream_preserves_authenticated_actor(
+    admin_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The authenticated socket principal becomes the canonical Run actor."""
+    import services.graph_runner as graph_runner
+    import stores
+
+    dag_id = "ws-actor-attribution"
+    stores.dags[dag_id] = {
+        "id": dag_id,
+        "name": "Actor attribution",
+        "description": "",
+        "nodes": [{"id": "n1", "role": "worker", "name": "n1"}],
+        "edges": [],
+    }
+    captured: dict[str, Any] = {}
+
+    async def fake_stream(dag_data: dict[str, Any], **kwargs: Any):
+        captured["dag_id"] = dag_data["id"]
+        captured["user_id"] = kwargs.get("user_id")
+        yield {"status": "completed", "run_id": "run-ws-actor"}
+
+    monkeypatch.setattr(graph_runner, "execute_dag_streaming", fake_stream)
+    try:
+        with admin_client.websocket_connect(f"/v1/ws/dags/{dag_id}/run") as ws:
+            assert ws.receive_json() == {"status": "completed", "run_id": "run-ws-actor"}
+    finally:
+        stores.dags.pop(dag_id, None)
+
+    assert captured == {"dag_id": dag_id, "user_id": "admin"}
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("integration")
 def test_same_origin_is_allowed(authed_client: TestClient) -> None:
     """A same-origin page must not be rejected.
 
@@ -158,3 +194,40 @@ def test_same_origin_is_allowed(authed_client: TestClient) -> None:
     assert exc.value.code == NORMAL_CLOSURE, (
         "a same-origin handshake must be allowed even though the origin is not in CORS_ORIGINS"
     )
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("integration")
+def test_dag_run_stream_closes_cleanly_when_the_run_ends_without_a_terminal_event(
+    admin_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The socket must not hang waiting for a `completed`/`failed` that never
+    comes: a stream that simply ends closes the socket through the same
+    finally path a terminal break uses."""
+    import services.graph_runner as graph_runner
+    import stores
+
+    dag_id = "ws-stream-exhausts"
+    stores.dags[dag_id] = {
+        "id": dag_id,
+        "name": "Exhausts",
+        "description": "",
+        "nodes": [{"id": "n1", "role": "worker", "name": "n1"}],
+        "edges": [],
+    }
+
+    async def ending_stream(dag_data: dict[str, Any], **kwargs: Any):
+        yield {"status": "node_complete", "node_id": "n1", "success": True}
+
+    monkeypatch.setattr(graph_runner, "execute_dag_streaming", ending_stream)
+    try:
+        with admin_client.websocket_connect(f"/v1/ws/dags/{dag_id}/run") as ws:
+            assert ws.receive_json() == {
+                "status": "node_complete",
+                "node_id": "n1",
+                "success": True,
+            }
+            with pytest.raises(WebSocketDisconnect):
+                ws.receive_json()
+    finally:
+        stores.dags.pop(dag_id, None)
