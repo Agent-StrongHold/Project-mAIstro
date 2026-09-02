@@ -23,9 +23,7 @@ from .spine import mirror_lifecycle
 from .stores import answer_record
 from .types import DurableRunRecord
 
-_RECOVERY_VISIBLE_STATUSES = frozenset(
-    {RunStatus.WAITING, RunStatus.PAUSED, RunStatus.RUNNING}
-)
+_RECOVERY_VISIBLE_STATUSES = frozenset({RunStatus.WAITING, RunStatus.PAUSED, RunStatus.RUNNING})
 
 
 class CanonicalDurableRunStore:
@@ -106,10 +104,10 @@ class CanonicalDurableRunStore:
                     if await self._continuations.delete(run_id):
                         changed += 1
                     continue
-                if (
-                    canonical.status is RunStatus.RUNNING
-                    and continuation.status in {RunStatus.WAITING, RunStatus.PAUSED}
-                ):
+                if canonical.status is RunStatus.RUNNING and continuation.status in {
+                    RunStatus.WAITING,
+                    RunStatus.PAUSED,
+                }:
                     await self._run_store.transition_run(run_id, continuation.status)
                     changed += 1
         return changed

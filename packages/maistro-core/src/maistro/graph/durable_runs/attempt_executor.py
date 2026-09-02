@@ -19,7 +19,7 @@ from maistro.graph.nodes.base import NodeContext, NodeResult
 from maistro.observability.correlation import bind_execution_context
 from maistro.runs.execution import AttemptExecutionService
 from maistro.runs.lifecycle import lease_is_expired, transition_path, transition_run
-from maistro.runs.model import Attempt, AttemptStatus, NodeRun, RunStatus
+from maistro.runs.model import Attempt, AttemptStatus, NodeRun, Run, RunStatus
 from maistro.runs.reconciliation import AttemptLifecycleReconciler, CancellationCause
 from maistro.runs.store import RunIntegrityError, RunStore
 from maistro.runtime import ExecutionRuntime, PythonExecutionRuntime
@@ -51,7 +51,7 @@ async def _validated_admitted_run(
     *,
     run_store: RunStore,
     run_id: str,
-):
+) -> Run:
     """Return the admitted canonical Run without starting it.
 
     Checkpoint 1 is the durable bootstrap claim. Moving the Run to RUNNING
@@ -198,16 +198,23 @@ async def resume_durable_graph(
 
     run = record.run
     if run.status in {RunStatus.WAITING, RunStatus.QUEUED}:
+        stepped: Run | None = None
         if spine is not None:
             canonical = await spine.get_run(run.run_id)
-            for step in transition_path(canonical.status, RunStatus.RUNNING):
-                canonical = await spine.transition_run(run.run_id, step)
-            record = traversal._replace_record(record, run=canonical)
-        else:
+            if canonical is not None:
+                for step in transition_path(canonical.status, RunStatus.RUNNING):
+                    canonical = await spine.transition_run(run.run_id, step)
+                stepped = canonical
+        if stepped is None:
+            # No spine row to walk stepwise (no spine, or the row was purged
+            # mid-resume): advance the record's own lifecycle instead, the
+            # pre-convergence behavior, rather than attribute-error here.
             record = traversal._replace_record(
                 record,
                 run=transition_run(run, RunStatus.RUNNING),
             )
+        else:
+            record = traversal._replace_record(record, run=stepped)
 
     return await _walk(
         record,

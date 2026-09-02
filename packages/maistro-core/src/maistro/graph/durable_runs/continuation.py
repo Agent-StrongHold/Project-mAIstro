@@ -31,9 +31,7 @@ from .types import DurableRunRecord
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import aiosqlite
 
-_RECOVERY_VISIBLE_STATUSES = frozenset(
-    {RunStatus.WAITING, RunStatus.PAUSED, RunStatus.RUNNING}
-)
+_RECOVERY_VISIBLE_STATUSES = frozenset({RunStatus.WAITING, RunStatus.PAUSED, RunStatus.RUNNING})
 
 
 class GraphContinuation(BaseModel):
@@ -92,9 +90,7 @@ class GraphContinuationStore(Protocol):
         """Return persisted wait/claim continuations whose deadline is due."""
         ...
 
-    async def list_run_ids_for_project(
-        self, project_id: str, *, limit: int = 25
-    ) -> list[str]: ...
+    async def list_run_ids_for_project(self, project_id: str, *, limit: int = 25) -> list[str]: ...
 
 
 def _clone(continuation: GraphContinuation) -> GraphContinuation:
@@ -161,9 +157,7 @@ class InMemoryGraphContinuationStore:
         rows.sort(key=lambda row: (row.resume_at, row.run_id))
         return [row.run_id for row in rows[:limit]]
 
-    async def list_run_ids_for_project(
-        self, project_id: str, *, limit: int = 25
-    ) -> list[str]:
+    async def list_run_ids_for_project(self, project_id: str, *, limit: int = 25) -> list[str]:
         rows = [row for row in self._rows.values() if row.project_id == project_id]
         rows.sort(
             key=lambda row: (row.created_at or datetime.min, row.run_id),
@@ -276,9 +270,7 @@ class SqliteGraphContinuationStore:
         )
         return [str(row[0]) for row in await cursor.fetchall()]
 
-    async def list_run_ids_for_project(
-        self, project_id: str, *, limit: int = 25
-    ) -> list[str]:
+    async def list_run_ids_for_project(self, project_id: str, *, limit: int = 25) -> list[str]:
         cursor = await self._conn.execute(
             "SELECT run_id FROM graph_continuations WHERE project_id = ? "
             "ORDER BY created_at DESC, run_id DESC LIMIT ?",

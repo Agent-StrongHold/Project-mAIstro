@@ -30,9 +30,7 @@ class DurableRunStore(Protocol):
         project_id: str | None = None,
     ) -> list[DurableRunRecord]: ...
 
-    async def list_due(
-        self, *, now: datetime, limit: int = 100
-    ) -> list[DurableRunRecord]:
+    async def list_due(self, *, now: datetime, limit: int = 100) -> list[DurableRunRecord]:
         """Return persisted graph continuations whose timed resume is due."""
         ...
 

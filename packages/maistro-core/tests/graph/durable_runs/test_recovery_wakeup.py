@@ -7,6 +7,7 @@ import pytest
 
 from maistro.graph.definitions import Graph, Node
 from maistro.graph.durable_runs import recovery
+from maistro.graph.durable_runs.attempt_executor import LiveAttemptOwned
 from maistro.runs.model import GraphSnapshot, Run, RunStatus
 
 pytestmark = [pytest.mark.contract("behavioral")]
@@ -174,7 +175,7 @@ async def test_queued_run_without_continuation_is_claimed_then_resumed(monkeypat
         store=store,
         run_store=run_store,
         eligible=lambda candidate: candidate.provenance.get("admission_source") == "owned",
-        node_resolver_factory=lambda _run: (lambda _node_id, _graph: None),
+        node_resolver_factory=lambda _run: lambda _node_id, _graph: None,
     )
 
     assert recovered == 1
@@ -201,7 +202,7 @@ async def test_queued_recovery_never_steals_an_unowned_admission_source(monkeypa
         store=store,
         run_store=_RunStore(run),
         eligible=lambda candidate: candidate.provenance.get("admission_source") == "owned",
-        node_resolver_factory=lambda _run: (lambda _node_id, _graph: None),
+        node_resolver_factory=lambda _run: lambda _node_id, _graph: None,
     )
 
     assert recovered == 0
@@ -210,7 +211,9 @@ async def test_queued_recovery_never_steals_an_unowned_admission_source(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_initial_continuation_insert_is_the_cross_replica_bootstrap_claim(monkeypatch) -> None:
+async def test_initial_continuation_insert_is_the_cross_replica_bootstrap_claim(
+    monkeypatch,
+) -> None:
     run = _queued_run()
     store = _BootstrapStore(lose_create_race=True)
     calls: list[str] = []
@@ -225,7 +228,7 @@ async def test_initial_continuation_insert_is_the_cross_replica_bootstrap_claim(
         store=store,
         run_store=_RunStore(run),
         eligible=lambda _candidate: True,
-        node_resolver_factory=lambda _run: (lambda _node_id, _graph: None),
+        node_resolver_factory=lambda _run: lambda _node_id, _graph: None,
     )
 
     assert recovered == 0
@@ -252,7 +255,7 @@ async def test_existing_queued_continuation_is_resumed_after_bootstrap_process_l
         store=store,
         run_store=_RunStore(run),
         eligible=lambda _candidate: True,
-        node_resolver_factory=lambda _run: (lambda _node_id, _graph: None),
+        node_resolver_factory=lambda _run: lambda _node_id, _graph: None,
     )
 
     assert recovered == 1
@@ -280,7 +283,288 @@ async def test_queued_resume_race_uses_canonical_status_to_yield_to_the_winner(m
             store=store,
             run_store=_RunStore(run),
             eligible=lambda _candidate: True,
-            node_resolver_factory=lambda _run: (lambda _node_id, _graph: None),
+            node_resolver_factory=lambda _run: lambda _node_id, _graph: None,
+        )
+        == 0
+    )
+
+
+@pytest.mark.asyncio
+async def test_wakeup_and_queued_ticks_are_noops_for_a_non_positive_limit() -> None:
+    """A zero budget must not touch persistence at all, let alone resume."""
+    store = _Store()
+    run = _queued_run()
+    assert (
+        await recovery.resume_due_graph_runs(
+            store=store,
+            run_store=object(),
+            node_resolver=lambda _node_id, _graph: None,
+            limit=0,
+        )
+        == 0
+    )
+    assert (
+        await recovery.recover_queued_graph_runs(
+            store=store,
+            run_store=_RunStore(run),
+            node_resolver_factory=lambda _run: lambda _node_id, _graph: None,
+            eligible=lambda _candidate: True,
+            limit=0,
+        )
+        == 0
+    )
+    assert await store.get("waiting") is None
+
+
+@pytest.mark.asyncio
+async def test_wakeup_ignores_a_due_record_the_due_query_still_returned(monkeypatch) -> None:
+    """The indexed query over-returns on purpose (HITL reconciliation reads it
+    too), so the tick re-checks visibility: a terminal record is never resumed."""
+    now = datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
+    completed = _record("completed", RunStatus.COMPLETED, now - timedelta(seconds=1))
+    store = _Store(completed)
+    calls: list[str] = []
+
+    async def _resume(run_id: str, **kwargs) -> None:
+        del kwargs
+        calls.append(run_id)
+
+    monkeypatch.setattr(recovery, "resume_durable_graph", _resume)
+
+    assert (
+        await recovery.resume_due_graph_runs(
+            store=store,
+            run_store=object(),
+            node_resolver=lambda _node_id, _graph: None,
+            now=now,
+        )
+        == 0
+    )
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_wakeup_tick_yields_to_a_live_attempt_that_still_owns_the_run(
+    monkeypatch,
+) -> None:
+    now = datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
+    waiting = _record("waiting", RunStatus.WAITING, now - timedelta(seconds=1))
+    store = _Store(waiting)
+
+    async def _owned_elsewhere(run_id: str, **kwargs) -> None:
+        del kwargs, run_id
+        raise LiveAttemptOwned("another worker holds a live Attempt for this Run")
+
+    monkeypatch.setattr(recovery, "resume_durable_graph", _owned_elsewhere)
+
+    assert (
+        await recovery.resume_due_graph_runs(
+            store=store,
+            run_store=object(),
+            node_resolver=lambda _node_id, _graph: None,
+            now=now,
+        )
+        == 0
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_resume_race_that_vanished_the_record_is_not_reraised(monkeypatch) -> None:
+    """A KeyError whose Run no longer exists was someone else completing the
+    cleanup; reraising it would fail the whole tick for one settled record."""
+    now = datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
+    waiting = _record("waiting", RunStatus.WAITING, now - timedelta(seconds=1))
+    store = _Store(waiting)
+
+    async def _vanished_mid_resume(run_id: str, **kwargs) -> None:
+        del kwargs
+        del store.records[run_id]
+        raise KeyError(run_id)
+
+    monkeypatch.setattr(recovery, "resume_durable_graph", _vanished_mid_resume)
+
+    assert (
+        await recovery.resume_due_graph_runs(
+            store=store,
+            run_store=object(),
+            node_resolver=lambda _node_id, _graph: None,
+            now=now,
+        )
+        == 0
+    )
+
+
+class _ReconcilingStore(_BootstrapStore):
+    """A store whose persistence half can be repaired before the tick reads it."""
+
+    def __init__(self, *records) -> None:
+        super().__init__(*records)
+        self.reconciled: list[int] = []
+
+    async def reconcile_persistence(self, *, limit: int = 100) -> int:
+        self.reconciled.append(limit)
+        return 0
+
+
+@pytest.mark.asyncio
+async def test_a_tick_reconciles_persistence_before_reading_due_work(monkeypatch) -> None:
+    """Crash residue is repaired first, or the tick would read a stale split:
+    purged orphans resurfacing as candidates, stepped statuses missed."""
+    now = datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
+    waiting = _record("waiting", RunStatus.WAITING, now - timedelta(seconds=1))
+    store = _ReconcilingStore(waiting)
+
+    async def _resume(run_id: str, **kwargs) -> None:
+        del kwargs, run_id
+
+    monkeypatch.setattr(recovery, "resume_durable_graph", _resume)
+
+    assert (
+        await recovery.resume_due_graph_runs(
+            store=store,
+            run_store=object(),
+            node_resolver=lambda _node_id, _graph: None,
+            now=now,
+            limit=7,
+        )
+        == 1
+    )
+    assert store.reconciled == [7]
+
+    assert (
+        await recovery.recover_queued_graph_runs(
+            store=store,
+            run_store=_RunStore(_queued_run()),
+            node_resolver_factory=lambda _run: lambda _node_id, _graph: None,
+            eligible=lambda _candidate: True,
+            limit=3,
+        )
+        == 1
+    )
+    assert store.reconciled == [7, 3]
+
+
+class _VanishingBootstrapStore(_Store):
+    """A create that fails without leaving the record behind."""
+
+    async def create(self, record):
+        raise ValueError(f"persistence refused the claim for {record.run_id!r}")
+
+
+@pytest.mark.asyncio
+async def test_a_failed_bootstrap_claim_that_left_nothing_reraises() -> None:
+    """A create that failed *and* left no record is not a race -- it is a
+    persistence refusal, and swallowing it would report the Run recovered."""
+    run = _queued_run()
+    store = _VanishingBootstrapStore()
+
+    with pytest.raises(ValueError, match="persistence refused the claim"):
+        await recovery.recover_queued_graph_runs(
+            store=store,
+            run_store=_RunStore(run),
+            node_resolver_factory=lambda _run: lambda _node_id, _graph: None,
+            eligible=lambda _candidate: True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_queued_recovery_leaves_a_continuation_someone_else_already_moved(
+    monkeypatch,
+) -> None:
+    """A queued candidate whose stored continuation is no longer queued was
+    claimed between listing and reading; the winner owns it now."""
+    run = _queued_run()
+    initial = recovery._initial_queued_record(run)
+    moved = initial.model_copy(
+        update={"run": initial.run.model_copy(update={"status": RunStatus.RUNNING})}
+    )
+    store = _BootstrapStore(moved)
+    calls: list[str] = []
+
+    async def _resume(run_id: str, **kwargs) -> None:
+        del kwargs
+        calls.append(run_id)
+
+    monkeypatch.setattr(recovery, "resume_durable_graph", _resume)
+
+    assert (
+        await recovery.recover_queued_graph_runs(
+            store=store,
+            run_store=_RunStore(run),
+            node_resolver_factory=lambda _run: lambda _node_id, _graph: None,
+            eligible=lambda _candidate: True,
+        )
+        == 0
+    )
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_queued_resume_failure_reraises_when_the_record_vanished(monkeypatch) -> None:
+    run = _queued_run()
+    initial = recovery._initial_queued_record(run)
+    store = _BootstrapStore(initial)
+
+    async def _vanished_mid_resume(run_id: str, **kwargs) -> None:
+        del kwargs
+        del store.records[run_id]
+        raise KeyError(run_id)
+
+    monkeypatch.setattr(recovery, "resume_durable_graph", _vanished_mid_resume)
+
+    with pytest.raises(KeyError):
+        await recovery.recover_queued_graph_runs(
+            store=store,
+            run_store=_RunStore(run),
+            node_resolver_factory=lambda _run: lambda _node_id, _graph: None,
+            eligible=lambda _candidate: True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_queued_resume_failure_reraises_when_the_run_is_still_queued(monkeypatch) -> None:
+    """Still queued after the failure means nobody else took it -- hiding that
+    would strand the Run behind a one-shot tick that already moved on."""
+    run = _queued_run()
+    initial = recovery._initial_queued_record(run)
+    store = _BootstrapStore(initial)
+
+    async def _broken(run_id: str, **kwargs) -> None:
+        del kwargs, run_id
+        raise ValueError("broken queued recovery invariant")
+
+    monkeypatch.setattr(recovery, "resume_durable_graph", _broken)
+
+    with pytest.raises(ValueError, match="broken queued recovery invariant"):
+        await recovery.recover_queued_graph_runs(
+            store=store,
+            run_store=_RunStore(run),
+            node_resolver_factory=lambda _run: lambda _node_id, _graph: None,
+            eligible=lambda _candidate: True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_queued_recovery_yields_when_a_live_attempt_already_owns_the_run(
+    monkeypatch,
+) -> None:
+    """The Attempt lease outranks this tick's claim to the same queued Run."""
+    run = _queued_run()
+    initial = recovery._initial_queued_record(run)
+    store = _BootstrapStore(initial)
+
+    async def _owned_elsewhere(run_id: str, **kwargs) -> None:
+        del kwargs, run_id
+        raise LiveAttemptOwned("another worker holds a live Attempt for this Run")
+
+    monkeypatch.setattr(recovery, "resume_durable_graph", _owned_elsewhere)
+
+    assert (
+        await recovery.recover_queued_graph_runs(
+            store=store,
+            run_store=_RunStore(run),
+            node_resolver_factory=lambda _run: lambda _node_id, _graph: None,
+            eligible=lambda _candidate: True,
         )
         == 0
     )

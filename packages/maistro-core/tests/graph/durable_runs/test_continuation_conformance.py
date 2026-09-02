@@ -186,9 +186,7 @@ async def test_due_deadline_query_agrees_across_backends(store: GraphContinuatio
             resume_at=now + timedelta(seconds=1),
         )
     )
-    await store.create(
-        _continuation("run-no-deadline", status=RunStatus.WAITING, resume_at=None)
-    )
+    await store.create(_continuation("run-no-deadline", status=RunStatus.WAITING, resume_at=None))
     await store.create(
         _continuation(
             "run-terminal",
@@ -199,3 +197,22 @@ async def test_due_deadline_query_agrees_across_backends(store: GraphContinuatio
 
     assert await store.list_due_run_ids(now=now, limit=10) == ["run-waiting", "run-paused"]
     assert await store.list_due_run_ids(now=now, limit=1) == ["run-waiting"]
+
+
+async def test_a_delete_removes_the_continuation_and_reports_what_it_removed(
+    store: GraphContinuationStore,
+) -> None:
+    """Orphan purging is a delete, and it must mean the same thing everywhere.
+
+    `reconcile_persistence` trusts this return value to count repaired Runs:
+    a backend that answered True without removing the row, or removed the row
+    while answering False, would make the repair either loop forever or
+    silently under-report. Deleting an absent Run is a no-op, not an error,
+    because two reconcilers racing on the same orphan must both succeed.
+    """
+    await store.create(_continuation("run-1"))
+
+    assert await store.delete("run-1") is True
+    assert await store.get("run-1") is None
+    assert await store.delete("run-1") is False
+    assert await store.delete("never-created") is False

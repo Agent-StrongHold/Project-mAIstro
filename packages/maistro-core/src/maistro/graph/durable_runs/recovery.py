@@ -120,9 +120,7 @@ async def _claim_initial_continuation(
 
     current = await store.get(run.run_id)
     if current is None:  # pragma: no cover - persistence contract breach
-        raise RuntimeError(
-            f"initial continuation for Run {run.run_id!r} disappeared after create"
-        )
+        raise RuntimeError(f"initial continuation for Run {run.run_id!r} disappeared after create")
     return current
 
 

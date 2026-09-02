@@ -76,9 +76,7 @@ class PgGraphContinuationStore:
             )
         if stored is None:
             raise KeyError(f"no such run: {continuation.run_id!r}")
-        raise ValueError(
-            f"version regression: stored={stored} incoming={continuation.version}"
-        )
+        raise ValueError(f"version regression: stored={stored} incoming={continuation.version}")
 
     async def delete(self, run_id: str) -> bool:
         async with self._pool.acquire() as conn:
@@ -86,7 +84,7 @@ class PgGraphContinuationStore:
                 "DELETE FROM graph_continuations WHERE run_id = $1",
                 run_id,
             )
-        return result != "DELETE 0"
+        return str(result) != "DELETE 0"
 
     async def list_run_ids_by_status(
         self,
@@ -125,9 +123,7 @@ class PgGraphContinuationStore:
             )
         return [str(row["run_id"]) for row in rows]
 
-    async def list_run_ids_for_project(
-        self, project_id: str, *, limit: int = 25
-    ) -> list[str]:
+    async def list_run_ids_for_project(self, project_id: str, *, limit: int = 25) -> list[str]:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT run_id FROM graph_continuations
