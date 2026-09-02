@@ -8,12 +8,13 @@ from typing import Annotated, Any
 
 import typer
 import yaml
+from pydantic import ValidationError
 from rich.console import Console
 
 from maistro_bootstrap.materialize import materialize_install_artifacts
 from maistro_bootstrap.plan import build_install_plan, run_apply_spec
 from maistro_bootstrap.repo_root import find_maistro_engine_root
-from maistro_bootstrap.schema import InstallAnswersV1, parse_answers_dict
+from maistro_bootstrap.schema import InstallAnswersV1, describe_validation_error, parse_answers_dict
 from maistro_bootstrap.wizard import collect_answers_interactive
 
 console = Console()
@@ -28,7 +29,13 @@ def _load_raw_answers(path: Path) -> dict[str, Any]:
 
 def _resolve_answers(answers_file: Path | None) -> InstallAnswersV1:
     if answers_file is not None:
-        return parse_answers_dict(_load_raw_answers(answers_file))
+        try:
+            return parse_answers_dict(_load_raw_answers(answers_file))
+        except ValidationError as exc:
+            # #810: unknown keys are errors that name the key, not silent defaults.
+            raise typer.BadParameter(
+                describe_validation_error(exc), param_hint="--answers-file"
+            ) from exc
     if not sys.stdin.isatty():
         console.print(
             "[red]No TTY and no --answers-file. Pass --answers-file or run interactively.[/red]"

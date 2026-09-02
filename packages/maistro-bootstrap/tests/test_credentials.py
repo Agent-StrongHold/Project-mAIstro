@@ -8,6 +8,7 @@ import stat
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from maistro_bootstrap.credentials import (
     BOOTSTRAP_CREDENTIALS_FILENAME,
@@ -63,8 +64,18 @@ def test_validate_rejects_missing_and_empty_secrets() -> None:
 
 
 def test_answers_schema_still_rejects_password_fields() -> None:
-    """AC-6: the answers schema must never grow secret fields silently."""
-    answers = InstallAnswersV1.model_validate({"admin_password": "oops", "user_password": "oops"})
-    dumped = answers.model_dump(mode="json")
-    assert "admin_password" not in dumped
-    assert "user_password" not in dumped
+    """AC-6: the answers schema must never grow secret fields silently.
+
+    #810 AC-4: rejection is now an explicit error naming the key — distinct
+    from a generic unknown-key typo in that the password fields are provably
+    *not* schema fields at all (no declaration to typo your way around), and
+    the failure is `extra_forbidden`, not a silent drop-to-default.
+    """
+    assert not {"admin_password", "user_password"} & set(InstallAnswersV1.model_fields)
+    with pytest.raises(ValidationError) as excinfo:
+        InstallAnswersV1.model_validate({"admin_password": "oops", "user_password": "oops"})
+    errs = {(e["type"], ".".join(str(p) for p in e.get("loc", ()))) for e in excinfo.value.errors()}
+    assert ("extra_forbidden", "admin_password") in errs
+    assert ("extra_forbidden", "user_password") in errs
+    # There is no validated answers object to inspect — the payload never
+    # existed, which is stronger than "the fields disappeared after parsing".
