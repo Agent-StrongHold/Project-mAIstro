@@ -106,6 +106,15 @@
       "built_by": [],
       "scanned_by": [],
       "published_by": null
+    },
+    {
+      "id": "copier-autonoetic-template",
+      "dockerfile": "templates/autonoetic/Dockerfile.jinja",
+      "disposition": "INTERNAL",
+      "rationale": "Copier Jinja template for generated autonoetic products. Rendered into downstream repos at scaffold time; this repository does not build or run it.",
+      "built_by": [],
+      "scanned_by": [],
+      "published_by": null
     }
   ]
 }

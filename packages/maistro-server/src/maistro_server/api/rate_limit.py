@@ -71,12 +71,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         if not allowed:
             retry_after = headers.get("X-RateLimit-Reset", "60")
-            http_requests_total.inc(method=request.method, path=request.url.path, status="429")
+            route = _route_template(request)
+            http_requests_total.inc(method=request.method, route=route, status="429")
             # Rejections are traffic too. Omitting them understated volume and
             # latency during exactly the overload the metric exists to show.
             maistro_request_duration_seconds.observe(
                 time.monotonic() - started,
-                route=_route_template(request),
+                route=route,
                 outcome="4xx",
             )
             return JSONResponse(
@@ -89,14 +90,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         response = await call_next(request)
         duration = time.monotonic() - started
+        route = _route_template(request)
 
         http_requests_total.inc(
-            method=request.method, path=request.url.path, status=str(response.status_code)
+            method=request.method, route=route, status=str(response.status_code)
         )
-        http_request_duration.observe(duration, method=request.method, path=request.url.path)
+        http_request_duration.observe(duration, method=request.method, route=route)
         maistro_request_duration_seconds.observe(
             duration,
-            route=_route_template(request),
+            route=route,
             outcome=f"{response.status_code // 100}xx",
         )
         return response

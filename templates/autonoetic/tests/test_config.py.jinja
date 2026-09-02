@@ -1,0 +1,31 @@
+"""Contract tests shipped with the generated autonoetic product."""
+
+from __future__ import annotations
+
+import pytest
+
+from {{ project_slug | replace('-', '_') }}.config import REQUIRED_ENVIRONMENT, load_config
+
+
+@pytest.mark.contract("boundary")
+@pytest.mark.scope("unit")
+def test_rendered_contract() -> None:
+    config = load_config({name: "configured" for name in REQUIRED_ENVIRONMENT})
+
+    assert config.awareness_loop_hz == {{ awareness_loop_hz }}
+    assert config.self_model == "{{ self_model }}"
+    assert config.memory_consolidator_enabled is {{ memory_consolidator == 'on' }}
+    assert config.dossier_store == "{{ dossier_store }}"
+    assert config.ready is True
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("unit")
+def test_readiness_and_tick_period() -> None:
+    missing = load_config({})
+    configured = load_config({name: "present" for name in REQUIRED_ENVIRONMENT})
+
+    assert missing.ready is False
+    assert missing.missing_environment == REQUIRED_ENVIRONMENT
+    assert configured.ready is True
+    assert configured.awareness_period_seconds == pytest.approx(1 / {{ awareness_loop_hz }})
