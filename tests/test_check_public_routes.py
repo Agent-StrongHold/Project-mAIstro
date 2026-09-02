@@ -54,6 +54,22 @@ def bench(tmp_path: Path, gate, monkeypatch: pytest.MonkeyPatch):
     return _set
 
 
+def _trusted_registry(gate, monkeypatch: pytest.MonkeyPatch, routes: dict) -> None:
+    """Give ``main`` a real-shaped trusted base without consulting Git history."""
+    prov = gate._provenance()
+    baseline = prov.Baseline(
+        text=json.dumps({"routes": routes}),
+        origin="base",
+        base_sha="0" * 40,
+        path=Path("quality/public-routes.json"),
+    )
+    monkeypatch.setattr(gate, "_materialize_ci_history", lambda _prov: None)
+    monkeypatch.setattr(prov, "resolve_baseline", lambda *args, **kwargs: baseline)
+    monkeypatch.setattr(prov, "load_authorizations", lambda *args, **kwargs: {})
+    monkeypatch.setattr(prov, "head_sha", lambda _root: "1" * 40)
+    monkeypatch.setattr(gate, "_provenance", lambda: prov)
+
+
 class TestItReadsTheDeclarationsAsTheyAreWritten:
     def test_each_tuple_contributes_its_own_kind(self, gate) -> None:
         """The kinds match differently — `prefix` is boundary-safe, the loose
@@ -225,8 +241,11 @@ class TestTheRepositorysOwnRegistry:
 
         assert gate.main() == 1
 
-    def test_main_reports_each_problem(self, gate, bench, capsys) -> None:
+    def test_main_reports_each_problem(
+        self, gate, bench, capsys, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         bench('_PUBLIC_PREFIXES = ("/v1/voice/",)\n', {})
+        _trusted_registry(gate, monkeypatch, {"/v1/voice/": dict(_ENTRY)})
 
         assert gate.main() == 1
         assert "/v1/voice/" in capsys.readouterr().out

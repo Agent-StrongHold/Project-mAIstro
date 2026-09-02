@@ -261,3 +261,47 @@ async def test_a_yielded_attempt_is_a_pause_in_the_runtime_metrics_too() -> None
     assert metrics.executions_yielded == 1
     assert metrics.executions_failed == 0
     assert metrics.executions_completed == 0
+
+
+@pytest.mark.asyncio
+async def test_execute_claimed_rejects_attempt_without_lease() -> None:
+    from maistro.runs.store import RunIntegrityError
+
+    store, _run_id, node_run_id = await _node_run()
+    service = AttemptExecutionService(store=store, runtime=PythonExecutionRuntime())
+    attempt = Attempt(node_run_id=node_run_id, ordinal=1, runtime_id="test")
+
+    async def executor(_work: Any, _context: Any) -> None:
+        return None
+
+    with pytest.raises(RunIntegrityError, match="missing its execution lease"):
+        await service.execute_claimed(attempt, None, None, executor=executor)
+
+
+@pytest.mark.asyncio
+async def test_execute_claimed_rejects_terminal_attempt() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from maistro.runs.store import RunIntegrityError
+
+    store, _run_id, node_run_id = await _node_run()
+    service = AttemptExecutionService(store=store, runtime=PythonExecutionRuntime())
+    attempt = await store.create_attempt(
+        node_run_id,
+        runtime_id="test",
+        lease_holder="test",
+        lease_ttl=timedelta(seconds=30),
+    )
+    terminal = Attempt.model_validate(
+        {
+            **attempt.model_dump(mode="python"),
+            "status": AttemptStatus.COMPLETED,
+            "finished_at": datetime.now(UTC),
+        }
+    )
+
+    async def executor(_work: Any, _context: Any) -> None:
+        return None
+
+    with pytest.raises(RunIntegrityError, match="requires an active Attempt"):
+        await service.execute_claimed(terminal, None, None, executor=executor)

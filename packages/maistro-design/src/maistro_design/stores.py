@@ -26,9 +26,15 @@ from maistro_design.types import (
 )
 
 
+def _row_dict(row: Any) -> dict[str, Any]:
+    """Materialize mapping-compatible database rows without assuming ``dict(row)`` works."""
+    mapping = row._mapping if hasattr(row, "_mapping") else row
+    return dict(mapping)
+
+
 def _coerce_design_project(row: Any, outputs: list[DesignOutput] | None = None) -> DesignProject:
     """Coerce database row to DesignProject dataclass."""
-    d = dict(row._mapping) if hasattr(row, "_mapping") else dict(row)
+    d = _row_dict(row)
     discovery_data = d.get("discovery_json")
     discovery: DiscoveryResult | None = None
     if discovery_data:
@@ -62,7 +68,7 @@ def _coerce_design_project(row: Any, outputs: list[DesignOutput] | None = None) 
 
 def _coerce_design_output(row: Any) -> DesignOutput:
     """Coerce database row to DesignOutput dataclass."""
-    d = dict(row)
+    d = _row_dict(row)
     metadata = d.get("metadata_json") or {}
     if isinstance(metadata, str):
         metadata = json.loads(metadata)
@@ -129,7 +135,7 @@ class PgDesignProjectStore:
                     (id, name, skill_slug, design_system_slug, org_id, team_id,
                      trust_tier, canvas_id, discovery_json, created_at, updated_at)
                     VALUES (:id, :name, :skill_slug, :design_system_slug, :org_id,
-                            :team_id, :trust_tier, :canvas_id, :discovery_json::jsonb,
+                            :team_id, :trust_tier, :canvas_id, CAST(:discovery_json AS jsonb),
                             :created_at, :updated_at)
                 """),
                 {
@@ -162,7 +168,8 @@ class PgDesignProjectStore:
                         INSERT INTO design_outputs
                         (project_id, format, content, url, trust_tier, metadata_json, created_at,
                          run_id, node_run_id, attempt_id)
-                        VALUES (:project_id, :format, :content, :url, :trust_tier, :metadata_json::jsonb, :created_at,
+                        VALUES (:project_id, :format, :content, :url, :trust_tier,
+                                CAST(:metadata_json AS jsonb), :created_at,
                                 :run_id, :node_run_id, :attempt_id)
                     """),
                     {
@@ -231,7 +238,7 @@ class PgDesignProjectStore:
             )
             projects = []
             for project_row in rows.fetchall():
-                project_id = str(dict(project_row)["id"])
+                project_id = str(_row_dict(project_row)["id"])
                 output_rows = await session.execute(
                     text("SELECT * FROM design_outputs WHERE project_id = :project_id"),
                     {"project_id": project_id},
@@ -256,7 +263,7 @@ class PgDesignProjectStore:
             )
             projects = []
             for project_row in rows.fetchall():
-                project_id = str(dict(project_row)["id"])
+                project_id = str(_row_dict(project_row)["id"])
                 output_rows = await session.execute(
                     text("SELECT * FROM design_outputs WHERE project_id = :project_id"),
                     {"project_id": project_id},
@@ -310,7 +317,8 @@ class PgDesignProjectStore:
                 text("""
                     UPDATE design_projects
                     SET name = :name, trust_tier = :trust_tier,
-                        canvas_id = :canvas_id, discovery_json = :discovery_json::jsonb,
+                        canvas_id = :canvas_id,
+                        discovery_json = CAST(:discovery_json AS jsonb),
                         updated_at = :updated_at
                     WHERE id = :id AND org_id = :org_id
                 """),

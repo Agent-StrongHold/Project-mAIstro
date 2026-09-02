@@ -337,7 +337,6 @@ class AttemptExecutionService:
             deadline_at = datetime.now(UTC) + timedelta(seconds=timeout_s)
 
         runtime_name = runtime_id or type(self._runtime).__name__
-        await self._lifecycle.prepare_execution(node_run_id)
         attempt = await self._store.create_attempt(
             node_run_id,
             runtime_id=runtime_name,
@@ -347,84 +346,96 @@ class AttemptExecutionService:
             lease_holder=executor_id or runtime_name,
             lease_ttl=self._lease_ttl,
         )
+        if attempt.execution_lease is None:
+            raise RunIntegrityError("store-created Attempt is missing its execution lease")
+
+        # Persist physical recovery evidence before logical state claims that
+        # execution is active (#544). If the process dies after this point, the
+        # ordinary lease sweep has an Attempt to reclaim.
+        await self._lifecycle.prepare_execution(node_run_id)
+        return await self.execute_claimed(
+            attempt,
+            work_item,
+            execution_context,
+            executor=executor,
+            timeout_s=timeout_s,
+            reconcile_logical=reconcile_logical,
+            context_factory=context_factory,
+        )
+
+    async def execute_claimed(
+        self,
+        attempt: Attempt,
+        work_item: Any,
+        execution_context: Any,
+        *,
+        executor: ExecutionCallable,
+        timeout_s: float | None = None,
+        reconcile_logical: bool = True,
+        context_factory: AttemptContextFactory | None = None,
+    ) -> Attempt:
         lease = attempt.execution_lease
         if lease is None:
-            raise RunIntegrityError("store-created Attempt is missing its execution lease")
+            raise RunIntegrityError("claimed Attempt is missing its execution lease")
         token = lease.fencing_token
-        attempt = await self._store.transition_attempt(
-            attempt.attempt_id,
-            AttemptStatus.RUNNING,
-            fencing_token=token,
-        )
-        # Here and not earlier: before this the Attempt is not running, and an
-        # id bound over work that has not started names an execution that has
-        # not happened. Everything from this line on -- the executor, the
-        # heartbeat task that copies this context at creation, terminalization,
-        # and reconciliation on every exit path -- is inside the Attempt (#707).
-        correlation.enter_context(bind_execution_context(attempt_id=attempt.attempt_id))
-        runtime_context = _materialize_execution_context(
-            attempt,
-            execution_context,
-            context_factory,
-        )
+        if attempt.status is AttemptStatus.CREATED:
+            attempt = await self._store.transition_attempt(
+                attempt.attempt_id,
+                AttemptStatus.RUNNING,
+                fencing_token=token,
+            )
+        elif attempt.status is not AttemptStatus.RUNNING:
+            raise RunIntegrityError("execute_claimed requires an active Attempt")
 
-        heartbeat = self._start_heartbeat(attempt.attempt_id, token)
-        try:
-            # Nested so the `finally` runs *before* any handler below: a renewal
-            # landing between the executor stopping and the Attempt terminalizing
-            # would race the terminal write, and the whole point of stopping is
-            # that this process is done vouching for the work.
+        with contextlib.ExitStack() as correlation:
+            correlation.enter_context(bind_execution_context(node_run_id=attempt.node_run_id))
+            correlation.enter_context(bind_execution_context(attempt_id=attempt.attempt_id))
+            runtime_context = _materialize_execution_context(
+                attempt,
+                execution_context,
+                context_factory,
+            )
+            heartbeat = self._start_heartbeat(attempt.attempt_id, token)
             try:
-                result = await self._runtime.execute(
-                    work_item,
-                    runtime_context,
-                    execution_id=attempt.attempt_id,
-                    executor=executor,
-                    timeout_s=timeout_s,
+                try:
+                    result = await self._runtime.execute(
+                        work_item,
+                        runtime_context,
+                        execution_id=attempt.attempt_id,
+                        executor=executor,
+                        timeout_s=timeout_s,
+                    )
+                finally:
+                    await self._stop_heartbeat(heartbeat)
+            except ExecutionYielded as exc:
+                terminal = await self._terminalize(
+                    attempt.attempt_id,
+                    AttemptStatus.YIELDED,
+                    fencing_token=token,
+                    result=exc.as_result(),
                 )
-            finally:
-                await self._stop_heartbeat(heartbeat)
-        except ExecutionYielded as exc:
-            # Before the combined handler below, and it has to stay there:
-            # `ExecutionYielded` is an `Exception`, so the broader clause would
-            # catch it first and record a pause as a failure -- which is the
-            # defect this whole change exists to remove.
+                await self._reconcile(terminal)
+                return terminal
+            except (asyncio.CancelledError, RuntimeDeadlineExceeded, Exception) as exc:
+                status, cause, error = _failure_disposition(exc)
+                terminal = await self._terminalize(
+                    attempt.attempt_id,
+                    status,
+                    fencing_token=token,
+                    result=attempt_evidence_of(exc),
+                    error=error,
+                )
+                await self._reconcile(terminal, cancellation=cause)
+                raise
             terminal = await self._terminalize(
                 attempt.attempt_id,
-                AttemptStatus.YIELDED,
+                AttemptStatus.COMPLETED,
                 fencing_token=token,
-                result=exc.as_result(),
+                result=result,
             )
-            # A pause is a disposition, not an error, so this returns where the
-            # handler below re-raises. The reconciler reads the persisted result
-            # to decide PAUSED against WAITING.
-            await self._reconcile(terminal)
+            if reconcile_logical:
+                await self._reconcile(terminal)
             return terminal
-        except (asyncio.CancelledError, RuntimeDeadlineExceeded, Exception) as exc:
-            # One handler, with the physical outcome as data. These were three
-            # `except` blocks whose bodies differed only in the status and the
-            # error text; separating the mapping from the writing keeps "which
-            # status does this exception mean" reviewable in one place.
-            status, cause, error = _failure_disposition(exc)
-            terminal = await self._terminalize(
-                attempt.attempt_id,
-                status,
-                fencing_token=token,
-                result=attempt_evidence_of(exc),
-                error=error,
-            )
-            await self._reconcile(terminal, cancellation=cause)
-            raise
-
-        terminal = await self._terminalize(
-            attempt.attempt_id,
-            AttemptStatus.COMPLETED,
-            fencing_token=token,
-            result=result,
-        )
-        if reconcile_logical:
-            await self._reconcile(terminal)
-        return terminal
 
     async def accept_outcome(self, outcome: AcceptedNodeOutcome) -> NodeRun:
         """Accept one persisted physical result with an explicit logical disposition."""

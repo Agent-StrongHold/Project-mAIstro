@@ -56,6 +56,7 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*")
 _DISTRIBUTION_IMPORT_OVERRIDES: dict[str, frozenset[str]] = {
     "argon2-cffi": frozenset({"argon2"}),
     "pillow": frozenset({"PIL"}),
+    "pyjwt": frozenset({"jwt"}),
     "pyyaml": frozenset({"yaml"}),
 }
 

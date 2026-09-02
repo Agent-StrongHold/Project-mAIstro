@@ -79,6 +79,10 @@ def downgrade() -> None:
     for table in _EMBEDDED_TABLES:
         op.execute(f"DROP INDEX IF EXISTS ix_{table}_embedding_hnsw")
         op.execute(f"ALTER TABLE {table} DROP COLUMN IF EXISTS embedding")
-    # The extension is left alone: `memory_entries.embedding` from 001 still
-    # needs it, and dropping it here would break a downgrade to any revision
-    # above 001.
+    # The extension is left alone. The original reason given here was that
+    # `memory_entries.embedding` from 001 still needs it -- which was wrong,
+    # because that column was `text` until 029 repaired it (#188). The
+    # conclusion survives its reason: 029 makes `memory_entries.embedding` a
+    # real vector, so a downgrade to any revision between 011 and 029 still
+    # leaves a vector column standing, and dropping the extension would break
+    # it.

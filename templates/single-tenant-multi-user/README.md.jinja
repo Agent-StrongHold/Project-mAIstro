@@ -1,6 +1,55 @@
 # {{ project_slug }}
 
-Generated from **maistro-engine** template `single-tenant-multi-user`.
+Single-tenant, multi-user product scaffold generated from the **maistro-engine**
+`single-tenant-multi-user` template.
 
-- Substrate: `{{ substrate_ref }}`
-- Next: run `uv sync`, add product-specific `src/`, and wire `docker-compose` per your host target.
+## Rendered contract
+
+- Maximum users: `{{ users_max }}`
+- Authentication: `{{ auth_backend }}`
+- Channels: `{{ channels | join(', ') }}`
+- Host target: `{{ host_target }}`
+- Engine ref: `74218cf762d7b704732b3a22ff1dd90e49273aee`
+
+The generated entry point is a fail-closed readiness check for this product
+overlay. It validates that the environment variables required by the selected
+auth and channel contracts are present, but it does not claim to implement a
+complete UI, identity provider, voice satellite, or mail transport.
+
+## Local verification
+
+```bash
+uv sync --extra dev
+uv run pytest
+uv run {{ project_slug }} --check
+```
+
+Copy `.env.example` to an untracked `.env` and provide real values through your
+secret manager or process environment. The readiness command reports only
+missing variable names; it never prints credential values.
+
+{% if host_target in ['docker', 'podman'] -%}
+## {{ host_target | capitalize }} image
+
+Build-time dependency installation is isolated in `Dockerfile`; the runtime
+container does not install packages.
+
+```bash
+{{ host_target }} compose -f deploy/compose.yml build
+{{ host_target }} compose -f deploy/compose.yml run --rm {{ project_slug }}
+```
+{% else -%}
+## systemd
+
+Build and install the wheel into `/opt/{{ project_slug }}/.venv`, provision
+`/etc/{{ project_slug }}.env` with mode `0600`, install
+`deploy/systemd/maistro.conf` under `/etc/sysusers.d/` (or run
+`systemd-sysusers deploy/systemd/maistro.conf`), then install
+`deploy/systemd/{{ project_slug }}.service`.
+{% endif %}
+
+## Governance
+
+The ADR seed cites `maistro-engine#ADR-019`, `maistro-engine#ADR-032`, and
+`maistro-engine#ADR-033`. Contract tests use both ADR-032 marker axes, and
+`cosmic-ray.toml` follows the engine's bounded source-to-test mutation pattern.

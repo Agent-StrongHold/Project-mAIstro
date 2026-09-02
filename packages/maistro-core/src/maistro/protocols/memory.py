@@ -296,6 +296,16 @@ class SessionStore(Protocol):
         """
         ...
 
+    async def produced_runs(self, session_id: str) -> list[str]:
+        """The canonical Runs that produced this session's turns, oldest first.
+
+        The session-to-Run direction, which until ADR-083026-56ee existed only
+        as a coincidence of one call site passing a Run id as an opaque turn
+        identity. Distinct, and never blank: a turn appended with no execution
+        in scope contributes nothing rather than an empty name.
+        """
+        ...
+
     async def delete_session(self, session_id: str) -> None:
         """Delete a session."""
         ...

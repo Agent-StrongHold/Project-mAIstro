@@ -10,6 +10,7 @@ import logging as _logging
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+from maistro.observability.correlation import current_execution_context
 from maistro.types.agent import AgentResponse
 
 _TOOL_SCHEMAS: dict[str, dict[str, object]] = {
@@ -693,9 +694,16 @@ class Agent:
             "charged_microchips": 0,
             "pricing_version": "",
         }
+        # The turn's own execution, not its conversation. `session_id` was
+        # passed here, which makes every turn of one session share a key: a
+        # ledger that dedupes on it drops every charge after the first, and one
+        # that only groups reports per session what was spent per turn. The Run
+        # is right under both readings, which is why it is the correction made
+        # without the ledger's contract in hand (ADR-083026-56ee).
+        context = current_execution_context()
         if self._coin_ledger:
             charge_info = await self._coin_ledger.charge_usage(
-                request_id=session_id or "",
+                request_id=context.run_id or context.request_id,
                 org_id=org_id,
                 team_id=team_id,
                 user_id=getattr(auth, "user_id", ""),
@@ -706,7 +714,12 @@ class Agent:
             )
 
         outcome = Outcome(
-            request_id=session_id or "",
+            # The session goes in the field named for it. Before #748 it went
+            # into `request_id`, because `Outcome` had no session field to put
+            # it in -- beside the three canonical columns #709 added that do
+            # mean what they say.
+            session_id=session_id or "",
+            request_id=context.request_id,
             task_type="",
             model_used=model,
             provider="",
