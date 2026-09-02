@@ -7,7 +7,7 @@ import os
 import stat
 import threading
 from contextlib import suppress
-from pathlib import Path
+from pathlib import Path, PosixPath
 
 import pytest
 
@@ -258,6 +258,97 @@ class TestExistingFileIsParseValidatedBeforeReuse:
         # The watching name kept the old inode; it never saw the new secret.
         old_payload = json.loads(shadow.read_text(encoding="utf-8"))
         assert old_payload["admin_password"] == "old-secret"
+
+
+@pytest.mark.ac
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file kinds and stat")
+class TestNonRegularPathHoldersAreRefused:
+    """#809 AC-5: a path held by anything other than a regular file — a
+    directory, or an inode swapped in mid-check — is wreckage or a redirect,
+    never staged input to trust or write through."""
+
+    def test_a_directory_at_the_final_path_is_refused(self, tmp_path: Path) -> None:
+        staged = _staged_path(tmp_path)
+        staged.mkdir()
+
+        with pytest.raises(UnsafeStagedCredentialsError, match="not a regular file"):
+            staged_credentials_valid(staged)
+        with pytest.raises(UnsafeStagedCredentialsError, match="not a regular file"):
+            write_bootstrap_credentials(tmp_path, _creds())
+
+    def test_an_inode_swapped_to_non_regular_mid_check_is_not_trusted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`is_file()` and the later `stat()` are two system calls; between
+        them the name can be repointed at a FIFO or device node. The stat
+        recheck must read that as wreckage, not reuse it."""
+        staged = _staged_path(tmp_path)
+        _write_valid_staged_file(staged, _creds(admin_password="old-secret"))
+
+        real_stat = Path.stat
+        looks = 0
+
+        def racing_stat(self: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+            nonlocal looks
+            # Only the symlink-following looks matter: `is_file()` and the
+            # recheck inside `staged_credentials_valid`. The first one must
+            # still see a regular file; the recheck sees the swap.
+            if self == staged and follow_symlinks:
+                looks += 1
+                if looks > 1:  # the recheck: the name now resolves to a FIFO
+                    was = real_stat(self, follow_symlinks=follow_symlinks)
+                    return os.stat_result(
+                        (
+                            stat.S_IFIFO | stat.S_IMODE(was.st_mode),
+                            was.st_ino,
+                            was.st_dev,
+                            was.st_nlink,
+                            was.st_uid,
+                            was.st_gid,
+                            was.st_size,
+                            was.st_atime,
+                            was.st_mtime,
+                            was.st_ctime,
+                        )
+                    )
+            return real_stat(self, follow_symlinks=follow_symlinks)
+
+        monkeypatch.setattr(Path, "stat", racing_stat)
+        assert staged_credentials_valid(staged) is False
+
+
+@pytest.mark.ac
+class TestWindowsSkipsThePOSIXOnlyChecks:
+    """The mode/nlink gates and the fchmod are POSIX hardening: on nt they
+    are skipped, and both entry points still work there. Pinned from POSIX
+    with `os.name` simulated, because the suites run nowhere else."""
+
+    def test_validity_skips_mode_and_nlink_checks_on_windows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        staged = _staged_path(tmp_path)
+        _write_valid_staged_file(staged, _creds(admin_password="already-there"))
+        staged.chmod(0o644)  # POSIX-only metadata; must not block reuse on nt
+
+        monkeypatch.setattr(os, "name", "nt")
+
+        assert staged_credentials_valid(staged) is True
+
+    def test_staging_skips_fchmod_on_windows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # `Path(...)` picks its flavour from `os.name` at construction time,
+        # so faking nt also has to pin the module's `Path` to `PosixPath` —
+        # otherwise the temp file's name re-renders through `WindowsPath`
+        # and the rename misses. The syscalls underneath stay POSIX.
+        monkeypatch.setattr("maistro_bootstrap.credentials.Path", PosixPath)
+        monkeypatch.setattr(os, "name", "nt")
+
+        path = write_bootstrap_credentials(tmp_path, _creds(admin_password="nt-secret"))
+
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert payload["admin_password"] == "nt-secret"
+        assert [p.name for p in tmp_path.iterdir()] == [BOOTSTRAP_CREDENTIALS_FILENAME]
 
 
 @pytest.mark.ac
