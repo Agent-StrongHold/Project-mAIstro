@@ -332,6 +332,10 @@ class _ScheduleRunner:
         for run_id in admission.run_ids:
             run = await container.run_store.get_run(run_id)
             provenance = dict(run.provenance) if run is not None else {}
+            # GraphSnapshot is an immutable envelope (extra="forbid") that
+            # carries the definition as JSON; the durable template identity
+            # lives on the materialized Graph, not on the snapshot itself.
+            template = run.graph.materialize().source_template if run is not None else None
             log_audit(
                 "schedule_fire",
                 "system",
@@ -351,9 +355,7 @@ class _ScheduleRunner:
                     "run_id": run_id,
                     "status": run.status.value if run is not None else "unknown",
                     "template_version": (
-                        run.graph.source_template.template_version
-                        if run is not None and run.graph.source_template is not None
-                        else None
+                        template.template_version if template is not None else None
                     ),
                 },
             )
