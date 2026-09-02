@@ -148,6 +148,7 @@ dev = [
     "hypothesis>=6.0",
     "cosmic-ray>=8.0.0",
     "pytest-timeout>=2.3",  # see the note in [project.optional-dependencies].dev
+    "copier>=9.17.2",
 ]
 
 [project.scripts]

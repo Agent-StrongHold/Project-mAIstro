@@ -74,8 +74,8 @@ Phases A–D run sequentially-ish in the substrate. Phase E (per-variant v1.0) r
 
 | Item | Part | Status | Detail |
 |---|---|---|---|
-| `[engine-010]` Copier template `single-tenant-multi-user` | substrate | Accepted; `gap-impl` | Knobs: `users_max`, `auth_backend`, `channels`, `host_target`. Round-trips against the Conductor variant |
-| `[engine-011]` Copier template `autonoetic` | substrate | Accepted; `gap-impl` | Knobs: `awareness_loop_hz`, `self_model`, `memory_consolidator`, `dossier_store`. Round-trips against the autonoetic variant |
+| `[engine-010]` Copier template `single-tenant-multi-user` | substrate | Implemented | Default/alternate render and update evidence: `tests/templates/test_single_tenant_multi_user_renders.py` |
+| `[engine-011]` Copier template `autonoetic` | substrate | Implemented | Default/alternate render and update evidence: `tests/templates/test_autonoetic_renders.py` |
 | `[engine-012]` Copier template `multi-tenant` | substrate | Accepted; `gap-impl` | Knobs: `tenants_max`, `policy_engine`, `deploy_target`, `compliance_pack`. Round-trips against the multi-tenant variant |
 | `[engine-013]` Two-stream release pipeline | substrate | Proposed | `pkg/v*` + `template/v*` tags |
 | `[conductor-095]` Copier bootstrap | conductor | Proposed; `gap-impl` | `copier copy` against fresh dir; close diff over 1–2 PRs |
