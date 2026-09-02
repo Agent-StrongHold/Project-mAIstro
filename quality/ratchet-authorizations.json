@@ -71,5 +71,17 @@
       "issue": "#129",
       "reason": "Declarative JiraIssue field mirroring the jira_poll node's default requested Jira fields projection (['summary','status','updated','issuetype']). #129's runner deletion removed its only in-scan reader; deleting the field while the node still requests issuetype from Jira would be incoherent schema surgery on a published-library model."
     }
+  },
+  "model-egress": {
+    "maistro-canvas-frontend-server::mcp.character": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#838",
+      "reason": "Pre-existing direct LiteLLM egress (httpx.post to {LITELLM_URL}/v1/chat/completions) in the book-maker POC's illustration pipeline: packages/maistro-canvas/frontend/server/mcp/character.py. The module executes whenever the Express server spawns server/export_book.py and the mcp package re-export surface imports it. It was invisible to the inventory until #838's fail-closed source universe admitted packages/*/frontend/server, which is the omitted-directory defect that issue exists to expose; nothing about the egress itself changed in #898. Banked in quality/model-egress.json by PR #898; expected to leave the inventory when #56's approved Provider implementation replaces direct callers, at which point the ratchet prunes it."
+    },
+    "maistro-canvas-frontend-server::mcp.story": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#838",
+      "reason": "Pre-existing direct LiteLLM egress (httpx.post to {LITELLM_URL}/v1/chat/completions) in the book-maker POC's story-generation pipeline: packages/maistro-canvas/frontend/server/mcp/story.py. The module executes whenever the Express server spawns server/export_book.py and the mcp package re-export surface imports it. It was invisible to the inventory until #838's fail-closed source universe admitted packages/*/frontend/server, which is the omitted-directory defect that issue exists to expose; nothing about the egress itself changed in #898. Banked in quality/model-egress.json by PR #898; expected to leave the inventory when #56's approved Provider implementation replaces direct callers, at which point the ratchet prunes it."
+    }
   }
 }
