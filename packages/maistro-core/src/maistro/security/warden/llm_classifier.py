@@ -161,14 +161,11 @@ async def classify_tool_result(
         if content == "safe":
             return {"label": "safe", "model": model, "tokens": tokens}
         if content == "suspicious":
-            logger.info("L3 classified tool result as suspicious (model=%s)", model)
+            logger.info("L3 classified tool result as suspicious")
             return {"label": "suspicious", "model": model, "tokens": tokens}
 
-        logger.warning(
-            "L3 classification returned malformed/ambiguous output; failing closed (model=%s)",
-            model,
-        )
+        logger.warning("L3 classification returned ambiguous output; failing closed")
         return _fail_closed_result(model, tokens=tokens, error="malformed_response")
     except Exception:
-        logger.warning("L3 classification failed; failing closed", exc_info=True)
+        logger.warning("L3 classification failed; failing closed")
         return _fail_closed_result(model, tokens=0, error="classification_failed")

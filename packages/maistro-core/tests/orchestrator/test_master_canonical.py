@@ -12,11 +12,17 @@ from maistro.graph.durable_runs import CanonicalDurableRunStore
 from maistro.graph.nodes.base import NodeResult
 from maistro.orchestrator.master import (
     _ROOT_NODE_ID,
+    INVALID_TERMINAL_RESULT,
+    WORK_ITEM_EXECUTION_FAILED_RESULT,
     MasterOrchestrator,
     Wave,
     WorkItem,
     WorkItemStatus,
     _outcome_key,
+)
+from maistro.orchestrator.output_security import (
+    MAX_PROJECTED_XP,
+    OUTPUT_SECURITY_ERROR_RESULT,
 )
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.model import (
@@ -219,6 +225,34 @@ async def test_dependency_failure_blocks_only_dependent_work_and_graph_continues
     assert blocked_run.status is RunStatus.COMPLETED
 
 
+async def test_canonical_item_reports_in_progress_during_handler() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_handler(item: WorkItem) -> WorkItem:
+        started.set()
+        await release.wait()
+        item.status = WorkItemStatus.PASSED
+        return item
+
+    orch = MasterOrchestrator()
+    orch.register_handler("mason", slow_handler)
+    orch.load_plan([[WorkItem(task_id="T1", description="slow", agent_role="mason")]])
+
+    execute_task = asyncio.create_task(orch.execute())
+    await started.wait()
+
+    progress = orch.get_progress()
+    assert progress["by_status"].get(WorkItemStatus.IN_PROGRESS) == 1
+    assert orch._items["T1"].status == WorkItemStatus.IN_PROGRESS
+
+    release.set()
+    result = await execute_task
+
+    assert result.completed == 1
+    assert orch._items["T1"].status == WorkItemStatus.PASSED
+
+
 async def test_wave_parallelism_is_graph_structure_and_respects_configured_bound() -> None:
     orch = MasterOrchestrator(max_concurrent_per_wave=2)
     running = 0
@@ -279,8 +313,8 @@ async def test_security_gate_failure_is_domain_result_on_canonical_execution() -
     assert node_run.status is RunStatus.COMPLETED
     assert node_run.accepted_outcome is not None
     physical = NodeResult.model_validate(node_run.accepted_outcome.attempt_result.result)
-    assert physical.success is False
-    assert physical.status == "failed"
+    assert physical.success is True
+    assert physical.status == "completed"
     attempts = await orch._run_store.list_attempts(node_run.node_run_id)
     assert len(attempts) == 1
     assert attempts[0].status is AttemptStatus.COMPLETED
@@ -288,7 +322,7 @@ async def test_security_gate_failure_is_domain_result_on_canonical_execution() -
 
 async def test_security_gate_exception_is_projected_as_domain_failure() -> None:
     async def security(_: WorkItem) -> WorkItem:
-        raise RuntimeError("gate unavailable")
+        raise RuntimeError("gate unavailable with secret-value")
 
     orch = MasterOrchestrator(max_retries=0, security_gate=security)
     orch.register_handler("mason", _pass)
@@ -298,7 +332,8 @@ async def test_security_gate_exception_is_projected_as_domain_failure() -> None:
 
     assert result.failed == 1
     assert orch._items["T1"].status == WorkItemStatus.FAILED
-    assert orch._items["T1"].result == "Security gate: gate unavailable"
+    assert orch._items["T1"].result == OUTPUT_SECURITY_ERROR_RESULT
+    assert "secret-value" not in orch._items["T1"].result
 
 
 async def test_security_gate_that_accepts_leaves_the_result_untouched() -> None:
@@ -431,14 +466,20 @@ def test_project_one_marks_a_never_dispatched_item_as_skipped() -> None:
     assert item.status == WorkItemStatus.SKIPPED
 
 
-def test_project_one_completed_without_a_payload_falls_back_to_passed() -> None:
+def test_project_one_completed_without_a_payload_fails_closed() -> None:
     orch = MasterOrchestrator()
-    item = WorkItem(task_id="T1", agent_role="mason")
+    item = WorkItem(
+        task_id="T1",
+        agent_role="mason",
+        metadata={"stale_secret": "metadata-secret@example.com"},
+    )
     node_run = _node_run(RunStatus.COMPLETED, result={"unrelated": True})
 
     orch._project_one(item, node_run)
 
-    assert item.status == WorkItemStatus.PASSED
+    assert item.status == WorkItemStatus.FAILED
+    assert item.result == INVALID_TERMINAL_RESULT
+    assert item.metadata == {}
 
 
 def test_project_one_projects_terminal_failure_statuses() -> None:
@@ -449,7 +490,7 @@ def test_project_one_projects_terminal_failure_statuses() -> None:
         orch._project_one(item, _node_run(status, error="boom"))
 
         assert item.status == WorkItemStatus.FAILED
-        assert item.result == "boom"
+        assert item.result == WORK_ITEM_EXECUTION_FAILED_RESULT
 
 
 def test_project_one_projects_in_flight_and_unstarted_statuses() -> None:
@@ -472,6 +513,18 @@ def test_project_xp_skips_non_integer_awards() -> None:
     orch = MasterOrchestrator()
     passed = WorkItem(task_id="T1", agent_role="mason", status=WorkItemStatus.PASSED)
     passed.metadata["xp_earned"] = "ten"
+    orch._items = {"T1": passed}
+
+    orch._project_xp()
+
+    assert orch._xp_earned == {}
+
+
+@pytest.mark.parametrize("xp_earned", [-1, MAX_PROJECTED_XP + 1, True])
+def test_project_xp_skips_out_of_range_awards(xp_earned: object) -> None:
+    orch = MasterOrchestrator()
+    passed = WorkItem(task_id="T1", agent_role="mason", status=WorkItemStatus.PASSED)
+    passed.metadata["xp_earned"] = xp_earned
     orch._items = {"T1": passed}
 
     orch._project_xp()

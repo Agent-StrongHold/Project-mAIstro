@@ -107,7 +107,7 @@ def _scan_reject_patterns(scan_content: str) -> list[str]:
             if _pattern_search(pattern, scan_content):
                 flags.append(description)
         except Exception:
-            logger.warning("Regex error on pattern: %s", description)
+            logger.warning("Warden pattern scan failed closed")
             flags.append(f"regex_error:{description}")
     return flags
 
@@ -218,7 +218,7 @@ class Warden:
             # `self._llm` is set, so L3 *was* configured; treating its absence
             # as clean would put the fail-open path back one frame further out,
             # which is the defect this whole check exists to remove.
-            logger.warning("L3 LLM classification unavailable; failing closed", exc_info=True)
+            logger.warning("L3 LLM classification unavailable; failing closed")
             flags.append(
                 f"llm_classification:suspicious (model={self._classifier_model}, mode=unavailable)"
             )

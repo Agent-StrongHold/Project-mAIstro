@@ -168,7 +168,7 @@ External-library adoption per [`engine#ADR-039`](docs/adr/ADR-039-external-libra
 - Generic APM is not an unported engine feature: [ADR-037](docs/adr/ADR-037-observability-taxonomy.md) defines vendor-neutral observability and per-product backends, and [ADR-055](docs/adr/ADR-055-observability-replay-and-pii-tiers.md) leaves vendor APM choice per product. Red Team remains the historical port candidate; no consolidated generic port is evidenced
 
 **[engine-105] Wire Master Orchestrator security gate + API dispatch — Accepted; `gap-impl`**
-- J1–J4 exist in `orchestrator/master.py` and `orchestrator/planner.py`; J5's injectable security gate and its accept, reject, and exception behavior are implemented and tested
+- J1–J4 exist in `orchestrator/master.py` and `orchestrator/planner.py`; J5 shipped: production planner construction supplies a fail-closed Warden + Sentinel output gate before a WorkItem can project `PASSED`; only sanitized output crosses into the canonical Graph → Run → NodeRun → Attempt result (accept, reject, and exception behavior are implemented and tested)
 - `MasterOrchestrator` is now a compatibility projection over canonical Graph → Run → NodeRun → Attempt execution per [#548](https://github.com/Agent-StrongHold/Project-mAIstro/issues/548). The archived J6 intent therefore does not call for a second Master Orchestrator HTTP API; remaining Conductor/Hive canonical dispatch is owned by [#53](https://github.com/Agent-StrongHold/Project-mAIstro/issues/53), including the live DAG route in [#736](https://github.com/Agent-StrongHold/Project-mAIstro/issues/736)
 
 ### NEW — from May 2026 catalog review (engine)

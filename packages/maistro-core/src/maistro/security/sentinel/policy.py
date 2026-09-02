@@ -9,7 +9,14 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Literal
 
-from maistro.security._types import AuditEntry, SentinelVerdict, Violation, WardenVerdict
+from maistro.observability.metrics import maistro_security_block_total
+from maistro.security._types import (
+    AuditEntry,
+    GateResult,
+    SentinelVerdict,
+    Violation,
+    WardenVerdict,
+)
 from maistro.security.sentinel.approver_graph import ApproverGraph
 from maistro.security.sentinel.argument_limits import ToolArgumentLimits, check_argument_limits
 from maistro.security.sentinel.authz_types import AuthzDecision, Principal, Tier
@@ -18,6 +25,7 @@ from maistro.security.sentinel.pii_filter import scan_and_redact
 from maistro.security.sentinel.rlphd import RlphdModel, RlphdThresholdStore, RlphdVerdict
 from maistro.security.sentinel.token_optimizer import optimize_result
 from maistro.security.sentinel.validator import validate_and_repair
+from maistro.security.warden.sanitizer import strip_terminal_escapes
 
 logger = logging.getLogger("maistro.sentinel")
 
@@ -307,9 +315,30 @@ class Sentinel:
         result: str,
         auth: AuthContext,
     ) -> str:
-        violations: list[Violation] = []
-        processed = result
+        """Return the sanitized tool result, or the established refusal text."""
+        outcome = await self.process_output(tool_name, result, auth)
+        if outcome.blocked:
+            return "[Tool result blocked by Warden -- contained injection attempt]"
+        return outcome.sanitized_text
 
+    async def process_output(
+        self,
+        tool_name: str,
+        result: str,
+        auth: AuthContext,
+    ) -> GateResult:
+        """Apply the post-call policy and return its structured security outcome.
+
+        ``post_call`` remains the compatibility API for agent strategies. Output
+        projection boundaries use this method so they can distinguish a refusal
+        from an allowed, explicitly sanitized value without repeating Warden or
+        PII policy logic.
+        """
+        violations: list[Violation] = []
+        processed = strip_terminal_escapes(result)
+
+        # SECURITY-REVIEW: agent/tool output is untrusted until Warden and PII
+        # processing complete; do not log or persist ``result`` before this gate.
         warden_verdict = await self._warden.scan(processed, "tool_result")
         if not warden_verdict.clean:
             violations.append(
@@ -317,17 +346,27 @@ class Sentinel:
                     boundary="post_call",
                     rule="warden_tool_result",
                     severity="error",
-                    detail=f"Warden flags: {', '.join(warden_verdict.flags)}",
+                    detail="Untrusted output refused by Warden",
                 )
             )
-            # Fix #3: tool results (egress) use the SAME threshold as user input (ingress).
-            # Any flag blocks — tool results are the higher-risk boundary (injected content arrives here).
-            processed = "[Tool result blocked by Warden -- contained injection attempt]"
-            logger.warning(
-                "Tool result BLOCKED: tool=%s, user=%s, flags=%s",
-                tool_name,
-                auth.user_id,
-                warden_verdict.flags,
+            maistro_security_block_total.inc(
+                gate="sentinel_output",
+                reason="unsafe_output",
+            )
+            logger.warning("Untrusted output blocked by Sentinel")
+            await self._log_audit(
+                boundary="post_call",
+                user_id=auth.user_id,
+                team_id=auth.team_id,
+                tool_name=tool_name,
+                verdict="flagged",
+                violations=tuple(violations),
+            )
+            return GateResult(
+                sanitized_text="",
+                warden_verdict=warden_verdict,
+                blocked=True,
+                block_reason="unsafe_output",
             )
 
         processed, pii_matches = scan_and_redact(processed)
@@ -353,7 +392,53 @@ class Sentinel:
             violations=tuple(violations),
         )
 
-        return processed
+        return GateResult(
+            sanitized_text=processed,
+            warden_verdict=warden_verdict,
+        )
+
+    async def record_output_handler_outcome(
+        self,
+        tool_name: str,
+        outcome: Literal["failed", "error", "invalid_result"],
+    ) -> None:
+        """Record a static, identity-free terminal handler outcome."""
+        rules = {
+            "failed": "handler_failed",
+            "error": "handler_error",
+            "invalid_result": "handler_invalid_result",
+        }
+        await self._log_audit(
+            boundary="post_call",
+            user_id="",
+            team_id="",
+            tool_name=tool_name,
+            verdict="error",
+            violations=(
+                Violation(
+                    boundary="post_call",
+                    rule=rules[outcome],
+                    severity="error",
+                ),
+            ),
+        )
+
+    async def record_output_security_error(self, tool_name: str) -> None:
+        """Record a static, identity-free fail-closed output-gate outcome."""
+        await self._log_audit(
+            boundary="post_call",
+            user_id="",
+            team_id="",
+            tool_name=tool_name,
+            verdict="error",
+            violations=(
+                Violation(
+                    boundary="post_call",
+                    rule="output_security_error",
+                    severity="error",
+                ),
+            ),
+        )
 
     async def _log_audit(
         self,
@@ -384,7 +469,7 @@ class Sentinel:
                 )
             )
         except Exception:
-            logger.exception("Audit log write failed (boundary=%s, tool=%s)", boundary, tool_name)
+            logger.error("Security audit log write failed")
 
 
 def _detection_layer(verdict: WardenVerdict) -> str:
