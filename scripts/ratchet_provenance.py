@@ -20,8 +20,10 @@ autonomous author cannot weaken the judge that judges it. This module
 generalizes that idea to the ledgers, without needing a second checkout.
 
 Local runs keep working. With no base revision available the resolver reads the
-worktree and labels its output `worktree`, so a developer's loop is unchanged;
-CI always has a base, so CI is always judged against it.
+worktree and labels its output `worktree`, so a developer's loop is unchanged.
+In GitHub Actions the resolver derives the immutable integration base from the
+event when a workflow has not supplied ``RATCHET_BASE_REV`` explicitly, so a
+workflow cannot accidentally fall back to a candidate-controlled trunk ref.
 
 Non-passing states, per #319: a base revision that is named but cannot be
 resolved or read, a scan that measured nothing, and a metric whose definition
@@ -40,13 +42,13 @@ from typing import Any, Literal
 
 ROOT = Path(__file__).resolve().parents[1]
 
-#: Overrides the base revision. CI sets it; unset means "judge against the
-#: worktree and say so", which is the developer loop.
+#: Overrides the base revision. CI may set it explicitly; otherwise GitHub event
+#: metadata is used before falling back to a local trunk ref.
 BASE_REV_ENV = "RATCHET_BASE_REV"
 
-#: Used when nothing names a base and the repository has the ref. Kept as the
-#: trunk name rather than a SHA so a local run picks up whatever `develop`
-#: currently points at.
+#: Used only when neither an explicit revision nor a GitHub event names a base
+#: and the repository has this ref. Kept as the trunk name so a local run picks
+#: up whatever ``develop`` currently points at.
 DEFAULT_BASE_REV = "origin/develop"
 
 _GIT_TIMEOUT_SECONDS = 30
@@ -112,6 +114,67 @@ def _is_null_sha(rev: str) -> bool:
     return set(rev.strip()) == {"0"} and len(rev.strip()) in (40, 64)
 
 
+def _github_event_payload(event_path: str) -> dict[str, Any]:
+    if not event_path:
+        return {}
+    try:
+        loaded = json.loads(Path(event_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RatchetProvenanceError(
+            f"GitHub event payload {event_path!r} could not be read: {exc}"
+        ) from exc
+    if not isinstance(loaded, dict):
+        raise RatchetProvenanceError(f"GitHub event payload {event_path!r} is not a JSON object")
+    return loaded
+
+
+def _pull_request_event_base(payload: dict[str, Any]) -> str | None:
+    base_ref = os.environ.get("GITHUB_BASE_REF", "").strip()
+    if not base_ref:
+        pull_request = payload.get("pull_request")
+        if isinstance(pull_request, dict):
+            base = pull_request.get("base")
+            if isinstance(base, dict):
+                base_ref = str(base.get("ref", "")).strip()
+    return f"origin/{base_ref}" if base_ref else None
+
+
+def _merge_group_event_base(payload: dict[str, Any]) -> str | None:
+    merge_group = payload.get("merge_group")
+    if not isinstance(merge_group, dict):
+        return None
+    base_sha = str(merge_group.get("base_sha", "")).strip()
+    return None if not base_sha or _is_null_sha(base_sha) else base_sha
+
+
+def _push_event_base(payload: dict[str, Any]) -> str | None:
+    before = str(payload.get("before", "")).strip()
+    return None if not before or _is_null_sha(before) else before
+
+
+def _github_event_base() -> str | None:
+    """Resolve the integration base from GitHub Actions event metadata.
+
+    Pull requests use the current target ref rather than the historical base
+    SHA carried by a long-lived PR event. GitHub's synthetic merge is therefore
+    judged against the target tree it is actually integrating into. Merge
+    groups name their immutable base SHA directly; pushes compare to ``before``.
+    """
+    event_name = os.environ.get("GITHUB_EVENT_NAME", "").strip()
+    event_path = os.environ.get("GITHUB_EVENT_PATH", "").strip()
+    if not event_name and not event_path:
+        return None
+
+    payload = _github_event_payload(event_path)
+    if event_name == "pull_request":
+        return _pull_request_event_base(payload)
+    if event_name == "merge_group":
+        return _merge_group_event_base(payload)
+    if event_name == "push":
+        return _push_event_base(payload)
+    return None
+
+
 def _resolve_commit(rev: str, *, root: Path) -> str:
     proc = _git(["rev-parse", "--verify", f"{rev}^{{commit}}"], root=root)
     if proc.returncode != 0:
@@ -143,9 +206,9 @@ class SelfReferentialBaseline(RatchetProvenanceError):
     committed ledger -- so that case stays a normal run.
 
     Refused rather than downgraded to `worktree`: a run that cannot compare is
-    a run that must not report a verdict, and the workflow now names the base
-    explicitly, so reaching this is a broken configuration rather than a state
-    anyone works in.
+    a run that must not report a verdict, and GitHub event metadata now names
+    the base automatically, so reaching this in CI is a broken configuration
+    rather than a state anyone should work around.
     """
 
 
@@ -180,29 +243,30 @@ def _refuse_self_reference(base_sha: str, *, root: Path) -> None:
         f"the base revision resolves to HEAD itself ({base_sha[:12]}) and the worktree "
         "matches it, so the baseline would be read from the very commit under "
         "judgement and the comparison could not fail.\n"
-        f"Name the event's own base explicitly in {BASE_REV_ENV} -- the pull "
-        "request's base SHA, or the pre-push revision for a push."
+        f"Name the event's own base explicitly in {BASE_REV_ENV}, or ensure GitHub event "
+        "metadata is available to the resolver."
     )
 
 
 def _base_rev(explicit: str | None, *, root: Path) -> str | None:
     """The revision to judge against, or None to judge against the worktree.
 
-    An explicitly named revision is always honored -- if it is unusable that is
-    an error, never a downgrade to worktree. The default trunk ref is used only
-    when the repository actually has it, which is what keeps a fresh clone or a
-    detached tree from failing every gate.
+    Precedence is explicit argument, ``RATCHET_BASE_REV``, GitHub event base,
+    then the local ``origin/develop`` fallback. An explicitly named revision is
+    always honored; if it is unusable that is an error, never a downgrade to
+    worktree.
 
-    The one exception is git's null SHA, which is what `github.event.before`
-    carries on the first push to a branch. It names no revision at all, so it
-    is not an unusable base -- it is the absence of one, and the fallback is
-    the right answer.
+    Git's null SHA, carried by ``github.event.before`` on the first push to a
+    branch, names no revision at all and therefore falls through normally.
     """
     if explicit and not _is_null_sha(explicit):
         return explicit
     from_env = os.environ.get(BASE_REV_ENV, "").strip()
     if from_env and not _is_null_sha(from_env):
         return from_env
+    event_base = _github_event_base()
+    if event_base:
+        return event_base
     probe = _git(["rev-parse", "--verify", f"{DEFAULT_BASE_REV}^{{commit}}"], root=root)
     return DEFAULT_BASE_REV if probe.returncode == 0 else None
 
@@ -210,8 +274,9 @@ def _base_rev(explicit: str | None, *, root: Path) -> str | None:
 def resolve_baseline(path: Path, *, base: str | None = None, root: Path = ROOT) -> Baseline:
     """The ledger at `path`, read from the base revision when there is one.
 
-    `base` names a revision explicitly; otherwise `RATCHET_BASE_REV`, otherwise
-    `origin/develop` when the repository has it, otherwise the worktree.
+    ``base`` names a revision explicitly; otherwise ``RATCHET_BASE_REV``, then
+    GitHub event metadata, then ``origin/develop`` when the repository has it,
+    otherwise the worktree.
     """
     rev = _base_rev(base, root=root)
     if rev is None:
