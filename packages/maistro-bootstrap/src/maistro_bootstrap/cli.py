@@ -98,7 +98,7 @@ def _print_human_plan(plan: dict[str, Any], answers: InstallAnswersV1, repo: str
 
     cc = plan.get("copier_command")
     if cc:
-        console.print("\n# Copier (install copier: uv tool install copier)", markup=False)
+        console.print("\n# Copier (available after `uv sync`)", markup=False)
         console.print(cc, markup=False, highlight=False)
 
     spec = plan.get("apply_spec")

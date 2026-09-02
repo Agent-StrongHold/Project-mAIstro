@@ -1,35 +1,13 @@
 #!/usr/bin/env python3
-"""Fail when a new work-state enum appears unclassified (#36).
+"""Fail when a new work-state enum appears outside the trusted lifecycle ledger (#36, #542).
 
-The convergence program's central claim is that `Run`/`NodeRun`/`Attempt` is the
-*one* execution identity. A second one does not usually arrive as a decision; it
-arrives as an enum. Someone needs to track whether a thing is pending, running or
-failed, writes the obvious five members, and the repository quietly has another
-lifecycle.
-
-So every work-state enum in production code is classified in
-`quality/execution-lifecycles.json`, and this gate ratchets against it in both
-directions: an enum with no entry fails, and an entry whose enum no longer exists
-fails until it is pruned, so the ledger cannot retain slack.
-
-Classification is the point, not detection. `CANONICAL` is the spine itself.
-`DOMAIN` is a lifecycle that genuinely is not execution — an event handler's
-at-most-once record, a graph's traversal phase — and saying so forces the
-distinction to be argued rather than assumed. `CONVERGE` names the issue that
-removes it, so the ledger doubles as the work-list.
-
-Deliberately narrow. A class is only a candidate when it subclasses an enum type
-*and* at least three of its members are recognisable work states. Broadening the
-signature would flood the ledger with false positives, and a gate that cries wolf
-teaches people to bank whatever it says — which is worse than no gate, because it
-launders a real second lifecycle through a routine `--update`.
-
-Known limitation, stated rather than hidden: this finds enum-shaped lifecycles
-only. `services.dag_run_store` folds its states out of events and
-`maistro_canvas.canvas.runner` assigns free-text strings, so neither is visible
-here. Both are recorded in `docs/architecture/CONVERGENCE-MATRIX.md`.
-
-Run: `python scripts/check-execution-lifecycles.py`
+The convergence program's central claim is that Run/NodeRun/Attempt is the one
+execution identity. A candidate may not introduce a second lifecycle and approve
+it by adding a classification to quality/execution-lifecycles.json in the same
+change. New enum identities are judged against the merge-base ledger and require
+a separately landed authorization. The candidate ledger is still the source of
+reviewed classification/rationale for identities already admitted, and stale
+entries must be pruned immediately.
 """
 
 from __future__ import annotations
@@ -39,18 +17,17 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from types import ModuleType
 
 ROOT = Path(__file__).resolve().parents[1]
 LEDGER = ROOT / "quality" / "execution-lifecycles.json"
 REACHABILITY = ROOT / "scripts" / "check-reachability.py"
+_PROVENANCE_SOURCE = ROOT / "scripts" / "ratchet_provenance.py"
+RATCHET = "execution-lifecycles"
+METRIC_DEFINITION_VERSION = "1"
 
 CLASSIFICATIONS = frozenset({"CANONICAL", "DOMAIN", "CONVERGE"})
-
-#: Enum base classes that make a class a candidate.
 _ENUM_BASES = frozenset({"Enum", "StrEnum", "IntEnum", "IntFlag", "Flag"})
-
-#: Member names that read as the state of a unit of work. Three or more of these
-#: in one enum is the signature; fewer is some other kind of enumeration.
 _WORK_STATES = frozenset(
     {
         "ABORTED",
@@ -78,8 +55,24 @@ _WORK_STATES = frozenset(
         "WAITING",
     }
 )
-
 _MIN_WORK_STATES = 3
+
+
+def _provenance() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("_ratchet_provenance", _PROVENANCE_SOURCE)
+    if spec is None or spec.loader is None:  # pragma: no cover - packaging accident
+        raise RuntimeError(f"cannot load {_PROVENANCE_SOURCE}")
+    cached = sys.modules.get(spec.name)
+    if cached is not None:
+        return cached
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules[spec.name]
+        raise
+    return module
 
 
 def _load_reachability() -> object:
@@ -111,7 +104,6 @@ def _is_enum(node: ast.ClassDef) -> bool:
 
 
 def work_state_enums(source: str, module: str) -> dict[str, set[str]]:
-    """`module::ClassName` -> the work-state members that qualified it."""
     try:
         tree = ast.parse(source)
     except SyntaxError:
@@ -135,8 +127,15 @@ def discover() -> dict[str, set[str]]:
     return found
 
 
+def _entries(ledger: object) -> dict[str, object]:
+    if not isinstance(ledger, dict):
+        return {}
+    entries = ledger.get("lifecycles")
+    return dict(entries) if isinstance(entries, dict) else {}
+
+
 def audit(ledger: dict[str, object], found: dict[str, set[str]]) -> list[str]:
-    """Every way the ledger and the code disagree, named."""
+    """Every way the candidate ledger and code disagree, named."""
     entries = ledger.get("lifecycles")
     if not isinstance(entries, dict):
         return ["ledger has no 'lifecycles' object"]
@@ -174,23 +173,63 @@ def main() -> int:
     if not LEDGER.exists():
         print(f"FAIL: {LEDGER} is missing", file=sys.stderr)
         return 1
-    ledger = json.loads(LEDGER.read_text())
+    candidate_ledger = json.loads(LEDGER.read_text())
+    candidate_entries = _entries(candidate_ledger)
     found = discover()
-    failures = audit(ledger, found)
+    candidate_failures = audit(candidate_ledger, found)
+
+    prov = _provenance()
+    try:
+        trusted_ref = prov.resolve_baseline(LEDGER, root=ROOT)
+        trusted_entries = _entries(trusted_ref.loads(default={"lifecycles": {}}))
+        prov.require_measurement(found, ratchet=RATCHET, what="work-state enums")
+        authorized = prov.load_authorizations(RATCHET, base=trusted_ref.base_sha)
+    except prov.RatchetProvenanceError as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+
+    added = sorted(set(found) - set(trusted_entries))
+    unauthorized = [name for name in added if name not in authorized]
+    unbanked_authorized = [
+        name for name in added if name in authorized and name not in candidate_entries
+    ]
+
+    print(
+        prov.Provenance(
+            ratchet=RATCHET,
+            baseline=trusted_ref,
+            tool="python ast",
+            metric_definition_version=METRIC_DEFINITION_VERSION,
+            old_value=f"{len(trusted_entries)} classified lifecycles",
+            new_value=f"{len(found)} discovered lifecycles",
+            candidate_sha=prov.head_sha(ROOT),
+            authorizations=tuple(
+                f"{name}: {authorized[name]}" for name in added if name in authorized
+            ),
+        ).render()
+    )
+
+    failures = list(candidate_failures)
+    failures.extend(
+        f"{name}: NEW work-state lifecycle is absent from the trusted base and has no "
+        "already-landed authorization"
+        for name in unauthorized
+    )
+    failures.extend(
+        f"{name}: authorized lifecycle addition is not classified in the candidate ledger"
+        for name in unbanked_authorized
+    )
     if failures:
-        print("FAIL: the execution-lifecycle ledger does not match the code\n")
+        print("FAIL: the execution-lifecycle ledger does not match trusted policy\n")
         for failure in failures:
             print(f"  - {failure}")
-        print(
-            "\nA new work-state enum is how a second execution lifecycle gets built without "
-            "anyone deciding to. Say which kind it is."
-        )
         return 1
 
     counts: dict[str, int] = {}
-    for entry in ledger["lifecycles"].values():
-        key = str(entry["classification"])
-        counts[key] = counts.get(key, 0) + 1
+    for entry in candidate_entries.values():
+        if isinstance(entry, dict):
+            key = str(entry["classification"])
+            counts[key] = counts.get(key, 0) + 1
     summary = ", ".join(f"{count} {name}" for name, count in sorted(counts.items()))
     print(f"OK: {len(found)} work-state enums, all classified ({summary})")
     return 0

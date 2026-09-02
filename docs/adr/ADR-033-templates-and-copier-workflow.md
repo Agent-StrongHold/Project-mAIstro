@@ -13,8 +13,12 @@ related:
 supersedes: []
 blocks: []
 blocked-by: []
-contracts: []
-tests: []
+contracts:
+  - behavioral
+tests:
+  - tests/templates/test_single_tenant_multi_user_renders.py
+  - tests/templates/test_autonoetic_renders.py
+  - packages/maistro-bootstrap/tests/test_resolver.py
 layer: Foundation
 owners:
   - '@BlakeMatthews-dev'
@@ -54,6 +58,14 @@ Use [Copier](https://copier.readthedocs.io/) over the alternatives. Reasons:
 | `templates/autonoetic/` | `AgentTuring` | `awareness_loop_hz`, `self_model` (hexaco \| minimal), `memory_consolidator` (on \| off), `dossier_store` (obsidian \| fs) |
 | `templates/multi-tenant/` | `stronghold` | `tenants_max`, `policy_engine` (opa \| cedar \| sentinel), `deploy_target` (k8s \| on-prem \| hybrid), `compliance_pack` (owasp \| nist \| euaiact \| all) |
 
+Copier requires its configuration at the Git repository root to retain a
+template revision for `copier update`. The root `copier.yml` is therefore the
+versioned dispatcher and selects completed payloads through a dynamic
+`_subdirectory`. Each nested `copier.yml` remains useful for isolated payload
+development, but a direct nested-path copy is not the canonical updateable
+workflow. The multi-tenant seed remains outside the dispatcher until its
+external Stronghold round-trip prerequisite exists.
+
 Each template scaffolds:
 
 - `pyproject.toml` with the engine dependency pinned to a known version
@@ -76,7 +88,17 @@ Each template scaffolds:
 
 When an engine ADR changes a behavior products inherit (e.g. memory protocols, security gates), it must also bump the appropriate template. The engine ADR's `tests:` field includes a template-render assertion (`tests/templates/test_<template>_renders.py`) that fails if the template has not been updated.
 
-### 5. Bootstrapping existing repos
+### 5. Template origin pinning
+
+Generated products ship a contract test that asserts `.copier-answers.yml`
+`_src_path` equals the canonical engine repository URL
+(`https://github.com/Agent-StrongHold/Project-mAIstro.git`). Changes to
+`_src_path` or `_commit` in `.copier-answers.yml` require the same security
+scrutiny as a dependency bump: they determine which template revision Copier
+will apply on the next update. Operators must never pass `--trust` to
+`copier update`; review template diffs explicitly before accepting an update.
+
+### 6. Bootstrapping existing repos
 
 `Project_mAIstro`, `AgentTuring`, and `stronghold` are not Copier-generated today. Bootstrap by:
 

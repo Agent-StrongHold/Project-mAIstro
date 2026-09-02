@@ -1,5 +1,53 @@
 # {{ project_slug }}
 
-Autonoetic product seed from **maistro-engine** template `autonoetic`.
+Autonoetic product scaffold generated from the **maistro-engine**
+`autonoetic` template.
 
-- Substrate: `{{ substrate_ref }}`
+## Rendered contract
+
+- Awareness loop: `{{ awareness_loop_hz }} Hz`
+- Self model: `{{ self_model }}`
+- Memory consolidator: `{{ memory_consolidator }}`
+- Dossier store: `{{ dossier_store }}`
+- Engine ref: `74218cf762d7b704732b3a22ff1dd90e49273aee`
+
+The entry point validates this overlay against `maistro-turing`'s
+`TuringConfig` and emits a non-secret readiness document. It does not start an
+unbounded autonomous loop or claim that an external model provider is
+configured.
+
+The defaults (`minimal`, consolidator `off`, filesystem dossier) minimize
+autonomous processing and retained personal data. Enable broader behavior only
+after documenting its policy and retention boundaries.
+
+## Local verification
+
+```bash
+uv sync --extra dev
+uv run pytest
+uv run {{ project_slug }} --check
+```
+
+## Container verification
+
+Build-time dependency installation is isolated in `Dockerfile`; the runtime
+container does not install packages.
+
+```bash
+docker compose -f deploy/compose.yml build
+docker compose -f deploy/compose.yml run --rm {{ project_slug }}
+```
+
+{% if dossier_store == 'obsidian' -%}
+Set `OBSIDIAN_VAULT_PATH` to the host vault directory before invoking Compose.
+The bind mount is read/write because the selected dossier adapter is intended
+to persist updates; scope that directory to a dedicated vault.
+{% else -%}
+The default named volume stores dossier data under `/data/dossier`.
+{% endif %}
+
+## Governance
+
+The ADR seed cites `maistro-engine#ADR-019`, `maistro-engine#ADR-032`, and
+`maistro-engine#ADR-033`. Contract tests use both ADR-032 marker axes, and
+`cosmic-ray.toml` follows the engine's bounded source-to-test mutation pattern.

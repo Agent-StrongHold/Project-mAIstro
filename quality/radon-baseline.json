@@ -711,6 +711,16 @@
       "rank": "C",
       "complexity": 15,
       "rationale": "AttemptResult evidence comparison introduced by execution-spine convergence; tracked by the complexity ratchet at its reviewed introduction value."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/orchestrator/master.py::MasterOrchestrator.load_plan",
+      "path": "packages/maistro-core/src/maistro/orchestrator/master.py",
+      "line": 399,
+      "name": "load_plan",
+      "classname": "MasterOrchestrator",
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "Master orchestrator plan validation (task_id presence, uniqueness, reserved root guard) introduced by the output-security gate convergence; tracked at its reviewed introduction value under SPEC-264."
     }
   ]
 }

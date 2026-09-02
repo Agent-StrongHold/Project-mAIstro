@@ -1,0 +1,51 @@
+"""Console entry point for the rendered product overlay."""
+
+from __future__ import annotations
+
+import argparse
+import json
+from importlib.metadata import PackageNotFoundError, version
+
+from .config import load_config
+
+
+def _engine_version() -> str | None:
+    try:
+        return version("maistro-core")
+    except PackageNotFoundError:
+        return None
+
+
+def main() -> int:
+    """Print a non-secret readiness document and fail closed when incomplete."""
+    parser = argparse.ArgumentParser(description="{{ project_slug }} readiness check")
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="validate the rendered integration contract",
+    )
+    parser.parse_args()
+
+    config = load_config()
+    engine_version = _engine_version()
+    ready = config.ready and engine_version is not None
+    print(
+        json.dumps(
+            {
+                "project": "{{ project_slug }}",
+                "engine_version": engine_version,
+                "users_max": config.users_max,
+                "auth_backend": config.auth_backend,
+                "channels": config.channels,
+                "host_target": config.host_target,
+                "missing_environment": config.missing_environment,
+                "ready": ready,
+            },
+            sort_keys=True,
+        )
+    )
+    return 0 if ready else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
