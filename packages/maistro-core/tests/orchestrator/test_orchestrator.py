@@ -29,15 +29,6 @@ async def _fail_handler(item: WorkItem) -> WorkItem:
     return item
 
 
-async def _flaky_handler(item: WorkItem) -> WorkItem:
-    if item.metadata.get("attempt", 0) == 0:
-        item.metadata["attempt"] = 1
-        raise RuntimeError("transient failure")
-    item.status = WorkItemStatus.PASSED
-    item.result = "recovered"
-    return item
-
-
 class TestMasterOrchestrator:
     async def test_single_item_passes(self):
         orch = MasterOrchestrator()
@@ -97,11 +88,23 @@ class TestMasterOrchestrator:
 
     async def test_retry_on_exception(self):
         orch = MasterOrchestrator(max_retries=1)
-        orch.register_handler("mason", _flaky_handler)
+        calls = 0
+
+        async def flaky_handler(item: WorkItem) -> WorkItem:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("transient failure")
+            item.status = WorkItemStatus.PASSED
+            item.result = "recovered"
+            return item
+
+        orch.register_handler("mason", flaky_handler)
         orch.load_plan([[WorkItem(task_id="T1", description="flaky", agent_role="mason")]])
 
         result = await orch.execute()
         assert result.completed == 1
+        assert calls == 2
 
     async def test_progress_tracking(self):
         orch = MasterOrchestrator()

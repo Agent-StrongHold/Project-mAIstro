@@ -1,0 +1,69 @@
+"""Rendered product contract and fail-closed environment readiness."""
+
+from __future__ import annotations
+
+import os
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Literal
+
+AuthBackend = Literal["keycloak", "local"]
+Channel = Literal["web", "voice", "email"]
+HostTarget = Literal["podman", "docker", "systemd"]
+
+USERS_MAX = {{ users_max }}
+AUTH_BACKEND: AuthBackend = "{{ auth_backend }}"
+CHANNELS: tuple[Channel, ...] = (
+{% for channel in channels -%}
+    "{{ channel }}",
+{% endfor -%}
+)
+HOST_TARGET: HostTarget = "{{ host_target }}"
+
+# SECURITY-REVIEW: Credential values remain in the process environment. This
+# module checks presence only and never retains, logs, or returns their values.
+REQUIRED_ENVIRONMENT: tuple[str, ...] = (
+{% if auth_backend == 'local' -%}
+    "MAISTRO_LOCAL_AUTH_SECRET",
+{% else -%}
+    "KEYCLOAK_ISSUER_URL",
+    "KEYCLOAK_CLIENT_ID",
+    "KEYCLOAK_CLIENT_SECRET",
+{% endif -%}
+{% if 'voice' in channels -%}
+    "VOICE_SERVICE_KEY",
+{% endif -%}
+{% if 'email' in channels -%}
+    "SMTP_URL",
+    "SMTP_PASSWORD",
+{% endif -%}
+)
+
+
+@dataclass(frozen=True)
+class ProductConfig:
+    """Non-secret configuration rendered by Copier."""
+
+    users_max: int
+    auth_backend: AuthBackend
+    channels: tuple[Channel, ...]
+    host_target: HostTarget
+    missing_environment: tuple[str, ...]
+
+    @property
+    def ready(self) -> bool:
+        """Whether every selected integration has its required environment."""
+        return not self.missing_environment
+
+
+def load_config(environ: Mapping[str, str] | None = None) -> ProductConfig:
+    """Return rendered settings plus names of absent required variables."""
+    source = os.environ if environ is None else environ
+    missing = tuple(name for name in REQUIRED_ENVIRONMENT if not source.get(name))
+    return ProductConfig(
+        users_max=USERS_MAX,
+        auth_backend=AUTH_BACKEND,
+        channels=CHANNELS,
+        host_target=HOST_TARGET,
+        missing_environment=missing,
+    )

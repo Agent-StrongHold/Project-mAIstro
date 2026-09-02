@@ -56,7 +56,34 @@ claims on the real HTTP path — registration stores Argon2id, a bcrypt row is u
 owner's first login without changing the password, a failed login leaves the hash untouched,
 and four shapes of corrupt hash return 401.
 
----
+### Account creation / registration policy (#313)
+
+Who may create the next account is a **durable policy, closed by default** — not a property of
+the user table. The register route is unauthenticated, and its old gate (`at least one user
+exists ⇒ registration open`) meant finishing initial setup *enabled* public signup forever:
+the exact inversion of what bootstrap is for.
+
+- **Bootstrap** mints the first owner exactly once, through the one-shot `/v1/setup/complete`.
+  The endpoint takes a conflict-safe first-run *claim* before any account exists, so concurrent
+  first-user attempts provision exactly one owner; a failed attempt releases the claim so setup
+  stays retryable, and registration stays closed throughout.
+- **Steady state**: registration is closed. `/v1/auth/register` consults the durable policy
+  record (`packages/hive-conductor/backend/services/registration_policy.py`) and fails closed — a
+  missing, unreadable, corrupt, or mid-bootstrap record all read as *closed*. Nothing in a
+  partial initialization can produce *open*, because *open* is a value only an authenticated
+  administrator writes, acknowledged only after the stored record reads back as what was sent.
+- **Opening it** takes explicit admin action: `PUT /v1/auth/registration/policy`
+  (`open`/`closed`), audited, or a **single-use invitation** (`POST /v1/auth/registration/invitations`)
+  — a 256-bit token stored only as a SHA-256 digest, shown once, expiring, and spent by one
+  conflict-safe insert so the same code can never create two accounts. Invitations and policy
+  survive restarts (SQLite-backed `kv_store` records, same as settings).
+- **Exposure**: `/v1/setup/status` publishes exactly the mode (`registration.mode`) so the login
+  page can require an invitation code when it must — and nothing else: no usernames, no user
+  counts, and the setup config (which names the admin) is no longer served to strangers.
+
+Evidence: `packages/hive-conductor/backend/tests/test_registration_policy.py` covers first setup,
+post-setup refusal, admin open/close, invitation issue/replay/expiry/concurrent redemption,
+restart durability (real SQLite reopen), concurrent bootstrap, and five corrupt-record shapes.
 
 ## Resource-limits inventory
 

@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from maistro_bootstrap.builders.errors import BlockedCommandError
 from maistro_bootstrap.builders.session import BuilderSession
 
 logger = logging.getLogger(__name__)
@@ -93,14 +95,147 @@ class AgentLoopConfig:
         return self.model or model_for_worker(self.worker)
 
 
+# ---------------------------------------------------------------------------
+# run_tests argument policy (#811)
+#
+# run_tests is a *safe* tool: it dispatches before the general run_command
+# approval gate on the theory that its argv is fixed and shell-free. The
+# model-supplied `args` string broke that theory — it used to be appended
+# verbatim (``argv += extra.split()``), so ``-p evil_plugin`` made pytest
+# import a module the model had just written into the sandbox. The model may
+# select tests and shape output; it may never widen what pytest imports.
+#
+# Validation walks PARSED argv tokens (shlex), never substrings, so a benign
+# node id like ``tests/test-plugin-flag.py`` cannot trip a ``-p`` substring
+# check, and a dangerous flag cannot hide inside another token's value.
+#
+# Deliberately NOT allowlisted — every one can make pytest import or execute
+# code the model chose: ``-p``/``--plugin`` (plugin load), ``-c``/
+# ``--config-file`` (a config's ``addopts``/``plugins`` ini keys reopen the
+# same hole), ``--pyargs`` (import arbitrary sys.path modules), ``-o``/
+# ``--override-ini`` (rewrites ini at runtime), ``--import-mode``, ``-W``,
+# ``--assert``, ``--rootdir``, ``--basetemp``, ``--junitxml``. Admitting any
+# of these requires a separately governed policy change to the tables below
+# — never a model-authored flag.
+# ---------------------------------------------------------------------------
+
+# Standalone flags (no value): test selection, verbosity, output shaping.
+_PYTEST_BOOL_FLAGS: frozenset[str] = frozenset(
+    {
+        "-v",
+        "-vv",
+        "-q",
+        "-qq",
+        "-x",
+        "-s",
+        "-l",
+        "--verbose",
+        "--quiet",
+        "--exitfirst",
+        "--showlocals",
+        "--no-header",
+        "--lf",
+        "--last-failed",
+        "--ff",
+        "--failed-first",
+        "--co",
+        "--collect-only",
+        "--strict-markers",
+    }
+)
+
+# Flags that consume a value, either separated (``-k expr``) or glued
+# (``--maxfail=1``, ``-kexpr``).
+_PYTEST_VALUE_FLAGS: frozenset[str] = frozenset(
+    {
+        "-k",
+        "-m",
+        "-r",
+        "--maxfail",
+        "--tb",
+        "--ignore",
+        "--deselect",
+    }
+)
+
+
+def _glued_long_flag_is_allowed(token: str) -> bool:
+    """``--maxfail=1`` yes; ``--config-file=evil.ini`` / ``--maxfail=`` no."""
+    flag, sep, value = token.partition("=")
+    return bool(sep) and flag in _PYTEST_VALUE_FLAGS and bool(value)
+
+
+def _glued_short_flag_is_allowed(token: str) -> bool:
+    """``-kexpr`` / ``-rA`` yes; boolean clusters (``-vx``) and ``-p`` no."""
+    return len(token) > 2 and token[:2] in _PYTEST_VALUE_FLAGS
+
+
+def _validate_pytest_args(args: str) -> list[str]:
+    """Parse model-supplied pytest args and return allowlisted argv tokens.
+
+    Raises :class:`BlockedCommandError` naming the first token outside the
+    allowlist. The whole invocation is rejected — never a partial argv — so a
+    model-controlled flag cannot ride along next to legitimate ones.
+    """
+    if not args.strip():
+        return []
+    try:
+        tokens = shlex.split(args)
+    except ValueError as exc:
+        raise BlockedCommandError(f"Unparseable pytest args: {exc}") from exc
+    return _validate_pytest_tokens(tokens)
+
+
+def _validate_pytest_tokens(tokens: list[str]) -> list[str]:
+    """Walk parsed pytest argv tokens; raise on the first non-allowlisted one."""
+    validated: list[str] = []
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token in _PYTEST_BOOL_FLAGS:
+            validated.append(token)
+            i += 1
+            continue
+        if token in _PYTEST_VALUE_FLAGS:
+            if i + 1 >= len(tokens):
+                raise BlockedCommandError(f"pytest flag {token!r} is missing its value")
+            validated.append(token)
+            validated.append(tokens[i + 1])
+            i += 2
+            continue
+        if token.startswith("--"):
+            # Glued long form: only allowlisted value flags with a non-empty
+            # value. Everything else — ``--config-file=...``,
+            # ``--override-ini=...`` — is rejected on the flag name itself.
+            if _glued_long_flag_is_allowed(token):
+                validated.append(token)
+                i += 1
+                continue
+            raise BlockedCommandError(f"pytest argument not allowed: {token!r}")
+        if token.startswith("-"):
+            if _glued_short_flag_is_allowed(token):
+                validated.append(token)
+                i += 1
+                continue
+            raise BlockedCommandError(f"pytest argument not allowed: {token!r}")
+        # Positional: a test path or node id. With ``--pyargs`` rejected these
+        # can only name files under the pytest rootdir, and sandbox.run_argv
+        # still path-checks every token before exec.
+        validated.append(token)
+        i += 1
+    return validated
+
+
 def _make_sandbox_tools(session: BuilderSession) -> list[dict[str, Any]]:
     """Return Anthropic-format tool definitions that delegate to the sandbox.
 
     Structured tools (run_tests, run_lint, git_status, git_diff) map to fixed
     argv lists executed with shell=False — no LLM-controlled string reaches the
-    shell.  run_command is retained for flexibility but is narrowed: the sandbox
-    applies metachar rejection + shlex parsing + path-escape checks, and callers
-    must set requires_human_approval=true for anything outside the common cases.
+    shell. run_tests' extra args are parsed and validated against a fixed
+    pytest flag allowlist (#811) before exec. run_command is retained for
+    flexibility but is narrowed: the sandbox applies metachar rejection +
+    shlex parsing + path-escape checks, and callers must set
+    requires_human_approval=true for anything outside the common cases.
     """
     return [
         {
@@ -158,7 +293,12 @@ def _make_sandbox_tools(session: BuilderSession) -> list[dict[str, Any]]:
                 "properties": {
                     "args": {
                         "type": "string",
-                        "description": "Extra pytest args e.g. '-k my_test -q'. No shell metacharacters.",
+                        "description": (
+                            "Extra pytest args, e.g. '-k my_test -q'. Allowlisted "
+                            "test-selection/verbosity flags and test paths only; "
+                            "plugin/config-loading flags (-p, -c, --pyargs, ...) "
+                            "are rejected."
+                        ),
                     }
                 },
             },
@@ -227,9 +367,10 @@ def _dispatch_safe_tool(sandbox: Any, name: str, inputs: dict[str, Any]) -> str 
         return str(sandbox.edit_file(inputs["path"], inputs["old_string"], inputs["new_string"]))
     if name == "run_tests":
         argv = ["python", "-m", "pytest"]
-        extra = inputs.get("args", "").strip()
-        if extra:
-            argv += extra.split()
+        # #811: validate BEFORE exec — run_tests dispatches ahead of the
+        # run_command approval gate, so the model must not be able to widen
+        # pytest beyond selection/verbosity flags (e.g. `-p evil_plugin`).
+        argv += _validate_pytest_args(inputs.get("args") or "")
         return str(sandbox.run_argv(argv))
     if name == "run_lint":
         return str(sandbox.run_argv(["ruff", "check", "."]))

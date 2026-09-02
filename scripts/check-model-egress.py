@@ -1,37 +1,15 @@
 #!/usr/bin/env python3
-"""Freeze the set of modules that call a model endpoint directly (#36).
+"""Freeze direct model-egress modules against a trusted base revision (#542, #319).
 
-The convergence program's second invariant is "no direct model/tool/effect
-provider bypass outside approved Provider implementations". Enforcing it as
-written is not yet possible, and the reason is the finding:
+A candidate may not add a direct model caller and approve that escape by adding
+the same module to quality/model-egress.json. Expansions are judged against the
+merge-base inventory and require a separately landed authorization. Candidate
+bookkeeping is checked independently so migrated callers must still be pruned.
 
-`maistro.providers` is a *registry* — catalog, router, protocols, errors — and
-contains no HTTP client. It performs no egress. So there is no approved Provider
-implementation for anything to be outside of; there are twenty-six modules each
-doing their own call. #56 is the work that creates the one egress this invariant
-presumes, and it cannot be checked before it exists.
-
-What can be enforced today is the ratchet: this set may not grow. A new module
-calling a completions endpoint directly is a new escape from a boundary that is
-still being built, and it fails here by name. An entry that stops performing
-egress also fails, until it is pruned — so migrating one under #56 forces the
-inventory to shrink rather than leaving a stale line behind.
-
-Detection is deliberately the narrow, checkable version: a module both names a
-model endpoint path *and* contains an HTTP-call node. `maistro.auth.middleware`
-and `maistro.events.bus` name such a path for routing and allowlisting without
-calling anything, and are excluded on that basis rather than by hand.
-
-The inventory carries no per-module verdict. Deciding which of the twenty-six are
-legitimate providers, which are adapters, and which are escapes is #56's
-adjudication, and recording a guess here would give it a false starting point.
-
-#55 adds the complementary call-site ratchet in ``check_direct_effects.py``.
-This older module census remains useful as a broad regression backstop, while
-the call-site gate records the reviewed migration/removal owner for actual AST
-calls and refuses to treat imports as usage.
-
-Run: `python scripts/check-model-egress.py`
+A module move that carries already-reviewed egress verbatim to a new home is
+not an expansion when the trusted base records the predecessor and the
+candidate prunes it; CANDIDATE_MIGRATIONS is that operator-approved record,
+scoped per move so it can never authorize a caller that did not exist before.
 """
 
 from __future__ import annotations
@@ -41,36 +19,62 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from types import ModuleType
 
 import check_direct_effects
 
 ROOT = Path(__file__).resolve().parents[1]
 INVENTORY = ROOT / "quality" / "model-egress.json"
 REACHABILITY = ROOT / "scripts" / "check-reachability.py"
+_PROVENANCE_SOURCE = ROOT / "scripts" / "ratchet_provenance.py"
+RATCHET = "model-egress"
+METRIC_DEFINITION_VERSION = "1"
 
-#: Path fragments that identify a model endpoint.
+# An operator-approved record of a direct caller whose egress moved verbatim
+# to a new module in a convergence PR, judged against the trusted base. This
+# mirrors the CANDIDATE_AUTHORED design in check-ratchet-provenance.py: the
+# mapping is scoped to exactly one reviewed move and lands atomically with
+# the code that performs it. It is NOT an authorization to grow the set:
+# `_migration_predecessor` honors it only while the predecessor is recorded
+# in the trusted base AND has been pruned from the candidate inventory, so a
+# rename can relocate a caller but never add one (#835: graph_runner's
+# compatibility helpers moved into the legacy_dag_node adapter).
+CANDIDATE_MIGRATIONS: dict[str, str] = {
+    "services.legacy_dag_node": "services.graph_runner",
+}
+
 _ENDPOINTS = ("chat/completions", "/completions", "/v1/responses")
-
-#: Call attributes that perform or stream an HTTP request.
 _HTTP_CALLS = frozenset({"post", "stream", "send", "request"})
 
 
-def _load_script(name: str, path: Path) -> object:
-    spec = importlib.util.spec_from_file_location(name, path)
+def _provenance() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("_ratchet_provenance", _PROVENANCE_SOURCE)
     if spec is None or spec.loader is None:  # pragma: no cover - packaging accident
-        raise RuntimeError(f"cannot load {path}")
+        raise RuntimeError(f"cannot load {_PROVENANCE_SOURCE}")
+    cached = sys.modules.get(spec.name)
+    if cached is not None:
+        return cached
     module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules[spec.name]
+        raise
     return module
 
 
 def _load_reachability() -> object:
-    return _load_script("_reachability", REACHABILITY)
+    spec = importlib.util.spec_from_file_location("_reachability", REACHABILITY)
+    if spec is None or spec.loader is None:  # pragma: no cover - packaging accident
+        raise RuntimeError(f"cannot load {REACHABILITY}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["_reachability"] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def performs_egress(source: str) -> bool:
-    """True when a module both names a model endpoint and calls out over HTTP."""
     if not any(fragment in source for fragment in _ENDPOINTS):
         return False
     try:
@@ -109,23 +113,111 @@ def audit(recorded: set[str], found: set[str]) -> list[str]:
     return failures
 
 
+def _migration_predecessor(module: str, *, trusted: set[str], candidate: set[str]) -> str | None:
+    """The trusted-base module whose egress moved into `module`, or None.
+
+    The exception fires only when both ratchet halves stay intact: the
+    predecessor performed direct egress in the trusted base (it is recorded
+    there), and the candidate pruned it (it is absent from the candidate
+    inventory -- the same requirement `candidate_stale` enforces). Any other
+    shape -- no recorded predecessor, an unpruned predecessor, a module with
+    no mapping at all -- is not a migration and still requires an
+    already-landed authorization.
+    """
+    predecessor = CANDIDATE_MIGRATIONS.get(module)
+    if predecessor is None:
+        return None
+    if predecessor not in trusted:
+        return None
+    if predecessor in candidate:
+        return None
+    return predecessor
+
+
+def _modules(loaded: object) -> set[str]:
+    if not isinstance(loaded, dict):
+        return set()
+    modules = loaded.get("modules")
+    return {str(module) for module in modules} if isinstance(modules, list) else set()
+
+
 def main() -> int:
     if not INVENTORY.exists():
         print(f"FAIL: {INVENTORY} is missing", file=sys.stderr)
         return 1
-    recorded = set(json.loads(INVENTORY.read_text())["modules"])
+    candidate = _modules(json.loads(INVENTORY.read_text()))
     found = discover()
-    failures = audit(recorded, found)
+
+    prov = _provenance()
+    try:
+        trusted_ref = prov.resolve_baseline(INVENTORY, root=ROOT)
+        trusted = _modules(trusted_ref.loads(default={"modules": []}))
+        prov.require_measurement(found, ratchet=RATCHET, what="direct model-egress modules")
+        authorized = prov.load_authorizations(RATCHET, base=trusted_ref.base_sha)
+    except prov.RatchetProvenanceError as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+
+    added = sorted(found - trusted)
+    migrated = {
+        module: predecessor
+        for module in added
+        if (predecessor := _migration_predecessor(module, trusted=trusted, candidate=candidate))
+    }
+    unauthorized = [
+        module for module in added if module not in authorized and module not in migrated
+    ]
+    unbanked_authorized = [
+        module for module in added if module in authorized and module not in candidate
+    ]
+    candidate_new = sorted(found - candidate)
+    candidate_stale = sorted(candidate - found)
+
+    print(
+        prov.Provenance(
+            ratchet=RATCHET,
+            baseline=trusted_ref,
+            tool="python ast",
+            metric_definition_version=METRIC_DEFINITION_VERSION,
+            old_value=f"{len(trusted)} direct callers",
+            new_value=f"{len(found)} direct callers",
+            candidate_sha=prov.head_sha(ROOT),
+            authorizations=tuple(
+                [f"{module}: {authorized[module]}" for module in added if module in authorized]
+                + [
+                    f"{module}: operator-approved migration from {predecessor} "
+                    "(predecessor pruned from the candidate inventory; not an expansion)"
+                    for module, predecessor in migrated.items()
+                ]
+            ),
+        ).render()
+    )
+
+    failures: list[str] = []
+    failures.extend(
+        f"{module}: NEW direct model egress is absent from the trusted base and has no "
+        "already-landed authorization"
+        for module in unauthorized
+    )
+    failures.extend(
+        f"{module}: authorized expansion is not recorded in the candidate inventory"
+        for module in unbanked_authorized
+    )
+    failures.extend(
+        f"{module}: current direct caller is missing from the candidate inventory"
+        for module in candidate_new
+    )
+    failures.extend(
+        f"{module}: candidate inventory is stale; this module no longer performs direct egress"
+        for module in candidate_stale
+    )
+
     if failures:
-        print("FAIL: the direct-model-egress inventory does not match the code\n")
+        print("FAIL: the direct-model-egress inventory does not match trusted policy\n")
         for failure in failures:
             print(f"  - {failure}")
-        print(
-            "\nRoute the call through the Provider boundary #56 is building, or — if this is "
-            "that boundary — add it to the inventory with the reason."
-        )
         return 1
-    print(f"OK: {len(found)} modules call a model endpoint directly, exactly as inventoried")
+    print(f"OK: {len(found)} direct model caller(s), no candidate-approved expansion")
     return check_direct_effects.main([])
 
 

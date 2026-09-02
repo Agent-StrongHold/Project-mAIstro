@@ -40,7 +40,7 @@ The **first** path entry wins for the top-level `maistro` package. Agent spec, r
 | `observability` | Langfuse | N/A | Same. | N/A |
 | `hive_conductor` | Hive Conductor package (API + UI; base compose under `packages/hive-conductor/`) | `uv pip install -r packages/hive-conductor/backend/requirements.txt` (see package README). | Base file: `packages/hive-conductor/docker-compose.yml`. Optional fragments under `packages/hive-conductor/compose/fragments/`. | N/A |
 | `product_conductor` | Single-tenant multi-user (Conductor-shaped) | Align with downstream repo; engine stays library-only. | Usually product repo’s compose. | Copier: [`templates/single-tenant-multi-user/`](../../templates/single-tenant-multi-user/). |
-| `product_stronghold` | Multi-tenant enterprise | **Not vendored** in this repo — clone Stronghold / use Copier multi-tenant template. | Stronghold’s own charts/compose. | Copier: [`templates/multi-tenant/`](../../templates/multi-tenant/). |
+| `product_stronghold` | Multi-tenant enterprise | **Not vendored** in this repo — the external Stronghold target is a prerequisite. | Stronghold’s own charts/compose. | Incomplete README seed only: [`templates/multi-tenant/`](../../templates/multi-tenant/); no round-trip claim. |
 | `product_turing` | Autonoetic product | Downstream product repo. | Product compose. | Copier: [`templates/autonoetic/`](../../templates/autonoetic/). |
 
 ---
@@ -77,7 +77,13 @@ dry_run: true
 
 - `features`: list of checkbox ids from the table.
 - `compose_addons`: optional list of add-on ids (see **Compose add-ons** above).
-- `product`: if set and not `none`, the CLI prints a `copier copy` line for the matching template under `templates/`.
+- `product`: for `single-tenant-multi-user` and `autonoetic`, the CLI prints a root-dispatcher
+  command such as `uv run copier copy --data product_template=autonoetic https://github.com/Agent-StrongHold/Project-mAIstro.git ../my-product`.
+  The repository-root `copier.yml` selects the matching payload under `templates/` with
+  `_subdirectory`, preserving Git template metadata for future `copier update` runs. Copying a
+  nested template path directly renders files but cannot record an updateable monorepo template
+  revision. `multi-tenant` remains a direct, non-updateable README seed until the external
+  Stronghold round-trip prerequisite exists.
 - `dry_run`: when true, only print commands.
 
 ### Extended fields (schema v1)

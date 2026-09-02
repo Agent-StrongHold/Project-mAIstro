@@ -33,6 +33,7 @@ from .legacy_archive import (
     LegacyRunNotResumable,
 )
 from .protocol import DurableRunStore
+from .recovery import recover_queued_graph_runs, resume_due_graph_runs
 from .stores import InMemoryDurableRunStore, SqliteDurableRunStore
 from .types import DurableRunRecord
 
@@ -52,6 +53,8 @@ __all__ = [
     "RunStatus",
     "SqliteDurableRunStore",
     "SqliteGraphContinuationStore",
+    "recover_queued_graph_runs",
+    "resume_due_graph_runs",
     "resume_durable_graph",
     "run_durable_graph",
 ]
