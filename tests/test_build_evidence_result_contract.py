@@ -203,6 +203,10 @@ def test_identity_validation_rejects_malformed_input_entries(tmp_path: Path) -> 
         ),
         ([{"path": "source.py", "sha256": "bad"}], "input digest is malformed"),
         ([{"path": "source.py", "sha256": "g" * 64}], "input digest is malformed"),
+        ([{"path": "source.py", "sha256": "+" + "a" * 63}], "input digest is malformed"),
+        ([{"path": "source.py", "sha256": "-" + "a" * 63}], "input digest is malformed"),
+        ([{"path": "source.py", "sha256": " " + "a" * 63}], "input digest is malformed"),
+        ([{"path": "source.py", "sha256": "0x" + "a" * 62}], "input digest is malformed"),
     ):
         candidate = dict(identity)
         candidate["inputs"] = inputs
@@ -218,10 +222,11 @@ def test_identity_validation_rejects_schema_command_and_key_drift(tmp_path: Path
     with pytest.raises(EvidenceError, match="fields do not match schema"):
         complete_manifest(extra_field, exit_code=0, duration_seconds=0)
 
-    bad_schema = dict(identity)
-    bad_schema["schema"] = 999
-    with pytest.raises(EvidenceError, match="unsupported identity schema"):
-        complete_manifest(bad_schema, exit_code=0, duration_seconds=0)
+    for invalid_schema in (999, True, 1.0):
+        bad_schema = dict(identity)
+        bad_schema["schema"] = invalid_schema
+        with pytest.raises(EvidenceError, match="unsupported identity schema"):
+            complete_manifest(bad_schema, exit_code=0, duration_seconds=0)
 
     empty_command = dict(identity)
     empty_command["command"] = " "
@@ -243,10 +248,11 @@ def test_completed_validation_rejects_malformed_envelope(tmp_path: Path) -> None
     with pytest.raises(EvidenceError, match="fields do not match schema"):
         verify_completed_manifest(extra_field, expected_identity=identity)
 
-    bad_schema = dict(completed)
-    bad_schema["schema"] = 999
-    with pytest.raises(EvidenceError, match="unsupported completed-evidence schema"):
-        verify_completed_manifest(bad_schema, expected_identity=identity)
+    for invalid_schema in (999, True, 1.0):
+        bad_schema = dict(completed)
+        bad_schema["schema"] = invalid_schema
+        with pytest.raises(EvidenceError, match="unsupported completed-evidence schema"):
+            verify_completed_manifest(bad_schema, expected_identity=identity)
 
     bad_identity = dict(completed)
     bad_identity["identity"] = "not-an-object"
@@ -269,6 +275,11 @@ def test_evidence_json_reader_fails_closed_on_invalid_content(tmp_path: Path) ->
     invalid_json.write_text("{", encoding="utf-8")
     with pytest.raises(EvidenceError, match="cannot read evidence JSON"):
         build_evidence._read_json(str(invalid_json))
+
+    invalid_utf8 = tmp_path / "invalid-utf8.json"
+    invalid_utf8.write_bytes(b"\xff")
+    with pytest.raises(EvidenceError, match="cannot read evidence JSON"):
+        build_evidence._read_json(str(invalid_utf8))
 
     non_object = tmp_path / "list.json"
     non_object.write_text("[]", encoding="utf-8")
@@ -308,3 +319,35 @@ def test_cli_identity_and_completion_requirements_fail_closed(
         == 2
     )
     assert "only valid with --complete-from" in capsys.readouterr().err
+
+    assert (
+        main(
+            [
+                "--verify-result",
+                "",
+                "--input",
+                "source.py",
+                "--command",
+                "pytest",
+                "--root",
+                str(tmp_path),
+            ]
+        )
+        == 2
+    )
+    assert "cannot read evidence JSON ''" in capsys.readouterr().err
+
+    assert (
+        main(
+            [
+                "--complete-from",
+                "",
+                "--exit-code",
+                "0",
+                "--duration-seconds",
+                "1",
+            ]
+        )
+        == 2
+    )
+    assert "cannot read evidence JSON ''" in capsys.readouterr().err

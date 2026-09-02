@@ -36,9 +36,11 @@ os.environ["TURING_ALLOW_DEV_AUTH"] = "1"
 
 @pytest.fixture(autouse=True)
 def _reset_state():
+    from ..execution import reset_execution_plane
     from ..state import reset_state
 
     reset_state()
+    reset_execution_plane()
     yield
 
 

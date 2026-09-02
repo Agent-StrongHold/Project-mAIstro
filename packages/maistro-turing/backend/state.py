@@ -89,8 +89,9 @@ class TuringState:
         # implementations (no episodic/learning store, no warden, no LLM
         # client). The runtime degrades gracefully (memory writes are dropped,
         # scans pass-through) — see TuringMemoryBridge/TuringSecurityBridge.
-        # Production wiring injects real stores + a warden + an LLM client here,
-        # typically via maistro.container.
+        # No maistro.container Turing wiring exists on the current product path.
+        # A future durable composition must replace these through the same
+        # Turing bridge contracts rather than implying that wiring already exists.
         self.memory = TuringMemoryBridge()
         self.security = TuringSecurityBridge()
         self.provider = TuringProviderBridge()

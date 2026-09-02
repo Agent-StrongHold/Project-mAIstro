@@ -172,6 +172,18 @@
       ]
     },
     {
+      "id": "events-envelope-library",
+      "subsystem": "Events and checkpoints",
+      "disposition": "LIBRARY",
+      "rationale": "The canonical envelope surfaces #61 ships: the PostgreSQL EventEnvelope store (identity and deterministic Workspace sequence, deliberately separate from ADR-086's legacy PgEventLog cursor), the persist-first publisher, the convergence contract for package-local projections, and the backend composition helper. maistro-core is a published library (AGENTS.md) and these are its importable surfaces for downstream products; no process entry point in this repository subscribes the wiring yet, so unreachable is their correct state for the same reason the rest of the published library is baselined. #62 is where a shipped process adopts the envelope.",
+      "modules": [
+        "maistro.events.convergence",
+        "maistro.events.pg_envelope",
+        "maistro.events.publisher",
+        "maistro.events.wiring"
+      ]
+    },
+    {
       "id": "evolve-unwired",
       "subsystem": "Evolve tournament optimizer",
       "disposition": "CONNECT",
