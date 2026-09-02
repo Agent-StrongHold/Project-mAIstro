@@ -36,6 +36,26 @@ async def _reconcile_if_supported(store: DurableRunStore, *, limit: int) -> None
         await store.reconcile_persistence(limit=limit)
 
 
+_RESUME_ELIGIBLE_STATUSES = frozenset({RunStatus.WAITING, RunStatus.RUNNING})
+
+
+def _is_resume_due(record: DurableRunRecord, moment: datetime) -> bool:
+    """Report whether `record` is in a resumable status with an elapsed wait."""
+    if record.run.status not in _RESUME_ELIGIBLE_STATUSES:
+        return False
+    return record.resume_at is not None and record.resume_at <= moment
+
+
+async def _is_still_resume_due(
+    store: DurableRunStore,
+    run_id: str,
+    moment: datetime,
+) -> bool:
+    """Re-read `run_id` and report whether it is still due for a resume."""
+    current = await store.get(run_id)
+    return current is not None and _is_resume_due(current, moment)
+
+
 async def resume_due_graph_runs(
     *,
     store: DurableRunStore,
@@ -55,11 +75,7 @@ async def resume_due_graph_runs(
     resumed = 0
 
     for candidate in candidates:
-        if candidate.run.status is RunStatus.PAUSED:
-            continue
-        if candidate.run.status not in {RunStatus.WAITING, RunStatus.RUNNING}:
-            continue
-        if candidate.resume_at is None or candidate.resume_at > moment:
+        if not _is_resume_due(candidate, moment):
             continue
         try:
             await resume_durable_graph(
@@ -72,14 +88,9 @@ async def resume_due_graph_runs(
         except LiveAttemptOwned:
             continue
         except (KeyError, ValueError):
-            current = await store.get(candidate.run_id)
-            if current is None:
-                continue
-            if (
-                current.run.status not in {RunStatus.WAITING, RunStatus.RUNNING}
-                or current.resume_at is None
-                or current.resume_at > moment
-            ):
+            # Only a record still due after the failure is a real error; a
+            # record another actor already moved on is settled, not resumed.
+            if not await _is_still_resume_due(store, candidate.run_id, moment):
                 continue
             raise
         resumed += 1

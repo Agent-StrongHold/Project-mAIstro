@@ -96,21 +96,26 @@ class CanonicalDurableRunStore:
                 if run_id in seen:
                     continue
                 seen.add(run_id)
-                continuation = await self._continuations.get(run_id)
-                if continuation is None:
-                    continue
-                canonical = await self._run_store.get_run(run_id)
-                if canonical is None:
-                    if await self._continuations.delete(run_id):
-                        changed += 1
-                    continue
-                if canonical.status is RunStatus.RUNNING and continuation.status in {
-                    RunStatus.WAITING,
-                    RunStatus.PAUSED,
-                }:
-                    await self._run_store.transition_run(run_id, continuation.status)
+                if await self._reconcile_run(run_id):
                     changed += 1
         return changed
+
+    async def _reconcile_run(self, run_id: str) -> bool:
+        """Repair one run's cross-store residue; report whether state changed."""
+        continuation = await self._continuations.get(run_id)
+        if continuation is None:
+            return False
+        canonical = await self._run_store.get_run(run_id)
+        if canonical is None:
+            # No canonical Run means a true orphan: purge the continuation.
+            return await self._continuations.delete(run_id)
+        if canonical.status is RunStatus.RUNNING and continuation.status in {
+            RunStatus.WAITING,
+            RunStatus.PAUSED,
+        }:
+            await self._run_store.transition_run(run_id, continuation.status)
+            return True
+        return False
 
     async def list_by_status(
         self,
