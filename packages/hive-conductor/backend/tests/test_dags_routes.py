@@ -186,9 +186,7 @@ def test_run_dag_canonical_failure_stays_failed(
         "status": "failed",
         "run_id": "run-failed-1",
         "cycles": 1,
-        "node_results": {
-            "n1": {"role": "worker", "success": False, "response": "node failed"}
-        },
+        "node_results": {"n1": {"role": "worker", "success": False, "response": "node failed"}},
         "error": "node failed",
     }
 
@@ -286,3 +284,25 @@ def test_run_champion_failure(admin_client: Any, monkeypatch: pytest.MonkeyPatch
     body = response.json()
     assert body["status"] == "failed"
     assert "champion crash" in body["error"]
+
+
+@pytest.mark.asyncio
+async def test_a_result_without_a_run_id_projects_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Recent Runs projection keys on the canonical Run id; a result that
+    never got one (pre-admission failure shapes) must not mint a projection
+    row under some synthesized key."""
+    import routes.dags as dags_routes
+    import services.dag_run_store as history
+
+    def _unexpected_store() -> Any:  # pragma: no cover
+        raise AssertionError("no store may be consulted without a run id")
+
+    monkeypatch.setattr(history, "get_dag_run_store", _unexpected_store)
+
+    await dags_routes._record_run_projection(
+        dag_id="dag-1",
+        user_id="admin",
+        result={"status": "failed", "error": "no run was admitted"},
+    )

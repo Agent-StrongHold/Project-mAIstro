@@ -63,9 +63,7 @@ def _actor(request: Request) -> str:
     return str(user.get("id") or "system")
 
 
-async def _record_run_projection(
-    *, dag_id: str, user_id: str, result: dict[str, Any]
-) -> None:
+async def _record_run_projection(*, dag_id: str, user_id: str, result: dict[str, Any]) -> None:
     """Mirror canonical Run facts into the bounded Recent Runs projection.
 
     The projection uses the canonical Run id as its own key and copies the
@@ -257,7 +255,9 @@ def remove_node(dag_id: str, node_id: str) -> dict:
     if not removed:
         raise HTTPException(status_code=404, detail="node not found")
     new_nodes = [node for node in dag.nodes if node.id != node_id]
-    new_edges = [edge for edge in dag.edges if edge.from_node != node_id and edge.to_node != node_id]
+    new_edges = [
+        edge for edge in dag.edges if edge.from_node != node_id and edge.to_node != node_id
+    ]
     dag = dag.model_copy(update={"nodes": new_nodes, "edges": new_edges, "updated_at": _now()})
     stores.dags[dag_id] = dag.model_dump(mode="json")
     return removed[0].model_dump(mode="json")

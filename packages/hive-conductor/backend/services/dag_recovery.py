@@ -9,6 +9,7 @@ the sole authorities for whether physical work may start.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 
 from services.canonical_dag_runner import recover_stranded_dag_runs
@@ -51,10 +52,8 @@ async def stop_dag_recovery() -> None:
     if task is None:
         return
     task.cancel()
-    try:
+    with contextlib.suppress(asyncio.CancelledError):
         await task
-    except asyncio.CancelledError:
-        pass
 
 
 __all__ = ["start_dag_recovery", "stop_dag_recovery"]

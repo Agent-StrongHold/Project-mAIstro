@@ -16,7 +16,7 @@ from typing import Any
 
 from maistro.graph.definitions import Edge, Graph, Node
 from maistro.graph.durable_runs import RunStatus, recover_queued_graph_runs, run_durable_graph
-from maistro.graph.types import AgentRole, DEFAULT_SYSTEM_PROMPTS, JSON_OUTPUT_SCHEMAS
+from maistro.graph.types import DEFAULT_SYSTEM_PROMPTS, JSON_OUTPUT_SCHEMAS, AgentRole
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run
 from services.dag_agents import _container, get_run_store
 from services.legacy_dag_node import LegacyConductorNode, OnResponseHook
@@ -358,9 +358,7 @@ def _recovery_resolver(run: Run):
 
     execution_mode = str(run.provenance.get("execution_mode") or "autonomous")
     if execution_mode not in {"interactive", "autonomous"}:
-        raise ValueError(
-            f"Run {run.run_id!r} has invalid legacy execution_mode {execution_mode!r}"
-        )
+        raise ValueError(f"Run {run.run_id!r} has invalid legacy execution_mode {execution_mode!r}")
     legacy_dag_id = str(graph.metadata.get("legacy_dag_id") or graph.graph_id)
     return _resolver(
         raw_by_id,

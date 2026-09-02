@@ -30,9 +30,7 @@ def _legacy_dag() -> dict:
 def _queued_run(*, mode: str = "interactive", source: str = "hive_legacy_dag") -> tuple[Run, Graph]:
     import services.canonical_dag_runner as runner
 
-    graph = runner.graph_from_legacy_dag(
-        _legacy_dag(), workspace_id="ws-1", project_id="project-1"
-    )
+    graph = runner.graph_from_legacy_dag(_legacy_dag(), workspace_id="ws-1", project_id="project-1")
     run = Run(
         run_id="run-recoverable",
         workspace_id=graph.workspace_id,
@@ -62,6 +60,17 @@ def test_recovery_resolver_rehydrates_node_and_execution_mode_from_run_snapshot(
     assert node._node_env["DAG_USER_ID"] == "user-1"
     assert node._node_env["DAG_ID"] == "recoverable-dag"
     assert not any(key.startswith("USER_CRED_") for key in node._node_env)
+
+
+def test_recovery_resolver_rejects_a_run_whose_mode_is_not_a_legacy_mode() -> None:
+    """The durable snapshot is the only source of truth for how the Run may
+    execute; an execution_mode outside the two the adapter admits is not a
+    default waiting to happen but a corrupt admission."""
+    import services.canonical_dag_runner as runner
+
+    run, _graph = _queued_run(mode="batch")
+    with pytest.raises(ValueError, match="invalid legacy execution_mode"):
+        runner._recovery_resolver(run)
 
 
 @pytest.mark.asyncio
@@ -151,7 +160,100 @@ async def test_recovery_cadence_starts_runs_a_tick_and_stops(
 
     recovery_driver.start_dag_recovery()
     await asyncio.wait_for(ticked.wait(), timeout=1.0)
-    assert recovery_driver.recovery_running() is True
+    # `recovery_running()` left with the pre-#835 scheduler surface: the
+    # driver's liveness is its task, which is the only state it owns.
+    assert recovery_driver._task is not None
+    assert not recovery_driver._task.done()
 
     await recovery_driver.stop_dag_recovery()
-    assert recovery_driver.recovery_running() is False
+    assert recovery_driver._task is None
+
+
+@pytest.mark.asyncio
+async def test_recovery_cadence_survives_a_failing_tick_and_logs_recoveries(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """One malformed candidate must not kill the cadence, and a productive
+    tick is reported, not swallowed: the log is the driver's only surface."""
+    import logging
+
+    import services.dag_recovery as recovery_driver
+
+    ticks = {"count": 0}
+    recovered = asyncio.Event()
+
+    async def _tick() -> int:
+        ticks["count"] += 1
+        if ticks["count"] == 1:
+            raise ValueError("malformed candidate")
+        recovered.set()
+        return 3
+
+    await recovery_driver.stop_dag_recovery()
+    monkeypatch.setattr(recovery_driver, "recover_stranded_dag_runs", _tick)
+    monkeypatch.setattr(recovery_driver, "_INTERVAL_S", 0.001)
+
+    recovery_driver.start_dag_recovery()
+    with caplog.at_level(logging.INFO, logger="hive.dag_recovery"):
+        await asyncio.wait_for(recovered.wait(), timeout=5.0)
+
+    assert any("legacy_dag_recovery_tick_failed" in r.message for r in caplog.records)
+    assert any("recovered=3" in r.message for r in caplog.records)
+
+    await recovery_driver.stop_dag_recovery()
+    assert recovery_driver._task is None
+
+
+@pytest.mark.asyncio
+async def test_recovery_cadence_cancellation_during_a_tick_ends_the_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cancel delivered while a tick is in flight must propagate as a
+    cancellation, not be logged as another malformed candidate."""
+    import services.dag_recovery as recovery_driver
+
+    in_tick = asyncio.Event()
+
+    async def _hanging_tick() -> int:
+        in_tick.set()
+        await asyncio.Event().wait()  # blocks until cancelled
+        return 0  # pragma: no cover - unreachable once cancelled
+
+    await recovery_driver.stop_dag_recovery()
+    monkeypatch.setattr(recovery_driver, "recover_stranded_dag_runs", _hanging_tick)
+
+    recovery_driver.start_dag_recovery()
+    await asyncio.wait_for(in_tick.wait(), timeout=1.0)
+    task = recovery_driver._task
+
+    await recovery_driver.stop_dag_recovery()
+
+    assert recovery_driver._task is None
+    assert task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_starting_the_recovery_cadence_twice_keeps_one_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`start` is idempotent: two starts must not leave two cadences ticking,
+    or one shutdown join would strand the other."""
+    import services.dag_recovery as recovery_driver
+
+    ticked = asyncio.Event()
+
+    async def _recover() -> int:
+        ticked.set()
+        return 0
+
+    await recovery_driver.stop_dag_recovery()
+    monkeypatch.setattr(recovery_driver, "recover_stranded_dag_runs", _recover)
+    monkeypatch.setattr(recovery_driver, "_INTERVAL_S", 3600.0)
+
+    recovery_driver.start_dag_recovery()
+    first = recovery_driver._task
+    recovery_driver.start_dag_recovery()
+
+    assert recovery_driver._task is first
+
+    await recovery_driver.stop_dag_recovery()
