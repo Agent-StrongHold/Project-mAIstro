@@ -5,6 +5,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "check-autonomous-merge.py"
 REGISTRY = ROOT / "quality" / "branch-independence.json"
@@ -194,3 +196,160 @@ def test_wiring_reads_migration_left_the_frozen_legacy_set() -> None:
     assert surface["kind"] == "base_derived"
     assert "target_kind" not in surface
     assert "quality/wiring-reads-baseline.json" not in registry["frozen_legacy_paths"]
+
+
+# --- Focused coverage of every fail-closed registry-validation branch ---
+#
+# The pipeline in scripts/check-autonomous-merge.py (_branch_independence_errors
+# and _quality_surfaces) turns any unusable checker, validator result, or
+# registry shape into ``None`` so _quality_reason fails closed to RED. Each test
+# below pins one branch decision; line numbers refer to the script as of this
+# change.
+
+
+class _LoaderlessSpec:
+    """Stand-in for a spec importlib may return without a loader attached."""
+
+    loader = None
+
+
+def _use_registry(monkeypatch, tmp_path: Path, payload: object) -> None:
+    monkeypatch.setattr(mod, "BRANCH_INDEPENDENCE_REGISTRY", _write_registry(tmp_path, payload))
+
+
+def _use_checker(monkeypatch, tmp_path: Path, body: str) -> Path:
+    checker = tmp_path / "stand-in-checker.py"
+    checker.write_text(body, encoding="utf-8")
+    monkeypatch.setattr(mod, "BRANCH_INDEPENDENCE_CHECKER", checker)
+    return checker
+
+
+def _trust_registry_schema(monkeypatch) -> None:
+    # Lines 204, 209 and 213 re-validate structure the canonical validator
+    # already rejects; accepting the schema first pins that defense in depth.
+    monkeypatch.setattr(mod, "_branch_independence_errors", lambda raw: [])
+
+
+def test_checker_location_without_loadable_spec_fails_closed(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    # A checker suffix with no registered loader makes spec_from_file_location
+    # return None (``spec is None`` -> line 166).
+    checker = tmp_path / "stand-in-checker.json"
+    checker.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(mod, "BRANCH_INDEPENDENCE_CHECKER", checker)
+    _use_registry(monkeypatch, tmp_path, _registry_payload())
+
+    assert mod._quality_surfaces() is None
+
+
+def test_checker_spec_without_loader_fails_closed(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    # A spec whose loader is unset is equally unusable (``spec.loader is
+    # None`` -> line 166).
+    _use_checker(monkeypatch, tmp_path, "registry_errors = 1\n")
+    _use_registry(monkeypatch, tmp_path, _registry_payload())
+    monkeypatch.setattr(
+        mod.importlib.util, "spec_from_file_location", lambda *args, **kwargs: _LoaderlessSpec()
+    )
+
+    assert mod._quality_surfaces() is None
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "registry_errors = 42\n",
+        "# registry_errors intentionally absent\n",
+    ],
+)
+def test_checker_without_callable_validator_fails_closed(
+    tmp_path: Path,
+    monkeypatch,
+    body: str,
+) -> None:
+    # getattr yields None or a non-callable value (``not callable(validator)``
+    # -> line 174).
+    _use_checker(monkeypatch, tmp_path, body)
+    _use_registry(monkeypatch, tmp_path, _registry_payload())
+
+    assert mod._quality_surfaces() is None
+
+
+@pytest.mark.parametrize("raised", [KeyError, RuntimeError, TypeError, ValueError])
+def test_validator_raising_is_swallowed_to_unclassified(
+    tmp_path: Path,
+    monkeypatch,
+    raised: type[Exception],
+) -> None:
+    # The guarded validator call converts each guarded exception into no
+    # classification (except clause -> lines 177-178).
+    body = f"def registry_errors(raw):\n    raise {raised.__name__}('stand-in failure')\n"
+    _use_checker(monkeypatch, tmp_path, body)
+    _use_registry(monkeypatch, tmp_path, _registry_payload())
+
+    assert mod._quality_surfaces() is None
+
+
+@pytest.mark.parametrize("returned", [42, None, ["ok", 5]])
+def test_validator_bad_result_shape_fails_closed(
+    tmp_path: Path,
+    monkeypatch,
+    returned: object,
+) -> None:
+    # A non-list result or a list with a non-string member is unusable
+    # (``not isinstance(errors, list) or any(...)`` -> line 180).
+    body = f"def registry_errors(raw):\n    return {returned!r}\n"
+    _use_checker(monkeypatch, tmp_path, body)
+    _use_registry(monkeypatch, tmp_path, _registry_payload())
+
+    assert mod._quality_surfaces() is None
+
+
+def test_registry_top_level_array_fails_closed(tmp_path: Path, monkeypatch) -> None:
+    # Valid JSON that is not an object never reaches the validator
+    # (``not isinstance(raw, dict)`` -> line 197).
+    _use_registry(monkeypatch, tmp_path, ["not", "an", "object"])
+
+    assert mod._quality_surfaces() is None
+
+
+def test_surfaces_not_a_list_fails_closed(tmp_path: Path, monkeypatch) -> None:
+    # ``surfaces`` must be a list (``not isinstance(surfaces, list)`` ->
+    # line 204).
+    _trust_registry_schema(monkeypatch)
+    _use_registry(monkeypatch, tmp_path, {"version": 1, "surfaces": "quality/*"})
+
+    assert mod._quality_surfaces() is None
+
+
+def test_surface_entry_not_an_object_fails_closed(tmp_path: Path, monkeypatch) -> None:
+    # Each surface must be an object (``not isinstance(surface, dict)`` ->
+    # line 209).
+    _trust_registry_schema(monkeypatch)
+    _use_registry(monkeypatch, tmp_path, {"version": 1, "surfaces": ["quality/baseline.json"]})
+
+    assert mod._quality_surfaces() is None
+
+
+@pytest.mark.parametrize(
+    "surface",
+    [
+        {"kind": 7, "paths": ["quality/x.json"]},
+        {"kind": "generated", "paths": "quality/x.json"},
+    ],
+)
+def test_surface_kind_or_paths_wrong_type_fails_closed(
+    tmp_path: Path,
+    monkeypatch,
+    surface: dict,
+) -> None:
+    # ``kind`` must be a string and ``paths`` a list (``not isinstance(kind,
+    # str) or not isinstance(paths, list)`` -> line 213).
+    _trust_registry_schema(monkeypatch)
+    _use_registry(monkeypatch, tmp_path, {"version": 1, "surfaces": [surface]})
+
+    assert mod._quality_surfaces() is None
