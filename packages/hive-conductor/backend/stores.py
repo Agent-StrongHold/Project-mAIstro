@@ -121,6 +121,11 @@ oauth_identity_links: JsonStore = JsonStore("oauth_identity_links")
 #: until #697; the page presented a 100-entry deque as history, empty after
 #: every restart.
 dag_runs: JsonStore = JsonStore("dag_runs")
+#: Registration invitations (#313) — insert-only records under
+#: ``inv:<sha256(token)>`` plus the ``used:<sha256(token)>`` redemption marker
+#: whose conflict-safe insert decides single use. Name is shared with
+#: ``services/registration_policy.py``; tokens are stored only as digests.
+registration_invitations: JsonStore = JsonStore("registration_invitations")
 
 _all_model_stores: list[ModelStore] = [
     missions,
@@ -151,6 +156,7 @@ _all_json_stores: list[JsonStore] = [
     dashboard_layouts,
     oauth_identity_links,
     dag_runs,
+    registration_invitations,
 ]
 
 

@@ -205,3 +205,196 @@ async def test_get_experience_context_respects_limit(store: SqliteOutcomeStore) 
         await store.record(make_outcome(task_type="chat", success=False, error_type=f"err{i}"))
     ctx = await store.get_experience_context("chat", limit=2)
     assert ctx.count("\n") == 2
+
+
+# ---------------------------------------------------------------------------
+# Scope (#844): every read took org_id/project_id and bound them into nothing,
+# so a SQLite-backed deployment answered a scoped read with every tenant's
+# rows while the PostgreSQL twin answered with one tenant's.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_outcomes_scopes_by_org(store: SqliteOutcomeStore) -> None:
+    await store.record(make_outcome(org_id="org-a", error_type="from-a"))
+    await store.record(make_outcome(org_id="org-b", error_type="from-b"))
+
+    found = await store.list_outcomes(org_id="org-a")
+
+    assert [o.error_type for o in found] == ["from-a"]
+
+
+@pytest.mark.asyncio
+async def test_get_task_completion_rate_scopes_by_org(store: SqliteOutcomeStore) -> None:
+    await store.record(make_outcome(org_id="org-a", success=False))
+    await store.record(make_outcome(org_id="org-a", success=True))
+    await store.record(make_outcome(org_id="org-b", success=False, model_used="other"))
+
+    scoped = await store.get_task_completion_rate(org_id="org-a")
+    unscoped = await store.get_task_completion_rate()
+
+    assert scoped["total"] == 2
+    assert "other" not in scoped["by_model"]
+    assert unscoped["total"] == 3, "no org named still means all of them"
+
+
+@pytest.mark.asyncio
+async def test_get_usage_breakdown_scopes_by_org(store: SqliteOutcomeStore) -> None:
+    await store.record(make_outcome(org_id="org-a", user_id="ua", input_tokens=10))
+    await store.record(make_outcome(org_id="org-b", user_id="ub", input_tokens=99))
+
+    rows = await store.get_usage_breakdown(group_by="user_id", org_id="org-a")
+
+    assert [r["group"] for r in rows] == ["ua"]
+
+
+@pytest.mark.asyncio
+async def test_get_usage_breakdown_scopes_by_org_when_days_zero_opens_the_where(
+    store: SqliteOutcomeStore,
+) -> None:
+    """`days <= 0` means "all time", not "all orgs" — the scope predicate has
+    to open the WHERE clause when there is no cutoff to extend."""
+    await store.record(make_outcome(org_id="org-a", user_id="ua"))
+    await store.record(make_outcome(org_id="org-b", user_id="ub"))
+
+    rows = await store.get_usage_breakdown(group_by="user_id", org_id="org-a", days=0)
+
+    assert [r["group"] for r in rows] == ["ua"]
+
+
+@pytest.mark.asyncio
+async def test_get_daily_timeseries_scopes_by_org(store: SqliteOutcomeStore) -> None:
+    await store.record(make_outcome(org_id="org-a", user_id="ua", input_tokens=10))
+    await store.record(make_outcome(org_id="org-b", user_id="ub", input_tokens=99))
+
+    rows = await store.get_daily_timeseries(group_by="user_id", org_id="org-a")
+
+    assert [r["group"] for r in rows] == ["ua"]
+    assert rows[0]["total_tokens"] == 15
+
+
+@pytest.mark.asyncio
+async def test_get_experience_context_scopes_by_org_and_project(
+    store: SqliteOutcomeStore,
+) -> None:
+    """The sharp end of the defect: this text is injected verbatim into an
+    agent's system prompt, so an unscoped read presented one tenant's failure
+    as another's experience."""
+    await store.record(
+        make_outcome(
+            task_type="chat", success=False, error_type="from-a-p1", org_id="org-a", project_id="p1"
+        )
+    )
+    await store.record(
+        make_outcome(
+            task_type="chat", success=False, error_type="from-a-p2", org_id="org-a", project_id="p2"
+        )
+    )
+    await store.record(
+        make_outcome(
+            task_type="chat", success=False, error_type="from-b-p1", org_id="org-b", project_id="p1"
+        )
+    )
+
+    org_and_project = await store.get_experience_context("chat", org_id="org-a", project_id="p1")
+    org_only = await store.get_experience_context("chat", org_id="org-a")
+
+    assert "from-a-p1" in org_and_project
+    assert "from-a-p2" not in org_and_project
+    assert "from-b-p1" not in org_and_project
+    # Both axes compose with AND: org-a alone sees both its projects.
+    assert "from-a-p2" in org_only
+    assert "from-b-p1" not in org_only
+
+
+@pytest.mark.asyncio
+async def test_list_thumbs_scopes_by_org(store: SqliteOutcomeStore) -> None:
+    await store.record(
+        make_outcome(org_id="org-a", thumb="down", thumb_comment="from-a", dag_id="d1")
+    )
+    await store.record(
+        make_outcome(org_id="org-b", thumb="down", thumb_comment="from-b", dag_id="d1")
+    )
+
+    found = await store.list_thumbs(dag_id="d1", org_id="org-a")
+
+    assert [o.thumb_comment for o in found] == ["from-a"]
+
+
+@pytest.mark.asyncio
+async def test_the_scope_predicate_is_in_the_query_not_a_post_filter(
+    store: SqliteOutcomeStore,
+) -> None:
+    """A post-filter after a global fetch would spend the LIMIT on other
+    tenants' rows: the one org-a row is older than five org-b rows, so
+    fetch-then-filter would return nothing and the scoped query returns it."""
+    for i in range(5):
+        await store.record(make_outcome(org_id="org-b", error_type=f"newer-b-{i}"))
+    await store.record(make_outcome(org_id="org-a", error_type="older-a"))
+
+    found = await store.list_outcomes(org_id="org-a", limit=1)
+
+    assert [o.error_type for o in found] == ["older-a"]
+
+
+@pytest.mark.asyncio
+async def test_a_scope_no_row_matches_returns_no_rows_not_every_row(
+    store: SqliteOutcomeStore,
+) -> None:
+    """No implicit `default` scope: a scope that matches nothing returns
+    nothing, rather than falling back to unfiltered visibility."""
+    await store.record(make_outcome(org_id="org-a"))
+
+    assert await store.list_outcomes(org_id="org-nobody") == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("read", "scope_kwargs"),
+    [
+        ("get_task_completion_rate", {"org_id": None}),
+        ("get_usage_breakdown", {"org_id": None}),
+        ("get_daily_timeseries", {"org_id": None}),
+        ("get_experience_context", {"org_id": None}),
+        ("get_experience_context", {"project_id": None}),
+        ("list_outcomes", {"org_id": None}),
+        ("list_thumbs", {"org_id": None}),
+    ],
+)
+async def test_an_ambiguous_scope_fails_closed(
+    store: SqliteOutcomeStore, read: str, scope_kwargs: dict[str, None]
+) -> None:
+    """`None` is a scope that failed to resolve, not one deliberately left
+    unscoped — treating it as `''` would widen visibility exactly when scope
+    resolution failed, so the store raises instead of guessing."""
+    method = getattr(store, read)
+    args = ("chat",) if read == "get_experience_context" else ()
+    with pytest.raises(ValueError, match="ambiguous"):
+        await method(*args, **scope_kwargs)
+
+
+@pytest.mark.asyncio
+async def test_the_scoped_read_walks_the_scope_index(store: SqliteOutcomeStore) -> None:
+    """The composite backing the scoped pattern in production, mirroring
+    PostgreSQL's `ix_outcomes_scope_task_time` from migration 010: without it
+    every scoped read degrades to a full scan of the outcomes table."""
+    cursor = await store._conn.execute(
+        "EXPLAIN QUERY PLAN SELECT * FROM outcomes "
+        "WHERE org_id = ? AND project_id = ? AND task_type = ? AND created_at >= ?",
+        ("org-a", "p1", "chat", "2000-01-01"),
+    )
+    plan = " ".join(str(row[3]) for row in await cursor.fetchall())
+
+    assert "SCAN" not in plan
+    assert "idx_outcomes_scope_task_time" in plan
+
+
+@pytest.mark.asyncio
+async def test_a_legacy_database_gains_the_scope_index(store: SqliteOutcomeStore) -> None:
+    """`ensure_schema` runs `CREATE INDEX IF NOT EXISTS`, so the index arrives
+    on an existing file rather than only on fresh ones."""
+    cursor = await store._conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'outcomes'"
+    )
+    indexes = [row[0] for row in await cursor.fetchall()]
+    assert "idx_outcomes_scope_task_time" in indexes

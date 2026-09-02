@@ -33,6 +33,16 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#61",
       "reason": "Backend composition helper for canonical Event persistence and publication, shipped by #61 for downstream products composing their own backends. No process entry point in this repository calls it yet; wiring it here ahead of #62 would assert adoption the closeout deliberately does not claim. Dispositioned LIBRARY in quality/reachability-dispositions.json (group events-envelope-library); #62 is where a shipped process adopts the envelope and this entry is expected to leave the baseline."
+    },
+    "maistro.interop": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#458",
+      "reason": "The #458 interoperability ontology's importable contract package. maistro-core is a published library; the module is an importable surface for the product convergence issues, not a process entry point, and no process in this repository imports it yet. Contract parity and validator behavior are proven by packages/maistro-core/tests/interop/test_contract.py; dispositioned LIBRARY in quality/reachability-dispositions.json (group interop-contract) in #997; the #459 parity suite and the Builders/Conductor migration issues are where shipped processes adopt the ontology, and this entry is expected to leave the baseline then."
+    },
+    "maistro.interop.contract": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#458",
+      "reason": "INTEROP_ONTOLOGY_V1 and the public projection/reference/version validators for the #458 ontology. Unreachable by construction for the same reason as maistro.interop: it is the contract products import, with no runtime of its own to wire, and no process entry point in this repository imports it yet. Its serialization is pinned to quality/shared-interop-ontology-v1.json by a contract test, so drift fails CI independently of reachability. Dispositioned LIBRARY in quality/reachability-dispositions.json (group interop-contract) in #997; the #459 parity suite and the Builders/Conductor migration issues are where shipped processes adopt the ontology, and this entry is expected to leave the baseline then."
     }
   }
 }

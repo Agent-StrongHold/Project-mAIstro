@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import math
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -322,6 +322,12 @@ def record_run_completion(run_record: Any) -> int:
         status = getattr(node_run, "status", "")
         phase = str(getattr(status, "value", status) or "").upper()
         node_id = str(getattr(node_run, "node_id", "") or "")
+        # The model the runner itself reported, not a re-resolution from node
+        # config or environment: a second copy of `node.get("model", ...) or
+        # CHAT_DEFAULT_MODEL` here would be two places to drift (#835 moved
+        # this recording off the route and onto the canonical completion).
+        result = getattr(node_run, "result", None)
+        reported_model = str(result.get("model", "")) if isinstance(result, Mapping) else ""
         obs = NodeObservation(
             run_id=run_id,
             node_id=node_id,
@@ -330,9 +336,10 @@ def record_run_completion(run_record: Any) -> int:
             dag_id=dag_id,
             phase=phase,
             latency_ms=_latency_ms(node_run),
-            # Absent, not zero. Attempt-level tokens, model and cost are not
-            # in the durable slice yet; recording them as zeroes would make
-            # every canonical run look free next to a measured one.
+            model_used=reported_model,
+            # Absent, not zero. Attempt-level tokens and cost are not in the
+            # durable slice yet; recording them as zeroes would make every
+            # canonical run look free next to a measured one.
         )
         _store.append(obs)
         appended += 1

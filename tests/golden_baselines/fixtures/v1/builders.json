@@ -1,0 +1,168 @@
+{
+  "baseline_id": "m1.builders.pre_cutover.v1",
+  "behavior_coverage": {
+    "cancellation": {
+      "reason": "Existing migration characterization does not establish a stable cancellation contract.",
+      "state": "not-characterized"
+    },
+    "durable_ids_provenance": {
+      "reason": "Logical run identity and artifact identity survive handoff/retry.",
+      "state": "captured"
+    },
+    "errors_refusals": {
+      "reason": "Failed runtime results terminalize instead of advancing.",
+      "state": "captured"
+    },
+    "lifecycle": {
+      "reason": "Advance, retry, revision, and failure transitions are characterized.",
+      "state": "captured"
+    },
+    "observable_outputs": {
+      "reason": "Artifact handoff and terminal summaries are observable at stage boundaries.",
+      "state": "captured"
+    },
+    "restart": {
+      "reason": "Existing migration characterization is in-process and does not prove restart recovery.",
+      "state": "not-characterized"
+    }
+  },
+  "captured_from": {
+    "commit": "8f9fc22984b9598f5d7d6453a24d1f9239ddd3da",
+    "evidence_tests": [
+      "packages/maistro-core/tests/builders/test_migration_parity.py::test_runtime_result_artifact_crosses_stage_boundary_and_worker_handoff",
+      "packages/maistro-core/tests/builders/test_migration_parity.py::test_failed_runtime_result_terminalizes_builders_flow_without_advancing",
+      "packages/maistro-core/tests/builders/test_migration_parity.py::test_retry_preserves_logical_run_identity_and_stage_context",
+      "packages/maistro-core/tests/builders/test_migration_parity.py::test_revision_path_preserves_run_and_can_return_from_review_to_implementation"
+    ]
+  },
+  "change_reason": "Initial immutable capture before Builders runtime authority is retired.",
+  "locked": true,
+  "product": "builders",
+  "scenarios": [
+    {
+      "example_observation": {
+        "next": {
+          "artifacts": [
+            {
+              "artifact_id": "artifact-spec-1"
+            }
+          ],
+          "context": {
+            "runtime_version": "v1"
+          },
+          "stage": "tests_written",
+          "worker": "mason"
+        },
+        "run_id": "builders-run-1"
+      },
+      "expect": {
+        "equals": {
+          "next.artifacts.0.artifact_id": "artifact-spec-1",
+          "next.context.runtime_version": "v1",
+          "next.stage": "tests_written",
+          "next.worker": "mason",
+          "run_id": "builders-run-1"
+        }
+      },
+      "id": "artifact_handoff_preserves_identity",
+      "input": {
+        "run_id": "builders-run-1",
+        "stage": "issue_analyzed",
+        "worker": "frank"
+      }
+    },
+    {
+      "example_observation": {
+        "current_stage": "failed",
+        "final_event": {
+          "event": "runtime_failed",
+          "message": "tests failed"
+        },
+        "run_id": "builders-run-1",
+        "status": "failed"
+      },
+      "expect": {
+        "equals": {
+          "current_stage": "failed",
+          "final_event.event": "runtime_failed",
+          "final_event.message": "tests failed",
+          "run_id": "builders-run-1",
+          "status": "failed"
+        }
+      },
+      "id": "failed_stage_terminalizes",
+      "input": {
+        "run_id": "builders-run-1",
+        "runtime_status": "failed",
+        "stage": "implementation_started",
+        "worker": "mason"
+      }
+    },
+    {
+      "example_observation": {
+        "current_stage": "implementation_started",
+        "current_worker": "mason",
+        "final_event": {
+          "event": "retry_scheduled"
+        },
+        "request_after": {
+          "context": {
+            "runtime_version": "v1"
+          },
+          "run_id": "builders-run-1",
+          "stage": "implementation_started"
+        },
+        "retries": {
+          "implementation_started": 1
+        },
+        "run_id": "builders-run-1"
+      },
+      "expect": {
+        "equals": {
+          "current_stage": "implementation_started",
+          "current_worker": "mason",
+          "final_event.event": "retry_scheduled",
+          "request_after.context.runtime_version": "v1",
+          "request_after.run_id": "builders-run-1",
+          "request_after.stage": "implementation_started",
+          "retries.implementation_started": 1,
+          "run_id": "builders-run-1"
+        }
+      },
+      "id": "retry_keeps_logical_run",
+      "input": {
+        "reason": "transient provider failure",
+        "run_id": "builders-run-1",
+        "stage": "implementation_started"
+      }
+    },
+    {
+      "example_observation": {
+        "current_stage": "implementation_started",
+        "current_worker": "mason",
+        "final_event": {
+          "event": "stage_advanced"
+        },
+        "run_id": "builders-run-1",
+        "status": "running"
+      },
+      "expect": {
+        "equals": {
+          "current_stage": "implementation_started",
+          "current_worker": "mason",
+          "final_event.event": "stage_advanced",
+          "run_id": "builders-run-1",
+          "status": "running"
+        }
+      },
+      "id": "revision_returns_to_implementation_same_run",
+      "input": {
+        "run_id": "builders-run-1",
+        "stage": "implementation_ready",
+        "worker": "auditor"
+      }
+    }
+  ],
+  "schema_version": 1,
+  "version": 1
+}

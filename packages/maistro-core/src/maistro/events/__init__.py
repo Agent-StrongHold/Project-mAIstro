@@ -6,6 +6,7 @@ from maistro.events.bus import (
     EventBus,
     EventCategory,
     Trigger,
+    TriggerActionFailure,
     TriggerCondition,
     get_event_bus,
 )
@@ -88,6 +89,7 @@ __all__ = [
     "SqliteInvocationStore",
     "SqliteTriggerStore",
     "Trigger",
+    "TriggerActionFailure",
     "TriggerCondition",
     "TriggerDefinition",
     "TriggerStore",

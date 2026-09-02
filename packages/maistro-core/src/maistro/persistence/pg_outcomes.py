@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.constants import THUMB_LIMIT, THUMB_WINDOW_DAYS
 from maistro.observability.correlation import observed_provenance
+from maistro.persistence.outcome_scope import scope_predicates
 from maistro.types.memory import Outcome
 
 if TYPE_CHECKING:
@@ -38,12 +39,16 @@ def _scope_clause(params: list[Any], org_id: str = "", project_id: str = "") -> 
     be interpolated at the WHERE rather than appended to the whole statement.
     Placeholder numbers come from the params list itself, which is what keeps
     the two forms consistent when a query already has positional arguments.
+
+    The composition rule itself lives in one shared module (`outcome_scope`)
+    so this store and the SQLite twin cannot disagree about what a scope
+    means — empty means unscoped, present axes compose with AND, `None`
+    raises rather than widening (#844).
     """
     clause = ""
-    for column, value in (("org_id", org_id), ("project_id", project_id)):
-        if value:
-            params.append(value)
-            clause += f" AND {column} = ${len(params)}"
+    for column, value in scope_predicates(org_id, project_id):
+        params.append(value)
+        clause += f" AND {column} = ${len(params)}"
     return clause
 
 
