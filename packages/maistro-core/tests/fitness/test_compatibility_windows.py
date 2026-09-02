@@ -75,80 +75,108 @@ def _canonical_map(document: dict[str, Any]) -> dict[str, frozenset[str]]:
     return result
 
 
-def _record_shape_violations(document: dict[str, Any], *, evidence_root: Path) -> list[str]:
-    violations: list[str] = []
-    policy = document.get("policy")
-    if not isinstance(policy, dict):
-        return ["compatibility contract registry requires policy object"]
-
+def _policy_violations(policy: dict[str, Any]) -> list[str]:
     # These sets are executable policy, not candidate-extensible configuration.
     # The JSON mirrors them for reviewers, but cannot authorize a weaker rule by
     # adding `import-alias` to the persisted list in the same PR it is judging.
+    violations: list[str] = []
     if set(policy.get("persisted_strategies", [])) != _DURABLE_STRATEGIES:
         violations.append("persisted strategy policy differs from the hard-coded durable boundary")
     if set(policy.get("non_persisted_strategies", [])) != _NON_PERSISTED_STRATEGIES:
         violations.append("non-persisted strategy policy differs from the hard-coded boundary")
+    return violations
 
+
+def _invalid_record_identity(record: dict[str, Any]) -> list[str] | None:
+    """Return fatal identity violations, or None when the identity is usable."""
+    missing = _REQUIRED_RECORD_FIELDS - record.keys()
+    label = str(record.get("old_identity", "<unknown>"))
+    if missing:
+        return [f"compatibility record {label} missing: {', '.join(sorted(missing))}"]
+    old_identity = record["old_identity"]
+    if not isinstance(old_identity, str) or not old_identity.strip():
+        return ["compatibility record has invalid old_identity"]
+    return None
+
+
+def _required_text_field_violations(record: dict[str, Any], old_identity: str) -> list[str]:
+    violations: list[str] = []
+    for field in (
+        "scope",
+        "strategy",
+        "migration",
+        "deprecation_window",
+        "owner",
+        "removal_condition",
+        "release_note",
+    ):
+        value = record[field]
+        if not isinstance(value, str) or not value.strip():
+            violations.append(f"compatibility record {old_identity} requires non-empty {field}")
+    return violations
+
+
+def _persisted_evidence_violations(record: dict[str, Any], *, evidence_root: Path) -> list[str]:
+    old_identity = record["old_identity"]
+    fixture = record.get("fixture")
+    loader_test = record.get("loader_test")
+    if not isinstance(fixture, str) or not fixture.strip():
+        return [f"persisted compatibility record {old_identity} requires fixture"]
+    if not isinstance(loader_test, str) or not loader_test.strip():
+        return [f"persisted compatibility record {old_identity} requires loader_test"]
+    violations: list[str] = []
+    fixture_path = evidence_root / fixture
+    loader_path = evidence_root / loader_test
+    if not fixture_path.is_file():
+        violations.append(f"persisted compatibility fixture does not exist: {fixture}")
+    if not loader_path.is_file():
+        violations.append(f"persisted compatibility loader test does not exist: {loader_test}")
+    elif Path(fixture).name not in loader_path.read_text(encoding="utf-8"):
+        violations.append(
+            f"persisted compatibility loader test {loader_test} does not reference {Path(fixture).name}"
+        )
+    return violations
+
+
+def _record_violations(record: dict[str, Any], *, seen: set[str], evidence_root: Path) -> list[str]:
+    fatal = _invalid_record_identity(record)
+    if fatal is not None:
+        return fatal
+
+    violations: list[str] = []
+    old_identity = record["old_identity"]
+    replacement = record["replacement_identity"]
+    if old_identity in seen:
+        violations.append(f"duplicate compatibility disposition for {old_identity}")
+    seen.add(old_identity)
+    if not isinstance(replacement, str) or not replacement.strip():
+        violations.append(f"compatibility record {old_identity} has invalid replacement_identity")
+
+    violations.extend(_required_text_field_violations(record, old_identity))
+
+    persisted = record["persisted_data"]
+    if not isinstance(persisted, bool):
+        violations.append(f"compatibility record {old_identity} persisted_data must be boolean")
+        return violations
+    strategy = record["strategy"]
+    allowed = _DURABLE_STRATEGIES if persisted else _NON_PERSISTED_STRATEGIES
+    if strategy not in allowed:
+        violations.append(f"compatibility record {old_identity} has unsafe strategy {strategy}")
+
+    if persisted:
+        violations.extend(_persisted_evidence_violations(record, evidence_root=evidence_root))
+    return violations
+
+
+def _record_shape_violations(document: dict[str, Any], *, evidence_root: Path) -> list[str]:
+    policy = document.get("policy")
+    if not isinstance(policy, dict):
+        return ["compatibility contract registry requires policy object"]
+
+    violations: list[str] = _policy_violations(policy)
     seen: set[str] = set()
     for record in _records(document):
-        missing = _REQUIRED_RECORD_FIELDS - record.keys()
-        label = str(record.get("old_identity", "<unknown>"))
-        if missing:
-            violations.append(f"compatibility record {label} missing: {', '.join(sorted(missing))}")
-            continue
-        old_identity = record["old_identity"]
-        replacement = record["replacement_identity"]
-        if not isinstance(old_identity, str) or not old_identity.strip():
-            violations.append("compatibility record has invalid old_identity")
-            continue
-        if old_identity in seen:
-            violations.append(f"duplicate compatibility disposition for {old_identity}")
-        seen.add(old_identity)
-        if not isinstance(replacement, str) or not replacement.strip():
-            violations.append(f"compatibility record {old_identity} has invalid replacement_identity")
-
-        for field in (
-            "scope",
-            "strategy",
-            "migration",
-            "deprecation_window",
-            "owner",
-            "removal_condition",
-            "release_note",
-        ):
-            value = record[field]
-            if not isinstance(value, str) or not value.strip():
-                violations.append(f"compatibility record {old_identity} requires non-empty {field}")
-
-        persisted = record["persisted_data"]
-        strategy = record["strategy"]
-        if not isinstance(persisted, bool):
-            violations.append(f"compatibility record {old_identity} persisted_data must be boolean")
-            continue
-        allowed = _DURABLE_STRATEGIES if persisted else _NON_PERSISTED_STRATEGIES
-        if strategy not in allowed:
-            violations.append(f"compatibility record {old_identity} has unsafe strategy {strategy}")
-
-        if not persisted:
-            continue
-        fixture = record.get("fixture")
-        loader_test = record.get("loader_test")
-        if not isinstance(fixture, str) or not fixture.strip():
-            violations.append(f"persisted compatibility record {old_identity} requires fixture")
-            continue
-        if not isinstance(loader_test, str) or not loader_test.strip():
-            violations.append(f"persisted compatibility record {old_identity} requires loader_test")
-            continue
-        fixture_path = evidence_root / fixture
-        loader_path = evidence_root / loader_test
-        if not fixture_path.is_file():
-            violations.append(f"persisted compatibility fixture does not exist: {fixture}")
-        if not loader_path.is_file():
-            violations.append(f"persisted compatibility loader test does not exist: {loader_test}")
-        elif Path(fixture).name not in loader_path.read_text(encoding="utf-8"):
-            violations.append(
-                f"persisted compatibility loader test {loader_test} does not reference {Path(fixture).name}"
-            )
+        violations.extend(_record_violations(record, seen=seen, evidence_root=evidence_root))
     return violations
 
 
