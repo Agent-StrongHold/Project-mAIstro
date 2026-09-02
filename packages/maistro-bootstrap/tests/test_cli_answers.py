@@ -7,6 +7,7 @@ silently substituted defaults.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import typer
@@ -20,7 +21,7 @@ _app = typer.Typer()
 _app.command()(main)
 
 
-_ANSI = __import__("re").compile(r"\x1b\\[[0-9;]*m")
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def _combined(result) -> str:
