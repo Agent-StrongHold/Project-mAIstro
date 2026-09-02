@@ -1,10 +1,36 @@
 {
-  "version": 1,
+  "version": 2,
   "issue": 460,
   "status": "active-during-m1",
   "canonical_execution_owner": "maistro.runs",
   "canonical_traversal_owner": "maistro.graph",
   "canonical_effect_owner": "maistro.capabilities",
+  "authoritative_gates": {
+    "execution_lifecycle": "scripts/check-execution-lifecycles.py",
+    "model_egress": "scripts/check-model-egress.py",
+    "import_boundaries": "packages/maistro-core/tests/fitness/test_import_boundaries.py",
+    "shared_ontology": "quality/shared-interop-ontology-v1.json"
+  },
+  "supplemental_shared_owners": {
+    "Event": [
+      "maistro.events"
+    ],
+    "Approval": [
+      "maistro.capabilities",
+      "maistro.privilege",
+      "maistro.policy",
+      "maistro.governance"
+    ],
+    "Recovery": [
+      "maistro.runs",
+      "maistro.graph.durable_runs"
+    ],
+    "Checkpoint": [
+      "maistro.runs",
+      "maistro.graph.durable_runs"
+    ]
+  },
+  "product_local_marker": "M1 product-local projection:",
   "frozen_universal_lifecycle_rows": [
     "Run / NodeRun / Attempt lifecycle",
     "Graph execution",
@@ -24,14 +50,27 @@
     "no second graph traversal authority",
     "no new effect path that bypasses Capability/Provider/Binding/Invocation",
     "no new event bus that becomes execution authority",
-    "new domain state must be explicitly classified as non-universal"
+    "new domain state must be explicitly classified as non-universal",
+    "new shared-owner-shaped types outside canonical owner modules must identify themselves as product-local projections"
   ],
   "exception_policy": {
     "required_label": "m1-convergence-exception",
     "required_artifacts": [
       "architecture rationale",
       "named retirement or convergence path",
-      "explicit canonical owner relationship"
+      "explicit canonical owner relationship",
+      "named disposition owner"
+    ],
+    "required_plan_fields": {
+      "architecture_rationale": "Architecture rationale:",
+      "canonical_owner": "Canonical owner:",
+      "disposition_owner": "Disposition owner:",
+      "retirement_path": "Retirement/convergence path:"
+    },
+    "cannot_bypass": [
+      "execution lifecycle classification",
+      "model/direct-effect egress ratchets",
+      "canonical shared-owner/type guard"
     ]
   }
 }
