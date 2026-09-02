@@ -1,5 +1,5 @@
 {
-  "version": "1.0.0",
+  "version": "1.1.0",
   "status": "m1-freeze-candidate",
   "issue": 458,
   "principles": [
@@ -12,8 +12,10 @@
   "concepts": {
     "Workspace": {"owner": "maistro.workspaces", "identity": "workspace_id"},
     "Project": {"owner": "maistro.projects", "identity": "project_id", "parent": "Workspace"},
+    "Agent": {"owner": "maistro.agents", "identity": "agent_id", "scope": "Workspace"},
     "Persona": {"owner": "maistro.personas", "identity": "persona_id"},
     "Template": {"owner": "maistro.prompts", "identity": "template_id"},
+    "Goal": {"owner": "maistro.goals", "identity": "goal_id", "parent": "Project", "revision": "goal_revision"},
     "Graph": {"owner": "maistro.graph", "identity": "graph_id", "scope": "Project"},
     "Run": {"owner": "maistro.runs", "identity": "run_id", "scope": "Project", "parent": "Graph"},
     "GraphExecutionState": {"owner": "maistro.graph", "identity": "run_id", "parent": "Run"},
@@ -25,8 +27,53 @@
     "Binding": {"owner": "maistro.capabilities", "identity": "binding_id", "parent": "Provider"},
     "Invocation": {"owner": "maistro.capabilities", "identity": "invocation_id", "parent": "Binding"}
   },
+  "relationships": {
+    "project_goal": {
+      "source": "Project",
+      "target": "Goal",
+      "kind": "scope",
+      "sources_per_target": "exactly-one",
+      "targets_per_source": "zero-or-many"
+    },
+    "agent_goal_ownership": {
+      "source": "Agent",
+      "target": "Goal",
+      "kind": "accountability",
+      "sources_per_target": "exactly-one",
+      "targets_per_source": "zero-or-many"
+    },
+    "goal_subgoal": {
+      "source": "Goal",
+      "target": "Goal",
+      "kind": "subgoal",
+      "sources_per_target": "zero-or-one",
+      "targets_per_source": "zero-or-many"
+    },
+    "goal_graph_selection": {
+      "source": "Goal",
+      "target": "Graph",
+      "kind": "execution-strategy",
+      "sources_per_target": "zero-or-many",
+      "targets_per_source": "zero-or-many"
+    },
+    "goal_run_evidence": {
+      "source": "Goal",
+      "target": "Run",
+      "kind": "execution-evidence",
+      "sources_per_target": "zero-or-one",
+      "targets_per_source": "zero-or-many"
+    },
+    "persona_agent_flavor": {
+      "source": "Persona",
+      "target": "Agent",
+      "kind": "behavioral-flavor",
+      "sources_per_target": "zero-or-one",
+      "targets_per_source": "zero-or-many"
+    }
+  },
   "required_lineage": [
     ["Workspace", "Project"],
+    ["Project", "Goal"],
     ["Project", "Graph"],
     ["Graph", "Run"],
     ["Run", "NodeRun"],
@@ -41,6 +88,8 @@
     "conductor": "M1",
     "evolve": "M1",
     "canvas_design": "M1",
+    "workspace_agent": "M3",
+    "design_studio": "M3",
     "rsi": "M5"
   }
 }
