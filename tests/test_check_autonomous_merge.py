@@ -145,6 +145,7 @@ def test_deleted_test_file_is_integrity_finding():
     assert findings == ["test file deleted: tests/test_x.py"]
 
 
+@pytest.mark.ac("SPEC-083126-5e62/AC-3")
 def test_merge_group_blocks_trusted_surface_regardless_of_identity():
     result = mod.assess([cf(".github/workflows/ci.yml")], "", merge_group=True)
     assert not result.eligible
