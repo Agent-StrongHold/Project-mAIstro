@@ -116,6 +116,22 @@ _IMMUTABLE_VENDORED_TREES = frozenset(
     }
 )
 
+#: Package-manager install trees: the `node_modules` directory `npm ci`
+#: materializes inside each frontend from its committed package-lock.json.
+#: The npm packages occasionally ship Python (`flatted` carries a
+#: `python/flatted.py`), and CI's test job installs frontend dependencies
+#: before the combined-suite pytest step (.github/workflows/ci.yml), so the
+#: source universe would otherwise differ between a bare checkout and an
+#: installed one — the guard ratcheting on install state is a flake, not a
+#: verdict. Classified by directory segment rather than per file: which npm
+#: packages ship Python shifts with every lockfile bump, so a file list here
+#: would re-review dependency updates they never asked for, while the
+#: declaration stays a segment — `node_modules` — that authored code never
+#: occupies, because the next `npm ci` deletes whatever a person puts there.
+#: What lands in these trees is governed where dependencies are governed: the
+#: lockfiles, the `npm audit --audit-level=high` CI step, and Dependabot.
+_THIRD_PARTY_INSTALL_DIRS = frozenset({"node_modules"})
+
 
 @dataclass(frozen=True)
 class FlatApp:
@@ -276,7 +292,9 @@ def _is_classified_outside_graph(rel_posix: str) -> bool:
     """
     if rel_posix in _EXCLUDED_PACKAGE_PYTHON:
         return True
-    return any(rel_posix.startswith(f"{tree}/") for tree in _IMMUTABLE_VENDORED_TREES)
+    if any(rel_posix.startswith(f"{tree}/") for tree in _IMMUTABLE_VENDORED_TREES):
+        return True
+    return bool(_THIRD_PARTY_INSTALL_DIRS.intersection(rel_posix.split("/")))
 
 
 def _all_package_python_files(root: Path) -> set[Path]:

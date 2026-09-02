@@ -102,3 +102,34 @@ def test_an_immutable_vendored_tree_is_classified_not_omitted(
     mods = reachability._collect_modules(tmp_path, ())
 
     assert not [key for key, path in mods.items() if "vendored" in path.parts]
+
+
+def test_an_installed_dependency_tree_is_outside_the_source_universe(tmp_path: Path) -> None:
+    # npm packages sometimes ship Python — `flatted` carries python/flatted.py
+    # — and CI's test job runs `npm ci` in both frontends before the
+    # combined-suite pytest step. The source universe must be the same in a
+    # bare checkout and an installed one; ratcheting on install state is a
+    # flake wearing the guard's uniform.
+    flatted = tmp_path / "packages" / "demo" / "frontend" / "node_modules" / "flatted" / "python"
+    flatted.mkdir(parents=True)
+    (flatted / "flatted.py").write_text("VALUE = 1\n")
+
+    mods = reachability._collect_modules(tmp_path, ())
+
+    assert not [key for key, path in mods.items() if "node_modules" in path.parts]
+
+
+def test_an_installed_dependency_tree_does_not_swallow_the_guard(tmp_path: Path) -> None:
+    # The classification is a reviewed statement about who owns those bytes
+    # (the lockfile), not a blind spot: authored, undeclared code beside the
+    # install tree still fails closed, and the vendored file is not in the
+    # indictment.
+    _write_frontend_server(tmp_path)
+    flatted = tmp_path / "packages" / "demo" / "frontend" / "node_modules" / "flatted" / "python"
+    flatted.mkdir(parents=True)
+    (flatted / "flatted.py").write_text("VALUE = 1\n")
+
+    with pytest.raises(RuntimeError) as info:
+        reachability._collect_modules(tmp_path, ())
+
+    assert "node_modules" not in str(info.value)
