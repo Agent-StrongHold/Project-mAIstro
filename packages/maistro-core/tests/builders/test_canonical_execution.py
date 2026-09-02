@@ -8,9 +8,12 @@ from typing import Any
 
 import pytest
 
-from maistro.builders.canonical_execution import CanonicalGraphPipelineExecutor
 from maistro.builders.graph import PipelineGraph, PipelineNode, RunContext
-from maistro.builders.graph_executor import DispatchResult, GraphPipelineExecutor
+from maistro.builders.graph_executor import (
+    CanonicalGraphPipelineExecutor,
+    DispatchResult,
+    GraphPipelineExecutor,
+)
 from maistro.builders.pipeline import PipelineRun, PipelineStage, StageStatus
 from maistro.graph.durable_runs import (
     CanonicalDurableRunStore,

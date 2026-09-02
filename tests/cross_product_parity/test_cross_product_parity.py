@@ -115,7 +115,7 @@ def test_builders_created_work_has_public_conductor_inspection_seams() -> None:
         assert dependency.blockers
         return
 
-    builders_execution = importlib.import_module("maistro.builders.canonical_execution")
+    builders_execution = importlib.import_module("maistro.builders.graph_executor")
     executor = builders_execution.CanonicalGraphPipelineExecutor
     assert executor.__name__ == "CanonicalGraphPipelineExecutor"
     route_source = (
