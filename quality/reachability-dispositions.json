@@ -371,6 +371,16 @@
       ]
     },
     {
+      "id": "interop-contract",
+      "subsystem": "Shared contracts and config",
+      "disposition": "LIBRARY",
+      "rationale": "The #458 interoperability ontology is a published import surface for products to converge onto, not a process entry point: INTEROP_ONTOLOGY_V1 is the executable form of quality/shared-interop-ontology-v1.json and exists to be imported by Builders/Conductor migration issues and the #459 parity suite, none of which may redefine the canonical concepts locally. Its parity and validation behavior is proven by packages/maistro-core/tests/interop/test_contract.py rather than by any runtime path.",
+      "modules": [
+        "maistro.interop",
+        "maistro.interop.contract"
+      ]
+    },
+    {
       "id": "supply-chain-unwired",
       "subsystem": "Skills, code registry, repertoire",
       "disposition": "CONNECT",
