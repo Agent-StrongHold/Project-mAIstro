@@ -173,9 +173,7 @@ def _manifest_sub_agents(manifest: dict[str, Any], *, agent_name: str) -> tuple[
         nested = delegation.get("sub_agents")
 
     flat = manifest.get("sub_agents")
-    nested_values = _strict_str_tuple(
-        nested, field="delegation.sub_agents", agent_name=agent_name
-    )
+    nested_values = _strict_str_tuple(nested, field="delegation.sub_agents", agent_name=agent_name)
     flat_values = _strict_str_tuple(flat, field="sub_agents", agent_name=agent_name)
     if nested is not None and flat is not None and nested_values != flat_values:
         raise ConfigError(
@@ -430,6 +428,51 @@ async def _persist_agent_record(
         )
 
 
+async def _seed_agent_directory(
+    agent_dir: Path,
+    *,
+    preamble: str,
+    prompt_manager: Any,
+    persist_registry: Any,
+    deps: dict[str, Any],
+    agents: dict[str, Agent],
+) -> None:
+    """Seed one agent directory into the roster, skipping unusable ones.
+
+    A directory without a valid ``agent.yaml`` leaves no trace, matching the
+    seed-data contract: the shipped roster is defined by manifests, not by
+    directory presence. Everything else (prompt upsert, registry write-back,
+    instantiation) is visible to the caller through ``agents``.
+    """
+    parsed = _parse_agent_dir(agent_dir)
+    if parsed is None:
+        return
+
+    manifest, soul, rules = parsed
+    identity = _build_identity_from_manifest(manifest)
+
+    rendered_preamble = _render_preamble(preamble, manifest)
+    full_soul = rendered_preamble + soul
+
+    await prompt_manager.upsert(
+        f"agent.{identity.name}.soul",
+        full_soul,
+        label="production",
+    )
+
+    if persist_registry:
+        await _persist_agent_record(persist_registry, identity, full_soul, rules)
+
+    agents[identity.name] = _instantiate(identity, agent_resolver=agents.get, **{**deps})
+    logger.info(
+        "Seeded agent '%s' (strategy=%s, tools=%d, db=%s)",
+        identity.name,
+        identity.reasoning_strategy,
+        len(identity.tools),
+        persist_registry is not None,
+    )
+
+
 async def create_agents(
     *,
     agents_dir: str | Path,
@@ -496,32 +539,13 @@ async def create_agents(
         if not agent_dir.is_dir():
             continue
 
-        parsed = _parse_agent_dir(agent_dir)
-        if parsed is None:
-            continue
-
-        manifest, soul, rules = parsed
-        identity = _build_identity_from_manifest(manifest)
-
-        rendered_preamble = _render_preamble(preamble, manifest)
-        full_soul = rendered_preamble + soul
-
-        await prompt_manager.upsert(
-            f"agent.{identity.name}.soul",
-            full_soul,
-            label="production",
-        )
-
-        if persist_registry:
-            await _persist_agent_record(persist_registry, identity, full_soul, rules)
-
-        agents[identity.name] = _instantiate(identity, agent_resolver=agents.get, **{**deps})
-        logger.info(
-            "Seeded agent '%s' (strategy=%s, tools=%d, db=%s)",
-            identity.name,
-            identity.reasoning_strategy,
-            len(identity.tools),
-            persist_registry is not None,
+        await _seed_agent_directory(
+            agent_dir,
+            preamble=preamble,
+            prompt_manager=prompt_manager,
+            persist_registry=persist_registry,
+            deps=deps,
+            agents=agents,
         )
 
     if not agents:

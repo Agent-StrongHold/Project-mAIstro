@@ -16,7 +16,6 @@ from maistro.agents.factory import (
 )
 from maistro.types.errors import ConfigError
 
-
 REPO_ROOT = Path(__file__).resolve().parents[4]
 SHIPPED_AGENTS = REPO_ROOT / "agents"
 
@@ -62,7 +61,7 @@ def test_conflicting_legacy_and_canonical_delegation_fails_closed() -> None:
 
 
 def test_missing_preamble_fails_closed(tmp_path: Path) -> None:
-    with pytest.raises(ConfigError, match="PREAMBLE.md"):
+    with pytest.raises(ConfigError, match=r"PREAMBLE\.md"):
         _load_preamble(tmp_path)
 
 
