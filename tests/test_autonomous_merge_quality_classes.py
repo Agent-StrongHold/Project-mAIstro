@@ -16,6 +16,13 @@ mod = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = mod
 SPEC.loader.exec_module(mod)
 
+# ADR-083126-5e62 declares `contracts: [behavioral]`, and ADR-032 says a
+# document claiming a kind has a test marked with that kind. This suite is the
+# ADR's listed evidence for how generated vs. trusted quality surfaces are
+# classified, which is behavioral, so the marker is the claim becoming true
+# rather than the ledger absorbing another entry.
+pytestmark = [pytest.mark.contract("behavioral")]
+
 
 def cf(path: str, status: str = "M", old_path: str | None = None):
     return mod.ChangedFile(status=status, path=path, old_path=old_path)
