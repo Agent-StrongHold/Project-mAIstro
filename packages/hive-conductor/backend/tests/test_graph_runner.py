@@ -18,9 +18,12 @@ from __future__ import annotations
 
 import pathlib
 import sys
+from types import SimpleNamespace
 from typing import Any, ClassVar
 
 import pytest
+
+from maistro.graph.durable_runs import RunStatus
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
@@ -148,7 +151,12 @@ async def test_run_llm_node_marks_node_failed_when_llm_unconfigured(
 async def test_execute_dag_streaming_fails_when_llm_unconfigured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A DAG stream against an unconfigured LLM ends in `failed`, not `completed`."""
+    """A DAG stream against an unconfigured LLM ends in `failed`, not `completed`.
+
+    The node is `safe`-tier so the LLM refusal is the failure that surfaces;
+    a default-tier node is routed through the isolation floor instead, and
+    that refusal is the sandbox contract's to assert, not this one's.
+    """
     from services import graph_runner as gr
 
     _unconfigure_llm(monkeypatch)
@@ -157,7 +165,17 @@ async def test_execute_dag_streaming_fails_when_llm_unconfigured(
     events = [
         ev
         async for ev in gr.execute_dag_streaming(
-            {"name": "d", "nodes": [{"id": "n1", "role": "worker"}], "edges": []}
+            {
+                "name": "d",
+                "nodes": [
+                    {
+                        "id": "n1",
+                        "role": "worker",
+                        "config": {"execution_tier": "safe"},
+                    }
+                ],
+                "edges": [],
+            }
         )
     ]
 
@@ -643,28 +661,38 @@ async def test_execute_champion_success_path(
 # --- execute_dag_streaming -------------------------------------------
 
 
+class _CompletedRecord:
+    """A finished canonical durable Run, in the shape `run_durable_graph` returns."""
+
+    run_id = "run-1"
+
+    class run:  # mirrors the durable record attribute
+        status = RunStatus.COMPLETED
+        error = None
+
+    graph_state = SimpleNamespace(cycle=1, blackboard_snapshot={"node_annotations": {}})
+    node_runs = (
+        SimpleNamespace(
+            node_id="n1",
+            status=RunStatus.COMPLETED,
+            result={"role": "worker", "response": "out", "success": True, "model": "m"},
+        ),
+    )
+
+
 async def test_execute_dag_streaming_yields_full_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import services.graph_runner as gr
+    from services import canonical_dag_runner as runner
 
-    class _NR:
-        node_id = "n1"
-        role = "worker"
-        selected_candidate = "out"
-        success = True
+    async def _run_durable_graph(graph: Any, **kw: Any) -> Any:
+        return _CompletedRecord()
 
-    class _Result:
-        total_cycles = 1
-        node_results: ClassVar = [_NR()]
-
-    async def _run_graph(**kw: Any) -> Any:
-        return _Result()
-
-    import maistro.graph.executor as exec_mod
-
-    monkeypatch.setattr(exec_mod, "run_graph", _run_graph)
-    monkeypatch.setattr(gr, "_build_llm_call", lambda *a, **kw: None)
+    monkeypatch.setattr(runner, "_container", lambda: None)
+    monkeypatch.setattr(runner, "get_run_store", lambda: object())
+    monkeypatch.setattr(runner, "record_run_completion", lambda record: 0)
+    monkeypatch.setattr(runner, "run_durable_graph", _run_durable_graph)
 
     events = []
     async for ev in gr.execute_dag_streaming(
@@ -684,14 +712,14 @@ async def test_execute_dag_streaming_yields_failed_on_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import services.graph_runner as gr
+    from services import canonical_dag_runner as runner
 
-    async def _boom(**kw: Any) -> Any:
+    async def _boom(graph: Any, **kw: Any) -> Any:
         raise RuntimeError("synthetic")
 
-    import maistro.graph.executor as exec_mod
-
-    monkeypatch.setattr(exec_mod, "run_graph", _boom)
-    monkeypatch.setattr(gr, "_build_llm_call", lambda *a, **kw: None)
+    monkeypatch.setattr(runner, "_container", lambda: None)
+    monkeypatch.setattr(runner, "get_run_store", lambda: object())
+    monkeypatch.setattr(runner, "run_durable_graph", _boom)
 
     events = []
     async for ev in gr.execute_dag_streaming(

@@ -92,7 +92,7 @@
     "packages/hive-conductor/backend/services/chat_completion.py::_tool_analyze_dashboard::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/chat_completion.py",
       "qualname": "_tool_analyze_dashboard",
-      "line": 1491,
+      "line": 1575,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
@@ -103,7 +103,7 @@
     "packages/hive-conductor/backend/services/chat_completion.py::_tool_browse_url::TOOL_EFFECT:hive.browse_url#1": {
       "path": "packages/hive-conductor/backend/services/chat_completion.py",
       "qualname": "_tool_browse_url",
-      "line": 1168,
+      "line": 1201,
       "category": "TOOL_EFFECT",
       "entry_point": "hive.browse_url",
       "callee": "_browse_url",
@@ -114,7 +114,7 @@
     "packages/hive-conductor/backend/services/chat_completion.py::_tool_web_search::TOOL_EFFECT:hive.web_search#1": {
       "path": "packages/hive-conductor/backend/services/chat_completion.py",
       "qualname": "_tool_web_search",
-      "line": 1152,
+      "line": 1185,
       "category": "TOOL_EFFECT",
       "entry_point": "hive.web_search",
       "callee": "_web_search",
@@ -136,7 +136,7 @@
     "packages/hive-conductor/backend/services/evolution.py::_EvolutionService._build_llm_call._llm_call::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/evolution.py",
       "qualname": "_EvolutionService._build_llm_call._llm_call",
-      "line": 128,
+      "line": 155,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
@@ -144,10 +144,10 @@
       "owner": "#56",
       "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
-    "packages/hive-conductor/backend/services/graph_runner.py::_build_llm_call._httpx_llm::MODEL_EFFECT:openai-compatible-http#1": {
-      "path": "packages/hive-conductor/backend/services/graph_runner.py",
+    "packages/hive-conductor/backend/services/legacy_dag_node.py::_build_llm_call._httpx_llm::MODEL_EFFECT:openai-compatible-http#1": {
+      "path": "packages/hive-conductor/backend/services/legacy_dag_node.py",
       "qualname": "_build_llm_call._httpx_llm",
-      "line": 658,
+      "line": 403,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
@@ -155,10 +155,10 @@
       "owner": "#56",
       "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
-    "packages/hive-conductor/backend/services/graph_runner.py::_tool_browse_url::TOOL_EFFECT:hive.browse_url#1": {
-      "path": "packages/hive-conductor/backend/services/graph_runner.py",
+    "packages/hive-conductor/backend/services/legacy_dag_node.py::_tool_browse_url::TOOL_EFFECT:hive.browse_url#1": {
+      "path": "packages/hive-conductor/backend/services/legacy_dag_node.py",
       "qualname": "_tool_browse_url",
-      "line": 220,
+      "line": 196,
       "category": "TOOL_EFFECT",
       "entry_point": "hive.browse_url",
       "callee": "browse_url",
@@ -166,10 +166,10 @@
       "owner": "#57",
       "rationale": "Shipped tool call can cause an external effect without an Invocation record; #57 owns governed tool execution."
     },
-    "packages/hive-conductor/backend/services/graph_runner.py::_tool_clarify::MODEL_EFFECT:hive.clarify#1": {
-      "path": "packages/hive-conductor/backend/services/graph_runner.py",
+    "packages/hive-conductor/backend/services/legacy_dag_node.py::_tool_clarify::MODEL_EFFECT:hive.clarify#1": {
+      "path": "packages/hive-conductor/backend/services/legacy_dag_node.py",
       "qualname": "_tool_clarify",
-      "line": 208,
+      "line": 186,
       "category": "MODEL_EFFECT",
       "entry_point": "hive.clarify",
       "callee": "clarify",
@@ -177,10 +177,10 @@
       "owner": "#56",
       "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
-    "packages/hive-conductor/backend/services/graph_runner.py::_tool_web_search::TOOL_EFFECT:hive.web_search#1": {
-      "path": "packages/hive-conductor/backend/services/graph_runner.py",
+    "packages/hive-conductor/backend/services/legacy_dag_node.py::_tool_web_search::TOOL_EFFECT:hive.web_search#1": {
+      "path": "packages/hive-conductor/backend/services/legacy_dag_node.py",
       "qualname": "_tool_web_search",
-      "line": 199,
+      "line": 178,
       "category": "TOOL_EFFECT",
       "entry_point": "hive.web_search",
       "callee": "web_search",
@@ -521,7 +521,7 @@
     "packages/maistro-core/src/maistro/capabilities/governed_invocation.py::GovernedInvocationExecutionService.invoke::CANONICAL_INVOCATION:InvocationExecutionService.invoke#1": {
       "path": "packages/maistro-core/src/maistro/capabilities/governed_invocation.py",
       "qualname": "GovernedInvocationExecutionService.invoke",
-      "line": 154,
+      "line": 158,
       "category": "CANONICAL_INVOCATION",
       "entry_point": "InvocationExecutionService.invoke",
       "callee": "self._invocations.invoke",
@@ -543,7 +543,7 @@
     "packages/maistro-core/src/maistro/capabilities/harness_manager.py::HarnessSessionManager.send_invocation::CANONICAL_INVOCATION:GovernedInvocationExecutionService.invoke#1": {
       "path": "packages/maistro-core/src/maistro/capabilities/harness_manager.py",
       "qualname": "HarnessSessionManager.send_invocation",
-      "line": 170,
+      "line": 174,
       "category": "CANONICAL_INVOCATION",
       "entry_point": "GovernedInvocationExecutionService.invoke",
       "callee": "invocation_service.invoke",
@@ -565,7 +565,7 @@
     "packages/maistro-core/src/maistro/capabilities/harness_manager.py::HarnessSessionManager.stop::HARNESS_EFFECT:harness.stop#1": {
       "path": "packages/maistro-core/src/maistro/capabilities/harness_manager.py",
       "qualname": "HarnessSessionManager.stop",
-      "line": 203,
+      "line": 207,
       "category": "HARNESS_EFFECT",
       "entry_point": "harness.stop",
       "callee": "safe.stop",
@@ -576,7 +576,7 @@
     "packages/maistro-core/src/maistro/capabilities/harness_manager.py::HarnessSessionManager.stream::HARNESS_EFFECT:harness.stream#1": {
       "path": "packages/maistro-core/src/maistro/capabilities/harness_manager.py",
       "qualname": "HarnessSessionManager.stream",
-      "line": 197,
+      "line": 201,
       "category": "HARNESS_EFFECT",
       "entry_point": "harness.stream",
       "callee": "safe.stream",

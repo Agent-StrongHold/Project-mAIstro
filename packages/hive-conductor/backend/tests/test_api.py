@@ -222,6 +222,28 @@ def test_install_session_get_and_post() -> None:
     assert "server" in sess["answers"]["features"]
 
 
+def test_install_session_unknown_key_is_422_naming_the_key() -> None:
+    """#810: an unknown install-answer key (e.g. a misspelled security field)
+    must be rejected with a 422 that names the key — never a silent default
+    (or an opaque 500)."""
+    c = _login()
+    r = c.post(
+        "/v1/install/session",
+        json={"schema_version": "1", "sandbox_profle": "developer"},
+    )
+    if r.status_code == 503:
+        pytest.skip("maistro-bootstrap not adjacent (non-monorepo layout)")
+    assert r.status_code == 422
+    assert "sandbox_profle" in r.json()["detail"]
+    # And the same payload without the typo is accepted — the typo is the error.
+    r2 = c.post(
+        "/v1/install/session",
+        json={"schema_version": "1", "sandbox_profile": "developer"},
+    )
+    assert r2.status_code == 200
+    assert r2.json()["answers"]["sandbox_profile"] == "developer"
+
+
 def test_chat_complete_stub() -> None:
     c = _login()
     r = c.post(

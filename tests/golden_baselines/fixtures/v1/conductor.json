@@ -1,0 +1,145 @@
+{
+  "baseline_id": "m1.conductor.pre_cutover.v1",
+  "behavior_coverage": {
+    "cancellation": {
+      "reason": "Cancellation exists elsewhere but is not pinned by this pre-cutover characterization set.",
+      "state": "not-characterized"
+    },
+    "durable_ids_provenance": {
+      "reason": "Submitted task identity is preserved in the response and stream.",
+      "state": "captured"
+    },
+    "errors_refusals": {
+      "reason": "The selected migration evidence does not define a stable task-execution refusal payload.",
+      "state": "not-characterized"
+    },
+    "lifecycle": {
+      "reason": "Pending/running/completed and failure projection mappings are characterized.",
+      "state": "captured"
+    },
+    "observable_outputs": {
+      "reason": "Task submission and WebSocket status projection are characterized.",
+      "state": "captured"
+    },
+    "restart": {
+      "reason": "The selected WebSocket characterization is in-process and does not prove reconnect/restart semantics.",
+      "state": "not-characterized"
+    }
+  },
+  "captured_from": {
+    "commit": "8f9fc22984b9598f5d7d6453a24d1f9239ddd3da",
+    "evidence_tests": [
+      "packages/hive-conductor/backend/tests/test_api.py::test_mission_create_dispatches_task",
+      "packages/hive-conductor/backend/tests/test_api.py::test_mission_status_maps_correctly",
+      "packages/hive-conductor/backend/tests/test_api.py::test_websocket_streams_task_events"
+    ]
+  },
+  "change_reason": "Initial immutable capture before Conductor task lifecycle projection is retired.",
+  "locked": true,
+  "product": "conductor",
+  "scenarios": [
+    {
+      "example_observation": {
+        "dispatch": {
+          "workspace_id": null
+        },
+        "response": {
+          "id": "abc123def456",
+          "status": "pending"
+        }
+      },
+      "expect": {
+        "equals": {
+          "dispatch.workspace_id": null,
+          "response.id": "abc123def456",
+          "response.status": "pending"
+        }
+      },
+      "id": "task_submission_preserves_public_identity",
+      "input": {
+        "description": "Write hello world",
+        "name": "Write hello world",
+        "workspace_id": null
+      }
+    },
+    {
+      "example_observation": {
+        "public_statuses": [
+          "pending",
+          "running",
+          "running",
+          "running",
+          "running",
+          "completed",
+          "failed",
+          "failed"
+        ]
+      },
+      "expect": {
+        "equals": {
+          "public_statuses": [
+            "pending",
+            "running",
+            "running",
+            "running",
+            "running",
+            "completed",
+            "failed",
+            "failed"
+          ]
+        }
+      },
+      "id": "task_status_projection_is_stable",
+      "input": {
+        "backend_statuses": [
+          "queued",
+          "planning",
+          "coding",
+          "reviewing",
+          "testing",
+          "completed",
+          "failed",
+          "cancelled"
+        ]
+      }
+    },
+    {
+      "example_observation": {
+        "event_statuses": [
+          "running",
+          "completed"
+        ],
+        "events": [
+          {
+            "current_step": "planning",
+            "progress": 0.5,
+            "status": "running"
+          },
+          {
+            "current_step": "done",
+            "progress": 1.0,
+            "status": "completed"
+          }
+        ]
+      },
+      "expect": {
+        "equals": {
+          "events.1.current_step": "done",
+          "events.1.progress": 1.0
+        },
+        "sequence": {
+          "event_statuses": [
+            "running",
+            "completed"
+          ]
+        }
+      },
+      "id": "task_stream_terminates_after_completion",
+      "input": {
+        "task_id": "test-task-1"
+      }
+    }
+  ],
+  "schema_version": 1,
+  "version": 1
+}
