@@ -340,6 +340,148 @@ class TestInvitations:
         assert outcomes.count(403) == 3
         assert len(stores.users) == before + 1
 
+    def test_invitation_that_loses_the_redemption_race_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The spend must win, not the check: a token that passed
+        `evaluate_registration` but fails `redeem_invitation` — the window a
+        concurrent redemption or a just-landed expiry opens — is refused, and
+        audited as `invitation_race` rather than as a closed hive."""
+        import stores
+        from main import app
+        from services import registration_policy as rp
+
+        token = rp.issue_invitation(actor="admin:test")["token"]
+        before = len(stores.users)
+        # Deterministic stand-in for losing the race: the check already said
+        # yes, so only the spend's verdict can refuse the attempt now.
+        monkeypatch.setattr(rp, "redeem_invitation", lambda *_args, **_kwargs: False)
+
+        client = TestClient(app)
+        r = client.post("/v1/auth/register", json=_register_body("race-loser", token))
+
+        assert r.status_code == 403
+        assert r.json()["detail"] == "Invalid or expired invitation."
+        blocked = [
+            entry
+            for entry in stores.audit_log.values()
+            if isinstance(entry, dict) and entry.get("action") == "register_blocked"
+        ]
+        assert blocked, "the race refusal must reach the audit log"
+        assert blocked[-1]["detail"]["reason"] == "invitation_race"
+        assert len(stores.users) == before
+
+
+class TestRegisterBodyNormalizesInvitationTokens:
+    """A blank code is the absence of a code, not an invalid one.
+
+    The validator folds `null` and whitespace-only tokens to `None`, so they
+    meet the same "closed" refusal as no token at all — the uniform refusal,
+    with no account information carried back either way.
+    """
+
+    def test_explicit_null_invitation_token_reads_as_absent(self) -> None:
+        from main import app
+
+        client = TestClient(app)
+        r = client.post(
+            "/v1/auth/register",
+            json={
+                "username": "null-token",
+                "password": "securepass1",
+                "confirm_password": "securepass1",
+                "invitation_token": None,
+            },
+        )
+
+        assert r.status_code == 403
+        assert r.json()["detail"] == "Registration is closed on this hive."
+
+    def test_whitespace_invitation_token_reads_as_absent(self) -> None:
+        from main import app
+
+        client = TestClient(app)
+        r = client.post(
+            "/v1/auth/register",
+            json={
+                "username": "blank-token",
+                "password": "securepass1",
+                "confirm_password": "securepass1",
+                "invitation_token": "   ",
+            },
+        )
+
+        assert r.status_code == 403
+        assert r.json()["detail"] == "Registration is closed on this hive."
+
+
+class TestAdminSurfaceFailClosedOnLostWrites:
+    """The admin surface refuses loudly when a write cannot be trusted."""
+
+    def test_bearer_only_auth_does_not_satisfy_the_route_level_guard(self) -> None:
+        """The middleware honours `Authorization: Bearer <session>`; the
+        registration-policy routes read only the `hive_session` cookie. A
+        bearer-only caller passes the middleware and is still refused by the
+        route's own 401 — a different detail than the middleware's, which is
+        how the guard under test is the one answering."""
+        from main import app
+
+        admin = TestClient(app)
+        _login(admin, "testadmin", "adminpass")
+        session_id = admin.cookies.get("hive_session")
+        assert session_id, "login must set the session cookie the routes read"
+
+        bearer_only = TestClient(app)
+        r = bearer_only.get(
+            "/v1/auth/registration/policy",
+            headers={"Authorization": f"Bearer {session_id}"},
+        )
+
+        assert r.status_code == 401
+        assert r.json()["detail"] == "No session"
+
+    def test_policy_change_that_cannot_persist_answers_503(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A mode change whose write was not observed back is reported as
+        `not persisted`, never as success (#334's rule, applied to #313)."""
+        from main import app
+        from services import registration_policy
+
+        def _lost(*_args: object, **_kwargs: object) -> dict:
+            raise registration_policy.RegistrationPolicyError("simulated write loss")
+
+        monkeypatch.setattr(registration_policy, "set_mode", _lost)
+
+        admin = TestClient(app)
+        _login(admin, "testadmin", "adminpass")
+        r = admin.put("/v1/auth/registration/policy", json={"mode": "open"})
+
+        assert r.status_code == 503
+        assert "registration policy was not persisted" in r.json()["detail"]
+        # And the record did not move.
+        view = admin.get("/v1/auth/registration/policy").json()["policy"]
+        assert view["mode"] == "closed"
+
+    def test_invitation_issue_that_cannot_persist_answers_503(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from main import app
+        from services import registration_policy
+
+        def _lost(*_args: object, **_kwargs: object) -> dict:
+            raise registration_policy.RegistrationPolicyError("simulated write loss")
+
+        monkeypatch.setattr(registration_policy, "issue_invitation", _lost)
+
+        admin = TestClient(app)
+        _login(admin, "testadmin", "adminpass")
+        r = admin.post("/v1/auth/registration/invitations", json={})
+
+        assert r.status_code == 503
+        assert "invitation was not persisted" in r.json()["detail"]
+        assert registration_policy.list_invitations() == []
+
 
 class TestFirstSetupIsOneShot:
     """Bootstrap: first owner via setup only, exactly once, retryably."""
@@ -467,6 +609,164 @@ class TestFirstSetupIsOneShot:
         assert len(admins) == 1
         winner = next(i for outcome, i in outcomes if outcome == "ok")
         assert admins[0].username == f"racer-{winner}"
+
+
+class TestSetupGuardEdges:
+    """The one-shot guard's refusal shapes, each pinned deterministically.
+
+    The barrier test above exercises the claim race statistically; here each
+    loser shape is forced on purpose, because a race whose timing CI never
+    produced reads as covered-in-principle and uncovered-in-fact — exactly
+    the hole the diff-coverage gate exists to name.
+    """
+
+    @staticmethod
+    def _retryable_instance(monkeypatch: pytest.MonkeyPatch) -> None:
+        """A first-run-shaped instance: guard says incomplete, users empty.
+
+        Same arrangement as test_settings_durability.py's direct-call tests:
+        the conftest-seeded session is always past setup, and un-provisioning
+        the app would test the fixture rather than the handler.
+        """
+        import stores
+        from models.schemas import HiveUser
+        from routes import setup as setup_routes
+        from services.model_store import ModelStore
+
+        monkeypatch.setattr(setup_routes, "_is_setup_complete", lambda: False)
+        monkeypatch.setattr(stores, "users", ModelStore("users", HiveUser))
+
+    @staticmethod
+    def _full_body() -> dict:
+        return {
+            "hardware_preset": "auto",
+            "admin_username": "guardadmin",
+            "admin_password": "s3cret-admin",
+            "user_username": "guarduser",
+            "user_password": "s3cret-user",
+        }
+
+    @pytest.mark.parametrize(
+        "missing",
+        ["hardware_preset", "admin_password", "user_password"],
+    )
+    def test_missing_required_fields_are_refused_422(
+        self, monkeypatch: pytest.MonkeyPatch, missing: str
+    ) -> None:
+        from routes.setup import complete_setup
+
+        self._retryable_instance(monkeypatch)
+        body = self._full_body()
+        del body[missing]
+
+        with pytest.raises(HTTPException) as exc_info:
+            complete_setup(body)
+
+        assert exc_info.value.status_code == 422
+        assert exc_info.value.detail == f"{missing} required"
+        # Refused before the claim, so before any account exists.
+        import stores
+
+        assert "__hive_setup_claim__" not in stores.sessions
+        assert len(stores.users) == 0
+
+    def test_first_run_that_loses_the_claim_race_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Guard passed, insert lost: the deterministic shape of the race —
+        another writer claimed between the completeness check and the
+        conflict-safe insert, and this attempt must be refused before it can
+        write an admin credential over the winner's."""
+        import stores
+        from routes.setup import complete_setup
+
+        self._retryable_instance(monkeypatch)
+        monkeypatch.setattr(stores.sessions, "put_if_absent", lambda *_a, **_k: False)
+
+        with pytest.raises(HTTPException) as exc_info:
+            complete_setup(self._full_body())
+
+        assert exc_info.value.status_code == 409
+        assert "Setup already complete" in exc_info.value.detail
+        assert len(stores.users) == 0
+
+    def test_policy_closeout_that_cannot_persist_fails_setup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The #313 close-out write is part of setup's contract: if the
+        registration-policy record cannot be persisted, setup must not
+        report success — and must stay retryable (the claim is released)."""
+        import stores
+        from routes.setup import complete_setup
+        from services import registration_policy as rp
+
+        self._retryable_instance(monkeypatch)
+
+        def _lost() -> None:
+            raise rp.RegistrationPolicyError("simulated write loss")
+
+        monkeypatch.setattr(rp, "close_after_setup", _lost)
+        with pytest.raises(HTTPException) as exc_info:
+            complete_setup(self._full_body())
+
+        assert exc_info.value.status_code == 503
+        assert "registration policy was not persisted" in str(exc_info.value.detail)
+        # The rollback released the claim: a failed first run stays retryable.
+        assert "__hive_setup_claim__" not in stores.sessions
+
+
+class TestPersistedSetupIsOneShot:
+    """A persisted run: the setup record in the KV store, not the account
+    list, is the "setup happened" signal (#313's inversion of #334's
+    loud-failure pattern)."""
+
+    def test_setup_is_one_shot_against_the_persisted_record(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+    ) -> None:
+        import stores
+        from models.schemas import HiveUser
+        from routes import setup as setup_routes
+        from services.model_store import JsonStore, ModelStore
+
+        from maistro.state import PersistedStore, State
+
+        state = State(db_path=tmp_path / "one-shot.db")
+        persisted = PersistedStore(state)
+        persisted.initialize()
+        monkeypatch.setattr(stores, "users", ModelStore("users", HiveUser))
+        kv_sessions = JsonStore("sessions", persisted=persisted)
+        kv_sessions.initialize()
+        # Restored by hand rather than monkeypatch: the module autouse fixture
+        # pops the setup markers from whatever `stores.sessions` is at ITS
+        # teardown, which runs after monkeypatch's — popping from a KV store
+        # whose State is already closed would raise. Restoring first keeps the
+        # fixture's teardown on the ephemeral store it expects.
+        original_sessions = stores.sessions
+        stores.sessions = kv_sessions
+        try:
+            body = {
+                "hardware_preset": "auto",
+                "admin_username": "kv-admin",
+                "admin_password": "s3cret-admin",
+                "user_username": "kv-user",
+                "user_password": "s3cret-user",
+            }
+            out = setup_routes.complete_setup(body)
+            assert out["setup_complete"] is True
+            # The durable marker is what the guard reads now, not the users it
+            # created: the record is present, so the answer is one-shot.
+            assert setup_routes._is_setup_complete() is True
+
+            with pytest.raises(HTTPException) as exc_info:
+                setup_routes.complete_setup({**body, "admin_username": "second-run"})
+            assert exc_info.value.status_code == 409
+            assert "Setup already complete" in exc_info.value.detail
+            # The winner's accounts survived the refused re-run.
+            assert stores.users["admin"].username == "kv-admin"
+        finally:
+            stores.sessions = original_sessions
+            state.flush()
+            state.close()
 
 
 class TestCorruptedStateFailsClosed:
