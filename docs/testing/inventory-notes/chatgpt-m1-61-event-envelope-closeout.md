@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +11
+  packages/maistro-core/tests: +30
 ---
 
 # M1 #61 canonical Event-envelope convergence inventory
@@ -29,6 +29,17 @@ No Builders, Evolve, Canvas, Turing, scheduler, DAG product implementation, Invo
 ## Discriminatory tests
 
 The +11 collected tests are all new event-convergence evidence: 3 publisher tests, 4 authority-contract tests, 3 PostgreSQL canonical-store tests, and 1 real recovery-producer pipeline test. The existing 7 recovery-event characterization tests are rewritten against the canonical adapter with no collected-count change.
+
+## Diff-coverage follow-up (+19)
+
+The follow-up coverage-closure commit adds 19 more `maistro-core` tests, bringing this branch's recorded delta to +30 with no node ID removed:
+
+- **Publisher (2):** `emit` refuses a fact that cannot project itself, and refuses a projection that is not a legacy event.
+- **Authority contract (6):** the publisher exposes its single sequence authority; a legacy projection carries a declared category; an unknown category name falls back to system; plain class annotations are inspected for authority fields; instances are inspected through their type; a plain projection without authority fields is metadata-only.
+- **Canonical store (3):** `ensure_schema` locks then creates the canonical table; `append` refuses an envelope that already carries a sequence; `get` returns `None` for an unknown event id.
+- **PostgreSQL envelope (2):** a stored row round-trips with object jsonb columns; a degenerate `list_stream` limit issues no query.
+- **Wiring (5):** without pools the in-memory store is the authority; a supplied db pool selects the SQLite store after its schema; a supplied pg pool selects the PostgreSQL store after its schema; a pg pool takes precedence over a sqlite connection; the wired publisher persists before notifying legacy consumers.
+- **Recovery (1):** a recovery fact for an unknown run is refused.
 
 `test_event_authority_contract.py` plants a package-local object that owns `event_id`, `sequence`, and `correlation_id` and proves the convergence contract rejects it. The same test proves `RecoveryDispositionEvent` owns none of those universal fields, while legacy `Event` and `RuntimeEventEnvelope.sequence` remain visible only through explicit metadata dispositions.
 
