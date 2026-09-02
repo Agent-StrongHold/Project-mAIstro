@@ -45,7 +45,9 @@ def test_legacy_bus_and_runtime_sequence_are_exposed_as_compatibility_metadata()
     assert event_authority_fields(Event) == frozenset({"event_id", "correlation_id"})
     assert event_authority_fields(RuntimeEventEnvelope) == frozenset({"sequence"})
 
-    require_metadata_only_projection(Event, metadata_fields=frozenset({"event_id", "correlation_id"}))
+    require_metadata_only_projection(
+        Event, metadata_fields=frozenset({"event_id", "correlation_id"})
+    )
     require_metadata_only_projection(
         RuntimeEventEnvelope,
         metadata_fields=frozenset({"sequence"}),

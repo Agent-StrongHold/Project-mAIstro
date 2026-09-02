@@ -18,9 +18,7 @@ def _require_postgres() -> str:
     if DATABASE_URL:
         return DATABASE_URL
     if os.environ.get("MAISTRO_REQUIRE_PG_LEGS"):
-        raise RuntimeError(
-            "MAISTRO_REQUIRE_PG_LEGS is set but MAISTRO_TEST_DATABASE_URL is empty"
-        )
+        raise RuntimeError("MAISTRO_REQUIRE_PG_LEGS is set but MAISTRO_TEST_DATABASE_URL is empty")
     pytest.skip("MAISTRO_TEST_DATABASE_URL is unset; PostgreSQL evidence needs a real server")
 
 
@@ -79,7 +77,10 @@ async def test_workspace_sequence_serializes_across_postgres_writers() -> None:
             for index in range(12)
         ]
         persisted = await asyncio.gather(
-            *((left if index % 2 == 0 else right).append(event) for index, event in enumerate(events))
+            *(
+                (left if index % 2 == 0 else right).append(event)
+                for index, event in enumerate(events)
+            )
         )
         history = await left.list_stream(stream, limit=100)
         assert sorted(event.sequence for event in persisted) == list(range(1, 13))

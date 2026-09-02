@@ -165,9 +165,7 @@ async def test_the_lease_sweep_announces_what_it_reclaimed() -> None:
         store, events=sink, source="maistro.container.recover_abandoned_attempts"
     ).reconcile(reclaimed[0])
 
-    assert [event.payload["disposition"] for event in recorded.events] == [
-        "recovered_and_parked"
-    ]
+    assert [event.payload["disposition"] for event in recorded.events] == ["recovered_and_parked"]
     assert recorded.events[0].source == "maistro.container.recover_abandoned_attempts"
     assert recorded.events[0].run_id == run_id
     assert recorded.events[0].workspace_id == "ws-recovery-events"
