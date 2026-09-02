@@ -66,6 +66,12 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
         "direct-effect entries are per-call-site reviewed policy: exact AST identities must "
         "match both directions and every live site must state disposition, owner and rationale"
     ),
+    ("check-shipped-surface-truth.py", "quality/shipped-surface-truth.json"): (
+        "the shipped-surface matrix is the reviewed per-surface truth specification being "
+        "changed: every discovered route must carry an exact disposition, so comparing "
+        "against a prior-tree oracle would compare against a matrix that predates the "
+        "surfaces this tree ships"
+    ),
 }
 
 # Adapter values are tooling identities (filename stems), not paths. Keeping the
