@@ -14,8 +14,8 @@ from maistro.runs import InMemoryRunStore
 from maistro.runs.model import AttemptStatus, CancellationCause, RunStatus
 from maistro.runs.reconciliation import AttemptLifecycleReconciler
 from maistro.runs.recovery_events import (
-    CanonicalRecoveryEventSink,
     RECOVERY_EVENT_TYPE,
+    CanonicalRecoveryEventSink,
 )
 
 
