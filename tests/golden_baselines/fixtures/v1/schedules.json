@@ -1,0 +1,137 @@
+{
+  "baseline_id": "m1.schedules.pre_cutover.v1",
+  "behavior_coverage": {
+    "cancellation": {
+      "reason": "Current scheduler characterization does not establish cancellation semantics for an already-fired Run.",
+      "state": "not-characterized"
+    },
+    "durable_ids_provenance": {
+      "reason": "A schedule fire produces a canonical Run with schedule provenance.",
+      "state": "captured"
+    },
+    "errors_refusals": {
+      "reason": "Overlap SKIP refuses a second in-flight execution without manufacturing work.",
+      "state": "captured"
+    },
+    "lifecycle": {
+      "reason": "Due, on-time, and overlap-SKIP behavior are characterized.",
+      "state": "captured"
+    },
+    "observable_outputs": {
+      "reason": "Nominal fire time, catch-up flag, audit, and Run identity are characterized.",
+      "state": "captured"
+    },
+    "restart": {
+      "reason": "Current tests do not establish scheduler catch-up behavior across a process restart boundary.",
+      "state": "not-characterized"
+    }
+  },
+  "captured_from": {
+    "commit": "8f9fc22984b9598f5d7d6453a24d1f9239ddd3da",
+    "evidence_tests": [
+      "packages/hive-conductor/backend/tests/test_scheduler.py::test_evaluate_fires_a_due_schedule",
+      "packages/hive-conductor/backend/tests/test_scheduler.py::test_an_on_time_fire_is_not_marked_as_a_catch_up",
+      "packages/hive-conductor/backend/tests/test_scheduler.py::test_an_in_flight_schedule_does_not_stack_a_second_run",
+      "packages/hive-conductor/backend/tests/test_scheduler.py::test_fire_schedule_with_registered_dag_produces_canonical_run",
+      "packages/hive-conductor/backend/tests/test_scheduler.py::test_a_scheduled_run_records_its_schedule_on_the_run"
+    ]
+  },
+  "change_reason": "Initial immutable capture before scheduler execution ownership is retired.",
+  "locked": true,
+  "product": "schedules",
+  "scenarios": [
+    {
+      "example_observation": {
+        "catchup": true,
+        "scheduled_for": "2026-08-21T12:00:00+00:00"
+      },
+      "expect": {
+        "equals": {
+          "catchup": true,
+          "scheduled_for": "2026-08-21T12:00:00+00:00"
+        }
+      },
+      "id": "late_occurrence_is_catchup",
+      "input": {
+        "cron": "0 * * * *",
+        "evaluated_at": "2026-08-21T12:05:00+00:00"
+      }
+    },
+    {
+      "example_observation": {
+        "catchup": false,
+        "scheduled_for": "2026-08-21T12:00:00+00:00"
+      },
+      "expect": {
+        "equals": {
+          "catchup": false,
+          "scheduled_for": "2026-08-21T12:00:00+00:00"
+        }
+      },
+      "id": "on_time_occurrence_is_not_catchup",
+      "input": {
+        "cron": "0 * * * *",
+        "evaluated_at": "2026-08-21T12:00:30+00:00"
+      }
+    },
+    {
+      "example_observation": {
+        "new_fire_count": 0
+      },
+      "expect": {
+        "equals": {
+          "new_fire_count": 0
+        }
+      },
+      "id": "overlap_skip_does_not_stack",
+      "input": {
+        "in_flight": true,
+        "overlap_policy": "skip",
+        "schedule_id": "s"
+      }
+    },
+    {
+      "example_observation": {
+        "audit": {
+          "action": "schedule_run",
+          "dag_id": "sched-prov",
+          "run_id": "run-123",
+          "status": "completed",
+          "template_version": 1
+        },
+        "run": {
+          "provenance": {
+            "admission_source": "schedule",
+            "schedule_id": "s-prov",
+            "scheduled_for": "2026-08-21T12:00:00+00:00"
+          },
+          "run_id": "run-123"
+        }
+      },
+      "expect": {
+        "equals": {
+          "audit.action": "schedule_run",
+          "audit.dag_id": "sched-prov",
+          "audit.status": "completed",
+          "audit.template_version": 1,
+          "run.provenance.admission_source": "schedule",
+          "run.provenance.schedule_id": "s-prov",
+          "run.provenance.scheduled_for": "2026-08-21T12:00:00+00:00"
+        },
+        "present": [
+          "audit.run_id",
+          "run.run_id"
+        ]
+      },
+      "id": "fire_produces_canonical_run_and_provenance",
+      "input": {
+        "catchup": true,
+        "dag_id": "sched-prov",
+        "schedule_id": "s-prov",
+        "scheduled_for": "2026-08-21T12:00:00+00:00"
+      }
+    }
+  ],
+  "schema_version": 1,
+  "version": 1
+}
