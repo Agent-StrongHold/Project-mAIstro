@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import importlib.util
 import json
 import re
 import subprocess
@@ -16,6 +17,12 @@ import sys
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+BRANCH_INDEPENDENCE_REGISTRY = ROOT / "quality" / "branch-independence.json"
+BRANCH_INDEPENDENCE_CHECKER = ROOT / "scripts" / "check-branch-independence.py"
+QUALITY_PREFIX = "quality/"
+BRANCH_INDEPENDENT_EVIDENCE_KINDS = frozenset({"base_derived", "generated"})
 
 AUTO_PREFIXES = (
     "claude/",
@@ -31,7 +38,10 @@ AUTO_LABELS = {"autonomous-merge", "agent-authored", "automerge-agent"}
 
 # A candidate may not redefine the mechanism or policy inputs that decide
 # whether candidates are safe. Human changes are allowed, but are never
-# autonomously admissible.
+# autonomously admissible. `quality/**` is handled separately through the
+# protected-base branch-independence registry: a generated/base-derived result
+# is not the judge once its checker reads the trusted base, while policy,
+# legacy, unknown and ambiguous quality state remains trusted by default.
 TRUSTED_PATTERNS = (
     ".github/workflows/**",
     ".github/actions/**",
@@ -40,7 +50,6 @@ TRUSTED_PATTERNS = (
     ".gitattributes",
     "CODEOWNERS",
     "scripts/check-*.py",
-    "quality/**",
     "packages/hive-conductor/cage/**",
     "packages/hive-conductor/eval/**",
 )
@@ -141,6 +150,95 @@ def _matches(path: str, patterns: Iterable[str]) -> bool:
     return any(fnmatch.fnmatch(path, pattern) for pattern in patterns)
 
 
+def _branch_independence_errors(raw: dict[str, object]) -> list[str] | None:
+    """Validate registry policy with the canonical protected-base validator."""
+    version = raw.get("version")
+    # bool is an int subclass; JSON true must not satisfy a numeric schema version.
+    if type(version) is not int or version != 1:
+        return ["registry version must be the integer 1"]
+
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "_autonomous_branch_independence",
+            BRANCH_INDEPENDENCE_CHECKER,
+        )
+        if spec is None or spec.loader is None:
+            return None
+        checker = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(checker)
+    except (ImportError, OSError, RuntimeError, SyntaxError, ValueError):
+        return None
+
+    validator = getattr(checker, "registry_errors", None)
+    if not callable(validator):
+        return None
+    try:
+        errors = validator(raw)
+    except (KeyError, RuntimeError, TypeError, ValueError):
+        return None
+    if not isinstance(errors, list) or any(not isinstance(error, str) for error in errors):
+        return None
+    return errors
+
+
+def _quality_surfaces() -> list[tuple[str, tuple[str, ...]]] | None:
+    """Read quality-state classes from the protected-base registry.
+
+    The autonomous-merge checker is executed from the protected base, so this
+    registry is protected policy too. A candidate may edit its own copy, but it
+    cannot change the classification used to judge that edit. Any unreadable or
+    malformed registry fails closed by returning no usable classification.
+    """
+    try:
+        raw = json.loads(BRANCH_INDEPENDENCE_REGISTRY.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    schema_errors = _branch_independence_errors(raw)
+    if schema_errors is None or schema_errors:
+        return None
+
+    surfaces = raw.get("surfaces")
+    if not isinstance(surfaces, list):
+        return None
+
+    classified: list[tuple[str, tuple[str, ...]]] = []
+    for surface in surfaces:
+        if not isinstance(surface, dict):
+            return None
+        kind = surface.get("kind")
+        paths = surface.get("paths")
+        if not isinstance(kind, str) or not isinstance(paths, list):
+            return None
+        if any(not isinstance(path, str) for path in paths):
+            return None
+        classified.append((kind, tuple(paths)))
+    return classified
+
+
+def _quality_reason(
+    path: str,
+    surfaces: list[tuple[str, tuple[str, ...]]] | None,
+) -> tuple[str, str]:
+    """Return the risk class and reason for one `quality/**` path.
+
+    Only a surface already classified by protected-base policy as generated or
+    base-derived evidence may leave RED, and it leaves only to YELLOW. Unknown,
+    multiply-classified, policy, legacy and durable-decision surfaces remain RED.
+    """
+    if surfaces is None:
+        return "red", f"trusted quality surface changed; classification unavailable: {path}"
+    matches = [kind for kind, patterns in surfaces if _matches(path, patterns)]
+    if len(matches) != 1:
+        detail = "unclassified" if not matches else "ambiguously classified"
+        return "red", f"trusted quality surface changed; {detail}: {path}"
+    kind = matches[0]
+    if kind in BRANCH_INDEPENDENT_EVIDENCE_KINDS:
+        return "yellow", f"branch-independent quality evidence changed ({kind}): {path}"
+    return "red", f"trusted quality policy/legacy surface changed ({kind}): {path}"
+
+
 def _is_test_path(path: str) -> bool:
     normalized = path.replace("\\", "/")
     return (
@@ -227,13 +325,28 @@ def assess(
         eligible=False,
         merge_group=merge_group,
     )
+    quality_surfaces = (
+        _quality_surfaces()
+        if any(
+            candidate.startswith(QUALITY_PREFIX)
+            for item in changed
+            for candidate in ([item.path] if item.old_path is None else [item.path, item.old_path])
+        )
+        else None
+    )
     for item in changed:
         result.changed_files.append(item.path)
         candidates = [item.path]
         if item.old_path:
             candidates.append(item.old_path)
         for path in candidates:
-            if _matches(path, TRUSTED_PATTERNS):
+            if path.startswith(QUALITY_PREFIX):
+                risk, reason = _quality_reason(path, quality_surfaces)
+                if risk == "red":
+                    result.red_reasons.append(reason)
+                else:
+                    result.yellow_reasons.append(reason)
+            elif _matches(path, TRUSTED_PATTERNS):
                 result.red_reasons.append(f"trusted CI/eval surface changed: {path}")
             elif _matches(path, YELLOW_PATTERNS):
                 result.yellow_reasons.append(f"high-blast-radius surface changed: {path}")

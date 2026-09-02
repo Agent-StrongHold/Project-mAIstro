@@ -66,13 +66,9 @@ class TestLoadPreamble:
         (tmp_path / "PREAMBLE.md").write_text("hello {{agent_name}}")
         assert _load_preamble(tmp_path) == "hello {{agent_name}}"
 
-    def test_returns_empty_and_warns_when_missing(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        with caplog.at_level(logging.WARNING):
-            result = _load_preamble(tmp_path)
-        assert result == ""
-        assert "No PREAMBLE.md" in caplog.text
+    def test_missing_preamble_fails_closed(self, tmp_path: Path) -> None:
+        with pytest.raises(ConfigError, match=r"PREAMBLE\.md"):
+            _load_preamble(tmp_path)
 
 
 class TestRenderPreamble:
@@ -419,6 +415,12 @@ def _create_agents_kwargs(agents_dir: str | Path, **overrides: Any) -> dict[str,
 
 
 class TestCreateAgentsFilesystem:
+    @pytest.fixture(autouse=True)
+    def _preamble(self, tmp_path: Path) -> None:
+        # The factory fails closed without a versioned preamble (#840), so every
+        # filesystem-seeding scenario needs one on disk.
+        (tmp_path / "PREAMBLE.md").write_text("# Shared preamble for {{agent_name}}")
+
     async def test_missing_agents_dir_returns_empty_and_warns(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -443,7 +445,6 @@ class TestCreateAgentsFilesystem:
 
     async def test_non_directory_entries_skipped(self, tmp_path: Path) -> None:
         _write_agent_dir(tmp_path, "scribe")
-        (tmp_path / "PREAMBLE.md").write_text("preamble")
         (tmp_path / "loose_file.txt").write_text("ignore me")
         kwargs = _create_agents_kwargs(tmp_path)
 

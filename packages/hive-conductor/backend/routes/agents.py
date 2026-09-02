@@ -6,18 +6,9 @@ An optional `workspace_id` query param (list/get) or body field
 just one premade template, not special-cased here) for that specific
 workspace. Omitted, the flat global `stores.agents` registry answers.
 
-There is no third branch any more (#129). `is_pm_poc_mode()` used to sit
-between those two and answer with `maistro.agents.pm_fleet.PM_FLEET`: six
-agents belonging to one persona, synthesised per request, visible to every
-caller in the deployment regardless of which workspace they were in. A
-persona's roster is now the only roster, so a caller who names no workspace
-sees the global agents rather than another persona's.
-
-`POST /{agent_id}/invoke` went with it. Its whole gate was that flag, it
-dispatched on `body.capability` alone -- `agent_id` reached nothing but the
-audit record -- and no frontend called it. ADR-082226-4478's third decision
-covers exactly this shape: a single-purpose endpoint retires onto the
-general path or is dropped, and there was nothing here to retire onto.
+Workspace authorization comes only from the canonical Workspace membership
+store through `services.workspace_authority` (#37). Hive's legacy Workspace
+records are migration input, never a live authorization source.
 """
 
 from __future__ import annotations
@@ -32,6 +23,7 @@ from fastapi import APIRouter, HTTPException, Request
 from models.schemas import Agent
 from pydantic import BaseModel, ConfigDict
 from services.agent_materialization import workspace_agents
+from services.workspace_authority import is_member, member_role
 
 from maistro.security.warden.detector import Warden
 from routes.audit import log_audit
@@ -50,30 +42,26 @@ def _user_id(request: Request) -> str:
     return str(user.get("id") or user.get("username") or "dev")
 
 
-def _is_member(user_id: str, workspace_id: str) -> bool:
-    workspace = stores.workspaces.get(workspace_id)
-    return workspace is not None and any(m.user_id == user_id for m in workspace.members)
+async def _is_member(user_id: str, workspace_id: str) -> bool:
+    return await is_member(user_id, workspace_id)
 
 
-def _is_workspace_owner(user_id: str, workspace_id: str) -> bool:
-    workspace = stores.workspaces.get(workspace_id)
-    if workspace is None:
-        return False
-    return any(m.user_id == user_id and m.role == "owner" for m in workspace.members)
+async def _is_workspace_owner(user_id: str, workspace_id: str) -> bool:
+    return await member_role(user_id, workspace_id) == "owner"
 
 
 @router.get("", response_model=list[Agent])
-def list_agents(request: Request, workspace_id: str | None = None) -> list[Agent]:
+async def list_agents(request: Request, workspace_id: str | None = None) -> list[Agent]:
     uid = _user_id(request)
-    if workspace_id and _is_member(uid, workspace_id):
+    if workspace_id and await _is_member(uid, workspace_id):
         return workspace_agents(workspace_id)
     return [a for a in stores.agents.values() if a.workspace_id is None]
 
 
 @router.get("/{agent_id}", response_model=Agent)
-def get_agent(agent_id: str, request: Request, workspace_id: str | None = None) -> Agent:
+async def get_agent(agent_id: str, request: Request, workspace_id: str | None = None) -> Agent:
     uid = _user_id(request)
-    if workspace_id and _is_member(uid, workspace_id):
+    if workspace_id and await _is_member(uid, workspace_id):
         agent = stores.agents.get(agent_id)
         if agent is None or agent.workspace_id != workspace_id:
             raise HTTPException(status_code=404, detail="agent not found")
@@ -93,14 +81,12 @@ class CreateAgentBody(BaseModel):
     capabilities: list[str] = []
     skills: list[str] = []
     config: dict = {}
-    # Attach this agent to a specific workspace instead of the flat global
-    # registry -- requires the caller be that workspace's owner.
     workspace_id: str | None = None
 
 
 @router.post("", response_model=Agent, status_code=201)
-def create_agent(body: CreateAgentBody, request: Request) -> Agent:
-    if body.workspace_id and not _is_workspace_owner(_user_id(request), body.workspace_id):
+async def create_agent(body: CreateAgentBody, request: Request) -> Agent:
+    if body.workspace_id and not await _is_workspace_owner(_user_id(request), body.workspace_id):
         raise HTTPException(status_code=403, detail="only a workspace owner can add agents to it")
     aid = str(uuid4())
     t = _now()
@@ -138,12 +124,12 @@ class UpdateAgentBody(BaseModel):
 
 
 @router.put("/{agent_id}", response_model=Agent)
-def update_agent(agent_id: str, body: UpdateAgentBody, request: Request) -> Agent:
+async def update_agent(agent_id: str, body: UpdateAgentBody, request: Request) -> Agent:
     existing = stores.agents.get(agent_id)
     if (
         existing is not None
         and existing.workspace_id
-        and not _is_workspace_owner(_user_id(request), existing.workspace_id)
+        and not await _is_workspace_owner(_user_id(request), existing.workspace_id)
     ):
         raise HTTPException(status_code=403, detail="only a workspace owner can update this agent")
     if agent_id not in stores.agents:
@@ -157,12 +143,12 @@ def update_agent(agent_id: str, body: UpdateAgentBody, request: Request) -> Agen
 
 
 @router.delete("/{agent_id}", status_code=204)
-def delete_agent(agent_id: str, request: Request) -> None:
+async def delete_agent(agent_id: str, request: Request) -> None:
     existing = stores.agents.get(agent_id)
     if (
         existing is not None
         and existing.workspace_id
-        and not _is_workspace_owner(_user_id(request), existing.workspace_id)
+        and not await _is_workspace_owner(_user_id(request), existing.workspace_id)
     ):
         raise HTTPException(status_code=403, detail="only a workspace owner can delete this agent")
     if agent_id not in stores.agents:
@@ -171,14 +157,6 @@ def delete_agent(agent_id: str, request: Request) -> None:
     log_audit("agent_delete", "system", target=agent_id)
 
 
-# A proposed configuration is caller-supplied and arbitrarily shaped, so the
-# walk below is what bounds it. Without a bound, a body nested a few thousand
-# levels deep is a stack overflow and a body of a hundred thousand short
-# strings is a hundred thousand Warden scans -- both reachable by anyone who
-# can reach this route. The limits are deliberately far above any real agent
-# config; exceeding one is a rejection, never a truncation, because a scan
-# that silently stopped early and reported no findings is the green-on-failure
-# this endpoint exists to remove (#418).
 MAX_SCAN_DEPTH = 32
 MAX_SCAN_NODES = 4096
 MAX_SCAN_TEXT = 64 * 1024
@@ -189,12 +167,7 @@ class ScanBudgetExceeded(Exception):
 
 
 def _text_leaves(value: object, *, path: str = "", depth: int = 0) -> Iterator[tuple[str, str]]:
-    """Yield every (dotted path, string) pair in a config, in a bounded walk.
-
-    Non-string scalars are not yielded: an int or a bool carries no prompt.
-    They still count against the node budget, because the cost being bounded
-    is the traversal, not the scanning.
-    """
+    """Yield every (dotted path, string) pair in a config, in a bounded walk."""
     if depth > MAX_SCAN_DEPTH:
         raise ScanBudgetExceeded(f"config nests deeper than {MAX_SCAN_DEPTH} levels")
     if isinstance(value, str):
@@ -211,11 +184,7 @@ def _text_leaves(value: object, *, path: str = "", depth: int = 0) -> Iterator[t
 
 
 def _warden() -> Warden:
-    """One detector for the process.
-
-    Layers 1-2.5 are stateless and free; no LLM client is passed, so no
-    outbound call happens on this path.
-    """
+    """One detector for the process."""
     global _warden_instance
     if _warden_instance is None:
         _warden_instance = Warden()
@@ -226,17 +195,7 @@ _warden_instance: Warden | None = None
 
 
 async def scan_config(config: object) -> dict:
-    """Scan every string in a configuration at the `user_input` boundary.
-
-    This is the same detector the harness runs caller input through
-    (`routes/harness.py`), reached the same way, so a config the Builder
-    proposes is held to the boundary production agents are held to rather
-    than to a second, weaker check written for this screen.
-
-    The findings are per-field: a flag on `system_prompt` and the same flag on
-    `description` are two findings, because "which field" is the only thing
-    that makes a finding actionable.
-    """
+    """Scan every string in a configuration at the `user_input` boundary."""
     warden = _warden()
     findings: list[str] = []
     for scanned, (path, text) in enumerate(_text_leaves(config), start=1):
@@ -250,19 +209,9 @@ async def scan_config(config: object) -> dict:
     return {"findings": findings, "status": "clean" if not findings else "flagged"}
 
 
-# Declared ahead of the `/{agent_id}` family so the literal wins the match.
-# `/v1/agents/scan` and `/v1/agents/{agent_id}` are both one segment, and a
-# path parameter accepts any single segment -- which is exactly how #418 hid:
-# the first version of the frontend route gate compared paths only and read
-# `/v1/agents/scan` as a match for `/v1/agents/{agent_id}`.
 @router.post("/scan")
 async def scan_proposed_config(body: dict) -> dict:
-    """Scan a *proposed* configuration -- one that has not been saved.
-
-    A different operation from `/{agent_id}/scan`, which scans a config this
-    deployment already holds. The Agent Builder needs this one: its whole
-    point is to check a config before committing it.
-    """
+    """Scan a proposed configuration before it is saved."""
     try:
         return await scan_config(body)
     except ScanBudgetExceeded as exc:
@@ -271,13 +220,7 @@ async def scan_proposed_config(body: dict) -> dict:
 
 @router.post("/{agent_id}/scan")
 async def scan_agent(agent_id: str) -> dict:
-    """Scan a saved agent's configuration.
-
-    Was `return {"findings": [], "status": "clean"}` -- a security control
-    that reported clean without looking, which is worse than one that errors:
-    it renders green. It now runs the same walk as the proposed-config route,
-    so the two cannot report differently on the same config.
-    """
+    """Scan a saved agent's configuration."""
     agent = stores.agents.get(agent_id)
     if agent is None:
         raise HTTPException(status_code=404, detail="agent not found")
@@ -297,8 +240,8 @@ class ForgeAgentBody(BaseModel):
 
 
 @router.post("/forge", response_model=Agent)
-def forge_agent(body: ForgeAgentBody, request: Request) -> Agent:
-    if body.workspace_id and not _is_workspace_owner(_user_id(request), body.workspace_id):
+async def forge_agent(body: ForgeAgentBody, request: Request) -> Agent:
+    if body.workspace_id and not await _is_workspace_owner(_user_id(request), body.workspace_id):
         raise HTTPException(status_code=403, detail="only a workspace owner can add agents to it")
     import random
     import string
