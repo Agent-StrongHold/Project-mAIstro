@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -151,3 +152,116 @@ def test_exception_plan_reads_pull_request_body(
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
 
     assert checker._exception_plan_from_environment() == "reviewed body"
+
+
+class _Prov:
+    """Provenance stand-in whose resolver yields the given text."""
+
+    def __init__(self, text: str | None) -> None:
+        self._text = text
+
+    def resolve_baseline(self, path, root=None):
+        return SimpleNamespace(text=self._text)
+
+
+def test_provenance_returns_cached_module(monkeypatch: pytest.MonkeyPatch) -> None:
+    checker = _module()
+    cached = SimpleNamespace(cached=True)
+    monkeypatch.setitem(sys.modules, "_ratchet_provenance", cached)
+
+    assert checker._provenance() is cached
+
+
+def test_provenance_rejects_unloadable_spec(monkeypatch: pytest.MonkeyPatch) -> None:
+    checker = _module()
+    monkeypatch.setattr(importlib.util, "spec_from_file_location", lambda *a, **k: None)
+
+    with pytest.raises(RuntimeError, match="cannot load"):
+        checker._provenance()
+
+
+def test_provenance_cleans_sys_modules_on_exec_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    checker = _module()
+    boom = importlib.util.spec_from_file_location("_ratchet_provenance", checker._PROVENANCE_SOURCE)
+    assert boom is not None
+
+    class _BoomLoader:
+        def create_module(self, spec) -> None:
+            return None
+
+        def exec_module(self, module: ModuleType) -> None:
+            raise RuntimeError("loader exploded")
+
+    boom.loader = _BoomLoader()
+    monkeypatch.setattr(importlib.util, "spec_from_file_location", lambda *a, **k: boom)
+    monkeypatch.delitem(sys.modules, "_ratchet_provenance", raising=False)
+
+    with pytest.raises(RuntimeError, match="loader exploded"):
+        checker._provenance()
+    assert "_ratchet_provenance" not in sys.modules
+
+
+def test_ontology_falls_back_to_empty_when_base_text_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checker = _module()
+    monkeypatch.setattr(checker, "_provenance", lambda: _Prov(None))
+
+    assert checker._ontology() == {}
+
+
+def test_module_name_resolves_hive_conductor_path() -> None:
+    checker = _module()
+
+    name = checker._module_name("packages/hive-conductor/backend/services/dag_recovery.py")
+
+    assert name == "packages.hive-conductor.backend.services.dag_recovery"
+
+
+def _fake_completed(stdout: str = "", returncode: int = 0, **_unused) -> SimpleNamespace:
+    return SimpleNamespace(stdout=stdout, stderr="", returncode=returncode)
+
+
+def test_changed_python_pairs_classifies_rename_copy_add_and_skips() -> None:
+    checker = _module()
+    monkeypatch = pytest.MonkeyPatch()
+    diff_output = (
+        "R100\told/path/svc.py\tpackages/hive-conductor/backend/svc.py\n"
+        "A\tpackages/hive-conductor/backend/new_test_target.py\n"
+        "M\tpackages/maistro-core/src/maistro/mod.py\n"
+        "D\tpackages/hive-conductor/backend/gone.py\n"
+        "\tunrecognized row\n"
+    )
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: _fake_completed(stdout=diff_output))
+    try:
+        pairs = checker._changed_python_pairs("base-sha")
+    finally:
+        monkeypatch.undo()
+
+    assert pairs == [
+        ("old/path/svc.py", "packages/hive-conductor/backend/svc.py"),
+        (None, "packages/hive-conductor/backend/new_test_target.py"),
+        ("packages/maistro-core/src/maistro/mod.py",) * 2,
+    ]
+
+
+def test_changed_python_pairs_raises_on_git_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    checker = _module()
+    monkeypatch.setattr(
+        "subprocess.run", lambda *a, **k: _fake_completed(returncode=128, stderr="boom")
+    )
+
+    with pytest.raises(RuntimeError, match="cannot diff production files"):
+        checker._changed_python_pairs("base-sha")
+
+
+def test_shared_owner_failures_tolerates_missing_base_blob(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checker = _module()
+    existing = "packages/hive-conductor/backend/routes/dags.py"
+    monkeypatch.setattr(checker, "_changed_python_pairs", lambda base: [(existing, existing)])
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: _fake_completed(returncode=1))
+    monkeypatch.setattr(checker, "new_shared_owner_violations", lambda *a, **k: [])
+
+    assert checker.shared_owner_failures("base", policy={}, ontology={}) == []
