@@ -1,0 +1,37 @@
+# Tiered dependency policy (decided with the operator, 2026-09-02):
+#   security + patch  -> auto-merge on green CI (delivery bot approves; until it
+#                        exists, the fleet shepherds land these when green)
+#   minor             -> weekly batch, triage lane, merge when green
+#   major             -> never silent: Dependabot opens an issue-class PR that
+#                        routes to M6 (deferred cleanup) for a human decision
+version: 2
+enable-beta-ecosystems: true
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+      day: sunday
+    open-pull-requests-limit: 10
+    groups:
+      patch-and-security:
+        applies-to: security-updates
+        patterns: ["*"]
+        update-types:
+          - "patch"
+          - "minor"
+    auto-merge:
+      allowed-updates:
+        - dependency-type: direct
+          dependency-group: patch-and-security
+      allowlisted-animations:
+        - merge
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    auto-merge:
+      allowed-updates:
+        - dependency-type: direct
+          update-type: patch
