@@ -262,6 +262,6 @@ class TestTheReport:
         """If the contract ever came back empty this gate would pass everything
         while appearing to check. That is the failure it exists to prevent, one
         level up."""
-        monkeypatch.setattr(check, "required_check_names", lambda: [])
+        monkeypatch.setattr(check, "required_check_names", lambda **_kwargs: [])
         assert check.main(["--check-runs", str(_payload(tmp_path, [_run("x")]))]) == 1
         assert "contract is empty" in capsys.readouterr().out

@@ -28,15 +28,16 @@ from __future__ import annotations
 
 import contextlib
 from dataclasses import dataclass
-from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any, cast
 
 from maistro.graph.nodes.base import (
     HUMAN_PAUSE_REASONS,
     RESUMED_PAUSE_KEY,
     TIMER_RESUMABLE_PAUSE_REASONS,
 )
-from maistro.runs.execution import ExecutionYielded
+from maistro.runs.consumer_claim import ConsumerClaimStore
+from maistro.runs.execution import AttemptExecutionService, ExecutionYielded
 from maistro.runs.model import Attempt, AttemptStatus, NodeRun, Run, RunStatus
 from maistro.runs.service import RunExecutionService
 from maistro.runs.sources import ADMISSION_SOURCE, SCHEDULE_INPUTS_KEY, SCHEDULE_SOURCE
@@ -57,6 +58,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only; runtime import would cycle
 #: `TASK_EXECUTOR_ID` names the task runner and `CHAT_EXECUTOR_ID` the
 #: Conduit. It answers "what kind of work was this" on the physical record.
 SCHEDULE_EXECUTOR_ID = "schedule-consumer"
+DEFAULT_SCHEDULE_LEASE_TTL = timedelta(seconds=30)
 
 #: Admission sources the consumer may execute. An allowlist rather than
 #: "everything QUEUED": a source joins by deciding to, in one reviewed place,
@@ -85,14 +87,26 @@ class ScheduleAttemptExecutor:
         runtime: ExecutionRuntime | None = None,
         timeout_s: float | None = None,
         node_resolver: NodeResolver | None = None,
+        lease_ttl: timedelta = DEFAULT_SCHEDULE_LEASE_TTL,
     ) -> None:
         if timeout_s is not None and timeout_s <= 0:
             raise ValueError("timeout_s must be > 0")
+        if lease_ttl <= timedelta(0):
+            raise ValueError("lease_ttl must be positive")
+        if not callable(getattr(run_store, "claim_consumer_run", None)):
+            raise RunIntegrityError(
+                "schedule consumption requires a consumer claim capability so RUNNING is "
+                "backed by recoverable physical evidence"
+            )
+        resolved_runtime = runtime or PythonExecutionRuntime()
         self._runs = run_store
-        self._service = RunExecutionService(
-            store=run_store,
-            runtime=runtime or PythonExecutionRuntime(),
+        self._claims = cast(ConsumerClaimStore, run_store)
+        self._attempts = AttemptExecutionService(
+            store=run_store, runtime=resolved_runtime, lease_ttl=lease_ttl
         )
+        self._service = RunExecutionService(store=run_store, runtime=resolved_runtime)
+        self._runtime_id = type(resolved_runtime).__name__
+        self._lease_ttl = lease_ttl
         self._timeout_s = timeout_s
         #: The Container's `build_node_resolver`, which is where
         #: `agent.spawn_harness` gets its adapters, `agent.delegate_remote` its
@@ -104,28 +118,46 @@ class ScheduleAttemptExecutor:
         self._resolver = node_resolver
 
     async def execute(self, run: Run) -> Run:
-        """Execute the Run's single node, leaving a NodeRun and an Attempt.
-
-        Returns the Run as the store sees it afterwards: `COMPLETED` when the
-        node succeeded (derived from the NodeRun, not asserted here), parked
-        `WAITING` when the physical try failed — the recovery disposition's
-        parked row, awaiting a retry decision rather than silently retried.
-        """
+        """Atomically claim and execute the Run's first physical Attempt (#544)."""
         spec = self._single_node(run)
         inputs = self._inputs(run, spec)
         ctx = self._context(run, spec)
+        deadline_at = (
+            datetime.now(UTC) + timedelta(seconds=self._timeout_s)
+            if self._timeout_s is not None
+            else None
+        )
+        claim = await self._claims.claim_consumer_run(
+            run.run_id,
+            node_id=spec.node_id,
+            runtime_id=self._runtime_id,
+            executor_id=SCHEDULE_EXECUTOR_ID,
+            lease_ttl=self._lease_ttl,
+            deadline_at=deadline_at,
+        )
 
-        # A failure is recorded on the Attempt and the reconciler has parked
-        # the NodeRun and the Run. Parked is the disposition — re-raising
-        # would make the tick's caller invent a second one.
+        async def _run(_work_item: Any, context: Any) -> Any:
+            node = self._resolve(run, spec)
+            result = await node.run(inputs, context)
+            if result.status == "paused" and result.success:
+                raise ExecutionYielded(
+                    awaits_human=_awaits_human_answer(result),
+                    evidence=_pause_evidence(result),
+                )
+            if result.status != "completed" or not result.success:
+                message = result.error_message or f"node {spec.node_id!r} did not complete"
+                raise ScheduleExecutionFailed(f"{result.error_code or result.status}: {message}")
+            output = result.output
+            if hasattr(output, "model_dump"):
+                return output.model_dump(mode="json")
+            return output
+
         with contextlib.suppress(ScheduleExecutionFailed):
-            await self._service.execute_node(
-                run.run_id,
-                spec.node_id,
+            await self._attempts.execute_claimed(
+                claim.attempt,
                 inputs,
                 ctx,
-                executor=self._node_executor(run, spec, inputs),
-                executor_id=SCHEDULE_EXECUTOR_ID,
+                executor=_run,
                 timeout_s=self._timeout_s,
                 context_factory=_with_attempt_identity,
             )

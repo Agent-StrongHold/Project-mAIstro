@@ -1,0 +1,59 @@
+"""Rendered autonoetic contract and fail-closed environment readiness."""
+
+from __future__ import annotations
+
+import os
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Literal
+
+SelfModel = Literal["hexaco", "minimal"]
+DossierStore = Literal["obsidian", "fs"]
+
+AWARENESS_LOOP_HZ = {{ awareness_loop_hz }}
+SELF_MODEL: SelfModel = "{{ self_model }}"
+MEMORY_CONSOLIDATOR_ENABLED = {{ memory_consolidator == 'on' }}
+DOSSIER_STORE: DossierStore = "{{ dossier_store }}"
+
+# SECURITY-REVIEW: Identity and path values remain in the process environment.
+# This module checks presence only and never retains, logs, or returns them.
+REQUIRED_ENVIRONMENT: tuple[str, ...] = (
+    "TURING_SELF_ID",
+{% if dossier_store == 'obsidian' -%}
+    "OBSIDIAN_VAULT_PATH",
+{% endif -%}
+)
+
+
+@dataclass(frozen=True)
+class AutonoeticConfig:
+    """Non-secret autonoetic settings rendered by Copier."""
+
+    awareness_loop_hz: int
+    self_model: SelfModel
+    memory_consolidator_enabled: bool
+    dossier_store: DossierStore
+    missing_environment: tuple[str, ...]
+
+    @property
+    def awareness_period_seconds(self) -> float:
+        """Seconds between awareness ticks."""
+        return 1.0 / self.awareness_loop_hz
+
+    @property
+    def ready(self) -> bool:
+        """Whether identity and selected storage are configured."""
+        return not self.missing_environment
+
+
+def load_config(environ: Mapping[str, str] | None = None) -> AutonoeticConfig:
+    """Return rendered settings plus names of absent required variables."""
+    source = os.environ if environ is None else environ
+    missing = tuple(name for name in REQUIRED_ENVIRONMENT if not source.get(name))
+    return AutonoeticConfig(
+        awareness_loop_hz=AWARENESS_LOOP_HZ,
+        self_model=SELF_MODEL,
+        memory_consolidator_enabled=MEMORY_CONSOLIDATOR_ENABLED,
+        dossier_store=DOSSIER_STORE,
+        missing_environment=missing,
+    )

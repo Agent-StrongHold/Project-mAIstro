@@ -1,0 +1,39 @@
+x-maistro-template:
+  awareness_loop_hz: {{ awareness_loop_hz }}
+  self_model: "{{ self_model }}"
+  memory_consolidator: "{{ memory_consolidator }}"
+  dossier_store: "{{ dossier_store }}"
+
+services:
+  {{ project_slug }}:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["--check"]
+    restart: "no"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    environment:
+      TURING_TICK_RATE_HZ: "{{ awareness_loop_hz }}"
+      TURING_SELF_ID: "${TURING_SELF_ID:?set TURING_SELF_ID}"
+      LITELLM_BASE_URL: "${LITELLM_BASE_URL:-}"
+      LITELLM_VIRTUAL_KEY: "${LITELLM_VIRTUAL_KEY:-}"
+{% if dossier_store == 'obsidian' %}
+      OBSIDIAN_VAULT_PATH: "/data/dossier"
+{% endif %}
+    volumes:
+{% if dossier_store == 'obsidian' %}
+      # SECURITY-REVIEW: Operator-controlled bind path; dedicate and permission the vault.
+      - "${OBSIDIAN_VAULT_PATH:?set OBSIDIAN_VAULT_PATH}:/data/dossier:rw"
+{% else %}
+      - dossier-data:/data/dossier:rw
+{% endif %}
+{% if dossier_store == 'fs' %}
+volumes:
+  dossier-data:
+{% endif %}

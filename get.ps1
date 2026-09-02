@@ -33,7 +33,7 @@
   resolved.
 
 .PARAMETER Repo
-  GitHub "owner/repo" to install from (default: BlakeMatthews-dev/maistro-engine).
+  GitHub "owner/repo" to install from (default: Agent-StrongHold/Project-mAIstro).
 
 .PARAMETER Distro
   WSL distro name to install/use (default: Ubuntu).
@@ -50,7 +50,7 @@
   / *_INSTALL_CLI / *_OPEN_BROWSER.
 
 .EXAMPLE
-  irm https://raw.githubusercontent.com/BlakeMatthews-dev/maistro-engine/main/get.ps1 | iex
+  irm https://raw.githubusercontent.com/Agent-StrongHold/Project-mAIstro/main/get.ps1 | iex
 
 .EXAMPLE
   .\get.ps1 -AutoInstallDeps
@@ -67,7 +67,14 @@ param(
     [ValidateSet('stable', 'dev')]
     [string]$Channel = 'stable',
     [string]$Branch = '',
-    [string]$Repo = 'BlakeMatthews-dev/maistro-engine',
+    # SECURITY-REVIEW: -Repo selects external GitHub content and crosses into
+    # the WSL shell handoff; preserve argument boundaries when changing it.
+    [ValidatePattern('^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')]
+    [ValidateScript({
+        $owner, $name = $_ -split '/', 2
+        $owner -notin @('.', '..') -and $name -notin @('.', '..')
+    })]
+    [string]$Repo = 'Agent-StrongHold/Project-mAIstro',
     [string]$Distro = 'Ubuntu',
     [switch]$RequireRelease,
     [switch]$AutoInstallDeps,
@@ -215,7 +222,7 @@ function Get-PassthroughArgs {
         $argList += @('-Branch', $script:Ref)
     }
     if ($RequireRelease) { $argList += '-RequireRelease' }
-    if ($Repo -ne 'BlakeMatthews-dev/maistro-engine') { $argList += @('-Repo', $Repo) }
+    if ($Repo -ne 'Agent-StrongHold/Project-mAIstro') { $argList += @('-Repo', $Repo) }
     if ($Distro -ne 'Ubuntu') { $argList += @('-Distro', $Distro) }
     if ($AutoInstallDeps) { $argList += '-AutoInstallDeps' }
     if ($SkipWizard) { $argList += '-SkipWizard' }

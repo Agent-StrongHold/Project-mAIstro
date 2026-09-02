@@ -5,11 +5,11 @@ set -euo pipefail
 #
 # Usage:
 #   curl -fsSL https://get.hiveconductor.dev | bash
-#   curl -fsSL https://raw.githubusercontent.com/BlakeMatthews-dev/maistro-engine/main/get.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Agent-StrongHold/Project-mAIstro/main/get.sh | bash
 #
 # This script needs bash and is the entrypoint for macOS, Linux, and WSL2.
 # On native Windows (no bash), use get.ps1 instead — from PowerShell:
-#   irm https://raw.githubusercontent.com/BlakeMatthews-dev/maistro-engine/main/get.ps1 | iex
+#   irm https://raw.githubusercontent.com/Agent-StrongHold/Project-mAIstro/main/get.ps1 | iex
 # get.ps1 sets up WSL2 + Ubuntu, then runs this same script inside it.
 #
 # This script installs/updates the maistro-engine source tree, then delegates to
@@ -27,7 +27,9 @@ set -euo pipefail
 # inexpressible and meant two people running the same command a week apart got
 # different code. The default is now a tag, which is immutable.
 
-REPO="${MAISTRO_REPO:-BlakeMatthews-dev/maistro-engine}"
+# SECURITY-REVIEW: MAISTRO_REPO selects an external GitHub source; every use
+# below remains a quoted URL or argv value and is never evaluated as shell code.
+REPO="${MAISTRO_REPO:-Agent-StrongHold/Project-mAIstro}"
 # No default: an empty MAISTRO_BRANCH means "resolve a release tag". Defaulting
 # it to `main` here would make an explicit branch request indistinguishable
 # from no request at all.
@@ -87,7 +89,8 @@ to install.sh (e.g. --answers-file, --skip-wizard, --no-start).
 
 Environment:
   MAISTRO_VERSION, MAISTRO_CHANNEL, MAISTRO_BRANCH, MAISTRO_REQUIRE_RELEASE,
-  MAISTRO_REPO, MAISTRO_DIR, MAISTRO_SHA256SUMS_URL,
+  MAISTRO_REPO (default: Agent-StrongHold/Project-mAIstro), MAISTRO_DIR,
+  MAISTRO_SHA256SUMS_URL,
   MAISTRO_GITHUB_TOKEN (only used to raise the GitHub API rate limit).
 EOF
 }
@@ -173,9 +176,31 @@ resolve_ref() {
     fi
 }
 
+# Existing checkouts may still point at a retired default remote. REPO is the
+# source of truth for where updates should come from, so converge origin before
+# fetch.
+ensure_git_origin() {
+    local current expected current_slug expected_slug
+    expected="$REPO_URL"
+    current="$(git -C "$INSTALL_DIR" remote get-url origin 2>/dev/null || true)"
+    if [[ -z "$current" ]]; then
+        info "Adding origin remote ${expected}..."
+        git -C "$INSTALL_DIR" remote add origin "$expected"
+        return
+    fi
+    current_slug="$(printf '%s\n' "${current%.git}" \
+        | sed -nE 's|^https://github.com/([^/]+/[^/]+)$|\1|p;s|^git@github.com:([^/]+/[^/]+)$|\1|p')"
+    expected_slug="$REPO"
+    if [[ "$current_slug" != "$expected_slug" ]]; then
+        info "Retargeting checkout remote from ${current} to ${expected}..."
+        git -C "$INSTALL_DIR" remote set-url origin "$expected"
+    fi
+}
+
 download_with_git() {
     if [[ -d "$INSTALL_DIR/.git" ]]; then
         info "Updating existing maistro-engine checkout at $INSTALL_DIR..."
+        ensure_git_origin
         if [[ "$REF_KIND" == "tag" ]]; then
             # --force so re-running with the same tag after an upstream retag
             # (which should never happen — tags are immutable per ADR §2 — but
