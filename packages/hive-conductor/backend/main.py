@@ -65,6 +65,7 @@ from routes import settings as settings_r
 from services import engine as engine_service
 from services import foundation as foundation_service
 from services.ha_tools import get_all_confirms, get_pending_confirms, respond_confirm
+from services.oauth_login import close_oauth_login_service
 from services.settings_store import SettingsPersistenceError
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -156,6 +157,10 @@ async def _shutdown_background_services() -> None:
                 await result
         except Exception as exc:
             _log.warning("%s_stop_failed: %s", name, exc)
+    try:
+        await close_oauth_login_service()
+    except Exception as exc:
+        _log.warning("oauth_login_stop_failed: %s", exc)
 
 
 @asynccontextmanager

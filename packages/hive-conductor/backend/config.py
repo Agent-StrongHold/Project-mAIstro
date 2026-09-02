@@ -2,11 +2,22 @@
 
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
-from pydantic import AliasChoices, Field, SecretStr, field_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from maistro.config.settings import validate_cors_origins
@@ -23,6 +34,81 @@ _ENV_FILES: tuple[str, ...] = tuple(
     if p.is_file()
 )
 
+_OAUTH_PROVIDER_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+_OAUTH_SCOPE_RE = re.compile(r"^[A-Za-z0-9._:/-]{1,128}$")
+
+
+def is_valid_oauth_provider_name(value: str) -> bool:
+    """Return whether ``value`` is the canonical provider URL slug."""
+    return bool(_OAUTH_PROVIDER_RE.fullmatch(value))
+
+
+def _https_url(value: str, *, field_name: str, origin_only: bool = False) -> str:
+    candidate = value.strip()
+    if len(candidate) > 2048 or any(ord(char) < 32 or ord(char) == 127 for char in candidate):
+        raise ValueError(f"{field_name} has an invalid length or control character")
+    try:
+        parsed = urlsplit(candidate)
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"{field_name} is not a valid URL") from exc
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise ValueError(f"{field_name} must be an absolute HTTPS URL")
+    if parsed.username is not None or parsed.password is not None or parsed.fragment:
+        raise ValueError(f"{field_name} must not contain credentials or a fragment")
+    if parsed.query:
+        raise ValueError(f"{field_name} must not contain a query")
+    if origin_only and parsed.path not in ("", "/"):
+        raise ValueError(f"{field_name} must be an HTTPS origin without a path or query")
+    return candidate.rstrip("/") if origin_only else candidate
+
+
+class OAuthProviderSettings(BaseModel):
+    """Validated non-secret configuration for one OIDC login provider."""
+
+    # SECURITY-REVIEW: Environment JSON is an external deserialization
+    # boundary; unknown fields and input-bearing validation errors are refused.
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    authorization_url: str
+    token_url: str
+    client_id: str = Field(min_length=1, max_length=256)
+    jwks_url: str
+    issuer: str
+    userinfo_url: str | None = None
+    scopes: tuple[str, ...] = ("openid", "profile", "email")
+    client_secret_vault_key: str | None = Field(
+        default=None,
+        pattern=r"^[A-Z][A-Z0-9_]{0,127}$",
+    )
+
+    @field_validator("authorization_url", "token_url", "jwks_url", "issuer", "userinfo_url")
+    @classmethod
+    def validate_provider_url(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if value is None:
+            return None
+        field_name = info.field_name or "OAuth provider URL"
+        return _https_url(value, field_name=field_name)
+
+    @field_validator("client_id")
+    @classmethod
+    def validate_client_id(cls, value: str) -> str:
+        client_id = value.strip()
+        if not client_id:
+            raise ValueError("client_id must not be blank")
+        return client_id
+
+    @field_validator("scopes")
+    @classmethod
+    def validate_scopes(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if not value or len(value) > 16:
+            raise ValueError("scopes must contain between 1 and 16 entries")
+        if "openid" not in value:
+            raise ValueError("scopes must include openid for verified OIDC login")
+        if len(set(value)) != len(value) or any(not _OAUTH_SCOPE_RE.fullmatch(v) for v in value):
+            raise ValueError("scopes must be unique OAuth scope tokens")
+        return value
+
 
 class Settings(BaseSettings):
     """Load from process env and `.env` (backend dir, then repo root)."""
@@ -31,6 +117,7 @@ class Settings(BaseSettings):
         env_file=_ENV_FILES or ".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        hide_input_in_errors=True,
     )
 
     # One canonical gateway field, with every deployment spelling accepted at
@@ -143,6 +230,13 @@ class Settings(BaseSettings):
     # is only meaningful with Secure, so it is not offered as a default.
     session_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
 
+    # OIDC human-login providers. This object contains public endpoints,
+    # client ids, and an optional *vault key name* only. Client secrets are
+    # deliberately not settings values and are resolved at exchange time.
+    oauth_providers: dict[str, OAuthProviderSettings] = Field(default_factory=dict)
+    oauth_public_origin: str | None = None
+    oauth_success_path: str = "/"
+
     # The single, explicit, greppable local-development escape. Startup refuses
     # a Secure-disabled session cookie unless this is set — see
     # `maistro.security.transport.assert_session_transport_is_safe`.
@@ -195,6 +289,54 @@ class Settings(BaseSettings):
     # `memory_decay.state == "disabled"`. A silent off switch here would look
     # exactly like the bug this closes.
     memory_decay_interval_s: int = 3600
+
+    @field_validator("oauth_providers")
+    @classmethod
+    def validate_oauth_provider_names(
+        cls, value: dict[str, OAuthProviderSettings]
+    ) -> dict[str, OAuthProviderSettings]:
+        if len(value) > 16:
+            raise ValueError("at most 16 OAuth providers may be configured")
+        if any(not is_valid_oauth_provider_name(name) for name in value):
+            raise ValueError("OAuth provider names must be lowercase URL-safe slugs")
+        return value
+
+    @field_validator("oauth_public_origin", mode="before")
+    @classmethod
+    def empty_oauth_public_origin_is_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("oauth_public_origin")
+    @classmethod
+    def validate_oauth_public_origin(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _https_url(value, field_name="oauth_public_origin", origin_only=True)
+
+    @field_validator("oauth_success_path")
+    @classmethod
+    def validate_oauth_success_path(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        if (
+            not value.startswith("/")
+            or value.startswith("//")
+            or "\\" in value
+            or any(ord(char) < 32 for char in value)
+            or parsed.scheme
+            or parsed.netloc
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("oauth_success_path must be one fixed local path")
+        return value
+
+    @model_validator(mode="after")
+    def validate_oauth_wiring(self) -> Settings:
+        if self.oauth_providers and self.oauth_public_origin is None:
+            raise ValueError("oauth_public_origin is required when OAuth providers are configured")
+        return self
 
     @property
     def maistro_llm_base_url(self) -> str | None:

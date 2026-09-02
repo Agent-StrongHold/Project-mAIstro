@@ -262,6 +262,15 @@ async def test_exchange_code_without_id_token_falls_back_to_userinfo() -> None:
     assert exchange.identity.email_verified is False
 
 
+async def test_exchange_code_rejects_missing_required_id_token() -> None:
+    idp = FakeIdP()
+    client = make_client(idp, config=provider_config(require_id_token=True))
+    state, _, _ = await start_flow(client)
+    idp.valid_codes["c"] = {"access_token": "at", "token_type": "bearer"}
+    with pytest.raises(OAuthTokenValidationError, match="required id_token"):
+        await client.exchange_code("test", "c", state, REDIRECT_URI)
+
+
 async def test_exchange_code_no_sub_anywhere_raises() -> None:
     idp = FakeIdP()
     client = make_client(idp)
@@ -447,6 +456,13 @@ async def test_id_token_nonce_mismatch_raises() -> None:
         await _exchange_with_id_token(idp, client, make_id_token(nonce="stolen-different-nonce"))
 
 
+async def test_id_token_requires_stable_subject_claim() -> None:
+    idp = FakeIdP()
+    client = make_client(idp)
+    with pytest.raises(OAuthTokenValidationError, match=r"subject|sub"):
+        await _exchange_with_id_token(idp, client, make_id_token(sub=None))
+
+
 async def test_id_token_unknown_kid_raises() -> None:
     idp = FakeIdP()
     client = make_client(idp)
@@ -582,6 +598,22 @@ async def test_state_store_expired_entry_is_none_and_gone() -> None:
     now[0] = 150.0  # exactly at expiry -> expired
     assert await store.consume("s") is None
     assert await store.consume("s") is None
+
+
+async def test_state_store_bounds_abandoned_starts() -> None:
+    store = InMemoryStateStore(max_entries=2)
+    await store.put("oldest", _entry(time.monotonic() + 10))
+    await store.put("middle", _entry(time.monotonic() + 20))
+    await store.put("newest", _entry(time.monotonic() + 30))
+
+    assert await store.consume("oldest") is None
+    assert await store.consume("middle") is not None
+    assert await store.consume("newest") is not None
+
+
+def test_state_store_rejects_an_unbounded_zero_capacity() -> None:
+    with pytest.raises(ValueError, match="positive"):
+        InMemoryStateStore(max_entries=0)
 
 
 # ---------------------------------------------------------------------------

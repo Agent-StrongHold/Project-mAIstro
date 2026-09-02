@@ -543,23 +543,26 @@ source <(sed -n {extract!r} "$SCRIPT_DIR/install.sh")
     def test_every_shell_write_path_lands_at_0600(self, tmp_path: Path) -> None:
         """`umask 0000` is what makes this an assertion rather than a
         coincidence: the pre-#357 shell produced 666 here."""
-        result = self._run(
-            tmp_path,
-            """
-umask 0000
-printf 'MAISTRO_ACCESS_TOKEN=tok\\nAPI_KEYS=["tok"]\\n' | secret_env_run create
-stat -c '%a create' .env
-append_env_once NEWKEY hello;   stat -c '%a append_env_once' .env
-set_env_value NEWKEY replaced;  stat -c '%a set_env_value' .env
-fill_env_value BLANKY filled;   stat -c '%a fill_env_value' .env
-ensure_api_keys_contains tok2;  stat -c '%a ensure_api_keys' .env
-verify_env_file
-""",
+        env_path = tmp_path / ".env"
+        writes = (
+            (
+                "secret_env_run create",
+                """printf 'MAISTRO_ACCESS_TOKEN=tok\\nAPI_KEYS=["tok"]\\n' |
+secret_env_run create""",
+            ),
+            ("append_env_once", "append_env_once NEWKEY hello"),
+            ("set_env_value", "set_env_value NEWKEY replaced"),
+            ("fill_env_value", "fill_env_value BLANKY filled"),
+            ("ensure_api_keys_contains", "ensure_api_keys_contains tok2"),
         )
+        for name, command in writes:
+            result = self._run(tmp_path, f"umask 0000\n{command}\n")
+            assert result.returncode == 0, result.stderr
+            mode = _mode(env_path)
+            assert mode == 0o600, f"{name} widened .env to {mode:#o}"
+
+        result = self._run(tmp_path, "verify_env_file")
         assert result.returncode == 0, result.stderr
-        modes = [line.split()[0] for line in result.stdout.strip().splitlines()]
-        assert modes, f"the harness produced no output: {result.stderr}"
-        assert set(modes) == {"600"}, f"a shell write path widened the mode: {result.stdout}"
 
     def test_the_shell_writes_the_values_it_was_given(self, tmp_path: Path) -> None:
         """Mode is not the only thing that has to survive the rewiring: the

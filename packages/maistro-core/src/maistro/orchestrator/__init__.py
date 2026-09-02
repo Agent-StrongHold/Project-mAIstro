@@ -21,6 +21,7 @@ from maistro.orchestrator.master import (
     WorkItem,
     WorkItemStatus,
 )
+from maistro.orchestrator.output_security import build_output_security_gate
 from maistro.orchestrator.planner import (
     PlanTemplate,
     SubsystemDef,
@@ -64,4 +65,5 @@ __all__ = [
     "WaveTask",
     "WorkItem",
     "WorkItemStatus",
+    "build_output_security_gate",
 ]
