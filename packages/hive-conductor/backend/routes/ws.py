@@ -75,7 +75,7 @@ async def stream_task(websocket: WebSocket, task_id: str) -> None:
 
 @router.websocket("/dags/{dag_id}/run")
 async def stream_dag_run(websocket: WebSocket, dag_id: str) -> None:
-    """Run a DAG and stream node-by-node progress over WebSocket.
+    """Run a DAG and stream canonical Run/NodeRun progress over WebSocket.
 
     Gated on `dags.write`, matching `POST /v1/dags` in the HTTP middleware's
     `_PROTECTED_OPS`: this endpoint *executes* the graph, and its nodes include
@@ -111,7 +111,7 @@ async def stream_dag_run(websocket: WebSocket, dag_id: str) -> None:
     try:
         from services.graph_runner import execute_dag_streaming
 
-        async for event in execute_dag_streaming(dag_data):
+        async for event in execute_dag_streaming(dag_data, user_id=str(user["id"])):
             await websocket.send_json(event)
             if event.get("status") in ("completed", "failed"):
                 break

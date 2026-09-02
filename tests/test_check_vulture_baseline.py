@@ -49,17 +49,42 @@ def _finding(gate, path, message, line=10, confidence=60):
     return gate.Finding(path=path, line=line, message=message, confidence=confidence)
 
 
+def _payload(rules):
+    return {"version": 1, "owner": "@test", "policy": "test", "rules": rules}
+
+
 def _baseline_with(tmp_path, rules):
-    payload = {"version": 1, "owner": "@test", "policy": "test", "rules": rules}
     path = tmp_path / "vulture-baseline.json"
-    path.write_text(json.dumps(payload), encoding="utf-8")
+    path.write_text(json.dumps(_payload(rules)), encoding="utf-8")
     return path
 
 
+def _trusted(gate, rules):
+    """Stand in for the merge-base ledger without consulting repository history."""
+    prov = gate._provenance()
+    return prov.Baseline(
+        text=json.dumps(_payload(rules)),
+        origin="base",
+        base_sha="0" * 40,
+        path=Path("quality/vulture-baseline.json"),
+    )
+
+
 def _run_main(gate, monkeypatch, tmp_path, rules, findings, argv=None):
+    candidate = _payload(rules)
     monkeypatch.setattr(gate, "BASELINE", _baseline_with(tmp_path, rules))
+    monkeypatch.setattr(gate, "_load_baseline", lambda *args, **kwargs: candidate)
     monkeypatch.setattr(gate, "_run_vulture", lambda args: findings)
-    return gate.main(argv if argv is not None else ["pkg"])
+
+    args = argv if argv is not None else ["pkg"]
+    if "--update" not in args:
+        trusted_ref = _trusted(gate, rules)
+        monkeypatch.setattr(
+            gate,
+            "_trusted_state",
+            lambda measured, prov: (trusted_ref, rules, {}),
+        )
+    return gate.main(args)
 
 
 def test_committed_baseline_has_explicit_identities():
@@ -158,6 +183,7 @@ def test_update_refuses_unbankable_findings(gate, monkeypatch, tmp_path, capsys)
     baseline_path = _baseline_with(tmp_path, [dict(RULES[0])])
     before = baseline_path.read_text(encoding="utf-8")
     monkeypatch.setattr(gate, "BASELINE", baseline_path)
+    monkeypatch.setattr(gate, "_load_baseline", lambda *args, **kwargs: _payload([dict(RULES[0])]))
     monkeypatch.setattr(gate, "_run_vulture", lambda args: findings)
     assert gate.main(["--update", "pkg"]) == 1
     assert "refused" in capsys.readouterr().err

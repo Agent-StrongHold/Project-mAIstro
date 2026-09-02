@@ -37,7 +37,7 @@ is also required live on both branches; because it is produced by
 
 | Branch | PR | Approvals | Linear history | Force-push | Deletion | Required checks |
 |---|:--:|:--:|:--:|:--:|:--:|:--:|
-| `develop` | yes | **0** | yes | no | no | **25** |
+| `develop` | yes | **0** | yes | no | no | **17** |
 | `main` | yes | **1** | no | no | no | **29** |
 
 | Check | `develop` | `main` |
@@ -56,20 +56,21 @@ is also required live on both branches; because it is produced by
 | `coverage (MinIO)` | ● | ● |
 | `coverage (PostgreSQL)` | ● | ● |
 | `coverage (no services)` | ● | ● |
-| `docker-build` | ● | ● |
-| `durable-events` | ● | ● |
+| `docker-build` | adv | ● |
+| `durable-events` | adv | ● |
 | `exact-debt-ledger` | ● | ● |
 | `formal-conformance` | ● | ● |
-| `hive-conductor-e2e` | ● | ● |
-| `hive-conductor-e2e-ui` | ● | ● |
+| `hive-conductor-e2e` | adv | ● |
+| `hive-conductor-e2e-ui` | adv | ● |
+| `integration-scope` | ● | adv |
 | `lint-and-type-check` | ● | ● |
-| `object storage (MinIO)` | ● | ● |
-| `postgres (pg17)` | ● | ● |
-| `postgres (pg18)` | ● | ● |
+| `object storage (MinIO)` | adv | ● |
+| `postgres (pg17)` | adv | ● |
+| `postgres (pg18)` | adv | ● |
 | `security` | ● | ● |
-| `strike-ladder` | ● | ● |
+| `strike-ladder` | adv | ● |
 | `test` | ● | ● |
-| `wheel-imports` | ● | ● |
+| `wheel-imports` | adv | ● |
 | `workflow-lint` | ● | ● |
 
 <!-- /protection:tables -->

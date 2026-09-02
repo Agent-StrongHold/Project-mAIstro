@@ -48,9 +48,15 @@ def upgrade() -> None:
         sa.Column("content", sa.Text, nullable=False),
         sa.Column("metadata", postgresql.JSONB, nullable=True),
         sa.Column("created_at", sa.DateTime, server_default=sa.func.now()),
-        sa.Column("embedding", sa.Text, nullable=True),  # vector(1536) — managed by pgvector
+        # NOTE: this makes the column `text`, and the `ALTER` below does NOT
+        # change that -- `IF NOT EXISTS` finds the column this line just
+        # created and skips, silently. `memory_entries.embedding` was `text`
+        # in every deployment until migration 029 repaired it (#188,
+        # ADR-083026-4b70). Both lines are left exactly as they ran; a
+        # migration records what happened, and the repair is forward.
+        sa.Column("embedding", sa.Text, nullable=True),
     )
-    # pgvector column added separately so the extension must exist first
+    # Intended to make the column a vector; a no-op in practice, see above.
     op.execute("ALTER TABLE memory_entries ADD COLUMN IF NOT EXISTS embedding vector(1536)")
 
     # ── knowledge_nodes (KnowledgeNode) ────────────────────────────

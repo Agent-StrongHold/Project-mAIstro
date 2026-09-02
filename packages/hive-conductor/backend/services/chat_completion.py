@@ -11,9 +11,11 @@ import contextlib
 import json
 import logging
 import os
+from collections.abc import AsyncIterator, Collection
 from typing import Any
 
 from adapters.llm_http import HttpOpenAIProtocolLLM, StubLLMPort
+from adapters.telemetry_langfuse import trace_llm
 from config import get_settings
 from models.schemas import ChatCompletionRequest
 from protocols.llm import LLMPort
@@ -219,7 +221,7 @@ def _build_system_prompt(user_id: str) -> str:  # noqa: C901  many optional prom
     return base
 
 
-PM_TOOLS = [
+PM_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
@@ -1977,36 +1979,96 @@ async def _stream_turn(
     turn_req: ChatCompletionRequest,
     tools_acc: _ToolCallAccumulator | None,
     content_out: list[str],
-):
+    *,
+    model: str,
+    allowed_models: Collection[str],
+    iteration: int,
+) -> AsyncIterator[dict[str, Any]]:
     """One llm.stream() turn: yield delta/thinking events, accumulate content
-    into ``content_out`` and tool-call fragments into ``tools_acc`` (if given)."""
-    async for chunk in llm.stream(turn_req):
+    into ``content_out`` and tool-call fragments into ``tools_acc`` (if given).
+
+    The content-free ``chat_completion`` span measures stream construction
+    through the first provider event (the concrete model-call await boundary).
+    It closes before this generator yields anything to its caller, so
+    cancellation or caller work between SSE yields cannot retain OTel context.
+    A full-stream span would cross those yields and leak current-span context.
+    """
+    with trace_llm(
+        "chat_completion",
+        model=model,
+        allowed_models=allowed_models,
+        metadata={"iteration": iteration, "streaming": True},
+    ):
+        stream = llm.stream(turn_req).__aiter__()
+        try:
+            chunk = await anext(stream)
+        except StopAsyncIteration:
+            return
+
+    while True:
         choices = chunk.get("choices") or []
-        if not choices:
+        if choices:
+            delta = choices[0].get("delta") or {}
+            piece = delta.get("content")
+            if piece:
+                content_out.append(piece)
+                yield {"type": "delta", "content": piece}
+            think = delta.get("reasoning_content")
+            if think:
+                yield {"type": "thinking", "content": think}
+            if tools_acc is not None and delta.get("tool_calls"):
+                tools_acc.add_deltas(delta["tool_calls"])
+        try:
+            chunk = await anext(stream)
+        except StopAsyncIteration:
+            return
+
+
+async def _complete_turn(
+    llm: LLMPort,
+    turn_req: ChatCompletionRequest,
+    *,
+    model: str,
+    allowed_models: Collection[str],
+    iteration: int,
+) -> dict[str, Any]:
+    """Await one non-streaming model call inside a content-free span."""
+    with trace_llm(
+        "chat_completion",
+        model=model,
+        allowed_models=allowed_models,
+        metadata={"iteration": iteration, "streaming": False},
+    ):
+        return await llm.complete(turn_req)
+
+
+def _registered_tool_names(tools: list[dict[str, Any]]) -> tuple[str, ...]:
+    """Return the finite server-advertised tool-name allowlist."""
+    names: list[str] = []
+    for tool in tools:
+        function = tool.get("function")
+        if not isinstance(function, dict):
             continue
-        delta = choices[0].get("delta") or {}
-        piece = delta.get("content")
-        if piece:
-            content_out.append(piece)
-            yield {"type": "delta", "content": piece}
-        think = delta.get("reasoning_content")
-        if think:
-            yield {"type": "thinking", "content": think}
-        if tools_acc is not None and delta.get("tool_calls"):
-            tools_acc.add_deltas(delta["tool_calls"])
+        name = function.get("name")
+        if isinstance(name, str):
+            names.append(name)
+    return tuple(names)
 
 
 async def run_chat_completion_streaming(  # noqa: C901  streaming state machine
     req: ChatCompletionRequest,
     user_id: str = "",
-):
+) -> AsyncIterator[dict[str, Any]]:
     """Streaming version — yields SSE events with real status updates."""
-    import os
-
-    from adapters.telemetry_langfuse import trace_llm
-
     s = get_settings()
     model = req.model or os.environ.get("CHAT_DEFAULT_MODEL") or s.chat_default_model
+    allowed_models = tuple(
+        dict.fromkeys(
+            candidate
+            for candidate in (os.environ.get("CHAT_DEFAULT_MODEL"), s.chat_default_model)
+            if candidate
+        )
+    )
     llm = build_llm_port()
 
     messages: list[dict[str, Any]] = list(req.messages)
@@ -2020,12 +2082,14 @@ async def run_chat_completion_streaming(  # noqa: C901  streaming state machine
             "message": "Sending to LLM…" if iteration == 0 else "Processing tool results…",
         }
 
+        tool_definitions = get_scoped_tools(getattr(req, "tools_scope", None))
+        registered_tool_names = _registered_tool_names(tool_definitions)
         tool_req = ChatCompletionRequest(
             messages=messages,
             model=model,
             temperature=req.temperature,
             max_tokens=req.max_tokens,
-            tools=get_scoped_tools(getattr(req, "tools_scope", None)),
+            tools=tool_definitions,
         )
 
         # Stream tokens + tool calls: consume raw llm.stream() deltas, emitting
@@ -2037,13 +2101,27 @@ async def run_chat_completion_streaming(  # noqa: C901  streaming state machine
         acc = _ToolCallAccumulator()
         content_parts: list[str] = []
         try:
-            async for evt in _stream_turn(llm, tool_req, acc, content_parts):
+            async for evt in _stream_turn(
+                llm,
+                tool_req,
+                acc,
+                content_parts,
+                model=model,
+                allowed_models=allowed_models,
+                iteration=iteration,
+            ):
                 yield evt
             collected_content = "".join(content_parts)
             collected_tool_calls = acc.finalize() if acc else None
         except Exception:
             # Fall back to non-streaming
-            out = await llm.complete(tool_req)
+            out = await _complete_turn(
+                llm,
+                tool_req,
+                model=model,
+                allowed_models=allowed_models,
+                iteration=iteration,
+            )
             choice = (out.get("choices") or [{}])[0]
             msg = choice.get("message", {})
             collected_content = msg.get("content", "")
@@ -2051,7 +2129,13 @@ async def run_chat_completion_streaming(  # noqa: C901  streaming state machine
 
         # If streaming yielded nothing, fall back to non-streaming
         if not collected_content and not collected_tool_calls:
-            out = await llm.complete(tool_req)
+            out = await _complete_turn(
+                llm,
+                tool_req,
+                model=model,
+                allowed_models=allowed_models,
+                iteration=iteration,
+            )
             choice = (out.get("choices") or [{}])[0]
             msg = choice.get("message", {})
             collected_content = msg.get("content", "")
@@ -2069,7 +2153,13 @@ async def run_chat_completion_streaming(  # noqa: C901  streaming state machine
                 )
             ):
                 logger.warning("Model leaked tool calls as text — retrying non-streaming")
-                out = await llm.complete(tool_req)
+                out = await _complete_turn(
+                    llm,
+                    tool_req,
+                    model=model,
+                    allowed_models=allowed_models,
+                    iteration=iteration,
+                )
                 choice = (out.get("choices") or [{}])[0]
                 msg = choice.get("message", {})
                 collected_content = msg.get("content", "")
@@ -2077,9 +2167,6 @@ async def run_chat_completion_streaming(  # noqa: C901  streaming state machine
 
         if not collected_tool_calls:
             if collected_content:
-                with trace_llm("chat_completion", model=model, user_id=user_id) as t:
-                    t["input"] = str(req.messages[-1:])[:1000]
-                    t["output"] = collected_content[:1000]
                 yield {"type": "done", "content": collected_content, "model": model}
             else:
                 yield {"type": "done", "content": "", "model": model}
@@ -2103,14 +2190,18 @@ async def run_chat_completion_streaming(  # noqa: C901  streaming state machine
                 args = {}
 
             yield {"type": "tool_call", "tool": name, "args": args}
+            # SECURITY-REVIEW: Tool arguments/results and the user ID do not
+            # cross the external telemetry boundary. The model-provided name
+            # exports only when it matches this turn's server-advertised tools;
+            # every other value collapses to one fixed sentinel.
             with trace_llm(
-                f"tool:{name}",
+                "tool_call",
                 model=model,
-                user_id=user_id,
-                metadata={"tool_args": str(args)[:500]},
-            ) as t:
+                allowed_models=allowed_models,
+                metadata={"iteration": iteration, "tool_name": name},
+                allowed_tool_names=registered_tool_names,
+            ):
                 result = await _execute_tool(name, args, user_id)
-                t["output"] = str(result)[:1000]
             yield {"type": "tool_result", "tool": name, "summary": _summarize_result(result)}
 
             messages.append(
@@ -2127,7 +2218,13 @@ async def run_chat_completion_streaming(  # noqa: C901  streaming state machine
     # Final synthesis
     yield {"type": "status", "message": "Finalizing…"}
     final_req = ChatCompletionRequest(messages=messages, model=model, temperature=req.temperature)
-    final_out = await llm.complete(final_req)
+    final_out = await _complete_turn(
+        llm,
+        final_req,
+        model=model,
+        allowed_models=allowed_models,
+        iteration=5,
+    )
     content = (final_out.get("choices") or [{}])[0].get("message", {}).get("content", "")
     yield {"type": "done", "content": content, "model": model}
 
@@ -2344,7 +2441,7 @@ TOOL_SCOPES: dict[str, list[str] | None] = {
 }
 
 
-def get_scoped_tools(scope: str | None) -> list[dict]:
+def get_scoped_tools(scope: str | None) -> list[dict[str, Any]]:
     """Return tool definitions filtered by scope. None scope = all tools."""
     if scope is None or scope == "chat":
         return PM_TOOLS

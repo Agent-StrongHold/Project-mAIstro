@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable, Iterator, ValuesView
-from typing import Any, TypeVar
+from collections.abc import Callable, ItemsView, Iterator, KeysView, ValuesView
+from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel
 
@@ -32,11 +32,11 @@ def register_pop_hook(store_name: str, hook: Callable[[str], None]) -> None:
         hooks.append(hook)
 
 
-class ModelStore:
+class ModelStore(Generic[T]):
     def __init__(
         self,
         store_name: str,
-        model_class: type[BaseModel],
+        model_class: type[T],
         persisted: Any | None = None,
     ) -> None:
         self._store_name = store_name
@@ -59,10 +59,10 @@ class ModelStore:
     def values(self) -> ValuesView[T]:
         return self._data.values()
 
-    def items(self):
+    def items(self) -> ItemsView[str, T]:
         return self._data.items()
 
-    def keys(self):
+    def keys(self) -> KeysView[str]:
         return self._data.keys()
 
     def __getitem__(self, key: str) -> T:
@@ -118,13 +118,13 @@ class JsonStore:
             len(self._data),
         )
 
-    def values(self) -> ValuesView:
+    def values(self) -> ValuesView[Any]:
         return self._data.values()
 
-    def items(self):
+    def items(self) -> ItemsView[str, Any]:
         return self._data.items()
 
-    def keys(self):
+    def keys(self) -> KeysView[str]:
         return self._data.keys()
 
     def __getitem__(self, key: str) -> Any:
@@ -134,6 +134,26 @@ class JsonStore:
         self._data[key] = value
         if self._persisted is not None:
             self._persisted.put_raw(self._store_name, key, json.dumps(value, default=str))
+
+    def put_if_absent(self, key: str, value: Any) -> bool:
+        """Insert once, using the durable backend's conflict decision when present."""
+        if key in self._data:
+            return False
+        document = json.dumps(value, default=str)
+        if self._persisted is not None:
+            put_once = getattr(self._persisted, "put_raw_if_absent", None)
+            if not callable(put_once):
+                raise RuntimeError("configured persistence cannot perform conflict-safe inserts")
+            if not bool(put_once(self._store_name, key, document)):
+                existing = self._persisted.get_raw(self._store_name, key)
+                if existing is None:
+                    raise RuntimeError("conflicting durable record could not be read")
+                # SECURITY-REVIEW: Durable JSON is untrusted at the
+                # deserialization boundary and is validated by the caller.
+                self._data[key] = json.loads(existing)
+                return False
+        self._data[key] = value
+        return True
 
     def __contains__(self, key: str) -> bool:
         return key in self._data

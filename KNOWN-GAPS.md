@@ -47,14 +47,29 @@ degraded state is not yet a complete user-facing operating mode.
 
 Tracking: finish the visible degraded-mode behavior in F3 (#302).
 
-### Canvas Studio cutover
+### Design Studio production availability and Canvas boundary
 
-The engine mounts `/v2/canvas` routes, but the separate Canvas Studio frontend
-has not completed its migration to that API. The `/v2` surface is therefore
-not the end-to-end production boundary for Studio yet.
+Design Studio is the parent creative-production surface; Canvas is one
+visual/fixed-page/rendering capability it consumes, not the identity of the
+Studio. The shipped Design Studio currently supports resource discovery,
+artifact-mode selection, and prompt entry only. Visual generation is disabled,
+fixed-page editing and preview are not yet available, Deck editing remains
+contained, and publish/export are not available. The product does not simulate
+those unavailable operations.
 
-Tracking: complete the cutover described by
-[SPEC-070226-8239](docs/specs/SPEC-070226-8239-canvas-studio-cutover.md).
+The repository contains and mounts Canvas capability routes, but the default
+shipped `maistro-server` does not inject the required Canvas store into that
+router. The mounted Canvas data routes therefore return `503` in the shipped
+configuration. This is a separate limitation from Design Studio's product
+cutover: neither the currently mounted route surface nor the current Studio UI
+is yet the complete end-to-end production boundary.
+
+Tracking: complete #95 under the continuing #286 Design Studio product lane,
+with #93 supplying the supported built-in worker after the canonical Canvas
+execution dependency lands. [SPEC-070226-8239](docs/specs/SPEC-070226-8239-canvas-studio-cutover.md)
+remains the Proposed `maistro-server` Canvas capability boundary; its historical
+filename and legacy migration notes must not be read as a separate current
+product identity.
 
 ### HTTP API content negotiation
 
@@ -111,7 +126,9 @@ The following text is intended to be copied verbatim into the release notes.
 
 > v1.0.0 ships with an in-memory task queue, so a restart loses queued and
 > active tasks. Canvas jobs require an external runner; Canvas publish and
-> some export formats are not implemented. Conductor can run in degraded mode
-> when optional services are unavailable. Canvas Studio has not completed its
-> `/v2/canvas` cutover, and API-wide HTTP content negotiation from ADR-076 is
-> deferred to v1.1.
+> some export formats are not implemented. The mounted Canvas data routes are
+> unconfigured in the default shipped service and return `503`. Design Studio
+> can discover resources and select artifact modes, but visual generation,
+> editing/preview, and publish/export are not available. Conductor can run in
+> degraded mode when optional services are unavailable, and API-wide HTTP
+> content negotiation from ADR-076 is deferred to v1.1.

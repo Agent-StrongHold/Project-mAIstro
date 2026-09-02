@@ -601,3 +601,62 @@ async def test_list_outcomes_maps_rows_to_outcome_dataclasses(
     assert outcome.charged_microchips == 5
     assert outcome.pricing_version == "v2"
     assert outcome.created_at == created
+
+
+# ---------------------------------------------------------------------------
+# Scope (#844): the org/project predicates render from the one shared rule
+# (`outcome_scope`) that the SQLite twin now renders too, so the two durable
+# backends cannot disagree about what a scope means.
+# ---------------------------------------------------------------------------
+
+
+async def test_list_outcomes_binds_the_org_scope_predicate(
+    store: PgOutcomeStore, conn: FakeConnection
+) -> None:
+    conn.queue_fetch([])
+
+    await store.list_outcomes(org_id="org-a")
+
+    call = conn.calls[0]
+    assert "AND org_id = $2" in call.query
+    assert call.args[1] == "org-a"
+    assert "LIMIT $3" in call.query
+
+
+async def test_get_usage_breakdown_days_zero_opens_the_where_with_the_scope(
+    store: PgOutcomeStore, conn: FakeConnection
+) -> None:
+    """`days <= 0` means "all time", not "all orgs": with no cutoff to extend,
+    the scope predicate has to open the WHERE clause."""
+    conn.queue_fetch([])
+
+    await store.get_usage_breakdown(days=0, org_id="org-a")
+
+    call = conn.calls[0]
+    assert "WHERE org_id = $1" in call.query
+    assert "AND" not in call.query.split("WHERE", 1)[1]
+    assert call.args == ("org-a",)
+
+
+@pytest.mark.parametrize(
+    ("read", "scope_kwargs"),
+    [
+        ("get_task_completion_rate", {"org_id": None}),
+        ("get_usage_breakdown", {"org_id": None}),
+        ("get_daily_timeseries", {"org_id": None}),
+        ("get_experience_context", {"org_id": None}),
+        ("get_experience_context", {"project_id": None}),
+        ("list_outcomes", {"org_id": None}),
+        ("list_thumbs", {"org_id": None}),
+    ],
+)
+async def test_an_ambiguous_scope_fails_closed(
+    store: PgOutcomeStore, read: str, scope_kwargs: dict[str, None]
+) -> None:
+    """`None` is a scope that failed to resolve, not one deliberately left
+    unscoped. It used to fall through `if value:` and read globally — the
+    widening every fail-closed check exists to stop — so it raises now."""
+    method = getattr(store, read)
+    args = ("chat",) if read == "get_experience_context" else ()
+    with pytest.raises(ValueError, match="ambiguous"):
+        await method(*args, **scope_kwargs)

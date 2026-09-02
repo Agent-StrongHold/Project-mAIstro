@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 SchemaVersion = Literal["1"]
 
@@ -22,7 +22,14 @@ DeliveryMode = Literal["image_pull", "source_build"]
 
 
 class InstallAnswersV1(BaseModel):
-    """Answers file / wizard payload. Do not store API keys here (names and flags only)."""
+    """Answers file / wizard payload. Do not store API keys here (names and flags only).
+
+    Unknown keys are validation errors (`extra="forbid"`), never silently
+    ignored: a misspelled security field must fail loudly instead of quietly
+    falling back to its default (#810).
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
     schema_version: SchemaVersion = "1"
     install_mode: InstallMode = "preview"
@@ -84,6 +91,31 @@ class InstallAnswersV1(BaseModel):
 def parse_answers_dict(data: dict[str, object]) -> InstallAnswersV1:
     """Parse and validate a YAML-loaded mapping."""
     return InstallAnswersV1.model_validate(data)
+
+
+def describe_validation_error(exc: ValidationError) -> str:
+    """Human-facing, key-naming summary of an InstallAnswersV1 failure (#810).
+
+    Unknown keys are listed by name so CLI/API callers can point at the exact
+    typo instead of shipping a silent default.
+    """
+    unknown: list[str] = []
+    other: list[str] = []
+    for err in exc.errors():
+        key = ".".join(str(part) for part in err.get("loc", ()))
+        if err["type"] == "extra_forbidden":
+            unknown.append(key)
+        else:
+            other.append(f"{key}: {err['msg']}")
+    parts: list[str] = []
+    if unknown:
+        parts.append(
+            "unknown install-answer key(s): "
+            + ", ".join(sorted(set(unknown)))
+            + " — rejected instead of silently defaulting; fix the spelling or remove them"
+        )
+    parts.extend(other)
+    return "; ".join(parts)
 
 
 def merge_session_payload(data: dict[str, object]) -> InstallAnswersV1:
