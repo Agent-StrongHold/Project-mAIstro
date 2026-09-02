@@ -106,6 +106,7 @@ CORE_PUBLIC_SURFACE = [
     "maistro.delivery",
     "maistro.governance",
     "maistro.integrations",
+    "maistro.interop",
     "maistro.observability",
     "maistro.personas",
     "maistro.policy",
