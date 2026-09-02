@@ -1,0 +1,25 @@
+# Tiered dependency policy (2026-09-02):
+#   security + patch  -> fleet lands on green CI (bot-approved)
+#   minor             -> weekly Sunday batch, triage lane
+#   major             -> routed to M6 for human decision — never silent
+# NOTE: Dependabot's native auto-merge key was removed — its schema rejected it;
+# the delivery fleet performs the merge step with recorded evidence instead.
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+      day: sunday
+    open-pull-requests-limit: 10
+    groups:
+      security-and-patch:
+        applies-to: security-updates
+        patterns: ["*"]
+        update-types:
+          - "patch"
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

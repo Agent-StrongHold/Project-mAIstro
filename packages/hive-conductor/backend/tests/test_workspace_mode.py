@@ -54,39 +54,31 @@ def _agent(workspace_id: str, name: str) -> Agent:
 
 
 class TestIsWorkspaceRequestAuthorized:
-    """Pure membership check, no persona-identity distinction -- any
-    persona's workspace authorizes its own members the same way.
+    """Pure membership check, no persona-identity distinction."""
 
-    Every "falls back to the legacy flag" case became a refusal in #129. The
-    environment variable is no longer reachable from any request, so these
-    tests patch nothing: whatever `HIVE_POC_MODE` is set to while the suite
-    runs, the answers below do not move.
-    """
-
-    def test_member_of_a_real_workspace_is_authorized(self) -> None:
+    async def test_member_of_a_real_workspace_is_authorized(self) -> None:
         stores.workspaces["ws-1"] = _workspace(persona_template_id="content_creator")
-        assert is_workspace_request_authorized("admin", "ws-1") is True
+        assert await is_workspace_request_authorized("admin", "ws-1") is True
 
-    def test_a_non_member_is_refused(self, monkeypatch) -> None:
+    async def test_a_non_member_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
         stores.workspaces["ws-1"] = _workspace()
         monkeypatch.setenv("HIVE_POC_MODE", "pm")
         monkeypatch.setenv("MAISTRO_POC_MODE", "pm")
-        assert is_workspace_request_authorized("someone-else", "ws-1") is False
+        assert await is_workspace_request_authorized("someone-else", "ws-1") is False
 
-    def test_no_workspace_id_is_refused(self, monkeypatch) -> None:
+    async def test_no_workspace_id_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("HIVE_POC_MODE", "pm")
         monkeypatch.setenv("MAISTRO_POC_MODE", "pm")
-        assert is_workspace_request_authorized("admin", None) is False
+        assert await is_workspace_request_authorized("admin", None) is False
 
-    def test_unknown_workspace_id_is_refused(self, monkeypatch) -> None:
+    async def test_unknown_workspace_id_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("HIVE_POC_MODE", "pm")
         monkeypatch.setenv("MAISTRO_POC_MODE", "pm")
-        assert is_workspace_request_authorized("admin", "does-not-exist") is False
+        assert await is_workspace_request_authorized("admin", "does-not-exist") is False
 
 
 class TestWorkspaceHasPmFleetAgents:
-    """Data-driven: derived from the workspace's own materialized agent
-    roster, not a `persona_template_id == "pm_fleet"` identity check."""
+    """Data-driven: derived from the workspace's materialized agent roster."""
 
     def test_true_when_materialized_agents_include_a_pm_fleet_shaped_name(self) -> None:
         stores.agents["ws-1.intake"] = _agent("ws-1", "intake")
@@ -100,9 +92,6 @@ class TestWorkspaceHasPmFleetAgents:
         assert workspace_has_pm_fleet_agents("ws-1") is False
 
     def test_any_persona_declaring_pm_fleet_shaped_agents_qualifies(self) -> None:
-        """Not identity-based: a hypothetically-named persona whose spawns
-        happen to include e.g. "program_manager" qualifies the same way
-        pm_fleet.yaml does -- nothing here checks persona_template_id."""
         stores.agents["ws-1.program_manager"] = _agent("ws-1", "program_manager")
         assert workspace_has_pm_fleet_agents("ws-1") is True
 

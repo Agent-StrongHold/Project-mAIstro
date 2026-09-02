@@ -96,6 +96,23 @@ class ModelStore(Generic[T]):
             return default[0]
         raise KeyError(key)
 
+    def retire_record(self, key: str, *default: Any) -> T | Any:
+        """Remove an obsolete storage representation without lifecycle hooks.
+
+        This is deliberately narrower than ``pop``. It is for representation
+        migrations where the logical entity remains live under another
+        canonical authority, so running deletion hooks would destroy children
+        of an entity that was not actually deleted. Ordinary entity deletion
+        must continue to use ``pop``.
+        """
+        if key in self._data:
+            if self._persisted is not None:
+                self._persisted.delete(self._store_name, key)
+            return self._data.pop(key)
+        if default:
+            return default[0]
+        raise KeyError(key)
+
     def persist(self, key: str) -> None:
         if self._persisted is not None and key in self._data:
             self._persisted.put(self._store_name, key, self._data[key])

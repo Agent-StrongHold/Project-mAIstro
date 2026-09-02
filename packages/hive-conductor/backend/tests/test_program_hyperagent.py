@@ -61,7 +61,7 @@ def test_user_id_from_request_raises_401_when_no_id() -> None:
 # --- require_program_access ----------------------------------------------
 
 
-def test_require_program_access_404_without_a_member_workspace(
+async def test_require_program_access_404_without_a_member_workspace(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """And with the POC flag on, which used to be the whole gate (#129)."""
@@ -70,17 +70,20 @@ def test_require_program_access_404_without_a_member_workspace(
     monkeypatch.setenv("HIVE_POC_MODE", "pm")
     monkeypatch.setenv("MAISTRO_POC_MODE", "pm")
     with pytest.raises(HTTPException) as ei:
-        ph.require_program_access("u1", None)
+        await ph.require_program_access("u1", None)
     assert ei.value.status_code == 404
 
 
-def test_require_program_access_passes_for_a_member(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_require_program_access_passes_for_a_member(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import services.program_hyperagent as ph
 
-    monkeypatch.setattr(
-        "services.workspace_mode.is_workspace_request_authorized", lambda uid, ws: True
-    )
-    ph.require_program_access("u1", "ws-1")  # no raise
+    async def _authorized(uid: str, workspace_id: str | None) -> bool:
+        return True
+
+    monkeypatch.setattr("services.workspace_mode.is_workspace_request_authorized", _authorized)
+    await ph.require_program_access("u1", "ws-1")
 
 
 # --- apply_guidance_and_pulse -------------------------------------------
@@ -462,9 +465,6 @@ class TestTheWorkspaceReachesEverythingItShould:
             lambda a, c, p, workspace_id=None: ("delivery", "d", "delivery"),
         )
         monkeypatch.setattr(ph, "_get_atlassian_pats", lambda uid: {})
-        # Imported inside the loop body, so patched at its source rather than
-        # on `ph`. The stub context is not a real ProgramContext and this test
-        # is about the workspace reaching `submit_task`, not about projection.
         monkeypatch.setattr("maistro.agents.program_context.context_for_task", lambda c: {})
 
         await ph.run_program_pulse("u1", workspace_id="ws-a")
@@ -474,11 +474,6 @@ class TestTheWorkspaceReachesEverythingItShould:
     async def test_a_roster_that_changed_mid_pulse_is_told_so(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Since #221 the proposals come from this workspace's own roster, so
-        an action that cannot be queued means the roster changed between
-        proposing and queueing. That is a real race, and returning an empty
-        `queued` beside a full `proposed` would read as "the pulse ran and
-        found nothing to do"."""
         import services.program_hyperagent as ph
 
         class _Engine:
@@ -520,10 +515,6 @@ class TestTheWorkspaceReachesEverythingItShould:
     async def test_a_workspace_with_no_autonomous_capable_agents_is_told_that(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The other empty case, and the one #221 makes ordinary. Nothing went
-        wrong and no roster changed: this workspace simply has no agent
-        declaring a capability that may run without approval. Saying "the
-        pulse proposed agents you do not have" there would be false."""
         import services.program_hyperagent as ph
 
         class _Engine:
@@ -549,8 +540,6 @@ class TestTheWorkspaceReachesEverythingItShould:
     async def test_the_pulse_reads_the_workspaces_own_roster(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The whole of #221 at this seam: the roster handed to the proposer
-        is this workspace's, not PM Fleet's."""
         import services.program_hyperagent as ph
 
         class _Engine:
