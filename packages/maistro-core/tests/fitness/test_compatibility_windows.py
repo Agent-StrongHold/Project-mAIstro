@@ -69,7 +69,9 @@ def _canonical_map(document: dict[str, Any]) -> dict[str, frozenset[str]]:
         fields = entry.get("required_fields")
         if not isinstance(identity, str) or not identity:
             raise AssertionError("canonical surface identity must be non-empty")
-        if not isinstance(fields, list) or not all(isinstance(field, str) and field for field in fields):
+        if not isinstance(fields, list) or not all(
+            isinstance(field, str) and field for field in fields
+        ):
             raise AssertionError(f"canonical surface {identity} has invalid required_fields")
         result[identity] = frozenset(fields)
     return result
@@ -180,9 +182,7 @@ def _record_shape_violations(document: dict[str, Any], *, evidence_root: Path) -
     return violations
 
 
-def _baseline_removal_violations(
-    baseline: dict[str, Any], candidate: dict[str, Any]
-) -> list[str]:
+def _baseline_removal_violations(baseline: dict[str, Any], candidate: dict[str, Any]) -> list[str]:
     """Compare candidate registry to trusted-base canonical surface."""
     base_surface = _canonical_map(baseline)
     candidate_surface = _canonical_map(candidate)
@@ -222,7 +222,9 @@ def _trusted_baseline() -> dict[str, Any]:
         # registry. Current-tree validation still runs in that case.
         return {"canonical_surface": []}
     if not isinstance(value, dict):
-        raise AssertionError(f"trusted compatibility baseline from {baseline.source} is not an object")
+        raise AssertionError(
+            f"trusted compatibility baseline from {baseline.source} is not an object"
+        )
     return value
 
 
@@ -305,9 +307,7 @@ def test_trusted_base_removal_requires_explicit_disposition() -> None:
         ]
     }
     candidate: dict[str, Any] = {
-        "canonical_surface": [
-            {"identity": "model.py::Thing", "required_fields": ["thing_id"]}
-        ],
+        "canonical_surface": [{"identity": "model.py::Thing", "required_fields": ["thing_id"]}],
         "compatibility_aliases": [],
         "compatibility_migrations": [],
     }
@@ -317,7 +317,5 @@ def test_trusted_base_removal_requires_explicit_disposition() -> None:
         "model.py::Thing.legacy_name"
     ]
 
-    candidate["compatibility_migrations"] = [
-        {"old_identity": "model.py::Thing.legacy_name"}
-    ]
+    candidate["compatibility_migrations"] = [{"old_identity": "model.py::Thing.legacy_name"}]
     assert _baseline_removal_violations(baseline, candidate) == []

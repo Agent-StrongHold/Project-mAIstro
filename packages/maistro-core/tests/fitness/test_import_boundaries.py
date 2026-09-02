@@ -271,8 +271,7 @@ def _compatibility_alias_violations(document: dict[str, Any], root: Path) -> lis
     aliases = _public_direct_aliases(root)
     found_aliases = set(aliases)
     violations.extend(
-        f"unreviewed public alias: {item}"
-        for item in sorted(found_aliases - reviewed_aliases)
+        f"unreviewed public alias: {item}" for item in sorted(found_aliases - reviewed_aliases)
     )
     violations.extend(
         f"stale compatibility alias registry entry: {item}"
@@ -453,9 +452,7 @@ def test_fitness_detector_catches_a_planted_violation(tmp_path: Path) -> None:
 
     # Removing a required canonical field is a red gate until a reviewed
     # migration updates the contract surface.
-    (planted / "canonical.py").write_text(
-        "class Canonical:\n    keep: str\n", encoding="utf-8"
-    )
+    (planted / "canonical.py").write_text("class Canonical:\n    keep: str\n", encoding="utf-8")
     minimal_contract["compatibility_aliases"] = []
     minimal_contract["canonical_surface"] = [
         {"identity": "canonical.py::Canonical", "required_fields": ["keep", "removed"]}
