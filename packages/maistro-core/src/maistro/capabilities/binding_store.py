@@ -111,8 +111,7 @@ class InMemoryBindingStore:
             )
         if binding.node_id and binding.node_id != node_id:
             raise BindingScopeDenied(
-                f"Binding {binding_id!r} is restricted to Node {binding.node_id!r}, "
-                f"not {node_id!r}"
+                f"Binding {binding_id!r} is restricted to Node {binding.node_id!r}, not {node_id!r}"
             )
         if binding.capability != capability:
             raise BindingScopeDenied(

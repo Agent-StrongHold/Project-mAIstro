@@ -22,6 +22,10 @@ from maistro.a2a.guest_peers import GuestPeerManager
 from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.intents import IntentRegistry, build_intent_registry
 from maistro.archive.wiring import build_archive_store
+from maistro.capabilities.effect_context import (
+    CapabilityEffectContext,
+    new_in_memory_effect_context,
+)
 from maistro.classifier.engine import ClassifierEngine
 from maistro.graph.durable_runs.canonical_store import CanonicalDurableRunStore
 from maistro.graph.durable_runs.protocol import DurableRunStore
@@ -245,6 +249,13 @@ class Container:
     # "rsi_cycle" itself.
     harness_adapters: dict[str, HarnessAdapter] = field(default_factory=dict)
     spawn_harness_node: AgentSpawnHarnessNode = None  # type: ignore[assignment]
+    # Canonical governed capability-effect boundary (#55): the Binding and
+    # Invocation authorities this container's effect nodes resolve against.
+    # Owned per-container so a deployment registers Bindings on the context its
+    # own nodes consume, instead of mutating a process-global default no
+    # application populated. Absence of a registered Binding stays a hard
+    # refusal; wiring the context grants nothing on its own.
+    capability_effects: CapabilityEffectContext = None  # type: ignore[assignment]  # wired in create_container
     # Shared quota usage log for any node/hook that needs one (e.g.
     # RsiQuotaPaceTriggerNode via build_node_resolver). Defaults to the
     # process-wide singleton (quota/usage_log.py) so this container and any
@@ -738,6 +749,7 @@ class Container:
                 a2a_delegator=self.a2a_delegator,
                 guest_peers=self.guest_peers,
                 run_store=self.run_store,
+                effect_context=self.capability_effects,
             ),
         )
         executed = 0
@@ -813,6 +825,7 @@ class Container:
                 a2a_delegator=self.a2a_delegator,
                 guest_peers=self.guest_peers,
                 run_store=self.run_store,
+                effect_context=self.capability_effects,
             ),
         )
         resumed = 0
@@ -1427,7 +1440,10 @@ async def create_container(
 
     # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) -----------
     wired_harness_adapters = _wire_harness_adapters(harness_adapters)
-    spawn_harness_node = AgentSpawnHarnessNode(adapters=wired_harness_adapters)
+    capability_effects = new_in_memory_effect_context()
+    spawn_harness_node = AgentSpawnHarnessNode(
+        adapters=wired_harness_adapters, effect_context=capability_effects
+    )
 
     # --- Personas golden records (SPEC-192) --------------------------------
     from maistro.personas.golden import InMemoryGoldenRecordStore
@@ -1498,6 +1514,7 @@ async def create_container(
         hierarchy=hierarchy,
         harness_adapters=wired_harness_adapters,
         spawn_harness_node=spawn_harness_node,
+        capability_effects=capability_effects,
         golden_record_store=golden_record_store,
         skill_registry=skill_registry,
         policy_attachment_store=policy_attachment_store,
@@ -2115,6 +2132,7 @@ def build_node_resolver(
     a2a_delegator: Any = None,
     guest_peers: Any = None,
     run_store: RunStore | None = None,
+    effect_context: CapabilityEffectContext | None = None,
 ) -> Callable[[str, Any], Any]:
     """Build the production durable-executor node resolver.
 
@@ -2142,6 +2160,11 @@ def build_node_resolver(
 
     resolved_adapters = harness_adapters if harness_adapters is not None else {}
     resolved_usage_log = usage_log if usage_log is not None else get_default_usage_log()
+    # The container passes its own capability_effects so resolver-built
+    # spawn_harness nodes resolve the same Binding/Invocation authorities the
+    # container's own node does (#55). Bare callers keep the process default,
+    # which registers no Bindings and therefore authorizes nothing.
+    resolved_effect_context = effect_context
 
     def _resolver(node_id: str, graph: Any) -> Any:
         kind = ""
@@ -2161,7 +2184,9 @@ def build_node_resolver(
             raise TypeError("node resolver requires canonical Graph or raw DAG snapshot")
 
         if kind == "agent.spawn_harness":
-            return AgentSpawnHarnessNode(adapters=resolved_adapters)
+            return AgentSpawnHarnessNode(
+                adapters=resolved_adapters, effect_context=resolved_effect_context
+            )
         if kind == "rsi.quota_pace_trigger":
             return RsiQuotaPaceTriggerNode(resolved_usage_log)
         if kind == "agent.delegate_remote":

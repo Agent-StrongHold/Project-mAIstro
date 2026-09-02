@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from maistro.capabilities.binding import Binding
@@ -289,3 +290,98 @@ def test_harness_kind_enum_values() -> None:
     assert HarnessKind.CLAUDE_CODE == "claude_code"
     assert HarnessKind.CONDUCTOR == "conductor"
     assert HarnessKind.IN_PROCESS == "in_process"
+
+
+# --- Dispatch-guard failures (#55): fail closed on corrupt provider results -
+
+
+@dataclass
+class _StubRecord:
+    """Minimal invocation-shaped record a stubbed service can return."""
+
+    result: object
+    invocation_id: str = "stub-invocation"
+
+
+class _ForeignProviderInvoker:
+    """Cross the Invocation seam with a provider of the wrong concrete type."""
+
+    async def invoke(self, *, executor: Any, request: Any, **_kwargs: Any) -> Any:
+        await executor(object(), request)
+        raise AssertionError("executor must have refused the foreign provider")
+
+
+class _NonDictResultInvoker:
+    """Complete an Invocation whose persisted result is not a dispatch dict."""
+
+    async def invoke(self, **_kwargs: Any) -> Any:
+        return _StubRecord(result="opaque provider blob")
+
+
+def _effects_with_stub(
+    effects: CapabilityEffectContext, stub_invocations: Any
+) -> CapabilityEffectContext:
+    return CapabilityEffectContext(
+        bindings=effects.bindings,
+        invocations=stub_invocations,
+        invocation_store=effects.invocation_store,
+        event_store=effects.event_store,
+    )
+
+
+async def test_foreign_provider_type_is_refused_before_dispatch() -> None:
+    adapter = FakeHarnessAdapter()
+    effects = await _effects_with_binding()
+    node = AgentSpawnHarnessNode(
+        adapters={"claude_code": adapter},
+        effect_context=_effects_with_stub(effects, _ForeignProviderInvoker()),
+    )
+    result = await node.run(
+        {"harness_type": "claude_code", "task": "do something", "binding_id": "b1"},
+        _ctx(),
+    )
+    assert result.success is False
+    assert result.error_code == "TypeError"
+    assert "non-harness provider" in (result.error_message or "")
+    assert adapter.dispatched == []
+
+
+async def test_non_dict_invocation_result_is_refused() -> None:
+    adapter = FakeHarnessAdapter()
+    effects = await _effects_with_binding()
+    node = AgentSpawnHarnessNode(
+        adapters={"claude_code": adapter},
+        effect_context=_effects_with_stub(effects, _NonDictResultInvoker()),
+    )
+    result = await node.run(
+        {"harness_type": "claude_code", "task": "do something", "binding_id": "b1"},
+        _ctx(),
+    )
+    assert result.success is False
+    assert result.error_code == "RuntimeError"
+    assert "did not persist a dispatch result" in (result.error_message or "")
+
+
+class _EmptyHandleAdapter(FakeHarnessAdapter):
+    """Provider bug: a dispatch handle without identity fields."""
+
+    async def dispatch(self, request: HarnessRequest) -> HarnessHandle:
+        await super().dispatch(request)
+        return HarnessHandle(handle_id="", harness_type=request.harness_type)
+
+
+async def test_provider_returning_an_invalid_handle_fails_the_node() -> None:
+    adapter = _EmptyHandleAdapter()
+    effects = await _effects_with_binding()
+    node = AgentSpawnHarnessNode(
+        adapters={"claude_code": adapter},
+        effect_context=effects,
+    )
+    result = await node.run(
+        {"harness_type": "claude_code", "task": "do something", "binding_id": "b1"},
+        _ctx(),
+    )
+    assert result.success is False
+    assert result.error_code == "RuntimeError"
+    assert "invalid dispatch handle" in (result.error_message or "")
+    assert len(adapter.dispatched) == 1
