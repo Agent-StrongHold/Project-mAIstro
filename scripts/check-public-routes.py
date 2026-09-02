@@ -1,84 +1,148 @@
 #!/usr/bin/env python3
-"""Gate: every path that skips authentication is declared, owned, and justified
-(#316).
+"""Gate the unauthenticated route surface against a trusted base (#316, #542).
 
-Why this exists
----------------
-`/v1/voice/` sat in `AuthMiddleware`'s `_PUBLIC_PREFIXES` for the whole of this
-repository's history. It is one string in one tuple, it reads exactly like the
-`/health` above it, and it made an entire prefix — including a route that
-reaches the tool loop — answer to anyone who could send it a request. The
-route's own optional key could not close it: unset was the shipped default, and
-unset meant "return early".
-
-The lesson is not "review tuples more carefully". It is that adding a public
-route costs one line and reviewing it costs reading the whole handler chain
-behind it, so the two are never in balance. This puts the decision somewhere it
-has to be argued: a path is public only if `quality/public-routes.json` says
-who owns it, what it exposes, and whether the exemption is permanent or has a
-date by which it must be re-justified.
-
-Both directions are checked. A path in the middleware and not the registry
-fails — that is a bypass nobody signed. A path in the registry and not the
-middleware fails too — a stale entry is a pre-approval waiting for whoever next
-adds that string back.
-
-What "expiry" means
--------------------
-A `temporary` exemption names the issue that removes it and a date. The date is
-not a promise that the work lands by then; it is the point at which the
-exemption stops being self-approving and someone has to look again. Past it,
-this gate fails and names the issue.
-
-Usage
------
-    python3 scripts/check-public-routes.py
+Every public path must still be declared, owned, justified, correctly shaped and
+unexpired in the candidate registry. In addition, a route identity ``(path,
+matching kind)`` that is public now but was not in the registry at the merge
+base is a security-surface expansion and requires a separately landed
+authorization. A candidate therefore cannot make a new bypass, or widen an
+existing bypass from boundary-safe matching to loose-prefix matching, acceptable
+by editing the route and registry in one commit.
 """
 
 from __future__ import annotations
 
 import ast
+import importlib.util
 import json
+import os
+import subprocess
 import sys
 from datetime import date
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 MIDDLEWARE = ROOT / "packages" / "hive-conductor" / "backend" / "middleware" / "auth.py"
 REGISTRY = ROOT / "quality" / "public-routes.json"
+_PROVENANCE_SOURCE = ROOT / "scripts" / "ratchet_provenance.py"
+RATCHET = "public-routes"
+METRIC_DEFINITION_VERSION = "2"
+_GIT_TIMEOUT_SECONDS = 60
 
-#: Module-level names in `auth.py` holding public paths, and the `kind` a
-#: registry entry must declare for a path found in each. The kinds are distinct
-#: because they match differently: `prefix` is boundary-safe (`/health` does not
-#: match `/healthz`), `loose-prefix` is a bare `startswith`, and `exact` is one
-#: path. Recording which one a route got means the registry describes the
-#: exemption that exists rather than the one the author had in mind.
 DECLARATIONS: dict[str, str] = {
     "_PUBLIC_PREFIXES": "prefix",
     "_PUBLIC_PREFIXES_LOOSE": "loose-prefix",
     "_PUBLIC_EXACT": "exact",
 }
-
-#: Fields every entry carries, whatever its disposition.
 REQUIRED = ("kind", "owner", "risk", "disposition", "reason")
-
-#: Extra fields a `temporary` exemption carries. A permanent one has no issue
-#: to name and no date to be re-justified by.
 REQUIRED_TEMPORARY = ("issue", "expires")
-
 RISKS = frozenset({"low", "medium", "high"})
 DISPOSITIONS = frozenset({"permanent", "temporary"})
 
 
-def declared_paths(source: str) -> dict[str, str]:
-    """`{path: kind}` for every literal in the declarations above.
+def _provenance() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("_ratchet_provenance", _PROVENANCE_SOURCE)
+    if spec is None or spec.loader is None:  # pragma: no cover - packaging accident
+        raise RuntimeError(f"cannot load {_PROVENANCE_SOURCE}")
+    cached = sys.modules.get(spec.name)
+    if cached is not None:
+        return cached
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules[spec.name]
+        raise
+    return module
 
-    Read from the syntax tree rather than by importing `auth.py`, which pulls
-    in FastAPI and the whole backend package layout; a gate that needs the
-    application to import in order to run is a gate that stops running the
-    first time the application does not.
+
+def _run_git(args: list[str]) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=_GIT_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"git {' '.join(args)} could not run: {exc}") from exc
+
+
+def _unshallow_ci_checkout(prov: ModuleType, event_base: str) -> None:
+    shallow = _run_git(["rev-parse", "--is-shallow-repository"])
+    if shallow.returncode != 0:
+        raise prov.RatchetProvenanceError(
+            f"could not determine checkout depth before resolving {event_base!r}: "
+            f"{shallow.stderr.strip()}"
+        )
+    if shallow.stdout.strip() != "true":
+        return
+
+    current_ref = os.environ.get("GITHUB_REF", "").strip()
+    if not current_ref:
+        raise prov.RatchetProvenanceError(
+            f"GitHub Actions checkout is shallow while resolving {event_base!r}, "
+            "but GITHUB_REF is unavailable to materialize the candidate ancestry"
+        )
+    fetched = _run_git(["fetch", "--no-tags", "--unshallow", "origin", current_ref])
+    if fetched.returncode != 0:
+        raise prov.RatchetProvenanceError(
+            f"could not unshallow GitHub event ref {current_ref!r}: {fetched.stderr.strip()}"
+        )
+
+
+def _materialize_event_base(prov: ModuleType, event_base: str) -> None:
+    if event_base.startswith("origin/"):
+        branch = event_base.removeprefix("origin/")
+        fetched = _run_git(
+            [
+                "fetch",
+                "--no-tags",
+                "origin",
+                f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
+            ]
+        )
+        if fetched.returncode != 0:
+            raise prov.RatchetProvenanceError(
+                f"could not materialize trusted base {event_base!r}: {fetched.stderr.strip()}"
+            )
+        return
+
+    probe = _run_git(["rev-parse", "--verify", f"{event_base}^{{commit}}"])
+    if probe.returncode == 0:
+        return
+    fetched = _run_git(["fetch", "--no-tags", "origin", event_base])
+    if fetched.returncode != 0:
+        raise prov.RatchetProvenanceError(
+            f"could not materialize trusted base {event_base!r}: {fetched.stderr.strip()}"
+        )
+
+
+def _materialize_ci_history(prov: ModuleType) -> None:
+    """Make the event-selected trusted base readable from a shallow Actions checkout.
+
+    ``actions/checkout`` defaults to depth one. On pull requests that leaves the
+    synthetic merge itself marked shallow and omits ``origin/<base>`` entirely,
+    so even a correct trusted-base resolver cannot calculate the merge base.
+    Materialize only the current event ref and its declared integration target;
+    never substitute the candidate ledger when that fetch fails.
     """
+    if os.environ.get("GITHUB_ACTIONS", "").lower() != "true":
+        return
+
+    event_base = prov._github_event_base()
+    if not event_base:
+        return
+    _unshallow_ci_checkout(prov, event_base)
+    _materialize_event_base(prov, event_base)
+
+
+def declared_paths(source: str) -> dict[str, str]:
     tree = ast.parse(source)
     found: dict[str, str] = {}
     for node in ast.walk(tree):
@@ -93,7 +157,6 @@ def declared_paths(source: str) -> dict[str, str]:
 
 
 def _shape_problems(path: str, entry: dict[str, Any], kind: str) -> list[str]:
-    """Field-level problems: wrong kind, unknown risk, unknown disposition."""
     problems = []
     if entry["kind"] != kind:
         problems.append(
@@ -110,7 +173,6 @@ def _shape_problems(path: str, entry: dict[str, Any], kind: str) -> list[str]:
 
 
 def _expiry_problems(path: str, entry: dict[str, Any], today: date) -> list[str]:
-    """Problems with a `temporary` exemption's issue and date."""
     missing = [
         f"  {path}: a temporary exemption must name {field!r}"
         for field in REQUIRED_TEMPORARY
@@ -118,7 +180,6 @@ def _expiry_problems(path: str, entry: dict[str, Any], today: date) -> list[str]
     ]
     if missing:
         return missing
-
     try:
         expires = date.fromisoformat(str(entry["expires"]))
     except ValueError:
@@ -133,26 +194,37 @@ def _expiry_problems(path: str, entry: dict[str, Any], today: date) -> list[str]
 
 
 def _entry_problems(path: str, entry: Any, kind: str, today: date) -> list[str]:
-    """Everything wrong with one registry entry, as messages."""
     if not isinstance(entry, dict):
         return [f"  {path}: registry entry is not an object"]
-
     missing = [f"  {path}: missing {field!r}" for field in REQUIRED if not entry.get(field)]
     if missing:
         return missing
-
     problems = _shape_problems(path, entry, kind)
     if problems or entry["disposition"] != "temporary":
         return problems
     return _expiry_problems(path, entry, today)
 
 
-def audit(today: date | None = None) -> list[str]:
-    """One message per disagreement between the middleware and the registry."""
-    today = today or date.today()
-    declared = declared_paths(MIDDLEWARE.read_text(encoding="utf-8"))
-    registry = json.loads(REGISTRY.read_text(encoding="utf-8")).get("routes", {})
+def _registry(loaded: object) -> dict[str, Any]:
+    if not isinstance(loaded, dict):
+        return {}
+    routes = loaded.get("routes")
+    return dict(routes) if isinstance(routes, dict) else {}
 
+
+def _registry_identities(registry: dict[str, Any]) -> set[tuple[str, str]]:
+    return {
+        (path, str(entry.get("kind")))
+        for path, entry in registry.items()
+        if isinstance(entry, dict) and entry.get("kind")
+    }
+
+
+def audit_registry(
+    declared: dict[str, str], registry: dict[str, Any], today: date | None = None
+) -> list[str]:
+    """One message per disagreement between middleware and one registry snapshot."""
+    today = today or date.today()
     failures: list[str] = []
     for path, kind in sorted(declared.items()):
         entry = registry.get(path)
@@ -163,7 +235,6 @@ def audit(today: date | None = None) -> list[str]:
             )
             continue
         failures.extend(_entry_problems(path, entry, kind, today))
-
     for path in sorted(set(registry) - set(declared)):
         failures.append(
             f"  {path}: declared in {REGISTRY.name} and not public in "
@@ -172,26 +243,88 @@ def audit(today: date | None = None) -> list[str]:
     return failures
 
 
+def audit(today: date | None = None) -> list[str]:
+    """Candidate-registry audit retained as the public/test-facing helper."""
+    declared = declared_paths(MIDDLEWARE.read_text(encoding="utf-8"))
+    registry = _registry(json.loads(REGISTRY.read_text(encoding="utf-8")))
+    return audit_registry(declared, registry, today)
+
+
 def main() -> int:
     for required in (MIDDLEWARE, REGISTRY):
         if not required.is_file():
             print(f"FAIL: {required} does not exist", file=sys.stderr)
             return 1
 
-    failures = audit()
+    declared = declared_paths(MIDDLEWARE.read_text(encoding="utf-8"))
+    candidate = _registry(json.loads(REGISTRY.read_text(encoding="utf-8")))
+    candidate_failures = audit_registry(declared, candidate)
+
+    prov = _provenance()
+    try:
+        _materialize_ci_history(prov)
+        trusted_ref = prov.resolve_baseline(REGISTRY, root=ROOT)
+        trusted = _registry(trusted_ref.loads(default={"routes": {}}))
+        prov.require_measurement(declared, ratchet=RATCHET, what="public routes")
+        authorized = prov.load_authorizations(RATCHET, base=trusted_ref.base_sha)
+    except (RuntimeError, prov.RatchetProvenanceError) as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+
+    current_identities = set(declared.items())
+    trusted_identities = _registry_identities(trusted)
+    added_identities = sorted(current_identities - trusted_identities)
+    affected_paths = sorted({path for path, _kind in added_identities})
+    unauthorized = [path for path in affected_paths if path not in authorized]
+    unbanked_authorized = [
+        path for path in affected_paths if path in authorized and path not in candidate
+    ]
+
+    print(
+        prov.Provenance(
+            ratchet=RATCHET,
+            baseline=trusted_ref,
+            tool="python ast",
+            metric_definition_version=METRIC_DEFINITION_VERSION,
+            old_value=f"{len(trusted_identities)} public route identities",
+            new_value=f"{len(current_identities)} public route identities",
+            candidate_sha=prov.head_sha(ROOT),
+            authorizations=tuple(
+                f"{path}: {authorized[path]}" for path in affected_paths if path in authorized
+            ),
+        ).render()
+    )
+
+    failures = list(candidate_failures)
+    for path in unauthorized:
+        trusted_entry = trusted.get(path)
+        old_kind = trusted_entry.get("kind") if isinstance(trusted_entry, dict) else None
+        if old_kind is None:
+            failures.append(
+                f"  {path}: NEW unauthenticated path is absent from the trusted base and has no "
+                "already-landed authorization"
+            )
+        else:
+            failures.append(
+                f"  {path}: unauthenticated matching kind changed from {old_kind!r} to "
+                f"{declared[path]!r} without already-landed authorization"
+            )
+    failures.extend(
+        f"  {path}: authorized public-surface expansion is not recorded in the candidate registry"
+        for path in unbanked_authorized
+    )
+
     if failures:
         print(f"FAIL: {len(failures)} problem(s) with the unauthenticated route surface:\n")
         print("\n".join(failures))
         print(
-            "\nMaking a route public costs one line; reviewing it costs reading "
-            "\neverything behind it. quality/public-routes.json is where that "
-            "\nasymmetry gets an owner, a risk, and — for anything meant to be "
-            "\ntemporary — a date by which it stops approving itself."
+            "\nA new public route or matching-kind expansion requires its registry entry plus a "
+            "separately landed authorization. Existing entries remain ordinary reviewed policy "
+            "and must stay owned, justified, correctly shaped, and unexpired."
         )
         return 1
 
-    count = len(declared_paths(MIDDLEWARE.read_text(encoding="utf-8")))
-    print(f"ok: all {count} unauthenticated path(s) are declared, owned, and unexpired")
+    print(f"ok: all {len(declared)} unauthenticated path(s) are declared and base-authorized")
     return 0
 
 

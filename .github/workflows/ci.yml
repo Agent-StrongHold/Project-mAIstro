@@ -171,6 +171,11 @@ jobs:
         run: python3 scripts/check-build-context.py
 
   postgres:
+    needs: workflow-lint
+    if: >-
+      github.event_name != 'merge_group' ||
+      github.event.merge_group.base_ref != 'refs/heads/develop' ||
+      needs.workflow-lint.outputs.postgres == 'true'
     # A real PostgreSQL, because the alternative was proving nothing. Every
     # `test_pg_*.py` module mocks the connection and asserts on the SQL string,
     # which cannot catch a missing table, a column the store writes and the
@@ -246,6 +251,11 @@ jobs:
         run: uv run pytest packages/maistro-core/tests/workspaces -v --tb=short
 
   object-storage:
+    needs: workflow-lint
+    if: >-
+      github.event_name != 'merge_group' ||
+      github.event.merge_group.base_ref != 'refs/heads/develop' ||
+      needs.workflow-lint.outputs.object_storage == 'true'
     # MinIO, not moto. The default `test` job already runs the archive suite
     # against an in-process moto server, which is a real HTTP S3 implementation
     # and enough to catch our own mistakes. MinIO is what people actually run,
@@ -406,6 +416,11 @@ jobs:
         run: python scripts/check-suite-inventory.py
 
   durable-events:
+    needs: workflow-lint
+    if: >-
+      github.event_name != 'merge_group' ||
+      github.event.merge_group.base_ref != 'refs/heads/develop' ||
+      needs.workflow-lint.outputs.durable_events == 'true'
     # The PostgreSQL legs of the durable-event suites (#135) skip without a
     # server, and a skipped leg is untested rather than passing — which is how
     # "durable events" stayed in-memory on PostgreSQL unnoticed in the first
@@ -459,6 +474,11 @@ jobs:
           MAISTRO_DRY_RUN: "1"
 
   strike-ladder:
+    needs: workflow-lint
+    if: >-
+      github.event_name != 'merge_group' ||
+      github.event.merge_group.base_ref != 'refs/heads/develop' ||
+      needs.workflow-lint.outputs.strike_ladder == 'true'
     # The PostgreSQL leg of the strike conformance suite (#134) skips without a
     # server, and the plain `test` job has none — so the suite that exists to
     # prove `PgStrikeTracker` matches the protocol was only ever exercising
@@ -487,7 +507,7 @@ jobs:
     env:
       MAISTRO_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/strike_test
       # Turns "no server, skip" into a failure, in this job only. Without it a
-      # misconfigured service container leaves the job green with the durable
+      # misconfigured service container leaves this job green with the durable
       # leg skipped — reporting the absence of the gap rather than its closure.
       MAISTRO_REQUIRE_PG_LEGS: "1"
     steps:
@@ -504,6 +524,11 @@ jobs:
           MAISTRO_DRY_RUN: "1"
 
   hive-conductor-e2e-ui:
+    needs: workflow-lint
+    if: >-
+      github.event_name != 'merge_group' ||
+      github.event.merge_group.base_ref != 'refs/heads/develop' ||
+      needs.workflow-lint.outputs.hive_e2e == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -555,6 +580,11 @@ jobs:
         run: docker compose -f docker-compose.test.yml down -v
 
   hive-conductor-e2e:
+    needs: workflow-lint
+    if: >-
+      github.event_name != 'merge_group' ||
+      github.event.merge_group.base_ref != 'refs/heads/develop' ||
+      needs.workflow-lint.outputs.hive_e2e == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -589,6 +619,11 @@ jobs:
         run: docker compose -f docker-compose.test.yml down -v
 
   wheel-imports:
+    needs: workflow-lint
+    if: >-
+      github.event_name != 'merge_group' ||
+      github.event.merge_group.base_ref != 'refs/heads/develop' ||
+      needs.workflow-lint.outputs.wheel_imports == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -626,7 +661,13 @@ jobs:
       - run: python scripts/pip_audit_gate.py /tmp/pip-audit.json
 
   docker-build:
+    needs: workflow-lint
+    if: >-
+      github.event_name != 'merge_group' ||
+      github.event.merge_group.base_ref != 'refs/heads/develop' ||
+      needs.workflow-lint.outputs.docker_build == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -923,12 +964,25 @@ jobs:
           --cache-to type=gha,scope=rsi-runner,mode=max .
 
   workflow-lint:
+    outputs:
+      postgres: ${{ steps.scope.outputs.postgres }}
+      object_storage: ${{ steps.scope.outputs.object_storage }}
+      durable_events: ${{ steps.scope.outputs.durable_events }}
+      strike_ladder: ${{ steps.scope.outputs.strike_ladder }}
+      hive_e2e: ${{ steps.scope.outputs.hive_e2e }}
+      wheel_imports: ${{ steps.scope.outputs.wheel_imports }}
+      docker_build: ${{ steps.scope.outputs.docker_build }}
     runs-on: ubuntu-latest
     env:
       ACTIONLINT_VERSION: "1.7.7"
       SHELLCHECK_VERSION: "0.10.0"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve specialized merge-group scope
+        id: scope
+        run: python3 scripts/ci_merge_group_scope.py --github-outputs >> "$GITHUB_OUTPUT"
       # `--retry` on both: these fetch from github.com/releases, which returns a
       # 502 often enough to matter. One did on this job, and the whole check
       # went red having linted nothing — a red that says nothing about the

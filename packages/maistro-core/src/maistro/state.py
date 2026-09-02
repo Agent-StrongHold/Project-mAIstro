@@ -84,8 +84,9 @@ class State:
         Raises rather than accepting work there is no thread to perform. Note
         `fn` runs while the writer lock is held, so it must not call back into
         `run_migration()`, `backup()` or `close()` — the lock is not reentrant
-        and doing so deadlocks the writer thread permanently. No current caller
-        does; `PersistedStore` only issues `conn.execute`.
+        and doing so deadlocks the writer thread permanently. PersistedStore
+        callbacks issue SQL (and the synchronous insert-if-absent commits) on
+        the supplied connection without calling back into State.
         """
         with self._lifecycle_lock:
             if not self._writer_open:
@@ -368,6 +369,46 @@ class PersistedStore:
             )
 
         self._state.submit(_upsert)
+
+    def put_raw_if_absent(
+        self,
+        store_name: str,
+        key: str,
+        json_str: str,
+        *,
+        timeout: float = 30.0,
+    ) -> bool:
+        """Atomically insert a raw value without overwriting an existing key."""
+        now = datetime.now(UTC).isoformat()
+        completed = threading.Event()
+        inserted: list[bool] = []
+        errors: list[Exception] = []
+
+        def _insert_once(conn: sqlite3.Connection) -> None:
+            try:
+                # SECURITY-REVIEW: Identity-link callers rely on the primary
+                # key conflict being decided by SQLite, not a process-local
+                # read followed by an overwriting upsert.
+                cursor = conn.execute(
+                    "INSERT INTO kv_store (store_name, key, value, updated_at) "
+                    "VALUES (?, ?, ?, ?) ON CONFLICT(store_name, key) DO NOTHING",
+                    (store_name, key, json_str, now),
+                )
+                conn.commit()
+                inserted.append(cursor.rowcount == 1)
+            except Exception as exc:
+                with contextlib.suppress(Exception):
+                    conn.rollback()
+                errors.append(exc)
+            finally:
+                completed.set()
+
+        self._state.submit(_insert_once)
+        if not completed.wait(timeout=timeout):
+            raise TimeoutError("timed out waiting for conflict-safe state insert")
+        if errors:
+            raise RuntimeError("conflict-safe state insert failed") from errors[0]
+        return inserted == [True]
 
     def get_raw(self, store_name: str, key: str) -> str | None:
         reader = self._state.open_reader()

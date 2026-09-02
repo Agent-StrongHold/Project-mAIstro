@@ -6,15 +6,30 @@ when the task completes, fails, or is cancelled.
 
 from __future__ import annotations
 
+import asyncio
 import re
+import time as _time
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal, cast
 from uuid import uuid4
 
+import stores
+from config import get_settings, is_valid_oauth_provider_name
 from fastapi import APIRouter, Cookie, HTTPException, Request, Response
+from models.schemas import HiveUser
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from services.oauth_login import (
+    OAUTH_MAX_PENDING_STATES,
+    OAUTH_STATE_MAX_LENGTH,
+    OAUTH_STATE_TTL_SECONDS,
+    OAuthLoginDenied,
+    get_oauth_login_service,
+    oauth_state_cookie_name,
+)
+from starlette.responses import JSONResponse, RedirectResponse
 
-from maistro.security.auth_throttle import AuthThrottle, StricterLimits
+from maistro.security.auth_throttle import AuthLimits, AuthThrottle, StricterLimits
+from maistro.security.passwords import equal_cost_verify, hash_password, needs_rehash
 from maistro.security.transport import is_trusted_proxy, parse_trusted_proxies
 from routes.audit import log_audit
 
@@ -26,6 +41,20 @@ _STRICTER = StricterLimits()
 _LOGIN_THROTTLE = AuthThrottle()
 _REGISTER_THROTTLE = AuthThrottle(_STRICTER.register)
 _ELEVATE_THROTTLE = AuthThrottle(_STRICTER.elevate)
+# In one state lifetime, anonymous starts cannot fill the bounded state store
+# even when distributed across client addresses.
+_OAUTH_START_GLOBAL_LIMIT = OAUTH_MAX_PENDING_STATES // 2
+_OAUTH_START_LIMITS = AuthLimits(
+    per_client=10,
+    per_account=_OAUTH_START_GLOBAL_LIMIT,
+    global_failures=_OAUTH_START_GLOBAL_LIMIT,
+    window_seconds=float(OAUTH_STATE_TTL_SECONDS),
+    max_delay_seconds=0.5,
+)
+_OAUTH_START_THROTTLE = AuthThrottle(_OAUTH_START_LIMITS)
+_OAUTH_CALLBACK_THROTTLE = AuthThrottle(_OAUTH_START_LIMITS)
+_OAUTH_START_ACCOUNT = "oauth-start"
+_OAUTH_CALLBACK_ACCOUNT = "oauth-callback"
 
 
 def _client_key(request: Request) -> str:
@@ -38,8 +67,6 @@ def _client_key(request: Request) -> str:
     is the same as having no per-client limit at all (#369 established the
     trusted-proxy check; this is the second thing that needs it).
     """
-    from config import get_settings
-
     peer = request.client.host if request.client else ""
     if not peer:
         # No peer address (a Unix socket, say). One shared bucket rather than
@@ -65,8 +92,6 @@ def _enforce(throttle: AuthThrottle, request: Request, account: str, action: str
     this endpoint is being hardened against. The reason goes to the audit log,
     where a defender can read it and an attacker cannot.
     """
-    import time as _time
-
     decision = throttle.check(client_key=_client_key(request), account=account)
     if decision.delay_seconds:
         _time.sleep(decision.delay_seconds)
@@ -83,6 +108,8 @@ _SESSION_COOKIE = "hive_session"
 _COOKIE_MAX_AGE = 60 * 60 * 24 * 7
 _USERNAME_RE = re.compile(r"^[a-zA-Z0-9_-]{3,32}$")
 _MIN_PASSWORD_LEN = 8
+_OAUTH_CODE_MAX_LENGTH = 4096
+_OAUTH_FAILURE_DETAIL = "OAuth authentication failed"
 
 
 class LoginBody(BaseModel):
@@ -131,8 +158,6 @@ class ElevateBody(BaseModel):
 
 
 def _resolve_session(session_id: str) -> dict[str, Any] | None:
-    import stores
-
     if not session_id or session_id not in stores.sessions:
         return None
     sess = stores.sessions[session_id]
@@ -168,8 +193,6 @@ def get_current_user(session_id: str | None) -> dict[str, Any] | None:
     sess = _resolve_session(session_id)
     if sess is None:
         return None
-    import stores
-
     user = stores.users.get(sess["user_id"])
     if user is None or not user.is_active:
         return None
@@ -196,30 +219,24 @@ def user_has_permission(session_id: str | None, perm: str) -> bool:
     sess = _resolve_session(session_id)
     if sess is None:
         return False
-    import stores
-
     user = stores.users.get(sess["user_id"])
     if user is None:
         return False
-    return user.has_permission(perm)
+    return bool(user.has_permission(perm))
 
 
 def _registration_allowed() -> bool:
     """Signup only after initial hive setup (at least one account exists)."""
-    import stores
-
     return len(stores.users) > 0
 
 
 def _cookie_secure() -> bool:
     """Read the Secure flag at call time, not import time, so tests and
     deployments can set SESSION_COOKIE_SECURE without re-importing this module."""
-    from config import get_settings
-
     return bool(get_settings().session_cookie_secure)
 
 
-def _cookie_samesite() -> str:
+def _cookie_samesite() -> Literal["lax", "strict", "none"]:
     """Read SameSite at call time, for the same reason as Secure (#369).
 
     Configurable rather than the hardcoded `"lax"` it was, because a deployment
@@ -227,20 +244,20 @@ def _cookie_samesite() -> str:
     way to ask for it. The default stays `lax`, which is what makes an emailed
     link to a Conductor page work.
     """
-    from config import get_settings
+    return get_settings().session_cookie_samesite
 
-    return str(get_settings().session_cookie_samesite)
+
+def _users() -> list[HiveUser]:
+    return cast(list[HiveUser], list(stores.users.values()))
 
 
 def _username_taken(username: str) -> bool:
-    import stores
-
-    return any(u.username.lower() == username.lower() for u in stores.users.values())
+    return any(user.username.lower() == username.lower() for user in _users())
 
 
 def _issue_session(user: Any, response: Response) -> dict[str, Any]:
-    import stores
-
+    # SECURITY-REVIEW: This is the canonical Hive authentication/session
+    # issuance boundary used by both password and verified OAuth login.
     session_id = str(uuid4())
     stores.sessions[session_id] = {
         "user_id": user.id,
@@ -272,8 +289,6 @@ def _issue_session(user: Any, response: Response) -> dict[str, Any]:
 
 
 def revoke_task_elevation(session_id: str, task_id: str) -> None:
-    import stores
-
     if session_id not in stores.sessions:
         return
     sess = stores.sessions[session_id]
@@ -281,6 +296,223 @@ def revoke_task_elevation(session_id: str, task_id: str) -> None:
     if task_id in grants:
         del grants[task_id]
         stores.sessions[session_id] = {**sess, "elevated_grants": grants}
+
+
+def _normalized_oauth_provider(provider: str) -> str:
+    return provider if is_valid_oauth_provider_name(provider) else "unknown"
+
+
+async def _charge_oauth_start(request: Request) -> None:
+    """Count each anonymous state allocation before it can reach the store."""
+    # SECURITY-REVIEW: This anonymous authentication boundary trusts only the
+    # canonical proxy-aware client key and charges before allocating state.
+    client_key = _client_key(request)
+    decision = _OAUTH_START_THROTTLE.check(
+        client_key=client_key,
+        account=_OAUTH_START_ACCOUNT,
+    )
+    if decision.delay_seconds:
+        await asyncio.sleep(decision.delay_seconds)
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many attempts. Wait a few minutes and try again.",
+            headers={"Retry-After": "60"},
+        )
+    # AuthThrottle calls this a failure because password routes charge only
+    # failed credentials. A start is itself the bounded resource spend, so
+    # every allowed allocation is charged.
+    _OAUTH_START_THROTTLE.record_failure(
+        client_key=client_key,
+        account=_OAUTH_START_ACCOUNT,
+    )
+
+
+async def _charge_oauth_callback(request: Request) -> None:
+    """Count each anonymous callback before it can reach audit or state work."""
+    # SECURITY-REVIEW: This anonymous authentication boundary trusts only the
+    # canonical proxy-aware client key and charges before audit amplification.
+    client_key = _client_key(request)
+    decision = _OAUTH_CALLBACK_THROTTLE.check(
+        client_key=client_key,
+        account=_OAUTH_CALLBACK_ACCOUNT,
+    )
+    if decision.delay_seconds:
+        await asyncio.sleep(decision.delay_seconds)
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many attempts. Wait a few minutes and try again.",
+            headers={"Retry-After": "60"},
+        )
+    _OAUTH_CALLBACK_THROTTLE.record_failure(
+        client_key=client_key,
+        account=_OAUTH_CALLBACK_ACCOUNT,
+    )
+
+
+def _audit_oauth_failure(provider: str, failure: OAuthLoginDenied) -> None:
+    normalized_provider = _normalized_oauth_provider(provider)
+    detail = {
+        "provider": normalized_provider,
+        "stage": failure.stage,
+        "reason": failure.reason,
+    }
+    if failure.subject is not None:
+        detail["subject"] = failure.subject
+    if failure.local_user_id is not None:
+        detail["local_user_id"] = failure.local_user_id
+    log_audit(
+        "auth.oauth.failed",
+        failure.local_user_id or "oauth",
+        target=normalized_provider,
+        detail=detail,
+        severity="warning",
+    )
+
+
+def _oauth_response_headers(response: Response) -> Response:
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
+def _clear_oauth_state_cookie(response: Response, provider: str) -> None:
+    safe_provider = _normalized_oauth_provider(provider)
+    response.set_cookie(
+        key=oauth_state_cookie_name(safe_provider),
+        value="",
+        max_age=0,
+        expires=0,
+        path="/",
+        httponly=True,
+        secure=True,
+        samesite="lax",
+    )
+
+
+def _oauth_failure_response(provider: str, failure: OAuthLoginDenied) -> Response:
+    _audit_oauth_failure(provider, failure)
+    response = JSONResponse(status_code=401, content={"detail": _OAUTH_FAILURE_DETAIL})
+    _clear_oauth_state_cookie(response, provider)
+    return _oauth_response_headers(response)
+
+
+def _single_callback_value(request: Request, name: str, max_length: int) -> str | None:
+    values = request.query_params.getlist(name)
+    if len(values) != 1 or not values[0] or len(values[0]) > max_length:
+        return None
+    return values[0]
+
+
+@router.get("/oauth/{provider}/start")
+async def oauth_start(provider: str, request: Request) -> Response:
+    """Begin fixed-redirect Authorization Code + PKCE login."""
+    await _charge_oauth_start(request)
+    try:
+        service = get_oauth_login_service()
+        authorization_url, state = await service.start(provider)
+    except OAuthLoginDenied as failure:
+        return _oauth_failure_response(provider, failure)
+    except Exception:
+        return _oauth_failure_response(
+            provider,
+            OAuthLoginDenied(stage="configuration", reason="missing"),
+        )
+
+    response = RedirectResponse(authorization_url, status_code=303)
+    safe_provider = _normalized_oauth_provider(provider)
+    response.set_cookie(
+        key=oauth_state_cookie_name(safe_provider),
+        value=state,
+        max_age=OAUTH_STATE_TTL_SECONDS,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
+    return _oauth_response_headers(response)
+
+
+@router.get("/oauth/{provider}/callback")
+async def oauth_callback(provider: str, request: Request) -> Response:
+    """Verify an OIDC callback and issue the existing Hive session."""
+    # SECURITY-REVIEW: OAuth query/cookie values are untrusted authentication
+    # inputs. They are bounded, browser-bound, single-use, and never logged.
+    await _charge_oauth_callback(request)
+    if request.query_params.getlist("error"):
+        state = _single_callback_value(request, "state", OAUTH_STATE_MAX_LENGTH)
+        if state is None:
+            return _oauth_failure_response(
+                provider,
+                OAuthLoginDenied(stage="state", reason="missing"),
+            )
+        safe_provider = _normalized_oauth_provider(provider)
+        browser_state = request.cookies.get(oauth_state_cookie_name(safe_provider))
+        try:
+            service = get_oauth_login_service()
+            await service.consume_failed_callback(
+                provider=provider,
+                state=state,
+                browser_state=browser_state,
+            )
+        except OAuthLoginDenied as failure:
+            return _oauth_failure_response(provider, failure)
+        except Exception:
+            return _oauth_failure_response(
+                provider,
+                OAuthLoginDenied(stage="provider", reason="provider_rejected"),
+            )
+        return _oauth_failure_response(
+            provider,
+            OAuthLoginDenied(stage="provider", reason="provider_rejected"),
+        )
+
+    code = _single_callback_value(request, "code", _OAUTH_CODE_MAX_LENGTH)
+    state = _single_callback_value(request, "state", OAUTH_STATE_MAX_LENGTH)
+    if code is None or state is None:
+        return _oauth_failure_response(
+            provider,
+            OAuthLoginDenied(
+                stage="exchange" if code is None else "state",
+                reason="missing",
+            ),
+        )
+
+    safe_provider = _normalized_oauth_provider(provider)
+    browser_state = request.cookies.get(oauth_state_cookie_name(safe_provider))
+    try:
+        service = get_oauth_login_service()
+        result = await service.authenticate(
+            provider=provider,
+            code=code,
+            state=state,
+            browser_state=browser_state,
+        )
+    except OAuthLoginDenied as failure:
+        return _oauth_failure_response(provider, failure)
+    except Exception:
+        return _oauth_failure_response(
+            provider,
+            OAuthLoginDenied(stage="provider", reason="provider_rejected"),
+        )
+
+    response = RedirectResponse(service.success_path, status_code=303)
+    _issue_session(result.user, response)
+    log_audit(
+        "auth.oauth.login",
+        result.user.id,
+        target=result.provider,
+        detail={
+            "provider": result.provider,
+            "stage": "session",
+            "reason": "success",
+            "subject": result.subject,
+            "local_user_id": result.user.id,
+        },
+    )
+    _clear_oauth_state_cookie(response, provider)
+    return _oauth_response_headers(response)
 
 
 @router.post("/register")
@@ -305,11 +537,6 @@ def register(body: RegisterBody, request: Request, response: Response) -> dict[s
         _REGISTER_THROTTLE.record_failure(client_key=_client_key(request), account=body.username)
         raise HTTPException(status_code=409, detail="Username is already taken.")
 
-    import stores
-    from models.schemas import HiveUser
-
-    from maistro.security.passwords import hash_password
-
     user_id = str(uuid4())
     password_hash = hash_password(body.password)
     now_ts = datetime.now(UTC)
@@ -331,10 +558,6 @@ def register(body: RegisterBody, request: Request, response: Response) -> dict[s
 
 @router.post("/login")
 def login(body: LoginBody, request: Request, response: Response) -> dict[str, Any]:
-    import stores
-
-    from maistro.security.passwords import equal_cost_verify, hash_password, needs_rehash
-
     _enforce(_LOGIN_THROTTLE, request, body.username, "login")
 
     # Find the account first, then ALWAYS verify exactly once — against a decoy
@@ -345,7 +568,7 @@ def login(body: LoginBody, request: Request, response: Response) -> dict[str, An
     # and `and` short-circuits, so an unknown username never reached Argon2.
     # Measured: 87.6 ms for a known username with the wrong password, ~0 ms for
     # an unknown one. Four orders of magnitude, readable from one request.
-    match = next((u for u in stores.users.values() if u.username == body.username), None)
+    match = next((user for user in _users() if user.username == body.username), None)
     verified = equal_cost_verify(body.password, match.password_hash if match else None)
 
     if match is not None and verified:
@@ -372,8 +595,6 @@ def login(body: LoginBody, request: Request, response: Response) -> dict[str, An
 @router.post("/logout")
 def logout(response: Response, hive_session: str | None = Cookie(None)) -> dict[str, Any]:
     if hive_session:
-        import stores
-
         user_info = _resolve_session(hive_session)
         actor = user_info.get("username", "unknown") if user_info else "unknown"
         stores.sessions.pop(hive_session, None)
@@ -406,10 +627,6 @@ def whoami(hive_session: str | None = Cookie(None)) -> dict[str, Any]:
 def elevate(
     body: ElevateBody, request: Request, hive_session: str | None = Cookie(None)
 ) -> dict[str, Any]:
-    import stores
-
-    from maistro.security.passwords import equal_cost_verify
-
     if not hive_session or hive_session not in stores.sessions:
         raise HTTPException(status_code=401, detail="No session")
     sess = stores.sessions[hive_session]
@@ -479,8 +696,6 @@ def set_user_permissions(
     `rsi.execute` or `harness.execute`. The admin (break-glass) account
     assigns; the daily account then elevates per task with its password.
     """
-    import stores
-
     actor = get_current_user(hive_session)
     if actor is None:
         raise HTTPException(status_code=401, detail="No session")

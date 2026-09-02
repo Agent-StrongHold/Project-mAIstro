@@ -589,10 +589,9 @@
       "id": "ratchet-provenance-helper",
       "subsystem": "Repo tooling",
       "disposition": "LIBRARY",
-      "rationale": "Shared helpers the ledger ratchets use to read their comparison baseline from the base revision instead of the candidate tree (#534), and to fold that baseline from per-branch notes rather than one shared line (#585). Both are loaded with importlib.util.spec_from_file_location rather than imported by name, so no static import edge exists for this gate to follow. The indirection is not incidental: tests/test_check_wiring_reads.py loads the gate scripts themselves by file path, which puts nothing on sys.path for a sibling import to resolve against, and the alternatives -- a sys.path insert before the imports, or a per-line lint waiver -- trade a real import edge for either an E402 violation or a suppression. `ac_state_notes` is loaded this way twice over: check-ac-state.py loads it by path, and it loads ratchet_provenance by path in turn. Exercised directly by tests/test_ratchet_provenance.py and tests/test_ac_state_notes.py, and through every ratchet that consumes them.",
+      "rationale": "ac_state_notes remains a per-branch AC-note fold helper loaded by path, so the tooling graph cannot see its runtime edge. ratchet_provenance left this group because the required Vulture Ratchet workflow now executes the full provenance inventory and delegated adapters, which load the shared resolver on every run.",
       "modules": [
-        "@tool/ac_state_notes",
-        "@tool/ratchet_provenance"
+        "@tool/ac_state_notes"
       ]
     },
     {
@@ -618,7 +617,7 @@
       "id": "shell-invoked-build-evidence",
       "subsystem": "Repo tooling",
       "disposition": "CONNECT",
-      "rationale": "Reached from a `run:` shell step in the `setup-uv` composite action (`.github/actions/setup-uv/action.yml`), not from a workflow step's `uses:` or a Python import -- the same blind spot `installer-shell-invoked-tooling` above documents: a script invoked through a shell command inside a workflow or composite action is not seen by the import-graph scan, which errs toward reporting it unreachable rather than toward silence. The code does execute on every job that pulls in `setup-uv`, one shell frame below what the rooting scan can follow. Covered directly by tests/test_build_evidence.py.",
+      "rationale": "Reached from a `run:` shell step in the `setup-uv` composite action (`.github/actions/setup-uv/action.yml`), not from a workflow step's `uses:` or a Python import -- the same blind spot `installer-shell-invoked-tooling` above documents: a script invoked through a shell command inside a workflow or composite action is not seen by the import-graph scan, which errs toward reporting a script unreachable rather than toward silence. The code does execute on every job that pulls in `setup-uv`, one shell frame below what the rooting scan can follow. Covered directly by tests/test_build_evidence.py.",
       "root": ".github/actions/setup-uv/action.yml's \"Record content-addressed setup evidence\" step; becomes visible to the graph if tooling rooting ever follows shell invocations inside composite actions",
       "modules": [
         "@tool/build-evidence"
