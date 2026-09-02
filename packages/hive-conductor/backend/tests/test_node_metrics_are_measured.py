@@ -17,7 +17,7 @@ from __future__ import annotations
 import ast
 import pathlib
 import sys
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -154,6 +154,38 @@ class TestTheIngestHasAProductionCaller:
         (obs,) = store.observations(window_seconds=3600)
         assert obs.latency_ms == 1500
         assert (obs.tokens_in, obs.tokens_out, obs.cost_usd) == (None, None, None)
+
+    @pytest.mark.ac("SPEC-083026-2642/AC-1")
+    def test_the_ingest_records_the_model_the_runner_reported(self) -> None:
+        """The #835 convergence moved this measurement off the route: the
+        durable NodeRun result carries the model the node itself reported
+        (the legacy adapter validates it onto every outcome), and the ingest
+        copies it without re-resolving. A result with no model -- a tool node,
+        a non-legacy node -- records the empty string, not a guess."""
+        from services.node_metrics_store import record_run_completion, set_store
+
+        class _NodeRunWithResult(_FakeNodeRun):
+            result: ClassVar[dict[str, Any]] = {
+                "role": "worker",
+                "response": "ok",
+                "model": "reported-model",
+            }
+
+        class _Record:
+            run = _FakeRecord.run
+            node_runs = (_NodeRunWithResult(), _FakeNodeRun())
+
+        store = NodeMetricsStore()
+        previous = _current_store()
+        set_store(store)
+        try:
+            assert record_run_completion(_Record()) == 2
+        finally:
+            set_store(previous)
+
+        first, unmeasured = store.observations(window_seconds=3600)
+        assert first.model_used == "reported-model"
+        assert unmeasured.model_used == ""
 
     @pytest.mark.ac("SPEC-083026-2642/AC-3")
     def test_a_node_run_with_no_timestamps_has_no_latency(self) -> None:
@@ -353,15 +385,20 @@ class TestTheModelANodeRanOnIsAMeasurement:
 
     The old route took the *first* node's model behind a hardcoded fallback and
     stamped it on every node, which was a fabrication. Dropping it entirely was
-    the overcorrection: `graph_runner` resolves each node's own model and passes
-    it to the call, so that value is measured. Without it `topology_compare`,
-    whose default grouping is `model_used`, puts every new observation in one
-    `(unset)` bucket and can no longer compare model variants at all.
+    the overcorrection: the node runner resolves each node's own model and
+    passes it to the call, so that value is measured. Without it
+    `topology_compare`, whose default grouping is `model_used`, puts every new
+    observation in one `(unset)` bucket and can no longer compare model
+    variants at all.
+
+    #835 moved the runner's helpers off `graph_runner` into the
+    `legacy_dag_node` adapter and the route's hand-built observations onto
+    `record_run_completion`; the scans follow the code they pin.
     """
 
     @staticmethod
     def _runner_source() -> str:
-        return (_BACKEND / "services/graph_runner.py").read_text()
+        return (_BACKEND / "services/legacy_dag_node.py").read_text()
 
     @pytest.mark.ac("SPEC-083026-2642/AC-1")
     def test_every_llm_result_carries_the_model_it_called(self) -> None:
@@ -384,13 +421,20 @@ class TestTheModelANodeRanOnIsAMeasurement:
         assert body.count('"model": model') == 3, "success, failure and exception all report it"
 
     @pytest.mark.ac("SPEC-083026-2642/AC-1")
-    def test_the_route_records_the_model_the_runner_reported(self) -> None:
+    def test_the_recorder_records_the_model_the_runner_reported(self) -> None:
         """From the runner's own result, not re-resolved: a second copy of
-        `node.get("model", ...) or CHAT_DEFAULT_MODEL or ...` in the route is
-        two places to drift."""
-        source = (_BACKEND / "routes/dags.py").read_text()
-        call = source[source.index("NodeObservation(") : source.index("except Exception:")]
-        assert 'model_used=str(nr.get("model", ""))' in call
+        `node.get("model", ...) or CHAT_DEFAULT_MODEL or ...` at the recording
+        seam is two places to drift. #835 moved that seam off the route and
+        onto `record_run_completion`, which reads the persisted NodeRun
+        result -- the value the node itself reported.
+        """
+        source = (_BACKEND / "services/node_metrics_store.py").read_text()
+        call = source[source.index("obs = NodeObservation(") : source.index("_store.append(obs)")]
+        assert "model_used=reported_model" in call
+        assert 'reported_model = str(result.get("model", ""))' in source
+        # And the ingest reads it from the record the runner produced:
+        # `result` is `node_run.result`, never node config or environment.
+        assert 'result = getattr(node_run, "result", None)' in source
 
     @pytest.mark.ac("SPEC-083026-2642/AC-1")
     def test_a_node_that_ran_no_model_reports_none(self) -> None:

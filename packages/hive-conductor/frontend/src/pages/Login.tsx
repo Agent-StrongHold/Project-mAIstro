@@ -1,8 +1,10 @@
-import { useState, type CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 import { SecretField, TextField } from "../components/shared";
 
 type Mode = "login" | "signup";
+
+type RegistrationMode = "open" | "closed";
 
 const USERNAME_RE = /^[a-zA-Z0-9_-]{3,32}$/;
 
@@ -46,11 +48,31 @@ export default function Login({ onAuthenticated }: LoginProps) {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [registrationMode, setRegistrationMode] = useState<RegistrationMode | null>(null);
+  const [invitationCode, setInvitationCode] = useState("");
+
+  // The hive publishes its registration policy on the public setup status
+  // (#313): closed by default after setup, opened only by an administrator,
+  // or crossed with a one-time invitation. The signup form follows it — an
+  // invitation code is required exactly when the policy is not open, so the
+  // form never offers a submit the server would refuse.
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/v1/setup/status", { credentials: "same-origin" });
+        const data = await res.json();
+        setRegistrationMode(data?.registration?.mode === "open" ? "open" : "closed");
+      } catch {
+        setRegistrationMode("closed");
+      }
+    })();
+  }, []);
 
   function switchMode(next: Mode) {
     setMode(next);
     setError(null);
     setConfirmPassword("");
+    setInvitationCode("");
   }
 
   async function handleLogin(e: React.FormEvent) {
@@ -105,6 +127,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
           username: username.trim(),
           password,
           confirm_password: confirmPassword,
+          invitation_token: invitationCode.trim() || undefined,
         }),
       });
       if (!res.ok) {
@@ -123,7 +146,11 @@ export default function Login({ onAuthenticated }: LoginProps) {
   const usernameValid = USERNAME_RE.test(trimmedUsername);
   const passwordValid = password.length >= 8;
   const passwordsMatch = password === confirmPassword;
-  const signupValid = usernameValid && passwordValid && passwordsMatch;
+  // An invitation is required unless an administrator opened registration.
+  const invitationRequired = registrationMode !== "open";
+  const invitationProvided = invitationCode.trim().length > 0;
+  const signupValid =
+    usernameValid && passwordValid && passwordsMatch && (!invitationRequired || invitationProvided);
 
   // Always tell the user why the submit button is disabled. Previously,
   // empty fields produced a greyed button with no hint at all — the user
@@ -143,7 +170,9 @@ export default function Login({ onAuthenticated }: LoginProps) {
                 ? "Type your password again to confirm."
                 : !passwordsMatch
                   ? "Passwords do not match."
-                  : null;
+                  : invitationRequired && !invitationProvided
+                    ? "Registration is invitation-only on this hive — enter your invitation code."
+                    : null;
 
   return (
     <div
@@ -278,6 +307,16 @@ export default function Login({ onAuthenticated }: LoginProps) {
               autoComplete="new-password"
               required
             />
+            {invitationRequired && (
+              <TextField
+                label="Invitation code"
+                value={invitationCode}
+                onChange={setInvitationCode}
+                hint="Registration is invitation-only; ask your administrator for a code."
+                autoComplete="off"
+                required
+              />
+            )}
             {signupHint && (
               <div
                 style={{

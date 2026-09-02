@@ -306,3 +306,106 @@ def test_empty_registry_exposes_only_uptime(monkeypatch: pytest.MonkeyPatch) -> 
         "# TYPE uptime_seconds gauge\n"
         "uptime_seconds 2.3\n"
     )
+
+
+# --- Series-cardinality backstop (#818 AC-3) ---------------------------------
+# Route-template labels keep cardinality bounded by construction; these tests
+# prove the registry itself also survives a caller that missed that memo and
+# feeds unbounded values (raw URLs, uuids) into a label.
+
+
+def test_registry_caps_counter_series_at_max_series_per_metric() -> None:
+    """A caller with unbounded label values gets bounded series, not memory."""
+    reg = MetricsRegistry(max_series_per_metric=3)
+    counter = reg.counter("attacker_total", "unbounded caller")
+
+    for index in range(10):
+        counter.inc(path=f"/attacker/controlled/{index}")
+
+    samples = counter.collect()
+    assert len(samples) == 3  # capped, not one series per label value
+    overflow = reg.collect_all()["metrics_series_overflow_total"]
+    assert {s["labels"]["metric"] for s in overflow} == {"attacker_total"}
+    assert sum(s["value"] for s in overflow) == 7  # 10 incs - 3 admitted
+
+
+def test_capped_metric_still_updates_existing_series_without_counting_overflow() -> None:
+    """A cap hit degrades resolution, never correctness: admitted series keep
+    counting, and re-touching them is not overflow."""
+    reg = MetricsRegistry(max_series_per_metric=2)
+    counter = reg.counter("routes_total", "bounded caller")
+    counter.inc(route="/a")
+    counter.inc(route="/b")
+    counter.inc(route="/c")  # dropped — new series past the cap
+
+    counter.inc(route="/a")
+    counter.inc(route="/a", amount=5)
+
+    values = {(s["labels"]["route"]): s["value"] for s in counter.collect()}
+    assert values == {"/a": 7.0, "/b": 1.0}
+    overflow = reg.collect_all()["metrics_series_overflow_total"]
+    assert sum(s["value"] for s in overflow) == 1  # only the one dropped sample
+
+
+def test_registry_caps_gauge_and_histogram_series_too() -> None:
+    """The backstop covers every instrument kind the registry can create."""
+    reg = MetricsRegistry(max_series_per_metric=2)
+    gauge = reg.gauge("g", "gauge under cap")
+    histogram = reg.histogram("h", "histogram under cap")
+
+    for index in range(5):
+        gauge.set(index, item=f"/raw/{index}")
+        histogram.observe(0.1, item=f"/raw/{index}")
+
+    assert len(gauge.collect()) == 2
+    assert len(histogram.collect()) == 2
+    overflow = {
+        (s["labels"]["metric"], s["value"])
+        for s in reg.collect_all()["metrics_series_overflow_total"]
+    }
+    assert overflow == {("g", 3.0), ("h", 3.0)}
+
+
+def test_series_cap_is_per_metric_not_per_registry() -> None:
+    reg = MetricsRegistry(max_series_per_metric=2)
+    first = reg.counter("first_total", "")
+    second = reg.counter("second_total", "")
+
+    for index in range(4):
+        first.inc(i=str(index))
+        second.inc(i=str(index))
+
+    assert len(first.collect()) == 2
+    assert len(second.collect()) == 2
+
+
+def test_uncapped_registry_records_every_series_and_no_overflow_metric() -> None:
+    """max_series_per_metric=None restores the pre-#818 behaviour, and a clean
+    capped registry renders no overflow counter until it is needed."""
+    reg = MetricsRegistry(max_series_per_metric=None)
+    counter = reg.counter("everything_total", "")
+
+    for index in range(8):
+        counter.inc(i=str(index))
+
+    assert len(counter.collect()) == 8
+    assert "metrics_series_overflow_total" not in reg.collect_all()
+    assert "metrics_series_overflow_total" not in reg.render_prometheus()
+
+
+def test_registry_rejects_a_series_cap_below_one() -> None:
+    with pytest.raises(ValueError, match="max_series_per_metric"):
+        MetricsRegistry(max_series_per_metric=0)
+
+
+def test_prometheus_exposition_surfaces_the_overflow_counter() -> None:
+    """Operators can alert on the backstop firing via the text exposition."""
+    reg = MetricsRegistry(max_series_per_metric=1)
+    counter = reg.counter("leaky_total", "")
+    counter.inc(key="first")
+    counter.inc(key="second")  # dropped
+
+    rendered = reg.render_prometheus()
+
+    assert "metrics_series_overflow_total" in rendered
+    assert 'metrics_series_overflow_total{metric="leaky_total"} 1.0\n' in rendered
