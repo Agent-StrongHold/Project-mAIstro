@@ -30,6 +30,7 @@ from maistro.tools.browser.guard import ABORT_REASON, ROUTE_PATTERN
 
 from .fakes import (
     FakeAsyncPlaywright,
+    FakePwBrowser,
     install_fake_playwright,
 )
 
@@ -504,6 +505,58 @@ class TestGuardedSession:
         with pytest.raises(BrowserToolError, match="playwright not installed"):
             await client.browse("https://example.com", "summarize")
 
+    @pytest.mark.asyncio
+    async def test_a_launch_failure_stops_playwright_without_a_browser_to_close(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Chromium refusing to start: there is no browser object yet, so the
+        failure path must still stop the Playwright driver and refuse the run
+        rather than leave the process holding a started transport."""
+        agent_cls, _created = make_agent_cls(run_result=SimpleNamespace(final_result="text"))
+        pw = _install_stack(monkeypatch, agent_cls)
+
+        async def _refuses_to_launch(**kwargs: Any) -> FakePwBrowser:
+            raise RuntimeError("chromium binary missing")
+
+        pw.chromium.launch = _refuses_to_launch  # type: ignore[method-assign]
+
+        client = BrowserClient()
+        with pytest.raises(BrowserToolError, match="browse failed"):
+            await client.browse("https://example.com", "summarize")
+
+        assert pw.stopped is True
+        assert pw.chromium.browsers == []
+
+    @pytest.mark.asyncio
+    async def test_a_context_creation_failure_closes_the_browser_it_made(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A context that cannot be created must not leak the browser it was
+        to live on: the half-built session is torn back down and the run is
+        refused."""
+        agent_cls, _created = make_agent_cls(run_result=SimpleNamespace(final_result="text"))
+        pw = _install_stack(monkeypatch, agent_cls)
+
+        async def _launch_context_refuser(**kwargs: Any) -> FakePwBrowser:
+            browser = FakePwBrowser()
+
+            async def _no_context(**kw: Any) -> None:
+                raise RuntimeError("cannot create context")
+
+            browser.new_context = _no_context  # type: ignore[method-assign]
+            pw.chromium.browsers.append(browser)
+            return browser
+
+        pw.chromium.launch = _launch_context_refuser  # type: ignore[method-assign]
+
+        client = BrowserClient()
+        with pytest.raises(BrowserToolError, match="search_web failed"):
+            await client.search_web("query")
+
+        assert pw.chromium.browsers[0].closed is True
+        assert pw.chromium.browsers[0].contexts == []
+        assert pw.stopped is True
+
 
 class TestGuardedSessionBrowserUseStrategies:
     """browser-use has changed how an external browser is handed over; each
@@ -647,6 +700,37 @@ class TestGuardedSessionBrowserUseStrategies:
         client = BrowserClient()
         with pytest.raises(BrowserToolError, match="cannot be governed"):
             await client.search_web("q")
+
+    @pytest.mark.asyncio
+    async def test_a_browser_cls_without_the_context_param_falls_through_to_the_session(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """browser-use drift: Agent still names `browser`, but Browser no
+        longer accepts a Playwright context (it builds its own). Handing it
+        one anyway would be silently ignored, so the wrapper must fall
+        through to a strategy that provably accepts the guarded object."""
+
+        class _ContextlessBrowser:
+            # Names other params, but not playwright_browser_context.
+            def __init__(self, *, browser_profile: Any = None) -> None:
+                self.browser_profile = browser_profile
+
+        agent_cls, created = make_agent_cls(run_result=SimpleNamespace(final_result="text"))
+        pw = _install_stack(
+            monkeypatch,
+            agent_cls,
+            browser_use_extra={
+                "Browser": _ContextlessBrowser,
+                "BrowserSession": FakeBrowserUseSessionWithContext,
+            },
+        )
+
+        client = BrowserClient()
+        await client.search_web("q")
+
+        context = created[0].browser_session.playwright_browser_context
+        assert context is pw.chromium.browsers[0].contexts[0]
+        assert [p for p, _h in context.route_handlers] == [ROUTE_PATTERN]
 
 
 class TestModelDirectedNavigation:
