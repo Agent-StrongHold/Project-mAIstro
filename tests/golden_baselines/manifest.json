@@ -1,0 +1,33 @@
+{
+  "baseline_set": "m1-pre-cutover-v1",
+  "captured_from_commit": "8f9fc22984b9598f5d7d6453a24d1f9239ddd3da",
+  "fixtures": [
+    {
+      "path": "fixtures/v1/builders.json",
+      "product": "builders",
+      "sha256": "dbef4122855bb12030babbba91eb801da8b9a3d8f09dd63527454a68ae118f25"
+    },
+    {
+      "path": "fixtures/v1/conductor.json",
+      "product": "conductor",
+      "sha256": "3e90b2e37fd01d7c852c7e186ed39cb17672b24c4002f1285cd6179b16d13aad"
+    },
+    {
+      "path": "fixtures/v1/evolve.json",
+      "product": "evolve",
+      "sha256": "0fd15bbf1b588c5510d3e2ed143d16bb85ac9806158b440986ee4a7f86a5012f"
+    },
+    {
+      "path": "fixtures/v1/schedules.json",
+      "product": "schedules",
+      "sha256": "4615d6c74f63f692c2e0dbba1811bf525338072da4470c2d30975e924bb4f619"
+    }
+  ],
+  "required_products": [
+    "builders",
+    "conductor",
+    "evolve",
+    "schedules"
+  ],
+  "schema_version": 1
+}

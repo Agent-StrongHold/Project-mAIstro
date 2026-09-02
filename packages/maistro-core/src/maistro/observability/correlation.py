@@ -5,7 +5,9 @@ nine of them and the Run/NodeRun/Attempt stores persist them. What was missing
 was any way for code *inside* an execution to know which execution it was in.
 `RequestIDMiddleware` bound one key, `request_id`, and only for work that
 arrived over HTTP; a schedule firing or a task-queue dispatch emitted log lines
-with no correlation at all, and a span opened by `trace_agent` named no Run.
+with no correlation at all. This context feeds local logs and records. External
+OTLP spans deliberately do not copy it: the ContextVar does not prove which IDs
+were server-generated, and `request_id` may be a client-supplied header.
 
 Three properties are load-bearing, and each has a test that fails without it:
 

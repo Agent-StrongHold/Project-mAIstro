@@ -18,6 +18,7 @@ from config import get_settings, is_valid_oauth_provider_name
 from fastapi import APIRouter, Cookie, HTTPException, Request, Response
 from models.schemas import HiveUser
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from services import registration_policy
 from services.oauth_login import (
     OAUTH_MAX_PENDING_STATES,
     OAUTH_STATE_MAX_LENGTH,
@@ -125,6 +126,22 @@ class RegisterBody(BaseModel):
     username: str
     password: str
     confirm_password: str
+    #: A one-time invitation code (#313). Optional because an administrator
+    #: may have opened registration outright; when the policy is closed this
+    #: is the only thing that makes the attempt succeed.
+    invitation_token: str | None = None
+
+    @field_validator("invitation_token")
+    @classmethod
+    def validate_invitation_token(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        token = value.strip()
+        if not token:
+            return None
+        if len(token) > 128:
+            raise ValueError("Invitation code is too long.")
+        return token
 
     @field_validator("username")
     @classmethod
@@ -223,11 +240,6 @@ def user_has_permission(session_id: str | None, perm: str) -> bool:
     if user is None:
         return False
     return bool(user.has_permission(perm))
-
-
-def _registration_allowed() -> bool:
-    """Signup only after initial hive setup (at least one account exists)."""
-    return len(stores.users) > 0
 
 
 def _cookie_secure() -> bool:
@@ -525,17 +537,45 @@ def register(body: RegisterBody, request: Request, response: Response) -> dict[s
     # and it also creates rows, so an unbounded stream is a storage attack as
     # well as a memory one.
     _enforce(_REGISTER_THROTTLE, request, body.username, "register")
-    if not _registration_allowed():
-        raise HTTPException(
-            status_code=403,
-            detail="Registration is unavailable until initial hive setup is complete.",
+    # #313: the durable policy decides, and it fails closed — no record,
+    # unreadable record, or an instance still mid-bootstrap all read as
+    # "closed". The old gate here was `len(stores.users) > 0`, which meant
+    # finishing setup turned public signup ON forever; this is the inversion
+    # of that. Reasons stay uniform in the response (an enumeration oracle
+    # #366 closed for login); the machine-readable reason goes to the audit
+    # log, where a defender can read it and an attacker cannot.
+    decision = registration_policy.evaluate_registration(body.invitation_token)
+    if not decision.allowed:
+        log_audit(
+            "register_blocked",
+            body.username,
+            detail={"reason": decision.reason},
+            severity="warning",
         )
+        if body.invitation_token:
+            raise HTTPException(status_code=403, detail="Invalid or expired invitation.")
+        raise HTTPException(status_code=403, detail="Registration is closed on this hive.")
     if _username_taken(body.username):
         # Charged as a failure: "is this name taken?" is itself an enumeration
         # primitive, and an unbudgeted one would let someone walk the user list
         # for free.
         _REGISTER_THROTTLE.record_failure(client_key=_client_key(request), account=body.username)
         raise HTTPException(status_code=409, detail="Username is already taken.")
+    if (
+        body.invitation_token is not None
+        and decision.reason == "invitation"
+        and not registration_policy.redeem_invitation(body.invitation_token, username=body.username)
+    ):
+        # The invitation lost a redemption race (or expired between the check
+        # and the spend). Anything that fails after a successful spend leaves
+        # the token spent — fail-closed; an operator reissues.
+        log_audit(
+            "register_blocked",
+            body.username,
+            detail={"reason": "invitation_race"},
+            severity="warning",
+        )
+        raise HTTPException(status_code=403, detail="Invalid or expired invitation.")
 
     user_id = str(uuid4())
     password_hash = hash_password(body.password)
@@ -551,6 +591,13 @@ def register(body: RegisterBody, request: Request, response: Response) -> dict[s
         created_at=now_ts,
     )
     stores.users[user_id] = user
+    if decision.reason == "invitation":
+        log_audit(
+            "registration_invitation_redeemed",
+            body.username,
+            target=decision.invitation_id,
+            detail={"invitation_id": decision.invitation_id},
+        )
     log_audit("user_register", body.username, target=user_id)
     result = _issue_session(user, response)
     return result
@@ -716,3 +763,116 @@ def set_user_permissions(
         severity="warning",
     )
     return {"ok": True, "user_id": user_id, "permissions": updated.permissions}
+
+
+# --- Registration policy (#313) ---------------------------------------------
+#
+# Admin-only surface over the durable registration policy. These are NOT in
+# AuthMiddleware's public table: dispatch 401s them without a session, and
+# the in-route role check is the same shape `set_user_permissions` above uses.
+# The anonymous surface is exactly two things — the register route itself,
+# which enforces the policy, and the `registration.mode` bit published by
+# `/v1/setup/status` so the login page need not offer a form that cannot
+# succeed.
+
+
+class RegistrationPolicyBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    mode: str
+
+
+def _require_admin(hive_session: str | None) -> dict[str, Any]:
+    actor = get_current_user(hive_session)
+    if actor is None:
+        raise HTTPException(status_code=401, detail="No session")
+    if actor["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin role required to change registration")
+    return actor
+
+
+@router.get("/registration/policy")
+def get_registration_policy(hive_session: str | None = Cookie(None)) -> dict[str, Any]:
+    """The active registration policy and the health of its durable record."""
+    _require_admin(hive_session)
+    return {"ok": True, "policy": registration_policy.describe()}
+
+
+@router.put("/registration/policy")
+def put_registration_policy(
+    body: RegistrationPolicyBody, hive_session: str | None = Cookie(None)
+) -> dict[str, Any]:
+    """Open or close public registration. Durable, and audited."""
+    actor = _require_admin(hive_session)
+    try:
+        policy = registration_policy.set_mode(body.mode, actor=f"admin:{actor['username']}")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except registration_policy.RegistrationPolicyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"registration policy was not persisted: {exc}",
+        ) from exc
+    log_audit(
+        "registration_policy_changed",
+        actor["username"],
+        detail={"mode": body.mode},
+        severity="warning",
+    )
+    return {"ok": True, "policy": policy}
+
+
+class InvitationBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    ttl_seconds: int | None = None
+    note: str | None = None
+
+
+@router.post("/registration/invitations")
+def create_invitation(
+    body: InvitationBody, hive_session: str | None = Cookie(None)
+) -> dict[str, Any]:
+    """Issue one single-use registration invitation.
+
+    The token is returned exactly once and stored only as a digest — this
+    response is the only place it can be read.
+    """
+    actor = _require_admin(hive_session)
+    try:
+        invitation = registration_policy.issue_invitation(
+            actor=f"admin:{actor['username']}",
+            ttl_seconds=body.ttl_seconds,
+            note=body.note,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except registration_policy.RegistrationPolicyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"invitation was not persisted: {exc}",
+        ) from exc
+    log_audit(
+        "registration_invitation_issued",
+        actor["username"],
+        target=invitation["invitation_id"],
+        detail={"ttl_seconds": invitation["ttl_seconds"]},
+        severity="warning",
+    )
+    return {
+        "ok": True,
+        **invitation,
+        "warning": (
+            "Show the invitation code now — it is stored only as a hash and "
+            "cannot be retrieved again."
+        ),
+    }
+
+
+@router.get("/registration/invitations")
+def list_registration_invitations(
+    hive_session: str | None = Cookie(None),
+) -> dict[str, Any]:
+    """List issued invitations: statuses and metadata, never tokens."""
+    _require_admin(hive_session)
+    return {"ok": True, "invitations": registration_policy.list_invitations()}

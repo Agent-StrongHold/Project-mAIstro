@@ -215,7 +215,6 @@
         "docs/adr/ADR-035-catalog-ownership-split.md",
         "docs/adr/ADR-036-ontology-semantic-object-layer.md",
         "docs/adr/ADR-037-observability-taxonomy.md",
-        "docs/adr/ADR-038-reliability-taxonomy.md",
         "docs/adr/ADR-039-external-library-adoption-policy.md",
         "docs/adr/ADR-041-canvas-layer-taxonomy-and-world-style.md",
         "docs/adr/ADR-044-layerrecord-to-assetinstance-migration.md",

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from maistro.agents.circuit_breaker import CircuitBreaker
 
 
@@ -28,9 +30,7 @@ def test_success_resets_failures():
     assert cb.allow_request()
 
 
-def test_half_open_after_recovery(monkeypatch: object):
-    import time
-
+def test_half_open_after_recovery():
     cb = CircuitBreaker(failure_threshold=2, recovery_timeout=0.01)
     cb.record_failure()
     cb.record_failure()
@@ -43,22 +43,20 @@ def test_half_open_after_recovery(monkeypatch: object):
 
 
 def test_half_open_success_closes():
-    import time
-
     cb = CircuitBreaker(failure_threshold=1, recovery_timeout=0.01)
     cb.record_failure()
     time.sleep(0.02)
     assert cb.state == "half_open"
+    assert cb.allow_request()
     cb.record_success()
     assert cb.state == "closed"
 
 
 def test_half_open_failure_reopens():
-    import time
-
     cb = CircuitBreaker(failure_threshold=1, recovery_timeout=0.01)
     cb.record_failure()
     time.sleep(0.02)
     assert cb.state == "half_open"
+    assert cb.allow_request()
     cb.record_failure()
     assert cb.state == "open"

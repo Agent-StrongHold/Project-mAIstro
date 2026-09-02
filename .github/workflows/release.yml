@@ -290,7 +290,7 @@ jobs:
   # nothing, which is worse than a red one.
   #
   # Required PyPI-side config, per package, for all five names:
-  #   owner: Agent-StrongHold   repository: maistro-engine
+  #   owner: Agent-StrongHold   repository: Project-mAIstro
   #   workflow: release.yml      environment: release
   # ---------------------------------------------------------------------------
   pypi:
@@ -350,7 +350,7 @@ jobs:
     timeout-minutes: 60
     environment:
       name: release
-      url: https://github.com/Agent-StrongHold/maistro-engine/pkgs/container/maistro-engine
+      url: https://github.com/Agent-StrongHold/Project-mAIstro/pkgs/container/maistro-engine
     permissions:
       contents: read
       packages: write
@@ -579,7 +579,7 @@ jobs:
 #  1. PyPI + TestPyPI trusted publishers for all five publish-set names
 #     (maistro-core, maistro-canvas, maistro-evolve, maistro-rsi,
 #     maistro-bootstrap), each configured with
-#     owner Agent-StrongHold / repo maistro-engine / workflow release.yml /
+#     owner Agent-StrongHold / repo Project-mAIstro / workflow release.yml /
 #     environment `release`. Until then the `pypi` job fails at upload.
 #  2. A GitHub environment named `release` with a required reviewer
 #     (ADR §4). Without it the `pypi` and `images` jobs run UNGATED — they

@@ -1,0 +1,35 @@
+"""Contract tests shipped with the generated product."""
+
+from __future__ import annotations
+
+import pytest
+
+from {{ project_slug | replace('-', '_') }}.config import REQUIRED_ENVIRONMENT, load_config
+
+
+@pytest.mark.contract("boundary")
+@pytest.mark.scope("unit")
+def test_rendered_contract() -> None:
+    config = load_config({name: "configured" for name in REQUIRED_ENVIRONMENT})
+
+    assert config.users_max == {{ users_max }}
+    assert config.auth_backend == "{{ auth_backend }}"
+    assert config.channels == (
+{% for channel in channels -%}
+        "{{ channel }}",
+{% endfor -%}
+    )
+    assert config.host_target == "{{ host_target }}"
+    assert config.ready is True
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("unit")
+def test_missing_credentials_fail_closed() -> None:
+    missing = load_config({})
+    configured = load_config({name: "present" for name in REQUIRED_ENVIRONMENT})
+
+    assert missing.ready is False
+    assert missing.missing_environment == REQUIRED_ENVIRONMENT
+    assert configured.ready is True
+    assert configured.missing_environment == ()

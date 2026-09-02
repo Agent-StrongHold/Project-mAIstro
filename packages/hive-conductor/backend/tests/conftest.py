@@ -98,16 +98,16 @@ def _isolate_dashboard_layouts():
 
 
 @pytest.fixture(autouse=True)
-def _legacy_registration_implementation_tests(request: pytest.FixtureRequest, monkeypatch):
-    """Let legacy implementation tests exercise /register without reopening it.
+def _legacy_registration_implementation_tests(request: pytest.FixtureRequest):
+    """Let legacy implementation tests exercise /register under an open policy.
 
-    M0 containment deliberately blocks the shipped route in
-    SecurityHeadersMiddleware. A few older password/credential tests are about
-    the *registration implementation* rather than anonymous route exposure.
-    For only those named modules, rebuild Starlette's middleware stack around a
-    test-scoped dispatch override, then discard that stack before the next test.
-    This avoids caching either the bypass or the production 403 across tests.
-    Production code has no bypass flag or backdoor.
+    Since #313 the shipped route enforces the durable registration policy —
+    closed by default — and SecurityHeadersMiddleware no longer short-circuits
+    it. A few older password/credential tests are about the *registration
+    implementation* (Argon2 storage, audit rows, sessions) rather than the
+    policy. For only those named modules, write an `open` policy record for
+    the duration of the test and drop it afterwards. Production has no
+    bypass: `open` is reachable only through the admin route or setup.
     """
     legacy_modules = {
         "test_api.py",
@@ -119,28 +119,13 @@ def _legacy_registration_implementation_tests(request: pytest.FixtureRequest, mo
         yield
         return
 
-    from main import app
-    from middleware.security_headers import SecurityHeadersMiddleware
+    from services import registration_policy
 
-    original_dispatch = SecurityHeadersMiddleware.dispatch
-
-    async def dispatch(self, http_request, call_next):
-        if http_request.url.path == "/v1/auth/register":
-            return await call_next(http_request)
-        return await original_dispatch(self, http_request, call_next)
-
-    monkeypatch.setattr(SecurityHeadersMiddleware, "dispatch", dispatch)
-    # Starlette binds dispatch when middleware_stack is built. Force this test
-    # to build a stack from the patched method instead of reusing an earlier
-    # test's cached production stack.
-    app.middleware_stack = None
+    registration_policy.set_mode("open", actor="test:legacy-registration")
     try:
         yield
     finally:
-        # Do not let a stack whose dispatch bound the test override survive the
-        # fixture. monkeypatch restores the class method after fixture teardown;
-        # the next request will then build the real production stack again.
-        app.middleware_stack = None
+        registration_policy.reset()
 
 
 @pytest.fixture(autouse=True)

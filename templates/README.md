@@ -1,18 +1,28 @@
 # Copier templates (ADR-033)
 
-This directory holds **scaffold** templates for the three product peers. Each subdirectory is a Copier project with its own `copier.yml`.
+This directory holds Copier projects for the product variants described by ADR-033.
 
-- **single-tenant-multi-user** — Conductor-shaped knobs (see ADR-033).
-- **autonoetic** — autonoetic-agent-shaped knobs.
-- **multi-tenant** — Stronghold-shaped knobs.
+- **single-tenant-multi-user** — runnable Conductor-shaped scaffold with
+  deployment, governance, and contract-test wiring.
+- **autonoetic** — runnable Turing-shaped scaffold with deployment, governance,
+  and contract-test wiring.
+- **multi-tenant** — question/README seed only. Completing and round-tripping it
+  is blocked on the external Stronghold target; do not treat it as runnable.
 
-Bootstrap round-trip and CI render tests are tracked in [BACKLOG.md](../BACKLOG.md) (engine-010–012). Expand each template with real `pyproject.toml`, compose, and `src/` overlays in follow-up PRs.
+Render and update coverage for the completed templates lives under
+[`tests/templates/`](../tests/templates/). The multi-tenant follow-up remains
+tracked as `engine-012` in [BACKLOG.md](../BACKLOG.md).
 
 Use from repo root:
 
 ```bash
-uv tool install copier
-copier copy templates/single-tenant-multi-user ./out/my-product --trust
+uv sync
+uv run copier copy --data product_template=single-tenant-multi-user https://github.com/Agent-StrongHold/Project-mAIstro.git ./out/my-product
 ```
+
+Using the repository root is required for update metadata: Copier stores the
+Git ref and the root dispatcher selects the payload through `_subdirectory`.
+After committing the generated product, future template releases can be
+applied with `uv run copier update`.
 
 Or run `uv run maistro-install` and pick a product to print the same command.
