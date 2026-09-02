@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,14 @@ router = APIRouter(tags=["setup"])
 logger = logging.getLogger("hive.setup")
 
 _SETUP_KEY = "__hive_setup__"
+#: The first-run *claim*, taken before any account exists (#313). Insert-only
+#: in the same store as the config record, so which of two concurrent
+#: first-run attempts is the one that provisions is decided by a conflict-safe
+#: insert rather than by which request writes the admin hash last.
+_SETUP_CLAIM_KEY = "__hive_setup_claim__"
+#: Serialises the claim-check-then-claim sequence inside this process; the
+#: durable conflict rule covers writers that are not this process.
+_SETUP_LOCK = threading.Lock()
 _SEED_VAULT_KEY = "CONDUCTOR_SEED_MNEMONIC"
 
 # Least-privilege permissions assigned to the daily account created at setup.
@@ -82,25 +91,46 @@ def _get_kv() -> Any:
 
 
 def _is_setup_complete() -> bool:
-    kv = _get_kv()
-    if kv is not None:
-        return _SETUP_KEY in kv
+    """True once first-run setup has begun or finished and cannot re-run.
+
+    In a persisted deployment the signals are the records setup itself writes:
+    the claim (a first-run attempt is underway — a concurrent second attempt
+    must not also mint accounts) and the config record (setup finished). Users
+    alone do not count here, so the pre-existing retry-after-failure contract
+    holds: an attempt that died between creating accounts and persisting its
+    config left the instance retryable, exactly as before (#334's loud-failure
+    pattern). An unpersisted run has no durable marker to read, so any account
+    at all is the only "setup happened" signal this process can see — and
+    notably it is *not* the signal the register route consults; that inversion
+    is what #313 fixes.
+    """
     import stores
 
+    if _get_kv() is not None:
+        return _SETUP_KEY in stores.sessions or _SETUP_CLAIM_KEY in stores.sessions
+    if _SETUP_KEY in stores.sessions or _SETUP_CLAIM_KEY in stores.sessions:
+        return True
     return len(stores.users) > 0
 
 
 @router.get("/status")
 def setup_status() -> dict[str, Any]:
-    complete = _is_setup_complete()
-    result: dict[str, Any] = {
-        "setup_complete": complete,
+    """The unauthenticated bootstrap probe.
+
+    Says two things only: whether setup still needs doing, and the active
+    registration *mode* (so the login surface can stop offering a signup form
+    the policy would refuse). The setup config itself — which carries the
+    admin and daily-account usernames and the operator's DID — stopped being
+    returned here with #313: it was account enumeration served to strangers,
+    and nothing in the product read it from this route. The wizard gets its
+    one-time copy from `/complete`'s response instead.
+    """
+    from services import registration_policy
+
+    return {
+        "setup_complete": _is_setup_complete(),
+        "registration": registration_policy.public_view(),
     }
-    if complete:
-        kv = _get_kv()
-        if kv is not None and _SETUP_KEY in kv:
-            result["config"] = kv[_SETUP_KEY]
-    return result
 
 
 class SetupCompleteBody:
@@ -150,34 +180,32 @@ def _maybe_generate_identity(
     return user_did, mnemonic, persisted
 
 
-@router.post("/complete")
-def complete_setup(body: dict[str, Any]) -> dict[str, Any]:
+def _provision_first_run(
+    body: dict[str, Any],
+    *,
+    hardware_preset: str,
+    admin_username: str,
+    admin_password: str,
+    user_username: str,
+    user_password: str,
+) -> tuple[dict[str, Any], list[str] | None]:
+    """The claimed work of first-run setup: accounts, settings, policy close-out.
+
+    Runs only while this request holds the one-time setup claim, so nothing
+    here has to defend against a concurrent provisioner — the claim already
+    settled which attempt that is. Returns `(config, mnemonic_words)`; the
+    mnemonic is None unless the crypto-identity module was requested.
+
+    Kept as a function rather than inlined into `complete_setup` for a
+    structural reason a reader cannot see from this file alone: the durable
+    settings write below must stay caught only by the narrow handlers around
+    it (#334 — a broad handler around it is the exact shape that used to
+    report `setup_complete: true` while losing the operator's choice, and
+    `test_settings_durability.py` pins that structurally).
+    """
     import stores
 
     from maistro.security.passwords import hash_password
-
-    # /v1/setup/ is a PUBLIC (unauthenticated) prefix. Setup must be a one-shot
-    # first-run operation — once complete, re-running it would let any
-    # unauthenticated caller overwrite the admin/user credentials (account
-    # takeover). Guard with the same check setup_status() reads.
-    if _is_setup_complete():
-        raise HTTPException(
-            status_code=409,
-            detail="Setup already complete. This endpoint is disabled after first-run provisioning.",
-        )
-
-    hardware_preset = body.get("hardware_preset")
-    admin_username = body.get("admin_username", "admin")
-    admin_password = body.get("admin_password")
-    user_username = body.get("user_username", "user")
-    user_password = body.get("user_password")
-
-    if not hardware_preset:
-        raise HTTPException(status_code=422, detail="hardware_preset required")
-    if not admin_password:
-        raise HTTPException(status_code=422, detail="admin_password required")
-    if not user_password:
-        raise HTTPException(status_code=422, detail="user_password required")
 
     now_ts = datetime.now(UTC)
 
@@ -234,10 +262,10 @@ def complete_setup(body: dict[str, Any]) -> dict[str, Any]:
     # Deliberately NOT inside the old best-effort `except Exception`. That
     # handler was written for a settings *shape* mismatch, and wrapping a
     # durable write in it reproduced the exact defect this change exists to
-    # remove: setup returning `setup_complete: true` while the operator's model
-    # choice was silently lost at the next restart (Codex, #334). A failure here
-    # means the install has no durable configuration, which is not a state to
-    # report success from.
+    # remove: setup returning `setup_complete: true` while the operator's
+    # model choice was silently lost at the next restart (Codex, #334). A
+    # failure here means the install has no durable configuration, which is
+    # not a state to report success from.
     from services import settings_store
 
     try:
@@ -259,9 +287,108 @@ def complete_setup(body: dict[str, Any]) -> dict[str, Any]:
             ),
         ) from exc
 
+    # #313: close registration durably, with the same acknowledgement rule
+    # the admin route uses, BEFORE setup reports success. The default is
+    # already closed, so a write lost to a crash fails toward closed; what
+    # this records is the transition itself — an instance that finished
+    # bootstrap holds a policy record saying who closed it and when.
+    from services import registration_policy
+
+    try:
+        registration_policy.close_after_setup()
+    except registration_policy.RegistrationPolicyError as exc:
+        logging.getLogger("hive.setup").error(
+            "setup could not persist the registration policy: %s", exc
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "setup did not complete: the registration policy was not "
+                "persisted, so registration state would not be durable"
+            ),
+        ) from exc
+
     kv = _get_kv()
     if kv is not None:
         kv[_SETUP_KEY] = config
+    else:
+        # Unpersisted run: the claim was only ever an in-flight lock —
+        # "setup happened" in this mode is signalled by the accounts it
+        # created, so releasing it here keeps complete ⟺ users-exist, the
+        # contract the memory-mode fallback always had. A persisted run
+        # keeps the claim forever: it is the durable one-shot marker.
+        with _SETUP_LOCK:
+            stores.sessions.pop(_SETUP_CLAIM_KEY, None)
+
+    return config, config_mnemonic
+
+
+@router.post("/complete")
+def complete_setup(body: dict[str, Any]) -> dict[str, Any]:
+    import stores
+
+    # /v1/setup/ is a PUBLIC (unauthenticated) prefix. Setup must be a one-shot
+    # first-run operation — once complete, re-running it would let any
+    # unauthenticated caller overwrite the admin/user credentials (account
+    # takeover). Guard with the same check setup_status() reads.
+    if _is_setup_complete():
+        raise HTTPException(
+            status_code=409,
+            detail="Setup already complete. This endpoint is disabled after first-run provisioning.",
+        )
+
+    hardware_preset = body.get("hardware_preset")
+    admin_username = body.get("admin_username", "admin")
+    admin_password = body.get("admin_password")
+    user_username = body.get("user_username", "user")
+    user_password = body.get("user_password")
+
+    if not hardware_preset:
+        raise HTTPException(status_code=422, detail="hardware_preset required")
+    if not admin_password:
+        raise HTTPException(status_code=422, detail="admin_password required")
+    if not user_password:
+        raise HTTPException(status_code=422, detail="user_password required")
+
+    # Claim first-run BEFORE any account exists (#313). The insert is
+    # conflict-safe at the durable layer, so two concurrent first-user
+    # attempts produce exactly one owner: the loser is refused here, before
+    # it can write an admin credential over the winner's.
+    with _SETUP_LOCK:
+        claimed = stores.sessions.put_if_absent(
+            _SETUP_CLAIM_KEY, {"claimed_at": datetime.now(UTC).isoformat()}
+        )
+        if not claimed:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Setup already complete. This endpoint is disabled after "
+                    "first-run provisioning."
+                ),
+            )
+
+    try:
+        config, config_mnemonic = _provision_first_run(
+            body,
+            hardware_preset=hardware_preset,
+            admin_username=admin_username,
+            admin_password=admin_password,
+            user_username=user_username,
+            user_password=user_password,
+        )
+    except BaseException:
+        # Release the claim so a failed first run stays retryable: the failure
+        # modes inside (identity runtime missing, settings or policy not
+        # persisted) are operator-fixable, and a claimed-but-abandoned instance
+        # would lock bootstrap behind manual database surgery. The handler
+        # re-raises everything it catches — it is a rollback, not a swallow.
+        # The delete is enqueued, so a crash in the instant between failure
+        # and flush can resurrect the claim — fail-closed (setup stays locked,
+        # registration stays closed) rather than fail-open, which is the only
+        # direction this endpoint is allowed to fail in.
+        with _SETUP_LOCK:
+            stores.sessions.pop(_SETUP_CLAIM_KEY, None)
+        raise
 
     result = {"setup_complete": True, "config": config}
     if config_mnemonic is not None:

@@ -133,6 +133,17 @@ class Foundation:
             configure_profiles(PersistedProfileRecordStore(persisted, self.state.flush))
             _warn_if_postgrest_profiles_are_being_left_behind()
 
+            # The registration policy record rides the same acknowledgement
+            # rule as settings and profiles (#313): a write is durable only
+            # after the writer queue drains, or an admin's "open" could be
+            # acknowledged and then lost.
+            from services.registration_policy import PersistedRegistrationRecordStore
+            from services.registration_policy import configure as configure_registration_policy
+
+            configure_registration_policy(
+                PersistedRegistrationRecordStore(persisted, self.state.flush)
+            )
+
             self.state.flush()
             logger.info("Stores wired to SQLite persistence")
         except Exception as exc:
@@ -155,6 +166,12 @@ class Foundation:
             from services.profile_store import reset as reset_profiles
 
             reset_profiles()
+            # Same rule for the registration policy: an ephemeral record, and
+            # `durable: false` in the admin view rather than an in-memory
+            # write wearing the shape of a durable one.
+            from services.registration_policy import reset as reset_registration_policy
+
+            reset_registration_policy()
 
     def _init_privilege(self, settings: Settings, data_dir: Path) -> None:
         if not settings.conductor_admin_public_key:
