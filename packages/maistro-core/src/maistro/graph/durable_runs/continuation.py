@@ -52,7 +52,7 @@ class GraphContinuation(BaseModel):
     created_at: datetime | None = None
 
     @classmethod
-    def of(cls, record: DurableRunRecord) -> "GraphContinuation":
+    def of(cls, record: DurableRunRecord) -> GraphContinuation:
         return cls(
             run_id=record.run_id,
             graph_state=record.graph_state,

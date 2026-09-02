@@ -18,7 +18,7 @@ from maistro.graph.execution_state import GraphExecutionState
 from maistro.graph.nodes.base import NodeContext, NodeResult
 from maistro.observability.correlation import bind_execution_context
 from maistro.runs.execution import AttemptExecutionService
-from maistro.runs.lifecycle import lease_is_expired, transition_run
+from maistro.runs.lifecycle import lease_is_expired, transition_path, transition_run
 from maistro.runs.model import Attempt, AttemptStatus, NodeRun, RunStatus
 from maistro.runs.reconciliation import AttemptLifecycleReconciler, CancellationCause
 from maistro.runs.store import RunIntegrityError, RunStore
@@ -199,7 +199,9 @@ async def resume_durable_graph(
     run = record.run
     if run.status in {RunStatus.WAITING, RunStatus.QUEUED}:
         if spine is not None:
-            canonical = await spine.transition_run(run.run_id, RunStatus.RUNNING)
+            canonical = await spine.get_run(run.run_id)
+            for step in transition_path(canonical.status, RunStatus.RUNNING):
+                canonical = await spine.transition_run(run.run_id, step)
             record = traversal._replace_record(record, run=canonical)
         else:
             record = traversal._replace_record(
