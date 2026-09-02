@@ -4,6 +4,8 @@ Adopts a client ``X-Request-ID`` only when exactly one header satisfies the
 public request-ID contract. Missing, invalid, or duplicate values receive a
 fresh server ID, which is then bound onto the canonical execution context so
 every log line, span, and event under the request carries the effective ID.
+The external telemetry boundary does not export ambient IDs because this
+context does not prove whether a value was server- or client-generated.
 """
 
 from __future__ import annotations
@@ -64,9 +66,10 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         # One vocabulary. This used to bind `request_id` straight into
         # structlog's contextvars, which correlated logs and nothing else: no
         # span, no event, and no path for the Run ids the request goes on to
-        # create to join it. Binding through the execution context reaches all
-        # three, and `execution_context_processor` still puts `request_id` on
-        # every log line (#707).
+        # create to join it. Binding through the execution context reaches
+        # local logs and events, and `execution_context_processor` still puts
+        # `request_id` on every log line (#707). External spans intentionally
+        # require stronger provenance than this ambient string context has.
         #
         # `clear_contextvars()` went with it. Starlette runs each request in
         # its own task, whose context is a copy, so there was nothing left

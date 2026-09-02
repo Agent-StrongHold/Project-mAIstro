@@ -12,5 +12,37 @@
       "issue": "#729",
       "reason": "Retiring the duplicate SQLite-only maistro.events checkpoint authority removes one previously taken checkpoint decision while accepting the canonical RunStore + GraphContinuationStore recovery authority. The replacement is fully linked and its newly touched criteria are proven, but the corpus-level design-coverage denominator changes from 34.1434% to 33.9095%; this grant authorizes exactly that intentional checkpoint-authority transition and no deeper fall."
     }
+  },
+  "reachability": {
+    "maistro.events.convergence": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#61",
+      "reason": "Convergence contract for package-local event projections, shipped by #61 as part of the canonical Event envelope closeout. maistro-core is a published library; the module is an importable surface for downstream products and no process entry point in this repository subscribes it yet. Dispositioned LIBRARY in quality/reachability-dispositions.json (group events-envelope-library); #62 is where a shipped process adopts the envelope and this entry is expected to leave the baseline."
+    },
+    "maistro.events.pg_envelope": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#61",
+      "reason": "PostgreSQL persistence for the canonical EventEnvelope (identity and deterministic Workspace sequence), deliberately separate from ADR-086's legacy PgEventLog reactor cursor. Shipped by #61 as a published-library surface for downstream products; no process entry point in this repository opens it yet. Dispositioned LIBRARY in quality/reachability-dispositions.json (group events-envelope-library); #62 is where a shipped process adopts the envelope and this entry is expected to leave the baseline."
+    },
+    "maistro.events.publisher": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#61",
+      "reason": "Persist-first publication for the one canonical Event envelope: the canonical store assigns the Workspace sequence first and the legacy EventBus receives a projection carrying that already-persisted identity. Shipped by #61 as a published-library surface for downstream products; no process entry point in this repository drives it yet. Dispositioned LIBRARY in quality/reachability-dispositions.json (group events-envelope-library); #62 is where a shipped process adopts the envelope and this entry is expected to leave the baseline."
+    },
+    "maistro.events.wiring": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#61",
+      "reason": "Backend composition helper for canonical Event persistence and publication, shipped by #61 for downstream products composing their own backends. No process entry point in this repository calls it yet; wiring it here ahead of #62 would assert adoption the closeout deliberately does not claim. Dispositioned LIBRARY in quality/reachability-dispositions.json (group events-envelope-library); #62 is where a shipped process adopts the envelope and this entry is expected to leave the baseline."
+    },
+    "maistro.interop": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#458",
+      "reason": "The #458 interoperability ontology's importable contract package. maistro-core is a published library; the module is an importable surface for the product convergence issues, not a process entry point, and no process in this repository imports it yet. Contract parity and validator behavior are proven by packages/maistro-core/tests/interop/test_contract.py; dispositioned LIBRARY in quality/reachability-dispositions.json (group interop-contract) in #997; the #459 parity suite and the Builders/Conductor migration issues are where shipped processes adopt the ontology, and this entry is expected to leave the baseline then."
+    },
+    "maistro.interop.contract": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#458",
+      "reason": "INTEROP_ONTOLOGY_V1 and the public projection/reference/version validators for the #458 ontology. Unreachable by construction for the same reason as maistro.interop: it is the contract products import, with no runtime of its own to wire, and no process entry point in this repository imports it yet. Its serialization is pinned to quality/shared-interop-ontology-v1.json by a contract test, so drift fails CI independently of reachability. Dispositioned LIBRARY in quality/reachability-dispositions.json (group interop-contract) in #997; the #459 parity suite and the Builders/Conductor migration issues are where shipped processes adopt the ontology, and this entry is expected to leave the baseline then."
+    }
   }
 }

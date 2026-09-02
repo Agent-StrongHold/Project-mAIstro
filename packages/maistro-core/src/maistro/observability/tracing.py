@@ -12,28 +12,38 @@ from __future__ import annotations
 
 import functools
 from collections.abc import Callable
-from typing import Any, ParamSpec, TypeVar
+from typing import ParamSpec, TypeVar, cast
 
-import structlog
+from maistro.observability.telemetry_safety import (
+    TelemetryTracer,
+    report_telemetry_failure,
+    safe_span,
+)
 
-from maistro.observability.correlation import current_execution_context
-
-logger = structlog.get_logger()
+try:
+    from opentelemetry import trace as _otel_trace
+except Exception:
+    _otel_trace = None  # type: ignore[assignment]  # supported without observability extra
 
 P = ParamSpec("P")
 T = TypeVar("T")
 
+_AGENT_SPAN_NAMES = frozenset({"conductor"})
 
-def _get_tracer() -> Any | None:
+
+def _get_tracer() -> TelemetryTracer | None:
     """Return an OpenTelemetry tracer, or None if OpenTelemetry is not installed.
 
     Install the exporter stack via the `observability` extra to actually emit spans.
     """
-    try:
-        from opentelemetry import trace
-    except ImportError:
+    if _otel_trace is None:
         return None
-    return trace.get_tracer("maistro.agents")
+    try:
+        return cast(TelemetryTracer, _otel_trace.get_tracer("maistro.agents"))
+    except Exception as exc:
+        # Tracer lookup is telemetry setup, not part of the product operation.
+        report_telemetry_failure("tracer_lookup", type(exc))
+        return None
 
 
 def trace_agent(name: str) -> Callable[[Callable[P, T]], Callable[P, T]]:
@@ -45,28 +55,22 @@ def trace_agent(name: str) -> Callable[[Callable[P, T]], Callable[P, T]]:
     def decorator(fn: Callable[P, T]) -> Callable[P, T]:
         @functools.wraps(fn)
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
-            tracer = _get_tracer()
-            if tracer is None:
+            try:
+                tracer = _get_tracer()
+            except Exception as exc:
+                report_telemetry_failure("tracer_lookup", type(exc))
+                tracer = None
+            # SECURITY-REVIEW: Agent results and exceptions can contain prompts,
+            # secrets, and tool payloads. Ambient ids are also excluded because
+            # their external-export provenance is not represented by the
+            # execution ContextVar (HTTP request ids may be client supplied).
+            with safe_span(
+                tracer,
+                name,
+                allowed_names=_AGENT_SPAN_NAMES,
+                fallback_name="agent.call",
+            ):
                 return await fn(*args, **kwargs)  # type: ignore[misc,no-any-return]
-
-            from opentelemetry.trace import Status, StatusCode
-
-            with tracer.start_as_current_span(name) as span:
-                # The span used to carry one attribute, `maistro.output_preview`,
-                # so a trace existed and could not be joined to the execution it
-                # traced. Only ids that are actually set are written -- an
-                # attribute present and empty is a claim that this span had no
-                # Run, which is different from not having recorded one (#707).
-                for id_name, id_value in current_execution_context().as_log_fields().items():
-                    span.set_attribute(f"maistro.{id_name}", id_value)
-                try:
-                    result = await fn(*args, **kwargs)  # type: ignore[misc]
-                    span.set_attribute("maistro.output_preview", str(result)[:500])
-                    return result  # type: ignore[no-any-return]
-                except Exception as exc:
-                    span.record_exception(exc)
-                    span.set_status(Status(StatusCode.ERROR, str(exc)))
-                    raise
 
         return wrapper  # type: ignore[return-value]
 

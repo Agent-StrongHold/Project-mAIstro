@@ -34,6 +34,7 @@ def test_dispatch_generates_request_id_when_header_absent() -> None:
     next_response = client.get("/")
 
     assert response.status_code == 200
+    assert "X-Request-ID" in response.headers
     request_id = response.headers["X-Request-ID"]
     assert re.fullmatch(r"[0-9a-f]{12}", request_id)
     assert response.text == request_id
@@ -195,7 +196,7 @@ def _context_app() -> Starlette:
 def test_the_handler_runs_under_the_requests_execution_context() -> None:
     """The binding used to go straight into structlog's contextvars, which
     correlated log lines and nothing else. A handler could not read it, so a
-    span or event raised under the request named no request."""
+    local event raised under the request named no request."""
     client = TestClient(_context_app())
     body = client.get("/", headers={"X-Request-ID": "req-abc"}).text
     assert body == "req-abc|req-abc"

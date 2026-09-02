@@ -5,6 +5,11 @@ A candidate may not add a direct model caller and approve that escape by adding
 the same module to quality/model-egress.json. Expansions are judged against the
 merge-base inventory and require a separately landed authorization. Candidate
 bookkeeping is checked independently so migrated callers must still be pruned.
+
+A module move that carries already-reviewed egress verbatim to a new home is
+not an expansion when the trusted base records the predecessor and the
+candidate prunes it; CANDIDATE_MIGRATIONS is that operator-approved record,
+scoped per move so it can never authorize a caller that did not exist before.
 """
 
 from __future__ import annotations
@@ -24,6 +29,19 @@ REACHABILITY = ROOT / "scripts" / "check-reachability.py"
 _PROVENANCE_SOURCE = ROOT / "scripts" / "ratchet_provenance.py"
 RATCHET = "model-egress"
 METRIC_DEFINITION_VERSION = "1"
+
+# An operator-approved record of a direct caller whose egress moved verbatim
+# to a new module in a convergence PR, judged against the trusted base. This
+# mirrors the CANDIDATE_AUTHORED design in check-ratchet-provenance.py: the
+# mapping is scoped to exactly one reviewed move and lands atomically with
+# the code that performs it. It is NOT an authorization to grow the set:
+# `_migration_predecessor` honors it only while the predecessor is recorded
+# in the trusted base AND has been pruned from the candidate inventory, so a
+# rename can relocate a caller but never add one (#835: graph_runner's
+# compatibility helpers moved into the legacy_dag_node adapter).
+CANDIDATE_MIGRATIONS: dict[str, str] = {
+    "services.legacy_dag_node": "services.graph_runner",
+}
 
 _ENDPOINTS = ("chat/completions", "/completions", "/v1/responses")
 _HTTP_CALLS = frozenset({"post", "stream", "send", "request"})
@@ -95,6 +113,27 @@ def audit(recorded: set[str], found: set[str]) -> list[str]:
     return failures
 
 
+def _migration_predecessor(module: str, *, trusted: set[str], candidate: set[str]) -> str | None:
+    """The trusted-base module whose egress moved into `module`, or None.
+
+    The exception fires only when both ratchet halves stay intact: the
+    predecessor performed direct egress in the trusted base (it is recorded
+    there), and the candidate pruned it (it is absent from the candidate
+    inventory -- the same requirement `candidate_stale` enforces). Any other
+    shape -- no recorded predecessor, an unpruned predecessor, a module with
+    no mapping at all -- is not a migration and still requires an
+    already-landed authorization.
+    """
+    predecessor = CANDIDATE_MIGRATIONS.get(module)
+    if predecessor is None:
+        return None
+    if predecessor not in trusted:
+        return None
+    if predecessor in candidate:
+        return None
+    return predecessor
+
+
 def _modules(loaded: object) -> set[str]:
     if not isinstance(loaded, dict):
         return set()
@@ -120,7 +159,14 @@ def main() -> int:
         return 1
 
     added = sorted(found - trusted)
-    unauthorized = [module for module in added if module not in authorized]
+    migrated = {
+        module: predecessor
+        for module in added
+        if (predecessor := _migration_predecessor(module, trusted=trusted, candidate=candidate))
+    }
+    unauthorized = [
+        module for module in added if module not in authorized and module not in migrated
+    ]
     unbanked_authorized = [
         module for module in added if module in authorized and module not in candidate
     ]
@@ -137,7 +183,12 @@ def main() -> int:
             new_value=f"{len(found)} direct callers",
             candidate_sha=prov.head_sha(ROOT),
             authorizations=tuple(
-                f"{module}: {authorized[module]}" for module in added if module in authorized
+                [f"{module}: {authorized[module]}" for module in added if module in authorized]
+                + [
+                    f"{module}: operator-approved migration from {predecessor} "
+                    "(predecessor pruned from the candidate inventory; not an expansion)"
+                    for module, predecessor in migrated.items()
+                ]
             ),
         ).render()
     )

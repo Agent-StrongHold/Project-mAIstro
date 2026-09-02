@@ -1,0 +1,125 @@
+{
+  "baseline_id": "m1.evolve.pre_cutover.v1",
+  "behavior_coverage": {
+    "cancellation": {
+      "reason": "Current Evolve service characterization exposes stop, not cancellation of a durable cycle Run.",
+      "state": "not-characterized"
+    },
+    "durable_ids_provenance": {
+      "reason": "Pre-cutover Evolve characterization has no durable canonical Run identity to preserve; #51/#459 must add it on convergence.",
+      "state": "not-characterized"
+    },
+    "errors_refusals": {
+      "reason": "Access before startup refuses, and cycle errors are surfaced without killing the loop.",
+      "state": "captured"
+    },
+    "lifecycle": {
+      "reason": "Start-state refusal, cycle execution, and continued loop operation after a cycle error are characterized.",
+      "state": "captured"
+    },
+    "observable_outputs": {
+      "reason": "Status exposes cycle count, population size, last error, and tournament stats.",
+      "state": "captured"
+    },
+    "restart": {
+      "reason": "Population/tournament persistence across process restart is not established by the selected evidence.",
+      "state": "not-characterized"
+    }
+  },
+  "captured_from": {
+    "commit": "8f9fc22984b9598f5d7d6453a24d1f9239ddd3da",
+    "evidence_tests": [
+      "packages/hive-conductor/backend/tests/test_evolution_service.py::test_get_evolution_service_raises_when_not_started",
+      "packages/hive-conductor/backend/tests/test_evolution_service.py::test_run_loop_captures_cycle_exception",
+      "packages/hive-conductor/backend/tests/test_evolution_service.py::test_run_one_cycle_invokes_evolution_cycle",
+      "packages/hive-conductor/backend/tests/test_evolution_service.py::test_status_reports_population_size_and_tournament_stats"
+    ]
+  },
+  "change_reason": "Initial immutable capture before Evolve cycle execution authority is retired.",
+  "locked": true,
+  "product": "evolve",
+  "scenarios": [
+    {
+      "example_observation": {
+        "error": {
+          "message": "not started",
+          "type": "RuntimeError"
+        }
+      },
+      "expect": {
+        "equals": {
+          "error.message": "not started",
+          "error.type": "RuntimeError"
+        }
+      },
+      "id": "service_refuses_access_before_start",
+      "input": {
+        "service_started": false
+      }
+    },
+    {
+      "example_observation": {
+        "loop_continued": true,
+        "status": {
+          "last_error": "synthetic cycle error"
+        }
+      },
+      "expect": {
+        "equals": {
+          "loop_continued": true,
+          "status.last_error": "synthetic cycle error"
+        }
+      },
+      "id": "cycle_error_is_visible_and_loop_survives",
+      "input": {
+        "cycle_attempt": 1,
+        "failure": "synthetic cycle error"
+      }
+    },
+    {
+      "example_observation": {
+        "cycle_count_after": 1,
+        "population_passed_to_cycle": true
+      },
+      "expect": {
+        "equals": {
+          "cycle_count_after": 1,
+          "population_passed_to_cycle": true
+        }
+      },
+      "id": "successful_cycle_increments_count",
+      "input": {
+        "population_size": 3
+      }
+    },
+    {
+      "example_observation": {
+        "status": {
+          "cycle_count": 7,
+          "last_error": "prev error",
+          "population_size": 4,
+          "tournament": {
+            "matches": 10
+          }
+        }
+      },
+      "expect": {
+        "equals": {
+          "status.cycle_count": 7,
+          "status.last_error": "prev error",
+          "status.population_size": 4,
+          "status.tournament.matches": 10
+        }
+      },
+      "id": "status_projects_domain_state",
+      "input": {
+        "cycle_count": 7,
+        "last_error": "prev error",
+        "population_size": 4,
+        "tournament_matches": 10
+      }
+    }
+  ],
+  "schema_version": 1,
+  "version": 1
+}

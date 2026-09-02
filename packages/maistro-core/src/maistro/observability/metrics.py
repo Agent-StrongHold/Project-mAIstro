@@ -9,7 +9,11 @@ and are escaped only when rendered.
 
 Callers are responsible for using bounded-cardinality label values. In
 particular, HTTP callers must use matched route templates rather than raw URL
-paths containing user-controlled identifiers.
+paths containing user-controlled identifiers. Because one missed caller must
+not turn that responsibility into unbounded process-memory growth, the
+registry additionally caps the number of distinct label sets a metric may
+hold (#818 AC-3): past the cap, new label sets are dropped and counted in
+``metrics_series_overflow_total`` instead of stored.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ import re
 import threading
 import time
 from collections import defaultdict
+from collections.abc import Callable
 from itertools import pairwise
 from typing import Any, TypedDict
 
@@ -31,7 +36,47 @@ _UPTIME_HELP = "Time elapsed since this metrics registry was created"
 _NO_RESERVED_LABELS: frozenset[str] = frozenset()
 _HISTOGRAM_RESERVED_LABELS = frozenset({"le"})
 
+#: Default per-metric cap on distinct label sets (series). Route-template
+#: labels keep well under this by construction; the cap is a backstop for a
+#: caller that missed that memo, not a quota anyone should plan against.
+DEFAULT_MAX_SERIES_PER_METRIC = 10_000
+
+#: Overflow signal counter, created lazily on the first dropped sample so
+#: clean registries keep rendering only what exists (#818 AC-3).
+_OVERFLOW_METRIC_NAME = "metrics_series_overflow_total"
+_OVERFLOW_METRIC_HELP = (
+    "Samples dropped because their metric reached its series-cardinality cap (#818)"
+)
+
 _LabelSet = tuple[tuple[str, str], ...]
+
+
+class _SeriesCap:
+    """Backstop bounding a metric's distinct label sets (#818 AC-3).
+
+    Route-template labels keep cardinality small by construction, but the
+    registry must also survive one caller that feeds request-controlled text
+    into a label: once the metric already holds ``max_series`` label sets,
+    further *new* sets are dropped and reported through ``on_overflow``
+    instead of stored. Existing series keep updating, so a cap hit degrades
+    resolution — never correctness — and memory stays bounded no matter what
+    a caller does.
+    """
+
+    __slots__ = ("max_series", "on_overflow")
+
+    def __init__(self, max_series: int | None, on_overflow: Callable[[str], None] | None) -> None:
+        self.max_series = max_series
+        self.on_overflow = on_overflow
+
+    def admits(self, values: dict[_LabelSet, Any], key: _LabelSet, metric_name: str) -> bool:
+        """Whether ``key`` may be stored. Callers must hold the metric's lock
+        so this membership test and the insertion it authorizes are atomic."""
+        if self.max_series is None or key in values or len(values) < self.max_series:
+            return True
+        if self.on_overflow is not None:
+            self.on_overflow(metric_name)
+        return False
 
 
 class _ValueSample(TypedDict):
@@ -110,11 +155,12 @@ def _format_number(value: float | int) -> str:
 class _Counter:
     """Thread-safe monotonic counter."""
 
-    def __init__(self, name: str, help_text: str) -> None:
+    def __init__(self, name: str, help_text: str, *, series_cap: _SeriesCap | None = None) -> None:
         self.name = name
         self.help = help_text
         self._values: dict[_LabelSet, float] = defaultdict(float)
         self._lock = threading.Lock()
+        self._series_cap = series_cap if series_cap is not None else _SeriesCap(None, None)
 
     def inc(self, amount: float = 1, **labels: str) -> None:
         numeric_amount = float(amount)
@@ -122,6 +168,8 @@ class _Counter:
             raise ValueError("a Prometheus counter increment must be finite and non-negative")
         key = _label_key(labels)
         with self._lock:
+            if not self._series_cap.admits(self._values, key, self.name):
+                return
             self._values[key] += numeric_amount
 
     def collect(self) -> list[_ValueSample]:
@@ -134,25 +182,32 @@ class _Counter:
 class _Gauge:
     """Thread-safe gauge (can go up and down)."""
 
-    def __init__(self, name: str, help_text: str) -> None:
+    def __init__(self, name: str, help_text: str, *, series_cap: _SeriesCap | None = None) -> None:
         self.name = name
         self.help = help_text
         self._values: dict[_LabelSet, float] = defaultdict(float)
         self._lock = threading.Lock()
+        self._series_cap = series_cap if series_cap is not None else _SeriesCap(None, None)
 
     def set(self, value: float, **labels: str) -> None:
         key = _label_key(labels)
         with self._lock:
+            if not self._series_cap.admits(self._values, key, self.name):
+                return
             self._values[key] = value
 
     def inc(self, amount: float = 1, **labels: str) -> None:
         key = _label_key(labels)
         with self._lock:
+            if not self._series_cap.admits(self._values, key, self.name):
+                return
             self._values[key] += amount
 
     def dec(self, amount: float = 1, **labels: str) -> None:
         key = _label_key(labels)
         with self._lock:
+            if not self._series_cap.admits(self._values, key, self.name):
+                return
             self._values[key] -= amount
 
     def collect(self) -> list[_ValueSample]:
@@ -167,9 +222,17 @@ class _Histogram:
 
     _DEFAULT_BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0)
 
-    def __init__(self, name: str, help_text: str, buckets: tuple[float, ...] | None = None) -> None:
+    def __init__(
+        self,
+        name: str,
+        help_text: str,
+        buckets: tuple[float, ...] | None = None,
+        *,
+        series_cap: _SeriesCap | None = None,
+    ) -> None:
         self.name = name
         self.help = help_text
+        self._series_cap = series_cap if series_cap is not None else _SeriesCap(None, None)
         configured = buckets or self._DEFAULT_BUCKETS
         # Prometheus requires a terminal +Inf bucket so the largest bucket count
         # always equals the total observation count (le semantics). Append it if
@@ -190,6 +253,8 @@ class _Histogram:
             raise ValueError("Prometheus histogram observations must be finite")
         key = _label_key(labels, reserved=_HISTOGRAM_RESERVED_LABELS)
         with self._lock:
+            if not self._series_cap.admits(self._totals, key, self.name):
+                return
             if key not in self._counts:
                 self._counts[key] = [0] * len(self.buckets)
             for i, b in enumerate(self.buckets):
@@ -221,19 +286,58 @@ class _Histogram:
 
 
 class MetricsRegistry:
-    """Central registry for JSON collection and Prometheus text exposition."""
+    """Central registry for JSON collection and Prometheus text exposition.
 
-    def __init__(self) -> None:
+    Every metric the registry creates carries the same series-cardinality
+    backstop (#818 AC-3): past ``max_series_per_metric`` distinct label sets,
+    new sets are dropped and counted in ``metrics_series_overflow_total``
+    rather than stored, so a caller with unbounded label values cannot grow
+    process memory without bound.
+    """
+
+    def __init__(self, max_series_per_metric: int | None = None) -> None:
+        cap = (
+            DEFAULT_MAX_SERIES_PER_METRIC
+            if max_series_per_metric is None
+            else max_series_per_metric
+        )
+        if cap is not None and cap < 1:
+            raise ValueError("max_series_per_metric must be at least 1 when set")
         self._metrics: dict[str, _Counter | _Gauge | _Histogram] = {}
         self._lock = threading.Lock()
         self._start_time = time.monotonic()
+        self._series_cap = _SeriesCap(cap, self._record_overflow)
+
+    def _record_overflow(self, metric_name: str) -> None:
+        """Count one dropped sample; never raises into the guarded metric.
+
+        Called with the reporting metric's lock held, so it must not touch that
+        metric again — only the lazily created, deliberately uncapped overflow
+        counter (its label space is registry metric names, already finite, and
+        wiring its own overflow to itself would recurse).
+        """
+        try:
+            with self._lock:
+                overflow = self._metrics.get(_OVERFLOW_METRIC_NAME)
+                if overflow is None:
+                    overflow = _Counter(
+                        _OVERFLOW_METRIC_NAME,
+                        _OVERFLOW_METRIC_HELP,
+                        series_cap=_SeriesCap(None, None),
+                    )
+                    self._metrics[_OVERFLOW_METRIC_NAME] = overflow
+                elif not isinstance(overflow, _Counter):
+                    return
+            overflow.inc(metric=metric_name)
+        except Exception:
+            pass  # a backstop that breaks the metric it guards guards nothing
 
     def counter(self, name: str, help_text: str = "") -> _Counter:
         _validate_metric_name(name)
         with self._lock:
             metric = self._metrics.get(name)
             if metric is None:
-                metric = _Counter(name, help_text)
+                metric = _Counter(name, help_text, series_cap=self._series_cap)
                 self._metrics[name] = metric
             elif not isinstance(metric, _Counter):
                 raise ValueError(f"metric {name!r} is already registered with another type")
@@ -244,7 +348,7 @@ class MetricsRegistry:
         with self._lock:
             metric = self._metrics.get(name)
             if metric is None:
-                metric = _Gauge(name, help_text)
+                metric = _Gauge(name, help_text, series_cap=self._series_cap)
                 self._metrics[name] = metric
             elif not isinstance(metric, _Gauge):
                 raise ValueError(f"metric {name!r} is already registered with another type")
@@ -257,7 +361,7 @@ class MetricsRegistry:
         with self._lock:
             metric = self._metrics.get(name)
             if metric is None:
-                metric = _Histogram(name, help_text, buckets)
+                metric = _Histogram(name, help_text, buckets, series_cap=self._series_cap)
                 self._metrics[name] = metric
             elif not isinstance(metric, _Histogram):
                 raise ValueError(f"metric {name!r} is already registered with another type")
