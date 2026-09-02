@@ -44,7 +44,7 @@ Three further rules follow from the columns' meanings. A `KEEP` column whose eve
 
 **What is not checked.** A cell may instead describe a non-module owner in prose — “age-encrypted file”, “OS file permissions”, “per-route”. Those are honest and unverifiable, and pretending otherwise would be the same defect this section fixes. The census below is checked, so the size of that gap cannot drift: of the 156 owner cells, 53 name a module, 73 declare there is no module owner, and 30 are prose the checker cannot reach.
 
-<!-- matrix:ownership-census claims=53 declared=73 prose=30 -->
+<!-- matrix:ownership-census claims=52 declared=73 prose=31 -->
 <!-- matrix:ownership -->
 | Subsystem | Modules | Canonical concept | Lifecycle owner | Persistence owner | Authorization owner |
 |---|---|---|---|---|---|
@@ -58,7 +58,7 @@ Three further rules follow from the columns' meanings. A `KEEP` column whose eve
 | Planning and wave orchestration | `maistro.orchestrator` | Graph synthesis | wave state in `orchestrator.waves` | — | — |
 | Builders pipeline | `maistro.builders` | Graph of spec→tests→code→review Nodes | `builders.runtime` (unreachable) + `builders.graph_executor` (unreachable; fourth universal lifecycle) | `builders.logger` (unreachable) | — |
 | Workspace / Project scope | `maistro.workspaces`, `maistro.projects` | Workspace, Project — the scope roots | n/a (scope, not execution) | `projects.store`, `projects.scope_store`, `workspaces.store` | `projects.authorization` |
-| Agents | `maistro.agents` | Node implementation / Provider | per-agent ad-hoc; `agents.pm_runner` emits its own events | `persistence.pg_agents` | `agents.intents` routing table only |
+| Agents | `maistro.agents` | Node implementation / Provider | per-agent ad-hoc | `persistence.pg_agents` | `agents.intents` routing table only |
 | Capability / Provider / Binding / Invocation | `maistro.capabilities` | the canonical effect path | `capabilities.invocation` | `capabilities.invocation_store`, `approval_store` | `capabilities.governed_invocation` |
 | Model providers | `maistro.providers` | Provider implementations | n/a | — | — |
 | Router and classifier | `maistro.router`, `maistro.classifier` | Provider selection policy | n/a (pure decision) | — | — |
