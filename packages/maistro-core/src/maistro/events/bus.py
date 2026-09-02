@@ -104,6 +104,25 @@ class Trigger:
 ActionHandler = Callable[[Trigger, Event], Coroutine[Any, Any, None]]
 
 
+class TriggerActionFailure(Exception):
+    """A matched trigger's action handler raised; the emission did not succeed.
+
+    Raised by :meth:`EventBus.emit` after delivery of the event has finished,
+    so one failing handler neither aborts the remaining triggers/subscribers nor
+    silently advances the trigger's success state. ``failures`` carries every
+    ``(trigger, exception)`` pair; the first exception is also set as the
+    ``__cause__`` so its traceback stays reachable.
+    """
+
+    def __init__(self, failures: list[tuple[Trigger, Exception]]) -> None:
+        self.failures = failures
+        detail = "; ".join(
+            f"trigger {t.name or t.trigger_id} (action_type={t.action_type!r}): {exc!r}"
+            for t, exc in failures
+        )
+        super().__init__(f"{len(failures)} trigger action handler(s) failed: {detail}")
+
+
 def _project_legacy_event(event: Event | LegacyEventProjector) -> Event:
     """Return the trigger-bus projection without treating it as canonical."""
     if isinstance(event, Event):
@@ -139,33 +158,76 @@ class EventBus:
     def subscribe(self, callback: Callable[[Event], Coroutine[Any, Any, None]]) -> None:
         self._subscribers.append(callback)
 
+    async def _fire_if_matched(
+        self,
+        trigger: Trigger,
+        projected: Event,
+        failures: list[tuple[Trigger, Exception]],
+    ) -> Trigger | None:
+        """Fire ``trigger`` for ``projected``; return it only on handler success.
+
+        Success state (``fire_count`` / ``last_fired``) is advanced only on the
+        path where a registered handler completed without raising. A matched
+        trigger with no registered handler is skipped with a warning; a raising
+        handler is logged and appended to ``failures`` for ``emit`` to surface.
+        """
+        try:
+            matched = trigger.matches(projected)
+        except Exception:
+            logger.exception(
+                "Trigger %s match evaluation failed for event %s",
+                trigger.trigger_id,
+                projected.event_id,
+            )
+            return None
+        if not matched:
+            return None
+        handler = self._handlers.get(trigger.action_type)
+        if handler is None:
+            logger.warning(
+                "Trigger %s matched event %s but no handler is registered for "
+                "action_type %r; not counted as fired",
+                trigger.trigger_id,
+                projected.event_id,
+                trigger.action_type,
+            )
+            return None
+        try:
+            await handler(trigger, projected)
+        except Exception as exc:
+            logger.exception("Trigger %s action failed", trigger.trigger_id)
+            failures.append((trigger, exc))
+            return None
+        trigger.fire_count += 1
+        trigger.last_fired = time.time()
+        return trigger
+
     async def emit(self, event: Event | LegacyEventProjector) -> list[Trigger]:
+        """Deliver ``event``; return only the triggers whose handlers completed.
+
+        A trigger is counted as fired (``fire_count`` / ``last_fired`` / the
+        returned list) only when a handler is registered for its
+        ``action_type`` **and** that handler completed without raising (#836):
+
+        - a matched trigger with no registered handler is skipped with a
+          warning — an unhandled ``action_type`` must not manufacture firing
+          evidence or start the cooldown;
+        - a raising handler is logged and collected; after the whole event has
+          been delivered, :class:`TriggerActionFailure` is raised carrying the
+          original exceptions, so handler failure is explicit and cannot
+          advance the success cooldown/counters as if the action ran.
+        """
         projected = _project_legacy_event(event)
         self._history.append(projected)
         if len(self._history) > self._max_history:
             self._history = self._history[-self._max_history :]
 
         fired: list[Trigger] = []
+        failures: list[tuple[Trigger, Exception]] = []
         for trigger in self._triggers:
-            try:
-                matched = trigger.matches(projected)
-            except Exception:
-                logger.exception(
-                    "Trigger %s match evaluation failed for event %s",
-                    trigger.trigger_id,
-                    projected.event_id,
-                )
-                continue
-            if matched:
-                handler = self._handlers.get(trigger.action_type)
-                if handler:
-                    try:
-                        await handler(trigger, projected)
-                    except Exception:
-                        logger.exception("Trigger %s action failed", trigger.trigger_id)
-                trigger.fire_count += 1
-                trigger.last_fired = time.time()
-                fired.append(trigger)
+            fired_trigger = await self._fire_if_matched(trigger, projected, failures)
+            if fired_trigger is not None:
+                fired.append(fired_trigger)
 
         for sub in self._subscribers:
             try:
@@ -180,6 +242,9 @@ class EventBus:
                 projected.event_type,
                 len(fired),
             )
+
+        if failures:
+            raise TriggerActionFailure(failures) from failures[0][1]
 
         return fired
 

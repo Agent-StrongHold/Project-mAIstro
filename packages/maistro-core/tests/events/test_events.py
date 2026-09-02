@@ -11,6 +11,7 @@ from maistro.events.bus import (
     EventBus,
     EventCategory,
     Trigger,
+    TriggerActionFailure,
     TriggerCondition,
 )
 from maistro.events.recipes import (
@@ -121,17 +122,23 @@ class TestEventBus:
     async def test_emit_fires_trigger(self):
         bus = EventBus()
         results = []
-        bus.add_trigger(
-            Trigger(
-                name="test",
-                event_types=["test"],
-                action_type="log",
-            )
+        trigger = Trigger(
+            name="test",
+            event_types=["test"],
+            action_type="log",
         )
-        bus.register_handler("log", lambda t, e: _append(results, (t.name, e.event_type)))
+        bus.add_trigger(trigger)
+
+        async def log(_trigger, event):
+            results.append(event.event_type)
+
+        bus.register_handler("log", log)
         fired = await bus.emit(Event(event_type="test"))
+        assert results == ["test"]
         assert len(fired) == 1
+        assert fired[0] is trigger
         assert fired[0].fire_count == 1
+        assert fired[0].last_fired is not None
 
     async def test_cooldown_prevents_refire(self):
         bus = EventBus()
@@ -143,7 +150,11 @@ class TestEventBus:
                 cooldown_seconds=999,
             )
         )
-        bus.register_handler("log", lambda t, e: None)
+
+        async def noop(_trigger, _event):
+            return None
+
+        bus.register_handler("log", noop)
         await bus.emit(Event(event_type="test"))
         fired = await bus.emit(Event(event_type="test"))
         assert len(fired) == 0
@@ -174,9 +185,166 @@ class TestEventBus:
     async def test_subscriber(self):
         bus = EventBus()
         received = []
-        bus.subscribe(lambda e: _append(received, e.event_type))
+
+        async def subscribe_handler(event):
+            received.append(event.event_type)
+
+        bus.subscribe(subscribe_handler)
         await bus.emit(Event(event_type="hello"))
         assert received == ["hello"]
+
+
+class TestEmitFiringAuthority:
+    """A trigger is counted as fired only when its handler actually completed (#836).
+
+    Guards the defect where ``emit`` incremented ``fire_count`` / ``last_fired``
+    and reported the trigger as fired even when no handler was registered for
+    the action type or the handler raised and the exception was swallowed.
+    """
+
+    async def test_no_handler_matched_trigger_is_not_counted_as_fired(self, caplog):
+        bus = EventBus()
+        trigger = Trigger(name="typo", event_types=["test"], action_type="no_such_action")
+        bus.add_trigger(trigger)
+
+        with caplog.at_level("WARNING", logger="maistro.events"):
+            fired = await bus.emit(Event(event_type="test"))
+
+        assert fired == []
+        assert trigger.fire_count == 0
+        assert trigger.last_fired is None
+        # The unmatched action_type must be visible, not silent.
+        assert "no handler is registered" in caplog.text
+        assert "no_such_action" in caplog.text
+
+    async def test_no_handler_does_not_start_cooldown(self):
+        bus = EventBus()
+        trigger = Trigger(
+            name="late-handler",
+            event_types=["test"],
+            action_type="log",
+            cooldown_seconds=999,
+        )
+        bus.add_trigger(trigger)
+
+        # First emit matches but no handler is registered yet: not fired.
+        fired = await bus.emit(Event(event_type="test"))
+        assert fired == []
+
+        # Registering the handler afterwards must still allow the trigger to
+        # fire: the earlier no-handler delivery must not have started cooldown.
+        observed = []
+
+        async def log(_trigger, event):
+            observed.append(event.event_type)
+
+        bus.register_handler("log", log)
+        fired = await bus.emit(Event(event_type="test"))
+        assert observed == ["test"]
+        assert [t.name for t in fired] == ["late-handler"]
+        assert trigger.fire_count == 1
+
+    async def test_raising_handler_is_not_counted_and_error_is_surfaced(self):
+        bus = EventBus()
+        trigger = Trigger(name="boom", event_types=["test"], action_type="log")
+        bus.add_trigger(trigger)
+
+        async def boom(_trigger, _event):
+            raise RuntimeError("handler exploded")
+
+        bus.register_handler("log", boom)
+
+        with pytest.raises(TriggerActionFailure) as excinfo:
+            await bus.emit(Event(event_type="test"))
+
+        # The original exception is surfaced, not swallowed.
+        assert isinstance(excinfo.value.__cause__, RuntimeError)
+        assert str(excinfo.value.__cause__) == "handler exploded"
+        assert [(t.name, str(err)) for t, err in excinfo.value.failures] == [
+            ("boom", "handler exploded")
+        ]
+        # The failed emission must not count as success.
+        assert trigger.fire_count == 0
+        assert trigger.last_fired is None
+
+    async def test_raising_handler_failure_does_not_start_cooldown(self):
+        bus = EventBus()
+        trigger = Trigger(
+            name="retry",
+            event_types=["test"],
+            action_type="log",
+            cooldown_seconds=999,
+        )
+        bus.add_trigger(trigger)
+        calls = []
+
+        async def flaky(_trigger, _event):
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("transient failure")
+
+        bus.register_handler("log", flaky)
+
+        with pytest.raises(TriggerActionFailure):
+            await bus.emit(Event(event_type="test"))
+
+        # Second delivery must still reach the handler: the failed attempt
+        # must not have armed the cooldown as if the action ran.
+        fired = await bus.emit(Event(event_type="test"))
+        assert [t.name for t in fired] == ["retry"]
+        assert trigger.fire_count == 1
+        assert len(calls) == 2
+
+    async def test_raising_handler_does_not_abort_other_triggers_or_subscribers(self):
+        bus = EventBus()
+        bus.add_trigger(Trigger(name="bad", event_types=["test"], action_type="explode"))
+        good = Trigger(name="good", event_types=["test"], action_type="log")
+        bus.add_trigger(good)
+
+        async def explode(_trigger, _event):
+            raise RuntimeError("handler exploded")
+
+        async def log(_trigger, _event):
+            return None
+
+        bus.register_handler("explode", explode)
+        bus.register_handler("log", log)
+
+        received = []
+
+        async def subscriber(event):
+            received.append(event.event_type)
+
+        bus.subscribe(subscriber)
+
+        with pytest.raises(TriggerActionFailure) as excinfo:
+            await bus.emit(Event(event_type="test"))
+
+        # The healthy trigger and the subscriber still ran; only the failing
+        # one is excluded from the success counters and reported.
+        assert [t.name for t, _err in excinfo.value.failures] == ["bad"]
+        assert good.fire_count == 1
+        assert received == ["test"]
+        assert bus.get_history()[-1].event_type == "test"
+
+    async def test_sync_handler_is_reported_as_failure_not_counted_as_success(self):
+        # The declared handler contract is a coroutine function; a sync
+        # callable is a contract violation and must surface as a failure
+        # rather than being counted as a fired trigger via the old swallow.
+        bus = EventBus()
+        trigger = Trigger(name="sync", event_types=["test"], action_type="log")
+        bus.add_trigger(trigger)
+
+        def sync_handler(_trigger, _event):  # not async on purpose
+            return None
+
+        bus.register_handler("log", sync_handler)
+
+        with pytest.raises(TriggerActionFailure):
+            await bus.emit(Event(event_type="test"))
+
+        assert trigger.fire_count == 0
+        assert trigger.last_fired is None
 
 
 class TestEmitRobustness:
@@ -186,6 +354,9 @@ class TestEmitRobustness:
         # abort the whole emit loop; later triggers/subscribers must still run.
         bus = EventBus()
         fired_names: list[str] = []
+
+        async def async_log(trigger, _event):
+            fired_names.append(trigger.name)
 
         # First trigger: gt comparison against a non-numeric payload value.
         bus.add_trigger(
@@ -204,10 +375,14 @@ class TestEmitRobustness:
                 action_type="log",
             )
         )
-        bus.register_handler("log", lambda t, e: _append(fired_names, t.name))
+        bus.register_handler("log", async_log)
 
         received: list[str] = []
-        bus.subscribe(lambda e: _append(received, e.event_type))
+
+        async def subscriber(event):
+            received.append(event.event_type)
+
+        bus.subscribe(subscriber)
 
         # payload fitness is non-numeric → float() would raise inside matches.
         fired = await bus.emit(Event(event_type="fitness", payload={"fitness": "n/a"}))
@@ -323,7 +498,11 @@ class TestIntegrations:
 
         bus = EventBus()
         received = []
-        bus.subscribe(lambda e: _append(received, e.event_type))
+
+        async def subscriber(event):
+            received.append(event.event_type)
+
+        bus.subscribe(subscriber)
         cs = CoinSwarmIntegration(event_bus=bus)
         await cs.emit_evolution_result({"generation": 5, "best_fitness": 0.85})
 
@@ -346,7 +525,3 @@ class TestIntegrations:
 
         turing.chat.assert_awaited_once()
         assert "Evolution cycle 5" in turing.chat.await_args.args[0]
-
-
-def _append(lst, val):
-    lst.append(val)
