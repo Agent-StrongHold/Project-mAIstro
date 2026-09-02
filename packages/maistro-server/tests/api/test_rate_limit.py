@@ -15,6 +15,8 @@ following the `_make_app` pattern in tests/api/test_auth.py.
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -252,3 +254,78 @@ class TestBoundedRouteLabels:
             sample["labels"] == {"method": "GET", "route": "unrouted"}
             for sample in histogram_samples
         )
+
+    def test_many_distinct_404_uuid_paths_create_no_series_per_url(self) -> None:
+        """#818 AC-2, verbatim: the middleware runs before routing/auth, so
+        arbitrary 404 UUID paths are exactly the traffic that must not mint
+        one metric series per URL — across every middleware-emitted metric."""
+        app = FastAPI()
+
+        @app.get("/items/{item_id}")
+        def item(item_id: str) -> dict[str, str]:
+            return {"id": item_id}
+
+        app.add_middleware(RateLimitMiddleware)
+        client = TestClient(app)
+        series_before = {
+            "counter": len(http_requests_total.collect()),
+            "duration": len(http_request_duration.collect()),
+            "maistro": len(maistro_request_duration_seconds.collect()),
+        }
+
+        paths = [f"/{uuid4()}" for _ in range(60)]
+        paths += [f"/items/{uuid4()}" for _ in range(30)]
+        for path in paths:
+            assert client.get(path).status_code in (200, 404)
+
+        # 60 distinct unmatched URLs + 30 distinct item ids collapse into at
+        # most two new series per metric: the `unrouted` fallback class and
+        # the `/items/{item_id}` template.
+        assert len(http_requests_total.collect()) <= series_before["counter"] + 2
+        assert len(http_request_duration.collect()) <= series_before["duration"] + 2
+        assert len(maistro_request_duration_seconds.collect()) <= series_before["maistro"] + 2
+        assert any(
+            sample["labels"] == {"method": "GET", "route": "unrouted", "status": "404"}
+            for sample in http_requests_total.collect()
+        )
+        assert any(
+            sample["labels"] == {"method": "GET", "route": "/items/{item_id}", "status": "200"}
+            for sample in http_requests_total.collect()
+        )
+
+    def test_distinct_routes_stay_distinguishable_without_raw_identifiers(self) -> None:
+        """#818 AC-4: bounding must not flatten legitimate route-level
+        observability — two real routes stay two series, and no label value
+        carries a request-controlled identifier."""
+        app = FastAPI()
+
+        @app.get("/items/{item_id}")
+        def item(item_id: str) -> dict[str, str]:
+            return {"id": item_id}
+
+        @app.get("/users/{user_id}/orders/{order_id}")
+        def order(user_id: str, order_id: str) -> dict[str, str]:
+            return {"user": user_id, "order": order_id}
+
+        app.add_middleware(RateLimitMiddleware)
+        client = TestClient(app)
+        for index in range(3):
+            assert client.get(f"/items/item-{index}").status_code == 200
+            assert client.get(f"/users/user-{index}/orders/order-{index}").status_code == 200
+
+        counter_by_route = {
+            sample["labels"]["route"]: sample["value"]
+            for sample in http_requests_total.collect()
+            if sample["labels"].get("method") == "GET" and sample["labels"].get("status") == "200"
+        }
+        assert counter_by_route.get("/items/{item_id}", 0) >= 3
+        assert counter_by_route.get("/users/{user_id}/orders/{order_id}", 0) >= 3
+
+        for sample in http_requests_total.collect():
+            route = sample["labels"].get("route", "")
+            assert "item-" not in route and "user-" not in route
+
+        histogram_routes = {
+            sample["labels"]["route"] for sample in maistro_request_duration_seconds.collect()
+        }
+        assert {"/items/{item_id}", "/users/{user_id}/orders/{order_id}"} <= histogram_routes
