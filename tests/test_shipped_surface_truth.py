@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import importlib.util
+import json
+import runpy
+import sys
 from pathlib import Path
 
+import pytest
 from scripts.shipped_surface_truth import (
     discover_backend_surfaces,
     discover_frontend_surfaces,
@@ -210,3 +215,72 @@ def test_repository_surface_matrix_is_complete() -> None:
     matrix = load_matrix(MATRIX)
     errors = validate_matrix(ROOT, matrix, strict=False)
     assert not errors, "\n".join(errors)
+
+
+# --------------------------------------------------------------------------
+# the checker CLI (scripts/check-shipped-surface-truth.py)
+# --------------------------------------------------------------------------
+
+
+def _load_cli(monkeypatch: pytest.MonkeyPatch):
+    """Import the checker CLI the way `python scripts/<name>.py` would.
+
+    The CLI does a bare ``from shipped_surface_truth import ...``, so the
+    scripts directory has to be importable for the module to load at all.
+    """
+    monkeypatch.syspath_prepend(str(ROOT / "scripts"))
+    spec = importlib.util.spec_from_file_location(
+        "check_shipped_surface_truth", ROOT / "scripts" / "check-shipped-surface-truth.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_checker_cli_reports_the_clean_matrix(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    cli = _load_cli(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["check-shipped-surface-truth.py"])
+    assert cli.main() == 0
+    out = capsys.readouterr().out
+    assert "Shipped-surface truth matrix is complete." in out
+
+
+def test_checker_cli_discover_json_prints_the_machine_surface_set(
+    monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    cli = _load_cli(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["check-shipped-surface-truth.py", "--discover-json"])
+    assert cli.main() == 0
+    discovered = json.loads(capsys.readouterr().out)
+    assert isinstance(discovered["backend_surfaces"], list)
+    assert discovered["backend_surfaces"]
+
+
+def test_checker_cli_exit_code_reflects_reported_errors(
+    monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """Exit 1 exactly when the report says the matrix failed.
+
+    Non-strict always passes today; the strict Gate D closeout form fails while
+    the six disclosed unresolved facades remain. Asserting the invariant, not
+    the facade count, keeps the test truthful as owners land their fixes.
+    """
+    cli = _load_cli(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["check-shipped-surface-truth.py", "--require-clean"])
+    code = cli.main()
+    out = capsys.readouterr().out
+    assert (code == 1) == ("Shipped-surface truth matrix failed:" in out)
+
+
+def test_checker_cli_main_guard_exits_from_script_execution(
+    monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    cli_path = str(ROOT / "scripts" / "check-shipped-surface-truth.py")
+    monkeypatch.syspath_prepend(str(ROOT / "scripts"))
+    monkeypatch.setattr(sys, "argv", ["check-shipped-surface-truth.py", "--discover-json"])
+    with pytest.raises(SystemExit) as excinfo:
+        runpy.run_path(cli_path, run_name="__main__")
+    assert excinfo.value.code == 0
+    assert json.loads(capsys.readouterr().out)["backend_surfaces"]
