@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +22
+  tests/: +6
 ---
 
 # #838 reachability source-universe classification tests
@@ -49,3 +49,8 @@ collected 3036`. Recording it here is the ledger's designed repair — the
 note's delta is whatever makes the sum come out right — and it self-corrects:
 when develop records its own +16, re-running `--update` on this branch after
 the next base move returns this delta to +6.
+
+
+(Correction 2026-09-02: an earlier revision recorded +22 = +6 own + 16
+absorbed from develop's #800 gap. The trunk heal #1031 also recorded that
++16, double-counting it; this note now records only the branch's own +6.)
