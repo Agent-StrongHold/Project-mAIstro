@@ -60,7 +60,17 @@ class TestSecurityHeadersPresence:
         assert r.headers["X-Content-Type-Options"] == "nosniff"
 
     def test_public_registration_is_fail_closed(self) -> None:
-        """Setup is the only anonymous account creator while #313 is deferred."""
+        """A stranger cannot self-register on a provisioned hive (#313).
+
+        M0 pinned this as an unconditional middleware 403 "while #313 is
+        deferred". The M2 policy it was waiting for has landed, so the
+        middleware returned to pure headers and the durable registration
+        policy — enforced in the route — is the gate. This test keeps the
+        containment claim honest through the full stack: conftest seeds a
+        provisioned instance (the exact state the old `_registration_allowed()`
+        bug read as "signup open"), and the anonymous attempt must still be
+        refused, with the security headers landing on the refusal.
+        """
         c = _client()
         r = c.post(
             "/v1/auth/register",
@@ -71,7 +81,7 @@ class TestSecurityHeadersPresence:
             },
         )
         assert r.status_code == 403
-        assert r.json()["detail"].startswith("Public registration is disabled")
+        assert r.json()["detail"].startswith("Registration is closed")
         assert r.headers["X-Frame-Options"] == "DENY"
         assert r.headers["X-Content-Type-Options"] == "nosniff"
 
