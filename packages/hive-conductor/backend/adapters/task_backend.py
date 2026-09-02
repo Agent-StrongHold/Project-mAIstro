@@ -11,12 +11,18 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 from collections.abc import AsyncIterator
 from typing import Any, Protocol
 
 import httpx
 
 from maistro.http import shared_client
+from maistro.tasks.http_contract import (
+    WORKSPACE_ID_HEADER,
+    WORKSPACE_SCOPE_SIGNATURE_HEADER,
+    sign_workspace_scope,
+)
 from maistro.tasks.models import TaskCreate, TaskResponse, TaskStatus
 
 _TERMINAL = frozenset({"completed", "failed"})
@@ -95,10 +101,9 @@ class TaskRecord:
         return self._task
 
 
-#: What an API caller is told when `WorkspaceNotRoutable` reaches a route.
-#: Separate from the exception's own message, which names the server this
-#: deployment would have submitted to -- that belongs in the log, not in a
-#: response body.
+#: Legacy route-facing detail retained while older backend implementations may
+#: still raise WorkspaceNotRoutable. The production MaistroServerTaskBackend no
+#: longer does when its cross-process Workspace assertion key is configured.
 WORKSPACE_NOT_ROUTABLE_DETAIL = (
     "this deployment routes tasks to a single-Workspace task server, which "
     "cannot admit work into a named workspace"
@@ -106,15 +111,7 @@ WORKSPACE_NOT_ROUTABLE_DETAIL = (
 
 
 class WorkspaceNotRoutable(RuntimeError):
-    """This backend cannot file work in the Workspace the submission named.
-
-    maistro-server binds one Workspace per instance (ADR-019/ADR-068: one
-    instance is one Workspace), so a Conductor that proxies to it has exactly
-    one Workspace to offer no matter how many its users belong to. Refusing is
-    the honest answer: admitting anyway would file the work in the server's
-    default Project while telling the caller it went to theirs, which is the
-    silent scope loss #158 exists to remove.
-    """
+    """A backend cannot safely file work in the Workspace the submission named."""
 
 
 class TaskBackend(Protocol):
@@ -204,9 +201,23 @@ class MaistroServerTaskBackend:
 
     _POLL_INTERVAL_S = 2.0
 
-    def __init__(self, *, base_url: str, api_key: str | None) -> None:
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str | None,
+        workspace_scope_key: str | None = None,
+    ) -> None:
         self._base = base_url.rstrip("/")
         self._key = api_key or ""
+        # Production compose supplies a service-only proof key to both Hive and
+        # maistro-server. Explicit constructor injection keeps focused tests and
+        # non-compose deployments deterministic.
+        self._workspace_scope_key = (
+            workspace_scope_key
+            if workspace_scope_key is not None
+            else os.getenv("WORKSPACE_SCOPE_KEY", "")
+        )
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -217,15 +228,23 @@ class MaistroServerTaskBackend:
     async def submit(
         self, create: TaskCreate, *, user_id: str, workspace_id: str | None = None
     ) -> TaskRecord:
+        headers = self._headers()
         if workspace_id is not None:
-            raise WorkspaceNotRoutable(
-                f"this deployment submits tasks to a single-Workspace maistro-server at "
-                f"{self._base}, which cannot admit into Workspace {workspace_id!r}"
+            if not workspace_id.strip():
+                raise ValueError("workspace_id must be a non-empty string")
+            if not self._workspace_scope_key:
+                # A bare Workspace header would turn every ordinary API token
+                # into a tenant selector. Keep the old fail-closed behavior
+                # unless this deployment can prove the scope came from Hive.
+                raise WorkspaceNotRoutable(WORKSPACE_NOT_ROUTABLE_DETAIL)
+            headers[WORKSPACE_ID_HEADER] = workspace_id
+            headers[WORKSPACE_SCOPE_SIGNATURE_HEADER] = sign_workspace_scope(
+                workspace_id, self._workspace_scope_key
             )
         async with shared_client(timeout=30.0) as client:
             r = await client.post(
                 f"{self._base}/tasks",
-                headers=self._headers(),
+                headers=headers,
                 json=create.model_dump(mode="json"),
             )
             r.raise_for_status()

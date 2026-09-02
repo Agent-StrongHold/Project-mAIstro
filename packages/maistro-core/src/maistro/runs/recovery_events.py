@@ -1,43 +1,117 @@
-"""What recovery says happened, on the canonical Event stream (#462).
+"""Recovery disposition facts and their canonical Event adapter (#462, #61).
 
-The disposition table (ADR-082826-08f0) decides what becomes of interrupted
-work. Until now the decision left no trace of its own: a parked NodeRun looks
-identical whether recovery parked it or a person paused it, and the reason
-survives only inside an Attempt's error string. The Run model stays the record
-of *state*; this is the record of *decision*.
-
-The sink is a protocol rather than the `EventBus` itself so the spine keeps
-depending on an interface (the repo's DI rule), and so a caller with no bus
-wired reconciles exactly as it did -- an unobservable recovery is bad, but a
-recovery that refuses to run because nothing is listening would be worse.
+The Run model remains the record of execution state. Recovery owns only the
+domain fact describing which disposition was applied. It deliberately owns no
+event id, timestamp, sequence, correlation id, or stream identity: those are
+universal Event concerns and belong exclusively to :class:`EventEnvelope`.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
-from maistro.events.bus import Event, EventCategory
-from maistro.runs.model import Attempt, AttemptStatus, CancellationCause, NodeRun
+from maistro.events.envelope import EventEnvelope
+from maistro.runs.model import Attempt, AttemptStatus, CancellationCause, NodeRun, Run
 
-#: One event type, because one table decides all of these. The disposition is
-#: a payload field rather than a family of event types so a subscriber cannot
-#: accidentally listen to some dispositions and not others.
 RECOVERY_EVENT_TYPE = "run.recovery_disposition"
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveryDispositionEvent:
+    """Package-local recovery fact, not a second universal event envelope."""
+
+    run_id: str
+    node_run_id: str
+    attempt_id: str
+    attempt_status: str
+    node_run_status: str
+    cancellation_cause: str
+    disposition: str
+    error: str | None
+    source: str
+
+    def payload(self) -> dict[str, Any]:
+        """Project the recovery-specific fact into a canonical Event payload."""
+        return {
+            "run_id": self.run_id,
+            "node_run_id": self.node_run_id,
+            "attempt_id": self.attempt_id,
+            "attempt_status": self.attempt_status,
+            "node_run_status": self.node_run_status,
+            "cancellation_cause": self.cancellation_cause,
+            "disposition": self.disposition,
+            "error": self.error,
+        }
+
+    def to_legacy_event(self) -> Any:
+        """Project onto the pre-#61 trigger bus without owning canonical identity.
+
+        The compatibility ``Event`` minted here is a delivery projection only.
+        Its short id and timestamp are not persisted canonical Event identity or
+        Workspace ordering; migrated paths use :class:`CanonicalRecoveryEventSink`
+        and :class:`CanonicalEventPublisher` before this projection is observed.
+        """
+        from maistro.events.bus import Event, EventCategory
+
+        return Event(
+            category=EventCategory.SYSTEM,
+            event_type=RECOVERY_EVENT_TYPE,
+            source=self.source,
+            correlation_id=self.run_id,
+            payload=self.payload(),
+        )
 
 
 @runtime_checkable
 class RecoveryEventSink(Protocol):
-    """Anything that accepts a canonical Event. `EventBus` satisfies it."""
+    """Anything that accepts one recovery-domain fact."""
 
-    async def emit(self, event: Event) -> Any: ...
+    async def emit(self, event: RecoveryDispositionEvent) -> Any: ...
+
+
+@runtime_checkable
+class RunLookup(Protocol):
+    """The canonical scope lookup needed to envelope a recovery fact."""
+
+    async def get_run(self, run_id: str) -> Run | None: ...
+
+
+@runtime_checkable
+class CanonicalEventSink(Protocol):
+    """Publisher/store seam for the one canonical Event envelope."""
+
+    async def emit(self, event: EventEnvelope) -> Any: ...
+
+
+class CanonicalRecoveryEventSink:
+    """Adapt recovery-domain facts onto the canonical Event envelope."""
+
+    def __init__(self, runs: RunLookup, events: CanonicalEventSink) -> None:
+        self._runs = runs
+        self._events = events
+
+    async def emit(self, event: RecoveryDispositionEvent) -> Any:
+        run = await self._runs.get_run(event.run_id)
+        if run is None:
+            raise ValueError(f"recovery event references unknown Run {event.run_id!r}")
+        envelope = EventEnvelope(
+            type=RECOVERY_EVENT_TYPE,
+            workspace_id=run.workspace_id,
+            project_id=run.project_id,
+            run_id=run.run_id,
+            node_run_id=event.node_run_id,
+            attempt_id=event.attempt_id,
+            correlation_id=run.run_id,
+            source=event.source,
+            provenance={"legacy_event_category": "system"},
+            payload=event.payload(),
+        )
+        return await self._events.emit(envelope)
 
 
 def disposition_of(attempt: Attempt, cancellation: CancellationCause) -> str:
-    """Name the row of the table this Attempt's reconciliation took.
-
-    Derived from the persisted Attempt and the cause, not passed in, so the
-    name cannot drift from the transition that was actually applied.
-    """
+    """Name the recovery table row actually applied to ``attempt``."""
     if attempt.status is AttemptStatus.COMPLETED:
         return "accepted"
     if attempt.status is AttemptStatus.CANCELLED:
@@ -55,33 +129,25 @@ def recovery_event(
     node_run: NodeRun,
     cancellation: CancellationCause,
     source: str,
-) -> Event:
-    """Build the event for one applied disposition.
-
-    `correlation_id` is the Run, because that is what someone asking "what
-    happened to this Run" already has in hand; the NodeRun and Attempt ids are
-    in the payload so the answer can be taken back to the spine and read there.
-    """
-    return Event(
-        category=EventCategory.SYSTEM,
-        event_type=RECOVERY_EVENT_TYPE,
+) -> RecoveryDispositionEvent:
+    """Build one recovery-domain fact after the disposition is persisted."""
+    return RecoveryDispositionEvent(
+        run_id=node_run.run_id,
+        node_run_id=node_run.node_run_id,
+        attempt_id=attempt.attempt_id,
+        attempt_status=attempt.status.value,
+        node_run_status=node_run.status.value,
+        cancellation_cause=cancellation.value,
+        disposition=disposition_of(attempt, cancellation),
+        error=attempt.error,
         source=source,
-        correlation_id=node_run.run_id,
-        payload={
-            "run_id": node_run.run_id,
-            "node_run_id": node_run.node_run_id,
-            "attempt_id": attempt.attempt_id,
-            "attempt_status": attempt.status.value,
-            "node_run_status": node_run.status.value,
-            "cancellation_cause": cancellation.value,
-            "disposition": disposition_of(attempt, cancellation),
-            "error": attempt.error,
-        },
     )
 
 
 __all__ = [
     "RECOVERY_EVENT_TYPE",
+    "CanonicalRecoveryEventSink",
+    "RecoveryDispositionEvent",
     "RecoveryEventSink",
     "disposition_of",
     "recovery_event",

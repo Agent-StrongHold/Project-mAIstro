@@ -219,6 +219,18 @@ def test_notes_fail_loudly_on_a_missing_section(notes_mod, tmp_path: Path):
         notes_mod.build("v1.0.0", "1.0.0", changelog)
 
 
+def test_notes_verify_artifacts_against_the_canonical_repository(notes_mod, tmp_path: Path):
+    changelog = tmp_path / "CHANGELOG.md"
+    changelog.write_text("## [1.0.0]\n\nbody\n")
+
+    body = notes_mod.build("v1.0.0", "1.0.0", changelog)
+
+    canonical = "https://github.com/Agent-StrongHold/Project-mAIstro"
+    assert f"{canonical}/blob/v1.0.0/docs/adr/ADR-073126-c4e1" in body
+    assert f"^{canonical}/\\.github/workflows/release\\.yml@refs/tags/v1\\.0\\.0$" in body
+    assert "https://github.com/Agent-StrongHold/maistro-engine" not in body
+
+
 def test_the_shipped_changelog_renders_for_its_own_release(notes_mod):
     """The real 1.0.0 notes must actually build — E4 writes the section, E3
     consumes it, and a mismatch between them is only visible here."""

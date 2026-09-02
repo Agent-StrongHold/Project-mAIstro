@@ -227,3 +227,42 @@ def test_json_store_get_with_default() -> None:
     s = JsonStore("js")
     assert s.get("missing", "fallback") == "fallback"
     assert s.get("missing") is None
+
+
+class _ConflictPersisted(_FakePersisted):
+    def __init__(self) -> None:
+        super().__init__()
+        self.put_once_calls: list[tuple[str, str, str]] = []
+
+    def put_raw_if_absent(self, store_name: str, key: str, raw: str) -> bool:
+        self.put_once_calls.append((store_name, key, raw))
+        return False
+
+    def get_raw(self, store_name: str, key: str) -> str | None:
+        return None
+
+
+def test_json_store_put_if_absent_returns_false_when_key_present() -> None:
+    from services.model_store import JsonStore
+
+    s = JsonStore("js")
+    s["k"] = {"owner": "first"}
+    assert s.put_if_absent("k", {"owner": "second"}) is False
+    assert s["k"] == {"owner": "first"}
+
+
+def test_json_store_put_if_absent_requires_conflict_safe_backend() -> None:
+    from services.model_store import JsonStore
+
+    s = JsonStore("js", persisted=_FakePersisted())
+    with pytest.raises(RuntimeError, match="conflict-safe inserts"):
+        s.put_if_absent("k", {"v": 1})
+
+
+def test_json_store_put_if_absent_loads_durable_winner_on_conflict() -> None:
+    from services.model_store import JsonStore
+
+    p = _ConflictPersisted()
+    s = JsonStore("js", persisted=p)
+    with pytest.raises(RuntimeError, match="conflicting durable record"):
+        s.put_if_absent("k", {"owner": "first"})

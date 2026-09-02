@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
 import pytest
@@ -11,6 +12,7 @@ from maistro.graph.durable_runs import (
     DurableRunRecord,
     InMemoryDurableRunStore,
     RunStatus,
+    attempt_executor,
     resume_durable_graph,
     run_durable_graph,
 )
@@ -318,3 +320,41 @@ async def test_resume_folds_completed_attempt_without_redispatching_node() -> No
     assert record.attempts[0].status is AttemptStatus.COMPLETED
     assert record.node_runs[0].result == {"seed": "already-done"}
     assert _Start.calls == 0
+
+
+@pytest.mark.parametrize(
+    ("resume_at", "expected"),
+    [
+        (datetime.now(UTC) - timedelta(seconds=1), True),
+        (datetime.now(UTC) + timedelta(hours=1), False),
+        (None, False),
+    ],
+)
+async def test_a_timed_pause_needs_a_fresh_try_only_once_its_deadline_elapses(
+    resume_at: datetime | None, expected: bool
+) -> None:
+    """A paused node that is not waiting on a human is waiting on the clock:
+    the persisted pause is only evidence of work to redo once it is due."""
+    record = DurableRunRecord(
+        run=Run(
+            run_id="redispatch-run",
+            workspace_id="ws-1",
+            project_id="project-1",
+            graph=GraphSnapshot.from_graph(
+                Graph(
+                    workspace_id="ws-1",
+                    project_id="project-1",
+                    name="redispatch",
+                    nodes=[Node(node_id="wait-step", node_type="test.attempt.wait")],
+                )
+            ),
+            status=RunStatus.WAITING,
+        ),
+        graph_state=GraphExecutionState(run_id="redispatch-run"),
+        version=1,
+    )
+    paused = NodeResult(success=True, status="paused", resume_at=resume_at)
+
+    assert (
+        attempt_executor._requires_continuation_redispatch(record, "wait-step", paused) is expected
+    )

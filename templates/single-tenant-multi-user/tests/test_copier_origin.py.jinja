@@ -1,0 +1,18 @@
+"""Copier provenance contract for the generated product."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+import yaml
+
+CANONICAL_ENGINE_SRC = "https://github.com/Agent-StrongHold/Project-mAIstro.git"
+
+
+@pytest.mark.contract("boundary")
+@pytest.mark.scope("unit")
+def test_template_origin_is_pinned_to_the_engine() -> None:
+    answers = yaml.safe_load(Path(".copier-answers.yml").read_text(encoding="utf-8"))
+    assert isinstance(answers, dict)
+    assert answers["_src_path"] == CANONICAL_ENGINE_SRC

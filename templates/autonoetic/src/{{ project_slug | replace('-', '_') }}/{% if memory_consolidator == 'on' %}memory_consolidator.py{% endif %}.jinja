@@ -1,0 +1,13 @@
+"""Product integration contract for enabled memory consolidation."""
+
+from __future__ import annotations
+
+from typing import Protocol
+
+
+class MemoryConsolidator(Protocol):
+    """Implement without bypassing Maistro memory and security boundaries."""
+
+    async def consolidate(self) -> int:
+        """Consolidate one bounded batch and return the records processed."""
+        ...
