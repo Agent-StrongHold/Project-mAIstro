@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -13,6 +14,10 @@ from maistro.builders.graph_executor import (
     CanonicalGraphPipelineExecutor,
     DispatchResult,
     GraphPipelineExecutor,
+    _canonical_graph,
+    _mark_skipped,
+    _project_canonical_record,
+    _resolver,
 )
 from maistro.builders.pipeline import PipelineRun, PipelineStage, StageStatus
 from maistro.graph.durable_runs import (
@@ -382,3 +387,228 @@ async def test_iteration_budget_bounds_revision_loop_before_extra_dispatch() -> 
         "builders-stage:review",
     ]
     assert node_runs[-1].status is RunStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_gate_exhaustion_halt_fails_the_run_with_domain_error() -> None:
+    """The default exhausted-gate policy is a halt, not a silent proceed."""
+    graph = PipelineGraph(
+        [
+            _node("implement"),
+            _node(
+                "review",
+                ("implement",),
+                gate=lambda ctx: False,
+                revise_target="implement",
+                max_revisions=0,
+            ),
+        ]
+    )
+    dispatcher = ScriptedDispatcher()
+
+    run, record, owner = await _canonical(graph, dispatcher)
+
+    assert record.run.status is RunStatus.FAILED
+    assert run.status == "failed at review"
+    assert run.failed_stage_error == "Gate failed after 0 revisions"
+    assert run.gate_exhausted == []
+    assert dispatcher.calls == ["implement", "review"]
+    node_runs = await owner.run_store.list_node_runs(record.run_id)
+    failed = [item for item in node_runs if item.status is RunStatus.FAILED]
+    assert [item.node_id for item in failed] == ["builders-stage:review"]
+
+
+@pytest.mark.asyncio
+async def test_gate_exhaustion_continue_records_the_stage_once_and_proceeds() -> None:
+    """A continue-policy gate stays recorded once across re-exhaustions."""
+    graph = PipelineGraph(
+        [
+            _node("implement"),
+            _node(
+                "audit",
+                ("implement",),
+                gate=lambda ctx: False,
+                gate_exhausted="continue",
+                max_revisions=0,
+            ),
+            _node(
+                "fixup",
+                ("audit",),
+                gate=lambda ctx: ctx.get("fixup") == "OK",
+                revise_target="audit",
+                max_revisions=1,
+            ),
+        ]
+    )
+    dispatcher = ScriptedDispatcher(outputs={"fixup": ["NO", "OK"]})
+
+    run, record, owner = await _canonical(graph, dispatcher)
+
+    assert run.status == "completed"
+    assert record.run.status is RunStatus.COMPLETED
+    assert run.gate_exhausted == ["audit"]
+    assert dispatcher.calls == ["implement", "audit", "fixup", "audit", "fixup"]
+    node_runs = await owner.run_store.list_node_runs(record.run_id)
+    assert [item.node_id for item in node_runs] == [
+        "builders-stage:implement",
+        "builders-stage:audit",
+        "builders-stage:fixup",
+        "builders-stage:audit",
+        "builders-stage:fixup",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_on_complete_hook_receives_the_committed_output() -> None:
+    hook_outputs: list[str] = []
+
+    async def hook(run: Any, output: str) -> None:
+        hook_outputs.append(output)
+
+    graph = PipelineGraph([_node("tests", on_complete=hook)])
+    dispatcher = ScriptedDispatcher()
+
+    run, record, _ = await _canonical(graph, dispatcher)
+
+    assert record.run.status is RunStatus.COMPLETED
+    assert hook_outputs == ["tests output"]
+    assert run.context["tests"] == "tests output"
+
+
+@pytest.mark.asyncio
+async def test_on_complete_hook_that_fails_the_run_fails_the_stage() -> None:
+    """A hook marking the run failed must surface as a failed stage, not pass."""
+
+    async def failing_hook(run: Any, output: str) -> None:
+        run.status = "failed at tests"
+
+    graph = PipelineGraph([_node("tests", on_complete=failing_hook)])
+    dispatcher = ScriptedDispatcher()
+
+    run, record, owner = await _canonical(graph, dispatcher)
+
+    assert record.run.status is RunStatus.FAILED
+    assert run.status == "failed at tests"
+    node_runs = await owner.run_store.list_node_runs(record.run_id)
+    assert [item.node_id for item in node_runs] == ["builders-stage:tests"]
+    assert node_runs[0].status is RunStatus.FAILED
+    assert "tests failed" in (node_runs[0].error or "")
+
+
+def test_resolver_rejects_node_ids_outside_the_builders_stage_namespace() -> None:
+    graph = PipelineGraph([_node("tests")])
+    run = _run(graph, run_id="resolver-run")
+    canonical = _canonical_graph(
+        graph,
+        run=run,
+        workspace_id="workspace-builders",
+        project_id="project-builders",
+    )
+    resolve = _resolver(
+        graph,
+        run=run,
+        dispatcher=ScriptedDispatcher(),
+        budget=IterationBudget(max_iterations=8),
+    )
+
+    assert resolve("builders-stage:tests", canonical).__class__.__name__ == "_StageNode"
+    with pytest.raises(KeyError, match="unknown Builders canonical node"):
+        resolve("builders-stage:nonexistent", canonical)
+    with pytest.raises(KeyError, match="unknown Builders canonical node"):
+        resolve("frontier-control", canonical)
+
+
+def test_mark_skipped_keeps_a_stage_recorded_exactly_once() -> None:
+    graph = PipelineGraph([_node("tests")])
+    run = _run(graph, run_id="skip-run")
+
+    _mark_skipped(run, "tests")
+    _mark_skipped(run, "tests")
+
+    assert run.skipped_stages == ["tests"]
+
+
+def test_projection_maps_running_queued_and_non_failed_terminal_node_runs() -> None:
+    """The receipt projection must not invent terminal states the spine lacks."""
+    graph = PipelineGraph(
+        [_node("implement"), _node("tests", ("implement",)), _node("review", ("tests",))]
+    )
+
+    def _record(run_status: RunStatus, node_runs: list[tuple[str, RunStatus]]) -> Any:
+        return SimpleNamespace(
+            run=SimpleNamespace(status=run_status),
+            node_runs=tuple(
+                SimpleNamespace(node_id=f"builders-stage:{name}", status=status, error=None)
+                for name, status in node_runs
+            ),
+        )
+
+    cancelled = _run(graph, run_id="projection-cancelled")
+    _project_canonical_record(cancelled, _record(RunStatus.CANCELLED, []))
+    assert cancelled.status == "cancelled"
+
+    in_flight = _run(graph, run_id="projection-running")
+    _project_canonical_record(
+        in_flight,
+        _record(
+            RunStatus.RUNNING,
+            [("implement", RunStatus.COMPLETED), ("tests", RunStatus.RUNNING)],
+        ),
+    )
+    assert in_flight.status == "running"
+    assert [stage.status for stage in in_flight.stages] == [
+        StageStatus.COMPLETED,
+        StageStatus.RUNNING,
+        StageStatus.PENDING,
+    ]
+
+    queued = _run(graph, run_id="projection-queued")
+    _project_canonical_record(
+        queued,
+        _record(
+            RunStatus.RUNNING,
+            [("implement", RunStatus.COMPLETED), ("tests", RunStatus.QUEUED)],
+        ),
+    )
+    assert [stage.status for stage in queued.stages] == [
+        StageStatus.COMPLETED,
+        StageStatus.PENDING,
+        StageStatus.PENDING,
+    ]
+
+    failed = _run(graph, run_id="projection-failed")
+    failed.failed_stage_error = "review broke"
+    _project_canonical_record(
+        failed,
+        _record(
+            RunStatus.FAILED,
+            [
+                ("implement", RunStatus.COMPLETED),
+                ("tests", RunStatus.FAILED),
+                ("review", RunStatus.FAILED),
+            ],
+        ),
+    )
+    assert failed.status == "failed at review"
+    stage_by_name = {stage.name: stage for stage in failed.stages}
+    assert stage_by_name["review"].status is StageStatus.FAILED
+    assert stage_by_name["review"].error == "review broke"
+    assert stage_by_name["tests"].status is StageStatus.FAILED
+    assert stage_by_name["tests"].error == ""
+
+
+@pytest.mark.asyncio
+async def test_execute_rejects_an_invalid_pipeline_graph_before_any_run() -> None:
+    graph = PipelineGraph([_node("code", ("nonexistent",))])
+    owner = await _owner()
+    executor = CanonicalGraphPipelineExecutor(
+        ScriptedDispatcher(),
+        run_store=owner.run_store,
+        durable_store=owner.durable_store,
+        workspace_id=owner.workspace_id,
+        project_id=owner.project_id,
+    )
+    run = _run(graph, run_id="invalid-graph-run")
+
+    with pytest.raises(ValueError, match="invalid Builders pipeline graph"):
+        await executor.execute(graph, run)

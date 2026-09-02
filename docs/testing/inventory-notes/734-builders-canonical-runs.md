@@ -1,10 +1,12 @@
+---
 # PR #734 Builders canonical execution inventory note
 
 Issue: #734
 Parent: #49
 
 inventory-delta:
-  packages/maistro-core/tests/: +7
+  packages/maistro-core/tests: +15
+---
 
 ## Claim and collision boundary
 
