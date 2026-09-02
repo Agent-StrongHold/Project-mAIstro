@@ -1,0 +1,113 @@
+_min_version: "9.0.0"
+_subdirectory: "templates/{{ product_template }}"
+_answers_file: .copier-answers.yml
+_exclude:
+  - copier.yaml
+  - copier.yml
+  - "~*"
+  - "*.py[co]"
+  - __pycache__
+  - .git
+  - .DS_Store
+  - .svn
+
+product_template:
+  type: str
+  help: Product variant to render from this engine repository
+  choices:
+    Single-tenant multi-user: single-tenant-multi-user
+    Autonoetic: autonoetic
+  default: single-tenant-multi-user
+
+project_slug:
+  type: str
+  help: Lowercase product slug
+  default: maistro-product
+  validator: >-
+    {% if not (project_slug | regex_search('^[a-z][a-z0-9-]*\Z')) %}
+    Use lowercase letters, digits, and dashes; start with a letter.
+    {% elif (project_slug | replace('-', '_')) in ['False', 'None', 'True', '_', 'and', 'as', 'assert', 'async', 'await', 'break', 'case', 'class', 'continue', 'def', 'del', 'elif', 'else', 'except', 'finally', 'for', 'from', 'global', 'if', 'import', 'in', 'is', 'lambda', 'match', 'nonlocal', 'not', 'or', 'pass', 'raise', 'return', 'try', 'while', 'with', 'yield'] %}
+    project_slug cannot be a Python keyword when dashes are converted to underscores.
+    {% endif %}
+
+users_max:
+  type: int
+  help: Maximum number of human users served by this single tenant
+  default: 5
+  when: "{{ product_template == 'single-tenant-multi-user' }}"
+  validator: >-
+    {% if users_max < 2 or users_max > 1000 %}
+    users_max must be between 2 and 1000.
+    {% endif %}
+
+auth_backend:
+  type: str
+  help: Authentication integration contract
+  choices:
+    Local credentials: local
+    Keycloak OIDC: keycloak
+  default: local
+  when: "{{ product_template == 'single-tenant-multi-user' }}"
+
+channels:
+  type: str
+  help: Product channels to include
+  choices:
+    Web: web
+    Voice: voice
+    Email: email
+  multiselect: true
+  default:
+    - web
+  when: "{{ product_template == 'single-tenant-multi-user' }}"
+  validator: >-
+    {% if channels | length == 0 %}
+    Select at least one channel.
+    {% endif %}
+
+host_target:
+  type: str
+  help: Deployment host target
+  choices:
+    Rootless Podman: podman
+    Docker: docker
+    systemd: systemd
+  default: podman
+  when: "{{ product_template == 'single-tenant-multi-user' }}"
+
+awareness_loop_hz:
+  type: int
+  help: Awareness-loop ticks per second
+  default: 1
+  when: "{{ product_template == 'autonoetic' }}"
+  validator: >-
+    {% if awareness_loop_hz < 1 or awareness_loop_hz > 1000 %}
+    awareness_loop_hz must be between 1 and 1000.
+    {% endif %}
+
+self_model:
+  type: str
+  help: Self-model profile
+  choices:
+    Minimal: minimal
+    HEXACO: hexaco
+  default: minimal
+  when: "{{ product_template == 'autonoetic' }}"
+
+memory_consolidator:
+  type: str
+  help: Enable autonomous memory consolidation
+  choices:
+    "Off": "off"
+    "On": "on"
+  default: "off"
+  when: "{{ product_template == 'autonoetic' }}"
+
+dossier_store:
+  type: str
+  help: Durable dossier storage adapter
+  choices:
+    Filesystem: fs
+    Obsidian vault: obsidian
+  default: fs
+  when: "{{ product_template == 'autonoetic' }}"

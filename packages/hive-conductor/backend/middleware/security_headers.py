@@ -34,8 +34,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from config import get_settings
+from services.csp_policy import conductor_policy
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
-from starlette.responses import JSONResponse
 
 from maistro.security.content_security_policy import ContentSecurityPolicy
 from maistro.security.transport import parse_trusted_proxies, request_is_https
@@ -59,8 +60,6 @@ def _is_https(request: Request) -> bool:
     an HSTS header that would force browsers to upgrade every future request is
     still what the gate is for.
     """
-    from config import get_settings
-
     return request_is_https(
         scheme=request.url.scheme,
         headers=request.headers,
@@ -84,9 +83,6 @@ def _content_security_policy() -> tuple[ContentSecurityPolicy, bool]:
     nobody ever promotes is a header that protects nothing while looking like
     it does.
     """
-    from config import get_settings
-    from services.csp_policy import conductor_policy
-
     settings = get_settings()
     return (
         conductor_policy(development=settings.allow_insecure_transport),
@@ -102,31 +98,25 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         request: Request,
         call_next: RequestResponseEndpoint,
     ) -> Response:
-        """Add security headers to the response and enforce M0 route containment."""
-        # M0 containment for #482/#313. First-run account creation belongs to
-        # /v1/setup/complete, which is explicitly one-shot. The legacy register
-        # route is intentionally unreachable until the M2 invitation/admin
-        # registration policy lands. Keep this outside AuthMiddleware's public
-        # route table so a stale or accidentally re-added exemption cannot
-        # silently reopen anonymous account creation.
-        if request.url.path == "/v1/auth/register":
-            response: Response = JSONResponse(
-                status_code=403,
-                content={
-                    "detail": (
-                        "Public registration is disabled. Use initial setup or "
-                        "administrator-managed provisioning."
-                    )
-                },
-            )
-        else:
-            response = await call_next(request)
+        """Add security headers to every response."""
+        # M0 containment for #482/#313 once short-circuited /v1/auth/register
+        # here with an unconditional 403, until the M2 registration policy
+        # existed. It exists now: `routes/auth.py` consults the durable policy
+        # and fails closed (missing, corrupt, or mid-bootstrap records all read
+        # as "closed"), so this middleware returned to pure headers. Keeping a
+        # consult here would duplicate the decision — and could not read the
+        # invitation token in the body anyway, so it would refuse invitations
+        # the policy exists to allow. The one thing that must never reappear is
+        # an exemption for this path in AuthMiddleware's public route table
+        # that is not paired with the route-side policy check.
+        response: Response = await call_next(request)
 
         if _is_https(request):
             response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        if "Referrer-Policy" not in response.headers:
+            response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
 
         policy, report_only = _content_security_policy()

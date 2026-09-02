@@ -47,7 +47,7 @@ async def test_with_a_connection_the_spine_is_durable() -> None:
         ) = await wire_execution_spine(conn, workspace_id="w1")
 
         assert type(scope_store).__name__ == "SqliteProjectScopeStore"
-        assert type(run_store).__name__ == "SqliteRunStore"
+        assert type(run_store).__name__ == "ClaimingSqliteRunStore"
 
 
 async def test_the_root_project_exists_before_the_first_submission() -> None:

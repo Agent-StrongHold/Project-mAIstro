@@ -97,6 +97,62 @@ def test_a_module_that_stopped_calling_out_must_be_pruned(gate) -> None:
     assert any("gone.away" in f and "prune it" in f for f in failures)
 
 
+# --- migrations ---------------------------------------------------------------
+
+
+def test_a_migration_is_recognized_only_between_recorded_and_pruned(gate) -> None:
+    """The one shape the exception permits: the trusted base recorded the
+    predecessor, and the candidate inventory no longer does."""
+    assert (
+        gate._migration_predecessor(
+            "services.legacy_dag_node",
+            trusted={"services.graph_runner"},
+            candidate={"services.legacy_dag_node"},
+        )
+        == "services.graph_runner"
+    )
+
+
+def test_a_module_with_no_recorded_predecessor_is_not_a_migration(gate) -> None:
+    """A brand-new direct caller has nothing to have moved from; it still
+    needs an already-landed authorization, not a mapping entry."""
+    assert (
+        gate._migration_predecessor(
+            "services.brand_new", trusted={"services.graph_runner"}, candidate=set()
+        )
+        is None
+    )
+
+
+def test_a_migration_needs_its_predecessor_in_the_trusted_base(gate) -> None:
+    """A rename cannot import an egress the trusted base never recorded."""
+    assert (
+        gate._migration_predecessor(
+            "services.legacy_dag_node", trusted=set(), candidate={"services.legacy_dag_node"}
+        )
+        is None
+    )
+
+
+def test_a_migration_requires_the_predecessor_to_be_pruned(gate) -> None:
+    """Both modules calling out is growth, not a move. Leaving the predecessor
+    banked while adding its successor must not ride the exception."""
+    assert (
+        gate._migration_predecessor(
+            "services.legacy_dag_node",
+            trusted={"services.graph_runner"},
+            candidate={"services.graph_runner", "services.legacy_dag_node"},
+        )
+        is None
+    )
+
+
+def test_the_shipped_migration_map_is_the_one_reviewed_move(gate) -> None:
+    """The exception is scoped per move, like CANDIDATE_AUTHORED: an entry
+    nobody reviewed landing here would widen it silently."""
+    assert gate.CANDIDATE_MIGRATIONS == {"services.legacy_dag_node": "services.graph_runner"}
+
+
 def test_the_shipped_inventory_matches_the_shipped_code(gate) -> None:
     assert gate.main() == 0
 

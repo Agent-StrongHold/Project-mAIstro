@@ -19,8 +19,13 @@ if TYPE_CHECKING:
     from maistro.protocols.embeddings import EmbeddingClient
 
 #: The width every `embedding vector(N)` column in the memory schema is created
-#: at, by `alembic/versions/007_memory_embedding_columns.py` and, for
-#: `memory_entries`, by 001 before it.
+#: at, by `alembic/versions/011_memory_embedding_columns.py` for `learnings` and
+#: by `029_memory_entries_embedding_is_a_vector.py` for `memory_entries`.
+#:
+#: Not 001. That revision named the width in a comment and produced a `text`
+#: column -- its `ADD COLUMN IF NOT EXISTS ... vector(1536)` was a no-op against
+#: the column its own `create_table` had just made. 029 is the repair (#188,
+#: ADR-083026-4b70).
 #:
 #: 1536 is OpenAI's `ada-002` / `3-small` width. `ADR-082326-8194` matched it
 #: deliberately rather than right-sizing: a second width in one database means

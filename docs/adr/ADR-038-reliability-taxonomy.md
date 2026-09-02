@@ -19,7 +19,9 @@ blocked-by: []
 contracts:
   - boundary
   - behavioral
-tests: []
+tests:
+  - packages/maistro-server/tests/api/test_health.py
+  - packages/maistro-server/tests/api/test_main.py
 layer: Reliability
 owners:
   - '@BlakeMatthews-dev'
@@ -52,14 +54,22 @@ Five reliability primitives, each with engine-level defaults that products inher
 Per upstream dependency — each LLM provider, each MCP server, each A2A peer, each database. State machine:
 
 ```
-closed ──(N failures in W)──► open ──(T cool-down)──► half-open ──(success)──► closed
+closed ──(N failures in W)──► open ──(T cool-down)──► half-open ──(leased probe succeeds)──► closed
                                                   │
-                                          (failure) │
+                                    (probe failure) │
                                                   ▼
                                                 open
 ```
 
 Defaults: `N=5`, `W=60s`, `T=30s`. Per-dependency tunable. State changes emit `maistro_circuit_state` (ADR-037) and a `circuit.state_change` event.
+
+**Probe ownership (clarified 2026-08-31).** `allow_request()` atomically grants the
+HALF_OPEN probe to one execution owner (thread or asyncio task). In HALF_OPEN,
+`record_success()` closes the circuit only when called by the owner whose
+`allow_request()` call acquired the current exclusive probe lease; success from any
+other caller is ignored. The owner may call `release_probe()` so another caller can
+claim the probe without changing state. An abandoned lease eventually reopens the
+circuit after its configured probe timeout.
 
 ### 3. Fallbacks
 
@@ -87,6 +97,13 @@ Three levels per service:
 - **Liveness** (`/health/live`) — process is up. Cheap.
 - **Readiness** (`/health/ready`) — ready to accept traffic. Verifies upstream deps reachable, cache warm, migrations applied.
 - **Startup** (`/health/startup`) — initial bootstrap done. K8s uses this to delay liveness probes during slow boot.
+
+**maistro-server implementation (2026-08-31):** the FastAPI lifespan records
+application-local startup state before initialization, marks it complete only after
+configuration, database/run-spine/container wiring, role-specific setup, and task-runner
+startup finish, and records initialization failure without exposing the exception. The startup
+endpoint reads only that in-process state; ongoing dependency probes remain the responsibility of
+readiness.
 
 K8s probes hit these directly; `Project_mAIstro` runs them via systemd or Docker healthcheck.
 

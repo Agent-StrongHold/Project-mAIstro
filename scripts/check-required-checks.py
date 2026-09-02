@@ -118,9 +118,22 @@ def _scope(pull_request: dict) -> str:
     return "every PR"
 
 
+_PR_BASE_REF_MARKERS = (
+    "github.base_ref",
+    "github.event.pull_request.base.ref",
+)
+
+
 def _job_scope(job: dict, trigger_scope: str) -> str:
+    """Report only PR-base coupling as a narrowing of PR check coverage.
+
+    A workflow may also inspect ``github.event.merge_group.base_ref`` to scope
+    expensive work inside a merge queue. That does not narrow which pull
+    requests produce the check, so treating any raw ``base_ref`` mention as a
+    PR filter makes the contract report a coverage hole that does not exist.
+    """
     condition = str((job or {}).get("if", ""))
-    if "base_ref" not in condition:
+    if not any(marker in condition for marker in _PR_BASE_REF_MARKERS):
         return trigger_scope
     return f"{trigger_scope}, job `if:` on base_ref"
 

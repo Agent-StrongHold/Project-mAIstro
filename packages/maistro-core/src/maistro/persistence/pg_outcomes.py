@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.constants import THUMB_LIMIT, THUMB_WINDOW_DAYS
 from maistro.observability.correlation import observed_provenance
+from maistro.persistence.outcome_scope import scope_predicates
 from maistro.types.memory import Outcome
 
 if TYPE_CHECKING:
@@ -38,12 +39,16 @@ def _scope_clause(params: list[Any], org_id: str = "", project_id: str = "") -> 
     be interpolated at the WHERE rather than appended to the whole statement.
     Placeholder numbers come from the params list itself, which is what keeps
     the two forms consistent when a query already has positional arguments.
+
+    The composition rule itself lives in one shared module (`outcome_scope`)
+    so this store and the SQLite twin cannot disagree about what a scope
+    means — empty means unscoped, present axes compose with AND, `None`
+    raises rather than widening (#844).
     """
     clause = ""
-    for column, value in (("org_id", org_id), ("project_id", project_id)):
-        if value:
-            params.append(value)
-            clause += f" AND {column} = ${len(params)}"
+    for column, value in scope_predicates(org_id, project_id):
+        params.append(value)
+        clause += f" AND {column} = ${len(params)}"
     return clause
 
 
@@ -78,9 +83,10 @@ class PgOutcomeStore:
                     input_tokens, output_tokens, charged_microchips, pricing_version,
                     project_id, dag_id, dag_run_id, node_id,
                     thumb, thumb_comment, eval_judge_score, created_at,
-                    run_id, node_run_id, attempt_id, usage_reported_calls)
+                    run_id, node_run_id, attempt_id, usage_reported_calls,
+                    session_id)
                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
-                           $17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)
+                           $17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
                    RETURNING id""",
                 outcome.request_id,
                 outcome.task_type,
@@ -141,6 +147,11 @@ class PgOutcomeStore:
                 # it counted and found none, which is the conflation the
                 # column exists to end (#717).
                 outcome.usage_reported_calls,
+                # NULL rather than "" for the same reason the provenance
+                # columns take NULL: an outcome recorded outside a
+                # conversation names no session, which is not the same as
+                # naming a session whose id is empty (#748).
+                outcome.session_id or None,
             )
             return int(row["id"]) if row else 0
 
@@ -437,6 +448,10 @@ def _row_to_outcome(r: asyncpg.Record) -> Outcome:
     return Outcome(
         id=r["id"],
         request_id=r.get("request_id", ""),
+        # `or ""` because the column is nullable and the field is not: a row
+        # from before 028, or one written outside a conversation, reads back as
+        # an outcome naming no session.
+        session_id=r.get("session_id") or "",
         task_type=r.get("task_type", ""),
         model_used=r.get("model_used", ""),
         provider=r.get("provider", ""),

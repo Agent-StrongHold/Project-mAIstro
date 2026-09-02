@@ -7,10 +7,11 @@ frontier, a blackboard and a routing history are not execution lifecycle
 (ADR-062, ADR-082826-d9f5). This module is that second half, stored beside the
 canonical rows rather than wrapped around them.
 
-The index columns (`status`, `project_id`, `created_at`) are denormalized from
-the canonical Run on every write. They exist so "which graph runs are paused"
-is one query rather than a scan of every Run on the spine; the Run remains the
-authority, and assembly always reads the status back from it.
+The index columns (`status`, `project_id`, `created_at`, `resume_at`) are
+denormalized from the canonical Run/continuation on every write. They exist so
+recovery can find eligible graph runs with bounded indexed queries rather than
+a scan of every Run on the spine; the Run remains the lifecycle authority, and
+assembly always reads the status back from it.
 """
 
 from __future__ import annotations
@@ -30,6 +31,8 @@ from .types import DurableRunRecord
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import aiosqlite
 
+_RECOVERY_VISIBLE_STATUSES = frozenset({RunStatus.WAITING, RunStatus.PAUSED, RunStatus.RUNNING})
+
 
 class GraphContinuation(BaseModel):
     """Graph traversal state for one canonical Run, and its lookup columns."""
@@ -48,7 +51,6 @@ class GraphContinuation(BaseModel):
 
     @classmethod
     def of(cls, record: DurableRunRecord) -> GraphContinuation:
-        """Split the continuation out of a whole record."""
         return cls(
             run_id=record.run_id,
             graph_state=record.graph_state,
@@ -74,6 +76,8 @@ class GraphContinuationStore(Protocol):
         """Persist a strictly newer optimistic-concurrency version."""
         ...
 
+    async def delete(self, run_id: str) -> bool: ...
+
     async def list_run_ids_by_status(
         self,
         status: RunStatus,
@@ -81,6 +85,10 @@ class GraphContinuationStore(Protocol):
         limit: int = 100,
         project_id: str | None = None,
     ) -> list[str]: ...
+
+    async def list_due_run_ids(self, *, now: datetime, limit: int = 100) -> list[str]:
+        """Return persisted wait/claim continuations whose deadline is due."""
+        ...
 
     async def list_run_ids_for_project(self, project_id: str, *, limit: int = 25) -> list[str]: ...
 
@@ -119,6 +127,10 @@ class InMemoryGraphContinuationStore:
             self._rows[continuation.run_id] = _clone(continuation)
             return _clone(continuation)
 
+    async def delete(self, run_id: str) -> bool:
+        async with self._lock:
+            return self._rows.pop(run_id, None) is not None
+
     async def list_run_ids_by_status(
         self,
         status: RunStatus,
@@ -134,9 +146,23 @@ class InMemoryGraphContinuationStore:
         rows.sort(key=lambda row: (row.created_at or datetime.min, row.run_id))
         return [row.run_id for row in rows[:limit]]
 
+    async def list_due_run_ids(self, *, now: datetime, limit: int = 100) -> list[str]:
+        rows = [
+            row
+            for row in self._rows.values()
+            if row.status in _RECOVERY_VISIBLE_STATUSES
+            and row.resume_at is not None
+            and row.resume_at <= now
+        ]
+        rows.sort(key=lambda row: (row.resume_at, row.run_id))
+        return [row.run_id for row in rows[:limit]]
+
     async def list_run_ids_for_project(self, project_id: str, *, limit: int = 25) -> list[str]:
         rows = [row for row in self._rows.values() if row.project_id == project_id]
-        rows.sort(key=lambda row: (row.created_at or datetime.min, row.run_id), reverse=True)
+        rows.sort(
+            key=lambda row: (row.created_at or datetime.min, row.run_id),
+            reverse=True,
+        )
         return [row.run_id for row in rows[:limit]]
 
 
@@ -163,14 +189,7 @@ CREATE INDEX IF NOT EXISTS idx_graph_continuations_resume_at
 
 
 class SqliteGraphContinuationStore:
-    """The homelab twin, on the same connection as the canonical spine.
-
-    Takes an `aiosqlite.Connection` rather than a path, and exposes
-    `ensure_schema`, because that is the convention every store wired by
-    `wire_execution_spine` follows. A continuation in a second database file
-    from the Run it continues is how a restart finds graph state whose Run the
-    spine cannot resolve.
-    """
+    """The homelab twin, on the same connection as the canonical spine."""
 
     def __init__(self, conn: aiosqlite.Connection) -> None:
         self._conn = conn
@@ -202,6 +221,15 @@ class SqliteGraphContinuationStore:
             await self._write(continuation, insert=False)
             return _clone(continuation)
 
+    async def delete(self, run_id: str) -> bool:
+        async with self._lock:
+            cursor = await self._conn.execute(
+                "DELETE FROM graph_continuations WHERE run_id = ?",
+                (run_id,),
+            )
+            await self._conn.commit()
+            return cursor.rowcount > 0
+
     async def list_run_ids_by_status(
         self,
         status: RunStatus,
@@ -222,6 +250,24 @@ class SqliteGraphContinuationStore:
                 "ORDER BY created_at ASC, run_id ASC LIMIT ?",
                 (status.value, project_id, limit),
             )
+        return [str(row[0]) for row in await cursor.fetchall()]
+
+    async def list_due_run_ids(self, *, now: datetime, limit: int = 100) -> list[str]:
+        cursor = await self._conn.execute(
+            """SELECT run_id FROM graph_continuations
+                WHERE status IN (?, ?, ?)
+                  AND resume_at IS NOT NULL
+                  AND resume_at <= ?
+             ORDER BY resume_at ASC, run_id ASC
+                LIMIT ?""",
+            (
+                RunStatus.WAITING.value,
+                RunStatus.PAUSED.value,
+                RunStatus.RUNNING.value,
+                now.isoformat(),
+                limit,
+            ),
+        )
         return [str(row[0]) for row in await cursor.fetchall()]
 
     async def list_run_ids_for_project(self, project_id: str, *, limit: int = 25) -> list[str]:

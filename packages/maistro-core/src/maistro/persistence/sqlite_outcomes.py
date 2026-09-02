@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.constants import THUMB_LIMIT, THUMB_WINDOW_DAYS
 from maistro.observability.correlation import observed_provenance
+from maistro.persistence.outcome_scope import scope_predicates
 from maistro.types.memory import Outcome
 
 if TYPE_CHECKING:
@@ -42,7 +43,8 @@ CREATE TABLE IF NOT EXISTS outcomes (
     run_id TEXT,
     node_run_id TEXT,
     attempt_id TEXT,
-    usage_reported_calls INTEGER
+    usage_reported_calls INTEGER,
+    session_id TEXT
 )
 """
 
@@ -70,9 +72,29 @@ _ADDED_COLUMNS = (
     # written before migration 027 did not count, and `0` would say it counted
     # and found none (#717).
     ("usage_reported_calls", "INTEGER"),
+    # Nullable, like the provenance columns and for the same reason: an
+    # outcome recorded outside a conversation names no session, which is not
+    # the same as naming a session whose id is empty. Migration 028 in
+    # PostgreSQL (#748).
+    ("session_id", "TEXT"),
 )
 
 _ALLOWED_GROUP_COLUMNS = frozenset({"user_id", "team_id", "model_used", "agent_id", "provider"})
+
+
+def _scope_clause(params: list[Any], org_id: str = "", project_id: str = "") -> str:
+    """The `AND col = ?` fragment for the org/project scope predicates.
+
+    Same composition rule as `PgOutcomeStore._scope_clause`, from the one
+    module that states it (`outcome_scope`): empty means unscoped, present
+    axes compose with AND, `None` raises rather than widening. Rendered into
+    the SQL `WHERE`, never applied after the fetch (#844).
+    """
+    clause = ""
+    for column, value in scope_predicates(org_id, project_id):
+        params.append(value)
+        clause += f" AND {column} = ?"
+    return clause
 
 
 class SqliteOutcomeStore:
@@ -102,6 +124,16 @@ class SqliteOutcomeStore:
         await self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_outcomes_run_id ON outcomes (run_id)"
         )
+        # The scoped access pattern every read now walks: org + project +
+        # task_type + created_at, the same composite PostgreSQL's migration
+        # 010 created as `ix_outcomes_scope_task_time`. Without it a scoped
+        # read is a full table scan on the one backend chosen for
+        # single-box deployments, where the outcomes table is the largest
+        # thing SQLite holds (#844).
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_outcomes_scope_task_time "
+            "ON outcomes (org_id, project_id, task_type, created_at)"
+        )
         await self._conn.commit()
 
     async def record(self, outcome: Outcome) -> int:
@@ -119,8 +151,9 @@ class SqliteOutcomeStore:
                 input_tokens, output_tokens, charged_microchips, pricing_version, created_at,
                 org_id, project_id, dag_id, dag_run_id, node_id,
                 thumb, thumb_comment, eval_judge_score,
-                run_id, node_run_id, attempt_id, usage_reported_calls)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                run_id, node_run_id, attempt_id, usage_reported_calls,
+                session_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 outcome.request_id,
                 outcome.task_type,
@@ -162,6 +195,8 @@ class SqliteOutcomeStore:
                 # it counted and found none, which is the conflation the
                 # column exists to end (#717).
                 outcome.usage_reported_calls,
+                # NULL rather than "", as in `pg_outcomes` (#748).
+                outcome.session_id or None,
             ),
         )
         await self._conn.commit()
@@ -180,6 +215,7 @@ class SqliteOutcomeStore:
         if task_type:
             query += " AND task_type = ?"
             params.append(task_type)
+        query += _scope_clause(params, org_id)
         cursor = await self._conn.execute(query, params)
         columns = [d[0] for d in cursor.description]
         raw_rows = await cursor.fetchall()
@@ -230,18 +266,26 @@ class SqliteOutcomeStore:
 
         if days > 0:
             cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+            params = [cutoff]
+            scope = _scope_clause(params, org_id)
             cursor = await self._conn.execute(
                 f"""{select_cols}
-                   WHERE created_at >= ?
+                   WHERE created_at >= ?{scope}
                    GROUP BY {group_by}
                    ORDER BY total_tokens DESC""",  # nosec B608
-                (cutoff,),
+                params,
             )
         else:
+            # No cutoff, so the scope predicate has to open the WHERE rather
+            # than extend one. `days <= 0` means "all time", not "all orgs" —
+            # the same rule the PostgreSQL twin states for its own branch.
+            params = []
+            scope = _scope_clause(params, org_id).replace(" AND ", " WHERE ", 1)
             cursor = await self._conn.execute(
-                f"""{select_cols}
+                f"""{select_cols}{scope}
                    GROUP BY {group_by}
-                   ORDER BY total_tokens DESC"""  # nosec B608
+                   ORDER BY total_tokens DESC""",  # nosec B608
+                params,
             )
         rows = await cursor.fetchall()
 
@@ -268,6 +312,8 @@ class SqliteOutcomeStore:
         """Daily token usage timeseries."""
         has_group = group_by in _ALLOWED_GROUP_COLUMNS
         cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        params: list[Any] = [cutoff]
+        scope = _scope_clause(params, org_id)
 
         if has_group:
             query = f"""
@@ -279,11 +325,11 @@ class SqliteOutcomeStore:
                        COALESCE(SUM(charged_microchips), 0) AS total_microchips,
                        COUNT(*) AS request_count
                  FROM outcomes
-                 WHERE created_at >= ?
+                 WHERE created_at >= ?{scope}
                  GROUP BY day, {group_by}
                  ORDER BY day"""  # nosec B608
         else:
-            query = """
+            query = f"""
                 SELECT DATE(created_at) AS day,
                        COALESCE(SUM(input_tokens), 0) AS input_tokens,
                        COALESCE(SUM(output_tokens), 0) AS output_tokens,
@@ -291,11 +337,11 @@ class SqliteOutcomeStore:
                        COALESCE(SUM(charged_microchips), 0) AS total_microchips,
                        COUNT(*) AS request_count
                 FROM outcomes
-                WHERE created_at >= ?
+                WHERE created_at >= ?{scope}
                 GROUP BY day
                 ORDER BY day"""
 
-        cursor = await self._conn.execute(query, (cutoff,))
+        cursor = await self._conn.execute(query, params)
         rows = await cursor.fetchall()
 
         if has_group:
@@ -332,15 +378,22 @@ class SqliteOutcomeStore:
         org_id: str = "",
         project_id: str = "",
     ) -> str:
-        """Get recent failure patterns as a prompt section."""
+        """Get recent failure patterns as a prompt section.
+
+        Scoped like the PostgreSQL twin, from the one shared rule: `org_id`
+        and `project_id` are predicates in the SQL, so a failure narrative
+        from another tenant's project cannot reach this one's prompt — the
+        defect this read existed with on this backend (#844).
+        """
         cutoff = (datetime.now(UTC) - timedelta(days=7)).isoformat()
-        cursor = await self._conn.execute(
-            """SELECT error_type, model_used FROM outcomes
+        params: list[Any] = [task_type, cutoff]
+        query = """SELECT error_type, model_used FROM outcomes
                WHERE task_type = ? AND success = 0
-               AND created_at >= ?
-               ORDER BY created_at DESC LIMIT ?""",
-            (task_type, cutoff, limit),
-        )
+               AND created_at >= ?"""
+        query += _scope_clause(params, org_id, project_id)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        cursor = await self._conn.execute(query, params)
         rows = await cursor.fetchall()
         if not rows:
             return ""
@@ -363,6 +416,7 @@ class SqliteOutcomeStore:
         if task_type:
             query += " AND task_type = ?"
             params.append(task_type)
+        query += _scope_clause(params, org_id)
         query += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
         cursor = await self._conn.execute(query, params)
@@ -392,9 +446,7 @@ class SqliteOutcomeStore:
         if dag_id:
             query += " AND (dag_id = ? OR dag_id = '')"
             params.append(dag_id)
-        if org_id:
-            query += " AND org_id = ?"
-            params.append(org_id)
+        query += _scope_clause(params, org_id)
         query += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
         cursor = await self._conn.execute(query, params)
@@ -439,6 +491,10 @@ def _row_to_outcome(r: dict[str, Any]) -> Outcome:
     return Outcome(
         id=r["id"],
         request_id=r.get("request_id", ""),
+        # `or ""` because the column is nullable and the field is not: a store
+        # file from before this column, or a row written outside a
+        # conversation, reads back as an outcome naming no session.
+        session_id=r.get("session_id") or "",
         task_type=r.get("task_type", ""),
         model_used=r.get("model_used", ""),
         provider=r.get("provider", ""),

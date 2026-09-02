@@ -54,7 +54,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 
 @pytest.fixture(autouse=True)
 def _default_ac_state_ratchet_event(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every test opts into merge-group semantics explicitly, or gets none.
+    """Every test opts into GitHub integration metadata explicitly, or gets none.
 
     A merge-group CI job exports GITHUB_EVENT_NAME=merge_group to pytest itself,
     and `check_ac_state_impl.in_merge_group()` reads exactly that. So any test
@@ -62,16 +62,22 @@ def _default_ac_state_ratchet_event(monkeypatch: pytest.MonkeyPatch) -> None:
     against the #620 carve-out it did not ask for, and fails only inside the
     queue -- green on the pull request, red where it decides the merge.
 
-    This default was first written scoped to `test_check_ac_state_ratchet.py`
-    by name, which is what let it miss `test_ac_state_notes.py`: that module
-    drives the same `ratchet` from its own fixture, was never on the list, and
-    reddened the queue exactly as this docstring already predicted. A filename
-    allowlist cannot know about the next module, so there is no list any more.
+    Trusted ratchets now also read the event's base metadata. Leaving the
+    runner's GITHUB_BASE_REF/GITHUB_EVENT_PATH/GITHUB_ACTIONS visible makes
+    otherwise-hermetic temp-repository tests resolve the real repository's
+    integration base. The default therefore keeps the historical pull-request
+    event kind used by AC-state tests while removing every ambient field that
+    can supply a real integration base or trigger CI-only materialization.
 
-    Pinning is a floor, not a ceiling: a test wanting merge-group semantics sets
-    the event in its own body, which runs after this fixture and wins.
+    Pinning is a floor, not a ceiling: a test wanting GitHub event or Actions
+    semantics sets the relevant variables in its own body, which runs after
+    this fixture and wins.
     """
     monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.delenv("GITHUB_EVENT_PATH", raising=False)
+    monkeypatch.delenv("GITHUB_BASE_REF", raising=False)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    monkeypatch.delenv("GITHUB_REF", raising=False)
 
 
 @pytest.fixture(autouse=True)

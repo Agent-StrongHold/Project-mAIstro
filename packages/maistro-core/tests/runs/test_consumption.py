@@ -20,6 +20,7 @@ from maistro.graph import Graph, Node
 from maistro.graph.nodes import BaseNode, NodeContext, register_node
 from maistro.runs.model import RunStatus
 from maistro.runs.sources import ADMISSION_SOURCE, SCHEDULE_INPUTS_KEY, SCHEDULE_SOURCE
+from maistro.runs.store import run_cursor_key
 from maistro.types.config import AgentConfig
 
 
@@ -210,6 +211,9 @@ async def test_list_by_status_returns_only_that_status_oldest_first(
     limited = await store.list_by_status(status, limit=1)
     assert [run.run_id for run in limited] == [older.run_id]
 
+    continued = await store.list_by_status(status, limit=10, after=run_cursor_key(limited[0]))
+    assert [run.run_id for run in continued] == [newer.run_id]
+
     scoped = await store.list_by_status(status, limit=10, project_id=project_id)
     assert [run.run_id for run in scoped[:2]] == [older.run_id, newer.run_id]
     assert await store.list_by_status(status, limit=10, project_id="project-elsewhere") == []
@@ -322,75 +326,44 @@ class _Proxy:
 
 
 async def test_a_lost_claim_is_skipped_rather_than_failed() -> None:
-    """The QUEUED→RUNNING mutex race from the loser's side: skip, touch nothing."""
+    """The atomic claim race has one winner; the loser touches no state."""
+    from maistro.runs.consumer_claim import ConsumerClaimLost
+
     container = await _container()
     run_id = await _admit_schedule_run(container)
 
     class _ClaimVeto(_Proxy):
-        async def transition_run(self, run_id: str, target: RunStatus, **kwargs: Any) -> Any:
-            if target is RunStatus.RUNNING:
-                raise RuntimeError("claimed by a concurrent tick")
-            return await self._inner.transition_run(run_id, target, **kwargs)
+        async def claim_consumer_run(self, *args: Any, **kwargs: Any) -> Any:
+            raise ConsumerClaimLost("claimed by a concurrent tick")
 
     container.run_store = _ClaimVeto(container.run_store)  # type: ignore[assignment]
-
     assert await container.execute_admitted_runs() == 0
-
     run = await container.run_store.get_run(run_id)
     assert run is not None and run.status is RunStatus.QUEUED
     assert await container.run_store.list_node_runs(run_id) == []
 
 
-async def test_infrastructure_failure_before_any_record_fails_the_claimed_run(
+async def test_infrastructure_failure_is_physical_evidence_and_parks_waiting(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Execution dying before a NodeRun exists must not leave a RUNNING Run
-    indistinguishable from a crashed process: it terminalizes as FAILED."""
     import logging
+
+    from maistro.runs.model import AttemptStatus
 
     container = await _container()
     run_id = await _admit_schedule_run(container, kind=_UnbuildableTickNode.kind)
-
     with caplog.at_level(logging.WARNING):
         executed = await container.execute_admitted_runs()
-
     assert executed == 1
     assert "failed during consumption" in caplog.text
     run = await container.run_store.get_run(run_id)
-    assert run is not None
-    assert run.status is RunStatus.FAILED
-    assert run.error == "consumption_error"
-    assert await container.run_store.list_node_runs(run_id) == []
-
-
-async def test_settlement_respects_a_run_that_left_records() -> None:
-    """With a NodeRun present, the parked/derived state is already the answer."""
-    container = await _container()
-    run_id = await _admit_schedule_run(container)
-    assert await container.execute_admitted_runs() == 1
-
-    await container._settle_unstarted_consumption(run_id)
-
-    run = await container.run_store.get_run(run_id)
-    assert run is not None and run.status is RunStatus.COMPLETED
-
-
-async def test_settlement_failure_is_logged_never_raised(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    import logging
-
-    container = await _container()
-
-    class _BrokenList(_Proxy):
-        async def list_node_runs(self, run_id: str) -> Any:
-            raise RuntimeError("store down")
-
-    container.run_store = _BrokenList(container.run_store)  # type: ignore[assignment]
-    with caplog.at_level(logging.WARNING):
-        await container._settle_unstarted_consumption("run-x")
-
-    assert "could not be settled" in caplog.text
+    assert run is not None and run.status is RunStatus.WAITING
+    (node_run,) = await container.run_store.list_node_runs(run_id)
+    (attempt,) = await container.run_store.list_attempts(node_run.node_run_id)
+    assert node_run.status is RunStatus.WAITING
+    assert attempt.status is AttemptStatus.FAILED
+    assert attempt.execution_lease is not None
+    assert "needs wiring" in (attempt.error or "")
 
 
 # --- the executor's own guards ----------------------------------------------
@@ -562,3 +535,13 @@ async def test_a_disposal_that_loses_its_claim_is_logged_never_raised(
     run = await container.run_store.get_run(run_id)
     assert run is not None
     assert run.status is RunStatus.FAILED
+
+
+async def test_schedule_executor_requires_physical_claim_capability() -> None:
+    from maistro.projects.scope_store import InMemoryProjectScopeStore
+    from maistro.runs.consumption import ScheduleAttemptExecutor
+    from maistro.runs.store import InMemoryRunStore, RunIntegrityError
+
+    store = InMemoryRunStore(project_store=InMemoryProjectScopeStore())
+    with pytest.raises(RunIntegrityError, match="consumer claim capability"):
+        ScheduleAttemptExecutor(store)

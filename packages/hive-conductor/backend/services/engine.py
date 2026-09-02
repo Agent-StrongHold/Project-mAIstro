@@ -172,6 +172,14 @@ class EngineService:
 
         reset_store()
 
+        # Recovery is a system reconciliation cadence, not a user schedule.
+        # Start it only after the core bridge has established the canonical Run
+        # and Graph-continuation stores so another replica can recover a process
+        # that died between Run admission and checkpoint 1 (#835/#837).
+        from services.dag_recovery import start_dag_recovery
+
+        start_dag_recovery()
+
         try:
             if settings.hive_mode == "demo":
                 import os
@@ -273,6 +281,9 @@ class EngineService:
             logger.warning("capability wiring failed (%s) — slots use baselines/SAFE_NOOP", exc)
 
     async def stop(self) -> None:
+        from services.dag_recovery import stop_dag_recovery
+
+        await stop_dag_recovery()
         if self._backend is not None:
             import contextlib
 
