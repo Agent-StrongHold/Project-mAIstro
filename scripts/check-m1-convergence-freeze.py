@@ -27,6 +27,7 @@ ONTOLOGY_PATH = ROOT / "quality" / "shared-interop-ontology-v1.json"
 OWNERSHIP_MARKER = "<!-- matrix:ownership -->"
 PRODUCT_LOCAL_MARKER = "M1 product-local projection:"
 SCRIPTS_DIR = ROOT / "scripts"
+_PROVENANCE_SOURCE = SCRIPTS_DIR / "ratchet_provenance.py"
 
 _AUTHORITY_SUFFIXES = frozenset(
     {
@@ -63,12 +64,38 @@ def _load_script(name: str, path: Path) -> ModuleType:
     return module
 
 
+def _provenance() -> ModuleType:
+    """Load the trusted-base ledger resolver without a package install."""
+    spec = importlib.util.spec_from_file_location("_ratchet_provenance", _PROVENANCE_SOURCE)
+    if spec is None or spec.loader is None:  # pragma: no cover - packaging accident
+        raise RuntimeError(f"cannot load {_PROVENANCE_SOURCE}")
+    cached = sys.modules.get(spec.name)
+    if cached is not None:
+        return cached
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules[spec.name]
+        raise
+    return module
+
+
 def _policy() -> dict[str, object]:
     return json.loads(POLICY_PATH.read_text(encoding="utf-8"))
 
 
 def _ontology() -> dict[str, object]:
-    return json.loads(ONTOLOGY_PATH.read_text(encoding="utf-8"))
+    """Read the shared-owner oracle from the trusted base (#542, #319).
+
+    A candidate cannot authorize its own new shared-owner-shaped type by
+    editing the ontology in the same change that defines it. Local runs
+    without a resolvable base revision keep reading the worktree through
+    the resolver's documented fallback.
+    """
+    text = _provenance().resolve_baseline(ONTOLOGY_PATH, root=ROOT).text
+    return json.loads(text) if text is not None else {}
 
 
 def _subsystems(text: str) -> set[str]:
