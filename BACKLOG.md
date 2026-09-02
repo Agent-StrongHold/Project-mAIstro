@@ -68,11 +68,17 @@ External-library adoption per [`engine#ADR-039`](docs/adr/ADR-039-external-libra
 
 ### Templates (M2 — weeks 2–6)
 
-**[engine-010] Copier template `single-tenant-multi-user` — Accepted; `gap-impl` — v1.0 M2**
+**[engine-010] Copier template `single-tenant-multi-user` — Implemented — v1.0 M2**
 - Knobs: `users_max`, `auth_backend`, `channels`, `host_target`.
+- Evidence: `tests/templates/test_single_tenant_multi_user_renders.py` renders secure defaults,
+  exercises alternate knobs through `copier update`, runs generated contract tests, and checks
+  target-specific file removal/addition.
 
-**[engine-011] Copier template `autonoetic` — Accepted; `gap-impl` — v1.0 M2**
+**[engine-011] Copier template `autonoetic` — Implemented — v1.0 M2**
 - Knobs: `awareness_loop_hz`, `self_model`, `memory_consolidator`, `dossier_store`.
+- Evidence: `tests/templates/test_autonoetic_renders.py` renders secure defaults, exercises
+  alternate knobs through `copier update`, runs generated contract tests, and checks optional
+  consolidator/storage file conditions.
 
 **[engine-012] Copier template `multi-tenant` — Accepted; `gap-impl` — v1.0 M2**
 - Knobs: `tenants_max`, `policy_engine`, `deploy_target`, `compliance_pack`. Round-trip vs `stronghold`
@@ -168,7 +174,7 @@ External-library adoption per [`engine#ADR-039`](docs/adr/ADR-039-external-libra
 - Generic APM is not an unported engine feature: [ADR-037](docs/adr/ADR-037-observability-taxonomy.md) defines vendor-neutral observability and per-product backends, and [ADR-055](docs/adr/ADR-055-observability-replay-and-pii-tiers.md) leaves vendor APM choice per product. Red Team remains the historical port candidate; no consolidated generic port is evidenced
 
 **[engine-105] Wire Master Orchestrator security gate + API dispatch — Accepted; `gap-impl`**
-- J1–J4 exist in `orchestrator/master.py` and `orchestrator/planner.py`; J5's injectable security gate and its accept, reject, and exception behavior are implemented and tested
+- J1–J4 exist in `orchestrator/master.py` and `orchestrator/planner.py`; J5 shipped: production planner construction supplies a fail-closed Warden + Sentinel output gate before a WorkItem can project `PASSED`; only sanitized output crosses into the canonical Graph → Run → NodeRun → Attempt result (accept, reject, and exception behavior are implemented and tested)
 - `MasterOrchestrator` is now a compatibility projection over canonical Graph → Run → NodeRun → Attempt execution per [#548](https://github.com/Agent-StrongHold/Project-mAIstro/issues/548). The archived J6 intent therefore does not call for a second Master Orchestrator HTTP API; remaining Conductor/Hive canonical dispatch is owned by [#53](https://github.com/Agent-StrongHold/Project-mAIstro/issues/53), including the live DAG route in [#736](https://github.com/Agent-StrongHold/Project-mAIstro/issues/736)
 
 ### NEW — from May 2026 catalog review (engine)

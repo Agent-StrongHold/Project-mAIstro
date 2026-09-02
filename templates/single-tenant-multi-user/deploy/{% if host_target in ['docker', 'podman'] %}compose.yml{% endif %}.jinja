@@ -1,0 +1,29 @@
+services:
+  {{ project_slug }}:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["--check"]
+    restart: "no"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    environment:
+{% if auth_backend == 'local' %}
+      MAISTRO_LOCAL_AUTH_SECRET: "${MAISTRO_LOCAL_AUTH_SECRET:?set MAISTRO_LOCAL_AUTH_SECRET}"
+{% else %}
+      KEYCLOAK_ISSUER_URL: "${KEYCLOAK_ISSUER_URL:?set KEYCLOAK_ISSUER_URL}"
+      KEYCLOAK_CLIENT_ID: "${KEYCLOAK_CLIENT_ID:?set KEYCLOAK_CLIENT_ID}"
+      KEYCLOAK_CLIENT_SECRET: "${KEYCLOAK_CLIENT_SECRET:?set KEYCLOAK_CLIENT_SECRET}"
+{% endif %}
+{% if 'voice' in channels %}
+      VOICE_SERVICE_KEY: "${VOICE_SERVICE_KEY:?set VOICE_SERVICE_KEY}"
+{% endif %}
+{% if 'email' in channels %}
+      SMTP_URL: "${SMTP_URL:?set SMTP_URL}"
+      SMTP_PASSWORD: "${SMTP_PASSWORD:?set SMTP_PASSWORD}"
+{% endif %}

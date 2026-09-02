@@ -1,7 +1,8 @@
 """Evolution service -- wires maistro-evolve into hive-conductor.
 
-Runs background evolution cycles, exposes the population via API,
-and provides the hyperagent self-improvement loop.
+Population, fitness, lineage and tournament state remain Evolve domain state.
+Actual cycle execution is delegated to ``services.evolution_graph`` so the live
+product path records one canonical Run with NodeRuns and physical Attempts.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import logging
 from typing import Any
 
 from maistro.http import shared_client
+from maistro.runs.model import RunStatus
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +45,7 @@ class _EvolutionService:
         self._population: Any = None
         self._cycle_count = 0
         self._last_cycle_error: str | None = None
+        self._last_run_id: str | None = None
         self.task: asyncio.Task[None] | None = None
         self._tournament: Any = None
 
@@ -60,6 +63,10 @@ class _EvolutionService:
     @property
     def tournament(self) -> Any:
         return self._tournament
+
+    @property
+    def last_run_id(self) -> str | None:
+        return self._last_run_id
 
     async def run_loop(self) -> None:
         try:
@@ -82,25 +89,45 @@ class _EvolutionService:
                 self._last_cycle_error = str(exc)
                 logger.warning("Evolution cycle failed: %s", exc)
 
-    async def _run_one_cycle(self) -> None:
-        from maistro_evolve.cycle import EvolutionConfig, EvolutionCycle
+    async def _run_one_cycle(self, *, actor_principal_id: str | None = None) -> str:
+        from maistro_evolve.cycle import EvolutionConfig
         from maistro_evolve.harness import EvalHarness
+        from services.evolution_graph import run_canonical_evolution_cycle
+
+        if self._population is None or self._tournament is None:
+            raise RuntimeError("Evolution population is not initialized")
 
         config = EvolutionConfig(
             self_improve=True,
             self_improve_top_n=3,
         )
         harness = EvalHarness(benchmark_fidelity="proxy")
-
-        cycle = EvolutionCycle(harness=harness, tournament=self._tournament)
-        await cycle.run_cycle(
+        record = await run_canonical_evolution_cycle(
             population=self._population,
-            llm_call=self._build_llm_call(),
+            tournament=self._tournament,
             config=config,
+            harness=harness,
+            llm_call=self._build_llm_call(),
+            actor_principal_id=actor_principal_id,
+            cycle_number=self._cycle_count + 1,
         )
+        self._last_run_id = record.run_id
+        if record.run.status is not RunStatus.COMPLETED:
+            detail = record.run.error or f"canonical Run ended {record.run.status.value}"
+            raise RuntimeError(
+                f"Evolution cycle canonical Run {record.run_id} did not complete: {detail}"
+            )
+
         self._cycle_count += 1
+        self._last_cycle_error = None
         pop_size = len(self._population.list_all())
-        logger.info("Evolution cycle %d complete, population: %d", self._cycle_count, pop_size)
+        logger.info(
+            "Evolution cycle %d complete as canonical Run %s, population: %d",
+            self._cycle_count,
+            record.run_id,
+            pop_size,
+        )
+        return record.run_id
 
     def _build_llm_call(self):
         try:
@@ -142,5 +169,6 @@ class _EvolutionService:
             "cycle_count": self._cycle_count,
             "population_size": len(self._population.list_all()) if self._population else 0,
             "last_error": self._last_cycle_error,
+            "last_run_id": self._last_run_id,
             "tournament": tournament_stats,
         }

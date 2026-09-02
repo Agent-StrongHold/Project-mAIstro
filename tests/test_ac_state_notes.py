@@ -50,7 +50,6 @@ def repo(tmp_path: Path) -> Path:
     """A real repository with a develop branch and the notes directory seeded."""
     root = tmp_path / "repo"
     (root / "quality" / "ac-state-notes").mkdir(parents=True)
-    _git("init", "-q", "-b", "develop", cwd=tmp_path) if False else None
     subprocess.run(["git", "init", "-q", "-b", "develop", str(root)], check=True, timeout=60)
     _git("config", "user.email", "t@example.com", cwd=root)
     _git("config", "user.name", "T", cwd=root)
