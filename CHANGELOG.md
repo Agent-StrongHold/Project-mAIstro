@@ -10,6 +10,17 @@ the same version as the root `VERSION` file.
 
 ## [Unreleased]
 
+### Security
+
+- **Bootstrap credential staging is now private, atomic, and never follows a
+  link (#809).** `write_bootstrap_credentials` writes secrets to a fresh 0600
+  temp file in the same directory and promotes it with `os.replace`, so secret
+  bytes never land in a pre-existing permissive inode, a planted symlink at
+  the final path is refused rather than followed, and an interruption can no
+  longer leave truncated JSON at the staged path. A pre-existing file is
+  reused only after parse-validation — existence alone is no longer treated
+  as staged input by the CLI's "already staged" skip either.
+
 ### Changed
 
 - **HALF_OPEN circuit-breaker success is now caller-bound.** `record_success()`
