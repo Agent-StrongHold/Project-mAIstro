@@ -139,6 +139,26 @@
       "effect_owner": "hive session/user stores + audit log"
     },
     {
+      "source": "packages/hive-conductor/backend/routes/auth.py",
+      "method": "POST",
+      "route": "/registration/invitations",
+      "handler": "create_invitation",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "admin issues a single-use registration invitation stored as a digest; 503 unless persisted",
+      "effect_owner": "registration policy record store + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/auth.py",
+      "method": "PUT",
+      "route": "/registration/policy",
+      "handler": "put_registration_policy",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "admin opens or closes public registration on the durable policy; 503 unless persisted",
+      "effect_owner": "registration policy record store + audit log"
+    },
+    {
       "source": "packages/hive-conductor/backend/routes/canvas.py",
       "method": "POST",
       "route": "/eval",
