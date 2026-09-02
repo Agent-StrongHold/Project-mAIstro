@@ -118,7 +118,9 @@ def test_canonical_registry_schema_is_required_before_yellow(
 
     for case in cases:
         payload = _registry_payload()
-        surface = next(item for item in payload["surfaces"] if item["id"] == "wiring-reads-baseline")
+        surface = next(
+            item for item in payload["surfaces"] if item["id"] == "wiring-reads-baseline"
+        )
         if case == "missing-id":
             surface.pop("id")
         elif case == "blank-reason":
