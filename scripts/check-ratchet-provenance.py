@@ -57,6 +57,11 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
         "the branch-independence registry is the reviewed representation specification; "
         "the checker separately compares its frozen legacy set against the trusted base"
     ),
+    ("check-m1-convergence-freeze.py", "quality/m1-convergence-freeze.json"): (
+        "the freeze policy is the reviewed specification being changed (#460); the "
+        "checker compares candidate architecture against the PR base separately and "
+        "resolves the shared-ontology owner oracle from the trusted base"
+    ),
     ("check_direct_effects.py", "quality/direct-effect-call-sites.json"): (
         "direct-effect entries are per-call-site reviewed policy: exact AST identities must "
         "match both directions and every live site must state disposition, owner and rationale"
