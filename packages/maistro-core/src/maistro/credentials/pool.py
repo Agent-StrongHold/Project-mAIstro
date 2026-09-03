@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 import time
+from typing import Any
 
 from maistro.credentials.types import (
     CredentialRecord,
@@ -186,39 +187,47 @@ class CredentialPool:
         return frozenset(e.key_id for e in self._entries)
 
     def get_stats(self) -> PoolStats:
-        available = self._available()
-        blocked = [e for e in self._entries if e.blocked]
-        cooling = [
-            e
-            for e in self._entries
-            if not e.blocked and e.cooldown_until is not None and not e.is_available
-        ]
-        return PoolStats(
-            provider=self._provider,
-            strategy=self._strategy,
-            total_keys=len(self._entries),
-            available_keys=len(available),
-            blocked_keys=len(blocked),
-            cooling_down_keys=len(cooling),
-            total_use_count=sum(e.use_count for e in self._entries),
-            total_error_count=sum(e.error_count for e in self._entries),
-            per_key=[
+        # One clock reading classifies every key: ``is_available`` consults
+        # ``time.monotonic()`` per call, so classifying via three separate
+        # comprehensions let a cooldown expiring mid-scan drop its key out of
+        # all three buckets (total != available + blocked + cooling) — the
+        # stateful machine found it. The partition is now exact by construction.
+        now = time.monotonic()
+        available_keys = blocked_keys = cooling_down_keys = 0
+        per_key: list[dict[str, Any]] = []
+        for entry in self._entries:
+            if entry.blocked:
+                blocked_keys += 1
+            elif entry.cooldown_until is not None and entry.cooldown_until > now:
+                cooling_down_keys += 1
+            else:
+                available_keys += 1
+            per_key.append(
                 {
-                    "key_id": e.key_id,
+                    "key_id": entry.key_id,
                     # `is_available`, matching the CredentialRecord property it
                     # copies — every other key in this dict mirrors its source
                     # attribute exactly, and ADR-063 declares per_key as
                     # list[CredentialRecord]. The bare `available` was a slip
                     # introduced while flattening the record into a dict.
-                    "is_available": e.is_available,
-                    "blocked": e.blocked,
-                    "use_count": e.use_count,
-                    "error_count": e.error_count,
-                    "last_status": e.last_status,
-                    "cooldown_remaining": max(0.0, (e.cooldown_until or 0) - time.monotonic()),
+                    "is_available": entry.is_available,
+                    "blocked": entry.blocked,
+                    "use_count": entry.use_count,
+                    "error_count": entry.error_count,
+                    "last_status": entry.last_status,
+                    "cooldown_remaining": max(0.0, (entry.cooldown_until or 0) - now),
                 }
-                for e in self._entries
-            ],
+            )
+        return PoolStats(
+            provider=self._provider,
+            strategy=self._strategy,
+            total_keys=len(self._entries),
+            available_keys=available_keys,
+            blocked_keys=blocked_keys,
+            cooling_down_keys=cooling_down_keys,
+            total_use_count=sum(e.use_count for e in self._entries),
+            total_error_count=sum(e.error_count for e in self._entries),
+            per_key=per_key,
         )
 
     def _find(self, key_id: str) -> CredentialRecord | None:
