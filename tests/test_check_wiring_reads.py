@@ -346,6 +346,7 @@ class TestTheLedgerIsNotItsOwnOracle:
         monkeypatch.setattr(check, "_load_baseline", lambda *a: banked)
         _base_state(check, monkeypatch, trusted, authorized=authorized)
 
+    @pytest.mark.ac("ADR-083126-5e62/AC-3")
     def test_banking_and_justifying_in_one_tree_still_fails(
         self, check, monkeypatch, capsys
     ) -> None:
@@ -354,6 +355,7 @@ class TestTheLedgerIsNotItsOwnOracle:
         assert check.main([]) == 1
         assert "NEWLY UNREAD against the trusted baseline" in capsys.readouterr().err
 
+    @pytest.mark.ac("ADR-083126-5e62/AC-3")
     def test_the_verdict_names_the_commit_it_judged_against(
         self, check, monkeypatch, capsys
     ) -> None:
@@ -390,6 +392,7 @@ class TestTheLedgerIsNotItsOwnOracle:
         assert check.main([]) == 0
         capsys.readouterr()
 
+    @pytest.mark.ac("ADR-083126-5e62/AC-4")
     def test_an_unreadable_base_fails_rather_than_trusting_the_candidate(
         self, check, monkeypatch, capsys
     ) -> None:

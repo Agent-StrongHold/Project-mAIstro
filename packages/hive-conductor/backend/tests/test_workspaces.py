@@ -6,12 +6,16 @@ no sticky tool bindings yet.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 import stores
 
 
 @pytest.fixture(autouse=True)
 def _clear_workspaces():
+    # Legacy rows are migration/recovery evidence only. Clear that evidence
+    # between route tests; canonical live authority is reset by conftest.
     for key in list(stores.workspaces.keys()):
         stores.workspaces.pop(key, None)
     yield
@@ -46,7 +50,16 @@ def test_create_workspace_persists_and_returns_it(admin_client) -> None:
     assert body["tool_bindings"] == []
     assert body["theme_id"] == "default"
     assert body["voice_tone_override"] is None
-    assert len(stores.workspaces) == 1
+
+    from services.workspace_authority import canonical_store_for_tests, presentation_store
+
+    canonical = asyncio.run(canonical_store_for_tests().get(body["id"]))
+    assert canonical is not None
+    assert canonical.workspace_id == body["id"]
+    assert canonical.name == "PM Fleet"
+    presentation = presentation_store().get(body["id"])
+    assert presentation is not None
+    assert presentation.workspace_id == body["id"]
 
 
 def test_user_can_have_two_workspaces_from_the_same_persona(admin_client) -> None:
@@ -384,15 +397,30 @@ class TestWorkspaceTheme:
 
 
 def _set_members(workspace_id: str, roles: dict[str, str]) -> None:
-    """Test-only helper: overwrite one workspace's membership list directly,
-    so role-gating logic can be exercised for both owners and non-owners
-    without needing a second real login per role."""
-    from models.workspace import WorkspaceMember
+    """Test-only helper: replace membership through canonical Workspace authority."""
+    from services import workspace_authority
 
-    workspace = stores.workspaces[workspace_id]
-    stores.workspaces[workspace_id] = workspace.model_copy(
-        update={"members": [WorkspaceMember(user_id=uid, role=role) for uid, role in roles.items()]}
-    )
+    target = dict(roles)
+    if "owner" not in target.values():
+        target["__canonical_test_owner__"] = "owner"
+
+    async def _apply() -> None:
+        store = workspace_authority.canonical_store_for_tests()
+        current = {
+            membership.user_id: membership
+            for membership in await store.list_memberships(workspace_id)
+        }
+        for user_id, role in target.items():
+            if role == "owner":
+                await workspace_authority.set_member(workspace_id, user_id=user_id, role=role)
+        for user_id, role in target.items():
+            if role != "owner":
+                await workspace_authority.set_member(workspace_id, user_id=user_id, role=role)
+        for user_id in current:
+            if user_id not in target:
+                await workspace_authority.remove_member(workspace_id, user_id=user_id)
+
+    asyncio.run(_apply())
 
 
 class TestWorkspaceMembers:

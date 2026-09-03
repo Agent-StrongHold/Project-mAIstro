@@ -1,6 +1,8 @@
+import asyncio
 import os
 import sys
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -9,14 +11,6 @@ import pytest
 # `Secure` cookie is never sent back over `http://`, and every route test that
 # needs a logged-in session would fail with no session rather than with a
 # meaningful error.
-#
-# So the suite declares itself, using the same two settings a developer running
-# `uvicorn main:app --reload` sets — rather than the production default being
-# weakened to suit the tests, which is the arrangement #369 exists to undo.
-#
-# The production shape is asserted separately and deliberately, by
-# `test_session_cookie_policy.py`, which reads `Settings()` directly rather
-# than through this environment.
 os.environ.setdefault("SESSION_COOKIE_SECURE", "false")
 os.environ.setdefault("ALLOW_INSECURE_TRANSPORT", "true")
 
@@ -57,19 +51,17 @@ def _init_engine() -> None:
 
     cred_svc.init_credential_store(tempfile.mkdtemp(prefix="hive-cred-test-"))
 
-    # Initialize design render service for tests that need it
     try:
         from services.design_render import init_design_render_service
 
         init_design_render_service()
     except Exception:
-        pass  # Service may not be available in all test environments
+        pass
 
 
 @pytest.fixture(autouse=True)
 def _isolate_persona_authoring_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    """Redirect wizard-authored persona templates to tmp_path so tests never
-    write YAML files into the developer's real ~/.conductor."""
+    """Redirect wizard-authored persona templates to tmp_path."""
     import services.persona_authoring as persona_authoring
 
     monkeypatch.setattr(
@@ -79,12 +71,7 @@ def _isolate_persona_authoring_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 
 @pytest.fixture(autouse=True)
 def _isolate_dashboard_layouts():
-    """Give each test its own layout store.
-
-    There is no file to redirect any more (#340): layouts are a `JsonStore` in
-    `stores`, unbacked in tests, so isolation is restoring the dict rather than
-    pointing a path at tmp_path.
-    """
+    """Give each test its own layout store."""
     import copy
 
     import stores
@@ -98,16 +85,84 @@ def _isolate_dashboard_layouts():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_workspace_authority():
+    """Do not let the canonical fallback/presentation adapter leak across tests."""
+    from services.workspace_authority import reset_for_tests
+
+    reset_for_tests()
+    yield
+    reset_for_tests()
+
+
+def _set_canonical_workspace_members(workspace_id: str, roles: dict[str, str]) -> None:
+    """Apply a legacy route-test member map through canonical Workspace authority."""
+    from models.workspace import WorkspaceRole
+    from services import workspace_authority
+
+    target = dict(roles)
+    if "owner" not in target.values():
+        # The canonical invariant forbids an ownerless Workspace. Tests whose
+        # point is only "the requester is not owner" get a neutral second owner
+        # so they exercise that refusal without invalid data.
+        target["__canonical_test_owner__"] = "owner"
+
+    async def _apply() -> None:
+        store = workspace_authority.canonical_store_for_tests()
+        current = {
+            membership.user_id: membership
+            for membership in await store.list_memberships(workspace_id)
+        }
+        for user_id, role in target.items():
+            if role == "owner":
+                await workspace_authority.set_member(
+                    workspace_id,
+                    user_id=user_id,
+                    role=cast(WorkspaceRole, role),
+                )
+        for user_id, role in target.items():
+            if role != "owner":
+                await workspace_authority.set_member(
+                    workspace_id,
+                    user_id=user_id,
+                    role=cast(WorkspaceRole, role),
+                )
+        for user_id in current:
+            if user_id not in target:
+                await workspace_authority.remove_member(workspace_id, user_id=user_id)
+
+    asyncio.run(_apply())
+
+
+@pytest.fixture(autouse=True)
+def _workspace_route_member_helper_uses_canonical_authority(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Route tests that change roles must mutate the canonical membership seam.
+
+    `test_workspaces.py` predates #37 and its `_set_members` helper wrote the
+    legacy migration record directly. Keep those route scenarios intact while
+    moving their setup onto the same canonical authority production now uses.
+    """
+    if Path(str(request.fspath)).name != "test_workspaces.py":
+        yield
+        return
+    module = request.module
+    if module is None or not hasattr(module, "_set_members"):
+        yield
+        return
+
+    monkeypatch.setattr(module, "_set_members", _set_canonical_workspace_members)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _legacy_registration_implementation_tests(request: pytest.FixtureRequest):
     """Let legacy implementation tests exercise /register under an open policy.
 
     Since #313 the shipped route enforces the durable registration policy —
-    closed by default — and SecurityHeadersMiddleware no longer short-circuits
-    it. A few older password/credential tests are about the *registration
-    implementation* (Argon2 storage, audit rows, sessions) rather than the
-    policy. For only those named modules, write an `open` policy record for
-    the duration of the test and drop it afterwards. Production has no
-    bypass: `open` is reachable only through the admin route or setup.
+    closed by default. For only the named legacy implementation modules, write
+    an `open` policy record for the duration of the test.
     """
     legacy_modules = {
         "test_api.py",
@@ -130,13 +185,7 @@ def _legacy_registration_implementation_tests(request: pytest.FixtureRequest):
 
 @pytest.fixture(autouse=True)
 def _route_local_llm_alias_tracks_service_patch(monkeypatch: pytest.MonkeyPatch):
-    """Keep older API tests' service-level LLM patches effective after #488.
-
-    The containment route imports build_llm_port into routes.chat so production
-    requests cannot fall back into the tool loop. Some pre-existing tests patch
-    services.chat_completion.build_llm_port. Route the test alias through that
-    service symbol dynamically so those mocks still test the current route.
-    """
+    """Keep older API tests' service-level LLM patches effective after #488."""
     import routes.chat as chat_routes
     import services.chat_completion as chat_service
 
@@ -152,7 +201,6 @@ def _seed_test_user() -> None:
     from datetime import UTC, datetime
 
     now_ts = datetime.now(UTC)
-    # Precomputed bcrypt hashes (legacy); login auto-upgrades to Argon2id on success.
     stores.users["user"] = stores.users._model_class(
         id="user",
         username="testuser",
@@ -197,8 +245,7 @@ def admin_client():
 
 @pytest.fixture(autouse=True)
 def _isolate_vault_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    """Redirect first-run vault provisioning to tmp_path so tests never write
-    age keys or vault files into the developer's real ~/.conductor."""
+    """Redirect first-run vault provisioning to tmp_path."""
     import routes.setup as setup_routes
 
     monkeypatch.setattr(

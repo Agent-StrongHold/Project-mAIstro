@@ -3,6 +3,8 @@
   "modules": [
     "adapters.llm_http",
     "adapters.maistro_core",
+    "maistro-canvas-frontend-server::mcp.character",
+    "maistro-canvas-frontend-server::mcp.story",
     "maistro.agents.conductor",
     "maistro.agents.pm_llm_call",
     "maistro.events.handlers",

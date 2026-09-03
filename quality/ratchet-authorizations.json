@@ -44,5 +44,59 @@
       "issue": "#458",
       "reason": "INTEROP_ONTOLOGY_V1 and the public projection/reference/version validators for the #458 ontology. Unreachable by construction for the same reason as maistro.interop: it is the contract products import, with no runtime of its own to wire, and no process entry point in this repository imports it yet. Its serialization is pinned to quality/shared-interop-ontology-v1.json by a contract test, so drift fails CI independently of reachability. Dispositioned LIBRARY in quality/reachability-dispositions.json (group interop-contract) in #997; the #459 parity suite and the Builders/Conductor migration issues are where shipped processes adopt the ontology, and this entry is expected to leave the baseline then."
     }
+  },
+  "vulture": {
+    "packages/maistro-core/src/maistro/agents/pm_capabilities.py::unused function 'is_gated'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#129",
+      "reason": "The PM capability policy predicate #129 retains as gated-work-item metadata. Its live consumer is Hive EngineService.submit_task's fail-closed guard (packages/hive-conductor/backend/services/engine.py), outside the packages/*/src Vulture scan set; the retired maistro.agents.pm_runner was previously its only in-scan caller. Deleting it would remove the policy predicate the shipped fail-closed path calls."
+    },
+    "packages/maistro-core/src/maistro/personas/schema.py::unused variable 'tagline'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#129",
+      "reason": "BrandSpec declarative field carrying a kind: workspace persona's product identity. #129's retirement of the pm_fleet adapter removed its only in-scan reader; hive-conductor's workspace routes still read template.brand.tagline for shipped brand copy (packages/hive-conductor/backend/routes/workspaces.py, outside the packages/*/src scan set), so the published-library field stays."
+    },
+    "packages/maistro-core/src/maistro/agents/catalog.py::unused class 'AgentCatalog'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#129",
+      "reason": "Generic agent-card catalog whose only in-repo consumers were the PM POC seeding paths #129 retired (maistro-server MAISTRO_POC_MODE catalog, Hive pm_mode catalog, register_pm_fleet). maistro-core is a published library and the catalog is retained as package API beside the live AgentCard surface (a2a broker resolution, portability manifests) rather than deleted to make the ratchet green."
+    },
+    "packages/maistro-core/src/maistro/tools/browser/client.py::unused method 'search_web'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#129",
+      "reason": "Generic public tool-client method on the browser client. Its only in-repo caller was the retired PM runner's web-search demo; #129's closeout records the exposed generic/public tool-client surfaces as retained real package APIs rather than deleted to make the ratchet green."
+    },
+    "packages/maistro-core/src/maistro/graph/nodes/jira_poll.py::unused variable 'issuetype'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#129",
+      "reason": "Declarative JiraIssue field mirroring the jira_poll node's default requested Jira fields projection (['summary','status','updated','issuetype']). #129's runner deletion removed its only in-scan reader; deleting the field while the node still requests issuetype from Jira would be incoherent schema surgery on a published-library model."
+    },
+    "packages/maistro-core/src/maistro/tools/browser/guard.py::unused attribute 'websocket_governed'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#855",
+      "reason": "BrowserNetworkGuard's honest capability flag: attach() sets it when the context exposes route_web_socket and the refusal handler registered. Production Playwright (pinned >=1.49) always exposes route_web_socket, so no shipped code path branches on the flag; its reader is the #855 test suite, which asserts a stand-in context that cannot govern upgrades does not silently claim to (packages/maistro-core/tests/tools/browser/test_net_guard.py, outside the packages/*/src scan set)."
+    },
+    "packages/maistro-core/src/maistro/tools/browser/guard.py::unused method 'denied_events'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#855",
+      "reason": "The refusals-only slice of the guard's bounded audit trail -- the view an incident review wants without paging through a session's allowed subrequests. maistro-core is a published library; its in-repo consumer is the #855 test suite proving every refusal is recorded with a branchable reason and resource type (packages/maistro-core/tests/tools/browser/test_net_guard.py, outside the packages/*/src scan set), ahead of the operator-facing evidence path that will read it."
+    },
+    "packages/maistro-core/src/maistro/tools/browser/client.py::unused method 'last_net_events'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#855",
+      "reason": "#855's auditable-evidence accessor: the network decisions of the most recent run (allowed and denied, origins only, never query contents). maistro-core is a published library; its in-repo readers are the #855 tests asserting an autonomous session's decisions -- including destinations the model invented mid-run -- are auditable from the client (packages/maistro-core/tests/tools/browser/test_client.py, outside the packages/*/src scan set); the PM research path that will emit them as run evidence adopts it next."
+    }
+  },
+  "model-egress": {
+    "maistro-canvas-frontend-server::mcp.character": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#838",
+      "reason": "Pre-existing direct LiteLLM egress (httpx.post to {LITELLM_URL}/v1/chat/completions) in the book-maker POC's illustration pipeline: packages/maistro-canvas/frontend/server/mcp/character.py. The module executes whenever the Express server spawns server/export_book.py and the mcp package re-export surface imports it. It was invisible to the inventory until #838's fail-closed source universe admitted packages/*/frontend/server, which is the omitted-directory defect that issue exists to expose; nothing about the egress itself changed in #898. Banked in quality/model-egress.json by PR #898; expected to leave the inventory when #56's approved Provider implementation replaces direct callers, at which point the ratchet prunes it."
+    },
+    "maistro-canvas-frontend-server::mcp.story": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#838",
+      "reason": "Pre-existing direct LiteLLM egress (httpx.post to {LITELLM_URL}/v1/chat/completions) in the book-maker POC's story-generation pipeline: packages/maistro-canvas/frontend/server/mcp/story.py. The module executes whenever the Express server spawns server/export_book.py and the mcp package re-export surface imports it. It was invisible to the inventory until #838's fail-closed source universe admitted packages/*/frontend/server, which is the omitted-directory defect that issue exists to expose; nothing about the egress itself changed in #898. Banked in quality/model-egress.json by PR #898; expected to leave the inventory when #56's approved Provider implementation replaces direct callers, at which point the ratchet prunes it."
+    }
   }
 }
