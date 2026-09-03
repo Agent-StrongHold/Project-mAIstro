@@ -14,8 +14,7 @@
         "pii_detector": "PIIDetector(mode='prod') is constructed and only stored. The PII filter on the request path builds its own detector; this field duplicates it and nothing reads it.",
         "resilience_policies": "InMemoryResiliencePolicyStore is constructed with the default policy set and only stored. No production reader; ADR-038's circuit-breaking reads its policies through maistro.resilience.",
         "schedule_admitter": "Authorized ahead of its reader (#231, granted in quality/ratchet-authorizations.json). ScheduleRunAdmitter had no production caller and no constructor call at all -- #251 found it admitting Runs nothing executed, and this is the other half: nothing built it, so the live scheduler grew its own create-and-advance logic instead. The migration onto it is separately blocked on maistro.runs.consumption's deliberate single-node-Run scope (#44/#34), since Hive's bundled daily-status DAG is multi-node.",
-        "spawn_harness_node": "AgentSpawnHarnessNode is constructed from the wired adapters and only stored. No production reader.",
-        "template_store": "Bound from wire_execution_spine's `graph_template_store` and only stored. The scheduler admission path takes its GraphTemplateStore by constructor injection instead (maistro.scheduling.admission), so this field is a second reference nothing follows."
+        "spawn_harness_node": "AgentSpawnHarnessNode is constructed from the wired adapters and only stored. No production reader."
       }
     }
   }
