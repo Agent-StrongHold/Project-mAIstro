@@ -94,17 +94,22 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
         self._adapters: dict[str, HarnessAdapter] = adapters or {}
         self._effects = effect_context or default_effect_context()
 
+    @staticmethod
+    def _resume_output(resumed: Any) -> SpawnHarnessOut:
+        """Rebuild the node output from a paused run's recorded resume answer."""
+        return SpawnHarnessOut(
+            status=resumed.get("status", "completed"),
+            handle_id=str(resumed.get("handle_id") or ""),
+            output=str(resumed.get("output") or ""),
+            error=resumed.get("error"),
+            metadata=dict(resumed.get("metadata") or {}),
+        )
+
     async def _execute(self, inputs: SpawnHarnessIn, ctx: NodeContext) -> SpawnHarnessOut:
         answers = (ctx.metadata or {}).get("hitl_answers") or {}
         resumed = answers.get(ctx.node_id)
         if resumed is not None:
-            return SpawnHarnessOut(
-                status=resumed.get("status", "completed"),
-                handle_id=str(resumed.get("handle_id") or ""),
-                output=str(resumed.get("output") or ""),
-                error=resumed.get("error"),
-                metadata=dict(resumed.get("metadata") or {}),
-            )
+            return self._resume_output(resumed)
 
         if not inputs.binding_id.strip():
             raise BindingNotFound(
