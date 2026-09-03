@@ -172,7 +172,5 @@ class InMemoryEpisodicStore:
         if not run_id:
             return []
         return [
-            m
-            for m in self._memories
-            if m.run_id == run_id and m.org_id == org_id and not m.deleted
+            m for m in self._memories if m.run_id == run_id and m.org_id == org_id and not m.deleted
         ][::-1]

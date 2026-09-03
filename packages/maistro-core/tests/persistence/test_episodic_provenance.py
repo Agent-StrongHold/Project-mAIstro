@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 
 from maistro.observability.correlation import bind_execution_context
-from maistro.types.memory import EpisodicMemory, MemoryScope, MemoryTier
+from maistro.types.memory import EpisodicMemory, MemoryScope
 
 pytest.importorskip("aiosqlite")
 import aiosqlite
@@ -34,11 +34,46 @@ def _memory(memory_id: str, **fields: Any) -> EpisodicMemory:
 
 @pytest.fixture(params=["memory", "sqlite", "postgres"])
 async def episodic(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
+    """Every backend, no skips on any leg.
+
+    A leg that cannot apply is a separate fixture, not a `pytest.skip` inside
+    the test: the AC-outcome plugin counts a skipped marked test as *not
+    passing*, so a skip inside a parametrized AC test sinks the whole criterion
+    even when every leg that can apply passed.
+    """
     if request.param == "memory":
         from maistro.memory.episodic.store import InMemoryEpisodicStore
 
         yield InMemoryEpisodicStore()
         return
+    if request.param == "sqlite":
+        from maistro.persistence.sqlite_episodic import SqliteEpisodicStore
+
+        conn = await aiosqlite.connect(":memory:")
+        store = SqliteEpisodicStore(conn)
+        await store.ensure_schema()
+        try:
+            yield store, conn
+        finally:
+            await conn.close()
+        return
+    if pg_pool is None:
+        pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+    from maistro.persistence.pg_episodic import PgEpisodicStore
+
+    store = PgEpisodicStore(pg_pool)
+    await store.ensure_schema()
+    yield store, pg_pool
+
+
+@pytest.fixture(params=["sqlite", "postgres"])
+async def durable_episodic(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
+    """The two stores with a row to read — no in-memory leg, so no skip.
+
+    No in-memory case for the same reason `test_record_provenance.py`'s
+    outcomes fixture has none: the tests here assert on the stored row, and a
+    store that keeps the object as given can only agree with itself.
+    """
     if request.param == "sqlite":
         from maistro.persistence.sqlite_episodic import SqliteEpisodicStore
 
@@ -106,13 +141,12 @@ class TestAMemoryNamesItsProducer:
         assert all(m.run_id == "" for m in found)
 
     @pytest.mark.ac("SPEC-090226-e4a1/AC-2")
-    async def test_a_durable_row_stores_absence_not_an_empty_id(self, episodic: Any) -> None:
+    async def test_a_durable_row_stores_absence_not_an_empty_id(
+        self, durable_episodic: Any
+    ) -> None:
         """NULL, not `''`: an empty string reads as a Run whose id is empty,
         which is a claim no memory outside an execution should make."""
-        store_and_handle = episodic
-        if not isinstance(store_and_handle, tuple):
-            pytest.skip("only the durable stores have a row to read")
-        store, handle = store_and_handle
+        store, handle = durable_episodic
         kind = "sqlite" if isinstance(handle, aiosqlite.Connection) else "postgres"
         await store.store(_memory("m-null"))
 
@@ -131,7 +165,9 @@ class TestAMemoryNamesItsProducer:
         assert found.attempt_id == "a-ambient"
 
     @pytest.mark.ac("SPEC-090226-e4a1/AC-4")
-    async def test_the_upsert_moves_the_producer_with_the_content(self, episodic: Any) -> None:
+    async def test_the_upsert_moves_the_producer_with_the_content(
+        self, durable_episodic: Any
+    ) -> None:
         """The upsert replaces the row. Leaving the earlier Run's id on it
         would attribute the surviving content to a Run that no longer wrote it
         — the dedup lesson `InMemoryLearningStore` already learned (#709).
@@ -140,9 +176,7 @@ class TestAMemoryNamesItsProducer:
         upserting, and that divergence is #710's documented contract, not this
         change's to settle.
         """
-        if not isinstance(episodic, tuple):
-            pytest.skip("the in-memory store appends; the upsert is the durable contract")
-        store = episodic[0]
+        store = durable_episodic[0]
         with bind_execution_context(run_id="r-first"):
             await store.store(_memory("m-upsert", content="first"))
         with bind_execution_context(run_id="r-second"):

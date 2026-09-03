@@ -141,8 +141,7 @@ class SqliteEpisodicStore:
             "ON episodic_memories (org_id, scope, weight DESC)"
         )
         await self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_episodic_memories_run_id "
-            "ON episodic_memories (run_id)"
+            "CREATE INDEX IF NOT EXISTS idx_episodic_memories_run_id ON episodic_memories (run_id)"
         )
         await self._conn.commit()
 
