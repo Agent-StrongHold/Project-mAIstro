@@ -50,9 +50,7 @@ if TYPE_CHECKING:
     from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
 
 
-def _gateway_usage(
-    provider: LlmGatewayProvider, body: Any
-) -> InvocationUsage | None:
+def _gateway_usage(provider: LlmGatewayProvider, body: Any) -> InvocationUsage | None:
     """Extract usage/cost metadata from one gateway response body."""
 
     if not isinstance(body, dict):

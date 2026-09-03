@@ -258,7 +258,7 @@ async def test_llm_summarize_401_raises_permission(
     out = await node.run(
         {"text": "x", "binding_id": llm_binding_id},
         _ctx(node_run_id="nr-401"),
-        )
+    )
     assert out.success is False
     assert out.error_code == "PermissionError"
     assert "llm_auth_failed" in (out.error_message or "")
@@ -274,7 +274,7 @@ async def test_llm_summarize_429_raises_runtime(
     out = await node.run(
         {"text": "x", "binding_id": llm_binding_id},
         _ctx(node_run_id="nr-429"),
-        )
+    )
     assert out.success is False
     assert out.error_code == "RuntimeError"
     assert "rate_limited" in (out.error_message or "")
@@ -290,7 +290,7 @@ async def test_llm_summarize_500_raises_runtime(
     out = await node.run(
         {"text": "x", "binding_id": llm_binding_id},
         _ctx(node_run_id="nr-500"),
-        )
+    )
     assert out.success is False
     assert out.error_code == "RuntimeError"
     assert "status=500" in (out.error_message or "")

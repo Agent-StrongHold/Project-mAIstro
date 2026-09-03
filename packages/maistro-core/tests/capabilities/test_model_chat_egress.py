@@ -41,7 +41,9 @@ from maistro.providers.types import (
 )
 
 
-def _meta(name: str, *, latency: int = 100, cost_in: float = 0.5, provider: str = "test-gw") -> ModelMetadata:
+def _meta(
+    name: str, *, latency: int = 100, cost_in: float = 0.5, provider: str = "test-gw"
+) -> ModelMetadata:
     return ModelMetadata(
         name=name,
         provider=provider,
@@ -192,6 +194,7 @@ async def test_router_selection_matches_resolver_selection_exactly() -> None:
     assert not isinstance(budgeted_provider, Unavailable)
     assert budgeted_provider.name == budgeted_expected.name
 
+
 async def test_binding_pin_outranks_router_preference(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -211,9 +214,7 @@ async def test_binding_pin_outranks_router_preference(
         node_run_id="nr1",
         attempt_id="a1",
         effect_key="test:pin",
-        request=ModelChatRequest(
-            model="fast-model", messages=[{"role": "user", "content": "hi"}]
-        ),
+        request=ModelChatRequest(model="fast-model", messages=[{"role": "user", "content": "hi"}]),
     )
 
     assert result.model == "slow-model"
@@ -239,7 +240,10 @@ async def test_unregistered_alias_still_reaches_gateway_with_absent_cost(
     registry = _registry()
     _patch_gateway(monkeypatch, _OK_BODY)
     egress = ModelChatEgress(
-        effects, registry=registry, router=CostAwareRouter(registry), endpoint=GatewayEndpoint(base_url="http://gw")
+        effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+        endpoint=GatewayEndpoint(base_url="http://gw"),
     )
 
     result = await egress.complete(
@@ -286,7 +290,10 @@ async def test_completed_effect_deduplicates_repeat_invocation(
 
     monkeypatch.setattr(httpx, "AsyncClient", _Client)
     egress = ModelChatEgress(
-        effects, registry=registry, router=CostAwareRouter(registry), endpoint=GatewayEndpoint(base_url="http://gw")
+        effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+        endpoint=GatewayEndpoint(base_url="http://gw"),
     )
     kwargs: dict[str, Any] = dict(
         binding=_binding(),
@@ -325,7 +332,10 @@ async def test_unreachable_gateway_records_failed_retryable_invocation(
 
     monkeypatch.setattr(httpx, "AsyncClient", _Client)
     egress = ModelChatEgress(
-        effects, registry=registry, router=CostAwareRouter(registry), endpoint=GatewayEndpoint(base_url="http://gw")
+        effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+        endpoint=GatewayEndpoint(base_url="http://gw"),
     )
     kwargs: dict[str, Any] = dict(
         binding=_binding(),
@@ -342,7 +352,10 @@ async def test_unreachable_gateway_records_failed_retryable_invocation(
         await egress.complete(**kwargs)
 
     history = await effects.invocation_store.list_effect(
-        run_id="r1", node_run_id="nr1", binding_id=kwargs["binding"].binding_id, effect_key="test:unreachable"
+        run_id="r1",
+        node_run_id="nr1",
+        binding_id=kwargs["binding"].binding_id,
+        effect_key="test:unreachable",
     )
     assert len(history) == 1
     assert history[0].status is InvocationStatus.FAILED
@@ -355,7 +368,10 @@ async def test_unreachable_gateway_records_failed_retryable_invocation(
     set_test_transport(None)
     _patch_gateway(monkeypatch, _OK_BODY)
     retried = await ModelChatEgress(
-        effects, registry=registry, router=CostAwareRouter(registry), endpoint=GatewayEndpoint(base_url="http://gw")
+        effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+        endpoint=GatewayEndpoint(base_url="http://gw"),
     ).complete(**kwargs)
     assert retried.model == "fast-model"
 
