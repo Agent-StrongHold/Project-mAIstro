@@ -24,28 +24,28 @@ ac-modules:
   AC-7: maistro.credentials.pool
   AC-8: maistro.credentials.pool
   AC-9: maistro.credentials.pool
-  AC-10: maistro.credentials.rotation
-  AC-11: maistro.credentials.rotation
-  AC-12: maistro.credentials.rotation
-  AC-13: maistro.credentials.rotation
-  AC-14: maistro.credentials.rotation
-  AC-15: maistro.credentials.rotation
-  AC-16: maistro.credentials.rotation
+  AC-10: maistro.credentials.router
+  AC-11: maistro.credentials.router
+  AC-12: maistro.credentials.router
+  AC-13: maistro.credentials.router
+  AC-14: maistro.credentials.router
+  AC-15: maistro.credentials.router
+  AC-16: maistro.credentials.router
   AC-17: maistro.credentials.pool
   AC-18: maistro.credentials.pool
-  AC-19: maistro.credentials.rotation
-  AC-20: maistro.credentials.pool
+  AC-19: maistro.credentials.router
+  AC-20: maistro.credentials.router
   AC-21: maistro.credentials.pool
   AC-22: maistro.credentials.pool
   AC-23: maistro.credentials.pool
-  AC-24: maistro.credentials.pool
-  AC-25: maistro.credentials.pool
-  AC-26: maistro.credentials.pool
-  AC-27: maistro.credentials.pool
+  AC-24: maistro.credentials.router
+  AC-25: maistro.credentials.router
+  AC-26: maistro.credentials.router
+  AC-27: maistro.credentials.router
   AC-28: maistro.credentials.pool
   AC-29: maistro.credentials.pool
-  AC-30: maistro.credentials.pool
-  AC-31: maistro.credentials.pool
+  AC-30: maistro.credentials.router
+  AC-31: maistro.credentials.router
   AC-32: maistro.credentials.pool
 layer: Foundation
 owners:
@@ -269,6 +269,27 @@ maistro/credentials/
 > `quality/reachability-baseline.json`. The key pool rotates, cools down,
 > blocks on 401/403 and reports stats — and nothing in a running process calls
 > it. Same shape as ADR-066's P1 layer.
+>
+> **Superseded by the 2026-09-02 note above:** #58 wired the pool into the
+> canonical Invocation path (`maistro.container` → `effect_context` →
+> `credential_routing` → `credentials.pool`), so pool and router left the
+> unreachable baseline and their criteria can reach the `reachable` rung.
+
+> **Measurement note (2026-09-02, #58).** The rotation scenarios below are
+> now bound to `maistro.credentials.rotation`'s successor: #58 moved
+> credential selection to Provider resolution and rotation to real Invocation
+> outcomes (see the ac-modules map — `maistro.credentials.router`), and the
+> detached `execute_with_pool` retry loop this feature originally assumed was
+> removed with it. The behavioral table is unchanged: 429 cools (≤60s,
+> honoring Retry-After), 402 cools an hour, 401/403 block, transients set no
+> cooldown. Physical retries are whole new Invocations under later Attempts,
+> owned by the canonical execution model — not a library sleep loop invisible
+> to it. AC-24/25/26/27/30/31's anchors moved from `pool` to `router` for the
+> same reason: the request-driven halves of those scenarios execute there
+> now. One improvement: the old loop read `detail["status_code"]`, which the
+> classifier never populated, so a 401 through `execute_with_pool` never
+> actually blocked its key; the router reads the status off the raised error,
+> and AC-24/AC-25 now have passing outcome-driven tests.
 
 ```gherkin
 Feature: Credential pool selection strategies
