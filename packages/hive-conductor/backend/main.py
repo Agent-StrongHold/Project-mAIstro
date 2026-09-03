@@ -56,12 +56,8 @@ from routes import (
     workspaces,
     ws,
 )
-from routes import (
-    metrics as metrics_r,
-)
-from routes import (
-    optimizer as optimizer_r,
-)
+from routes import metrics as metrics_r
+from routes import optimizer as optimizer_r
 from routes import settings as settings_r
 from services import engine as engine_service
 from services import foundation as foundation_service
@@ -219,16 +215,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         _lifespan_log.info("Design preview and render services initialized")
     except Exception as exc:
         _lifespan_log.warning("design_service_start_failed: %s", exc, exc_info=True)
-    try:
-        # Day 8 — wire pm_runner's event bus into the DAG-run store so
-        # /v1/dag-runs/{id}/events SSE streams pick up live pm_node_*
-        # events from PM-fleet invocations. No-op if pm_runner isn't
-        # importable (e.g. when MAISTRO_POC_MODE != "pm").
-        from services.dag_run_store import install_pm_event_bridge
-
-        install_pm_event_bridge()
-    except Exception:
-        _lifespan_log.warning("pm_event_bridge_install_failed", exc_info=True)
     try:
         from services.scheduler import start_scheduler
 

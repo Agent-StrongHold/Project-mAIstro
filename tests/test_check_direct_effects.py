@@ -86,18 +86,6 @@ async def search():
     assert sites[0].entry_point == "browser.search_web"
 
 
-def test_imported_model_helper_call_is_detected(gate) -> None:
-    source = """
-from maistro.agents.pm_llm_call import maistro_llm_call
-async def run(messages):
-    return await maistro_llm_call(messages)
-"""
-    sites = gate.analyze_source(source)
-    assert len(sites) == 1
-    assert sites[0].category == "MODEL_EFFECT"
-    assert sites[0].entry_point == "model-helper"
-
-
 def test_stable_identity_ignores_line_number_churn(gate) -> None:
     first = gate.analyze_source(
         'async def ask(client):\n    await client.post("/v1/chat/completions")\n'

@@ -398,7 +398,7 @@ async def test_submit_task_success_returns_task_record(
         "ship hello",
         task_type="intake",
         agent_id="intake",
-        capability="route_to_pm_agent",
+        capability="generic_capability",
     )
     assert rec.id == "new-task"
     assert rec.description == "ship hello"

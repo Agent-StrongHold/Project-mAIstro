@@ -112,6 +112,7 @@ _USERNAME_RE = re.compile(r"^[a-zA-Z0-9_-]{3,32}$")
 _MIN_PASSWORD_LEN = 8
 _OAUTH_CODE_MAX_LENGTH = 4096
 _OAUTH_FAILURE_DETAIL = "OAuth authentication failed"
+_OAUTH_LINK_COOKIE_PREFIX = "__Host-hive_oauth_link_"
 
 
 class LoginBody(BaseModel):
@@ -260,6 +261,10 @@ def _cookie_samesite() -> Literal["lax", "strict", "none"]:
     return get_settings().session_cookie_samesite
 
 
+def _human_auth_policy() -> HumanAuthModePolicy:
+    return HumanAuthModePolicy(mode=get_settings().human_auth_mode)
+
+
 def _users() -> list[HiveUser]:
     return cast(list[HiveUser], list(stores.users.values()))
 
@@ -313,6 +318,10 @@ def revoke_task_elevation(session_id: str, task_id: str) -> None:
 
 def _normalized_oauth_provider(provider: str) -> str:
     return provider if is_valid_oauth_provider_name(provider) else "unknown"
+
+
+def _oauth_link_cookie_name(provider: str) -> str:
+    return f"{_OAUTH_LINK_COOKIE_PREFIX}{provider}"
 
 
 async def _charge_oauth_start(request: Request) -> None:
@@ -404,10 +413,25 @@ def _clear_oauth_state_cookie(response: Response, provider: str) -> None:
     )
 
 
+def _clear_oauth_link_cookie(response: Response, provider: str) -> None:
+    safe_provider = _normalized_oauth_provider(provider)
+    response.set_cookie(
+        key=_oauth_link_cookie_name(safe_provider),
+        value="",
+        max_age=0,
+        expires=0,
+        path="/",
+        httponly=True,
+        secure=True,
+        samesite="lax",
+    )
+
+
 def _oauth_failure_response(provider: str, failure: OAuthLoginDenied) -> Response:
     _audit_oauth_failure(provider, failure)
     response = JSONResponse(status_code=401, content={"detail": _OAUTH_FAILURE_DETAIL})
     _clear_oauth_state_cookie(response, provider)
+    _clear_oauth_link_cookie(response, provider)
     return _oauth_response_headers(response)
 
 
@@ -422,6 +446,11 @@ def _single_callback_value(request: Request, name: str, max_length: int) -> str 
 async def oauth_start(provider: str, request: Request) -> Response:
     """Begin fixed-redirect Authorization Code + PKCE login."""
     await _charge_oauth_start(request)
+    if not _human_auth_policy().oauth_provider_enabled(provider):
+        return _oauth_failure_response(
+            provider,
+            OAuthLoginDenied(stage="configuration", reason="unknown_provider"),
+        )
     try:
         service = get_oauth_login_service()
         authorization_url, state = await service.start(provider)
@@ -447,39 +476,106 @@ async def oauth_start(provider: str, request: Request) -> Response:
     return _oauth_response_headers(response)
 
 
-@router.get("/oauth/{provider}/callback")
-async def oauth_callback(provider: str, request: Request) -> Response:
-    """Verify an OIDC callback and issue the existing Hive session."""
-    # SECURITY-REVIEW: OAuth query/cookie values are untrusted authentication
-    # inputs. They are bounded, browser-bound, single-use, and never logged.
-    await _charge_oauth_callback(request)
-    if request.query_params.getlist("error"):
-        state = _single_callback_value(request, "state", OAUTH_STATE_MAX_LENGTH)
-        if state is None:
-            return _oauth_failure_response(
-                provider,
-                OAuthLoginDenied(stage="state", reason="missing"),
-            )
-        safe_provider = _normalized_oauth_provider(provider)
-        browser_state = request.cookies.get(oauth_state_cookie_name(safe_provider))
-        try:
-            service = get_oauth_login_service()
-            await service.consume_failed_callback(
-                provider=provider,
-                state=state,
-                browser_state=browser_state,
-            )
-        except OAuthLoginDenied as failure:
-            return _oauth_failure_response(provider, failure)
-        except Exception:
-            return _oauth_failure_response(
-                provider,
-                OAuthLoginDenied(stage="provider", reason="provider_rejected"),
-            )
+@router.post("/oauth/{provider}/link/start")
+async def oauth_link_start(
+    provider: str,
+    request: Request,
+    hive_session: str | None = Cookie(None),
+) -> Response:
+    """Start an explicit provider-link flow for the authenticated Hive user."""
+    await _charge_oauth_start(request)
+    current = get_current_user(hive_session)
+    if current is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    if not _human_auth_policy().oauth_provider_enabled(provider):
+        return _oauth_failure_response(
+            provider,
+            OAuthLoginDenied(stage="configuration", reason="unknown_provider"),
+        )
+    try:
+        service = get_oauth_login_service()
+        authorization_url, state = await service.start(provider)
+    except OAuthLoginDenied as failure:
+        return _oauth_failure_response(provider, failure)
+    except Exception:
+        return _oauth_failure_response(
+            provider,
+            OAuthLoginDenied(stage="configuration", reason="missing"),
+        )
+
+    response = RedirectResponse(authorization_url, status_code=303)
+    safe_provider = _normalized_oauth_provider(provider)
+    response.set_cookie(
+        key=oauth_state_cookie_name(safe_provider),
+        value=state,
+        max_age=OAUTH_STATE_TTL_SECONDS,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
+    # Marker only. The authoritative link target is re-resolved from the
+    # authenticated hive_session at callback time; no user id is client-carried.
+    response.set_cookie(
+        key=_oauth_link_cookie_name(safe_provider),
+        value="1",
+        max_age=OAUTH_STATE_TTL_SECONDS,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
+    return _oauth_response_headers(response)
+
+
+async def _oauth_provider_error_callback(provider: str, request: Request) -> Response:
+    """Consume a failed authorization response's state, then fail closed.
+
+    The state must still be burned even when the provider reports `error`:
+    otherwise a denied authorization leaves a pending state that could be
+    replayed against a later attempt.
+    """
+    state = _single_callback_value(request, "state", OAUTH_STATE_MAX_LENGTH)
+    if state is None:
+        return _oauth_failure_response(
+            provider,
+            OAuthLoginDenied(stage="state", reason="missing"),
+        )
+    safe_provider = _normalized_oauth_provider(provider)
+    browser_state = request.cookies.get(oauth_state_cookie_name(safe_provider))
+    try:
+        service = get_oauth_login_service()
+        await service.consume_failed_callback(
+            provider=provider,
+            state=state,
+            browser_state=browser_state,
+        )
+    except OAuthLoginDenied as failure:
+        return _oauth_failure_response(provider, failure)
+    except Exception:
         return _oauth_failure_response(
             provider,
             OAuthLoginDenied(stage="provider", reason="provider_rejected"),
         )
+    return _oauth_failure_response(
+        provider,
+        OAuthLoginDenied(stage="provider", reason="provider_rejected"),
+    )
+
+
+@router.get("/oauth/{provider}/callback")
+async def oauth_callback(provider: str, request: Request) -> Response:
+    """Verify an OIDC callback and issue or link the existing Hive identity."""
+    # SECURITY-REVIEW: OAuth query/cookie values are untrusted authentication
+    # inputs. They are bounded, browser-bound, single-use, and never logged.
+    await _charge_oauth_callback(request)
+    if not _human_auth_policy().oauth_provider_enabled(provider):
+        return _oauth_failure_response(
+            provider,
+            OAuthLoginDenied(stage="configuration", reason="unknown_provider"),
+        )
+    if request.query_params.getlist("error"):
+        return await _oauth_provider_error_callback(provider, request)
 
     code = _single_callback_value(request, "code", _OAUTH_CODE_MAX_LENGTH)
     state = _single_callback_value(request, "state", OAUTH_STATE_MAX_LENGTH)
@@ -494,14 +590,27 @@ async def oauth_callback(provider: str, request: Request) -> Response:
 
     safe_provider = _normalized_oauth_provider(provider)
     browser_state = request.cookies.get(oauth_state_cookie_name(safe_provider))
+    link_requested = request.cookies.get(_oauth_link_cookie_name(safe_provider)) == "1"
     try:
         service = get_oauth_login_service()
-        result = await service.authenticate(
-            provider=provider,
-            code=code,
-            state=state,
-            browser_state=browser_state,
-        )
+        if link_requested:
+            current = get_current_user(request.cookies.get(_SESSION_COOKIE))
+            if current is None:
+                raise OAuthLoginDenied(stage="identity", reason="unknown_user")
+            result = await service.link_authenticated_user(
+                provider=provider,
+                code=code,
+                state=state,
+                browser_state=browser_state,
+                user_id=current["id"],
+            )
+        else:
+            result = await service.authenticate(
+                provider=provider,
+                code=code,
+                state=state,
+                browser_state=browser_state,
+            )
     except OAuthLoginDenied as failure:
         return _oauth_failure_response(provider, failure)
     except Exception:
@@ -511,20 +620,35 @@ async def oauth_callback(provider: str, request: Request) -> Response:
         )
 
     response = RedirectResponse(service.success_path, status_code=303)
-    _issue_session(result.user, response)
-    log_audit(
-        "auth.oauth.login",
-        result.user.id,
-        target=result.provider,
-        detail={
-            "provider": result.provider,
-            "stage": "session",
-            "reason": "success",
-            "subject": result.subject,
-            "local_user_id": result.user.id,
-        },
-    )
+    if link_requested:
+        log_audit(
+            "auth.oauth.link.complete",
+            result.user.id,
+            target=result.provider,
+            detail={
+                "provider": result.provider,
+                "stage": "identity",
+                "reason": "success",
+                "subject": result.subject,
+                "local_user_id": result.user.id,
+            },
+        )
+    else:
+        _issue_session(result.user, response)
+        log_audit(
+            "auth.oauth.login",
+            result.user.id,
+            target=result.provider,
+            detail={
+                "provider": result.provider,
+                "stage": "session",
+                "reason": "success",
+                "subject": result.subject,
+                "local_user_id": result.user.id,
+            },
+        )
     _clear_oauth_state_cookie(response, provider)
+    _clear_oauth_link_cookie(response, provider)
     return _oauth_response_headers(response)
 
 
@@ -607,15 +731,17 @@ def register(body: RegisterBody, request: Request, response: Response) -> dict[s
 @router.post("/login")
 def login(body: LoginBody, request: Request, response: Response) -> dict[str, Any]:
     _enforce(_LOGIN_THROTTLE, request, body.username, "login")
-
-    # The deployment's explicit login mode decides before any credential is
-    # read (#491). An Entra-only deployment denies ordinary password login
-    # here rather than "falling back" to passwords because no provider was
-    # reachable; break-glass recovery is a separate operator-controlled seam,
-    # never a request parameter.
-    if not HumanAuthModePolicy(mode=get_settings().human_auth_mode).password_login_enabled():
-        log_audit("login_password_denied", body.username, severity="warning")
-        raise HTTPException(status_code=403, detail="Password login is disabled")
+    policy = _human_auth_policy()
+    if not policy.ordinary_password_login_enabled:
+        log_audit(
+            "login_auth_mode_denied",
+            "password",
+            target=policy.mode,
+            severity="warning",
+        )
+        raise HTTPException(
+            status_code=403, detail="Password login is disabled for this deployment."
+        )
 
     # Find the account first, then ALWAYS verify exactly once — against a decoy
     # when there is no account (#366). The previous form was:

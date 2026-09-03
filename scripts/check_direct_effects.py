@@ -38,9 +38,8 @@ _MODEL_ENDPOINTS = ("chat/completions", "/completions", "/v1/responses")
 _HTTP_EFFECT_METHODS = frozenset({"post", "stream", "send", "request"})
 
 # Semantic helpers whose call itself is a model effect.
-_MODEL_FUNCTIONS = {
-    "maistro.agents.pm_llm_call.maistro_llm_call": "model-helper",
-}
+# The PM-private helper was retired by #129; future helpers must be reviewed here.
+_MODEL_FUNCTIONS: dict[str, str] = {}
 
 # Typed clients whose public calls have product effect semantics. Constructors
 # and cleanup are intentionally absent: importing/constructing a client is not
@@ -49,41 +48,6 @@ _TYPED_EFFECT_METHODS: dict[str, dict[str, tuple[str, str]]] = {
     "maistro.tools.browser.BrowserClient": {
         "search_web": ("TOOL_EFFECT", "browser.search_web"),
         "browse": ("TOOL_EFFECT", "browser.browse"),
-    },
-    "maistro.tools.atlassian.AtlassianMCPClient": {
-        "jira_get_my_issues": (
-            "MCP_EFFECT",
-            "atlassian.jira_get_my_issues",
-        ),
-        "jira_search_issues": (
-            "MCP_EFFECT",
-            "atlassian.jira_search_issues",
-        ),
-        "jira_get_issue": ("MCP_EFFECT", "atlassian.jira_get_issue"),
-        "jira_create_issue": (
-            "MCP_EFFECT",
-            "atlassian.jira_create_issue",
-        ),
-        "jira_update_issue": (
-            "MCP_EFFECT",
-            "atlassian.jira_update_issue",
-        ),
-        "confluence_search": (
-            "MCP_EFFECT",
-            "atlassian.confluence_search",
-        ),
-        "confluence_get_page": (
-            "MCP_EFFECT",
-            "atlassian.confluence_get_page",
-        ),
-        "confluence_create_page": (
-            "MCP_EFFECT",
-            "atlassian.confluence_create_page",
-        ),
-        "confluence_update_page": (
-            "MCP_EFFECT",
-            "atlassian.confluence_update_page",
-        ),
     },
 }
 

@@ -6,7 +6,6 @@
     "maistro-canvas-frontend-server::mcp.character",
     "maistro-canvas-frontend-server::mcp.story",
     "maistro.agents.conductor",
-    "maistro.agents.pm_llm_call",
     "maistro.events.handlers",
     "maistro.graph.nodes.llm_summarize",
     "maistro_bootstrap.builders.model_selector",
