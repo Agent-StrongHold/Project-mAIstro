@@ -56,6 +56,11 @@
       "issue": "#129",
       "reason": "The PM capability policy predicate #129 retains as gated-work-item metadata. Its live consumer is Hive EngineService.submit_task's fail-closed guard (packages/hive-conductor/backend/services/engine.py), outside the packages/*/src Vulture scan set; the retired maistro.agents.pm_runner was previously its only in-scan caller. Deleting it would remove the policy predicate the shipped fail-closed path calls."
     },
+    "packages/maistro-core/src/maistro/capabilities/effect_context.py::unused method 'credential_routing'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#58",
+      "reason": "CapabilityEffectContext.credential_routing is the #58 accessor that wraps the context's CredentialRouter in a CredentialRouting, so slot-specific resolver/executor pairs draw credential selection from the resolved Binding scope and rotation reacts to real Invocation outcomes. maistro-core is a published library; its in-repo readers are the #58 tests (packages/maistro-core/tests/capabilities/test_credential_routing.py, outside the packages/*/src scan set). Deleting it would remove the credential-pool seam's public accessor on the canonical effect context."
+    },
     "packages/maistro-core/src/maistro/personas/schema.py::unused variable 'tagline'": {
       "owner": "@BlakeMatthews-dev",
       "issue": "#129",
