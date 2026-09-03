@@ -189,46 +189,22 @@ class EngineService:
 
         try:
             if settings.hive_mode == "demo":
-                import os
-
                 from adapters.task_backend import LocalTaskBackend
 
-                pm_mode = (
-                    os.getenv("MAISTRO_POC_MODE", os.getenv("HIVE_POC_MODE", "")).strip().lower()
-                    == "pm"
-                )
-                if pm_mode:
-                    from maistro.agents.pm_runner import run_pm_task
+                from maistro.agents.conductor import run_task
 
-                    executor = run_pm_task
-                    # pm_runner makes real Claude calls through the LLM gateway
-                    # for LLM-reasoning capabilities and short-circuits to
-                    # source='no_data' for data tools that need PATs (jira) or
-                    # Chromium (browser-use) when those aren't wired yet.
-                    logger.info(
-                        "LocalTaskBackend (demo) using PM runner — real LLM via LLM gateway "
-                        "(source='no_data' for Jira/Airtable/web until PATs set)"
-                    )
-                else:
-                    from maistro.agents.conductor import run_task
-
-                    executor = run_task
-                    logger.info("LocalTaskBackend (demo) using engineering conductor executor")
-
+                # Demo mode retains the local backend, but not a product-specific
+                # executor switch. Workspace Persona identity is resolved before
+                # submission through the generic materialized roster; execution
+                # has one authority regardless of legacy POC environment values.
                 backend = LocalTaskBackend(
-                    executor=executor,
+                    executor=run_task,
                     admitter=self.task_admitter,
                     run_store=self.run_store,
                 )
                 await backend.start()
                 self._backend = backend
-                if pm_mode:
-                    from maistro.agents.catalog import AgentCatalog
-                    from maistro.agents.pm_fleet import register_pm_fleet
-
-                    catalog = AgentCatalog()
-                    register_pm_fleet(catalog)
-                    self._pm_catalog = catalog
+                logger.info("LocalTaskBackend (demo) using canonical conductor executor")
             else:
                 from adapters.task_backend import MaistroServerTaskBackend
 
@@ -346,7 +322,12 @@ class EngineService:
         """
         if self._backend is None:
             raise RuntimeError("TaskQueue not available")
-        from maistro.agents.pm_capabilities import is_gated, normalize_capability
+        from maistro.agents.pm_capabilities import (
+            AUTONOMOUS_CAPABILITIES,
+            GATED_CAPABILITIES,
+            is_gated,
+            normalize_capability,
+        )
         from maistro.tasks.models import TaskCreate
 
         cap = normalize_capability(capability or "")
@@ -354,6 +335,11 @@ class EngineService:
         if is_gated(cap) and not pctx_probe.get("confirmed"):
             raise ValueError(
                 f"Capability {cap!r} must use the work-item draft flow (POST /v1/work-items/suggest → confirm)"
+            )
+        if cap in AUTONOMOUS_CAPABILITIES or cap in GATED_CAPABILITIES:
+            raise ValueError(
+                f"PM capability execution {cap!r} through the generic task queue is retired; "
+                "keep it as a Workspace Persona proposal until canonical Graph execution owns it"
             )
 
         pctx = program_context

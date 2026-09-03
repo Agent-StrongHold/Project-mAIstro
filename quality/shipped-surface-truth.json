@@ -1589,16 +1589,6 @@
       "effect_owner": "canvas executor.start_job"
     },
     {
-      "source": "packages/maistro-server/src/maistro_server/api/agents.py",
-      "method": "POST",
-      "route": "/{agent_id}/invoke",
-      "handler": "invoke_pm_agent",
-      "disposition": "canonical",
-      "production_enabled": true,
-      "reason": "submits a PM fleet task to the queue (POC-gated)",
-      "effect_owner": "task queue submit -> canonical Run"
-    },
-    {
       "source": "packages/maistro-server/src/maistro_server/api/canvas.py",
       "method": "DELETE",
       "route": "/designs/{design_id}",

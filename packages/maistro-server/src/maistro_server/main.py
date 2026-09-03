@@ -20,8 +20,6 @@ import maistro.agents.conductor as conductor
 import maistro.config.settings as settings_module
 import maistro.memory.store as memory_store
 import maistro.persistence as persistence
-from maistro.agents.catalog import AgentCatalog
-from maistro.agents.pm_fleet import register_pm_fleet
 from maistro.config.database import resolve_database_url, to_asyncpg_dsn
 from maistro.config.settings import Settings, get_settings
 from maistro.container import POSTGRES_SCHEMES, create_container
@@ -37,7 +35,6 @@ from maistro.tasks.runner import TaskRunner
 from maistro.tools.sandbox.server import cleanup_all_containers
 from maistro.types.config import AgentConfig
 from maistro_server.api import (
-    agents,
     canvas,
     chat_completions,
     health,
@@ -276,12 +273,6 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
     # #150 had to build here for want of one.
     chat_completions.configure_container(container)
 
-    if os.getenv("MAISTRO_POC_MODE", "").strip().lower() == "pm":
-        catalog = AgentCatalog()
-        register_pm_fleet(catalog)
-        app.state.pm_catalog = catalog
-        await logger.ainfo("pm_fleet_catalog_seeded", agents=len(catalog.list_agents()))
-
     progress_wh: ProgressWebhookNotifier | None = None
     if settings.task_progress_webhook_url.strip():
         progress_wh = ProgressWebhookNotifier(
@@ -454,7 +445,6 @@ API_V1_PREFIX = "/v1"
 app.include_router(tasks.router, prefix=API_V1_PREFIX)
 app.include_router(runs.router, prefix=API_V1_PREFIX)
 app.include_router(workspaces.router, prefix=API_V1_PREFIX)
-app.include_router(agents.router, prefix=f"{API_V1_PREFIX}/maistro")
 app.include_router(chat_completions.router, prefix=API_V1_PREFIX)
 app.include_router(models.router, prefix=API_V1_PREFIX)
 app.include_router(webhooks.router, prefix=API_V1_PREFIX)
