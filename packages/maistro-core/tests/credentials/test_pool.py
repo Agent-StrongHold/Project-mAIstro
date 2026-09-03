@@ -8,6 +8,7 @@ governed-seam composition in ``tests/capabilities/test_credential_routing.py``.
 from __future__ import annotations
 
 import time
+from typing import cast
 
 import pytest
 from hypothesis import strategies as st
@@ -186,6 +187,14 @@ class TestScopedSelection:
     def test_key_ids_lists_every_configured_key(self):
         pool = _pool(["a", "b"])
         assert pool.key_ids() == frozenset({"a", "b"})
+
+    def test_unknown_strategy_is_refused_rather_than_guessed(self):
+        pool = CredentialPool(
+            "openai", [_rec("a")], cast(SelectionStrategy, "bogus")
+        )
+
+        with pytest.raises(ValueError, match="Unknown strategy"):
+            pool.select()
 
 
 class TestAutomaticRotation:

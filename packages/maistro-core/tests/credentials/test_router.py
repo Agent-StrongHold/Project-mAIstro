@@ -399,6 +399,29 @@ class TestCooldownMapping:
 
         assert _status_from_error(ValueError("no status at all")) == 0
 
+    def test_non_integer_status_attribute_falls_through_to_response(self):
+        from maistro.credentials.router import _status_from_error
+
+        class _StringyStatus(Exception):
+            def __init__(self) -> None:
+                super().__init__("string status")
+                self.status_code = "429"
+                self.response = type("Resp", (), {"status_code": 429, "headers": {}})
+
+        assert _status_from_error(_StringyStatus()) == 429
+
+    def test_none_detail_yields_no_status(self):
+        classified = ClassifiedError(
+            category=ErrorCategory.UNKNOWN,
+            original=ValueError("no detail"),
+            detail=None,
+        )
+
+        cooldown, block = cooldown_for_failure(classified)
+
+        assert cooldown == 0.0
+        assert block is False
+
     def test_non_integer_detail_status_is_ignored(self):
         classified = ClassifiedError(
             category=ErrorCategory.UNKNOWN,

@@ -1,11 +1,11 @@
 {
-  "branch": null,
+  "branch": "claude/issue-40-template-object-provenance",
   "counters": {
     "adrs_without_implementing_spec": 33,
     "completion_claims_contradicted": 0,
     "completion_claims_unverifiable": 0,
     "criteria_claimed_but_unproven": 0,
-    "design_coverage": 21.3053,
+    "design_coverage": 22.6206,
     "gherkin_parse_errors": 0,
     "markers_without_criterion": 2,
     "scenarios_without_ac_tag": 0,
