@@ -135,10 +135,16 @@ class TestScopedAcquisition:
         stats = router.stats(workspace_id=WS, project_id=PROJECT, provider=PROVIDER)
         assert stats is not None and stats.total_keys == 1
 
+    def test_router_reports_its_default_strategy(self):
+        router = _router(["a"])
+
+        assert router.strategy is SelectionStrategy.ROUND_ROBIN
+
 
 class TestOutcomeRotation:
     """Rotation as a reaction to real provider outcomes (#58)."""
 
+    @pytest.mark.ac("ADR-063/AC-30")
     async def test_success_outcome_clears_error_state_and_counts_use(self):
         router = _router(["a"])
         await router.record_outcome(
@@ -280,6 +286,7 @@ class TestOutcomeRotation:
         assert _entry(router, "a").cooldown_until is None
         assert _entry(router, "a").is_available
 
+    @pytest.mark.ac("ADR-063/AC-24")
     async def test_401_outcome_blocks_the_key_permanently(self):
         router = _router(["a", "b"])
 
@@ -292,6 +299,35 @@ class TestOutcomeRotation:
         )
 
         assert _entry(router, "a").blocked is True
+        assert _entry(router, "a").is_available is False
+
+    @pytest.mark.ac("ADR-063/AC-25")
+    async def test_403_outcome_blocks_the_key_permanently(self):
+        router = _router(["a", "b"])
+
+        await router.record_outcome(
+            workspace_id=WS,
+            project_id=PROJECT,
+            provider=PROVIDER,
+            key_id="a",
+            error=_HttpError("Forbidden", 403),
+        )
+
+        assert _entry(router, "a").blocked is True
+
+    @pytest.mark.ac("ADR-063/AC-31")
+    async def test_error_outcome_increments_error_count(self):
+        router = _router(["a"])
+
+        await router.record_outcome(
+            workspace_id=WS,
+            project_id=PROJECT,
+            provider=PROVIDER,
+            key_id="a",
+            error=_HttpError("Rate limit exceeded", 429),
+        )
+
+        assert _entry(router, "a").error_count == 1
 
     @pytest.mark.ac("ADR-063/AC-19")
     async def test_single_key_429_then_acquire_reports_exhaustion(self):
@@ -309,6 +345,7 @@ class TestOutcomeRotation:
             await _acquire(router)
         assert exc_info.value.total_keys == 1
 
+    @pytest.mark.ac("ADR-063/AC-20")
     async def test_exhaustion_error_names_the_provider(self):
         router = CredentialRouter()
         router.add(workspace_id=WS, project_id=PROJECT, record=_rec("x", provider="anthropic"))
@@ -347,6 +384,32 @@ class TestOutcomeRotation:
 class TestCooldownMapping:
     """The ADR-063 table, folded from classified errors."""
 
+    def test_status_is_read_from_the_error_response_object(self):
+        class _ResponseOnly(Exception):
+            def __init__(self) -> None:
+                super().__init__("transport said so")
+                self.response = type("Resp", (), {"status_code": 403, "headers": {}})
+
+        from maistro.credentials.router import _status_from_error
+
+        assert _status_from_error(_ResponseOnly()) == 403
+
+    def test_status_falls_back_to_zero_without_any_status_attribute(self):
+        from maistro.credentials.router import _status_from_error
+
+        assert _status_from_error(ValueError("no status at all")) == 0
+
+    def test_non_integer_detail_status_is_ignored(self):
+        classified = ClassifiedError(
+            category=ErrorCategory.UNKNOWN,
+            original=ValueError("weird"),
+            detail={"status_code": "not-a-number"},
+        )
+
+        cooldown, block = cooldown_for_failure(classified)
+
+        assert cooldown == 0.0
+        assert block is False
     def test_rate_limit_classification_without_status_code_still_cools(self):
         # The classifier itself only produces RATE_LIMIT for status 429 (and
         # 402-with-usage-message), both of which earlier branches handle. This

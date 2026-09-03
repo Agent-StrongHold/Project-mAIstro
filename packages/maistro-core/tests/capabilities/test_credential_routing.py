@@ -17,7 +17,6 @@ import pytest
 from maistro.capabilities.binding import Binding, ResolvedBinding, ResolvedCapabilityProvider
 from maistro.capabilities.credential_routing import (
     CredentialBackedProvider,
-    CredentialConsumer,
     CredentialRouting,
 )
 from maistro.capabilities.effect_context import (
@@ -29,6 +28,7 @@ from maistro.capabilities.invocation import (
     EffectNotApplied,
     InvocationStatus,
 )
+from maistro.capabilities.types import Unavailable
 from maistro.credentials.router import CredentialRouter, CredentialScopeError
 from maistro.credentials.types import CredentialRecord
 
@@ -179,9 +179,7 @@ class TestRoutedInvocation:
                 await _invoke(context, executor=executor, attempt_id=attempt, effect_key="ticket:3")
 
         with pytest.raises(CapabilityUnavailable, match="credential pool exhausted"):
-            await _invoke(
-                context, executor=executor, attempt_id="attempt-3", effect_key="ticket:3"
-            )
+            await _invoke(context, executor=executor, attempt_id="attempt-3", effect_key="ticket:3")
 
 
 class TestScopedAuthorization:
@@ -242,6 +240,29 @@ class TestScopedAuthorization:
                 resolver=routing.resolver(_resolve_provider),
                 executor=executor,
             )
+
+    async def test_unavailable_base_resolver_result_passes_through(self):
+        context = _context_with_pool()
+        routing = context.credential_routing()
+
+        async def unavailable_resolver(binding: Binding) -> ResolvedCapabilityProvider:
+            return Unavailable(slot=binding.capability, reason="slot disabled")
+
+        resolved = await routing.resolver(unavailable_resolver)(_binding())
+
+        assert isinstance(resolved, Unavailable)
+        assert resolved.reason == "slot disabled"
+
+    async def test_unrouted_executor_passthrough_for_bare_providers(self):
+        context = _context_with_pool()
+        routing = context.credential_routing()
+
+        async def executor(provider: Any, request: Any) -> str:
+            return f"bare:{provider.name}"
+
+        result = await routing.executor(executor)(_BareProvider(), {})
+
+        assert result == "bare:provider-bare"
 
     async def test_provider_without_credential_surface_is_unavailable(self):
         context = _context_with_pool()

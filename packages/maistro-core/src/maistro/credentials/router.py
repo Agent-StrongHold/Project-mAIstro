@@ -27,7 +27,6 @@ from __future__ import annotations
 from maistro.credentials.pool import CredentialPool
 from maistro.credentials.types import (
     CredentialRecord,
-    PoolExhaustedError,
     PoolStats,
     SelectionStrategy,
 )
@@ -71,7 +70,30 @@ def _status_from_error(error: Exception) -> int:
     return 0
 
 
-def cooldown_for_failure(classified: ClassifiedError, *, status_code: int = 0) -> tuple[float, bool]:
+def _effective_status(classified: ClassifiedError, status_code: int) -> int:
+    """The status the cooldown table keys on: raised, else classified detail."""
+
+    if status_code:
+        return status_code
+    detail = classified.detail
+    if isinstance(detail, dict):
+        status = detail.get("status_code", 0)
+        return status if isinstance(status, int) else 0
+    return 0
+
+
+def _rate_limit_cooldown(classified: ClassifiedError) -> tuple[float, bool]:
+    """Up to RATE_LIMIT_COOLDOWN_SECONDS, honoring a provider Retry-After."""
+
+    retry_after = classified.retry_after_seconds
+    if retry_after and retry_after > 0:
+        return min(RATE_LIMIT_COOLDOWN_SECONDS, retry_after), False
+    return RATE_LIMIT_COOLDOWN_SECONDS, False
+
+
+def cooldown_for_failure(
+    classified: ClassifiedError, *, status_code: int = 0
+) -> tuple[float, bool]:
     """Map a classified provider error to ``(cooldown_seconds, should_block)``.
 
     Carries the ADR-063 cooldown table onto Invocation outcomes: 429 cools for
@@ -81,21 +103,14 @@ def cooldown_for_failure(classified: ClassifiedError, *, status_code: int = 0) -
     error itself; classification categories cover errors that carry no status.
     """
 
-    detail = classified.detail
-    effective_status = status_code or (
-        detail.get("status_code", 0) if isinstance(detail, dict) else 0
-    )
+    effective = _effective_status(classified, status_code)
 
-    if effective_status == 402 or classified.category is ErrorCategory.BILLING:
+    if effective == 402 or classified.category is ErrorCategory.BILLING:
         return BILLING_COOLDOWN_SECONDS, False
-    if effective_status in (401, 403) or classified.category is ErrorCategory.AUTH:
+    if effective in (401, 403) or classified.category is ErrorCategory.AUTH:
         return 0.0, True
-    if effective_status == 429 or classified.category is ErrorCategory.RATE_LIMIT:
-        retry_after = classified.retry_after_seconds
-        if retry_after and retry_after > 0:
-            return min(RATE_LIMIT_COOLDOWN_SECONDS, retry_after), False
-        return RATE_LIMIT_COOLDOWN_SECONDS, False
-
+    if effective == 429 or classified.category is ErrorCategory.RATE_LIMIT:
+        return _rate_limit_cooldown(classified)
     return 0.0, False
 
 
@@ -111,9 +126,7 @@ class CredentialRouter:
     Provider resolver/executor pair of the Invocation path.
     """
 
-    def __init__(
-        self, *, strategy: SelectionStrategy = SelectionStrategy.ROUND_ROBIN
-    ) -> None:
+    def __init__(self, *, strategy: SelectionStrategy = SelectionStrategy.ROUND_ROBIN) -> None:
         self._pools: dict[ScopeKey, CredentialPool] = {}
         self._strategy = strategy
 
@@ -164,9 +177,7 @@ class CredentialRouter:
         Key ids and counts only — never secret material (ADR-063 stats table).
         """
 
-        pool = self.pool_for(
-            workspace_id=workspace_id, project_id=project_id, provider=provider
-        )
+        pool = self.pool_for(workspace_id=workspace_id, project_id=project_id, provider=provider)
         return pool.get_stats() if pool is not None else None
 
     async def acquire(
@@ -188,9 +199,7 @@ class CredentialRouter:
         as capability unavailability until the soonest cooldown expires.
         """
 
-        pool = self.pool_for(
-            workspace_id=workspace_id, project_id=project_id, provider=provider
-        )
+        pool = self.pool_for(workspace_id=workspace_id, project_id=project_id, provider=provider)
         if pool is None or pool.size == 0:
             raise CredentialScopeError(
                 f"no credentials configured for provider {provider!r} in "
@@ -229,9 +238,7 @@ class CredentialRouter:
         the provider's own response — never a timer started speculatively.
         """
 
-        pool = self.pool_for(
-            workspace_id=workspace_id, project_id=project_id, provider=provider
-        )
+        pool = self.pool_for(workspace_id=workspace_id, project_id=project_id, provider=provider)
         if pool is None:
             return
 
@@ -253,9 +260,9 @@ class CredentialRouter:
 
 __all__ = [
     "BILLING_COOLDOWN_SECONDS",
+    "RATE_LIMIT_COOLDOWN_SECONDS",
     "CredentialRouter",
     "CredentialScopeError",
-    "RATE_LIMIT_COOLDOWN_SECONDS",
     "ScopeKey",
     "cooldown_for_failure",
 ]

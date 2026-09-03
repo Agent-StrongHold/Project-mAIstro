@@ -88,7 +88,7 @@ class CredentialBackedProvider:
 
         return self.credential.provider
 
-    def __repr__(self) -> str:  # pragma: no cover - defensive, asserted in tests
+    def __repr__(self) -> str:
         # The dataclass default would embed ``credential`` — and with it the
         # api_key — into any traceback or log that reprs this provider. Only
         # non-secret identity is ever shown.

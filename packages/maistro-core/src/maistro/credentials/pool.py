@@ -31,6 +31,28 @@ def least_used(available: list[CredentialRecord]) -> CredentialRecord:
     return min(available, key=lambda e: e.use_count)
 
 
+def _soonest_cooldown(entries: list[CredentialRecord]) -> float | None:
+    """Earliest cooldown expiry among non-blocked entries, None if none cooling."""
+
+    soonest: float | None = None
+    for entry in entries:
+        if entry.blocked or entry.cooldown_until is None:
+            continue
+        if soonest is None or entry.cooldown_until < soonest:
+            soonest = entry.cooldown_until
+    return soonest
+
+
+def _exhaustion_counts(entries: list[CredentialRecord]) -> tuple[int, int]:
+    """(blocked, cooling-down) counts over the entries being accounted."""
+
+    blocked = sum(1 for e in entries if e.blocked)
+    cooling = sum(
+        1 for e in entries if not e.blocked and e.cooldown_until is not None and not e.is_available
+    )
+    return blocked, cooling
+
+
 class CredentialPool:
     def __init__(
         self,
@@ -85,48 +107,37 @@ class CredentialPool:
     def select(self, allowed_key_ids: frozenset[str] | None = None) -> CredentialRecord:
         available = self._available(allowed_key_ids)
         if not available:
-            scoped = (
-                [e for e in self._entries if e.key_id in allowed_key_ids]
-                if allowed_key_ids is not None
-                else self._entries
-            )
-            soonest = None
-            for e in scoped:
-                if (
-                    e.cooldown_until is not None
-                    and not e.blocked
-                    and (soonest is None or e.cooldown_until < soonest)
-                ):
-                    soonest = e.cooldown_until
-            blocked = sum(1 for e in scoped if e.blocked)
-            cooling = sum(
-                1
-                for e in scoped
-                if not e.blocked and e.cooldown_until is not None and not e.is_available
-            )
-            raise PoolExhaustedError(
-                message=(
-                    f"All {len(scoped)} credentials exhausted for {self._provider}"
-                    if allowed_key_ids is None
-                    else f"All {len(scoped)} authorized credentials exhausted for {self._provider}"
-                ),
-                provider=self._provider,
-                total_keys=len(scoped),
-                blocked_keys=blocked,
-                cooling_down_keys=cooling,
-                soonest_available_at=soonest,
-            )
+            self._raise_exhausted(allowed_key_ids)
 
         if self._strategy == SelectionStrategy.FILL_FIRST:
             return fill_first(available)
-        elif self._strategy == SelectionStrategy.ROUND_ROBIN:
+        if self._strategy == SelectionStrategy.ROUND_ROBIN:
             entry, self._rr_index = round_robin(available, self._rr_index)
             return entry
-        elif self._strategy == SelectionStrategy.RANDOM:
+        if self._strategy == SelectionStrategy.RANDOM:
             return random_select(available)
-        elif self._strategy == SelectionStrategy.LEAST_USED:
+        if self._strategy == SelectionStrategy.LEAST_USED:
             return least_used(available)
         raise ValueError(f"Unknown strategy: {self._strategy}")
+
+    def _raise_exhausted(self, allowed_key_ids: frozenset[str] | None) -> None:
+        """Raise PoolExhaustedError accounting only the selectable subset."""
+
+        scoped = (
+            self._entries
+            if allowed_key_ids is None
+            else [e for e in self._entries if e.key_id in allowed_key_ids]
+        )
+        blocked, cooling = _exhaustion_counts(scoped)
+        qualifier = "authorized " if allowed_key_ids is not None else ""
+        raise PoolExhaustedError(
+            message=(f"All {len(scoped)} {qualifier}credentials exhausted for {self._provider}"),
+            provider=self._provider,
+            total_keys=len(scoped),
+            blocked_keys=blocked,
+            cooling_down_keys=cooling,
+            soonest_available_at=_soonest_cooldown(scoped),
+        )
 
     def record_success(self, key_id: str) -> None:
         entry = self._find(key_id)
