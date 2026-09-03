@@ -85,6 +85,21 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#855",
       "reason": "#855's auditable-evidence accessor: the network decisions of the most recent run (allowed and denied, origins only, never query contents). maistro-core is a published library; its in-repo readers are the #855 tests asserting an autonomous session's decisions -- including destinations the model invented mid-run -- are auditable from the client (packages/maistro-core/tests/tools/browser/test_client.py, outside the packages/*/src scan set); the PM research path that will emit them as run evidence adopts it next."
+    },
+    "packages/maistro-core/src/maistro/graph/durable_runs/canonical_store.py::unused method 'cancel_hitl'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#737",
+      "reason": "CanonicalDurableRunStore.cancel_hitl is the explicit-cancellation settlement #737 adds beside the already-banked submit_hitl_answer. Its live consumer is hive-conductor's cancel_human_work route (packages/hive-conductor/backend/routes/hitl.py), outside the packages/*/src Vulture scan set. Deleting it would remove the cancellation half of the durable HITL settlement API."
+    },
+    "packages/maistro-core/src/maistro/graph/durable_runs/protocol.py::unused method 'cancel_hitl'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#737",
+      "reason": "DurableRunStore protocol contract for explicit HITL cancellation (#737), mirroring the banked submit_hitl_answer protocol entry; consumed through the canonical store by hive-conductor's cancel route outside the scan set."
+    },
+    "packages/maistro-core/src/maistro/graph/durable_runs/stores.py::unused method 'cancel_hitl'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#737",
+      "reason": "InMemoryDurableRunStore and SqliteDurableRunStore cancel_hitl implementations (#737): the store-level cancellation settlement the conductor's cancel route dispatches to. Both occurrences share this identity because the scan keys name, not class; neither has an in-scan caller by design."
     }
   },
   "model-egress": {
@@ -97,6 +112,13 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#838",
       "reason": "Pre-existing direct LiteLLM egress (httpx.post to {LITELLM_URL}/v1/chat/completions) in the book-maker POC's story-generation pipeline: packages/maistro-canvas/frontend/server/mcp/story.py. The module executes whenever the Express server spawns server/export_book.py and the mcp package re-export surface imports it. It was invisible to the inventory until #838's fail-closed source universe admitted packages/*/frontend/server, which is the omitted-directory defect that issue exists to expose; nothing about the egress itself changed in #898. Banked in quality/model-egress.json by PR #898; expected to leave the inventory when #56's approved Provider implementation replaces direct callers, at which point the ratchet prunes it."
+    }
+  },
+  "radon": {
+    "packages/maistro-core/src/maistro/graph/durable_runs/stores.py::settle_hitl_record@16": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#737",
+      "reason": "settle_hitl_record is the single durable HITL settlement rule #737 serializes answer, timeout, and cancellation through: it validates the paused NodeRun, applies the settlement outcome (timed_out/cancelled) or attaches an answer, resolves resume_at vs the persisted deadline, and mirrors the terminal canonical lifecycle. The shared predicate for three settlement paths lands at cyclomatic complexity 16 (rank C); the per-path wrappers stay trivial. Tracked under ADR-083026-6c72."
     }
   }
 }
