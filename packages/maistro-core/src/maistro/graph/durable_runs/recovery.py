@@ -93,6 +93,7 @@ async def resume_due_graph_runs(
     if limit <= 0:
         return 0
     _require_resolver_choice(node_resolver, node_resolver_factory)
+    resolver_for = _per_run_resolver(node_resolver, node_resolver_factory)
 
     await _reconcile_if_supported(store, limit=limit)
     moment = now if now is not None else datetime.now(UTC)
@@ -108,11 +109,7 @@ async def resume_due_graph_runs(
             await resume_durable_graph(
                 candidate.run_id,
                 store=store,
-                node_resolver=(
-                    node_resolver
-                    if node_resolver is not None
-                    else node_resolver_factory(candidate.run)
-                ),
+                node_resolver=resolver_for(candidate.run),
                 runtime=runtime,
                 run_store=run_store,
                 events=events,
@@ -244,6 +241,24 @@ def _require_resolver_choice(
         raise ValueError(
             "resume_due_graph_runs requires exactly one of node_resolver or node_resolver_factory"
         )
+
+
+def _per_run_resolver(
+    node_resolver: NodeResolver | None,
+    node_resolver_factory: QueuedNodeResolverFactory | None,
+) -> Callable[[Run], NodeResolver]:
+    """Fold the two resolver shapes into one per-Run lookup.
+
+    A single resolver answers every Run; a factory answers each from its own
+    durable facts. The tick should not have to care which shape its caller chose.
+    """
+    if node_resolver is not None:
+        return lambda _run: node_resolver
+    if node_resolver_factory is not None:
+        return node_resolver_factory
+    raise ValueError(  # pragma: no cover - _require_resolver_choice ran first
+        "resume_due_graph_runs requires exactly one of node_resolver or node_resolver_factory"
+    )
 
 
 __all__ = ["recover_queued_graph_runs", "resume_due_graph_runs"]
