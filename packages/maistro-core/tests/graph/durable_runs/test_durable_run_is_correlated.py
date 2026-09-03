@@ -83,6 +83,55 @@ class TestADurableRunNamesItself:
         assert seen.node_run_id
         assert seen.attempt_id
 
+    async def test_a_node_runs_under_the_durable_runs_own_scope(self) -> None:
+        """The Workspace and Project ride the same binding as the Run (#63).
+
+        `record.run` is already in hand at the walk, so naming its scope costs
+        no read — the outer-bind case ADR-083026-1cb1 reserved for seams that
+        hold the ids. Without it no real path bound a Workspace or Project at
+        all, so an event emitted inside the execution could only fill
+        `project_id` by its producer spelling it.
+        """
+        record = await run_durable_graph(
+            _graph(), store=InMemoryDurableRunStore(), node_resolver=_resolver
+        )
+
+        [seen] = _Watching.seen
+        assert seen.workspace_id == "ws-1"
+        assert seen.project_id == "proj-1"
+
+    async def test_an_event_inside_the_run_fills_its_project_from_the_context(self) -> None:
+        """`correlated()` is the reader that makes the scope binding real."""
+        from maistro.events.envelope import EventEnvelope, correlated
+
+        class _Emitting(_Watching):
+            kind: ClassVar[str] = "test.correlation.emitting"
+            seen: ClassVar[list[ExecutionContext]] = []
+
+            async def _execute(self, inputs: _Empty, ctx: NodeContext) -> _Done:
+                type(self).seen.append(current_execution_context())
+                assert ctx.workspace_id == "ws-1"  # the durable path supplies it
+                envelope = correlated(
+                    EventEnvelope(
+                        type="test.scope.probe",
+                        workspace_id=ctx.workspace_id or "ws-1",
+                    )
+                )
+                assert envelope.project_id == "proj-1"
+                assert envelope.run_id == ctx.run_id
+                assert envelope.correlation_id == ctx.run_id
+                return _Done(text="done")
+
+        def resolver(node_id: str, graph: Graph) -> Any:
+            del graph
+            assert node_id == "watch"
+            return _Emitting()
+
+        record = await run_durable_graph(
+            _graph(), store=InMemoryDurableRunStore(), node_resolver=resolver
+        )
+        assert record.status is RunStatus.COMPLETED
+
     async def test_a_nested_durable_run_names_itself_and_not_its_caller(self) -> None:
         """The case that was actively wrong rather than merely missing: binding
         is additive, so with nothing overriding it a nested durable graph's
