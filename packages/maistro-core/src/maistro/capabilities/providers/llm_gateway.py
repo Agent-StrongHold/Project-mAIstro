@@ -16,6 +16,8 @@ reached, so no external effect occurred and the Invocation may fail retryably.
 
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -97,6 +99,37 @@ class ModelChatRequest(BaseModel):
     tools: list[dict[str, object]] | None = None
 
 
+def _chat_payload(provider: LlmGatewayProvider, request: ModelChatRequest) -> dict[str, object]:
+    """Merge the resolved model with the governed request into a gateway body."""
+
+    payload: dict[str, object] = {
+        "model": provider.name,
+        "messages": [dict(message) for message in request.messages],
+        "temperature": request.temperature,
+        "stream": False,
+    }
+    if request.max_tokens is not None:
+        payload["max_tokens"] = request.max_tokens
+    if request.tools:
+        payload["tools"] = [dict(tool) for tool in request.tools]
+    return payload
+
+
+def _checked_body(response: Any) -> dict[str, object]:
+    """Map gateway statuses to the error shapes the shipped model paths raise."""
+
+    if response.status_code == 401:
+        raise PermissionError("llm_auth_failed status=401 (check gateway credentials)")
+    if response.status_code == 429:
+        raise RuntimeError("llm_rate_limited status=429")
+    if response.status_code >= 400:
+        raise RuntimeError(f"llm_http_error status={response.status_code}")
+    body = response.json()
+    if not isinstance(body, dict):
+        raise RuntimeError("model gateway returned a non-object response body")
+    return body
+
+
 async def execute_model_chat(
     provider: ResolvedCapabilityProvider,
     request: object,
@@ -114,37 +147,17 @@ async def execute_model_chat(
     if not isinstance(request, ModelChatRequest):
         raise TypeError(f"model-chat Invocation received a foreign request: {type(request)!r}")
 
-    payload: dict[str, object] = {
-        "model": provider.name,
-        "messages": [dict(message) for message in request.messages],
-        "temperature": request.temperature,
-        "stream": False,
-    }
-    if request.max_tokens is not None:
-        payload["max_tokens"] = request.max_tokens
-    if request.tools:
-        payload["tools"] = [dict(tool) for tool in request.tools]
-
     try:
         async with shared_client(timeout=endpoint.timeout_s) as client:
             response = await client.post(
                 f"{endpoint._base}/chat/completions",
                 headers=endpoint.authorization_header(),
-                json=payload,  # type: ignore[arg-type]
+                json=_chat_payload(provider, request),  # type: ignore[arg-type]
             )
     except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
         raise EffectNotApplied(f"model gateway unreachable, no effect occurred: {exc}") from exc
 
-    if response.status_code == 401:
-        raise PermissionError("llm_auth_failed status=401 (check gateway credentials)")
-    if response.status_code == 429:
-        raise RuntimeError("llm_rate_limited status=429")
-    if response.status_code >= 400:
-        raise RuntimeError(f"llm_http_error status={response.status_code}")
-    body = response.json()
-    if not isinstance(body, dict):
-        raise RuntimeError("model gateway returned a non-object response body")
-    return body
+    return _checked_body(response)
 
 
 __all__ = [

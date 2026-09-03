@@ -303,6 +303,14 @@ async def test_completed_effect_deduplicates_repeat_invocation(
         effect_key="test:dedupe",
         request=ModelChatRequest(messages=[{"role": "user", "content": "hi"}]),
     )
+    kwargs: dict[str, Any] = {
+        "binding": _binding(),
+        "run_id": "r1",
+        "node_run_id": "nr1",
+        "attempt_id": "a1",
+        "effect_key": "test:dedupe",
+        "request": ModelChatRequest(messages=[{"role": "user", "content": "hi"}]),
+    }
 
     first = await egress.complete(**kwargs)
     second = await egress.complete(**kwargs)
@@ -345,6 +353,14 @@ async def test_unreachable_gateway_records_failed_retryable_invocation(
         effect_key="test:unreachable",
         request=ModelChatRequest(messages=[{"role": "user", "content": "hi"}]),
     )
+    kwargs: dict[str, Any] = {
+        "binding": _binding(),
+        "run_id": "r1",
+        "node_run_id": "nr1",
+        "attempt_id": "a1",
+        "effect_key": "test:unreachable",
+        "request": ModelChatRequest(messages=[{"role": "user", "content": "hi"}]),
+    }
 
     from maistro.capabilities.invocation import EffectNotApplied
 

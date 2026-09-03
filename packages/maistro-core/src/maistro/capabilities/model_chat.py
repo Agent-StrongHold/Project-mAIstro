@@ -29,7 +29,6 @@ from maistro.capabilities.invocation import (
     InvocationUsage,
     ProviderResolver,
 )
-from maistro.capabilities.types import Unavailable
 from maistro.capabilities.providers.llm_gateway import (
     MODEL_CHAT_CAPABILITY,
     GatewayEndpoint,
@@ -37,6 +36,7 @@ from maistro.capabilities.providers.llm_gateway import (
     ModelChatRequest,
     execute_model_chat,
 )
+from maistro.capabilities.types import Unavailable
 from maistro.providers.errors import ModelNotFoundError, NoEligibleModelError
 from maistro.providers.types import (
     ModelMetadata,

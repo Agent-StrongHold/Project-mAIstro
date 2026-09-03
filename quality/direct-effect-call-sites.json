@@ -499,7 +499,7 @@
     "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py::execute_model_chat::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py",
       "qualname": "execute_model_chat",
-      "line": 130,
+      "line": 152,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
