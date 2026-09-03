@@ -314,3 +314,26 @@ models were unreliable in a *previous* run — acceptable, since provider
 health genuinely changes over time. `feature_judge` is designed but not
 built; FEATURE-kind promotions are judged by proxy signals only until it
 lands.
+
+## Acceptance Criteria
+
+Criteria declared 2026-09-03 for the harvest-path tests that already cite this
+ADR (`packages/maistro-rsi/tests/test_harvest.py`) — the behaviors those tests
+prove, stated as the ADR's Stage-4 contract:
+
+```gherkin
+Feature: RSI evolve genome tournament — harvest persistence
+
+  @persist
+  Scenario: Harvest groups patches by file into durable, safe refs
+    Given a session's promotion patches
+    When they are harvested into grouped PR branches
+    Then each file's patches form one group
+    And the branch slug is a safe git ref
+
+  @stage3
+  Scenario: Stage-3 promotions persist to the population store
+    Given promotions accepted during a session
+    When the harvest completes
+    Then population and fixer lineage are persisted for future sessions
+```
