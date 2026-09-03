@@ -43,6 +43,11 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#458",
       "reason": "INTEROP_ONTOLOGY_V1 and the public projection/reference/version validators for the #458 ontology. Unreachable by construction for the same reason as maistro.interop: it is the contract products import, with no runtime of its own to wire, and no process entry point in this repository imports it yet. Its serialization is pinned to quality/shared-interop-ontology-v1.json by a contract test, so drift fails CI independently of reachability. Dispositioned LIBRARY in quality/reachability-dispositions.json (group interop-contract) in #997; the #459 parity suite and the Builders/Conductor migration issues are where shipped processes adopt the ontology, and this entry is expected to leave the baseline then."
+    },
+    "@flat/hive-conductor/services.entra_entitlements": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#492",
+      "reason": "Deterministic Entra group entitlement policy module shipped deliberately unwired per PR #918's documented scope (product adoption deferred to a later #62 slice); PR #918 lands the module and this entry leaves the baseline when adoption ships."
     }
   },
   "vulture": {
