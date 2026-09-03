@@ -8,7 +8,7 @@
 
 # --- /code-health : "better than a linter" analyzers ---
 radon>=6.0            # Apache-2.0 — cyclomatic complexity + maintainability
-xenon>=0.9            # GPL? wraps radon; complexity gate  (invoked CLI)
+xenon>=0.9.3            # GPL? wraps radon; complexity gate  (invoked CLI)
 vulture>=2.11         # MIT — dead-code detection
 lizard>=1.17          # MIT — god-function / param-count detection
 pylint>=3.3           # GPL (invoked CLI) — duplicate-code (R0801)
