@@ -59,7 +59,7 @@ async def _guarded_context(**kwargs) -> tuple[BrowserNetworkGuard, FakePwContext
 # --- every navigation answers to the policy --------------------------------
 
 
-@pytest.mark.ac("#855/AC-1")
+@pytest.mark.ac("SPEC-090326-b7e2/AC-1")
 async def test_a_public_navigation_is_allowed_onto_the_network() -> None:
     _guard, context = await _guarded_context()
 
@@ -68,7 +68,7 @@ async def test_a_public_navigation_is_allowed_onto_the_network() -> None:
     assert route.action == ("continue",)
 
 
-@pytest.mark.ac("#855/AC-3")
+@pytest.mark.ac("SPEC-090326-b7e2/AC-3")
 async def test_a_navigation_the_model_invented_is_governed_too() -> None:
     """The autonomous case: nothing in any task named this destination.
 
@@ -83,7 +83,7 @@ async def test_a_navigation_the_model_invented_is_governed_too() -> None:
     assert route.action == ("abort", ABORT_REASON)
 
 
-@pytest.mark.ac("#855/AC-5")
+@pytest.mark.ac("SPEC-090326-b7e2/AC-5")
 @pytest.mark.parametrize(
     "url",
     [
@@ -117,7 +117,7 @@ async def test_every_notation_of_a_private_or_dangerous_target_is_denied(url: st
     assert guard.denied_events(), "a refusal without an audit event is unauditable"
 
 
-@pytest.mark.ac("#855/AC-2")
+@pytest.mark.ac("SPEC-090326-b7e2/AC-2")
 async def test_a_redirect_hop_from_public_to_private_is_denied_at_that_hop() -> None:
     """Start public, land private: the hop that matters is the one refused."""
     guard, context = await _guarded_context()
@@ -144,7 +144,7 @@ async def test_a_redirect_to_a_public_destination_is_allowed_through_the_hop() -
 # --- subresources are governed, not just documents --------------------------
 
 
-@pytest.mark.ac("#855/AC-4")
+@pytest.mark.ac("SPEC-090326-b7e2/AC-4")
 @pytest.mark.parametrize("resource_type", ["xhr", "script", "stylesheet", "image", "font"])
 async def test_subresources_to_a_private_destination_are_denied(resource_type: str) -> None:
     """A page cannot read internal data out through a subrequest either."""
@@ -156,7 +156,7 @@ async def test_subresources_to_a_private_destination_are_denied(resource_type: s
     assert guard.events[-1].resource_type == resource_type
 
 
-@pytest.mark.ac("#855/AC-4")
+@pytest.mark.ac("SPEC-090326-b7e2/AC-4")
 async def test_public_subresources_are_allowed() -> None:
     _guard, context = await _guarded_context()
 
@@ -165,7 +165,7 @@ async def test_public_subresources_are_allowed() -> None:
     assert route.action == ("continue",)
 
 
-@pytest.mark.ac("#855/AC-4")
+@pytest.mark.ac("SPEC-090326-b7e2/AC-4")
 async def test_websocket_upgrades_are_denied_regardless_of_destination() -> None:
     """The explicitly decided WebSocket policy: refused outright.
 
@@ -188,7 +188,7 @@ async def test_websocket_upgrades_are_denied_regardless_of_destination() -> None
 # --- allowances are host-owned and stay narrow ------------------------------
 
 
-@pytest.mark.ac("#855/AC-6")
+@pytest.mark.ac("SPEC-090326-b7e2/AC-6")
 async def test_a_configured_origin_is_allowed_and_the_allowance_stays_scoped() -> None:
     configure_outbound_policy("http://10.20.30.40:8443")
     _guard, context = await _guarded_context()
@@ -204,7 +204,7 @@ async def test_a_configured_origin_is_allowed_and_the_allowance_stays_scoped() -
     assert other_host.action == ("abort", ABORT_REASON)
 
 
-@pytest.mark.ac("#855/AC-6")
+@pytest.mark.ac("SPEC-090326-b7e2/AC-6")
 async def test_browser_specific_origins_layer_without_widening_the_shared_policy() -> None:
     """`BROWSER_USE_ALLOWED_ORIGINS` is a host-owned browser allowance.
 
@@ -249,7 +249,7 @@ def test_an_explicit_policy_needs_no_global_state() -> None:
 # --- the audit trail --------------------------------------------------------
 
 
-@pytest.mark.ac("#855/AC-7")
+@pytest.mark.ac("SPEC-090326-b7e2/AC-7")
 async def test_events_record_origins_only_never_the_query_or_path() -> None:
     """Query strings carry search text, session ids and tokens; an audit
     trail that repeats them into logs leaks what it was guarding."""
@@ -267,7 +267,7 @@ async def test_events_record_origins_only_never_the_query_or_path() -> None:
     assert origins == ["https://example.com:443", "http://127.0.0.1:8080"]
 
 
-@pytest.mark.ac("#855/AC-7")
+@pytest.mark.ac("SPEC-090326-b7e2/AC-7")
 async def test_denied_events_carry_a_branchable_reason_and_resource_type() -> None:
     guard, context = await _guarded_context()
 
@@ -281,7 +281,7 @@ async def test_denied_events_carry_a_branchable_reason_and_resource_type() -> No
     assert (BLOCK_SCHEME, "document") in reasons
 
 
-@pytest.mark.ac("#855/AC-7")
+@pytest.mark.ac("SPEC-090326-b7e2/AC-7")
 async def test_allowed_and_denied_decisions_are_both_audited() -> None:
     guard, context = await _guarded_context()
 

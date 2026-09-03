@@ -205,7 +205,6 @@
         "packages/maistro-core/src/maistro/graph/definitions.py::unused variable 'binding_ids'",
         "packages/maistro-core/src/maistro/graph/definitions.py::unused variable 'binding_ids'",
         "packages/maistro-core/src/maistro/graph/definitions.py::unused variable 'object_hash'",
-        "packages/maistro-core/src/maistro/graph/definitions.py::unused variable 'object_id'",
         "packages/maistro-core/src/maistro/graph/definitions.py::unused variable 'object_kind'",
         "packages/maistro-core/src/maistro/graph/definitions.py::unused variable 'object_source_template'",
         "packages/maistro-core/src/maistro/graph/definitions.py::unused variable 'saved_from'",

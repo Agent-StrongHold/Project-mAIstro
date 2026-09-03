@@ -9,7 +9,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 import httpx
 import stores
@@ -22,9 +22,15 @@ from config import (
 from models.schemas import HiveUser
 from routes.audit import log_audit
 
+from maistro.auth.entra import (
+    EntraIdTokenVerifier,
+    build_entra_provider_config,
+)
 from maistro.auth.oauth import (
     IdentityLinker,
+    IdTokenVerifier,
     InMemoryStateStore,
+    JWKSIdTokenVerifier,
     OAuth2Client,
     OAuthError,
     OAuthExchange,
@@ -67,6 +73,36 @@ OAuthFailureReason = Literal[
 ]
 
 _IDENTITY_LINK_LOCK = threading.RLock()
+
+
+class _TenantBoundIdTokenVerifier:
+    """Route each provider's id_token to the verifier that owns its contract.
+
+    Providers configured with an ``entra_tenant_id`` get the Entra
+    specialization: generic cryptographic verification first, then immutable
+    ``tid``/``oid`` claims and admission against the configured tenant, with
+    the durable subject canonicalized to ``tid:oid`` (#491). Every other
+    provider keeps the generic JWKS verifier unchanged. Dispatch is by
+    provider name — the name on ``OAuthProviderConfig`` is the configured
+    provider slug, so one client serves a hybrid deployment correctly.
+    """
+
+    def __init__(self, entra_tenants: dict[str, str]) -> None:
+        self._entra_tenants = dict(entra_tenants)
+        self._delegate = JWKSIdTokenVerifier()
+
+    async def verify(
+        self,
+        id_token: str,
+        config: OAuthProviderConfig,
+        http: httpx.AsyncClient,
+        nonce: str | None,
+    ) -> dict[str, Any]:
+        tenant_id = self._entra_tenants.get(config.name)
+        if tenant_id is None:
+            return await self._delegate.verify(id_token, config, http, nonce)
+        entra = EntraIdTokenVerifier(tenant_id=tenant_id, delegate=self._delegate)
+        return await entra.verify(id_token, config, http, nonce)
 
 
 class IdentityLinkConflictError(Exception):
@@ -240,9 +276,19 @@ class OAuthLoginService:
             name: self._core_provider(name, provider)
             for name, provider in self._provider_settings.items()
         }
+        entra_tenants = {
+            name: provider.entra_tenant_id
+            for name, provider in self._provider_settings.items()
+            if provider.entra_tenant_id is not None
+        }
         # SECURITY-REVIEW: OAuth2Client performs external provider I/O through
         # maistro.http's guarded transport; provider URLs are also registered
         # with core's outbound allowlist and JWKS verification is mandatory.
+        # Entra-configured providers additionally get tenant-bound tid/oid
+        # identity normalization (#491); the generic providers are untouched.
+        id_token_verifier: IdTokenVerifier | None = (
+            _TenantBoundIdTokenVerifier(entra_tenants) if entra_tenants else None
+        )
         self._client = OAuth2Client(
             providers=providers,
             state_store=self._states,
@@ -250,10 +296,21 @@ class OAuthLoginService:
             secret_resolver=self._resolve_client_secret,
             state_ttl_seconds=OAUTH_STATE_TTL_SECONDS,
             clock=clock,
+            id_token_verifier=id_token_verifier,
         )
 
     @staticmethod
     def _core_provider(name: str, provider: OAuthProviderSettings) -> OAuthProviderConfig:
+        if provider.entra_tenant_id is not None:
+            # Tenant-specific Microsoft v2 endpoints, derived from the one
+            # admitted directory UUID. `common`/`organizations` never reach
+            # here: settings validation rejects them as non-UUID tenants.
+            return build_entra_provider_config(
+                tenant_id=provider.entra_tenant_id,
+                client_id=provider.client_id,
+                scopes=provider.scopes,
+                name=name,
+            )
         return OAuthProviderConfig(
             name=name,
             authorization_url=provider.authorization_url,

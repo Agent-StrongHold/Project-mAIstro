@@ -19,6 +19,7 @@ from fastapi import APIRouter, Cookie, HTTPException, Request, Response
 from models.schemas import HiveUser
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from services import registration_policy
+from services.human_auth_mode import HumanAuthModePolicy
 from services.oauth_login import (
     OAUTH_MAX_PENDING_STATES,
     OAUTH_STATE_MAX_LENGTH,
@@ -606,6 +607,15 @@ def register(body: RegisterBody, request: Request, response: Response) -> dict[s
 @router.post("/login")
 def login(body: LoginBody, request: Request, response: Response) -> dict[str, Any]:
     _enforce(_LOGIN_THROTTLE, request, body.username, "login")
+
+    # The deployment's explicit login mode decides before any credential is
+    # read (#491). An Entra-only deployment denies ordinary password login
+    # here rather than "falling back" to passwords because no provider was
+    # reachable; break-glass recovery is a separate operator-controlled seam,
+    # never a request parameter.
+    if not HumanAuthModePolicy(mode=get_settings().human_auth_mode).password_login_enabled():
+        log_audit("login_password_denied", body.username, severity="warning")
+        raise HTTPException(status_code=403, detail="Password login is disabled")
 
     # Find the account first, then ALWAYS verify exactly once — against a decoy
     # when there is no account (#366). The previous form was:
