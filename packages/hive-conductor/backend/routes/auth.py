@@ -528,6 +528,41 @@ async def oauth_link_start(
     return _oauth_response_headers(response)
 
 
+async def _oauth_provider_error_callback(provider: str, request: Request) -> Response:
+    """Consume a failed authorization response's state, then fail closed.
+
+    The state must still be burned even when the provider reports `error`:
+    otherwise a denied authorization leaves a pending state that could be
+    replayed against a later attempt.
+    """
+    state = _single_callback_value(request, "state", OAUTH_STATE_MAX_LENGTH)
+    if state is None:
+        return _oauth_failure_response(
+            provider,
+            OAuthLoginDenied(stage="state", reason="missing"),
+        )
+    safe_provider = _normalized_oauth_provider(provider)
+    browser_state = request.cookies.get(oauth_state_cookie_name(safe_provider))
+    try:
+        service = get_oauth_login_service()
+        await service.consume_failed_callback(
+            provider=provider,
+            state=state,
+            browser_state=browser_state,
+        )
+    except OAuthLoginDenied as failure:
+        return _oauth_failure_response(provider, failure)
+    except Exception:
+        return _oauth_failure_response(
+            provider,
+            OAuthLoginDenied(stage="provider", reason="provider_rejected"),
+        )
+    return _oauth_failure_response(
+        provider,
+        OAuthLoginDenied(stage="provider", reason="provider_rejected"),
+    )
+
+
 @router.get("/oauth/{provider}/callback")
 async def oauth_callback(provider: str, request: Request) -> Response:
     """Verify an OIDC callback and issue or link the existing Hive identity."""
@@ -540,32 +575,7 @@ async def oauth_callback(provider: str, request: Request) -> Response:
             OAuthLoginDenied(stage="configuration", reason="unknown_provider"),
         )
     if request.query_params.getlist("error"):
-        state = _single_callback_value(request, "state", OAUTH_STATE_MAX_LENGTH)
-        if state is None:
-            return _oauth_failure_response(
-                provider,
-                OAuthLoginDenied(stage="state", reason="missing"),
-            )
-        safe_provider = _normalized_oauth_provider(provider)
-        browser_state = request.cookies.get(oauth_state_cookie_name(safe_provider))
-        try:
-            service = get_oauth_login_service()
-            await service.consume_failed_callback(
-                provider=provider,
-                state=state,
-                browser_state=browser_state,
-            )
-        except OAuthLoginDenied as failure:
-            return _oauth_failure_response(provider, failure)
-        except Exception:
-            return _oauth_failure_response(
-                provider,
-                OAuthLoginDenied(stage="provider", reason="provider_rejected"),
-            )
-        return _oauth_failure_response(
-            provider,
-            OAuthLoginDenied(stage="provider", reason="provider_rejected"),
-        )
+        return await _oauth_provider_error_callback(provider, request)
 
     code = _single_callback_value(request, "code", _OAUTH_CODE_MAX_LENGTH)
     state = _single_callback_value(request, "state", OAUTH_STATE_MAX_LENGTH)
@@ -729,7 +739,9 @@ def login(body: LoginBody, request: Request, response: Response) -> dict[str, An
             target=policy.mode,
             severity="warning",
         )
-        raise HTTPException(status_code=403, detail="Password login is disabled for this deployment.")
+        raise HTTPException(
+            status_code=403, detail="Password login is disabled for this deployment."
+        )
 
     # Find the account first, then ALWAYS verify exactly once — against a decoy
     # when there is no account (#366). The previous form was:

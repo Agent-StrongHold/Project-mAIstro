@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -67,6 +68,26 @@ def _user(user_id: str = "user-1") -> HiveUser:
         did=None,
         created_at=datetime.now(UTC),
     )
+
+
+@pytest.fixture(autouse=True)
+def _restore_hive_stores() -> Iterator[None]:
+    """Route/service code here writes module-level stores; restore them so
+    later suites see an untouched baseline (test_oauth_product_wiring counts
+    audit entries exactly)."""
+    snapshots = {
+        "users": dict(stores.users.items()),
+        "sessions": dict(stores.sessions.items()),
+        "audit_log": dict(stores.audit_log.items()),
+        "oauth_identity_links": dict(stores.oauth_identity_links.items()),
+    }
+    yield
+    for name, snapshot in snapshots.items():
+        store = getattr(stores, name)
+        for key in list(store.keys()):
+            store.pop(key)
+        for key, value in snapshot.items():
+            store[key] = value
 
 
 @pytest.mark.asyncio

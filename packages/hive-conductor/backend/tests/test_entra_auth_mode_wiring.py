@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from types import SimpleNamespace
 
 import pytest
+import stores
 from config import OAuthProviderSettings, Settings
 from fastapi import HTTPException, Request, Response
 from pydantic import ValidationError
@@ -11,6 +13,26 @@ from routes.auth import LoginBody
 
 TENANT = "11111111-2222-3333-4444-555555555555"
 BASE = f"https://login.microsoftonline.com/{TENANT}"
+
+
+@pytest.fixture(autouse=True)
+def _restore_hive_stores() -> Iterator[None]:
+    """Route-level tests here write module-level stores; restore them so
+    later suites see an untouched baseline (test_oauth_product_wiring counts
+    audit entries exactly)."""
+    snapshots = {
+        "users": dict(stores.users.items()),
+        "sessions": dict(stores.sessions.items()),
+        "audit_log": dict(stores.audit_log.items()),
+        "oauth_identity_links": dict(stores.oauth_identity_links.items()),
+    }
+    yield
+    for name, snapshot in snapshots.items():
+        store = getattr(stores, name)
+        for key in list(store.keys()):
+            store.pop(key)
+        for key, value in snapshot.items():
+            store[key] = value
 
 
 def _entra_provider() -> OAuthProviderSettings:

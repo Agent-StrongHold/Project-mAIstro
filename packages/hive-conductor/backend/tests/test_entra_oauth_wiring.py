@@ -4,10 +4,10 @@ from typing import Any
 
 import httpx
 import pytest
+from services.entra_oauth import ProductIdTokenVerifier, entra_tenant_from_provider_config
 
 from maistro.auth.entra import build_entra_provider_config
 from maistro.auth.oauth import OAuthProviderConfig, OAuthTokenValidationError
-from services.entra_oauth import ProductIdTokenVerifier, entra_tenant_from_provider_config
 
 TENANT = "11111111-2222-3333-4444-555555555555"
 OBJECT = "99999999-8888-7777-6666-555555555555"
