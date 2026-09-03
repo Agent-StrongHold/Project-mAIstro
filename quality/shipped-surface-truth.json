@@ -131,6 +131,16 @@
     {
       "source": "packages/hive-conductor/backend/routes/auth.py",
       "method": "POST",
+      "route": "/oauth/{provider}/link/start",
+      "handler": "oauth_link_start",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "authenticated start of an explicit provider-identity link flow; allocates PKCE state only, the callback binds the verified external subject (#491)",
+      "effect_owner": "OAuth state store + durable identity-link store (link happens at callback)"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/auth.py",
+      "method": "POST",
       "route": "/register",
       "handler": "register",
       "disposition": "domain-state",
@@ -1587,16 +1597,6 @@
       "production_enabled": true,
       "reason": "starts a real async generation job",
       "effect_owner": "canvas executor.start_job"
-    },
-    {
-      "source": "packages/maistro-server/src/maistro_server/api/agents.py",
-      "method": "POST",
-      "route": "/{agent_id}/invoke",
-      "handler": "invoke_pm_agent",
-      "disposition": "canonical",
-      "production_enabled": true,
-      "reason": "submits a PM fleet task to the queue (POC-gated)",
-      "effect_owner": "task queue submit -> canonical Run"
     },
     {
       "source": "packages/maistro-server/src/maistro_server/api/canvas.py",

@@ -303,12 +303,24 @@ class TestEntraProviderSettings:
                 issuer=_ENTRA_ISSUER,
             )
 
-    def test_the_default_login_mode_is_local(self) -> None:
-        assert Settings(_env_file=None).human_auth_mode == "local"
+    def test_the_default_login_mode_is_hybrid(self) -> None:
+        # `hybrid` is the compatibility default: existing generic-OAuth
+        # deployments keep their providers and local-only deployments behave
+        # exactly as before (no providers configured).
+        assert Settings(_env_file=None).human_auth_mode == "hybrid"
 
-    @pytest.mark.parametrize("mode", ["local", "entra", "hybrid"])
+    @pytest.mark.parametrize("mode", ["local", "hybrid"])
     def test_only_the_three_named_modes_are_admitted(self, mode: str) -> None:
         assert Settings(_env_file=None, human_auth_mode=mode).human_auth_mode == mode
+
+    def test_entra_mode_is_admitted_with_its_single_required_provider(self) -> None:
+        settings = Settings(
+            _env_file=None,
+            human_auth_mode="entra",
+            oauth_providers=_entra_provider_document(),
+            oauth_public_origin=_PUBLIC_ORIGIN,
+        )
+        assert settings.human_auth_mode == "entra"
 
     def test_an_unnamed_mode_is_refused(self) -> None:
         with pytest.raises(ValidationError):
@@ -433,6 +445,8 @@ class TestLoginModePolicyIsReachedByTheRoute:
         self, monkeypatch: pytest.MonkeyPatch, password_user: str
     ) -> None:
         monkeypatch.setenv("HUMAN_AUTH_MODE", "entra")
+        monkeypatch.setenv("OAUTH_PROVIDERS", json.dumps(_entra_provider_document()))
+        monkeypatch.setenv("OAUTH_PUBLIC_ORIGIN", _PUBLIC_ORIGIN)
         get_settings.cache_clear()
         client = _client()
         before = set(stores.sessions.keys())
@@ -443,14 +457,16 @@ class TestLoginModePolicyIsReachedByTheRoute:
         )
 
         assert response.status_code == 403
-        assert response.json() == {"detail": "Password login is disabled"}
+        assert response.json() == {"detail": "Password login is disabled for this deployment."}
         assert set(stores.sessions.keys()) == before
-        assert "login_password_denied" in _audit_actions()
+        assert "login_auth_mode_denied" in _audit_actions()
 
     def test_the_denial_cannot_be_weakened_from_the_request(
         self, monkeypatch: pytest.MonkeyPatch, password_user: str
     ) -> None:
         monkeypatch.setenv("HUMAN_AUTH_MODE", "entra")
+        monkeypatch.setenv("OAUTH_PROVIDERS", json.dumps(_entra_provider_document()))
+        monkeypatch.setenv("OAUTH_PUBLIC_ORIGIN", _PUBLIC_ORIGIN)
         get_settings.cache_clear()
         client = _client()
         before = set(stores.sessions.keys())

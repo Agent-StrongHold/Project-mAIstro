@@ -39,7 +39,7 @@ type Props = {
   reason?: string;
   hint?: string;
   onClose: () => void;
-  onPosted?: (issueKey: string, taskId: string) => void;
+  onPosted?: (issueKey: string, taskId: string | null) => void;
 };
 
 export function WorkItemDraftModal({
@@ -157,7 +157,8 @@ export function WorkItemDraftModal({
       const res = await apiPost<{
         draft: WorkItemDraft;
         jira: { issue_key?: string };
-        task_id: string;
+        task_id: string | null;
+        execution_note?: string;
         message: string;
       }>(`/v1/work-items/${activeDraft.id}/confirm`);
       setDraft(res.draft);

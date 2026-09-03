@@ -1,9 +1,8 @@
 """Tests for the FastAPI app entrypoint — lifespan, shutdown, exception handlers.
 
 Evidence: main.py wires the task runner into the app lifecycle, registers
-graceful-shutdown signal handlers, seeds the PM fleet catalog in POC mode,
-and wraps both HTTPException and unhandled exceptions in a consistent
-ErrorResponse envelope (request_id, type, message).
+graceful-shutdown signal handlers, and wraps both HTTPException and unhandled
+exceptions in a consistent ErrorResponse envelope (request_id, type, message).
 """
 
 from __future__ import annotations
@@ -262,32 +261,6 @@ class TestLifespan:
             if call.args and call.args[0] == "run_store_in_process_only"
         ]
         assert bool(warned) is expects_warning
-
-    async def test_lifespan_seeds_pm_catalog_in_poc_mode(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("MAISTRO_POC_MODE", "pm")
-        test_app = MagicMock()
-        test_app.state = MagicMock()
-
-        mock_runner = MagicMock()
-        mock_runner.start = AsyncMock()
-        mock_runner.stop = AsyncMock()
-
-        with (
-            patch("maistro.agents.conductor.run_task"),
-            patch("maistro.memory.store.get_engine", return_value=None),
-            patch("maistro.memory.store.reset_engine_cache"),
-            patch("maistro.tools.sandbox.server.cleanup_all_containers", AsyncMock()),
-            patch("maistro_server.main.logger", MagicMock(ainfo=AsyncMock(), awarning=AsyncMock())),
-            patch("maistro_server.main.TaskRunner", return_value=mock_runner),
-            patch("asyncio.get_running_loop") as mock_loop,
-        ):
-            mock_loop.return_value = _FakeLoop()
-            async with lifespan(test_app):
-                pass
-
-        assert test_app.state.pm_catalog is not None
 
     async def test_lifespan_configures_progress_webhook_when_url_set(
         self, monkeypatch: pytest.MonkeyPatch
