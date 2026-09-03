@@ -9,12 +9,13 @@ a provider merely because one happens to be registered elsewhere.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
 
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.binding_store import BindingStore, InMemoryBindingStore
+from maistro.capabilities.credential_routing import CredentialRouting
 from maistro.capabilities.governed_invocation import (
     GovernedInvocationExecutionService,
     InvocationPolicyContext,
@@ -25,6 +26,7 @@ from maistro.capabilities.invocation import (
     InvocationExecutionService,
     InvocationStore,
 )
+from maistro.credentials.router import CredentialRouter
 from maistro.events.envelope import EventStore, InMemoryEventStore
 from maistro.policy.types import Decision, PolicyVerdict
 
@@ -58,13 +60,32 @@ class CapabilityEffectContext:
     invocations: GovernedInvocationExecutionService
     invocation_store: InvocationStore
     event_store: EventStore
+    credentials: CredentialRouter = field(default_factory=CredentialRouter)
+
+    def credential_routing(self) -> CredentialRouting:
+        """Credential routing for this context's Provider selection seam (#58).
+
+        Consumers wrap their slot-specific resolver/executor pair with this, so
+        credential selection is scoped by the resolved Binding and rotation
+        reacts to real Invocation outcomes. The default router starts empty —
+        absence of an authorized credential is a hard refusal, never a silent
+        fallback to some other scope's key.
+        """
+
+        return CredentialRouting(self.credentials)
 
 
 def new_in_memory_effect_context(
     *,
     policy_evaluator: PolicyEvaluator | None = None,
+    credentials: CredentialRouter | None = None,
 ) -> CapabilityEffectContext:
-    """Build an isolated canonical effect context for local/runtime composition."""
+    """Build an isolated canonical effect context for local/runtime composition.
+
+    ``credentials`` supplies the scoped credential pool for Provider selection
+    (#58); omitted, the router exists but holds no credentials, so routed
+    acquisitions fail closed until one is registered in the requesting scope.
+    """
 
     binding_store = InMemoryBindingStore()
     invocation_store = InMemoryInvocationStore()
@@ -80,6 +101,7 @@ def new_in_memory_effect_context(
         invocations=governed,
         invocation_store=invocation_store,
         event_store=event_store,
+        credentials=credentials or CredentialRouter(),
     )
 
 

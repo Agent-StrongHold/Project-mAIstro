@@ -1,16 +1,19 @@
-"""Tests for credential pool, selection strategies, and automatic key rotation."""
+"""Tests for credential pool and selection strategies.
+
+Rotation-through-a-call moved to the Invocation path with #58: outcome-driven
+cooldown/blocking is covered in ``tests/credentials/test_router.py`` and the
+governed-seam composition in ``tests/capabilities/test_credential_routing.py``.
+"""
 
 from __future__ import annotations
 
 import time
-from unittest.mock import AsyncMock, patch
 
 import pytest
 from hypothesis import strategies as st
 from hypothesis.stateful import Bundle, RuleBasedStateMachine, invariant, rule
 
 from maistro.credentials.pool import CredentialPool
-from maistro.credentials.rotation import RotationResult, execute_with_pool
 from maistro.credentials.types import (
     CredentialRecord,
     PoolExhaustedError,
@@ -32,13 +35,6 @@ def _pool(
         entries=[_rec(k, provider) for k in keys],
         strategy=strategy,
     )
-
-
-class _HttpError(Exception):
-    def __init__(self, message: str, status_code: int, headers: dict | None = None) -> None:
-        super().__init__(message)
-        self.status_code = status_code
-        self.response = type("Resp", (), {"status_code": status_code, "headers": headers or {}})
 
 
 class TestCredentialRecord:
@@ -154,108 +150,53 @@ class TestSelectionStrategies:
         assert pool.select().key_id == "a"
 
 
+class TestScopedSelection:
+    """#58: selection constrained to the credential refs a Binding authorizes."""
+
+    def test_select_never_returns_a_key_outside_the_authorized_subset(self):
+        pool = _pool(["a", "b", "c"], SelectionStrategy.ROUND_ROBIN)
+
+        for _ in range(6):
+            assert pool.select(allowed_key_ids=frozenset({"b"})).key_id == "b"
+
+    def test_exhaustion_error_counts_only_authorized_keys(self):
+        pool = CredentialPool(
+            "openai",
+            [
+                _rec("a", cooldown_until=time.monotonic() + 60),
+                _rec("b", cooldown_until=time.monotonic() + 30),
+                _rec("c"),
+            ],
+        )
+        with pytest.raises(PoolExhaustedError) as exc_info:
+            pool.select(allowed_key_ids=frozenset({"a", "b"}))
+        err = exc_info.value
+        assert err.total_keys == 2
+        assert err.cooling_down_keys == 2
+        assert 20 < err.wait_seconds <= 30
+
+    def test_authorized_subset_with_no_available_key_leaves_others_unreachable(self):
+        pool = CredentialPool(
+            "openai",
+            [_rec("a", blocked=True), _rec("c")],
+        )
+        with pytest.raises(PoolExhaustedError):
+            pool.select(allowed_key_ids=frozenset({"a"}))
+
+    def test_key_ids_lists_every_configured_key(self):
+        pool = _pool(["a", "b"])
+        assert pool.key_ids() == frozenset({"a", "b"})
+
+
 class TestAutomaticRotation:
-    @patch("asyncio.sleep", new_callable=AsyncMock)
-    @pytest.mark.ac("ADR-063/AC-10")
-    async def test_rotate_on_429(self, _mock_sleep):
-        pool = _pool(["a", "b"], SelectionStrategy.FILL_FIRST)
+    """Cooldown mechanics driven through record_failure.
 
-        async def call_fn(cred: CredentialRecord):
-            if cred.key_id == "a":
-                raise _HttpError("Rate limit exceeded", 429)
-            return "ok"
+    The request-execution sequences the ADR-063 rotation scenarios describe
+    (429/402 through a real call) are exercised against the router that now
+    owns them in ``tests/credentials/test_router.py``.
+    """
 
-        result = await execute_with_pool(pool, call_fn, max_retries=1)
-        assert result.value == "ok"
-        assert result.key_id == "b"
-        assert result.key_rotations == 1
-        key_a = next(e for e in pool._entries if e.key_id == "a")
-        assert key_a.cooldown_until is not None
-
-    @patch("asyncio.sleep", new_callable=AsyncMock)
-    @pytest.mark.ac("ADR-063/AC-12")
-    @pytest.mark.ac("ADR-063/AC-26")
-    async def test_429_default_cooldown_is_60_seconds(self, _mock_sleep):
-        pool = _pool(["a", "b"], SelectionStrategy.FILL_FIRST)
-
-        async def call_fn(cred: CredentialRecord):
-            if cred.key_id == "a":
-                raise _HttpError("Rate limit exceeded", 429)
-            return "ok"
-
-        await execute_with_pool(pool, call_fn, max_retries=1)
-        key_a = next(e for e in pool._entries if e.key_id == "a")
-        remaining = key_a.cooldown_until - time.monotonic()
-        assert 55 < remaining <= 60
-
-    @patch("asyncio.sleep", new_callable=AsyncMock)
-    @pytest.mark.ac("ADR-063/AC-11")
-    async def test_429_with_retry_after_header(self, _mock_sleep):
-        pool = _pool(["a", "b"], SelectionStrategy.FILL_FIRST)
-
-        async def call_fn(cred: CredentialRecord):
-            if cred.key_id == "a":
-                raise _HttpError("Slow down", 429, headers={"retry-after": "30"})
-            return "ok"
-
-        await execute_with_pool(pool, call_fn, max_retries=1)
-        key_a = next(e for e in pool._entries if e.key_id == "a")
-        remaining = key_a.cooldown_until - time.monotonic()
-        assert 25 < remaining <= 30
-
-    @patch("asyncio.sleep", new_callable=AsyncMock)
-    @pytest.mark.ac("ADR-063/AC-27")
-    async def test_429_retry_after_capped_at_60(self, _mock_sleep):
-        pool = _pool(["a", "b"], SelectionStrategy.FILL_FIRST)
-
-        async def call_fn(cred: CredentialRecord):
-            if cred.key_id == "a":
-                raise _HttpError("Slow down", 429, headers={"retry-after": "300"})
-            return "ok"
-
-        await execute_with_pool(pool, call_fn, max_retries=1)
-        key_a = next(e for e in pool._entries if e.key_id == "a")
-        remaining = key_a.cooldown_until - time.monotonic()
-        assert 55 < remaining <= 60
-
-    @patch("asyncio.sleep", new_callable=AsyncMock)
-    @pytest.mark.ac("ADR-063/AC-13")
-    async def test_inner_loop_retries_transient(self, _mock_sleep):
-        pool = _pool(["a"])
-        calls: list[str] = []
-
-        async def call_fn(cred: CredentialRecord):
-            calls.append(cred.key_id)
-            if len(calls) == 1:
-                raise _HttpError("Internal Server Error", 500)
-            if len(calls) == 2:
-                raise _HttpError("Bad Gateway", 502)
-            return "ok"
-
-        result = await execute_with_pool(pool, call_fn, max_retries=3)
-        assert result.value == "ok"
-        assert result.key_id == "a"
-        assert result.attempts == 3
-        assert result.retries_on_current_key == 2
-        assert result.key_rotations == 0
-
-    @patch("asyncio.sleep", new_callable=AsyncMock)
-    @pytest.mark.ac("ADR-063/AC-14")
-    async def test_transient_errors_set_no_cooldown(self, _mock_sleep):
-        pool = _pool(["a"])
-        attempt = 0
-
-        async def call_fn(cred: CredentialRecord):
-            nonlocal attempt
-            attempt += 1
-            if attempt == 1:
-                raise _HttpError("Server Error", 500)
-            return "ok"
-
-        await execute_with_pool(pool, call_fn, max_retries=3)
-        assert pool._entries[0].cooldown_until is None
-
-    async def test_billing_cooldown_via_record_failure(self):
+    def test_billing_cooldown_via_record_failure(self):
         pool = _pool(["a", "b"], SelectionStrategy.FILL_FIRST)
         pool.record_failure("a", status_code=402, error_code="billing", cooldown_seconds=3600)
         key_a = next(e for e in pool._entries if e.key_id == "a")
@@ -442,77 +383,6 @@ class TestPoolStats:
     def test_stats_reports_strategy(self):
         pool = _pool(["a"], strategy=SelectionStrategy.LEAST_USED)
         assert pool.get_stats().strategy == SelectionStrategy.LEAST_USED
-
-
-class TestRotationIntegration:
-    async def test_happy_path(self):
-        pool = _pool(["a"])
-
-        async def call_fn(cred: CredentialRecord):
-            return "result"
-
-        result = await execute_with_pool(pool, call_fn)
-        assert result.value == "result"
-        assert result.key_id == "a"
-        assert result.attempts == 1
-        assert result.key_rotations == 0
-        assert result.retries_on_current_key == 0
-
-    @patch("asyncio.sleep", new_callable=AsyncMock)
-    async def test_rotation_on_429_failure(self, _mock_sleep):
-        pool = _pool(["a", "b"], SelectionStrategy.FILL_FIRST)
-
-        async def call_fn(cred: CredentialRecord):
-            if cred.key_id == "a":
-                raise _HttpError("Rate limit exceeded", 429)
-            return "ok"
-
-        result = await execute_with_pool(pool, call_fn, max_retries=1)
-        assert result.value == "ok"
-        assert result.key_id == "b"
-        assert result.key_rotations == 1
-
-    @patch("asyncio.sleep", new_callable=AsyncMock)
-    async def test_pool_exhaustion_from_rotation(self, _mock_sleep):
-        pool = _pool(["a", "b"])
-
-        async def call_fn(cred: CredentialRecord):
-            raise _HttpError("Rate limit exceeded", 429)
-
-        with pytest.raises(PoolExhaustedError) as exc_info:
-            await execute_with_pool(pool, call_fn, max_retries=1)
-        assert exc_info.value.provider == "openai"
-        assert exc_info.value.total_keys == 2
-
-    @pytest.mark.ac("ADR-063/AC-30")
-    async def test_success_records_use_count(self):
-        pool = _pool(["a"])
-
-        async def call_fn(cred: CredentialRecord):
-            return "ok"
-
-        await execute_with_pool(pool, call_fn)
-        assert pool._entries[0].use_count == 1
-
-    @patch("asyncio.sleep", new_callable=AsyncMock)
-    async def test_max_key_rotations_limit(self, _mock_sleep):
-        pool = _pool(["a", "b", "c"])
-
-        async def call_fn(cred: CredentialRecord):
-            raise _HttpError("Rate limit exceeded", 429)
-
-        with pytest.raises(PoolExhaustedError):
-            await execute_with_pool(pool, call_fn, max_retries=1, max_key_rotations=2)
-
-    async def test_rotation_result_type(self):
-        pool = _pool(["a"])
-
-        async def call_fn(cred: CredentialRecord):
-            return 42
-
-        result = await execute_with_pool(pool, call_fn)
-        assert isinstance(result, RotationResult)
-        assert result.value == 42
 
 
 class CredentialPoolMachine(RuleBasedStateMachine):

@@ -64,33 +64,54 @@ class CredentialPool:
         self._entries = [e for e in self._entries if e.key_id != key_id]
         return len(self._entries) < before
 
-    def _available(self) -> list[CredentialRecord]:
-        return [e for e in self._entries if e.is_available]
+    def _available(self, allowed_key_ids: frozenset[str] | None = None) -> list[CredentialRecord]:
+        """Available entries, optionally restricted to an authorized subset.
+
+        ``allowed_key_ids`` is the Binding-scoped view of the pool (#58): when a
+        caller passes the credential ids a Binding authorizes, availability,
+        exhaustion accounting, and every strategy operate over that subset only,
+        so an authorized selection can never fall through to a credential the
+        Binding does not name.
+        """
+        return [
+            e
+            for e in self._entries
+            if e.is_available and (allowed_key_ids is None or e.key_id in allowed_key_ids)
+        ]
 
     def available_count(self) -> int:
         return len(self._available())
 
-    def select(self) -> CredentialRecord:
-        available = self._available()
+    def select(self, allowed_key_ids: frozenset[str] | None = None) -> CredentialRecord:
+        available = self._available(allowed_key_ids)
         if not available:
+            scoped = (
+                [e for e in self._entries if e.key_id in allowed_key_ids]
+                if allowed_key_ids is not None
+                else self._entries
+            )
             soonest = None
-            for e in self._entries:
+            for e in scoped:
                 if (
                     e.cooldown_until is not None
                     and not e.blocked
                     and (soonest is None or e.cooldown_until < soonest)
                 ):
                     soonest = e.cooldown_until
-            blocked = sum(1 for e in self._entries if e.blocked)
+            blocked = sum(1 for e in scoped if e.blocked)
             cooling = sum(
                 1
-                for e in self._entries
+                for e in scoped
                 if not e.blocked and e.cooldown_until is not None and not e.is_available
             )
             raise PoolExhaustedError(
-                message=f"All {len(self._entries)} credentials exhausted for {self._provider}",
+                message=(
+                    f"All {len(scoped)} credentials exhausted for {self._provider}"
+                    if allowed_key_ids is None
+                    else f"All {len(scoped)} authorized credentials exhausted for {self._provider}"
+                ),
                 provider=self._provider,
-                total_keys=len(self._entries),
+                total_keys=len(scoped),
                 blocked_keys=blocked,
                 cooling_down_keys=cooling,
                 soonest_available_at=soonest,
@@ -147,6 +168,11 @@ class CredentialPool:
             entry.blocked = False
             entry.last_status = None
             entry.last_error_code = None
+
+    def key_ids(self) -> frozenset[str]:
+        """Every configured key id in this pool, available or not."""
+
+        return frozenset(e.key_id for e in self._entries)
 
     def get_stats(self) -> PoolStats:
         available = self._available()
