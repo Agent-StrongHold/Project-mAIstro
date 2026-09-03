@@ -4,9 +4,10 @@
 but ADR-093 mandates hardware-VM-class isolation for *untrusted agent code*
 (the architecture-fit judge flagged the local path as violating it). This is the
 Docker-backed implementation ADR-093 names as satisfying the isolation contract
-today (Firecracker/E2B/gVisor remain an open backend choice): the repo is copied
-into an ephemeral container and every read/write/edit/command the agent issues
-runs *there*, so agent-controlled code never executes against the host.
+today (Firecracker/E2B/gVisor remain an open backend choice): the repo's working
+tree is seeded into an ephemeral container (minus a credential denylist — see
+`_SEED_EXCLUDES`) and every read/write/edit/command the agent issues runs
+*there*, so agent-controlled code never executes against the host.
 
 Same `BuilderSandbox` protocol as the local sandbox, so it's a drop-in — the
 agent loop and TUI don't change. Sync the container's work back to the host with
@@ -14,10 +15,24 @@ agent loop and TUI don't change. Sync the container's work back to the host with
 
 Talks to Docker through the `docker` CLI with argv lists (no shell on the host),
 so it stays synchronous like the rest of the builder sandbox interface.
+
+Network posture (#77): the container is created with `--network=none`, so an
+unattended candidate has *no* egress by default — external, DNS, link-local
+(incl. cloud metadata), and private-network paths all fail, because the only
+interface inside the netns is loopback. There is deliberately no constructor
+parameter to relax this: any egress grant belongs to the policy/Binding layer
+(#18), granted explicitly and audited there — not to a sandbox flag candidate
+influence could reach. The policy lives in the container's create-time config,
+so it survives restarts and cannot be widened from inside: the candidate runs
+as an unprivileged uid with `cap-drop=ALL`, no Docker socket is mounted, and
+`no-new-privileges` blocks setuid paths; the one bootstrap exec that needs root
+(`chown` of the empty workspace, before any candidate code or repo content
+exists) is explicit and auditable below.
 """
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path, PurePosixPath
 
@@ -33,6 +48,56 @@ _DEFAULT_TIMEOUT = 120
 # suites) are heavier than a single code-exec call.
 _MEMORY_LIMIT = "2g"
 _PIDS_LIMIT = "512"
+
+# Every command that can run candidate-influenced code executes as this
+# unprivileged identity (#77: the sandbox used to run the agent as container
+# root). A numeric uid:gid works in any image — no passwd entry is needed —
+# and is deliberately not 0. Container PID 1 is `sleep infinity` (harness
+# code, not candidate code) and also runs as this user via `--user`.
+_AGENT_UID_GID = "65532:65532"
+_AGENT_HOME = "/tmp"  # 1777 in the base images; outside the synced workspace
+
+# The seed denylist (#77/#78: the sandbox used to hand the container the whole
+# repo via `docker cp`, ambient credentials included). Applied HOST-side when
+# the seed archive is built — the trust boundary — never container-side.
+# Pattern semantics verified identical on GNU tar 1.35 and bsdtar 3.5.3 (so
+# macOS hosts and Linux CI behave the same): patterns prefixed `./` are exact
+# root-relative paths; bare names (`.env`, `id_rsa`, `.ssh`) and bare
+# `*.ext` patterns match at ANY depth. Secret-shaped material is excluded
+# wherever it sits — the failure mode of over-excluding is a visible test
+# failure, while under-excluding leaks silently. Committed placeholder
+# content (e.g. `.env.example`) is already public; only the secret-shaped
+# names below are dropped.
+_SEED_EXCLUDES = (
+    # git metadata that carries host-side code or credentials. HEAD/index/
+    # objects stay so `git diff`/`git status` keep working inside; config
+    # (credential helpers, fsmonitor/pager command hooks, remote URLs with
+    # embedded tokens) and hooks (host-authored scripts) do not.
+    "./.git/config",
+    "./.git/hooks",
+    # dotenv secrets (the gitignored kind), at any depth.
+    ".env",
+    ".env.local",
+    ".env.*.local",
+    # ambient credential directories and registry logins, at any depth.
+    ".ssh",
+    ".aws",
+    ".gnupg",
+    ".docker",
+    ".npmrc",
+    ".netrc",
+    "_netrc",
+    # bare key material, at any depth.
+    "id_rsa",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+    "*.pem",
+    "*.key",
+    "*.p12",
+    "*.pfx",
+)
+_SEED_TIMEOUT = 300  # tar create+extract through one pipe ≈ 2x the old `docker cp`
 
 
 def _docker(
@@ -57,10 +122,12 @@ def _docker(
 class ContainerBuilderSandbox:
     """A `BuilderSandbox` whose operations execute inside an ephemeral container.
 
-    Use as a context manager: entering creates the container and copies the repo
-    in; exiting force-removes the container (nothing persists). The host repo is
-    only read once (to seed the container) and only written by an explicit
-    `sync_to_host()` — the agent itself never touches it.
+    Use as a context manager: entering creates the container and seeds it with
+    the (denylist-filtered) working tree; exiting force-removes the container
+    (nothing persists). The host repo is only read once (to seed the container)
+    and only written by an explicit `sync_to_host()` — the agent itself never
+    touches it. Every command the agent can reach runs as `_AGENT_UID_GID`
+    inside a `--network=none` container (#77).
     """
 
     def __init__(self, repo_root: Path, *, image: str = DEFAULT_IMAGE) -> None:
@@ -77,19 +144,98 @@ class ContainerBuilderSandbox:
                 "-d",
                 "--workdir",
                 _WORKDIR,
+                # Default-deny egress (#77): no interface beyond loopback, so
+                # external, DNS, link-local and private paths all fail.
+                "--network=none",
+                # Nobody in this container runs as root — not PID 1, not any
+                # exec — and no capability survives the drop (CHOWN returns
+                # solely for the one-shot root bootstrap below; caps granted
+                # to uid 0 cannot be exercised by the agent's uid).
+                "--user",
+                _AGENT_UID_GID,
                 "--cap-drop=ALL",
+                "--cap-add=CHOWN",
                 "--security-opt=no-new-privileges",
                 f"--memory={_MEMORY_LIMIT}",
                 f"--pids-limit={_PIDS_LIMIT}",
+                "-e",
+                f"HOME={_AGENT_HOME}",
                 self._image,
                 "sleep",
                 "infinity",
             ]
         ).stdout.strip()
         self._cid = cid
-        # Copy the repo *into* the container (no host bind-mount → isolation).
-        _docker(["cp", f"{self._repo_root}/.", f"{cid}:{_WORKDIR}"])
+        # One explicit, auditable root exec: make the (empty) workspace
+        # writable by the agent uid. Runs before any repo content or candidate
+        # code exists; everything after this is unprivileged.
+        _docker(
+            [
+                "exec",
+                "-u",
+                "0:0",
+                cid,
+                "chown",
+                _AGENT_UID_GID,
+                _WORKDIR,
+            ]
+        )
+        self._seed(cid)
         return self
+
+    def _seed(self, cid: str) -> None:
+        """Seed the workspace with the repo, minus the `_SEED_EXCLUDES` denylist.
+
+        The archive is built HOST-side (the trust boundary — an inside-the-
+        container filter would run as the party being contained) and extracted
+        *as the agent uid*, so every seeded file is owned by the unprivileged
+        user from the start — no root-owned files, no later `chown -R` pass,
+        and `git` sees consistent ownership. `COPYFILE_DISABLE` keeps macOS
+        bsdtar from smuggling `._*` AppleDouble metadata files into the seed.
+        """
+        archive = subprocess.run(
+            [
+                "tar",
+                "-cf",
+                "-",
+                *[f"--exclude={pattern}" for pattern in _SEED_EXCLUDES],
+                "-C",
+                str(self._repo_root),
+                ".",
+            ],
+            capture_output=True,
+            timeout=_SEED_TIMEOUT,
+            env={**os.environ, "COPYFILE_DISABLE": "1"},
+        )
+        if archive.returncode != 0:
+            self.__exit__(None, None, None)
+            raise RuntimeError(f"seed tar failed: {archive.stderr.decode(errors='replace')[:300]}")
+        extract = subprocess.run(
+            [
+                "docker",
+                "exec",
+                "-i",
+                "-u",
+                _AGENT_UID_GID,
+                "-e",
+                f"HOME={_AGENT_HOME}",
+                cid,
+                "tar",
+                "-xf",
+                "-",
+                "--no-same-owner",
+                "-C",
+                _WORKDIR,
+            ],
+            input=archive.stdout,
+            capture_output=True,
+            timeout=_SEED_TIMEOUT,
+        )
+        if extract.returncode != 0:
+            self.__exit__(None, None, None)
+            raise RuntimeError(
+                f"container tar extract failed: {extract.stderr.decode(errors='replace')[:300]}"
+            )
 
     def __exit__(self, *exc: object) -> None:
         if self._cid:
@@ -99,23 +245,29 @@ class ContainerBuilderSandbox:
     def sync_to_host(self, dest: Path | None = None) -> None:
         """Copy the container workspace back to the host, EXCLUDING ``.git``.
 
-        The agent has shell access inside the container (root, in fact), so a
-        plain ``docker cp`` of the whole workspace would let it corrupt
-        refs/config/hooks that the caller then runs host-side git against —
-        defeating the isolation. The container-side ``--exclude`` below is
-        only a courtesy: it runs as root *inside* the untrusted container, so
-        an attacker who controls that container can simply not honor it. The
-        exclude that actually matters is the host-side one, applied while
-        extracting — that's the real trust boundary. ``--no-same-owner`` on
-        the extract also stops the container's root-owned files from landing
-        on the host owned by root.
+        The agent has shell access inside the container, so a plain archive of
+        the whole workspace would let it corrupt refs/config/hooks that the
+        caller then runs host-side git against — defeating the isolation. The
+        container-side ``--exclude`` below is only a courtesy: it runs *inside*
+        the untrusted container, so an attacker who controls that container can
+        simply not honor it. The exclude that actually matters is the host-side
+        one, applied while extracting — that's the real trust boundary.
+        ``--no-same-owner`` on the extract also stops the container's files
+        from landing on the host with foreign uids.
+
+        The container-side tar runs as the agent uid, which owns every file in
+        the workspace (seeded and written as that uid): `cap-drop=ALL` leaves
+        even root without `DAC_OVERRIDE`, so exec-as-root would read no more
+        than the owner can — and the owner always can, whatever modes the
+        host tree carried (a mode-700 workspace from a 0700 host checkout
+        would otherwise break the sync read).
         """
         target = Path(dest) if dest is not None else self._repo_root
         target.mkdir(parents=True, exist_ok=True)
         archive = subprocess.run(
             [
                 "docker",
-                "exec",
+                *self._exec_prefix(),
                 self._require_cid(),
                 "tar",
                 "cf",
@@ -166,12 +318,21 @@ class ContainerBuilderSandbox:
 
     def _exec(self, argv: list[str], *, timeout: int = _DEFAULT_TIMEOUT) -> tuple[int, str]:
         proc = subprocess.run(
-            ["docker", "exec", self._require_cid(), *argv],
+            ["docker", *self._exec_prefix(), self._require_cid(), *argv],
             capture_output=True,
             text=True,
             timeout=timeout,
         )
         return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
+    def _exec_prefix(self) -> list[str]:
+        """Docker flags every agent-facing exec carries (#77).
+
+        Unprivileged uid + sanitized HOME on *every* exec, explicitly — never
+        relying on the container's default user alone, so a future edit that
+        drops `--user` from the `docker run` cannot silently re-root the agent.
+        """
+        return ["exec", "-u", _AGENT_UID_GID, "-e", f"HOME={_AGENT_HOME}"]
 
     # -- BuilderSandbox protocol --------------------------------------------
 
@@ -184,9 +345,16 @@ class ContainerBuilderSandbox:
     def write_file(self, path: str, content: str) -> None:
         target = self._safe(path)
         parent = str(PurePosixPath(target).parent)
-        _docker(["exec", self._require_cid(), "mkdir", "-p", parent])
+        _docker([*self._exec_prefix(), self._require_cid(), "mkdir", "-p", parent])
         _docker(
-            ["exec", "-i", self._require_cid(), "sh", "-c", f"cat > {_sh_quote(target)}"],
+            [
+                *self._exec_prefix(),
+                "-i",
+                self._require_cid(),
+                "sh",
+                "-c",
+                f"cat > {_sh_quote(target)}",
+            ],
             stdin=content,
         )
 

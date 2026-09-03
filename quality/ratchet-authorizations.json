@@ -70,6 +70,21 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#129",
       "reason": "Declarative JiraIssue field mirroring the jira_poll node's default requested Jira fields projection (['summary','status','updated','issuetype']). #129's runner deletion removed its only in-scan reader; deleting the field while the node still requests issuetype from Jira would be incoherent schema surgery on a published-library model."
+    },
+    "packages/maistro-core/src/maistro/tools/browser/guard.py::unused attribute 'websocket_governed'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#855",
+      "reason": "BrowserNetworkGuard's honest capability flag: attach() sets it when the context exposes route_web_socket and the refusal handler registered. Production Playwright (pinned >=1.49) always exposes route_web_socket, so no shipped code path branches on the flag; its reader is the #855 test suite, which asserts a stand-in context that cannot govern upgrades does not silently claim to (packages/maistro-core/tests/tools/browser/test_net_guard.py, outside the packages/*/src scan set)."
+    },
+    "packages/maistro-core/src/maistro/tools/browser/guard.py::unused method 'denied_events'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#855",
+      "reason": "The refusals-only slice of the guard's bounded audit trail -- the view an incident review wants without paging through a session's allowed subrequests. maistro-core is a published library; its in-repo consumer is the #855 test suite proving every refusal is recorded with a branchable reason and resource type (packages/maistro-core/tests/tools/browser/test_net_guard.py, outside the packages/*/src scan set), ahead of the operator-facing evidence path that will read it."
+    },
+    "packages/maistro-core/src/maistro/tools/browser/client.py::unused method 'last_net_events'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#855",
+      "reason": "#855's auditable-evidence accessor: the network decisions of the most recent run (allowed and denied, origins only, never query contents). maistro-core is a published library; its in-repo readers are the #855 tests asserting an autonomous session's decisions -- including destinations the model invented mid-run -- are auditable from the client (packages/maistro-core/tests/tools/browser/test_client.py, outside the packages/*/src scan set); the PM research path that will emit them as run evidence adopts it next."
     }
   },
   "model-egress": {
