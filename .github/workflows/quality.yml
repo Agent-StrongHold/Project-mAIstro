@@ -363,7 +363,7 @@ jobs:
         run: uv sync --locked --all-extras
 
       - name: download every producer's coverage data
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: coverage-*
           path: coverage-data
