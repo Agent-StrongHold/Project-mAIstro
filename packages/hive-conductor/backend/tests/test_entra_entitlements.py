@@ -19,9 +19,7 @@ def _policy(*, enabled: bool = True, **kwargs: object) -> EntraJitPolicy:
     defaults: dict[str, object] = {
         "eligible_groups": {
             GROUP_USER: EntraGroupGrant("user", frozenset({"runs:read"})),
-            GROUP_OPERATOR: EntraGroupGrant(
-                "operator", frozenset({"runs:create", "runs:cancel"})
-            ),
+            GROUP_OPERATOR: EntraGroupGrant("operator", frozenset({"runs:create", "runs:cancel"})),
         },
         "role_precedence": ("user", "operator", "admin"),
         "policy_version": "test-v1",
@@ -31,9 +29,7 @@ def _policy(*, enabled: bool = True, **kwargs: object) -> EntraJitPolicy:
 
 
 def test_jit_is_denied_when_policy_is_disabled() -> None:
-    decision = _policy(enabled=False).evaluate(
-        EntraGroupMembership.complete_token([GROUP_USER])
-    )
+    decision = _policy(enabled=False).evaluate(EntraGroupMembership.complete_token([GROUP_USER]))
 
     assert decision.eligible is False
     assert decision.managed is None
@@ -61,19 +57,13 @@ def test_one_group_produces_only_its_managed_role_and_permissions() -> None:
 def test_multiple_groups_union_permissions_and_choose_role_by_explicit_precedence() -> None:
     policy = _policy()
 
-    forward = policy.evaluate(
-        EntraGroupMembership.complete_token([GROUP_USER, GROUP_OPERATOR])
-    )
-    reverse = policy.evaluate(
-        EntraGroupMembership.complete_token([GROUP_OPERATOR, GROUP_USER])
-    )
+    forward = policy.evaluate(EntraGroupMembership.complete_token([GROUP_USER, GROUP_OPERATOR]))
+    reverse = policy.evaluate(EntraGroupMembership.complete_token([GROUP_OPERATOR, GROUP_USER]))
 
     assert forward == reverse
     assert forward.managed is not None
     assert forward.managed.role == "operator"
-    assert forward.managed.permissions == frozenset(
-        {"runs:read", "runs:create", "runs:cancel"}
-    )
+    assert forward.managed.permissions == frozenset({"runs:read", "runs:create", "runs:cancel"})
     assert forward.managed.matched_group_ids == (GROUP_USER, GROUP_OPERATOR)
 
 
@@ -83,9 +73,7 @@ def test_incomplete_or_overage_token_evidence_never_becomes_empty_membership() -
 
 
 def test_authoritative_resolver_membership_is_accepted_after_overage_resolution() -> None:
-    decision = _policy().evaluate(
-        EntraGroupMembership.complete_resolver([GROUP_OPERATOR])
-    )
+    decision = _policy().evaluate(EntraGroupMembership.complete_resolver([GROUP_OPERATOR]))
 
     assert decision.eligible is True
     assert decision.managed is not None

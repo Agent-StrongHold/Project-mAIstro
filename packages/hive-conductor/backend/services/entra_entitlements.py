@@ -203,9 +203,7 @@ class EntraJitPolicy:
             (grant.role for grant in grants),
             key=self.role_precedence.index,
         )
-        permissions = frozenset(
-            permission for grant in grants for permission in grant.permissions
-        )
+        permissions = frozenset(permission for grant in grants for permission in grant.permissions)
         return EntraAdmissionDecision(
             eligible=True,
             managed=SSOManagedEntitlements(
