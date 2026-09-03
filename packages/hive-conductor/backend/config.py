@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import uuid
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -64,23 +65,34 @@ def _https_url(value: str, *, field_name: str, origin_only: bool = False) -> str
 
 
 class OAuthProviderSettings(BaseModel):
-    """Validated non-secret configuration for one OIDC login provider."""
+    """Validated non-secret configuration for one OIDC login provider.
+
+    A provider either names its four endpoint URLs explicitly (the generic
+    OIDC contract) or names exactly one ``entra_tenant_id`` and derives every
+    endpoint from Microsoft's tenant-specific v2 endpoints. Mixing the two
+    would let a drifted URL quietly disagree with the tenant the verifier
+    admits, so the combination is refused rather than resolved.
+    """
 
     # SECURITY-REVIEW: Environment JSON is an external deserialization
     # boundary; unknown fields and input-bearing validation errors are refused.
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
-    authorization_url: str
-    token_url: str
+    authorization_url: str | None = None
+    token_url: str | None = None
     client_id: str = Field(min_length=1, max_length=256)
-    jwks_url: str
-    issuer: str
+    jwks_url: str | None = None
+    issuer: str | None = None
     userinfo_url: str | None = None
     scopes: tuple[str, ...] = ("openid", "profile", "email")
     client_secret_vault_key: str | None = Field(
         default=None,
         pattern=r"^[A-Z][A-Z0-9_]{0,127}$",
     )
+    # One concrete Entra directory UUID. ``common`` / ``organizations`` and
+    # every other multi-tenant alias are non-UUID strings and are rejected
+    # here, before any token is accepted (#491 tenant admission).
+    entra_tenant_id: str | None = None
 
     @field_validator("authorization_url", "token_url", "jwks_url", "issuer", "userinfo_url")
     @classmethod
@@ -108,6 +120,38 @@ class OAuthProviderSettings(BaseModel):
         if len(set(value)) != len(value) or any(not _OAUTH_SCOPE_RE.fullmatch(v) for v in value):
             raise ValueError("scopes must be unique OAuth scope tokens")
         return value
+
+    @field_validator("entra_tenant_id")
+    @classmethod
+    def validate_entra_tenant_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            # Canonical lowercase: alternate spellings of one directory must
+            # not configure (or link) as two different tenants.
+            return str(uuid.UUID(value.strip()))
+        except ValueError as exc:
+            raise ValueError(
+                "entra_tenant_id must be one concrete directory UUID; multi-tenant "
+                "aliases such as 'common' or 'organizations' are not admitted"
+            ) from exc
+
+    @model_validator(mode="after")
+    def endpoints_are_explicit_or_entra_derived(self) -> OAuthProviderSettings:
+        explicit = (self.authorization_url, self.token_url, self.jwks_url, self.issuer)
+        if self.entra_tenant_id is not None:
+            if any(url is not None for url in explicit):
+                raise ValueError(
+                    "entra_tenant_id derives all endpoints; do not also set "
+                    "authorization_url, token_url, jwks_url, or issuer"
+                )
+            return self
+        if any(url is None for url in explicit):
+            raise ValueError(
+                "authorization_url, token_url, jwks_url, and issuer are required "
+                "unless entra_tenant_id derives them"
+            )
+        return self
 
 
 class Settings(BaseSettings):
@@ -236,6 +280,15 @@ class Settings(BaseSettings):
     oauth_providers: dict[str, OAuthProviderSettings] = Field(default_factory=dict)
     oauth_public_origin: str | None = None
     oauth_success_path: str = "/"
+
+    # Explicit human-login mode (#491): `local` keeps password login, `entra`
+    # denies ordinary password login (Entra-only), `hybrid` allows both. The
+    # route layer reads this through HumanAuthModePolicy instead of inferring
+    # login availability from whether a provider happens to be configured, so
+    # a misconfigured Entra-only deployment cannot silently fall back to
+    # passwords. Break-glass recovery stays a distinct operator-controlled
+    # seam, never a request parameter.
+    human_auth_mode: Literal["local", "entra", "hybrid"] = "local"
 
     # The single, explicit, greppable local-development escape. Startup refuses
     # a Secure-disabled session cookie unless this is set — see
