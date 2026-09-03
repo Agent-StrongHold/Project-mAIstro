@@ -12,6 +12,7 @@ answer to "what is this Run doing" rather than two that can disagree
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime
 from typing import Any
 
@@ -24,6 +25,8 @@ from .stores import answer_record
 from .types import DurableRunRecord
 
 _RECOVERY_VISIBLE_STATUSES = frozenset({RunStatus.WAITING, RunStatus.PAUSED, RunStatus.RUNNING})
+
+logger = logging.getLogger(__name__)
 
 
 class CanonicalDurableRunStore:
@@ -108,6 +111,16 @@ class CanonicalDurableRunStore:
         canonical = await self._run_store.get_run(run_id)
         if canonical is None:
             # No canonical Run means a true orphan: purge the continuation.
+            # Logged rather than deleted silently, because a Run purge that
+            # outran this reconciliation must remain inspectable evidence
+            # (#62), not a continuation that quietly stopped existing.
+            logger.warning(
+                "purging orphaned Graph continuation %s (status=%s version=%d): "
+                "its canonical Run was purged or never persisted",
+                run_id,
+                continuation.status.value,
+                continuation.version,
+            )
             return await self._continuations.delete(run_id)
         if canonical.status is RunStatus.RUNNING and continuation.status in {
             RunStatus.WAITING,
