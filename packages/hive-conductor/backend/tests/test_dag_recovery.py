@@ -79,7 +79,10 @@ async def test_recovery_owns_only_hive_legacy_admissions(monkeypatch: pytest.Mon
 
     graph_store = object()
     run_store = object()
-    container = SimpleNamespace(graph_run_store=graph_store, run_store=run_store)
+    event_bus = object()
+    container = SimpleNamespace(
+        graph_run_store=graph_store, run_store=run_store, event_bus=event_bus
+    )
     captured: dict = {}
 
     async def _recover(**kwargs):
@@ -93,6 +96,7 @@ async def test_recovery_owns_only_hive_legacy_admissions(monkeypatch: pytest.Mon
     assert captured["store"] is graph_store
     assert captured["run_store"] is run_store
     assert captured["limit"] == 7
+    assert captured["events"] is event_bus
 
     owned, _ = _queued_run(source="hive_legacy_dag")
     foreign, _ = _queued_run(source="some_other_consumer")
