@@ -11,6 +11,7 @@ runtime executor (which is exercised by Phase 0d's existing graph tests).
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -31,9 +32,32 @@ def _ctx(**overrides: Any) -> NodeContext:
         "node_id": "n1",
         "user_id": "u1",
         "project_id": "p1",
+        "workspace_id": "w1",
+        "node_run_id": "nr1",
+        "attempt_id": "a1",
     }
     base.update(overrides)
     return NodeContext(**base)
+
+
+@pytest.fixture
+async def llm_binding_id() -> str:
+    """Register the governed model.chat Binding llm.summarize resolves (#56)."""
+
+    from maistro.capabilities.binding import Binding
+    from maistro.capabilities.effect_context import default_effect_context
+
+    await default_effect_context().bindings.put(
+        Binding(
+            # fixed created_at keeps the idempotent re-put legal across tests
+            created_at=datetime(2026, 9, 1, tzinfo=UTC),
+            binding_id="llm-summarize-test-binding",
+            workspace_id="w1",
+            project_id="p1",
+            capability="model.chat",
+        )
+    )
+    return "llm-summarize-test-binding"
 
 
 # --- transform.extract_field ----------------------------------------------
@@ -362,6 +386,7 @@ async def test_airtable_poll_uses_filter_formula_for_since_iso(
 
 async def test_llm_summarize_against_litellm_response_shape(
     monkeypatch: pytest.MonkeyPatch,
+    llm_binding_id: str,
 ) -> None:
     monkeypatch.setenv("MAISTRO_LLM_BASE_URL", "http://fake-litellm:4000")
     monkeypatch.setenv("MAISTRO_LLM_API_KEY", "fake-key")
@@ -397,7 +422,12 @@ async def test_llm_summarize_against_litellm_response_shape(
     monkeypatch.setattr(httpx, "AsyncClient", _Client)
     Node = get_node("llm.summarize")
     out = await Node().run(
-        {"text": "lots of fleet activity ...", "style": "bullet", "max_tokens": 256},
+        {
+            "text": "lots of fleet activity ...",
+            "style": "bullet",
+            "max_tokens": 256,
+            "binding_id": llm_binding_id,
+        },
         _ctx(),
     )
     assert out.success

@@ -2156,6 +2156,7 @@ def build_node_resolver(
     from maistro.graph.definitions import Graph
     from maistro.graph.nodes import get_node
     from maistro.graph.nodes.agent_delegate_remote import AgentDelegateRemoteNode
+    from maistro.graph.nodes.llm_summarize import LlmSummarizeNode
     from maistro.graph.nodes.rsi_quota_pace_trigger import RsiQuotaPaceTriggerNode
 
     resolved_adapters = harness_adapters if harness_adapters is not None else {}
@@ -2187,6 +2188,11 @@ def build_node_resolver(
             return AgentSpawnHarnessNode(
                 adapters=resolved_adapters, effect_context=resolved_effect_context
             )
+        if kind == "llm.summarize":
+            # The shipped model path crosses the governed model egress (#56):
+            # the node resolves Bindings and files Invocations against the same
+            # authorities the container's own effect nodes use.
+            return LlmSummarizeNode(effect_context=resolved_effect_context)
         if kind == "rsi.quota_pace_trigger":
             return RsiQuotaPaceTriggerNode(resolved_usage_log)
         if kind == "agent.delegate_remote":

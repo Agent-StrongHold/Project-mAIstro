@@ -1,19 +1,34 @@
-"""`llm.summarize` — single-shot LLM summarization against the LLM gateway.
+"""`llm.summarize` — single-shot LLM summarization through the governed egress.
 
-The model is configurable per-node (the optimizer swaps when latency/cost
-budgets demand). The base URL + API key come from the runtime context
-(maistro config) — not from the DAG definition — so user-saved DAGs are
-portable across environments.
+The node no longer performs HTTP itself: it resolves a pre-authorized
+Workspace/Project-scoped Binding and crosses the canonical Provider/Binding/
+Invocation boundary (#56), so every summarize call persists an Invocation with
+model/version/token/cost/provider metadata. The base URL + API key still come
+from the runtime environment (maistro config) — not from the DAG definition —
+so user-saved DAGs remain portable across environments.
+
+Model selection keeps its existing semantics: the node's ``model`` alias is
+honored as the requested model, and a Binding that pins ``provider_name``
+outranks it.
 """
 
 from __future__ import annotations
 
 import os
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
-from maistro.http import shared_client
+from maistro.capabilities.binding_store import BindingNotFound
+from maistro.capabilities.effect_context import CapabilityEffectContext, default_effect_context
+from maistro.capabilities.model_chat import (
+    MODEL_CHAT_CAPABILITY,
+    ModelChatEgress,
+    ModelChatRequest,
+)
+from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
+from maistro.providers.registry import InMemoryProviderRegistry
+from maistro.providers.router import CostAwareRouter
 
 from . import register_node
 from .base import BaseNode, NodeContext
@@ -36,6 +51,10 @@ class LlmSummarizeIn(BaseModel):
         description="Optional extra system context (e.g. project profile)",
     )
     timeout_s: float = 30.0
+    binding_id: str = Field(
+        default="",
+        description="Pre-authorized model.chat Binding for this node's workspace/project",
+    )
 
 
 class LlmSummarizeOut(BaseModel):
@@ -68,8 +87,23 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
     display_name: ClassVar[str] = "LLM: summarize"
     description: ClassVar[str] = (
         "One-shot LLM summarization (bullet / paragraph / exec / tldr). "
-        "Runs against the configured LLM gateway."
+        "Runs against the configured LLM gateway via the governed model egress."
     )
+
+    def __init__(
+        self,
+        *,
+        effect_context: CapabilityEffectContext | None = None,
+        registry: InMemoryProviderRegistry | None = None,
+        router: CostAwareRouter | None = None,
+    ) -> None:
+        # The container passes its own capability_effects so resolver-built
+        # nodes resolve the same Binding/Invocation authorities (#55 wiring
+        # pattern). Bare registry construction keeps the process default, which
+        # registers no Bindings and therefore authorizes nothing.
+        self._effects = effect_context or default_effect_context()
+        self._registry = registry if registry is not None else InMemoryProviderRegistry()
+        self._router = router if router is not None else CostAwareRouter(self._registry)
 
     async def _execute(self, inputs: LlmSummarizeIn, ctx: NodeContext) -> LlmSummarizeOut:
         # LLM gateway endpoint + key — pulled from env (maistro config layer
@@ -89,41 +123,55 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
         if not base_url:
             raise RuntimeError("llm.summarize: no LLM base URL configured")
 
+        if not inputs.binding_id.strip():
+            raise BindingNotFound(
+                "llm.summarize requires a pre-authorized model.chat binding_id "
+                "before any model call"
+            )
+        binding = await self._effects.bindings.resolve(
+            inputs.binding_id,
+            workspace_id=str(ctx.workspace_id or ""),
+            project_id=str(ctx.project_id or ""),
+            node_id=ctx.node_id,
+            capability=MODEL_CHAT_CAPABILITY,
+        )
+
         sys_prompt = _STYLE_PROMPTS.get(inputs.style, _STYLE_PROMPTS["bullet"])
         if inputs.system_prompt_extra:
             sys_prompt = sys_prompt + "\n\n" + inputs.system_prompt_extra
 
-        payload = {
-            "model": inputs.model,
-            "messages": [
+        request = ModelChatRequest(
+            model=inputs.model,
+            messages=[
                 {"role": "system", "content": sys_prompt},
                 {"role": "user", "content": inputs.text},
             ],
-            "max_tokens": inputs.max_tokens,
-            "temperature": inputs.temperature,
-        }
-        headers = {"Content-Type": "application/json"}
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
+            temperature=inputs.temperature,
+            max_tokens=inputs.max_tokens,
+        )
+        egress = ModelChatEgress(
+            self._effects,
+            registry=self._registry,
+            router=self._router,
+            endpoint=GatewayEndpoint(
+                base_url=base_url, api_key=api_key, timeout_s=inputs.timeout_s
+            ),
+        )
+        result = await egress.complete(
+            binding=binding,
+            run_id=ctx.run_id,
+            node_run_id=ctx.node_run_id,
+            attempt_id=ctx.attempt_id,
+            effect_key=f"llm.summarize.complete:{inputs.model}",
+            request=request,
+        )
 
-        async with shared_client(timeout=inputs.timeout_s) as client:
-            resp = await client.post(
-                f"{base_url}/v1/chat/completions", json=payload, headers=headers
-            )
-
-        if resp.status_code == 401:
-            raise PermissionError("llm_auth_failed status=401 (check LITELLM_API_KEY)")
-        if resp.status_code == 429:
-            raise RuntimeError("llm_rate_limited status=429")
-        if resp.status_code >= 400:
-            raise RuntimeError(f"llm_http_error status={resp.status_code}")
-
-        data = resp.json()
+        data: dict[str, Any] = result.body
         text = (data.get("choices", [{}])[0].get("message", {}) or {}).get("content", "") or ""
         usage = data.get("usage", {}) or {}
         return LlmSummarizeOut(
             summary=text.strip(),
-            model_used=data.get("model", inputs.model),
+            model_used=str(data.get("model") or inputs.model),
             tokens_in=int(usage.get("prompt_tokens") or 0),
             tokens_out=int(usage.get("completion_tokens") or 0),
         )

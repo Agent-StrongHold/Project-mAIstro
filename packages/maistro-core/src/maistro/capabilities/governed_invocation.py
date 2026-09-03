@@ -21,6 +21,7 @@ from maistro.capabilities.invocation import (
     InvocationStatus,
     ProviderExecutor,
     ProviderResolver,
+    UsageExtractor,
 )
 from maistro.capabilities.slots.approval import ApprovalRequest
 from maistro.events.envelope import EventEnvelope, EventStore
@@ -118,6 +119,7 @@ class GovernedInvocationExecutionService:
         request: Any,
         resolver: ProviderResolver,
         executor: ProviderExecutor,
+        usage_from: UsageExtractor | None = None,
     ) -> Invocation:
         context = InvocationPolicyContext(
             run_id=run_id,
@@ -164,6 +166,7 @@ class GovernedInvocationExecutionService:
                 request=request,
                 resolver=resolver,
                 executor=executor,
+                usage_from=usage_from,
             )
         except asyncio.CancelledError:
             await self._append_latest_terminal_event(
