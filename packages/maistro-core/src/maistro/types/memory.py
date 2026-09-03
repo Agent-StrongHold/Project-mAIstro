@@ -255,3 +255,12 @@ class EpisodicMemory:
     shared: bool = False
     # ADR-080 part B: contradiction review queue marker (never auto-resolved).
     flagged_for_review: bool = False
+    # Producer provenance (#64). #709 left this table alone because nothing
+    # wrote it: its only store held a dict, and columns with nothing behind
+    # them are the unbacked durability claim this repo keeps removing. #710
+    # then made the stores durable, which is the condition #709 named for
+    # coming back. Blank means no execution was in scope; the stores fill it
+    # from the ambient context when the caller does not name one.
+    run_id: str = ""
+    node_run_id: str = ""
+    attempt_id: str = ""
