@@ -309,8 +309,8 @@
       "name": "LlmSummarizeNode",
       "classname": null,
       "rank": "C",
-      "complexity": 19,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+      "complexity": 12,
+      "rationale": "Dropped 19 -> 12 by the #56 governed-egress migration: the node's HTTP/protocol branching moved into the approved llm_gateway Provider, leaving Binding resolution and request/result mapping. The remaining C is class-aggregate; further reduction tracked under SPEC-264."
     },
     {
       "key": "packages/maistro-core/src/maistro/graph/nodes/llm_summarize.py::LlmSummarizeNode._execute",

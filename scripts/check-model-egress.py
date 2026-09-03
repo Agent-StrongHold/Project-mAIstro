@@ -32,15 +32,19 @@ METRIC_DEFINITION_VERSION = "1"
 
 # An operator-approved record of a direct caller whose egress moved verbatim
 # to a new module in a convergence PR, judged against the trusted base. This
-# mirrors the CANDIDATE_AUTHORED design in check-ratchet-provenance.py: the
-# mapping is scoped to exactly one reviewed move and lands atomically with
-# the code that performs it. It is NOT an authorization to grow the set:
-# `_migration_predecessor` honors it only while the predecessor is recorded
-# in the trusted base AND has been pruned from the candidate inventory, so a
-# rename can relocate a caller but never add one (#835: graph_runner's
-# compatibility helpers moved into the legacy_dag_node adapter).
+#: An operator-approved record of a direct caller whose egress moved verbatim
+#: to a new module in a convergence PR, judged against the trusted base. This
+#: mirrors the CANDIDATE_AUTHORED design in check-ratchet-provenance.py: the
+#: mapping is scoped to exactly one reviewed move and lands atomically with
+#: the code that performs it. It is NOT an authorization to grow the set:
+#: `_migration_predecessor` honors it only while the predecessor is recorded
+#: in the trusted base AND has been pruned from the candidate inventory, so a
+#: rename can relocate a caller but never add one (#835: graph_runner's
+#: compatibility helpers moved into the legacy_dag_node adapter; #56:
+#: llm_summarize's model HTTP moved into the approved llm_gateway Provider).
 CANDIDATE_MIGRATIONS: dict[str, str] = {
     "services.legacy_dag_node": "services.graph_runner",
+    "maistro.capabilities.providers.llm_gateway": "maistro.graph.nodes.llm_summarize",
 }
 
 _ENDPOINTS = ("chat/completions", "/completions", "/v1/responses")

@@ -15,7 +15,7 @@
     "packages/hive-conductor/backend/adapters/maistro_core.py::_HttpOpenAILLMClient.complete::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/adapters/maistro_core.py",
       "qualname": "_HttpOpenAILLMClient.complete",
-      "line": 87,
+      "line": 77,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
@@ -433,7 +433,7 @@
     "packages/maistro-core/src/maistro/capabilities/governed_invocation.py::GovernedInvocationExecutionService.invoke::CANONICAL_INVOCATION:InvocationExecutionService.invoke#1": {
       "path": "packages/maistro-core/src/maistro/capabilities/governed_invocation.py",
       "qualname": "GovernedInvocationExecutionService.invoke",
-      "line": 158,
+      "line": 160,
       "category": "CANONICAL_INVOCATION",
       "entry_point": "InvocationExecutionService.invoke",
       "callee": "self._invocations.invoke",
@@ -496,6 +496,17 @@
       "owner": "#56",
       "rationale": "Terminal harness/provider lifecycle egress inside capabilities infrastructure; #56 owns governed caller convergence."
     },
+    "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py::execute_model_chat::MODEL_EFFECT:openai-compatible-http#1": {
+      "path": "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py",
+      "qualname": "execute_model_chat",
+      "line": 152,
+      "category": "MODEL_EFFECT",
+      "entry_point": "openai-compatible-http",
+      "callee": "client.post",
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
+      "owner": "#56",
+      "rationale": "The approved Provider implementation itself: the one module #56 authorizes to hold an HTTP client for a model endpoint. The call executes beneath a resolved canonical Binding and a governed Invocation, so this site IS the governed egress, not a bypass."
+    },
     "packages/maistro-core/src/maistro/events/handlers.py::conductor_chat_action::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-core/src/maistro/events/handlers.py",
       "qualname": "conductor_chat_action",
@@ -511,17 +522,6 @@
       "path": "packages/maistro-core/src/maistro/events/handlers.py",
       "qualname": "conductor_chat_action",
       "line": 123,
-      "category": "MODEL_EFFECT",
-      "entry_point": "openai-compatible-http",
-      "callee": "client.post",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
-      "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
-    },
-    "packages/maistro-core/src/maistro/graph/nodes/llm_summarize.py::LlmSummarizeNode._execute::MODEL_EFFECT:openai-compatible-http#1": {
-      "path": "packages/maistro-core/src/maistro/graph/nodes/llm_summarize.py",
-      "qualname": "LlmSummarizeNode._execute",
-      "line": 110,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",

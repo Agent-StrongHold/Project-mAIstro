@@ -819,6 +819,7 @@
         "packages/maistro-core/src/maistro/capabilities/approval_store.py::unused method '_validate_state'",
         "packages/maistro-core/src/maistro/capabilities/harness_manager.py::unused method 'active_sessions'",
         "packages/maistro-core/src/maistro/capabilities/harness_manager.py::unused method 'send_invocation'",
+        "packages/maistro-core/src/maistro/capabilities/invocation.py::unused method '_validate_usage'",
         "packages/maistro-core/src/maistro/capabilities/providers/harness_stub.py::unused class 'StubHarnessRunner'",
         "packages/maistro-core/src/maistro/capabilities/providers/host_health.py::unused class 'HostHealthAction'",
         "packages/maistro-core/src/maistro/capabilities/providers/host_health.py::unused class 'HostHealthMonitor'",

@@ -2125,6 +2125,52 @@ def _wire_harness_adapters(
     return dict(overrides or {})
 
 
+def _di_node(
+    kind: str,
+    *,
+    harness_adapters: dict[str, HarnessAdapter],
+    usage_log: InMemoryUsageLog,
+    a2a_delegator: Any,
+    guest_peers: Any,
+    run_store: RunStore | None,
+    effect_context: CapabilityEffectContext | None,
+) -> Any:
+    """Construct a dependency-injected node kind, or None for registry kinds.
+
+    Extracted from ``build_node_resolver``'s resolver so adding DI kinds (#55
+    spawn_harness, #56 llm.summarize) does not raise the resolver's own
+    complexity; each branch documents why the kind cannot use plain registry
+    construction.
+    """
+
+    from maistro.graph.nodes.agent_delegate_remote import AgentDelegateRemoteNode
+    from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
+    from maistro.graph.nodes.llm_summarize import LlmSummarizeNode
+    from maistro.graph.nodes.rsi_quota_pace_trigger import RsiQuotaPaceTriggerNode
+
+    if kind == "agent.spawn_harness":
+        return AgentSpawnHarnessNode(adapters=harness_adapters, effect_context=effect_context)
+    if kind == "llm.summarize":
+        # The shipped model path crosses the governed model egress (#56):
+        # the node resolves Bindings and files Invocations against the same
+        # authorities the container's own effect nodes use.
+        return LlmSummarizeNode(effect_context=effect_context)
+    if kind == "rsi.quota_pace_trigger":
+        return RsiQuotaPaceTriggerNode(usage_log)
+    if kind == "agent.delegate_remote":
+        # Previously fell through to `get_node(kind)()`, which constructs
+        # the node with `a2a_delegator=None` and `guest_peers=None` -- so in
+        # the only resolver production uses, every delegation returned
+        # `status="failed"` with "no a2a_delegator configured". A returned
+        # failure reads like the target agent declining, so nothing
+        # surfaced it (#147). `run_store` is what lets the node file the
+        # delegated work as a canonical child Run.
+        return AgentDelegateRemoteNode(
+            a2a_delegator=a2a_delegator, guest_peers=guest_peers, run_store=run_store
+        )
+    return None
+
+
 def build_node_resolver(
     *,
     harness_adapters: dict[str, HarnessAdapter] | None = None,
@@ -2155,8 +2201,6 @@ def build_node_resolver(
     """
     from maistro.graph.definitions import Graph
     from maistro.graph.nodes import get_node
-    from maistro.graph.nodes.agent_delegate_remote import AgentDelegateRemoteNode
-    from maistro.graph.nodes.rsi_quota_pace_trigger import RsiQuotaPaceTriggerNode
 
     resolved_adapters = harness_adapters if harness_adapters is not None else {}
     resolved_usage_log = usage_log if usage_log is not None else get_default_usage_log()
@@ -2183,25 +2227,15 @@ def build_node_resolver(
         else:
             raise TypeError("node resolver requires canonical Graph or raw DAG snapshot")
 
-        if kind == "agent.spawn_harness":
-            return AgentSpawnHarnessNode(
-                adapters=resolved_adapters, effect_context=resolved_effect_context
-            )
-        if kind == "rsi.quota_pace_trigger":
-            return RsiQuotaPaceTriggerNode(resolved_usage_log)
-        if kind == "agent.delegate_remote":
-            # Previously fell through to `get_node(kind)()`, which constructs
-            # the node with `a2a_delegator=None` and `guest_peers=None` -- so in
-            # the only resolver production uses, every delegation returned
-            # `status="failed"` with "no a2a_delegator configured". A returned
-            # failure reads like the target agent declining, so nothing
-            # surfaced it (#147). `run_store` is what lets the node file the
-            # delegated work as a canonical child Run.
-            return AgentDelegateRemoteNode(
-                a2a_delegator=a2a_delegator,
-                guest_peers=guest_peers,
-                run_store=run_store,
-            )
-        return get_node(kind)()
+        injected = _di_node(
+            kind,
+            harness_adapters=resolved_adapters,
+            usage_log=resolved_usage_log,
+            a2a_delegator=a2a_delegator,
+            guest_peers=guest_peers,
+            run_store=run_store,
+            effect_context=resolved_effect_context,
+        )
+        return injected if injected is not None else get_node(kind)()
 
     return _resolver
