@@ -8,12 +8,14 @@ boundary in :mod:`attempt_executor`.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.runs.model import Run, RunStatus
+from maistro.runs.recovery_events import RecoveryEventSink
 from maistro.runs.store import RunStore
 from maistro.runtime import ExecutionRuntime
 
@@ -21,6 +23,8 @@ from . import executor as traversal
 from .attempt_executor import LiveAttemptOwned, NodeResolver, resume_durable_graph
 from .protocol import DurableRunStore
 from .types import DurableRunRecord
+
+logger = logging.getLogger(__name__)
 
 QueuedRunPredicate = Callable[[Run], bool]
 QueuedNodeResolverFactory = Callable[[Run], NodeResolver]
@@ -60,14 +64,35 @@ async def resume_due_graph_runs(
     *,
     store: DurableRunStore,
     run_store: RunStore,
-    node_resolver: NodeResolver,
+    node_resolver: NodeResolver | None = None,
+    node_resolver_factory: QueuedNodeResolverFactory | None = None,
     runtime: ExecutionRuntime | None = None,
     now: datetime | None = None,
     limit: int = 100,
+    eligible: QueuedRunPredicate | None = None,
+    events: RecoveryEventSink | None = None,
 ) -> int:
-    """Resume elapsed durable Graph waits or expired recovery claims."""
+    """Resume elapsed durable Graph waits or expired recovery claims.
+
+    Exactly one of ``node_resolver`` (one resolver answers every candidate) or
+    ``node_resolver_factory`` (the resolver is rebuilt from each candidate's
+    own durable Run facts) must be supplied. The factory is the shape a
+    production wakeup consumer needs: which node implementation may execute a
+    resumed Graph is recorded on the Run itself, not in the waking process's
+    memory (#62, #837).
+
+    ``eligible`` is the same ownership guard ``recover_queued_graph_runs``
+    takes: a tick that wakes due continuations without it would execute
+    another consumer's paused work with this process's resolvers. The guard
+    reads the Run, and the optimistic continuation version plus the canonical
+    Attempt lease/fence still decide admission regardless of what it says.
+
+    ``events`` carries the resume's crash dispositions onto the canonical
+    Event stream when the caller provides a sink.
+    """
     if limit <= 0:
         return 0
+    _require_resolver_choice(node_resolver, node_resolver_factory)
 
     await _reconcile_if_supported(store, limit=limit)
     moment = now if now is not None else datetime.now(UTC)
@@ -77,13 +102,20 @@ async def resume_due_graph_runs(
     for candidate in candidates:
         if not _is_resume_due(candidate, moment):
             continue
+        if eligible is not None and not eligible(candidate.run):
+            continue
         try:
             await resume_durable_graph(
                 candidate.run_id,
                 store=store,
-                node_resolver=node_resolver,
+                node_resolver=(
+                    node_resolver
+                    if node_resolver is not None
+                    else node_resolver_factory(candidate.run)
+                ),
                 runtime=runtime,
                 run_store=run_store,
+                events=events,
             )
         except LiveAttemptOwned:
             continue
@@ -142,6 +174,7 @@ async def _resume_queued_candidate(
     run_store: RunStore,
     node_resolver_factory: QueuedNodeResolverFactory,
     runtime: ExecutionRuntime | None,
+    events: RecoveryEventSink | None,
 ) -> bool:
     current = await _claim_initial_continuation(store, run)
     if current is None or current.run.status is not RunStatus.QUEUED:
@@ -154,6 +187,7 @@ async def _resume_queued_candidate(
             node_resolver=node_resolver_factory(run),
             runtime=runtime,
             run_store=run_store,
+            events=events,
         )
     except LiveAttemptOwned:
         return False
@@ -175,8 +209,13 @@ async def recover_queued_graph_runs(
     eligible: QueuedRunPredicate,
     runtime: ExecutionRuntime | None = None,
     limit: int = 100,
+    events: RecoveryEventSink | None = None,
 ) -> int:
-    """Recover admitted durable Graph Runs around checkpoint 1."""
+    """Recover admitted durable Graph Runs around checkpoint 1.
+
+    ``events`` carries each recovery's crash dispositions onto the canonical
+    Event stream when the caller provides a sink.
+    """
     if limit <= 0:
         return 0
 
@@ -190,9 +229,21 @@ async def recover_queued_graph_runs(
             run_store=run_store,
             node_resolver_factory=node_resolver_factory,
             runtime=runtime,
+            events=events,
         ):
             recovered += 1
     return recovered
+
+
+def _require_resolver_choice(
+    node_resolver: NodeResolver | None,
+    node_resolver_factory: QueuedNodeResolverFactory | None,
+) -> None:
+    """Enforce the exactly-one resolver contract the wakeup tick documents."""
+    if (node_resolver is None) == (node_resolver_factory is None):
+        raise ValueError(
+            "resume_due_graph_runs requires exactly one of node_resolver or node_resolver_factory"
+        )
 
 
 __all__ = ["recover_queued_graph_runs", "resume_due_graph_runs"]

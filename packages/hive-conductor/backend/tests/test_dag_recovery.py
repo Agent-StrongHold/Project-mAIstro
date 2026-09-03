@@ -257,3 +257,97 @@ async def test_starting_the_recovery_cadence_twice_keeps_one_task(
     assert recovery_driver._task is first
 
     await recovery_driver.stop_dag_recovery()
+
+
+@pytest.mark.asyncio
+async def test_wakeup_owns_only_hive_legacy_admissions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The timed half of the recovery cadence wakes due continuations through
+    the canonical seam with the same ownership rule as the bootstrap half, and
+    reports its crash dispositions on the Container's canonical Event bus."""
+    import services.canonical_dag_runner as runner
+
+    event_bus = object()
+    container = SimpleNamespace(
+        graph_run_store=object(),
+        run_store=object(),
+        event_bus=event_bus,
+    )
+    captured: dict = {}
+
+    async def _wake(**kwargs):
+        captured.update(kwargs)
+        return 2
+
+    monkeypatch.setattr(runner, "_container", lambda: container)
+    monkeypatch.setattr(runner, "resume_due_graph_runs", _wake)
+
+    assert await runner.wake_due_dag_runs(limit=5) == 2
+    assert captured["store"] is container.graph_run_store
+    assert captured["run_store"] is container.run_store
+    assert captured["events"] is event_bus
+    assert captured["limit"] == 5
+
+    owned, _ = _queued_run(source="hive_legacy_dag")
+    foreign, _ = _queued_run(source="some_other_consumer")
+    assert captured["eligible"](owned) is True
+    assert captured["eligible"](foreign) is False
+
+
+@pytest.mark.asyncio
+async def test_wakeup_is_a_noop_without_a_container_or_graph_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Standalone Conductor deployments keep today's behavior: no Container,
+    no canonical tick, no fabricated work."""
+    import services.canonical_dag_runner as runner
+
+    async def _boom(**kwargs):  # pragma: no cover - must not be reached
+        raise AssertionError("wake_due_dag_runs must not reach the seam without a Container")
+
+    monkeypatch.setattr(runner, "resume_due_graph_runs", _boom)
+
+    monkeypatch.setattr(runner, "_container", lambda: None)
+    assert await runner.wake_due_dag_runs() == 0
+
+    monkeypatch.setattr(
+        runner, "_container", lambda: SimpleNamespace(graph_run_store=None, run_store=object())
+    )
+    assert await runner.wake_due_dag_runs() == 0
+
+
+@pytest.mark.asyncio
+async def test_recovery_cadence_wakes_due_runs_and_survives_a_failed_half(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cadence's two halves are isolated: a bootstrap failure must not
+    silence the timed wakeup in the same tick, and neither kills the loop."""
+    import services.dag_recovery as cadence
+
+    calls: list[str] = []
+
+    async def _failing_recover():
+        calls.append("recover")
+        raise RuntimeError("one malformed queued candidate")
+
+    async def _waking():
+        calls.append("wake")
+        return 1
+
+    # The cadence bound these names at import, so the seam is patched where
+    # the loop resolves them: on the cadence module itself.
+    monkeypatch.setattr(cadence, "recover_stranded_dag_runs", _failing_recover)
+    monkeypatch.setattr(cadence, "wake_due_dag_runs", _waking)
+    # Real asyncio.sleep at a test cadence, so the loop spins without
+    # wall-clock delay and without patching the shared asyncio module.
+    monkeypatch.setattr(cadence, "_INTERVAL_S", 0.01)
+
+    cadence.start_dag_recovery()
+    try:
+        await asyncio.wait_for(_observed(calls, ["recover", "wake", "recover", "wake"]), timeout=5)
+    finally:
+        await cadence.stop_dag_recovery()
+
+
+async def _observed(calls: list[str], expected: list[str]) -> None:
+    while calls[: len(expected)] != expected:
+        await asyncio.sleep(0.01)
