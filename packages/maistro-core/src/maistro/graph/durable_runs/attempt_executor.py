@@ -326,7 +326,18 @@ async def _walk(
     )
     steps = 0
 
-    with bind_execution_context(run_id=record.run_id):
+    # The Run record is already in hand here, so binding its Workspace and
+    # Project costs no read — the exact "outer bind supplies them for free
+    # where they are known" case ADR-083026-1cb1 reserved this seam for. Until
+    # now nothing on any real path bound them at all: `execute_node` holds only
+    # `run_id`, and the HTTP seam holds only `request_id`, so an event emitted
+    # inside a durable execution filled `project_id` only if its producer set
+    # it by hand, and a log line named a Run with no Workspace (#63).
+    with bind_execution_context(
+        run_id=record.run_id,
+        workspace_id=record.run.workspace_id,
+        project_id=record.run.project_id,
+    ):
         return await _walk_until_settled(
             record,
             graph=graph,

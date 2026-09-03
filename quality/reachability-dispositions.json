@@ -2,18 +2,6 @@
   "_comment": "One disposition and owner for every module in reachability-baseline.json, grouped by coherent subsystem (#33). CONNECT = correct design, no production entry point yet; names the root that would reach it. LIBRARY = published surface or test scaffolding, unreachable by construction and honestly so. RETIRE = superseded; names what replaces it. Checked by scripts/check-reachability-dispositions.py: every baseline module must appear in exactly one group, no group may name a module that is not in the baseline, and every subsystem must be a row in docs/architecture/CONVERGENCE-MATRIX.md. A RETIRE disposition is a decision, not permission to delete -- deletion requires behavioural parity first (#35).",
   "groups": [
     {
-      "id": "hive-privilege-and-protocols",
-      "subsystem": "Agent Conductor HTTP surface",
-      "disposition": "CONNECT",
-      "rationale": "Privilege middleware and the agent/telemetry protocols are the Conductor's half of ADR-028 and ADR-037; they are written but never installed on the app. Wiring them is #60/#63 work.",
-      "root": "main.py middleware registration",
-      "modules": [
-        "@flat/hive-conductor/middleware.privilege",
-        "@flat/hive-conductor/protocols.agent",
-        "@flat/hive-conductor/protocols.telemetry"
-      ]
-    },
-    {
       "id": "hive-unwired-services",
       "subsystem": "Agent Conductor services",
       "disposition": "CONNECT",
