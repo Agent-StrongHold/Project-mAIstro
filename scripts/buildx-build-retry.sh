@@ -36,12 +36,12 @@
 #
 # Env:
 #   BUILDX_RETRY_ATTEMPTS  attempts (default 2)
-#   BUILDX_ATTEMPT_TIMEOUT hard deadline per attempt (default 8m; GNU timeout syntax)
+#   BUILDX_ATTEMPT_TIMEOUT hard deadline per attempt (default 15m; GNU timeout syntax)
 
 set -euo pipefail
 
 ATTEMPTS="${BUILDX_RETRY_ATTEMPTS:-2}"
-ATTEMPT_TIMEOUT="${BUILDX_ATTEMPT_TIMEOUT:-8m}"
+ATTEMPT_TIMEOUT="${BUILDX_ATTEMPT_TIMEOUT:-15m}"
 
 # A zero or negative ATTEMPTS makes the loop below run zero times: the script
 # would reach EOF after `shift` with no explicit exit, which is success --
