@@ -1,5 +1,10 @@
 <!-- Keep it short. The diff explains the what; this explains the why. -->
 
+
+## Closure
+
+- [ ] This PR closes issue(s): `Closes #N` — one per issue, verified the number is an ISSUE not a PR (missing closure keywords force manual closes with receipts; 4+ occurrences this week)
+
 ## Why
 
 ## Checks

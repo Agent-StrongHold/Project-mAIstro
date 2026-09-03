@@ -307,6 +307,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history: the fitness suite resolves its trusted ratchet base
+          # (merge base against origin/develop) the same way quality.yml's
+          # ratchet jobs do; a shallow checkout leaves `origin/develop`
+          # unresolvable, which is a documented non-passing state for a
+          # ratchet, not a pass.
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"

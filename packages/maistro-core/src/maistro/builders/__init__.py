@@ -25,6 +25,7 @@ from maistro.builders.dag import (
 )
 from maistro.builders.graph import PipelineGraph, PipelineNode, RunContext
 from maistro.builders.graph_executor import (
+    CanonicalGraphPipelineExecutor,
     DispatchResult,
     GraphPipelineExecutor,
     PipelineDispatcher,
@@ -58,6 +59,7 @@ __all__ = [
     "BuildersDagResult",
     "BuildersOrchestrator",
     "BuildersRuntime",
+    "CanonicalGraphPipelineExecutor",
     "DagRun",
     "DispatchResult",
     "Gate",
