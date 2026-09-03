@@ -95,6 +95,7 @@ class TestADurableRunNamesItself:
         record = await run_durable_graph(
             _graph(), store=InMemoryDurableRunStore(), node_resolver=_resolver
         )
+        assert record.status is RunStatus.COMPLETED
 
         [seen] = _Watching.seen
         assert seen.workspace_id == "ws-1"

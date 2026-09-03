@@ -28,6 +28,8 @@ from collections.abc import Collection, Generator, Mapping
 from contextlib import AbstractContextManager, contextmanager, suppress
 from typing import Any, cast
 
+from protocols.telemetry import TelemetryPort
+
 from maistro.observability.telemetry_safety import (
     TelemetryTracer,
     mark_span_error,
@@ -36,7 +38,6 @@ from maistro.observability.telemetry_safety import (
     set_allowlisted_span_attribute,
     set_span_attributes,
 )
-from protocols.telemetry import TelemetryPort
 
 try:
     from opentelemetry import trace as otel_trace
@@ -309,4 +310,4 @@ class LangfuseTelemetry(TelemetryPort):
 
 #: The composed default. Call sites import this, not the concrete class, so
 #: swapping backends is one line here and zero lines elsewhere.
-telemetry: "LangfuseTelemetry" = LangfuseTelemetry()
+telemetry: LangfuseTelemetry = LangfuseTelemetry()

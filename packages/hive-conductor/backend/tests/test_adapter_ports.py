@@ -52,10 +52,9 @@ def test_both_telemetry_backends_satisfy_the_port() -> None:
     runtime-checkable isinstance is the same fact restated for a reader of the
     wiring — an offline deployment and a traced one hold the same boundary.
     """
-    from protocols.telemetry import TelemetryPort
-
     from adapters.telemetry_langfuse import LangfuseTelemetry
     from adapters.telemetry_noop import NoopTelemetry
+    from protocols.telemetry import TelemetryPort
 
     assert isinstance(NoopTelemetry(), TelemetryPort)
     assert isinstance(LangfuseTelemetry(), TelemetryPort)
