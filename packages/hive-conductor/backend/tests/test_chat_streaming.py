@@ -195,6 +195,23 @@ async def test_streaming_tool_call_then_streamed_answer(monkeypatch) -> None:
     assert events[-1]["content"] == "All clear"
 
 
+class _CaptureTelemetry:
+    """A TelemetryPort stub whose spans record what crossed the boundary.
+
+    The chat path holds the port (not the concrete adapter) since #63 wired
+    it, so tests patch the seam the way a deployment swaps the backend.
+    """
+
+    def __init__(self, sink: Any) -> None:
+        self._sink = sink
+
+    def trace(self, **kwargs: Any) -> Any:
+        return self._sink(kwargs.pop("name", "telemetry.operation"), **kwargs)
+
+    def generation(self, **kwargs: Any) -> Any:
+        return self._sink(kwargs.pop("name", "telemetry.operation"), **kwargs)
+
+
 async def test_streaming_telemetry_call_sites_are_content_free(monkeypatch) -> None:
     credential_probe = "".join(("sk-", "live_ABCDE", "FGHIJKLMNO", "PQRSTUVWXY", "Z123456"))
     traces: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
@@ -208,7 +225,7 @@ async def test_streaming_telemetry_call_sites_are_content_free(monkeypatch) -> N
         traces.append((name, kwargs, context))
         yield context
 
-    monkeypatch.setattr("services.chat_completion.trace_llm", capture_trace)
+    monkeypatch.setattr("services.chat_completion.telemetry", _CaptureTelemetry(capture_trace))
     monkeypatch.setattr("services.chat_completion._build_system_prompt", lambda uid: "SYS")
 
     async def fake_exec(tool_name: str, args: dict[str, Any], user_id: str) -> dict[str, Any]:
@@ -284,7 +301,7 @@ async def test_stream_span_measures_first_model_await_and_closes_before_yield(
             timeline.append("stream_resumed")
             yield _content("second")
 
-    monkeypatch.setattr("services.chat_completion.trace_llm", capture_trace)
+    monkeypatch.setattr("services.chat_completion.telemetry", _CaptureTelemetry(capture_trace))
     monkeypatch.setattr("services.chat_completion._build_system_prompt", lambda uid: "SYS")
     monkeypatch.setattr("services.chat_completion.build_llm_port", _MeasuredLLM)
     req = ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}], model="model")
@@ -308,7 +325,7 @@ async def test_stream_turn_exits_when_provider_stream_is_empty(monkeypatch) -> N
         traces.append((name, kwargs))
         yield {}
 
-    monkeypatch.setattr("services.chat_completion.trace_llm", capture_trace)
+    monkeypatch.setattr("services.chat_completion.telemetry", _CaptureTelemetry(capture_trace))
     req = ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}], model="test-model")
     content_out: list[str] = []
     events = [
@@ -350,7 +367,7 @@ async def test_complete_turn_uses_non_streaming_telemetry_span(monkeypatch) -> N
         async def complete(self, req: ChatCompletionRequest) -> dict[str, Any]:
             return {"choices": [{"message": {"content": "done"}}]}
 
-    monkeypatch.setattr("services.chat_completion.trace_llm", capture_trace)
+    monkeypatch.setattr("services.chat_completion.telemetry", _CaptureTelemetry(capture_trace))
     req = ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}], model="test-model")
     out = await _complete_turn(
         _CompleteLLM(),
@@ -459,7 +476,7 @@ async def test_streaming_final_synthesis_uses_non_streaming_span(monkeypatch) ->
         traces.append((name, kwargs))
         yield {}
 
-    monkeypatch.setattr("services.chat_completion.trace_llm", capture_trace)
+    monkeypatch.setattr("services.chat_completion.telemetry", _CaptureTelemetry(capture_trace))
     monkeypatch.setattr("services.chat_completion._build_system_prompt", lambda uid: "SYS")
 
     async def fake_exec(tool_name: str, args: dict[str, Any], user_id: str) -> dict[str, Any]:
@@ -519,7 +536,7 @@ async def test_stream_span_closes_when_first_model_await_is_cancelled(
             await asyncio.Event().wait()
             yield _content("unreachable")
 
-    monkeypatch.setattr("services.chat_completion.trace_llm", capture_trace)
+    monkeypatch.setattr("services.chat_completion.telemetry", _CaptureTelemetry(capture_trace))
     monkeypatch.setattr("services.chat_completion._build_system_prompt", lambda uid: "SYS")
     monkeypatch.setattr("services.chat_completion.build_llm_port", _BlockingLLM)
     req = ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}], model="model")

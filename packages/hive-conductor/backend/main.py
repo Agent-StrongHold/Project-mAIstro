@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from logging_setup import configure_logging
 from middleware.auth import AuthMiddleware
+from middleware.privilege import PrivilegeMiddleware
 from middleware.request_log import RequestLogMiddleware
 from middleware.security_headers import SecurityHeadersMiddleware
 from pydantic import BaseModel, ConfigDict
@@ -266,6 +267,12 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.add_middleware(RequestLogMiddleware)
+    # Privilege boundary — added before Auth so Auth wraps it and the
+    # principal is known when a path-level privilege check runs. Today the
+    # policy table is empty and the middleware passes through; installing the
+    # seam now means the first admin-path restriction is a table entry, not an
+    # application rewiring (#63, the disposition root this fulfils).
+    app.add_middleware(PrivilegeMiddleware)
     app.add_middleware(AuthMiddleware)
 
     # Security headers — the true outermost middleware (added last), so

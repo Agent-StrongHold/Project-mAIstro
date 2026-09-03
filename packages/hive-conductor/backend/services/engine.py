@@ -15,6 +15,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from adapters.task_backend import TaskRecord
+from protocols.agent import AgentPort
 
 logger = logging.getLogger("hive.engine")
 
@@ -30,7 +31,13 @@ __all__ = ["EngineService", "TaskRecord", "get_engine", "start_engine", "stop_en
 
 class EngineService:
     def __init__(self) -> None:
-        self._agent_port: Any = None
+        # The port, not a concrete adapter: the engine's job is to hold the
+        # seam (ADR-037's provider-agnostic telemetry/agent boundary), and
+        # every consumer below routes through `route()` rather than the
+        # bridge's own surface. `_bind_agent_port` is the one assignment
+        # point, so the conformance of both implementations is checked where
+        # they are chosen, not assumed where they are used (#63).
+        self._agent_port: AgentPort | None = None
         self._backend: Any = None
         self._configured = False
         self._capabilities: Any = None
@@ -148,7 +155,7 @@ class EngineService:
             bridge = MaistroCoreBridge()
             try:
                 await bridge.start(settings)
-                self._agent_port = bridge
+                self._bind_agent_port(bridge)
                 self._configured = True
             except Exception as exc:
                 # The module logger, not a function-local `import logging`:
@@ -157,9 +164,9 @@ class EngineService:
                 # raised UnboundLocalError whenever this branch was not taken —
                 # turning any failure below into a different, wrong error.
                 logger.warning("maistro-core bridge failed (%s) — falling back to stub", exc)
-                self._agent_port = StubAgentPort()
+                self._bind_agent_port(StubAgentPort())
         else:
-            self._agent_port = StubAgentPort()
+            self._bind_agent_port(StubAgentPort())
 
         self._wire_capabilities(settings)
         self._wire_outcome_store()
@@ -249,6 +256,21 @@ class EngineService:
                 )
         except Exception as exc:
             logger.warning("TaskBackend setup failed (%s) — mission dispatch disabled", exc)
+
+    def _bind_agent_port(self, port: AgentPort) -> None:
+        """Assign the one agent seam, checking the port contract as chosen.
+
+        `AgentPort` is runtime-checkable, so the structural claim both
+        adapters make is verified at the composition point instead of
+        failing later at the first call with a different AttributeError for
+        each implementation (#63).
+        """
+        if not isinstance(port, AgentPort):
+            raise TypeError(
+                f"{type(port).__name__} does not satisfy AgentPort; "
+                "the engine cannot route chat through it"
+            )
+        self._agent_port = port
 
     def _wire_capabilities(self, settings: Settings) -> None:
         """Source the registry (Container when configured, else canonical) and

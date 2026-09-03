@@ -21,6 +21,10 @@ services:
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}
       - LITELLM_API_KEY=${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}
       - LITELLM_PROXY_KEY=${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}
+      # Langfuse coordinates for the Langfuse service's own UI/API. Trace
+      # export from this stack is not driven by these: spans leave only over
+      # OTLP, and nothing here sets OTEL_EXPORTER_OTLP_ENDPOINT (see the
+      # note on the hive-conductor service below).
       - LANGFUSE_HOST=http://langfuse:3000
       - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
       - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
@@ -185,7 +189,11 @@ services:
       - MAISTRO_BASE_URL=http://maistro-engine:8000
       - MAISTRO_ROUTER_API_KEY=${MAISTRO_ACCESS_TOKEN:-}
       - WORKSPACE_SCOPE_KEY=${WORKSPACE_SCOPE_KEY:-}
-      # Telemetry (optional; blank keys disable it).
+      # Langfuse credentials for the Langfuse service's own UI/API. These
+      # do NOT enable trace export from this app: the conductor's spans go
+      # out only over OTLP — a build with INSTALL_OBSERVABILITY=1 plus
+      # OTEL_EXPORTER_OTLP_ENDPOINT/HEADERS (see
+      # packages/hive-conductor/backend/adapters/telemetry_langfuse.py).
       - LANGFUSE_BASE_URL=http://langfuse:3000
       - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
       - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}

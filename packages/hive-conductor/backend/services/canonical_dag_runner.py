@@ -15,7 +15,12 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from maistro.graph.definitions import Edge, Graph, Node
-from maistro.graph.durable_runs import RunStatus, recover_queued_graph_runs, run_durable_graph
+from maistro.graph.durable_runs import (
+    RunStatus,
+    recover_queued_graph_runs,
+    resume_due_graph_runs,
+    run_durable_graph,
+)
 from maistro.graph.types import DEFAULT_SYSTEM_PROMPTS, JSON_OUTPUT_SCHEMAS, AgentRole
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run
 from services.dag_agents import _container, get_run_store
@@ -387,6 +392,31 @@ async def recover_stranded_dag_runs(*, limit: int = 100) -> int:
         run_store=container.run_store,
         node_resolver_factory=_recovery_resolver,
         eligible=lambda run: run.provenance.get("admission_source") == "hive_legacy_dag",
+        events=container.event_bus,
+        limit=limit,
+    )
+
+
+async def wake_due_dag_runs(*, limit: int = 100) -> int:
+    """Wake elapsed legacy-DAG timed waits through the canonical resume seam.
+
+    The timed half of #837/#913 reachability: a durable legacy-DAG
+    continuation parked WAITING with an elapsed ``resume_at`` is resumed from
+    its own persisted Run facts, by the same ownership rule the bootstrap
+    half uses. The resolver is rebuilt per Run because which legacy node
+    implementation may execute is durable Run metadata, not state this
+    process holds. Crash dispositions reach the Container's canonical Event
+    bus exactly as ``recover_abandoned_attempts`` reports them (#62).
+    """
+    container = _container()
+    if container is None or container.graph_run_store is None:
+        return 0
+    return await resume_due_graph_runs(
+        store=container.graph_run_store,
+        run_store=container.run_store,
+        node_resolver_factory=_recovery_resolver,
+        eligible=lambda run: run.provenance.get("admission_source") == "hive_legacy_dag",
+        events=container.event_bus,
         limit=limit,
     )
 

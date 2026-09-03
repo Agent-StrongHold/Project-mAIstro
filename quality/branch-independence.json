@@ -41,6 +41,14 @@
       "reason": "This registry is the explicit policy that classifies collaboration-state representations."
     },
     {
+      "id": "compatibility-contracts",
+      "kind": "specification",
+      "paths": [
+        "quality/compatibility-contracts.json"
+      ],
+      "reason": "Reviewed compatibility-window specification: canonical-surface pins and alias dispositions are policy whose change is the substantive change; the fitness suite reads its trusted base through ratchet_provenance, so the candidate copy is not its own oracle."
+    },
+    {
       "id": "direct-dependency-exceptions",
       "kind": "specification",
       "paths": [

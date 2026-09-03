@@ -20,6 +20,19 @@ the same version as the root `VERSION` file.
   longer leave truncated JSON at the staged path. A pre-existing file is
   reused only after parse-validation — existence alone is no longer treated
   as staged input by the CLI's "already staged" skip either.
+### Added
+
+- **Browser sessions are governed at the Playwright boundary (#855).** Every
+  network request a `BrowserClient` browser makes — main-frame navigations,
+  redirect hops, subresources, and the destinations the browser-use agent
+  invents mid-run — now passes a route handler that applies the same canonical
+  outbound destination policy used by ordinary HTTP effects
+  (ADR-082326-5386), *before* the network stack connects. WebSockets are denied
+  outright (Playwright's route layer cannot govern them), service workers are
+  blocked at context creation, and every decision is audited as an origin-only
+  `BrowserNetEvent`. Operators can layer browser-specific origins via
+  `BROWSER_USE_ALLOWED_ORIGINS`; a browser-use build that cannot be handed a
+  guarded context is refused rather than run unguarded.
 
 ### Changed
 

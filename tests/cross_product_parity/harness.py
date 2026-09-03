@@ -91,7 +91,7 @@ BUILDERS = Dependency(
     description="Builders exposes its canonical Graph/Run execution adapter.",
     probes=(
         SourceProbe(
-            "packages/maistro-core/src/maistro/builders/canonical_execution.py",
+            "packages/maistro-core/src/maistro/builders/graph_executor.py",
             required_tokens=("class CanonicalGraphPipelineExecutor",),
         ),
     ),

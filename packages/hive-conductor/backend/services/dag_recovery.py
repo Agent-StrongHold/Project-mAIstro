@@ -1,8 +1,10 @@
-"""System recovery cadence for stranded canonical Hive DAG Runs (#835/#837).
+"""System recovery cadence for stranded and due canonical Hive DAG Runs (#835/#837, #62).
 
 This is not a scheduler and owns no execution lifecycle. It periodically asks
 the canonical recovery seam to reconcile only Runs admitted by the legacy Hive
-DAG adapter. The canonical Run, continuation, Attempt lease, and fence remain
+DAG adapter: bootstrap recovery for QUEUED admissions stranded around
+checkpoint 1, and timed wakeup for continuations whose persisted ``resume_at``
+has elapsed. The canonical Run, continuation, Attempt lease, and fence remain
 the sole authorities for whether physical work may start.
 """
 
@@ -12,7 +14,7 @@ import asyncio
 import contextlib
 import logging
 
-from services.canonical_dag_runner import recover_stranded_dag_runs
+from services.canonical_dag_runner import recover_stranded_dag_runs, wake_due_dag_runs
 
 logger = logging.getLogger("hive.dag_recovery")
 _INTERVAL_S = 10.0
@@ -33,6 +35,17 @@ async def _run() -> None:
             # failures visible to this boundary; this cadence logs them and
             # retries on the next bounded tick rather than killing the process.
             logger.exception("legacy_dag_recovery_tick_failed")
+        try:
+            woken = await wake_due_dag_runs()
+            if woken:
+                logger.info("legacy_dag_wakeup resumed=%d", woken)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Same discipline as the bootstrap half: one bad candidate must not
+            # silence the tick or the other half. The canonical seam re-raises
+            # only for a record still due after failing; the next tick retries.
+            logger.exception("legacy_dag_wakeup_tick_failed")
         await asyncio.sleep(_INTERVAL_S)
 
 

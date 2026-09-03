@@ -21,6 +21,7 @@ from maistro.runs.execution import AttemptExecutionService
 from maistro.runs.lifecycle import lease_is_expired, transition_path, transition_run
 from maistro.runs.model import Attempt, AttemptStatus, NodeRun, Run, RunStatus
 from maistro.runs.reconciliation import AttemptLifecycleReconciler, CancellationCause
+from maistro.runs.recovery_events import RecoveryEventSink
 from maistro.runs.store import RunIntegrityError, RunStore
 from maistro.runtime import ExecutionRuntime, PythonExecutionRuntime
 
@@ -30,6 +31,10 @@ from .execution_store import DurableRunExecutionStore
 from .protocol import DurableRunStore
 from .spine import mirror_lifecycle
 from .types import DurableRunRecord
+
+# Where resume-side dispositions say they came from when they reach the
+# canonical Event stream (#62).
+_RESUME_DISPOSITION_SOURCE = "maistro.graph.durable_runs.attempt_executor"
 
 NodeResolver = traversal.NodeResolver
 
@@ -97,6 +102,7 @@ async def run_durable_graph(
     provenance: Mapping[str, Any] | None = None,
     blackboard_metadata: Mapping[str, Any] | None = None,
     run_store: RunStore | None = None,
+    events: RecoveryEventSink | None = None,
 ) -> DurableRunRecord:
     """Start a durable Graph whose physical node work crosses the Attempt firewall.
 
@@ -119,6 +125,12 @@ async def run_durable_graph(
     That ordering makes process death before/after the continuation write
     rediscoverable. Without a spine, the pre-convergence in-memory mint is
     unchanged.
+
+    ``events`` is the optional recovery sink a resume-through-recovery caller
+    threads so crash dispositions reach the canonical Event stream (#62). It
+    is deliberately not required: a caller that starts fresh work has no
+    dispositions to report, and refusing to run without a listener would make
+    the events path load-bearing for execution it only observes.
     """
     if run_store is not None:
         run = await _validated_admitted_run(
@@ -155,6 +167,7 @@ async def run_durable_graph(
             node_resolver=node_resolver,
             runtime=runtime,
             run_store=run_store,
+            events=events,
         )
     return await _walk(
         record,
@@ -172,8 +185,14 @@ async def resume_durable_graph(
     node_resolver: NodeResolver,
     runtime: ExecutionRuntime | None = None,
     run_store: RunStore | None = None,
+    events: RecoveryEventSink | None = None,
 ) -> DurableRunRecord:
-    """Claim and resume persisted Graph work through canonical physical evidence."""
+    """Claim and resume persisted Graph work through canonical physical evidence.
+
+    ``events`` carries the crash-recovery dispositions this resume applies onto
+    the canonical Event stream (#62). Without a sink the resume behaves exactly
+    as before; the dispositions themselves are persisted facts either way.
+    """
     record = await store.get(run_id)
     if record is None:
         raise KeyError(f"no such run: {run_id!r}")
@@ -187,7 +206,7 @@ async def resume_durable_graph(
         raise ValueError(f"cannot resume run in status {record.run.status!r}")
 
     spine = await traversal._canonical_spine(record, run_store)
-    record = await _reconcile_orphaned_attempts(record, store=store, run_store=spine)
+    record = await _reconcile_orphaned_attempts(record, store=store, run_store=spine, events=events)
 
     claim_until = datetime.now(UTC) + GRAPH_RECOVERY_CLAIM_TTL
     record = await traversal._checkpoint(
@@ -230,10 +249,15 @@ async def _reconcile_orphaned_attempts(
     *,
     store: DurableRunStore,
     run_store: RunStore | None = None,
+    events: RecoveryEventSink | None = None,
 ) -> DurableRunRecord:
     """Terminalize process-lost active Attempts and reconcile their NodeRuns."""
     execution_store = DurableRunExecutionStore(store, run_id=record.run_id, run_store=run_store)
-    lifecycle = AttemptLifecycleReconciler(execution_store)
+    lifecycle = AttemptLifecycleReconciler(
+        execution_store,
+        events=events,
+        source=_RESUME_DISPOSITION_SOURCE,
+    )
     active = tuple(
         attempt
         for attempt in record.attempts
@@ -302,7 +326,18 @@ async def _walk(
     )
     steps = 0
 
-    with bind_execution_context(run_id=record.run_id):
+    # The Run record is already in hand here, so binding its Workspace and
+    # Project costs no read — the exact "outer bind supplies them for free
+    # where they are known" case ADR-083026-1cb1 reserved this seam for. Until
+    # now nothing on any real path bound them at all: `execute_node` holds only
+    # `run_id`, and the HTTP seam holds only `request_id`, so an event emitted
+    # inside a durable execution filled `project_id` only if its producer set
+    # it by hand, and a log line named a Run with no Workspace (#63).
+    with bind_execution_context(
+        run_id=record.run_id,
+        workspace_id=record.run.workspace_id,
+        project_id=record.run.project_id,
+    ):
         return await _walk_until_settled(
             record,
             graph=graph,

@@ -198,16 +198,21 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
 
    It used to be a function each call site had to remember to call. That is still visible in the
    code and is worth stating, because it is the thing this change makes *stop* mattering:
-   measured (`measured-outbound-http`), of the **33** modules in `maistro-core` that can open an
-   outbound connection, **4** call the guard directly. Read as a coverage figure that number is
+   measured (`measured-outbound-http`), of the **34** modules in `maistro-core` that can open an
+   outbound connection, **5** call the guard directly. Read as a coverage figure that number is
    wrong now, and it was the honest figure before — which is the whole argument for moving the
-   control.
+   control. The fifth call site is not a call site at all but a second enforcement seam:
+   `tools/browser/guard.py` applies this policy to every request a Playwright browser context
+   makes (#855), because a browser is not an HTTP client and the httpx transport cannot see
+   where it navigates.
 
    What replaced it: `security/outbound.py` applies the policy at the transport `maistro.http`
    hands to every pooled client (ADR-082326-5386), so a module is covered by routing through the
-   shared pool. Measured (`measured-outbound-seam`) — **32** of the census route through the pool
+   shared pool. Measured (`measured-outbound-seam`) — **33** of the census route through the pool
    and **1** builds its own client. Redirect hops are validated per hop, because httpx re-enters
-   the transport for each one. `tasks/progress_webhook` and `integrations/ntfy` built private
+   the transport for each one; the browser seam re-validates per hop the same way, because
+   Chromium consults the route handler for every navigation, redirect and subresource before the
+   network stack connects. `tasks/progress_webhook` and `integrations/ntfy` built private
    clients and were moved onto the pool so the seam actually reaches them.
 
    The remaining bypass is `cli/_approvals.py`, and it is not an oversight: it builds a
