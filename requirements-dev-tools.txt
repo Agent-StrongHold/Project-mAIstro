@@ -11,7 +11,7 @@ radon>=6.0            # Apache-2.0 — cyclomatic complexity + maintainability
 xenon>=0.9            # GPL? wraps radon; complexity gate  (invoked CLI)
 vulture>=2.11         # MIT — dead-code detection
 lizard>=1.17          # MIT — god-function / param-count detection
-pylint>=3.3           # GPL (invoked CLI) — duplicate-code (R0801)
+pylint>=4.0.8           # GPL (invoked CLI) — duplicate-code (R0801)
 
 # --- /security-scan : permissively-licensed (MIT/Apache/BSD) security stack ---
 bandit>=1.8           # Apache-2.0 — Python SAST
