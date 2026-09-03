@@ -198,7 +198,7 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
 
    It used to be a function each call site had to remember to call. That is still visible in the
    code and is worth stating, because it is the thing this change makes *stop* mattering:
-   measured (`measured-outbound-http`), of the **34** modules in `maistro-core` that can open an
+   measured (`measured-outbound-http`), of the **35** modules in `maistro-core` that can open an
    outbound connection, **5** call the guard directly. Read as a coverage figure that number is
    wrong now, and it was the honest figure before — which is the whole argument for moving the
    control. The fifth call site is not a call site at all but a second enforcement seam:
@@ -208,7 +208,7 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
 
    What replaced it: `security/outbound.py` applies the policy at the transport `maistro.http`
    hands to every pooled client (ADR-082326-5386), so a module is covered by routing through the
-   shared pool. Measured (`measured-outbound-seam`) — **33** of the census route through the pool
+   shared pool. Measured (`measured-outbound-seam`) — **34** of the census route through the pool
    and **1** builds its own client. Redirect hops are validated per hop, because httpx re-enters
    the transport for each one; the browser seam re-validates per hop the same way, because
    Chromium consults the route handler for every navigation, redirect and subresource before the

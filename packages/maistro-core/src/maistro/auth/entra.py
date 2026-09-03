@@ -50,17 +50,6 @@ class EntraIdentityKey:
             object_id=_canonical_uuid_claim(claims.get("oid"), "oid"),
         )
 
-    @classmethod
-    def parse_subject(cls, subject: str) -> EntraIdentityKey:
-        """Recover the structured ``(tid, oid)`` pair from a stored subject."""
-        parts = subject.split(":")
-        if len(parts) != 2:
-            raise ValueError("Entra subject must encode exactly tid:oid")
-        return cls(
-            tenant_id=_canonical_uuid_claim(parts[0], "tid"),
-            object_id=_canonical_uuid_claim(parts[1], "oid"),
-        )
-
 
 def _canonical_uuid_claim(value: object, claim: str) -> str:
     if not isinstance(value, str) or not value:
@@ -68,9 +57,7 @@ def _canonical_uuid_claim(value: object, claim: str) -> str:
     try:
         parsed = UUID(value)
     except (ValueError, AttributeError) as exc:
-        raise OAuthTokenValidationError(
-            f"Entra id_token has no valid {claim} claim"
-        ) from exc
+        raise OAuthTokenValidationError(f"Entra id_token has no valid {claim} claim") from exc
     # Entra directory/object identifiers are UUIDs.  Canonical lowercase text
     # prevents alternate spellings from creating duplicate durable links.
     return str(parsed)

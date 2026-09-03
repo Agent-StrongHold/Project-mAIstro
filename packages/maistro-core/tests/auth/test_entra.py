@@ -6,8 +6,8 @@ import httpx
 import pytest
 
 from maistro.auth.entra import (
-    EntraIdTokenVerifier,
     EntraIdentityKey,
+    EntraIdTokenVerifier,
     build_entra_provider_config,
     canonical_entra_tenant_id,
 )
@@ -56,6 +56,16 @@ def test_entra_tenant_must_be_one_explicit_directory(tenant: str) -> None:
         canonical_entra_tenant_id(tenant)
 
 
+def test_build_entra_provider_config_refuses_blank_client_id() -> None:
+    with pytest.raises(ValueError, match="client_id must not be blank"):
+        build_entra_provider_config(tenant_id=TENANT, client_id="   ")
+
+
+def test_build_entra_provider_config_refuses_scopes_without_openid() -> None:
+    with pytest.raises(ValueError, match="scopes must include openid"):
+        build_entra_provider_config(tenant_id=TENANT, client_id=CLIENT, scopes=("profile",))
+
+
 @pytest.mark.asyncio
 async def test_verifier_normalizes_verified_tid_oid_into_durable_subject() -> None:
     delegate = StubVerifier(
@@ -74,7 +84,6 @@ async def test_verifier_normalizes_verified_tid_oid_into_durable_subject() -> No
 
     assert delegate.calls == 1
     assert claims["sub"] == f"{TENANT}:{OBJECT}"
-    assert EntraIdentityKey.parse_subject(claims["sub"]) == EntraIdentityKey(TENANT, OBJECT)
 
 
 @pytest.mark.asyncio
@@ -143,9 +152,3 @@ def test_email_or_upn_changes_do_not_participate_in_entra_identity_key() -> None
 
     assert first == second
     assert first.subject == f"{TENANT}:{OBJECT}"
-
-
-def test_parse_subject_rejects_ambiguous_or_non_uuid_values() -> None:
-    for subject in (OBJECT, f"{TENANT}:{OBJECT}:extra", f"common:{OBJECT}"):
-        with pytest.raises((ValueError, OAuthTokenValidationError)):
-            EntraIdentityKey.parse_subject(subject)
