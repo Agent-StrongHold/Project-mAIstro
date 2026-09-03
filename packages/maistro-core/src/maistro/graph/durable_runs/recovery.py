@@ -8,7 +8,6 @@ boundary in :mod:`attempt_executor`.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
@@ -23,8 +22,6 @@ from . import executor as traversal
 from .attempt_executor import LiveAttemptOwned, NodeResolver, resume_durable_graph
 from .protocol import DurableRunStore
 from .types import DurableRunRecord
-
-logger = logging.getLogger(__name__)
 
 QueuedRunPredicate = Callable[[Run], bool]
 QueuedNodeResolverFactory = Callable[[Run], NodeResolver]
