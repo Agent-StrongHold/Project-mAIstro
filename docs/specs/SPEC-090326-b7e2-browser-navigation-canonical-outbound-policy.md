@@ -14,16 +14,16 @@ history:
   - status: AC Defined
     date: 2026-09-03
 substrate:
-  - maistro-engine#155
+  - maistro-engine#ADR-082326-5386
 implements: []
 related:
-  - maistro-engine#855
-  - maistro-engine#ADR-082326-5386
+  - maistro-engine#SPEC-070626-a675
 supersedes: []
 superseded-by: []
 blocks: []
 blocked-by: []
 contracts: []
+layer: Tools
 tests:
   - packages/maistro-core/tests/tools/browser/test_net_guard.py
 owners:
