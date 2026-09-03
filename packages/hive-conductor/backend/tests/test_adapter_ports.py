@@ -43,3 +43,51 @@ def test_privilege_middleware_currently_passes_through() -> None:
 
     assert PrivilegeMiddleware.__doc__ is not None
     assert "privilege checks" in PrivilegeMiddleware.__doc__
+
+
+def test_both_telemetry_backends_satisfy_the_port() -> None:
+    """The port is the seam; both backends present it (#63).
+
+    Explicit Protocol subclassing checks conformance at class creation, and
+    runtime-checkable isinstance is the same fact restated for a reader of the
+    wiring — an offline deployment and a traced one hold the same boundary.
+    """
+    from protocols.telemetry import TelemetryPort
+
+    from adapters.telemetry_langfuse import LangfuseTelemetry
+    from adapters.telemetry_noop import NoopTelemetry
+
+    assert isinstance(NoopTelemetry(), TelemetryPort)
+    assert isinstance(LangfuseTelemetry(), TelemetryPort)
+
+
+def test_the_chat_path_holds_the_telemetry_port_not_the_backend() -> None:
+    """`chat_completion` composes through the port singleton, so the backend
+    is chosen in the adapter, not at every span call site."""
+    from adapters import telemetry_langfuse
+    from services import chat_completion
+
+    assert chat_completion.telemetry is telemetry_langfuse.telemetry
+    assert callable(chat_completion.telemetry.trace)
+    assert callable(chat_completion.telemetry.generation)
+
+
+def test_the_engine_holds_the_agent_port_and_checks_it() -> None:
+    """`_bind_agent_port` is the one assignment point and it verifies the
+    port contract, so neither the bridge nor the stub can drift from it
+    silently (#63)."""
+    from adapters.maistro_core import StubAgentPort
+    from protocols.agent import AgentPort
+    from services.engine import EngineService
+
+    engine = EngineService()
+    engine._bind_agent_port(StubAgentPort())
+    assert isinstance(engine._agent_port, AgentPort)
+
+    class _NotAPort:
+        pass
+
+    import pytest
+
+    with pytest.raises(TypeError, match="does not satisfy AgentPort"):
+        engine._bind_agent_port(_NotAPort())  # type: ignore[arg-type]

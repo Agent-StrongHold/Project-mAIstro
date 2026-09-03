@@ -25,7 +25,7 @@ import logging
 import os
 import threading
 from collections.abc import Collection, Generator, Mapping
-from contextlib import contextmanager, suppress
+from contextlib import AbstractContextManager, contextmanager, suppress
 from typing import Any, cast
 
 from maistro.observability.telemetry_safety import (
@@ -36,6 +36,7 @@ from maistro.observability.telemetry_safety import (
     set_allowlisted_span_attribute,
     set_span_attributes,
 )
+from protocols.telemetry import TelemetryPort
 
 try:
     from opentelemetry import trace as otel_trace
@@ -281,3 +282,31 @@ def trace_llm(
                     mark_span_error(span, reporter=_report_once)
             except Exception as exc:
                 _report_once("runtime", type(exc))
+
+
+class LangfuseTelemetry(TelemetryPort):
+    """The TelemetryPort implementation this app composes (#63).
+
+    The port (`protocols.telemetry.TelemetryPort`) is the seam the chat path
+    depends on; this class is the one backend wired today, delegating to this
+    module's content-free spans. It is a wrapper rather than a rewrite: every
+    allowlist, PII check and fail-open rule stays where it already lives and
+    is already tested, and the port adds only the indirection that lets a
+    deployment swap the backend without touching the chat service.
+
+    Subclasses the Protocol explicitly so conformance is checked at class
+    creation, not discovered missing at the first span.
+    """
+
+    def trace(self, **kwargs: Any) -> AbstractContextManager[Any]:
+        """One generic span; `name` selects it (default the safe fallback)."""
+        return trace_llm(kwargs.pop("name", "telemetry.operation"), **kwargs)
+
+    def generation(self, **kwargs: Any) -> AbstractContextManager[Any]:
+        """One LLM-generation span; `name` selects it."""
+        return trace_llm(kwargs.pop("name", "telemetry.operation"), **kwargs)
+
+
+#: The composed default. Call sites import this, not the concrete class, so
+#: swapping backends is one line here and zero lines elsewhere.
+telemetry: "LangfuseTelemetry" = LangfuseTelemetry()

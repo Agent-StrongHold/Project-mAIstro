@@ -15,7 +15,7 @@ from collections.abc import AsyncIterator, Collection
 from typing import Any
 
 from adapters.llm_http import HttpOpenAIProtocolLLM, StubLLMPort
-from adapters.telemetry_langfuse import trace_llm
+from adapters.telemetry_langfuse import telemetry
 from config import get_settings
 from models.schemas import ChatCompletionRequest
 from protocols.llm import LLMPort
@@ -1993,8 +1993,8 @@ async def _stream_turn(
     cancellation or caller work between SSE yields cannot retain OTel context.
     A full-stream span would cross those yields and leak current-span context.
     """
-    with trace_llm(
-        "chat_completion",
+    with telemetry.generation(
+        name="chat_completion",
         model=model,
         allowed_models=allowed_models,
         metadata={"iteration": iteration, "streaming": True},
@@ -2033,8 +2033,8 @@ async def _complete_turn(
     iteration: int,
 ) -> dict[str, Any]:
     """Await one non-streaming model call inside a content-free span."""
-    with trace_llm(
-        "chat_completion",
+    with telemetry.generation(
+        name="chat_completion",
         model=model,
         allowed_models=allowed_models,
         metadata={"iteration": iteration, "streaming": False},
@@ -2194,8 +2194,8 @@ async def run_chat_completion_streaming(  # noqa: C901  streaming state machine
             # cross the external telemetry boundary. The model-provided name
             # exports only when it matches this turn's server-advertised tools;
             # every other value collapses to one fixed sentinel.
-            with trace_llm(
-                "tool_call",
+            with telemetry.trace(
+                name="tool_call",
                 model=model,
                 allowed_models=allowed_models,
                 metadata={"iteration": iteration, "tool_name": name},
