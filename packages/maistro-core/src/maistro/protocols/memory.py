@@ -144,6 +144,15 @@ class EpisodicStore(Protocol):
         """
         ...
 
+    async def produced_by(self, run_id: str, *, org_id: str = "") -> list[EpisodicMemory]:
+        """The memories this Run stored, newest first (#64).
+
+        The same contract `LearningStore.produced_by` set (#709): a blank
+        `run_id` returns nothing rather than every unattributed memory, and the
+        read is org-scoped so the producer's name cannot widen visibility.
+        """
+        ...
+
 
 @runtime_checkable
 class DecayableEpisodicStore(Protocol):
