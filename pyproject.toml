@@ -309,6 +309,17 @@ ignore_missing_imports = true
 module = ["bip_utils"]
 ignore_missing_imports = true
 
+# playwright is the browser extra (#855/#996): installed by `uv sync --all-extras`
+# (the CI type-check env) and baked into the maistro-engine image, absent in
+# minimal installs. The runtime import is already guarded by try/except; this
+# override describes that optionality to mypy so the import needs no per-line
+# ignore — which flags as *unused* precisely in the envs that install the extra
+# (#996 landed with that latent unused-ignore; strict CI surfaced it once the
+# ac-state step ahead of it stopped failing).
+[[tool.mypy.overrides]]
+module = ["playwright", "playwright.*"]
+ignore_missing_imports = true
+
 # aioboto3/botocore ship no py.typed marker. Same shape as the bip-utils note
 # above: this covers missing *stubs*, not a missing install. Deliberately not
 # reaching for `types-aiobotocore` — its stubs are generated per-service and

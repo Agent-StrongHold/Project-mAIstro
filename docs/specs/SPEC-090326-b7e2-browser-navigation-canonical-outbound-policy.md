@@ -15,7 +15,8 @@ history:
     date: 2026-09-03
 substrate:
   - maistro-engine#ADR-082326-5386
-implements: []
+implements:
+  - maistro-engine#ADR-082326-5386
 related:
   - maistro-engine#SPEC-070626-a675
 supersedes: []
