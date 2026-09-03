@@ -1,4 +1,30 @@
+---
+inventory-delta:
+  packages/hive-conductor/backend/tests: -2
+  packages/maistro-core/tests: -170
+  tests/: -1
+---
 # M1 #129 PM-Fleet POC closeout inventory
+
+## Suite inventory delta (retirement deletions)
+
+The retirement deletes executable POC surfaces and their dedicated tests; the
+inventory-delta above records the net collected-node-ID movement against the
+rebased base (`develop@ecf062b3`):
+
+- `packages/maistro-core/tests`: **-170** — dedicated tests for the deleted
+  `agents/pm_runner`, `agents/pm_fleet`, `tools/pm_stubs` modules, the retired
+  PM POC executor edge cases, and the one-shot ledger-diagnostic module
+  removed with its reconciler.
+- `packages/hive-conductor/backend/tests`: **-2** — the Program Pulse
+  queue-path tests that monkeypatched the deleted `get_engine` submission
+  path (`run_program_pulse` is proposal-only after retirement).
+- `tests/`: **-1** — the root-tree direct-effects test for the retired
+  `maistro.agents.pm_llm_call` model-helper seam.
+
+No suite stopped collecting: every suite still collects and the numbers above
+are deletions of retired-behavior tests, verified against
+`develop@ecf062b365bbd87aceea92efbc5ddaea42d18bad`.
 
 Initial reachability audit from `develop@93401f3485ebb815dedc1b0c6b7ad1d7e767fa32` on 2026-08-31. The branch was merged forward to `develop@80b0d82794f15db970c61f7f915a46001b251b88` before final merge validation.
 

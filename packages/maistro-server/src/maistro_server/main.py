@@ -20,8 +20,6 @@ import maistro.agents.conductor as conductor
 import maistro.config.settings as settings_module
 import maistro.memory.store as memory_store
 import maistro.persistence as persistence
-from maistro.agents.catalog import AgentCatalog
-from maistro.agents.pm_fleet import register_pm_fleet
 from maistro.config.database import resolve_database_url, to_asyncpg_dsn
 from maistro.config.settings import Settings, get_settings
 from maistro.container import POSTGRES_SCHEMES, create_container

@@ -103,8 +103,6 @@ async def apply_guidance_and_pulse(
     return out
 
 
-
-
 async def run_program_pulse(
     user_id: str, *, workspace_id: str | None = None, max_actions: int = 4
 ) -> dict[str, Any]:
@@ -123,7 +121,6 @@ async def run_program_pulse(
     roster = pulse_roster(workspace_id)
     actions = propose_autonomous_actions(ctx, roster=roster, max_actions=max_actions)
     suggestions = propose_work_item_suggestions(ctx, user_id)
-
 
     now = datetime.now(UTC).isoformat()
     prog.save_context(ctx.model_copy(update={"last_pulse_at": now, "updated_at": now}))

@@ -161,7 +161,7 @@ async def test_apply_guidance_pulse_exception_swallowed(
 
     monkeypatch.setattr(ph, "run_program_pulse", _boom)
     out = await ph.apply_guidance_and_pulse("u1", "go")
-    assert out["pulse_note"] == "Fleet pulse skipped (engine unavailable)"
+    assert out["pulse_note"] == "Program pulse proposal generation failed."
 
 
 async def test_apply_guidance_max_pulse_actions_zero_skips_pulse(
@@ -187,7 +187,7 @@ async def test_apply_guidance_max_pulse_actions_zero_skips_pulse(
     out = await ph.apply_guidance_and_pulse("u1", "go", max_pulse_actions=0)
     # With max=0, pulse SHOULD NOT be called
     assert pulse_called[0] == 0
-    assert "next pulse" in out["message"]
+    assert out["message"] == "Guidance saved — no autonomous actions were proposed."
 
 
 # --- run_program_pulse --------------------------------------------------
