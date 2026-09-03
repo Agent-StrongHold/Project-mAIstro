@@ -941,6 +941,7 @@
         "packages/maistro-core/src/maistro/graph/durable_runs/protocol.py::unused method 'list_for_project'",
         "packages/maistro-core/src/maistro/graph/durable_runs/protocol.py::unused method 'submit_hitl_answer'",
         "packages/maistro-core/src/maistro/graph/durable_runs/stores.py::unused attribute 'row_factory'",
+        "packages/maistro-core/src/maistro/graph/durable_runs/stores.py::unused method 'cancel_hitl'",
         "packages/maistro-core/src/maistro/graph/durable_runs/stores.py::unused method 'list_for_project'",
         "packages/maistro-core/src/maistro/graph/durable_runs/stores.py::unused method 'list_for_project'",
         "packages/maistro-core/src/maistro/graph/durable_runs/stores.py::unused method 'submit_hitl_answer'",
