@@ -276,7 +276,7 @@ class BrowserClient:
         unregistered worker cannot stand in for a governed request.
         """
         try:
-            from playwright.async_api import async_playwright  # type: ignore[import-not-found]
+            from playwright.async_api import async_playwright
         except ImportError as exc:
             raise BrowserToolError(
                 "playwright not installed in this environment. The "
