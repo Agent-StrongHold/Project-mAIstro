@@ -189,9 +189,7 @@ class TestScopedSelection:
         assert pool.key_ids() == frozenset({"a", "b"})
 
     def test_unknown_strategy_is_refused_rather_than_guessed(self):
-        pool = CredentialPool(
-            "openai", [_rec("a")], cast(SelectionStrategy, "bogus")
-        )
+        pool = CredentialPool("openai", [_rec("a")], cast(SelectionStrategy, "bogus"))
 
         with pytest.raises(ValueError, match="Unknown strategy"):
             pool.select()

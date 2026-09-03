@@ -433,6 +433,7 @@ class TestCooldownMapping:
 
         assert cooldown == 0.0
         assert block is False
+
     def test_rate_limit_classification_without_status_code_still_cools(self):
         # The classifier itself only produces RATE_LIMIT for status 429 (and
         # 402-with-usage-message), both of which earlier branches handle. This
