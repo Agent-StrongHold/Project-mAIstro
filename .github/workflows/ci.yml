@@ -34,7 +34,7 @@ jobs:
   lint-and-type-check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -216,7 +216,7 @@ jobs:
       REQUIRE_AUTH: "false"
       MAISTRO_DRY_RUN: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -271,7 +271,7 @@ jobs:
       REQUIRE_AUTH: "false"
       MAISTRO_DRY_RUN: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -306,7 +306,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Full history: the fitness suite resolves its trusted ratchet base
           # (merge base against origin/develop) the same way quality.yml's
@@ -459,7 +459,7 @@ jobs:
       # its closure.
       MAISTRO_REQUIRE_PG_LEGS: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -518,7 +518,7 @@ jobs:
       # leg skipped — reporting the absence of the gap rather than its closure.
       MAISTRO_REQUIRE_PG_LEGS: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -539,7 +539,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # `docker compose --build` here resolves the same cgr.dev/chainguard
       # base image docker-build's prepull already protects (#204) -- but this
       # job never calls that script, so its compose build has zero registry
@@ -595,7 +595,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Same gap, same fix as hive-conductor-e2e-ui above: this job's
       # `docker compose --build` gets zero registry retry today.
       #
@@ -634,7 +634,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -656,7 +656,7 @@ jobs:
   security:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -676,7 +676,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # buildx + the GitHub Actions cache backend, so an unchanged Dockerfile
       # reuses layers across runs instead of re-pulling and re-installing from
@@ -984,7 +984,7 @@ jobs:
       ACTIONLINT_VERSION: "1.7.7"
       SHELLCHECK_VERSION: "0.10.0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Resolve specialized merge-group scope

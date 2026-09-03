@@ -84,7 +84,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0   # full history: the diff gate needs the merge base
 
@@ -184,7 +184,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Start MinIO
         run: |
           set -euo pipefail
@@ -294,7 +294,7 @@ jobs:
       REQUIRE_AUTH: "false"
       MAISTRO_DRY_RUN: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -350,7 +350,7 @@ jobs:
     timeout-minutes: 15
     needs: [coverage-unit, coverage-archive, coverage-postgres]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0   # full history: the diff gate needs the merge base
 
@@ -546,7 +546,7 @@ jobs:
       MAISTRO_TEST_PG_DSN: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
       DATABASE_URL: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0   # full history for Boy-Scout-Rule diff vs baseline
 
