@@ -10,6 +10,7 @@
       "modules": [
         "@flat/hive-conductor/services.canonical_corpus",
         "@flat/hive-conductor/services.chatbot_integration",
+        "@flat/hive-conductor/services.entra_entitlements",
         "@flat/hive-conductor/services.eval_bootstrap",
         "@flat/hive-conductor/services.onboard_db",
         "@flat/hive-conductor/services.pipeline_orchestrator",
