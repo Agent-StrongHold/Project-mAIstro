@@ -42,3 +42,24 @@ def test_hybrid_does_not_depend_on_break_glass_configuration() -> None:
 
     assert policy.password_login_enabled() is True
     assert policy.password_login_enabled(break_glass=True) is True
+
+
+def test_local_mode_disables_all_oauth_provider_front_doors() -> None:
+    policy = HumanAuthModePolicy(mode="local")
+
+    assert policy.oauth_provider_enabled("entra") is False
+    assert policy.oauth_provider_enabled("oidc") is False
+
+
+def test_entra_only_mode_exposes_only_the_entra_provider() -> None:
+    policy = HumanAuthModePolicy(mode="entra")
+
+    assert policy.oauth_provider_enabled("entra") is True
+    assert policy.oauth_provider_enabled("oidc") is False
+
+
+def test_hybrid_mode_preserves_configured_oauth_provider_support() -> None:
+    policy = HumanAuthModePolicy(mode="hybrid")
+
+    assert policy.oauth_provider_enabled("entra") is True
+    assert policy.oauth_provider_enabled("oidc") is True
