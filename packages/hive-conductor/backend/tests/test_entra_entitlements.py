@@ -110,12 +110,14 @@ def test_group_display_names_cannot_be_used_as_mapping_keys() -> None:
 
 
 def test_case_variant_duplicate_group_ids_are_rejected_after_canonicalization() -> None:
-    upper = GROUP_USER.upper()
+    # GROUP_USER is all digits, so .upper() is a no-op; use a lettered UUID so
+    # the two spellings are genuinely different before canonicalization.
+    lower = "abcdefab-1111-1111-1111-111111111111"
     with pytest.raises(EntraEntitlementPolicyError, match="duplicate Entra group"):
         _policy(
             eligible_groups={
-                GROUP_USER: EntraGroupGrant("user"),
-                upper: EntraGroupGrant("operator"),
+                lower: EntraGroupGrant("user"),
+                lower.upper(): EntraGroupGrant("operator"),
             }
         )
 
