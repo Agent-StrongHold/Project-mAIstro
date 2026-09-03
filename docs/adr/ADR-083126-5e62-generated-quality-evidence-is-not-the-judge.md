@@ -18,6 +18,11 @@ contracts:
   - behavioral
 tests:
   - tests/test_autonomous_merge_quality_classes.py
+ac-modules:
+  AC-1: '@tool/check-autonomous-merge'
+  AC-2: '@tool/check-autonomous-merge'
+  AC-3: '@tool/check-wiring-reads'
+  AC-4: '@tool/check-wiring-reads'
 history:
   - status: Proposed
     date: 2026-08-31
@@ -103,6 +108,24 @@ Stale-branch attribution is a separate problem. Repository-owned queue admission
 uses a current-base-to-prospective-merge diff so changes that landed on
 `develop` after the branch was cut are not charged to the candidate. This ADR
 does not add another stale-diff implementation to the risk classifier.
+
+## Acceptance Criteria
+
+- [ ] **AC-1** Only registry kinds `base_derived` and `generated` downgrade a
+  `quality/**` edit from RED to YELLOW; `specification`, `per_identity_policy`,
+  `folded_notes`, `legacy_shared_aggregate` and `retired_compat` all stay RED.
+- [ ] **AC-2** A classification the registry cannot establish — unknown,
+  malformed, missing, or multiply matched — fails closed to RED rather than
+  granting less scrutiny.
+- [x] **AC-3** The first migrated surface compares against a trusted-base
+  ledger: banking an unread field and writing its justification in one
+  candidate tree still fails, and the verdict names the base commit it was
+  judged against.
+- [x] **AC-4** When the trusted base cannot be resolved, the wiring gate fails
+  rather than falling back to the candidate tree's own copy.
+
+<!-- ac-state: unproven AC-1 - the classifier scripts/check-autonomous-merge.py is baselined unreachable in quality/reachability-baseline.json, so this criterion measures at the passing rung; tests/test_autonomous_merge_quality_classes.py is its evidence and the anchor retrofit remains measured governance debt -->
+<!-- ac-state: unproven AC-2 - same unreachable @tool/check-autonomous-merge anchor as AC-1; the fail-closed behavior is test-proven but the module is not entry-point reachable -->
 
 ## Consequences
 
