@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +4
+  packages/maistro-core/tests: +5
   packages/hive-conductor/backend/tests: +6
 ---
 # claude-glm-issue-63-m1-e3-convergence-tail

@@ -125,9 +125,7 @@ def test_a_child_runs_trace_is_its_own_and_links_back_through_the_parent() -> No
                         parent_node_run_id=ctx.node_run_id,
                     )
                     emitted["child_run_id"] = child.run.run_id
-                stored = await events.append(
-                    EventEnvelope(type="node.ran", workspace_id="w1")
-                )
+                stored = await events.append(EventEnvelope(type="node.ran", workspace_id="w1"))
                 emitted.setdefault(self.kind, stored.event_id)
                 return _NoopOut(done=True)
 

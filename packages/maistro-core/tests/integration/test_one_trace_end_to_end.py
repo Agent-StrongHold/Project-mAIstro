@@ -179,9 +179,7 @@ class TestOneTraceFollowsTheWork:
             ):
                 run = await service.create_run(graph)
                 with pytest.raises(RuntimeError, match="first try fails"):
-                    await service.execute_node(
-                        run.run_id, "node-1", "work", {}, executor=failing
-                    )
+                    await service.execute_node(run.run_id, "node-1", "work", {}, executor=failing)
                 first_node_run = (await store.list_node_runs(run.run_id))[0]
                 await service.retry_node(
                     first_node_run.node_run_id,
