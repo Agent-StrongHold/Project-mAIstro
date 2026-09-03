@@ -2,18 +2,41 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from maistro.agents.hyperagent import (
     RosterAgent,
     propose_actions,
     propose_work_item_suggestions,
 )
 from maistro.agents.pm_capabilities import is_autonomous
-from maistro.agents.pm_fleet import PM_FLEET
 from maistro.agents.program_context import (
     ProgramContext,
     apply_guidance,
     apply_interview_answer,
 )
+from maistro.personas.expander import expand_persona
+from maistro.personas.rubric import load_template
+
+_PM_FLEET_TEMPLATE = (
+    Path(__file__).resolve().parents[2]
+    / "src"
+    / "maistro"
+    / "personas"
+    / "templates"
+    / "pm_fleet.yaml"
+)
+
+
+def _pm_fleet_roster() -> list[RosterAgent]:
+    expanded = expand_persona(load_template(_PM_FLEET_TEMPLATE))
+    return [
+        RosterAgent(
+            name=agent.recipe.name.rsplit(".", 1)[-1],
+            capabilities=frozenset(agent.skills),
+        )
+        for agent in expanded.agents
+    ]
 
 
 def test_interview_advances_and_completes() -> None:
@@ -41,10 +64,7 @@ def test_propose_actions_after_interview() -> None:
     ctx = ProgramContext.empty("carol")
     for answer in ("Prog A", "Goal 1", "Jira", "Dep X", "Lead"):
         ctx = apply_interview_answer(ctx, answer)
-    roster = [
-        RosterAgent(name=defn.name, capabilities=frozenset(defn.capabilities)) for defn in PM_FLEET
-    ]
-    actions = propose_actions(ctx, roster=roster, max_actions=4)
+    actions = propose_actions(ctx, roster=_pm_fleet_roster(), max_actions=4)
     assert len(actions) >= 2
     agents = {a.agent_id for a in actions}
     assert "program_manager" in agents
