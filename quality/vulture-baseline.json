@@ -585,6 +585,7 @@
         "packages/maistro-core/src/maistro/tools/approval/gate.py::unused variable 'approved_at'",
         "packages/maistro-core/src/maistro/tools/approval/types.py::unused variable 'decided_by'",
         "packages/maistro-core/src/maistro/tools/browser/guard.py::unused attribute 'websocket_governed'",
+        "packages/maistro-core/src/maistro/tools/browser/guard.py::unused attribute 'websocket_governed'",
         "packages/maistro-core/src/maistro/tools/browser/types.py::unused variable 'screenshot_b64'",
         "packages/maistro-core/src/maistro/tools/sandbox/microvm.py::unused variable 'kernel_image'",
         "packages/maistro-core/src/maistro/tools/sandbox/microvm.py::unused variable 'memory_mib'",
