@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
 from services.entra_entitlements import (
     EntraEntitlementPolicyError,
     EntraGroupGrant,

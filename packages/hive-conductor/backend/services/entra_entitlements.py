@@ -18,8 +18,9 @@ Security posture:
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Iterable, Literal, Mapping
+from typing import Literal
 from uuid import UUID
 
 MembershipSource = Literal["token", "resolver"]
