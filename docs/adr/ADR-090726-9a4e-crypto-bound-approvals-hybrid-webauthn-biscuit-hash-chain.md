@@ -34,7 +34,7 @@ history:
   - status: Accepted
     date: 2026-09-07
     reason: "Operator ratified the full Hybrid for M2 (decision d5, 2026-09-07): WebAuthn + Biscuit + hash-chained log, all phases 0-4."
-ac:
+ac-modules:
   AC-1: maistro.capabilities.approval_store
   AC-2: maistro.graph.nodes.human_approve_draft
   AC-3: maistro.graph.nodes.human_delegate_to_role
