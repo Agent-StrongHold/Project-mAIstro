@@ -5,13 +5,7 @@ Pydantic-validated config loaded from YAML.
 
 from __future__ import annotations
 
-from typing import Annotated
-
 from pydantic import BaseModel, Field, field_validator
-from pydantic.types import StringConstraints
-
-
-NonBlankStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
 class RoutingConfig(BaseModel):
@@ -147,13 +141,13 @@ class ModelBindingConfig(BaseModel):
     router selection.
     """
 
-    binding_id: NonBlankStr
-    project_id: NonBlankStr
+    binding_id: str = Field(min_length=1, pattern=r"\S")
+    project_id: str = Field(min_length=1, pattern=r"\S")
     workspace_id: str = ""
     node_id: str = ""
     provider_name: str = ""
-    credential_refs: tuple[NonBlankStr, ...] = ()
-    policy_refs: tuple[NonBlankStr, ...] = ()
+    credential_refs: tuple[str, ...] = ()
+    policy_refs: tuple[str, ...] = ()
 
 
 class AgentConfig(BaseModel):
