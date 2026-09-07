@@ -8,6 +8,7 @@ a projection carrying that already-persisted identity and sequence.
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 from maistro.events.bus import Event, EventBus, EventCategory
@@ -54,7 +55,10 @@ def project_legacy_event(event: EventEnvelope) -> Event:
     except ValueError:
         category = EventCategory.SYSTEM
 
-    payload: dict[str, Any] = dict(event.payload)
+    # Compatibility consumers are deliberately mutable. Never expose nested
+    # objects shared with the persisted canonical envelope: one old handler
+    # must not be able to rewrite historical Event facts in an in-memory store.
+    payload: dict[str, Any] = copy.deepcopy(event.payload)
     payload[CANONICAL_EVENT_METADATA] = {
         "event_id": event.event_id,
         "stream_id": event.stream_id,

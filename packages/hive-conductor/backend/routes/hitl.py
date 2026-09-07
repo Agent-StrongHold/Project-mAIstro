@@ -26,7 +26,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
+from middleware.auth import resolve_principal
 from pydantic import BaseModel, ConfigDict, Field
 
 from maistro.graph.durable_runs import expire_hitl_pauses
@@ -73,6 +74,27 @@ def _store() -> Any:
     from services.dag_agents import get_run_store
 
     return get_run_store()
+
+
+def _session_principal(request: Request) -> str:
+    """The verified session principal behind this request, never "system".
+
+    AuthMiddleware stamps ``request.state.user`` for every authenticated
+    ``/v1/`` request after resolving the live session; reading that back keeps
+    one resolver and one revocation check (ADR-077) per request. The fallback
+    re-resolves from the cookie in case a caller reaches the handler without
+    the middleware's stamp. A request that still has no principal is recorded
+    as *unauthenticated* rather than as the system: an audit trail that names
+    a principal who was never verified overclaims in exactly the way the
+    crypto-bound approval record (#329 / ADR-090726-9a4e) exists to prevent —
+    a human decision must name a verified human, not a convenient default.
+    """
+    user = getattr(request.state, "user", None) or resolve_principal(
+        request.cookies, request.headers.get("Authorization")
+    )
+    if user is None:
+        return "unauthenticated"
+    return str(user.get("username") or user.get("id") or "unverified")
 
 
 def _pending_items(record: Any) -> list[PendingHumanWork]:
@@ -133,7 +155,7 @@ async def expire_human_work(limit: int = 100) -> dict[str, Any]:
 
 
 @router.post("/{run_id}/{node_id}/cancel")
-async def cancel_human_work(run_id: str, node_id: str) -> dict[str, Any]:
+async def cancel_human_work(run_id: str, node_id: str, request: Request) -> dict[str, Any]:
     """Request canonical cancellation of one durable human pause."""
     store = _store()
     try:
@@ -143,7 +165,9 @@ async def cancel_human_work(run_id: str, node_id: str) -> dict[str, Any]:
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    log_audit("hitl_cancel", "system", target=run_id, detail={"node_id": node_id})
+    log_audit(
+        "hitl_cancel", _session_principal(request), target=run_id, detail={"node_id": node_id}
+    )
     return {
         "run_id": run_id,
         "node_id": node_id,
@@ -152,7 +176,9 @@ async def cancel_human_work(run_id: str, node_id: str) -> dict[str, Any]:
 
 
 @router.post("/{run_id}/{node_id}/answer")
-async def answer_human_work(run_id: str, node_id: str, body: HumanAnswer) -> dict[str, Any]:
+async def answer_human_work(
+    run_id: str, node_id: str, body: HumanAnswer, request: Request
+) -> dict[str, Any]:
     """Answer one paused node, resuming its Run.
 
     The store performs the validation and the state change; this maps its three
@@ -207,7 +233,12 @@ async def answer_human_work(run_id: str, node_id: str, body: HumanAnswer) -> dic
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    log_audit("hitl_answer", "system", target=run_id, detail={"node_id": node_id})
+    # The audit record names the verified principal who answered, not "system"
+    # (#329 / ADR-090726-9a4e): this write settles a human decision, so its
+    # evidence must say which human.
+    log_audit(
+        "hitl_answer", _session_principal(request), target=run_id, detail={"node_id": node_id}
+    )
     return {
         "run_id": run_id,
         "node_id": node_id,
