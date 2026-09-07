@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 import time
+from typing import Any
 
 from maistro.credentials.types import (
     CredentialRecord,
@@ -29,6 +30,28 @@ def random_select(available: list[CredentialRecord]) -> CredentialRecord:
 
 def least_used(available: list[CredentialRecord]) -> CredentialRecord:
     return min(available, key=lambda e: e.use_count)
+
+
+def _soonest_cooldown(entries: list[CredentialRecord]) -> float | None:
+    """Earliest cooldown expiry among non-blocked entries, None if none cooling."""
+
+    soonest: float | None = None
+    for entry in entries:
+        if entry.blocked or entry.cooldown_until is None:
+            continue
+        if soonest is None or entry.cooldown_until < soonest:
+            soonest = entry.cooldown_until
+    return soonest
+
+
+def _exhaustion_counts(entries: list[CredentialRecord]) -> tuple[int, int]:
+    """(blocked, cooling-down) counts over the entries being accounted."""
+
+    blocked = sum(1 for e in entries if e.blocked)
+    cooling = sum(
+        1 for e in entries if not e.blocked and e.cooldown_until is not None and not e.is_available
+    )
+    return blocked, cooling
 
 
 class CredentialPool:
@@ -64,48 +87,58 @@ class CredentialPool:
         self._entries = [e for e in self._entries if e.key_id != key_id]
         return len(self._entries) < before
 
-    def _available(self) -> list[CredentialRecord]:
-        return [e for e in self._entries if e.is_available]
+    def _available(self, allowed_key_ids: frozenset[str] | None = None) -> list[CredentialRecord]:
+        """Available entries, optionally restricted to an authorized subset.
+
+        ``allowed_key_ids`` is the Binding-scoped view of the pool (#58): when a
+        caller passes the credential ids a Binding authorizes, availability,
+        exhaustion accounting, and every strategy operate over that subset only,
+        so an authorized selection can never fall through to a credential the
+        Binding does not name.
+        """
+        return [
+            e
+            for e in self._entries
+            if e.is_available and (allowed_key_ids is None or e.key_id in allowed_key_ids)
+        ]
 
     def available_count(self) -> int:
         return len(self._available())
 
-    def select(self) -> CredentialRecord:
-        available = self._available()
+    def select(self, allowed_key_ids: frozenset[str] | None = None) -> CredentialRecord:
+        available = self._available(allowed_key_ids)
         if not available:
-            soonest = None
-            for e in self._entries:
-                if (
-                    e.cooldown_until is not None
-                    and not e.blocked
-                    and (soonest is None or e.cooldown_until < soonest)
-                ):
-                    soonest = e.cooldown_until
-            blocked = sum(1 for e in self._entries if e.blocked)
-            cooling = sum(
-                1
-                for e in self._entries
-                if not e.blocked and e.cooldown_until is not None and not e.is_available
-            )
-            raise PoolExhaustedError(
-                message=f"All {len(self._entries)} credentials exhausted for {self._provider}",
-                provider=self._provider,
-                total_keys=len(self._entries),
-                blocked_keys=blocked,
-                cooling_down_keys=cooling,
-                soonest_available_at=soonest,
-            )
+            self._raise_exhausted(allowed_key_ids)
 
         if self._strategy == SelectionStrategy.FILL_FIRST:
             return fill_first(available)
-        elif self._strategy == SelectionStrategy.ROUND_ROBIN:
+        if self._strategy == SelectionStrategy.ROUND_ROBIN:
             entry, self._rr_index = round_robin(available, self._rr_index)
             return entry
-        elif self._strategy == SelectionStrategy.RANDOM:
+        if self._strategy == SelectionStrategy.RANDOM:
             return random_select(available)
-        elif self._strategy == SelectionStrategy.LEAST_USED:
+        if self._strategy == SelectionStrategy.LEAST_USED:
             return least_used(available)
         raise ValueError(f"Unknown strategy: {self._strategy}")
+
+    def _raise_exhausted(self, allowed_key_ids: frozenset[str] | None) -> None:
+        """Raise PoolExhaustedError accounting only the selectable subset."""
+
+        scoped = (
+            self._entries
+            if allowed_key_ids is None
+            else [e for e in self._entries if e.key_id in allowed_key_ids]
+        )
+        blocked, cooling = _exhaustion_counts(scoped)
+        qualifier = "authorized " if allowed_key_ids is not None else ""
+        raise PoolExhaustedError(
+            message=(f"All {len(scoped)} {qualifier}credentials exhausted for {self._provider}"),
+            provider=self._provider,
+            total_keys=len(scoped),
+            blocked_keys=blocked,
+            cooling_down_keys=cooling,
+            soonest_available_at=_soonest_cooldown(scoped),
+        )
 
     def record_success(self, key_id: str) -> None:
         entry = self._find(key_id)
@@ -148,40 +181,53 @@ class CredentialPool:
             entry.last_status = None
             entry.last_error_code = None
 
+    def key_ids(self) -> frozenset[str]:
+        """Every configured key id in this pool, available or not."""
+
+        return frozenset(e.key_id for e in self._entries)
+
     def get_stats(self) -> PoolStats:
-        available = self._available()
-        blocked = [e for e in self._entries if e.blocked]
-        cooling = [
-            e
-            for e in self._entries
-            if not e.blocked and e.cooldown_until is not None and not e.is_available
-        ]
-        return PoolStats(
-            provider=self._provider,
-            strategy=self._strategy,
-            total_keys=len(self._entries),
-            available_keys=len(available),
-            blocked_keys=len(blocked),
-            cooling_down_keys=len(cooling),
-            total_use_count=sum(e.use_count for e in self._entries),
-            total_error_count=sum(e.error_count for e in self._entries),
-            per_key=[
+        # One clock reading classifies every key: ``is_available`` consults
+        # ``time.monotonic()`` per call, so classifying via three separate
+        # comprehensions let a cooldown expiring mid-scan drop its key out of
+        # all three buckets (total != available + blocked + cooling) — the
+        # stateful machine found it. The partition is now exact by construction.
+        now = time.monotonic()
+        available_keys = blocked_keys = cooling_down_keys = 0
+        per_key: list[dict[str, Any]] = []
+        for entry in self._entries:
+            if entry.blocked:
+                blocked_keys += 1
+            elif entry.cooldown_until is not None and entry.cooldown_until > now:
+                cooling_down_keys += 1
+            else:
+                available_keys += 1
+            per_key.append(
                 {
-                    "key_id": e.key_id,
+                    "key_id": entry.key_id,
                     # `is_available`, matching the CredentialRecord property it
                     # copies — every other key in this dict mirrors its source
                     # attribute exactly, and ADR-063 declares per_key as
                     # list[CredentialRecord]. The bare `available` was a slip
                     # introduced while flattening the record into a dict.
-                    "is_available": e.is_available,
-                    "blocked": e.blocked,
-                    "use_count": e.use_count,
-                    "error_count": e.error_count,
-                    "last_status": e.last_status,
-                    "cooldown_remaining": max(0.0, (e.cooldown_until or 0) - time.monotonic()),
+                    "is_available": entry.is_available,
+                    "blocked": entry.blocked,
+                    "use_count": entry.use_count,
+                    "error_count": entry.error_count,
+                    "last_status": entry.last_status,
+                    "cooldown_remaining": max(0.0, (entry.cooldown_until or 0) - now),
                 }
-                for e in self._entries
-            ],
+            )
+        return PoolStats(
+            provider=self._provider,
+            strategy=self._strategy,
+            total_keys=len(self._entries),
+            available_keys=available_keys,
+            blocked_keys=blocked_keys,
+            cooling_down_keys=cooling_down_keys,
+            total_use_count=sum(e.use_count for e in self._entries),
+            total_error_count=sum(e.error_count for e in self._entries),
+            per_key=per_key,
         )
 
     def _find(self, key_id: str) -> CredentialRecord | None:
