@@ -21,10 +21,14 @@ from services.owned_records import chat_sessions_for
 
 router = APIRouter(tags=["chat"])
 
-# M0 containment (#483/#484): external Conductor chat is conversational-only
-# until the canonical Warden input/tool-result/output boundaries land in #315.
-# The tool-capable agent loop remains implemented behind services.chat_completion
-# for trusted/internal callers, but this public route must not invoke it.
+# The input half of #315 has landed: every message crosses the Warden boundary
+# (`_gate_messages` → `services.chat_gate`) before the model is called. The
+# tool half is still contained — external Conductor chat stays conversational-
+# only until model-driven tool use is re-enabled behind the dispatch policy in
+# `services.chat_gate` (privileged effects need an approval the model cannot
+# mint; networked effects need a principal). The tool-capable agent loop
+# remains implemented behind services.chat_completion for trusted/internal
+# callers, but this public route must not invoke it.
 _DASHBOARD_EDIT_SCOPE = "dashboard_edit"
 _DASHBOARD_EDIT_DISABLED = "AI dashboard editing is temporarily disabled until the governed widget capability boundary is enabled."
 _CONVERSATION_SYSTEM_PROMPT = (

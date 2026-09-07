@@ -46,10 +46,11 @@ class VoiceIntentResponse(BaseModel):
     (#315) also answers `unknown`: the utterance was refused before the model,
     so the route understood nothing from it.
 
-    Restoring a real action record is #315's, together with the Warden
-    input/tool-result/output boundary that has to gate the tools before any of
-    them may run again. That is a security boundary, not a response field, so
-    it is not smuggled in here.
+    Restoring a real action record is #315's remaining half, together with
+    re-enabling model-driven tools behind the dispatch policy — the input
+    boundary and the tool-result boundary now exist (`services.chat_gate`).
+    That is a security boundary, not a response field, so it is not smuggled
+    in here.
     """
 
     understood: bool
