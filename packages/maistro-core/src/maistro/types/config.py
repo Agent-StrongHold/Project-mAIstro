@@ -5,7 +5,12 @@ Pydantic-validated config loaded from YAML.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, field_validator
+from typing import Annotated
+
+from pydantic import BaseModel, Field, StringConstraints, field_validator
+
+
+NonBlankStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
 class RoutingConfig(BaseModel):
@@ -141,27 +146,13 @@ class ModelBindingConfig(BaseModel):
     router selection.
     """
 
-    binding_id: str
-    project_id: str
+    binding_id: NonBlankStr
+    project_id: NonBlankStr
     workspace_id: str = ""
     node_id: str = ""
     provider_name: str = ""
-    credential_refs: tuple[str, ...] = ()
-    policy_refs: tuple[str, ...] = ()
-
-    @field_validator("binding_id", "project_id")
-    @classmethod
-    def _require_scope_identity(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("model Binding identity/scope fields must be non-empty")
-        return value
-
-    @field_validator("credential_refs", "policy_refs")
-    @classmethod
-    def _reject_empty_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if any(not ref.strip() for ref in value):
-            raise ValueError("model Binding refs cannot contain empty values")
-        return value
+    credential_refs: tuple[NonBlankStr, ...] = ()
+    policy_refs: tuple[NonBlankStr, ...] = ()
 
 
 class AgentConfig(BaseModel):
