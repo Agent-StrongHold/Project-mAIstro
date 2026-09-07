@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, type KeyboardEvent } from "react";
 import { SetupChecklist } from "../components/SetupChecklist";
 import { TemplatePicker } from "../components/TemplatePicker";
+import { sanitizeWidget, sanitizeWidgetChanges } from "../lib/widgetCapabilities";
 
 const JIRA_BASE = (import.meta as any).env?.VITE_JIRA_BASE_URL || "";
 
@@ -64,13 +65,22 @@ function useServerTabs(tabs: Tab[], setTabs: (t: Tab[]) => void, setActiveIdx: (
     fetch("/v1/dashboard/layout", { credentials: "same-origin" })
       .then(r => r.ok ? r.json() : null)
       .then(d => {
+        // Server state crosses the same #314 boundary the SPA applies to
+        // model output: whatever a layout once persisted, only declarative
+        // widget configuration may render or fetch.
+        const sanitizeTabs = (tabsIn: Tab[]) => tabsIn.map((t: Tab) => ({
+          ...t,
+          widgets: ((t.widgets || []) as unknown[])
+            .map((w: unknown) => sanitizeWidget(w))
+            .filter(Boolean) as Widget[],
+        }));
         if (d?.tabs?.length) {
-          setTabs(d.tabs);
+          setTabs(sanitizeTabs(d.tabs as Tab[]));
           if (typeof d.activeTab === "number") setActiveIdx(d.activeTab);
           initialized.current = true;
         } else if (d?.widgets?.length) {
           // Migrate legacy single-page layout to tabs
-          setTabs([{ name: "Overview", widgets: d.widgets }]);
+          setTabs([{ name: "Overview", widgets: ((d.widgets as unknown[]).map((w: unknown) => sanitizeWidget(w)).filter(Boolean) as Widget[]) }]);
           initialized.current = true;
         } else if (!initialized.current) {
           saveTabs(tabs, 0).then(onSaveError);
@@ -273,7 +283,15 @@ BEHAVIOR:
             if (cmd.action === "remove") {
               pendingRemoves.push(cmd.id);
             } else if (cmd.action === "update" && cmd.id) {
-              current = current.map(w => w.id === cmd.id ? { ...w, ...cmd.changes } : w);
+              // Model-authored changes cross the #314 declarative schema before
+              // they are applied: only envelope fields and per-type config
+              // fields survive, so an update can never install a request
+              // primitive or an arbitrary fetch destination.
+              const target = current.find(w => w.id === cmd.id);
+              if (!target) continue;
+              const changes = sanitizeWidgetChanges(target.type, cmd.changes);
+              if (!changes) continue;
+              current = current.map(w => w.id === cmd.id ? { ...w, ...changes } as Widget : w);
             }
           } catch { /* skip malformed */ }
         }
@@ -491,8 +509,11 @@ function UnknownWidget({ widget }: { widget: Widget }) {
 
   useEffect(() => {
     setLoading(true); setData(null);
-    const endpoint = cfg.endpoint;
-    // If config has inline data (baked in by the builder), use it directly
+    const cfg = widget.config || {};
+    // #314: the only data paths are named server-side capabilities — fixed
+    // same-origin routes the renderer itself builds — or data baked into the
+    // config. `endpoint`/`method`/`params` are not widget fields and can no
+    // longer reach this component's fetch.
     if ((cfg.breakdown && Object.keys(cfg.breakdown).length > 0) || (cfg.records && cfg.records.length > 0) || (cfg.count !== undefined && cfg.count > 0)) {
       if (cfg.breakdown && Object.keys(cfg.breakdown).length > 0) setData({ breakdown: cfg.breakdown, total: Object.values(cfg.breakdown as Record<string,number>).reduce((a: number, b: number) => a + b, 0) });
       else if (cfg.records && cfg.records.length > 0) setData({ records: cfg.records, count: cfg.records.length });
@@ -500,20 +521,16 @@ function UnknownWidget({ widget }: { widget: Widget }) {
       setLoading(false);
       return;
     }
-    if (endpoint) {
-      const url = cfg.params ? `${endpoint}?${new URLSearchParams(cfg.params)}` : endpoint;
-      fetch(url, { method: cfg.method || "GET", credentials: "same-origin" })
-        .then(r => r.json()).then(setData).catch(() => setData(null)).finally(() => setLoading(false));
-    } else if (cfg.source === "airtable" && cfg.table) {
+    if (cfg.source === "airtable" && cfg.table) {
       const params = new URLSearchParams({ table: cfg.table });
       if (cfg.filter_formula) params.set("filter_formula", cfg.filter_formula);
-      if (cfg.max_records) params.set("max_records", cfg.max_records);
+      if (cfg.max_records) params.set("max_records", String(cfg.max_records));
       if (cfg.field || cfg.group_by) params.set("group_by", cfg.field || cfg.group_by);
       if (cfg.display_field) params.set("display_field", cfg.display_field);
       fetch(`/v1/widgets/airtable?${params}`, { credentials: "same-origin" })
         .then(r => r.json()).then(setData).catch(() => setData(null)).finally(() => setLoading(false));
     } else if (cfg.source === "metrics" && cfg.metric) {
-      fetch(`/v1/widgets/metrics?metric=${cfg.metric}&period=${cfg.period || "1h"}`, { credentials: "same-origin" })
+      fetch(`/v1/widgets/metrics?metric=${encodeURIComponent(cfg.metric)}&period=${encodeURIComponent(cfg.period || "1h")}`, { credentials: "same-origin" })
         .then(r => r.json()).then(setData).catch(() => setData(null)).finally(() => setLoading(false));
     } else if (cfg.query) {
       // Legacy: natural-language query widgets (pre-deterministic)
@@ -523,9 +540,9 @@ function UnknownWidget({ widget }: { widget: Widget }) {
     } else {
       setLoading(false);
     }
-  }, [cfg.endpoint, cfg.source, cfg.table, cfg.metric, cfg.filter_formula, cfg.query, tick]);
+  }, [cfg.source, cfg.table, cfg.metric, cfg.filter_formula, cfg.query, cfg.field, cfg.group_by, cfg.display_field, cfg.max_records, cfg.period, tick]);
 
-  if (!cfg.endpoint && !cfg.source && !cfg.query) {
+  if (!cfg.source && !cfg.query) {
     return <div style={{ color: C.muted, fontSize: "0.72rem" }}>
       <p style={{ margin: "0 0 4px" }}>Not configured.</p>
       <p style={{ margin: 0, fontSize: "0.65rem" }}>Use the chat in Edit mode to build this widget.</p>
@@ -906,13 +923,12 @@ function WidgetCard({ widget, agents, metrics, editing, onRemove, onUpdate }: {
   }, [cfgTable]);
   const [cfgField, setCfgField] = useState(widget.config?.field || "");
   const [cfgSub, setCfgSub] = useState(widget.config?.sub || "");
-  // Read-only on purpose, for now: the legacy-custom-widget `endpoint`/`query`
-  // fields are loaded from the saved config and written straight back at save
-  // time (see `config.endpoint = cfgEndpoint` below), but the config panel
-  // renders no input bound to either, so nothing can call a setter. Dropping
-  // the setters says that plainly; dropping the state would stop round-tripping
-  // the values and silently erase them on the next save.
-  const [cfgEndpoint] = useState(widget.config?.endpoint || "");
+  // `cfgEndpoint` used to round-trip a legacy `config.endpoint` that the
+  // config panel rendered no input for. #314 removed `endpoint` from the
+  // widget schema entirely — the renderer builds its own capability URLs —
+  // so the round-trip would only resurrect a field the boundary strips.
+  // `cfgQuery` stays: the natural-language query is declarative and renders
+  // through /v1/chat/complete, never a generic fetch.
   const [cfgDisplay, setCfgDisplay] = useState(widget.config?.display || "auto");
   const [cfgQuery] = useState(widget.config?.query || "");
   const [cfgProject, setCfgProject] = useState(widget.config?.project || "");
@@ -943,8 +959,9 @@ function WidgetCard({ widget, agents, metrics, editing, onRemove, onUpdate }: {
         config.variables = config.variables.map((v: any) => ({ ...v, value: vars[v.id] ?? v.value }));
       }
       config.display = cfgDisplayType;
-      // For legacy custom widgets
-      if (!config.variables) { config.endpoint = cfgEndpoint; config.query = cfgQuery; }
+      // For legacy custom widgets only the declarative query round-trips
+      // (#314: `endpoint` is not a widget field).
+      if (!config.variables) { config.query = cfgQuery; }
     }
     onUpdate({ ...widget, title: cfgTitle, type: cfgType, size: cfgSize as Widget["size"], rows: cfgRows as Widget["rows"], config: { ...config, refresh_minutes: Number(cfgRefresh) || 0, theme: cfgTheme, display: cfgDisplay !== "auto" ? cfgDisplay : undefined, ...(cfgTable ? { table: cfgTable, source: "airtable", filter_formula: cfgFilter || undefined, display_field: cfgDisplayField || undefined, max_records: cfgMaxRecords || "20" } : {}), ...(cfgGroupBy ? { field: cfgGroupBy, group_by: cfgGroupBy } : {}) } });
     setConfigOpen(false);
@@ -1247,8 +1264,7 @@ export default function Dashboard() {
     setActiveIdx(newIdx);
     persist(newTabs, newIdx);
   };
-  const addWidget = (type: string, size: Widget["size"], config?: any, title?: string) => update([...widgets, { id: `w-${Date.now()}`, type, title: title || CATALOG.find(c => c.type === type)?.label || type, size, config }]);
-  const removeWidget = (id: string) => update(widgets.filter(w => w.id !== id));
+  const addWidget = (type: string, size: Widget["size"], config?: any, title?: string) => update([...widgets, { id: `w-${Date.now()}`, type, title: title || CATALOG.find(c => c.type === type)?.label || type, size, config }]);  const removeWidget = (id: string) => update(widgets.filter(w => w.id !== id));
   const updateWidget = (id: string, w: Widget) => update(widgets.map(x => x.id === id ? w : x));
 
   return (
@@ -1321,7 +1337,14 @@ export default function Dashboard() {
       </div>
       {showTemplates && <TemplatePicker onClose={() => setShowTemplates(false)} onSelect={(id) => {
         fetch(`/v1/dashboard/demos/${id}`, { credentials: "same-origin" })
-          .then(r => r.json()).then(d => { if (d.widgets) update(d.widgets); });
+          .then(r => r.json()).then(d => {
+            if (d.widgets) {
+              // Demo dashboards are product-shipped, but they cross the same
+              // #314 boundary on the way in as anything else a server sends.
+              const sanitized = (d.widgets.map((w: unknown) => sanitizeWidget(w)).filter(Boolean) as Widget[]);
+              update(sanitized);
+            }
+          });
         setShowTemplates(false);
       }} />}
     </div>

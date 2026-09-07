@@ -14,6 +14,7 @@ import os
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from maistro.graph.conditions import CONDITION_OPERATORS
 from maistro.graph.definitions import Edge, Graph, Node
 from maistro.graph.durable_runs import (
     RunStatus,
@@ -31,12 +32,6 @@ logger = logging.getLogger(__name__)
 _COMPAT_SCOPE = "hive-standalone-compat"
 _SCOUT_NODE_ID = "__hive_legacy_scout__"
 _SCOUT_EDGE_ID = "__hive_legacy_scout_to_entry__"
-# These are historical evolution tokens, not expressions in the canonical
-# predicate language. The shipped dependency-wave runner ignored edge
-# conditions entirely, so treating them as predicates would silently skip work
-# that ran before convergence. Preserve that behavior while retaining the token
-# as provenance on the canonical edge.
-_LEGACY_DEPENDENCY_CONDITIONS = frozenset({"success", "failure", "timeout"})
 
 
 def _raw_nodes(dag_data: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -206,14 +201,31 @@ def _execution_shape(
 
 
 def _canonical_condition(raw: Mapping[str, Any]) -> str | None:
-    """Translate a legacy edge condition without inventing new routing semantics."""
+    """Translate only syntactically canonical predicates; keep legacy labels as dependencies."""
     value = raw.get("condition")
     if value is None:
         return None
     condition = str(value).strip()
-    if not condition or condition.lower() in _LEGACY_DEPENDENCY_CONDITIONS:
+    if not condition:
         return None
-    return condition
+
+    # The shipped wave runner ignored this field, and the legacy CRUD surface
+    # accepted arbitrary human labels (for example ``if x``). Passing such a
+    # label to the canonical evaluator silently makes the edge ineligible. A
+    # condition becomes routing authority only when it is recognizably in the
+    # canonical safe predicate dialect: one supported operator and a dotted
+    # identifier path on the left. The original string remains provenance in
+    # ``legacy_condition`` either way.
+    for operator in CONDITION_OPERATORS:
+        if operator not in condition:
+            continue
+        lhs_text, rhs_text = condition.split(operator, 1)
+        lhs = lhs_text.strip()
+        rhs = rhs_text.strip()
+        if lhs and rhs and all(part.isidentifier() for part in lhs.split(".")):
+            return condition
+        return None
+    return None
 
 
 def _edge_metadata(raw: Mapping[str, Any]) -> dict[str, Any]:
