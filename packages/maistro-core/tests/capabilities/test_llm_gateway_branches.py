@@ -17,9 +17,10 @@ from maistro.capabilities.providers.llm_gateway import (
     GatewayEndpoint,
     LlmGatewayProvider,
     ModelChatRequest,
+    _chat_payload,
+    _checked_body,
     execute_model_chat,
 )
-from maistro.capabilities.providers.llm_gateway import _chat_payload, _checked_body
 
 
 class _ForeignProvider:
