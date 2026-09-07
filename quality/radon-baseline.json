@@ -233,6 +233,16 @@
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
+      "key": "packages/maistro-core/src/maistro/graph/durable_runs/stores.py::settle_hitl_record",
+      "path": "packages/maistro-core/src/maistro/graph/durable_runs/stores.py",
+      "line": 139,
+      "name": "settle_hitl_record",
+      "classname": null,
+      "rank": "C",
+      "complexity": 16,
+      "rationale": "Authorized raise per grant #1043 for #737: settle_hitl_record is the single durable HITL settlement rule (answer, timeout, cancellation); the shared predicate for three settlement paths lands at CC 16 (rank C), per-path wrappers stay trivial. Tracked under ADR-083026-6c72."
+    },
+    {
       "key": "packages/maistro-core/src/maistro/graph/executor.py::execute_with_resilience",
       "path": "packages/maistro-core/src/maistro/graph/executor.py",
       "line": 46,
