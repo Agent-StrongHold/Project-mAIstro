@@ -55,6 +55,29 @@ or placeholder-only section.
   successes from other callers are ignored. A probe owner can call
   `release_probe()` to let another caller claim the probe.
 
+- **Governance gates read content, not tokens (#385, #387, #391).** The
+  release-consistency gate now requires meaningful categorized, issue-linked
+  `## [Unreleased]` entries and refuses to publish an empty section at tag
+  time; a new registry gate fails ADR/spec body status language that
+  contradicts front matter (28 legacy body status lines are baselined and
+  ratchet down); pytest runs with `--strict-markers` and CONTRIBUTING's
+  marker table is validated against `pyproject.toml`. Operators must do the
+  same in kind: placeholder-only Unreleased content fails, and unknown
+  pytest markers fail collection.
+
+- **Branch guidance is single-sourced and CI-checked (#381, #383).** README
+  no longer recommends the gate-missing `feature/*` spelling; the accepted
+  topic-branch prefixes live once in `.github/branch-protection.json` and
+  the quality/security push triggers cover every documented prefix; the PR
+  template names `develop` as the base and a new `pr-base` CI job fails
+  mis-based PRs with the correction (`main` requires the `release` label).
+
+- **README claims reconciled with code (#388).** Schedules execute (Partial,
+  not TODO — Run admission, `max_runs`, and the #251 convergence limit stated);
+  embedding schema (vector(1536) + HNSW) is stated separately from readiness
+  (no production embedding client is constructed, so the column stays NULL);
+  the matrix no longer claims scoped pgvector recall is live.
+
 ## [1.0.0] - TBD
 
 First tagged release. Prior to this, the repository had no tags, no release
