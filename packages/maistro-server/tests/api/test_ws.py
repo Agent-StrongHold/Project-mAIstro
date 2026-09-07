@@ -136,22 +136,29 @@ class TestWsOwnerId:
         assert _ws_owner_id("anything", settings) == "dev"
 
     def test_no_token_with_keys_returns_none(self) -> None:
-        settings = Settings(api_keys=["secret"])
+        settings = Settings(api_keys=["ops:secret"])
         assert _ws_owner_id(None, settings) is None
 
     def test_invalid_token_returns_none(self) -> None:
-        settings = Settings(api_keys=["secret"])
+        settings = Settings(api_keys=["ops:secret"])
         assert _ws_owner_id("wrong", settings) is None
 
     def test_valid_token_returns_user_id(self) -> None:
         settings = Settings(api_keys=["alice:secret"])
         assert _ws_owner_id("secret", settings) == "alice"
 
+    def test_legacy_plain_key_fails_closed_on_ws_too(self) -> None:
+        """#843: a plain key never resolves — the WS path shares the same
+        canonical resolver, so no endpoint family keeps the invented
+        ``default`` identity."""
+        settings = Settings(api_keys=["legacy-plain"])
+        assert _ws_owner_id("legacy-plain", settings) is None
+
 
 class TestStreamTaskEndpoint:
     def test_rejects_connection_when_no_token_and_auth_required(self) -> None:
         app = _make_app()
-        settings = Settings(api_keys=["secret"])
+        settings = Settings(api_keys=["ops:secret"])
         app.dependency_overrides[get_settings] = lambda: settings
         client = TestClient(app)
         with (

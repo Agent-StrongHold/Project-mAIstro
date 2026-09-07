@@ -28,11 +28,54 @@ class TestStartupValidation:
             _validate_startup(settings)
 
     def test_keys_present_passes(self) -> None:
-        settings = Settings(api_keys=["test-key"], require_auth=True)
+        settings = Settings(api_keys=["ops:test-key"], require_auth=True)
         _validate_startup(settings)  # Should not raise
 
     def test_require_auth_false_allows_no_keys(self) -> None:
         settings = Settings(api_keys=[], require_auth=False)
+        _validate_startup(settings)  # Should not raise
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("unit")
+class TestExplicitPrincipalStartupGate:
+    """#843: the server refuses to start while any API_KEYS entry lacks an
+    explicit canonical principal — the legacy plain-key form that collapsed
+    every credential onto user ``default`` fails closed, with actionable
+    configuration guidance and no key material in the message."""
+
+    def test_plain_key_refuses_to_start_with_guidance(self) -> None:
+        settings = Settings(api_keys=["legacy-plain-secret"], require_auth=True)
+        with pytest.raises(RuntimeError) as exc_info:
+            _validate_startup(settings)
+        message = str(exc_info.value)
+        assert "principal" in message
+        assert "API_KEYS" in message
+        assert "legacy-plain-secret" not in message
+
+    def test_plain_key_gate_fires_even_with_require_auth_false(self) -> None:
+        """Configured keys are enforced by resolve_token_principal regardless
+        of require_auth, so a half-configured plain key must fail at boot
+        rather than boot into a state where every request 401s."""
+        settings = Settings(api_keys=["legacy-plain-secret"], require_auth=False)
+        with pytest.raises(RuntimeError, match="principal"):
+            _validate_startup(settings)
+
+    def test_mixed_configuration_refuses_to_start(self) -> None:
+        """One good entry does not launder a plain one."""
+        settings = Settings(api_keys=["ops:good-key", "bad-plain-key"], require_auth=True)
+        with pytest.raises(RuntimeError, match="entry 2"):
+            _validate_startup(settings)
+
+    def test_sk_prefixed_secret_refuses_to_start(self) -> None:
+        settings = Settings(api_keys=["sk-abc123def"], require_auth=True)
+        with pytest.raises(RuntimeError, match="no principal prefix"):
+            _validate_startup(settings)
+
+    def test_prefixed_keys_pass_the_gate(self) -> None:
+        settings = Settings(
+            api_keys=["ops:secret-a", "alice:admin:secret-b"], require_auth=True
+        )
         _validate_startup(settings)  # Should not raise
 
 
@@ -102,7 +145,7 @@ class TestRouterApiKeyValidation:
     ) -> None:
         monkeypatch.delenv("ROUTER_API_KEY", raising=False)
         with pytest.raises(RuntimeError, match="ROUTER_API_KEY"):
-            _validate_startup(Settings(api_keys=["k"], require_auth=True))
+            _validate_startup(Settings(api_keys=["ops:k"], require_auth=True))
 
     def test_a_whitespace_only_router_api_key_is_not_a_key(
         self, monkeypatch: pytest.MonkeyPatch
@@ -112,4 +155,4 @@ class TestRouterApiKeyValidation:
         this check exists to prevent."""
         monkeypatch.setenv("ROUTER_API_KEY", "   ")
         with pytest.raises(RuntimeError, match="ROUTER_API_KEY"):
-            _validate_startup(Settings(api_keys=["k"], require_auth=True))
+            _validate_startup(Settings(api_keys=["ops:k"], require_auth=True))
