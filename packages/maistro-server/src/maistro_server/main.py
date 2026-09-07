@@ -46,6 +46,7 @@ from maistro_server.api import (
     workspaces,
     ws,
 )
+from maistro_server.api.auth import API_KEY_ENTRY_DOC, invalid_api_key_entries
 from maistro_server.api.chat_completions import RUN_ID_HEADER
 from maistro_server.api.middleware import PayloadSizeLimitMiddleware, SecurityHeadersMiddleware
 from maistro_server.api.rate_limit import RateLimitMiddleware
@@ -76,6 +77,19 @@ def _validate_startup(settings: Settings) -> None:
         raise RuntimeError(
             "CRITICAL: No API keys configured and REQUIRE_AUTH is true. "
             "Set API_KEYS env var or set REQUIRE_AUTH=false for local development."
+        )
+    # #843: fail closed at boot rather than serving a config where keys
+    # silently share an invented identity. Descriptions never echo key
+    # material (invalid_api_key_entries guarantees that).
+    invalid_entries = invalid_api_key_entries(settings)
+    if invalid_entries:
+        raise RuntimeError(
+            "CRITICAL: API_KEYS entries without an explicit canonical "
+            f"principal (#843): {'; '.join(invalid_entries)}. Rewrite every "
+            f"entry as {API_KEY_ENTRY_DOC}. A legacy plain key keeps working "
+            "once prefixed with its principal — the same secret keeps "
+            "authenticating, now attributed to the named principal. See "
+            "docs/install/api-key-identity.md for the migration path."
         )
     if settings.require_webhook_secrets and not (
         settings.github_webhook_secret and settings.ci_webhook_secret

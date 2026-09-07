@@ -348,7 +348,7 @@ write_new_env() {
 
 # API access
 MAISTRO_ACCESS_TOKEN=${token}
-API_KEYS=["${token}"]
+API_KEYS=["conductor:${token}"]
 ROUTER_API_KEY=${router_key}
 REQUIRE_AUTH=true
 MAISTRO_BIND_HOST=${BIND_HOST}
@@ -435,8 +435,12 @@ repair_existing_env() {
     fi
 
     # API_KEYS is the server's actual auth list; ensure our token is in it
-    # even if the key already existed (blank or with other entries).
-    ensure_api_keys_contains "$token"
+    # even if the key already existed (blank or with other entries). #843:
+    # every entry needs an explicit principal — the installer's key is the
+    # Conductor service's credential. Migrate a legacy plain entry written by
+    # an older install (same secret, now attributed), then ensure membership.
+    secret_env_run migrate-api-keys "$token" "conductor"
+    ensure_api_keys_contains "conductor:${token}"
     append_env_once REQUIRE_AUTH "true"
     append_env_once MAISTRO_BIND_HOST "$BIND_HOST"
     append_env_once MAISTRO_PORT "$PORT"
@@ -487,8 +491,38 @@ if not isinstance(api_keys, list) or not api_keys or not all(
 ):
     raise SystemExit("Invalid API_KEYS: expected a non-empty JSON array of strings.")
 
+# #843: every entry must name an explicit canonical principal. The server
+# refuses to boot on a plain entry (it used to authenticate as an invented
+# `default` user); fail here, at install time, with the rewrite rule.
+def _entry_secret(entry: str) -> str:
+    return entry.split(":", 1)[1] if ":" in entry else entry
+
+
+for position, entry in enumerate(api_keys, start=1):
+    stripped = entry.strip()
+    problems = []
+    if stripped.startswith("sk-"):
+        problems.append("secret-shaped key with no principal prefix")
+    elif ":" not in stripped:
+        problems.append("plain secret-only key")
+    else:
+        principal, _, secret = stripped.partition(":")
+        if not principal.strip():
+            problems.append("missing principal before ':'")
+        elif not secret:
+            problems.append("missing secret after ':'")
+    if problems:
+        raise SystemExit(
+            f"Invalid API_KEYS entry {position}: {problems[0]}. Rewrite it as "
+            "'principal:secret' (or 'principal:admin:secret'), e.g. rewrite a "
+            "legacy key 'API_KEYS=[\"<secret>\"]' as "
+            "'API_KEYS=[\"ops:<secret>\"]' — the same secret keeps working, "
+            "now attributed to the named principal. See "
+            "docs/install/api-key-identity.md."
+        )
+
 access_token = values.get("MAISTRO_ACCESS_TOKEN", "")
-if not access_token or access_token not in api_keys:
+if not access_token or access_token not in (_entry_secret(e) for e in api_keys):
     raise SystemExit("MAISTRO_ACCESS_TOKEN must be present in API_KEYS.")
 router_key = values.get("ROUTER_API_KEY", "")
 if len(router_key) < 32:
