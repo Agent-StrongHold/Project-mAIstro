@@ -123,9 +123,7 @@ def grant_from_credential(record: CredentialRecord, env_name: str) -> dict[str, 
             f"(CredentialRecord), not ambient material: got {type(record).__name__}"
         )
     if env_name in _RESERVED_NAMES:
-        raise ValueError(
-            f"credential grant name {env_name!r} shadows the sandbox base environment"
-        )
+        raise ValueError(f"credential grant name {env_name!r} shadows the sandbox base environment")
     return {env_name: record.api_key}
 
 
@@ -137,7 +135,7 @@ def redact_env(env: Mapping[str, str]) -> dict[str, str]:
     form that cannot be brute-forced back from a short prefix or a salted
     digest of a low-entropy key.
     """
-    return {name: "***" for name in env}
+    return dict.fromkeys(env, "***")
 
 
 __all__ = [

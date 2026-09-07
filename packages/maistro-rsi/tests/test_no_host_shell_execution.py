@@ -198,10 +198,19 @@ class TestTheFitnessScorecardsOwnTestGate:
 
     def test_a_failing_command_reports_its_exit_code_either_way(self, tmp_path: Path) -> None:
         """The argv branch has to produce the same (passed, reason) shape the
-        shell branch does, or a real failure would read as a pass."""
+        shell branch does, or a real failure would read as a pass.
+
+        `sys.executable`, not `"python"`: the command runs behind the
+        credential boundary (#78), whose PATH is the fixed minimal base —
+        resolving a bare `python` would depend on the ambient PATH the
+        boundary exists to withhold."""
+        import sys
+
         from maistro_rsi.candidate_fitness import _run
 
-        passed, reason = _run("", tmp_path, argv=("python", "-c", "import sys; sys.exit(3)"))
+        passed, reason = _run(
+            "", tmp_path, argv=(sys.executable, "-c", "import sys; sys.exit(3)")
+        )
 
         assert not passed
         assert "exit 3" in reason

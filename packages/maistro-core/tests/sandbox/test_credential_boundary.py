@@ -56,9 +56,7 @@ class TestCandidateEnv:
         assert "AWS_SECRET_ACCESS_KEY" not in env
         assert "GITHUB_TOKEN" not in env
 
-    def test_ambient_path_is_not_inherited_on_posix(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_ambient_path_is_not_inherited_on_posix(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """PATH is a literal, never the host's: an ambient PATH pointing at a
         bin directory stuffed with credential helpers is an indirect channel."""
         monkeypatch.setattr(os, "name", "posix", raising=False)
@@ -93,9 +91,7 @@ class TestWindowsForwarding:
         assert env["SYSTEMROOT"] == r"C:\\Windows"
         assert "SECRET_HARNESS_KEY" not in env
 
-    def test_windows_forwarded_path_is_the_real_one(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_windows_forwarded_path_is_the_real_one(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """On Windows a POSIX PATH literal is meaningless (executable lookup
         needs the real PATH), so the forwarded value wins over the base."""
         monkeypatch.setattr(os, "name", "nt", raising=False)

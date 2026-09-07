@@ -755,7 +755,14 @@ class _NoHostExecSandbox(LocalSandbox):
 
 @dataclass
 class LocalRsiConfig:
-    """Inputs for one capped local self-improvement run."""
+    """Inputs for one capped local self-improvement run.
+
+    Both test fields run behind the credential boundary (#78): the command's
+    process starts from a fixed minimal environment (PATH, locale, TERM —
+    nothing ambient), because its imports execute candidate code. A command
+    that needs a specific interpreter should name it absolutely or rely on
+    `python3` being on the base PATH, not on the operator's ambient PATH.
+    """
 
     repo_path: str
     #: The test command as a shell string. Kept for the CLI, where an operator

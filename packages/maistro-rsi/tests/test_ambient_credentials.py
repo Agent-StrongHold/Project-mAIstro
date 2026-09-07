@@ -121,9 +121,8 @@ class TestLocalLoopSandboxExec:
         rc, output = await sandbox.exec("env")
         assert rc == 0
         assert "sk-live-harness-secret" not in output
-        assert set(line.split("=", 1)[0] for line in output.splitlines() if "=" in line) == (
-            set(candidate_env()) | _SHELL_PROVIDED
-        )
+        seen = {line.split("=", 1)[0] for line in output.splitlines() if "=" in line}
+        assert seen == set(candidate_env()) | _SHELL_PROVIDED
 
 
 class TestLocalLoopHostTestPaths:
@@ -200,9 +199,7 @@ class TestFitnessTestCommand:
         assert seen["env"] == candidate_env()
         assert "LITELLM_MASTER_KEY" not in seen["env"]
 
-    def test_run_argv_path_passes_the_boundary_env(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_run_argv_path_passes_the_boundary_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import maistro_rsi.candidate_fitness as cf
 
         seen: dict[str, Any] = {}

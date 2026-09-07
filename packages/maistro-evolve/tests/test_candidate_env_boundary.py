@@ -83,10 +83,9 @@ def test_fallback_base_matches_the_canonical_boundary() -> None:
     """The inline fallback (standalone evolve installs) must mirror the
     canonical base exactly — a drift here would make the two runtimes give
     candidates different environments, and the weaker one would win."""
+    import maistro_evolve._candidate_env as ce
     from maistro.sandbox.credential_boundary import CANDIDATE_BASE_ENV
 
-    import maistro_evolve._candidate_env as ce
-
-    assert ce._FALLBACK_BASE == dict(CANDIDATE_BASE_ENV)
+    assert dict(CANDIDATE_BASE_ENV) == ce._FALLBACK_BASE
     # With core importable (the integrated RSI runtime), delegation is exact.
     assert ce.candidate_env() == dict(CANDIDATE_BASE_ENV)
