@@ -10,9 +10,10 @@ from maistro.graph import Graph, Node
 from maistro.graph.durable_runs import (
     InMemoryDurableRunStore,
     durable_graph_launch_provenance,
+    recovery,
     run_durable_graph,
 )
-from maistro.graph.durable_runs import recovery
+from maistro.graph.execution_state import thaw_json_value
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
 from maistro.runs.model import RunStatus
@@ -78,11 +79,16 @@ async def test_bootstrap_recovery_rehydrates_exact_admitted_launch_snapshot() ->
     # Simulate process death after Run admission and before checkpoint 1.
     recovered = recovery._initial_queued_record(admitted)
 
-    assert recovered.graph_state.metadata["initial_inputs"] == inputs
-    assert recovered.graph_state.blackboard_snapshot["metadata"] == blackboard
+    # GraphExecutionState freezes JSON-shaped state (nested mappings become
+    # read-only proxies, lists become tuples); thaw_json_value is the public
+    # accessor for the ordinary JSON view, so equality is asserted on that.
+    assert thaw_json_value(recovered.graph_state.metadata["initial_inputs"]) == inputs
+    assert thaw_json_value(recovered.graph_state.blackboard_snapshot["metadata"]) == blackboard
 
     # The snapshot is detached from caller-owned mutable data.
     inputs["request"]["flags"].append("mutated-later")
     blackboard["policy"]["mode"] = "changed-later"
-    assert recovered.graph_state.metadata["initial_inputs"]["request"]["flags"] == ["a", "b"]
-    assert recovered.graph_state.blackboard_snapshot["metadata"]["policy"]["mode"] == "bounded"
+    thawed_inputs = thaw_json_value(recovered.graph_state.metadata["initial_inputs"])
+    thawed_metadata = thaw_json_value(recovered.graph_state.blackboard_snapshot["metadata"])
+    assert thawed_inputs["request"]["flags"] == ["a", "b"]
+    assert thawed_metadata["policy"]["mode"] == "bounded"
