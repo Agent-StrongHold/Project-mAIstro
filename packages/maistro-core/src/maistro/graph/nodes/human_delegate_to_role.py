@@ -17,7 +17,7 @@ model (`maistro.security._types.AuthContext`).
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Any, ClassVar, Literal, Protocol, runtime_checkable
+from typing import Any, ClassVar, Literal, Protocol, cast, runtime_checkable
 
 from pydantic import BaseModel, Field
 
@@ -51,8 +51,11 @@ class DelegateToRoleIn(BaseModel):
     timeout_seconds: int = Field(default=86_400)
 
 
+DelegateToRoleVerdict = Literal["approved", "rejected", "modified", "timed_out", "no_holder"]
+
+
 class DelegateToRoleOut(BaseModel):
-    verdict: Literal["approved", "rejected", "modified", "timed_out", "no_holder"] = "approved"
+    verdict: DelegateToRoleVerdict = "approved"
     resolved_user_id: str | None = None
     modified_payload: dict[str, Any] | None = None
     reviewer_note: str = ""
@@ -82,34 +85,26 @@ class HumanDelegateToRoleNode(BaseNode[DelegateToRoleIn, DelegateToRoleOut]):
         resumed = answers.get(ctx.node_id)
         if resumed is not None:
             # Fail closed (#329 / ADR-090726-9a4e) before any routing: a
-            # missing or empty verdict key is not an approval, so the node
-            # stays pending rather than handing the payload to a role holder
-            # under a verdict nobody asserted.
+            # missing, empty, or non-string verdict key is not an approval, so
+            # an answer that states no verdict falls through to the pause
+            # below — the node stays pending rather than handing the payload
+            # to a role holder under a verdict nobody asserted.
             verdict = resumed.get("verdict")
-            if not isinstance(verdict, str) or not verdict.strip():
-                pause_until(
-                    PAUSE_AWAITING_ROLE_DELEGATE,
-                    resume_at=now_utc() + timedelta(seconds=inputs.timeout_seconds),
-                    metadata={
-                        "role": inputs.role,
-                        "payload": inputs.payload,
-                        "title": inputs.title,
-                        "timeout_seconds": inputs.timeout_seconds,
-                    },
+            if isinstance(verdict, str) and verdict.strip():
+                # `cast` states what pydantic still enforces at runtime: an
+                # unknown verdict string fails the node rather than approving.
+                resolved_user_id = (
+                    self._role_resolver.resolve(inputs.role) if self._role_resolver else None
                 )
-                return DelegateToRoleOut()  # unreachable
-            resolved_user_id = (
-                self._role_resolver.resolve(inputs.role) if self._role_resolver else None
-            )
-            if resolved_user_id is None:
-                return DelegateToRoleOut(verdict="no_holder", resolved_user_id=None)
-            return DelegateToRoleOut(
-                verdict=verdict,
-                resolved_user_id=resolved_user_id,
-                modified_payload=resumed.get("modified_payload"),
-                reviewer_note=str(resumed.get("reviewer_note") or ""),
-                timed_out=bool(resumed.get("timed_out", False)),
-            )
+                if resolved_user_id is None:
+                    return DelegateToRoleOut(verdict="no_holder", resolved_user_id=None)
+                return DelegateToRoleOut(
+                    verdict=cast(DelegateToRoleVerdict, verdict),
+                    resolved_user_id=resolved_user_id,
+                    modified_payload=resumed.get("modified_payload"),
+                    reviewer_note=str(resumed.get("reviewer_note") or ""),
+                    timed_out=bool(resumed.get("timed_out", False)),
+                )
 
         resume_at = now_utc() + timedelta(seconds=inputs.timeout_seconds)
         pause_until(

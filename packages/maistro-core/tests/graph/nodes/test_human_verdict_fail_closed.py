@@ -80,6 +80,18 @@ async def test_approve_draft_explicit_verdicts_still_resume() -> None:
         assert result.output.verdict == verdict
 
 
+@pytest.mark.ac("ADR-090726-9a4e/AC-2")
+async def test_approve_draft_unknown_verdict_string_fails_not_approves() -> None:
+    """A non-empty but unrecognized verdict string is garbage, not approval:
+    the output schema rejects it and the node fails loudly rather than
+    silently admitting an unmodeled verdict."""
+    node = get_node("human.approve_draft")()
+    result = await node.run({"draft": {"ticket": "PROJ-1"}}, _ctx("n", {"verdict": "banana"}))
+
+    assert result.status == "failed"
+    assert result.output is None
+
+
 # --- human.delegate_to_role ---------------------------------------------------
 
 
