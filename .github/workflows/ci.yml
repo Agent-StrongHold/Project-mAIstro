@@ -384,7 +384,7 @@ jobs:
           REQUIRE_AUTH: "false"
           MAISTRO_DRY_RUN: "1"
           PYTHONPATH: packages/maistro-rsi/src:packages/maistro-evolve/src
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
