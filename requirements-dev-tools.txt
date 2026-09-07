@@ -14,7 +14,7 @@ lizard>=1.17          # MIT — god-function / param-count detection
 pylint>=3.3           # GPL (invoked CLI) — duplicate-code (R0801)
 
 # --- /security-scan : permissively-licensed (MIT/Apache/BSD) security stack ---
-bandit>=1.8           # Apache-2.0 — Python SAST
+bandit>=1.9.4           # Apache-2.0 — Python SAST
 dlint>=0.16           # BSD-3 — flake8 security plugin (DUO rules)
 semgrep>=1.100        # LGPL-2.1 (invoked CLI) — taint/dataflow SAST
 detect-secrets>=1.5   # Apache-2.0 — secret scanning
