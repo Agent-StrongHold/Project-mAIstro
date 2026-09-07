@@ -167,7 +167,8 @@
   "advisory": {
     "$comment": [
       "Checks deliberately non-required must be named here with a reason."
-    ]
+    ],
+    "pr-base": "PR-only branch-policy check (#383): reports on pull_request events only, so it cannot be a required check that the merge queue waits on (merge_group); the correction is to rebase onto develop."
   },
   "repository": {
     "allow_auto_merge": true,

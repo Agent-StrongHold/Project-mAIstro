@@ -31,6 +31,27 @@ permissions:
   contents: read
 
 jobs:
+  # #383: the PR template used to tell every author to target `main`, which
+  # contradicted CONTRIBUTING, ADR-095 and the actual branch flow — and the
+  # base decides which checks can even report (base-coupled gates run on
+  # main-based PRs; the develop merge contract does not). This job makes the
+  # base a checked fact on every PR: develop normally, main only for a
+  # `release`-labelled promotion, topic branches only as stacked bases.
+  pr-base:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: PR base follows branch policy (ADR-095)
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.ref }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: python scripts/check-pr-base.py --base "$PR_BASE" --labels "$PR_LABELS"
+
   lint-and-type-check:
     runs-on: ubuntu-latest
     steps:
