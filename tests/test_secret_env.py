@@ -374,6 +374,24 @@ class TestMigrateApiKeys:
             secret_env.migrate_api_keys(env_path, "tok", "a:b")
         assert env_path.read_text(encoding="utf-8") == 'API_KEYS=["tok"]\n'
 
+    def test_a_corrupt_api_keys_line_is_rejected_without_overwriting_it(
+        self, secret_env, env_path
+    ) -> None:
+        """Same refusal as `ensure_api_keys`: an unreadable array is the
+        operator's to fix, not a file the helper may rewrite around."""
+        secret_env.create_exclusive(env_path, "API_KEYS=not json\n")
+        with pytest.raises(ValueError, match="expected a JSON array"):
+            secret_env.migrate_api_keys(env_path, "tok", "conductor")
+        assert env_path.read_text(encoding="utf-8") == "API_KEYS=not json\n"
+
+    @pytest.mark.parametrize("value", ['{"key": "value"}', '["valid", 3]', '[""]'])
+    def test_non_string_api_key_arrays_are_rejected(self, secret_env, env_path, value: str) -> None:
+        """Valid JSON of the wrong shape is refused rather than migrated
+        through — an entry the helper cannot inspect is one it must not touch."""
+        secret_env.create_exclusive(env_path, f"API_KEYS={value}\n")
+        with pytest.raises(ValueError, match="non-empty strings"):
+            secret_env.migrate_api_keys(env_path, "tok", "conductor")
+
 
 class TestTheInstallersUseIt:
     """A helper nothing calls fixes nothing — the same shape as the guards in

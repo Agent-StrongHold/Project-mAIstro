@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/maistro-server/tests: +25
-  tests/: +26
+  tests/: +30
 ---
 
 # m2-842-843-principal-identity
@@ -44,6 +44,13 @@ for the installer's #843 migration helper: plain entry prefixed in place,
 unrelated manual entries untouched, idempotence, a half-migrated state
 dropping its stale plain duplicate, an absent secret leaving the file alone,
 and a colon-bearing principal refused.
+
+**+4 `tests/test_secret_env.py` (diff-coverage repair)** — the same two error
+branches `ensure_api_keys` was already pinned on, now asserted for the
+migration path too: an unparseable `API_KEYS` line and wrong-shape arrays
+(object, mixed-type, empty-string entry) are rejected with the file left
+byte-for-byte intact, closing the helper's last uncovered statements
+(lines 269-270, 276).
 
 **+19 `tests/api/`** — the root copies of `test_auth.py` and
 `test_startup.py` are the static halves of the shipped-image smoke
