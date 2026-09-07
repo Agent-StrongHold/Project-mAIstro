@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/maistro-core/tests: +14
-  packages/maistro-evolve/tests: +3
+  packages/maistro-evolve/tests: +5
   packages/maistro-rsi/tests: +9
   packages/maistro-bootstrap/tests: +1
 ---
@@ -30,12 +30,15 @@ The +27 node IDs are four files, one per seam:
   `export` in one exec cannot widen the next (#78 AC); the local loop's host
   test paths (argv and shell) and `candidate_fitness._run` pass the boundary
   env; the host-backed worktree sandbox likewise.
-- `packages/maistro-evolve/tests/test_candidate_env_boundary.py` (new, 3)
+- `packages/maistro-evolve/tests/test_candidate_env_boundary.py` (new, 5)
   pins `run_test_selection` (tdd evidence and the mutation probe's executor)
-  and `measure_coverage_detailed` behind the boundary, and pins the evolve
+  and `measure_coverage_detailed` behind the boundary, pins the evolve
   inline fallback equal to the canonical base so the two runtimes cannot
   drift (evolve cannot depend on maistro-core; the fallback mirrors the
-  canonical module and delegates when core is importable).
+  canonical module and delegates when core is importable), and exercises the
+  no-core fallback path itself (import blocked) — POSIX minimal posture and
+  the Windows by-name forwarding — so the fallback is proven equally strict,
+  not trusted to be.
 - `packages/maistro-bootstrap/tests/test_container_sandbox_hardening.py`
   (+1) pins the container sandbox's env minimality: `HOME=/tmp` is the only
   env assignment in any `docker run`/`exec` argv, so no future edit can add

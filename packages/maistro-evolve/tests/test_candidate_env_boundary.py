@@ -89,3 +89,57 @@ def test_fallback_base_matches_the_canonical_boundary() -> None:
     assert dict(CANDIDATE_BASE_ENV) == ce._FALLBACK_BASE
     # With core importable (the integrated RSI runtime), delegation is exact.
     assert ce.candidate_env() == dict(CANDIDATE_BASE_ENV)
+
+
+def _block_canonical_import(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make importing the canonical module raise ImportError — the
+    standalone-evolve condition the fallback exists for.
+
+    Poisoning sys.modules with None is not enough here: the workspace's
+    editable-install finder resolves the module anyway, so the test must
+    block the import machinery itself to be sure the fallback actually ran
+    (otherwise the assertion passes vacuously — the canonical env equals the
+    fallback by design)."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _blocked(name: str, *args: object, **kwargs: object) -> object:
+        if name == "maistro.sandbox.credential_boundary":
+            raise ImportError(f"blocked for test: {name}")
+        return real_import(name, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(builtins, "__import__", _blocked)
+
+
+def test_fallback_without_core_keeps_the_same_minimal_posture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A standalone evolve install (no maistro-core) must get the identical
+    minimal environment, not a weakened variant: a fallback that inverted
+    into ambient inheritance would be the exact bug #78 closes."""
+    import maistro_evolve._candidate_env as ce
+
+    _block_canonical_import(monkeypatch)
+    monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-live-harness-secret")
+    env = ce.candidate_env()
+    assert env == ce._FALLBACK_BASE
+    assert "LITELLM_MASTER_KEY" not in env
+
+
+def test_fallback_on_windows_forwards_system_basics_by_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fallback's Windows branch mirrors the canonical one: system basics
+    by NAME only (python.exe cannot start without SYSTEMROOT), never a spread."""
+    import os
+
+    import maistro_evolve._candidate_env as ce
+
+    _block_canonical_import(monkeypatch)
+    monkeypatch.setattr(os, "name", "nt", raising=False)
+    monkeypatch.setenv("SYSTEMROOT", "C:\\Windows")
+    monkeypatch.setenv("SECRET_HARNESS_KEY", "sk-should-not-forward")
+    env = ce.candidate_env()
+    assert env["SYSTEMROOT"] == "C:\\Windows"
+    assert "SECRET_HARNESS_KEY" not in env

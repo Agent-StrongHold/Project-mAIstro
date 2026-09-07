@@ -199,9 +199,7 @@ def _env_assignments(argv: list[str]) -> list[str]:
     return out
 
 
-def test_container_env_is_home_and_nothing_else(
-    recorder: _Recording, tmp_path: Path
-) -> None:
+def test_container_env_is_home_and_nothing_else(recorder: _Recording, tmp_path: Path) -> None:
     """#78: no ambient host environment crosses into the container. Docker
     does not inherit the client's env by default, and that default is the
     security property — this pins it so a future edit cannot quietly add an
