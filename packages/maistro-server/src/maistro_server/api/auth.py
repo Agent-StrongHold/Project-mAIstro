@@ -25,10 +25,7 @@ security_scheme = HTTPBearer(auto_error=False)
 
 #: The accepted API_KEYS entry syntax, stated once so the parser, the
 #: startup gate, and every error message agree on it (#843).
-API_KEY_ENTRY_DOC = (
-    "principal:secret (or principal:admin:secret), e.g. "
-    'API_KEYS=["ops:<secret>"]'
-)
+API_KEY_ENTRY_DOC = 'principal:secret (or principal:admin:secret), e.g. API_KEYS=["ops:<secret>"]'
 
 
 def _parse_api_key_entry(entry: str) -> tuple[str, str, frozenset[str]] | None:
@@ -85,9 +82,7 @@ def invalid_api_key_entries(settings: Settings) -> list[str]:
         if not stripped:
             problems.append(f"entry {position}: empty")
         elif stripped.startswith("sk-"):
-            problems.append(
-                f"entry {position}: secret-shaped key with no principal prefix"
-            )
+            problems.append(f"entry {position}: secret-shaped key with no principal prefix")
         elif ":" not in stripped:
             problems.append(f"entry {position}: plain secret-only key")
         else:

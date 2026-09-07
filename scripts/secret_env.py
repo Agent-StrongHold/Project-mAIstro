@@ -247,6 +247,50 @@ def ensure_api_keys(path: Path, token: str) -> None:
     write(path, _rendered(lines))
 
 
+def migrate_api_keys(path: Path, secret: str, principal: str) -> None:
+    """#843 migration: rewrite a legacy plain API_KEYS entry in place.
+
+    An entry that is exactly `secret` (the legacy plain-key form the
+    installer used to write, which authenticated as an invented `default`
+    user) becomes `principal:secret`. The secret material is untouched, so
+    every client still presenting the bare secret keeps working — identity
+    becomes explicit without rotating credentials. Entries that are not
+    exactly `secret` (including already-prefixed ones) are left alone:
+    manual keys are the operator's to migrate deliberately.
+    """
+    if not principal or ":" in principal:
+        raise ValueError("principal must be a non-empty single segment (no ':').")
+    lines = _lines(path)
+    prefix = "API_KEYS="
+    for index, line in enumerate(lines):
+        if line.startswith(prefix):
+            try:
+                current = json.loads(line[len(prefix) :]) or []
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"Invalid API_KEYS in {path}: expected a JSON array ({exc.msg})."
+                ) from exc
+            if not isinstance(current, list) or not all(
+                isinstance(item, str) and item for item in current
+            ):
+                raise ValueError(
+                    f"Invalid API_KEYS in {path}: expected a JSON array of non-empty strings."
+                )
+            prefixed = f"{principal}:{secret}"
+            if secret not in current:
+                break  # nothing of ours to migrate (absent or already clean)
+            # Drop the legacy plain entry; keep/add the prefixed one. Also
+            # completes a half-migrated state where both had been present.
+            current = [item for item in current if item != secret]
+            if prefixed not in current:
+                current.append(prefixed)
+            lines[index] = prefix + json.dumps(current)
+            write(path, _rendered(lines))
+            break
+    # No API_KEYS line: nothing this installer wrote to migrate; callers
+    # add the prefixed entry separately via ensure-api-keys.
+
+
 def reserve(path: Path) -> None:
     """Make `path` an empty regular file at 0600, ready to be written into.
 
@@ -374,6 +418,14 @@ def main(argv: list[str] | None = None) -> int:
     p_keys.add_argument("path", type=Path)
     p_keys.add_argument("token")
 
+    p_migrate = sub.add_parser(
+        "migrate-api-keys",
+        help="rewrite a legacy plain API_KEYS entry as principal:secret (#843)",
+    )
+    p_migrate.add_argument("path", type=Path)
+    p_migrate.add_argument("secret")
+    p_migrate.add_argument("principal")
+
     p_check = sub.add_parser("check", help="validate the target without writing")
     p_check.add_argument("path", type=Path)
 
@@ -398,6 +450,7 @@ def main(argv: list[str] | None = None) -> int:
         "set-key": lambda a: set_key(a.path, a.key, a.value, only_if_blank=a.only_if_blank),
         "append-once": lambda a: append_once(a.path, a.key, a.value),
         "ensure-api-keys": lambda a: ensure_api_keys(a.path, a.token),
+        "migrate-api-keys": lambda a: migrate_api_keys(a.path, a.secret, a.principal),
         "check": lambda a: validate_target(a.path),
         "reserve": lambda a: reserve(a.path),
         "purge": lambda a: purge(a.path),

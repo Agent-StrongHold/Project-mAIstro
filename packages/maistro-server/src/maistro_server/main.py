@@ -46,9 +46,9 @@ from maistro_server.api import (
     workspaces,
     ws,
 )
+from maistro_server.api.auth import API_KEY_ENTRY_DOC, invalid_api_key_entries
 from maistro_server.api.chat_completions import RUN_ID_HEADER
 from maistro_server.api.middleware import PayloadSizeLimitMiddleware, SecurityHeadersMiddleware
-from maistro_server.api.auth import API_KEY_ENTRY_DOC, invalid_api_key_entries
 from maistro_server.api.rate_limit import RateLimitMiddleware
 from maistro_server.api.schemas import ErrorDetail, ErrorResponse
 from maistro_server.conductor_agent import CONDUCTOR_AGENT_NAME, ConductorAgent

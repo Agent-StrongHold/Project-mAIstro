@@ -216,9 +216,7 @@ class TestInvalidEntryDescriptions:
     ever echoing key material."""
 
     def test_valid_configuration_yields_no_problems(self) -> None:
-        settings = Settings(
-            api_keys=["ops:secret-a", "alice:admin:secret-b", "bob:weird:secret"]
-        )
+        settings = Settings(api_keys=["ops:secret-a", "alice:admin:secret-b", "bob:weird:secret"])
         assert invalid_api_key_entries(settings) == []
 
     def test_plain_and_malformed_entries_are_described(self) -> None:

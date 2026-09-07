@@ -60,9 +60,9 @@ def tight_limits(monkeypatch: pytest.MonkeyPatch) -> None:
 def configure_api_keys(monkeypatch: pytest.MonkeyPatch, *entries: str) -> None:
     """Point settings at an explicit API_KEYS list (JSON, like the env var).
 
-    The middleware resolves bearers through the canonical resolver, so these
-tests must pin the key list rather than depend on whatever the ambient
-environment carries.
+        The middleware resolves bearers through the canonical resolver, so these
+    tests must pin the key list rather than depend on whatever the ambient
+    environment carries.
     """
     monkeypatch.setenv("API_KEYS", json.dumps(list(entries)))
     get_settings.cache_clear()
@@ -179,11 +179,17 @@ class TestPrincipalIdentityKeying:
         configure_api_keys(monkeypatch, "ops:rl-key-one", "ops:rl-key-two")
         client = TestClient(_make_app())
 
-        assert client.get("/thing", headers={"Authorization": "Bearer rl-key-one"}).status_code == 200
-        assert client.get("/thing", headers={"Authorization": "Bearer rl-key-two"}).status_code == 200
+        assert (
+            client.get("/thing", headers={"Authorization": "Bearer rl-key-one"}).status_code == 200
+        )
+        assert (
+            client.get("/thing", headers={"Authorization": "Bearer rl-key-two"}).status_code == 200
+        )
         # Same principal (ops), third request — regardless of which of the
         # principal's two valid secrets is presented.
-        assert client.get("/thing", headers={"Authorization": "Bearer rl-key-one"}).status_code == 429
+        assert (
+            client.get("/thing", headers={"Authorization": "Bearer rl-key-one"}).status_code == 429
+        )
 
     def test_invalid_bearer_strings_do_not_mint_independent_buckets(
         self, tight_limits: None, monkeypatch: pytest.MonkeyPatch
@@ -194,10 +200,17 @@ class TestPrincipalIdentityKeying:
         configure_api_keys(monkeypatch, "ops:rl-legit-key")
         client = TestClient(_make_app())
 
-        assert client.get("/thing", headers={"Authorization": "Bearer garbage-one"}).status_code == 200
-        assert client.get("/thing", headers={"Authorization": "Bearer garbage-two"}).status_code == 200
+        assert (
+            client.get("/thing", headers={"Authorization": "Bearer garbage-one"}).status_code == 200
+        )
+        assert (
+            client.get("/thing", headers={"Authorization": "Bearer garbage-two"}).status_code == 200
+        )
         # A third distinct bearer string — still the same pre-auth bucket.
-        assert client.get("/thing", headers={"Authorization": "Bearer garbage-three"}).status_code == 429
+        assert (
+            client.get("/thing", headers={"Authorization": "Bearer garbage-three"}).status_code
+            == 429
+        )
 
     def test_anonymous_traffic_cannot_evade_the_network_floor_by_changing_headers(
         self, tight_limits: None, monkeypatch: pytest.MonkeyPatch
@@ -209,9 +222,13 @@ class TestPrincipalIdentityKeying:
         client = TestClient(_make_app())
 
         assert client.get("/thing").status_code == 200
-        assert client.get("/thing", headers={"Authorization": "Bearer not-a-key"}).status_code == 200
+        assert (
+            client.get("/thing", headers={"Authorization": "Bearer not-a-key"}).status_code == 200
+        )
         # Different scheme entirely — still the same connecting client.
-        assert client.get("/thing", headers={"Authorization": "Basic dXNlcjpwYXNz"}).status_code == 429
+        assert (
+            client.get("/thing", headers={"Authorization": "Basic dXNlcjpwYXNz"}).status_code == 429
+        )
 
     def test_forwarded_for_cannot_rotate_the_preauth_bucket(
         self, tight_limits: None, monkeypatch: pytest.MonkeyPatch
