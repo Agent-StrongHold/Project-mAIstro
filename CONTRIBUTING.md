@@ -86,12 +86,28 @@ CI runs `lint` in warn-only mode currently. Hard-fail flips after day 30 of regi
 
 ## Tests
 
-Two markers are registered in `pyproject.toml` (per [`ADR-032`](docs/adr/ADR-032-contracts-as-acceptance-criteria.md)):
+Three markers are registered in `pyproject.toml`, and `pytest` runs with
+`--strict-markers` (#391): an unregistered marker is a claim no gate can read,
+so it fails collection instead of passing as inert decoration. Adding,
+removing, or re-purposing a marker is a same-PR documentation change —
+`tests/test_pytest_marker_docs.py` fails otherwise.
 
-- `@pytest.mark.contract(...)` — contract axis: `boundary | behavioral | cross_service`
-- `@pytest.mark.scope(...)` — scope axis: `unit | integration | e2e | property`
+| Marker | Meaning | Consumer (gate) | CI effect |
+|---|---|---|---|
+| `@pytest.mark.ac("SPEC-NNN/AC-N")` | This test is evidence for that acceptance criterion ([`ADR-097`](docs/adr/ADR-097-lifecycle-status-machine.md)). The id must name a declared `**AC-N**` in that doc — a typo'd id claims nothing and cannot clear the `covered` rung. | `scripts/ac_outcome_plugin.py` records claims/outcomes; `scripts/check-ac-state.py --run-tests --ratchet` folds them into evidence rungs | The AC-state ratchet (`quality` job) banks the rung each criterion reached: `declared → covered → passing → reachable`. A **skip is no evidence** and a failure sinks the criterion; rungs drive the acceptance-state/design-coverage gate (owner: #160) |
+| `@pytest.mark.contract("boundary"\|"behavioral"\|"cross-service")` | Which contract axis the test pins ([`ADR-032`](docs/adr/ADR-032-contracts-as-acceptance-criteria.md)) | `scripts/check-contract-markers.py` | A contract claim without a passing test is baselined debt, not evidence; new unmatched claims fail |
+| `@pytest.mark.scope("unit"\|"integration"\|"e2e"\|"property")` | Test scope axis ([`ADR-032`](docs/adr/ADR-032-contracts-as-acceptance-criteria.md)) | Selection/documentation axis (`pytest -m scope`) | Names the layer a change must test at per ADR-032; also how suites are selected in CI jobs |
 
-So a Hypothesis property test on an ADR invariant is `@pytest.mark.contract("behavioral")` and/or `@pytest.mark.scope("property")` — not a standalone `behavioral` marker. Run e.g. `pytest -m "contract"` for contract-tagged tests; `pytest -m "scope"` for scope-tagged.
+Examples of correct linkage and rung behavior:
+
+```python
+@pytest.mark.ac("SPEC-080126-3a7c/AC-2")  # clears `covered` when collected, `passing` only when it passes
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("integration")
+async def test_due_schedule_admits_a_canonical_run() -> None: ...
+```
+
+A Hypothesis property test on an ADR invariant is `@pytest.mark.contract("behavioral")` and/or `@pytest.mark.scope("property")` — not a standalone `behavioral` marker. Run e.g. `pytest -m "ac"` for AC-claiming tests; `pytest -m "contract"` for contract-tagged ones; `pytest -m "scope"` for scope-tagged ones.
 
 ## Commit style
 
@@ -103,6 +119,7 @@ Imperative mood, one logical change per commit. PR titles include the backlog id
 - [ ] Front-matter present (registry CI green)
 - [ ] Tests at the right layer per `ADR-032`
 - [ ] Front-matter references resolve
+- [ ] CHANGELOG `## [Unreleased]` entry for user/operator/security-visible changes — categorized and issue-linked; generated churn is excluded by policy ([`CHANGELOG.md`](CHANGELOG.md) preamble, #385)
 - [ ] BACKLOG entry status updated if shipping closes one
 
 ## Where to ask

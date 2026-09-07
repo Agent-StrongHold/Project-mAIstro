@@ -45,7 +45,6 @@ _OAUTH_EXPORTS = (
     "OAuthToken",
     "OAuthTokenValidationError",
     "StateStore",
-    "UnverifiedJWTClaimsValidator",
     "default_id_token_verifier",
 )
 
@@ -100,7 +99,6 @@ __all__ = [
     "ServiceKeyClient",
     "ServiceKeyRegistry",
     "StateStore",
-    "UnverifiedJWTClaimsValidator",
     "WorkspaceMembership",
     "default_id_token_verifier",
     "expand_scopes",

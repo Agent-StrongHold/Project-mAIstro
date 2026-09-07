@@ -26,6 +26,7 @@ AUTHORIZATION_RATCHET_CHECKERS = (
     "scripts/check-execution-lifecycles.py",
     "scripts/check-reachability-provenance.py",
     "scripts/check-reachability-dispositions-provenance.py",
+    "scripts/check-adr-status-language-provenance.py",
     "scripts/check-model-egress.py",
     "scripts/check-public-routes.py",
 )

@@ -91,3 +91,14 @@ jobs:
         # are regenerated from it with `--fix`, and the reviewed columns
         # (`Summary`, `Ver`, `Last Modified`) are never touched.
         run: python scripts/check-adr-index.py
+
+      - name: Body status language agrees with front matter (#387)
+        # ADR-046 carried `status: Superseded` in front matter, a "Superseded
+        # by" banner, *and* a body paragraph asserting "The status therefore
+        # stays `Accepted`" — three weeks of different readers receiving
+        # different authority answers, because nothing read the body's status
+        # claims. Structured body markers (status lines, replacement banners,
+        # unqualified status assertions) must agree with front matter. Legacy
+        # body status lines are baselined per-identity
+        # (quality/adr-status-language-baseline.json) and ratchet down.
+        run: python scripts/check-adr-status-language.py

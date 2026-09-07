@@ -10,7 +10,7 @@ rather than just swap in a whole new draft.
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, cast
 
 from pydantic import BaseModel, Field
 
@@ -41,8 +41,11 @@ class ReviewAndEditIn(BaseModel):
     timeout_seconds: int = Field(default=86_400)
 
 
+ReviewAndEditVerdict = Literal["approved", "rejected", "edited", "timed_out"]
+
+
 class ReviewAndEditOut(BaseModel):
-    verdict: Literal["approved", "rejected", "edited", "timed_out"] = "approved"
+    verdict: ReviewAndEditVerdict = "approved"
     edits: list[FieldEdit] = Field(default_factory=list)
     reviewer_note: str = ""
     timed_out: bool = False
@@ -68,13 +71,21 @@ class HumanReviewAndEditNode(BaseNode[ReviewAndEditIn, ReviewAndEditOut]):
         answers = (ctx.metadata or {}).get("hitl_answers") or {}
         resumed = answers.get(ctx.node_id)
         if resumed is not None:
-            raw_edits = resumed.get("edits") or []
-            return ReviewAndEditOut(
-                verdict=resumed.get("verdict", "approved"),
-                edits=[FieldEdit.model_validate(edit) for edit in raw_edits],
-                reviewer_note=str(resumed.get("reviewer_note") or ""),
-                timed_out=bool(resumed.get("timed_out", False)),
-            )
+            # Fail closed (#329 / ADR-090726-9a4e): the same class of fix as
+            # human.approve_draft — a missing, empty, or non-string verdict
+            # key must not count as approval of the document under review; it
+            # falls through to the pause below and the node stays pending.
+            verdict = resumed.get("verdict")
+            if isinstance(verdict, str) and verdict.strip():
+                # `cast` states what pydantic still enforces at runtime: an
+                # unknown verdict string fails the node rather than approving.
+                raw_edits = resumed.get("edits") or []
+                return ReviewAndEditOut(
+                    verdict=cast(ReviewAndEditVerdict, verdict),
+                    edits=[FieldEdit.model_validate(edit) for edit in raw_edits],
+                    reviewer_note=str(resumed.get("reviewer_note") or ""),
+                    timed_out=bool(resumed.get("timed_out", False)),
+                )
 
         resume_at = now_utc() + timedelta(seconds=inputs.timeout_seconds)
         pause_until(

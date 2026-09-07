@@ -109,8 +109,11 @@ Deviations from the phase text above:
 - `PyJWT[crypto]` is a direct `maistro-core` dependency.
   `default_id_token_verifier()` always returns `JWKSIdTokenVerifier`; there is
   no claims-only fallback and production injection is unnecessary.
-  `UnverifiedJWTClaimsValidator` remains only as an explicitly selected
-  compatibility/test seam and is not selected by the product.
+  `UnverifiedJWTClaimsValidator` was removed entirely (#856): an unverified
+  claims parser no longer satisfies `IdTokenVerifier` anywhere. A missing
+  verification dependency (PyJWT or its crypto backend) refuses the module
+  import or fails the provider closed with an actionable error — JWKS
+  signature verification is never optional (#856).
 - Client-secret resolution remains protocol-driven in core. Hive resolves the
   configured vault key through its canonical vault-first secrets service at
   exchange time; no secret is a provider-config value. Provider tokens are not

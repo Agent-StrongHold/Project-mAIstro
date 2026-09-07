@@ -3,20 +3,30 @@ WORKDIR /tests
 # `@axe-core/playwright` is what makes the accessibility assertions in
 # `modal-a11y.spec.ts` a scan rather than a hand-written checklist (#371).
 #
-# React + esbuild are test-harness-only dependencies for #752. Deck Builder is
-# deliberately absent from the shipped SPA while its M0 containment is active,
-# so its security spec bundles the real component into an ephemeral localhost
-# page inside this test container rather than re-enabling the production route.
-# Versions match the shipped frontend / its lockfile.
+# React + esbuild are test-harness-only dependencies for #752/#314. Deck
+# Builder and the Dashboard page are deliberately bundled into an ephemeral
+# localhost page inside this test container: the deck page is absent from the
+# shipped SPA while its M0 containment is active, and the dashboard widget
+# boundary (#314) has to be proven against the real component's fetch paths.
+# react-router-dom is needed because the Dashboard page imports SetupChecklist,
+# whose markup links through the router. Versions match the shipped frontend /
+# its lockfile.
 RUN npm init -y && npm install \
     @playwright/test@1.52.0 \
     @axe-core/playwright@4.10.2 \
     typescript \
     esbuild@0.28.1 \
     react@19.2.0 \
-    react-dom@19.2.0
+    react-dom@19.2.0 \
+    react-router-dom@7.9.5
 COPY tests/e2e/ /tests/tests/e2e/
 COPY frontend/src/pages/DeckBuilder.tsx /tests/frontend/src/pages/DeckBuilder.tsx
 COPY frontend/src/lib/deckSanitizer.ts /tests/frontend/src/lib/deckSanitizer.ts
 COPY frontend/src/lib/deckTemplates.ts /tests/frontend/src/lib/deckTemplates.ts
+COPY frontend/src/pages/Dashboard.tsx /tests/frontend/src/pages/Dashboard.tsx
+COPY frontend/src/lib/widgetCapabilities.ts /tests/frontend/src/lib/widgetCapabilities.ts
+COPY frontend/src/components/SetupChecklist.tsx /tests/frontend/src/components/SetupChecklist.tsx
+COPY frontend/src/components/TemplatePicker.tsx /tests/frontend/src/components/TemplatePicker.tsx
+COPY frontend/src/lib/api.ts /tests/frontend/src/lib/api.ts
+COPY frontend/src/lib/debug.ts /tests/frontend/src/lib/debug.ts
 CMD ["npx", "playwright", "test", "--config=tests/e2e/playwright.config.ts"]

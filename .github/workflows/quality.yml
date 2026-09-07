@@ -20,7 +20,9 @@ permissions:
 
 # Progressive enforcement ladder (Phase 19; vulture and radon reclassified
 # Phase 20 — SPEC-264):
-#   feat/* pushes                       -> in scope, but lighter weight (no PR-target backstop)
+#   topic-branch pushes (feat/bug/fix/  -> in scope, but lighter weight (no PR-target
+#   idea/doc/chore, #381)                  backstop); the prefix set is single-sourced in
+#                                          .github/branch-protection.json
 #   PR/push -> develop/integration/main -> same gate everywhere: ruff/mypy hard; radon CC and
 #                                          vulture hard-fail on any finding unmatched by their
 #                                          respective baseline (quality/radon-baseline.json,
@@ -46,7 +48,12 @@ on:
   merge_group:
     types: [checks_requested]
   push:
-    branches: [main, integration, develop, feat/*]
+    # Every accepted topic-branch prefix (#381): the set is defined once in
+    # .github/branch-protection.json (topic_branch_policy) and validated by
+    # tests/test_branch_policy.py, so a push to any documented branch receives
+    # this gate set — a `feature/*` or bare-name branch is not a documented
+    # shape and gets its gates at PR time, where pull_request is unfiltered.
+    branches: [main, integration, develop, feat/*, bug/*, fix/*, idea/*, doc/*, chore/*]
 
 # See the rationale in ci.yml: supersede candidate runs, let protected-branch
 # pushes finish so their pass/fail record survives.
@@ -696,7 +703,7 @@ jobs:
       # while the tree had 1,422 findings — and 4 findings of retained slack
       # would have silently paid for a later regression. The same invocation
       # also runs in vulture-ratchet.yml; the ledger JSON is the single
-      # authority, this job extends it to feat/* pushes.
+      # authority, this job extends it to topic-branch pushes (#381).
       #
       # Scope: ALL packages/*/src (2026-07-01), not just maistro-core — a single
       # invocation so cross-package reachability resolves public APIs consumed
@@ -740,7 +747,7 @@ jobs:
       #
       # On the push that creates a branch, `github.event.before` is git's null
       # SHA. That names no revision, so the checker falls through to the trunk
-      # rather than failing every first push to a `feat/*` branch.
+      # rather than failing every first push to a topic branch (#381).
       - name: wiring reads ratchet (DI attributes nothing reads back)
         env:
           RATCHET_BASE_REV: >-

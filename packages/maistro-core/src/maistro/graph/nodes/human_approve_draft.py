@@ -12,7 +12,7 @@ they're posted).
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, cast
 
 from pydantic import BaseModel, Field
 
@@ -36,8 +36,11 @@ class ApproveDraftIn(BaseModel):
     timeout_seconds: int = Field(default=86_400)
 
 
+ApproveDraftVerdict = Literal["approved", "rejected", "modified", "timed_out"]
+
+
 class ApproveDraftOut(BaseModel):
-    verdict: Literal["approved", "rejected", "modified", "timed_out"] = "approved"
+    verdict: ApproveDraftVerdict = "approved"
     modified_draft: dict[str, Any] | None = None
     reviewer_note: str = ""
     timed_out: bool = False
@@ -62,13 +65,22 @@ class HumanApproveDraftNode(BaseNode[ApproveDraftIn, ApproveDraftOut]):
         answers = (ctx.metadata or {}).get("hitl_answers") or {}
         resumed = answers.get(ctx.node_id)
         if resumed is not None:
-            verdict = resumed.get("verdict", "approved")
-            return ApproveDraftOut(
-                verdict=verdict,
-                modified_draft=resumed.get("modified_draft"),
-                reviewer_note=str(resumed.get("reviewer_note") or ""),
-                timed_out=bool(resumed.get("timed_out", False)),
-            )
+            # Fail closed (#329 / ADR-090726-9a4e): a missing, empty, or
+            # non-string verdict key is not an approval. The absence of a key
+            # nobody asserted must never count as the human having approved,
+            # so an answer that states no verdict falls through to the pause
+            # below and the node stays pending — waiting for an answer that
+            # states a verdict explicitly.
+            verdict = resumed.get("verdict")
+            if isinstance(verdict, str) and verdict.strip():
+                # `cast` states what pydantic still enforces at runtime: an
+                # unknown verdict string fails the node rather than approving.
+                return ApproveDraftOut(
+                    verdict=cast(ApproveDraftVerdict, verdict),
+                    modified_draft=resumed.get("modified_draft"),
+                    reviewer_note=str(resumed.get("reviewer_note") or ""),
+                    timed_out=bool(resumed.get("timed_out", False)),
+                )
 
         resume_at = now_utc() + timedelta(seconds=inputs.timeout_seconds)
         pause_until(

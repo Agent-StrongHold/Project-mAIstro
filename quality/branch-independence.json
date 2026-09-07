@@ -258,6 +258,14 @@
       "reason": "One large tracked aggregate mixes generated findings with durable classification policy."
     },
     {
+      "id": "adr-status-language-baseline",
+      "kind": "base_derived",
+      "paths": [
+        "quality/adr-status-language-baseline.json"
+      ],
+      "reason": "Shrink-only body-status contradiction ratchet (#387): check-adr-status-language-provenance.py compares the candidate measurement against the ledger resolved from the trusted base, so the worktree copy is the landing state rather than an authoritative comparison; concurrent prunes that miss a merge are caught by the stale-entry rule."
+    },
+    {
       "id": "wiring-reads-baseline",
       "kind": "base_derived",
       "paths": [

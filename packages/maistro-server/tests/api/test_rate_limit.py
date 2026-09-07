@@ -1,20 +1,23 @@
 """Integration tests for maistro_server.api.rate_limit.RateLimitMiddleware.
 
-The middleware is rewired (B4) to wrap the shared
-`maistro.security.rate_limiter.InMemoryRateLimiter` sliding-window limiter
-instead of an ad-hoc per-IP token bucket. `InMemoryRateLimiter`'s own unit
-tests (packages/maistro-core/tests/security/test_rate_limiter.py) already
-cover the sliding-window logic in isolation; these tests exercise the
-middleware end-to-end: header presence, 429 body shape, and key-extraction
-priority (Authorization header vs. client-IP fallback).
+The middleware wraps the shared
+`maistro.security.rate_limiter.InMemoryRateLimiter` sliding-window limiter.
+`InMemoryRateLimiter`'s own unit tests
+(packages/maistro-core/tests/security/test_rate_limiter.py) already cover the
+sliding-window logic in isolation; these tests exercise the middleware
+end-to-end: header presence, 429 body shape, and — per #842 — the identity
+model of the bucket key: canonical authenticated principal when the bearer
+resolves, and a bounded pre-auth client identity (the connecting IP, not
+header text) otherwise.
 
 Uses a standalone FastAPI app (not the shared `maistro_server.main.app`
-singleton) so each test can set its own tight rate limit via env vars —
-following the `_make_app` pattern in tests/api/test_auth.py.
+singleton) so each test can set its own tight rate limit and API keys via
+env vars — following the `_make_app` pattern in tests/api/test_auth.py.
 """
 
 from __future__ import annotations
 
+import json
 from uuid import uuid4
 
 import pytest
@@ -51,6 +54,17 @@ def tight_limits(monkeypatch: pytest.MonkeyPatch) -> None:
     """Set a tight rate limit so a handful of requests trips it."""
     monkeypatch.setenv("RATE_LIMIT_PER_MINUTE", "2")
     monkeypatch.setenv("RATE_LIMIT_BURST", "0")
+    get_settings.cache_clear()
+
+
+def configure_api_keys(monkeypatch: pytest.MonkeyPatch, *entries: str) -> None:
+    """Point settings at an explicit API_KEYS list (JSON, like the env var).
+
+        The middleware resolves bearers through the canonical resolver, so these
+    tests must pin the key list rather than depend on whatever the ambient
+    environment carries.
+    """
+    monkeypatch.setenv("API_KEYS", json.dumps(list(entries)))
     get_settings.cache_clear()
 
 
@@ -106,20 +120,18 @@ class TestRateLimitHeadersAnd429Body:
 
 
 class TestKeyExtractionPriority:
-    def test_authorization_header_used_as_key_when_present(self, tight_limits: None) -> None:
-        """Two different IPs (simulated by different client fixtures aren't
-        available via TestClient) sharing the same Authorization header
-        should share the same rate-limit bucket — i.e. the header, not the
-        IP, determines the key when present."""
+    def test_valid_credential_keys_the_principal_bucket(self, tight_limits: None) -> None:
+        """A valid bearer keys the bucket on the resolved principal: the
+        same token keeps hitting the same bucket until it trips."""
         client = TestClient(_make_app())
-        headers = {"Authorization": "Bearer same-token"}
+        headers = {"Authorization": "Bearer rl-key"}
 
         first = client.get("/thing", headers=headers)
         assert first.status_code == 200
         second = client.get("/thing", headers=headers)
         assert second.status_code == 200
         # Limit is 2/minute with burst=0 — the third call against the same
-        # Authorization-derived key must be denied.
+        # principal bucket must be denied.
         third = client.get("/thing", headers=headers)
         assert third.status_code == 429
 
@@ -132,22 +144,138 @@ class TestKeyExtractionPriority:
         third = client.get("/thing")
         assert third.status_code == 429
 
-    def test_different_authorization_headers_get_independent_buckets(
-        self, tight_limits: None
+    def test_different_principals_get_independent_buckets(
+        self, tight_limits: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Per-principal limits are real limits: exhausting one principal's
+        bucket does not touch a different principal's (#842 AC: quota follows
+        the canonical identity)."""
+        configure_api_keys(monkeypatch, "ops:rl-secret-a", "dev:rl-secret-b")
         client = TestClient(_make_app())
-        headers_a = {"Authorization": "Bearer token-a"}
-        headers_b = {"Authorization": "Bearer token-b"}
+        headers_ops = {"Authorization": "Bearer rl-secret-a"}
+        headers_dev = {"Authorization": "Bearer rl-secret-b"}
 
-        # Exhaust token-a's bucket.
-        client.get("/thing", headers=headers_a)
-        client.get("/thing", headers=headers_a)
-        exhausted = client.get("/thing", headers=headers_a)
+        # Exhaust ops' bucket.
+        client.get("/thing", headers=headers_ops)
+        client.get("/thing", headers=headers_ops)
+        exhausted = client.get("/thing", headers=headers_ops)
         assert exhausted.status_code == 429
 
-        # token-b has its own, still-fresh bucket.
-        response_b = client.get("/thing", headers=headers_b)
-        assert response_b.status_code == 200
+        # dev has its own, still-fresh principal bucket.
+        response_dev = client.get("/thing", headers=headers_dev)
+        assert response_dev.status_code == 200
+
+
+class TestPrincipalIdentityKeying:
+    """#842: rate limits key to the authenticated principal, not to
+    attacker-controlled bearer text."""
+
+    def test_one_principal_many_bearer_strings_shares_one_bucket(
+        self, tight_limits: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AC: one principal with many bearer strings stays in one principal
+        bucket — rotating credentials (or overlapping old/new keys during
+        rotation) preserves the principal-level abuse history."""
+        configure_api_keys(monkeypatch, "ops:rl-key-one", "ops:rl-key-two")
+        client = TestClient(_make_app())
+
+        assert (
+            client.get("/thing", headers={"Authorization": "Bearer rl-key-one"}).status_code == 200
+        )
+        assert (
+            client.get("/thing", headers={"Authorization": "Bearer rl-key-two"}).status_code == 200
+        )
+        # Same principal (ops), third request — regardless of which of the
+        # principal's two valid secrets is presented.
+        assert (
+            client.get("/thing", headers={"Authorization": "Bearer rl-key-one"}).status_code == 429
+        )
+
+    def test_invalid_bearer_strings_do_not_mint_independent_buckets(
+        self, tight_limits: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AC: invalid bearer tokens never mint independent buckets. Every
+        unrecognized credential falls into the same pre-auth client bucket
+        as an unauthenticated request."""
+        configure_api_keys(monkeypatch, "ops:rl-legit-key")
+        client = TestClient(_make_app())
+
+        assert (
+            client.get("/thing", headers={"Authorization": "Bearer garbage-one"}).status_code == 200
+        )
+        assert (
+            client.get("/thing", headers={"Authorization": "Bearer garbage-two"}).status_code == 200
+        )
+        # A third distinct bearer string — still the same pre-auth bucket.
+        assert (
+            client.get("/thing", headers={"Authorization": "Bearer garbage-three"}).status_code
+            == 429
+        )
+
+    def test_anonymous_traffic_cannot_evade_the_network_floor_by_changing_headers(
+        self, tight_limits: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AC: anonymous traffic cannot evade the global/network floor by
+        changing headers — mixing absent, invalid, and non-Bearer schemes
+        stays inside the one pre-auth bucket."""
+        configure_api_keys(monkeypatch, "ops:rl-legit-key")
+        client = TestClient(_make_app())
+
+        assert client.get("/thing").status_code == 200
+        assert (
+            client.get("/thing", headers={"Authorization": "Bearer not-a-key"}).status_code == 200
+        )
+        # Different scheme entirely — still the same connecting client.
+        assert (
+            client.get("/thing", headers={"Authorization": "Basic dXNlcjpwYXNz"}).status_code == 429
+        )
+
+    def test_forwarded_for_cannot_rotate_the_preauth_bucket(
+        self, tight_limits: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AC: proxy/client-IP handling follows the trusted-proxy policy.
+        The pre-auth identity is the address the connection came from;
+        arbitrary X-Forwarded-For header text must not rotate it."""
+        configure_api_keys(monkeypatch, "ops:rl-legit-key")
+        client = TestClient(_make_app())
+
+        assert client.get("/thing", headers={"X-Forwarded-For": "203.0.113.1"}).status_code == 200
+        assert client.get("/thing", headers={"X-Forwarded-For": "203.0.113.2"}).status_code == 200
+        assert client.get("/thing", headers={"X-Forwarded-For": "203.0.113.3"}).status_code == 429
+
+    def test_metrics_and_responses_never_expose_credential_material(
+        self, tight_limits: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AC (#842, via #818's bounded labels): no metric label and no
+        response surface ever carries credential material — the bucket key
+        is the principal id, never the secret."""
+        configure_api_keys(monkeypatch, "ops:rl-metric-secret", "dev:rl-other-secret")
+        client = TestClient(_make_app())
+
+        responses = [
+            client.get("/thing", headers={"Authorization": "Bearer rl-metric-secret"}),
+            client.get("/thing", headers={"Authorization": "Bearer rl-other-secret"}),
+            client.get("/thing", headers={"Authorization": "Bearer rl-metric-secret"}),
+            client.get("/thing", headers={"Authorization": "Bearer rl-metric-secret"}),
+            client.get("/thing", headers={"Authorization": "Bearer invalid-secret"}),
+        ]
+        assert any(r.status_code == 429 for r in responses)
+
+        for response in responses:
+            assert "rl-metric-secret" not in response.text
+            assert "rl-other-secret" not in response.text
+            for header_value in response.headers.values():
+                assert "rl-metric-secret" not in header_value
+
+        metrics = (
+            http_requests_total.collect()
+            + http_request_duration.collect()
+            + maistro_request_duration_seconds.collect()
+        )
+        for sample in metrics:
+            for label_value in sample["labels"].values():
+                assert "rl-metric-secret" not in label_value
+                assert "rl-other-secret" not in label_value
 
 
 class TestAdr037RequestDuration:
