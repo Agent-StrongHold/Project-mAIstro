@@ -4,6 +4,16 @@ All queries use raw SQL via sqlalchemy text() — same pattern as
 pg_agents.py.  Z-index invariants are enforced inside transactions to
 prevent races; the DB schema uses a UNIQUE constraint on
 (canvas_id, z_index) as the authoritative guard.
+
+Scope (#857): every read and mutation takes a required keyword-only
+``org_id`` and carries it into the SQL predicate. The org axis is soft
+(ADR-068) — no table resolves an org to an owner — so the store cannot
+answer "may this caller see this canvas"; it can, and now must, refuse
+to answer at all outside the scope the caller authenticated with.
+Layers, jobs and composites scope through their canvas: the tables carry
+no org column of their own, so the predicate joins ``canvases`` — a
+row in another org reads as absent rather than forbidden, which keeps
+existence itself scoped information.
 """
 
 from __future__ import annotations
@@ -24,6 +34,7 @@ from maistro_canvas.types import (
     DuplicateZIndexError,
     GenerationJobRecord,
     IncompleteReorderError,
+    JobNotFoundError,
     LayerLimitExceededError,
     LayerNotFoundError,
     LayerRecord,
@@ -195,11 +206,12 @@ class PgCanvasStore:
         )
         return record
 
-    async def get_canvas(self, canvas_id: str) -> CanvasRecord | None:
+    async def get_canvas(self, canvas_id: str, *, org_id: str) -> CanvasRecord | None:
+        """Fetch one canvas inside ``org_id``; another org's canvas is absent."""
         async with AsyncSession(self._engine) as session:
             result = await session.execute(
-                text("SELECT * FROM canvases WHERE id = :id"),
-                {"id": canvas_id},
+                text("SELECT * FROM canvases WHERE id = :id AND org_id = :org"),
+                {"id": canvas_id, "org": org_id},
             )
             row = result.mappings().first()
             return _coerce_canvas(row) if row else None
@@ -228,19 +240,20 @@ class PgCanvasStore:
             rows = result.mappings().all()
             return [_coerce_canvas(r) for r in rows]
 
-    async def update_canvas(self, canvas: CanvasRecord) -> CanvasRecord:
+    async def update_canvas(self, canvas: CanvasRecord, *, org_id: str) -> CanvasRecord:
         canvas.updated_at = datetime.now(UTC)
         async with AsyncSession(self._engine) as session:
-            await session.execute(
+            result = await session.execute(
                 text("""
                     UPDATE canvases SET
                         name = :name, background_color = :bg,
                         layer_count = :lc, archived_at = :archived,
                         updated_at = :updated
-                    WHERE id = :id
+                    WHERE id = :id AND org_id = :org
                 """),
                 {
                     "id": canvas.id,
+                    "org": org_id,
                     "name": canvas.name,
                     "bg": canvas.background_color,
                     "lc": canvas.layer_count,
@@ -248,6 +261,8 @@ class PgCanvasStore:
                     "updated": canvas.updated_at,
                 },
             )
+            if result.rowcount == 0:
+                raise CanvasNotFoundError(canvas.id)
             await session.commit()
         return canvas
 
@@ -257,16 +272,22 @@ class PgCanvasStore:
         self,
         canvas_id: str,
         *,
+        org_id: str,
         name: str,
         layer_type: str,
         z_index: int | None = None,
         **kwargs: Any,
     ) -> LayerRecord:
         async with AsyncSession(self._engine) as session:
-            # Check ceiling
+            # Check ceiling. The org predicate rides the locked row: a canvas
+            # in another org raises the same CanvasNotFoundError an unknown id
+            # does, so existence stays scoped (#857).
             cnt_result = await session.execute(
-                text("SELECT layer_count FROM canvases WHERE id = :id FOR UPDATE"),
-                {"id": canvas_id},
+                text(
+                    "SELECT layer_count FROM canvases"
+                    " WHERE id = :id AND org_id = :org FOR UPDATE"
+                ),
+                {"id": canvas_id, "org": org_id},
             )
             cnt_row = cnt_result.mappings().first()
             if cnt_row is None:
@@ -379,25 +400,35 @@ class PgCanvasStore:
             updated_at=now,
         )
 
-    async def get_layer(self, layer_id: str) -> LayerRecord | None:
+    async def get_layer(self, layer_id: str, *, org_id: str) -> LayerRecord | None:
+        """One layer, scoped through its canvas's org (#857)."""
         async with AsyncSession(self._engine) as session:
             result = await session.execute(
-                text("SELECT * FROM layers WHERE id = :id"),
-                {"id": layer_id},
+                text(
+                    "SELECT l.* FROM layers l"
+                    " JOIN canvases c ON c.id = l.canvas_id"
+                    " WHERE l.id = :id AND c.org_id = :org"
+                ),
+                {"id": layer_id, "org": org_id},
             )
             row = result.mappings().first()
             return _coerce_layer(row) if row else None
 
-    async def list_layers(self, canvas_id: str) -> list[LayerRecord]:
+    async def list_layers(self, canvas_id: str, *, org_id: str) -> list[LayerRecord]:
         async with AsyncSession(self._engine) as session:
             result = await session.execute(
-                text("SELECT * FROM layers WHERE canvas_id = :cid ORDER BY z_index ASC"),
-                {"cid": canvas_id},
+                text(
+                    "SELECT l.* FROM layers l"
+                    " JOIN canvases c ON c.id = l.canvas_id"
+                    " WHERE l.canvas_id = :cid AND c.org_id = :org"
+                    " ORDER BY l.z_index ASC"
+                ),
+                {"cid": canvas_id, "org": org_id},
             )
             rows = result.mappings().all()
             return [_coerce_layer(r) for r in rows]
 
-    async def update_layer(self, layer: LayerRecord) -> LayerRecord:
+    async def update_layer(self, layer: LayerRecord, *, org_id: str) -> LayerRecord:
         layer.updated_at = datetime.now(UTC)
         tc_json = json.dumps(None)
         if layer.text_config is not None:
@@ -413,7 +444,7 @@ class PgCanvasStore:
                 }
             )
         async with AsyncSession(self._engine) as session:
-            await session.execute(
+            result = await session.execute(
                 text("""
                     UPDATE layers SET
                         name = :name, z_index = :z, x = :x, y = :y, scale = :sc,
@@ -422,10 +453,12 @@ class PgCanvasStore:
                         prompt = :pr, negative_prompt = :np, model_id = :mi,
                         tier = :ti, generation_seed = :gs,
                         text_config = :tc::jsonb, updated_at = :updated
-                    WHERE id = :id
+                    WHERE id = :id AND canvas_id IN
+                        (SELECT id FROM canvases WHERE org_id = :org)
                 """),
                 {
                     "id": layer.id,
+                    "org": org_id,
                     "name": layer.name,
                     "z": layer.z_index,
                     "x": layer.x,
@@ -446,6 +479,8 @@ class PgCanvasStore:
                     "updated": layer.updated_at,
                 },
             )
+            if result.rowcount == 0:
+                raise LayerNotFoundError(layer.id)
             await session.commit()
         return layer
 
@@ -490,6 +525,8 @@ class PgCanvasStore:
         self,
         canvas_id: str,
         assignments: list[dict[str, Any]],
+        *,
+        org_id: str,
     ) -> list[LayerRecord]:
         """Atomically reassign z_indices.  Validates completeness and uniqueness."""
         # Validate no duplicate z_index values
@@ -502,7 +539,12 @@ class PgCanvasStore:
             existing = (
                 (
                     await session.execute(
-                        text("SELECT id FROM layers WHERE canvas_id = :cid"), {"cid": canvas_id}
+                        text(
+                            "SELECT l.id FROM layers l"
+                            " JOIN canvases c ON c.id = l.canvas_id"
+                            " WHERE l.canvas_id = :cid AND c.org_id = :org"
+                        ),
+                        {"cid": canvas_id, "org": org_id},
                     )
                 )
                 .scalars()
@@ -527,12 +569,24 @@ class PgCanvasStore:
                 )
             await session.commit()
 
-        return await self.list_layers(canvas_id)
+        return await self.list_layers(canvas_id, org_id=org_id)
 
     # ── Generation jobs ───────────────────────────────────────────────
 
-    async def create_job(self, job: GenerationJobRecord) -> GenerationJobRecord:
+    async def create_job(self, job: GenerationJobRecord, *, org_id: str) -> GenerationJobRecord:
+        """Persist a job receipt, refusing a canvas outside ``org_id`` (#857)."""
         async with AsyncSession(self._engine) as session:
+            owner = (
+                (
+                    await session.execute(
+                        text("SELECT 1 FROM canvases WHERE id = :id AND org_id = :org"),
+                        {"id": job.canvas_id, "org": org_id},
+                    )
+                )
+                .first()
+            )
+            if owner is None:
+                raise CanvasNotFoundError(job.canvas_id)
             await session.execute(
                 text("""
                     INSERT INTO generation_jobs
@@ -564,27 +618,37 @@ class PgCanvasStore:
             await session.commit()
         return job
 
-    async def get_job(self, job_id: str) -> GenerationJobRecord | None:
+    async def get_job(self, job_id: str, *, org_id: str) -> GenerationJobRecord | None:
+        """One job, scoped through its layer's canvas's org (#857)."""
         async with AsyncSession(self._engine) as session:
             result = await session.execute(
-                text("SELECT * FROM generation_jobs WHERE id = :id"),
-                {"id": job_id},
+                text(
+                    "SELECT j.* FROM generation_jobs j"
+                    " JOIN layers l ON l.id = j.layer_id"
+                    " JOIN canvases c ON c.id = l.canvas_id"
+                    " WHERE j.id = :id AND c.org_id = :org"
+                ),
+                {"id": job_id, "org": org_id},
             )
             row = result.mappings().first()
             return _coerce_job(row) if row else None
 
-    async def update_job(self, job: GenerationJobRecord) -> GenerationJobRecord:
+    async def update_job(self, job: GenerationJobRecord, *, org_id: str) -> GenerationJobRecord:
         async with AsyncSession(self._engine) as session:
-            await session.execute(
+            result = await session.execute(
                 text("""
                     UPDATE generation_jobs SET
                         status = :status, result_paths = :paths::jsonb,
                         selected_index = :sel, error_message = :err,
                         started_at = :start, completed_at = :done
-                    WHERE id = :id
+                    WHERE id = :id AND layer_id IN
+                        (SELECT l.id FROM layers l
+                         JOIN canvases c ON c.id = l.canvas_id
+                         WHERE c.org_id = :org)
                 """),
                 {
                     "id": job.id,
+                    "org": org_id,
                     "status": job.status,
                     "paths": json.dumps(job.result_paths),
                     "sel": job.selected_index,
@@ -593,38 +657,65 @@ class PgCanvasStore:
                     "done": job.completed_at,
                 },
             )
+            if result.rowcount == 0:
+                raise JobNotFoundError(job.id)
             await session.commit()
         return job
 
-    async def active_job_for_layer(self, layer_id: str) -> GenerationJobRecord | None:
+    async def active_job_for_layer(
+        self, layer_id: str, *, org_id: str
+    ) -> GenerationJobRecord | None:
         async with AsyncSession(self._engine) as session:
             result = await session.execute(
                 text("""
-                    SELECT * FROM generation_jobs
-                    WHERE layer_id = :lid AND status IN ('pending', 'running')
+                    SELECT j.* FROM generation_jobs j
+                    JOIN layers l ON l.id = j.layer_id
+                    JOIN canvases c ON c.id = l.canvas_id
+                    WHERE j.layer_id = :lid AND c.org_id = :org
+                      AND j.status IN ('pending', 'running')
                     LIMIT 1
                 """),
-                {"lid": layer_id},
+                {"lid": layer_id, "org": org_id},
             )
             row = result.mappings().first()
             return _coerce_job(row) if row else None
 
-    async def list_jobs_for_layer(self, layer_id: str) -> list[GenerationJobRecord]:
+    async def list_jobs_for_layer(
+        self, layer_id: str, *, org_id: str
+    ) -> list[GenerationJobRecord]:
         async with AsyncSession(self._engine) as session:
             result = await session.execute(
                 text(
-                    "SELECT * FROM generation_jobs WHERE layer_id = :lid ORDER BY created_at DESC"
+                    "SELECT j.* FROM generation_jobs j"
+                    " JOIN layers l ON l.id = j.layer_id"
+                    " JOIN canvases c ON c.id = l.canvas_id"
+                    " WHERE j.layer_id = :lid AND c.org_id = :org"
+                    " ORDER BY j.created_at DESC"
                 ),
-                {"lid": layer_id},
+                {"lid": layer_id, "org": org_id},
             )
             rows = result.mappings().all()
             return [_coerce_job(r) for r in rows]
 
     # ── Composites ────────────────────────────────────────────────────
 
-    async def save_composite(self, result: CompositeResult) -> CompositeResult:
+    async def save_composite(
+        self, result: CompositeResult, *, org_id: str
+    ) -> CompositeResult:
+        """Persist a composite, refusing a canvas outside ``org_id`` (#857)."""
         composite_id = str(uuid.uuid4())
         async with AsyncSession(self._engine) as session:
+            owner = (
+                (
+                    await session.execute(
+                        text("SELECT 1 FROM canvases WHERE id = :id AND org_id = :org"),
+                        {"id": result.canvas_id, "org": org_id},
+                    )
+                )
+                .first()
+            )
+            if owner is None:
+                raise CanvasNotFoundError(result.canvas_id)
             await session.execute(
                 text("""
                     INSERT INTO composite_records
@@ -646,16 +737,18 @@ class PgCanvasStore:
             await session.commit()
         return result
 
-    async def latest_composite(self, canvas_id: str) -> CompositeResult | None:
+    async def latest_composite(self, canvas_id: str, *, org_id: str) -> CompositeResult | None:
+        """The newest composite of a canvas inside ``org_id`` (#857)."""
         async with AsyncSession(self._engine) as session:
             result = await session.execute(
                 text("""
-                    SELECT * FROM composite_records
-                    WHERE canvas_id = :cid
-                    ORDER BY created_at DESC
+                    SELECT r.* FROM composite_records r
+                    JOIN canvases c ON c.id = r.canvas_id
+                    WHERE r.canvas_id = :cid AND c.org_id = :org
+                    ORDER BY r.created_at DESC
                     LIMIT 1
                 """),
-                {"cid": canvas_id},
+                {"cid": canvas_id, "org": org_id},
             )
             row = result.mappings().first()
             return _coerce_composite(row) if row else None

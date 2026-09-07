@@ -34,29 +34,50 @@ if TYPE_CHECKING:
 
 class _AssetStore(Protocol):
     """Structural protocol covering the methods the executor calls.
-    InMemoryAssetStore and PostgresAssetStore both satisfy it."""
+    InMemoryAssetStore and PostgresAssetStore both satisfy it. Every method
+    takes the caller's ``org_id`` (#857)."""
 
-    async def register_definition(self, defn: AssetDefinition) -> AssetDefinition: ...
-    async def get_definition(self, asset_id: str) -> AssetDefinition | None: ...
-    async def list_definitions_by_kind(self, kind: str) -> list[AssetDefinition]: ...
-    async def update_definition(self, defn: AssetDefinition) -> AssetDefinition: ...
-    async def upsert_sheet(self, sheet: AssetSheet) -> AssetSheet: ...
-    async def get_sheet(self, asset_id: str) -> AssetSheet | None: ...
+    async def register_definition(
+        self, defn: AssetDefinition, *, org_id: str
+    ) -> AssetDefinition: ...
+    async def get_definition(
+        self, asset_id: str, *, org_id: str
+    ) -> AssetDefinition | None: ...
+    async def list_definitions_by_kind(
+        self, kind: str, *, org_id: str
+    ) -> list[AssetDefinition]: ...
+    async def update_definition(
+        self, defn: AssetDefinition, *, org_id: str
+    ) -> AssetDefinition: ...
+    async def upsert_sheet(self, sheet: AssetSheet, *, org_id: str) -> AssetSheet: ...
+    async def get_sheet(self, asset_id: str, *, org_id: str) -> AssetSheet | None: ...
     async def regenerate_sheet(
         self,
         asset_id: str,
         sheet_image: str,
         refs: tuple[str, ...] | None = None,
         params: dict[str, Any] | None = None,
+        *,
+        org_id: str,
     ) -> AssetSheet: ...
-    async def upsert_instance(self, instance: AssetInstance) -> AssetInstance: ...
-    async def get_instance(self, instance_id: str) -> AssetInstance | None: ...
-    async def list_instances(self, canvas_id: str) -> list[AssetInstance]: ...
-    async def remove_instance(self, instance_id: str) -> None: ...
-    async def upsert_profile(self, profile: ChildProfile) -> ChildProfile: ...
-    async def get_profile(self, profile_id: str) -> ChildProfile | None: ...
-    async def get_book(self, book_id: str) -> Book | None: ...
-    async def update_book(self, book: Book) -> Book: ...
+    async def upsert_instance(
+        self, instance: AssetInstance, *, org_id: str
+    ) -> AssetInstance: ...
+    async def get_instance(
+        self, instance_id: str, *, org_id: str
+    ) -> AssetInstance | None: ...
+    async def list_instances(
+        self, canvas_id: str, *, org_id: str
+    ) -> list[AssetInstance]: ...
+    async def remove_instance(self, instance_id: str, *, org_id: str) -> None: ...
+    async def upsert_profile(
+        self, profile: ChildProfile, *, org_id: str
+    ) -> ChildProfile: ...
+    async def get_profile(
+        self, profile_id: str, *, org_id: str
+    ) -> ChildProfile | None: ...
+    async def get_book(self, book_id: str, *, org_id: str) -> Book | None: ...
+    async def update_book(self, book: Book, *, org_id: str) -> Book: ...
 
 
 class _ImageGenClient(Protocol):
@@ -85,6 +106,11 @@ class AssetExecutor:
     Used by:
       - the FastAPI router (ADR-042) — directly via DI
       - the agent tool (ADR-043 §AssetTool) — through dispatch
+
+    Constructed with the org scope every action runs under (#857): the
+    HTTP path binds the authenticated principal's org, the agent path
+    binds the Run's canonical org. The executor never derives scope from
+    asset ids or canvas ids, which are caller-supplied.
     """
 
     def __init__(
@@ -92,33 +118,38 @@ class AssetExecutor:
         store: _AssetStore,
         image_gen: _ImageGenClient,
         *,
+        org_id: str,
         sheet_size: tuple[int, int] = (1024, 1024),
         default_model_id: str = "default",
     ) -> None:
+        if not org_id:
+            msg = "AssetExecutor requires the org scope its actions run under"
+            raise ValueError(msg)
         self._store = store
         self._gen = image_gen
+        self._org_id = org_id
         self._sheet_size = sheet_size
         self._default_model_id = default_model_id
 
     # ── Definition / instance pass-through ─────────────────────────
 
     async def register_definition(self, defn: AssetDefinition) -> AssetDefinition:
-        return await self._store.register_definition(defn)
+        return await self._store.register_definition(defn, org_id=self._org_id)
 
     async def get_definition(self, asset_id: str) -> AssetDefinition | None:
-        return await self._store.get_definition(asset_id)
+        return await self._store.get_definition(asset_id, org_id=self._org_id)
 
     async def list_definitions_by_kind(self, kind: str) -> list[AssetDefinition]:
-        return await self._store.list_definitions_by_kind(kind)
+        return await self._store.list_definitions_by_kind(kind, org_id=self._org_id)
 
     async def upsert_instance(self, instance: AssetInstance) -> AssetInstance:
-        return await self._store.upsert_instance(instance)
+        return await self._store.upsert_instance(instance, org_id=self._org_id)
 
     async def list_instances(self, canvas_id: str) -> list[AssetInstance]:
-        return await self._store.list_instances(canvas_id)
+        return await self._store.list_instances(canvas_id, org_id=self._org_id)
 
     async def remove_instance(self, instance_id: str) -> None:
-        await self._store.remove_instance(instance_id)
+        await self._store.remove_instance(instance_id, org_id=self._org_id)
 
     # ── Sheet generation ───────────────────────────────────────────
 
@@ -136,7 +167,7 @@ class AssetExecutor:
         backend returns one image; we persist it as the sheet's
         ``sheet_image`` and return the row.
         """
-        defn = await self._store.get_definition(asset_id)
+        defn = await self._store.get_definition(asset_id, org_id=self._org_id)
         existing = defn.asset_sheet if defn is not None else None
         # Use the existing sheet (if any) as conditioning so successive
         # regenerations stay anchored.
@@ -159,7 +190,7 @@ class AssetExecutor:
             revision=(existing.revision + 1) if existing is not None else 1,
             generation_params=dict(params or {}),
         )
-        return await self._store.upsert_sheet(new_sheet)
+        return await self._store.upsert_sheet(new_sheet, org_id=self._org_id)
 
     async def regenerate_sheet(
         self,
@@ -170,7 +201,7 @@ class AssetExecutor:
         params: dict[str, Any] | None = None,
     ) -> AssetSheet:
         """Bump the revision of an existing sheet."""
-        existing = await self._store.get_sheet(asset_id)
+        existing = await self._store.get_sheet(asset_id, org_id=self._org_id)
         images = await self._gen.generate(
             model_id=self._default_model_id,
             prompt=prompt,
@@ -187,6 +218,7 @@ class AssetExecutor:
             sheet_image=_image_to_url(images[0]),
             refs=refs,
             params=params,
+            org_id=self._org_id,
         )
 
     # ── Render plan ────────────────────────────────────────────────
@@ -207,13 +239,17 @@ class AssetExecutor:
         definitions referenced by string id, and runs ``plan_render``
         from ADR-041.
         """
-        instances = await self._store.list_instances(canvas_id)
-        profile = await self._store.get_profile(profile_id) if profile_id is not None else None
+        instances = await self._store.list_instances(canvas_id, org_id=self._org_id)
+        profile = (
+            await self._store.get_profile(profile_id, org_id=self._org_id)
+            if profile_id is not None
+            else None
+        )
 
         referenced_ids = {i.definition for i in instances if isinstance(i.definition, str)}
         preloaded: dict[str, AssetDefinition | None] = {}
         for aid in referenced_ids:
-            preloaded[aid] = await self._store.get_definition(aid)
+            preloaded[aid] = await self._store.get_definition(aid, org_id=self._org_id)
 
         def lookup(asset_id: str) -> AssetDefinition | None:
             return preloaded.get(asset_id)

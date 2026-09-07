@@ -74,6 +74,10 @@ class FakeImageGenClient:
         ]
 
 
+#: The org every executor/store interaction in this module runs under (#857).
+ORG = "org-1"
+
+
 def _world_style() -> WorldStyle:
     return WorldStyle(
         era="modern",
@@ -97,7 +101,7 @@ def gen() -> FakeImageGenClient:
 
 @pytest.fixture
 def executor(store: InMemoryAssetStore, gen: FakeImageGenClient) -> AssetExecutor:
-    return AssetExecutor(store, gen)
+    return AssetExecutor(store, gen, org_id=ORG)
 
 
 @pytest.fixture

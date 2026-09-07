@@ -51,7 +51,9 @@ class InMemoryJobStore:
     async def get_job(self, job_id: str) -> GenerationJobRecord | None:
         return self._jobs.get(job_id)
 
-    async def update_job(self, job: GenerationJobRecord) -> GenerationJobRecord:
+    async def update_job(
+        self, job: GenerationJobRecord, *, org_id: str
+    ) -> GenerationJobRecord:
         self._jobs[job.id] = job
         return job
 
@@ -176,7 +178,7 @@ async def test_dead_worker_lease_requeues_when_budget_remains() -> None:
     job.attempts = 1
     job.leased_by = "dead-worker"
     job.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
-    await store.update_job(job)
+    await store.update_job(job, org_id=job.org_id)
 
     reaped = await store.reap_expired_leases()
     assert len(reaped) == 1
@@ -194,7 +196,7 @@ async def test_dead_worker_lease_fails_when_budget_exhausted() -> None:
     job.attempts = 3
     job.leased_by = "dead-worker"
     job.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
-    await store.update_job(job)
+    await store.update_job(job, org_id=job.org_id)
 
     reaped = await store.reap_expired_leases()
     assert len(reaped) == 1

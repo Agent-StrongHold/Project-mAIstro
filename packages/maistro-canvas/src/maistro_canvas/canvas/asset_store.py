@@ -7,7 +7,11 @@ Two implementations:
 - ``PostgresAssetStore``: production. Raw SQL via ``sqlalchemy.text()``,
   async, matching the existing canvas ``store.py`` pattern.
 
-Both expose the same shape. Persists:
+Both expose the same shape, and both take a required keyword-only ``org_id``
+on every read and write (#857): rows live in the org that created them, and
+an id from another org reads as absent. The org axis is soft (ADR-068) — it
+carves no ownership tables — so the store boundary is where the scope is
+enforced. Persists:
 
 - ``AssetDefinition`` — registered, named, reusable.
 - ``AssetSheet`` — one per asset_id; revision bumps on regenerate.
@@ -290,22 +294,30 @@ def _definitions_equivalent(a: AssetDefinition, b: AssetDefinition) -> bool:
 
 
 class InMemoryAssetStore:
-    """Ephemeral asset store. Not threadsafe; intended for tests."""
+    """Ephemeral asset store. Not threadsafe; intended for tests.
+
+    Rows are keyed by ``(org_id, id)`` (#857): the same asset_id in two orgs
+    is two rows, and an id addressed under the wrong org is absent. This is
+    the behavioural twin of the Postgres predicates, not a mock of them.
+    """
 
     def __init__(self) -> None:
-        self._definitions: dict[str, AssetDefinition] = {}
-        self._sheets: dict[str, AssetSheet] = {}
-        self._instances: dict[str, AssetInstance] = {}
-        self._profiles: dict[str, ChildProfile] = {}
-        self._books: dict[str, Book] = {}
+        self._definitions: dict[tuple[str, str], AssetDefinition] = {}
+        self._sheets: dict[tuple[str, str], AssetSheet] = {}
+        self._instances: dict[tuple[str, str], AssetInstance] = {}
+        self._profiles: dict[tuple[str, str], ChildProfile] = {}
+        self._books: dict[tuple[str, str], Book] = {}
 
     # ── AssetDefinition ─────────────────────────────────────────────
 
-    async def register_definition(self, defn: AssetDefinition) -> AssetDefinition:
+    async def register_definition(
+        self, defn: AssetDefinition, *, org_id: str
+    ) -> AssetDefinition:
         if not defn.asset_id:
             msg = "register_definition requires a non-empty asset_id"
             raise ValueError(msg)
-        existing = self._definitions.get(defn.asset_id)
+        key = (org_id, defn.asset_id)
+        existing = self._definitions.get(key)
         if existing is not None:
             if _definitions_equivalent(existing, defn):
                 return existing  # idempotent no-op
@@ -313,33 +325,54 @@ class InMemoryAssetStore:
                 f"AssetDefinition {defn.asset_id!r} already exists with different canonical fields"
             )
             raise ValueError(msg)
-        self._definitions[defn.asset_id] = defn
+        self._definitions[key] = defn
         return defn
 
-    async def get_definition(self, asset_id: str) -> AssetDefinition | None:
-        return self._definitions.get(asset_id)
+    async def get_definition(
+        self, asset_id: str, *, org_id: str
+    ) -> AssetDefinition | None:
+        defn = self._definitions.get((org_id, asset_id))
+        if defn is None:
+            return None
+        sheet = self._sheets.get((org_id, asset_id))
+        if sheet is not None:
+            return dataclasses.replace(defn, asset_sheet=sheet)
+        return defn
 
-    async def list_definitions_by_kind(self, kind: str) -> list[AssetDefinition]:
-        return [d for d in self._definitions.values() if d.kind.value == kind]
+    async def list_definitions_by_kind(
+        self, kind: str, *, org_id: str
+    ) -> list[AssetDefinition]:
+        return [
+            d
+            for (org, _), d in self._definitions.items()
+            if org == org_id and d.kind.value == kind
+        ]
 
-    async def update_definition(self, defn: AssetDefinition) -> AssetDefinition:
-        if defn.asset_id not in self._definitions:
+    async def update_definition(
+        self, defn: AssetDefinition, *, org_id: str
+    ) -> AssetDefinition:
+        key = (org_id, defn.asset_id)
+        if key not in self._definitions:
             raise AssetDefinitionNotFoundError(defn.asset_id)
-        self._definitions[defn.asset_id] = defn
+        self._definitions[key] = defn
         return defn
 
     # ── AssetSheet ──────────────────────────────────────────────────
 
-    async def upsert_sheet(self, sheet: AssetSheet) -> AssetSheet:
-        self._sheets[sheet.asset_id] = sheet
+    async def upsert_sheet(self, sheet: AssetSheet, *, org_id: str) -> AssetSheet:
+        if (org_id, sheet.asset_id) not in self._definitions:
+            raise AssetDefinitionNotFoundError(sheet.asset_id)
+        self._sheets[(org_id, sheet.asset_id)] = sheet
         # If the parent definition exists, reflect the new sheet on it.
-        defn = self._definitions.get(sheet.asset_id)
+        defn = self._definitions.get((org_id, sheet.asset_id))
         if defn is not None:
-            self._definitions[sheet.asset_id] = dataclasses.replace(defn, asset_sheet=sheet)
+            self._definitions[(org_id, sheet.asset_id)] = dataclasses.replace(
+                defn, asset_sheet=sheet
+            )
         return sheet
 
-    async def get_sheet(self, asset_id: str) -> AssetSheet | None:
-        return self._sheets.get(asset_id)
+    async def get_sheet(self, asset_id: str, *, org_id: str) -> AssetSheet | None:
+        return self._sheets.get((org_id, asset_id))
 
     async def regenerate_sheet(
         self,
@@ -347,8 +380,12 @@ class InMemoryAssetStore:
         sheet_image: str,
         refs: tuple[str, ...] | None = None,
         params: dict[str, Any] | None = None,
+        *,
+        org_id: str,
     ) -> AssetSheet:
-        prev = self._sheets.get(asset_id)
+        if (org_id, asset_id) not in self._definitions:
+            raise AssetDefinitionNotFoundError(asset_id)
+        prev = self._sheets.get((org_id, asset_id))
         if prev is None:
             if refs is None:
                 raise AssetSheetNotFoundError(asset_id)
@@ -369,52 +406,68 @@ class InMemoryAssetStore:
                 if params is not None
                 else dict(prev.generation_params),
             )
-        await self.upsert_sheet(new)
+        await self.upsert_sheet(new, org_id=org_id)
         return new
 
     # ── AssetInstance ───────────────────────────────────────────────
 
-    async def upsert_instance(self, instance: AssetInstance) -> AssetInstance:
+    async def upsert_instance(
+        self, instance: AssetInstance, *, org_id: str
+    ) -> AssetInstance:
         # Either registry id or inline AssetDefinition; never both, never neither.
         if isinstance(instance.definition, str):
             if not instance.definition:
                 msg = "AssetInstance.definition string must be non-empty"
                 raise ValueError(msg)
+            if (org_id, instance.definition) not in self._definitions:
+                raise AssetDefinitionNotFoundError(instance.definition)
         elif not isinstance(instance.definition, AssetDefinition):
             msg = (
                 f"AssetInstance.definition must be str or AssetDefinition, "
                 f"got {type(instance.definition).__name__}"
             )
             raise TypeError(msg)
-        self._instances[instance.instance_id] = instance
+        self._instances[(org_id, instance.instance_id)] = instance
         return instance
 
-    async def get_instance(self, instance_id: str) -> AssetInstance | None:
-        return self._instances.get(instance_id)
+    async def get_instance(
+        self, instance_id: str, *, org_id: str
+    ) -> AssetInstance | None:
+        return self._instances.get((org_id, instance_id))
 
-    async def list_instances(self, canvas_id: str) -> list[AssetInstance]:
-        rows = [i for i in self._instances.values() if i.canvas_id == canvas_id]
+    async def list_instances(
+        self, canvas_id: str, *, org_id: str
+    ) -> list[AssetInstance]:
+        rows = [
+            i
+            for (org, _), i in self._instances.items()
+            if org == org_id and i.canvas_id == canvas_id
+        ]
         # z_index ASC, then insertion order (dicts preserve insertion order on 3.7+).
         rows.sort(key=lambda i: i.z_index)
         return rows
 
-    async def remove_instance(self, instance_id: str) -> None:
-        self._instances.pop(instance_id, None)
-        # Cascade parent_id references to None on any children.
-        for other_id, other in list(self._instances.items()):
-            if other.parent_id == instance_id:
-                self._instances[other_id] = dataclasses.replace(
+    async def remove_instance(self, instance_id: str, *, org_id: str) -> None:
+        self._instances.pop((org_id, instance_id), None)
+        # Cascade parent_id references to None on any children in the same org.
+        for other_key, other in list(self._instances.items()):
+            if other_key[0] == org_id and other.parent_id == instance_id:
+                self._instances[other_key] = dataclasses.replace(
                     other, parent_id=None, parent_socket=None
                 )
 
     # ── ChildProfile ────────────────────────────────────────────────
 
-    async def upsert_profile(self, profile: ChildProfile) -> ChildProfile:
-        self._profiles[profile.profile_id] = profile
+    async def upsert_profile(
+        self, profile: ChildProfile, *, org_id: str
+    ) -> ChildProfile:
+        self._profiles[(org_id, profile.profile_id)] = profile
         return profile
 
-    async def get_profile(self, profile_id: str) -> ChildProfile | None:
-        return self._profiles.get(profile_id)
+    async def get_profile(
+        self, profile_id: str, *, org_id: str
+    ) -> ChildProfile | None:
+        return self._profiles.get((org_id, profile_id))
 
     # ── Book ────────────────────────────────────────────────────────
 
@@ -428,7 +481,11 @@ class InMemoryAssetStore:
         profile_id: str | None = None,
         org_id: str = "",
     ) -> Book:
-        if book_id in self._books:
+        if not org_id:
+            msg = "a book is created within a scope"
+            raise ValueError(msg)
+        key = (org_id, book_id)
+        if key in self._books:
             msg = f"Book {book_id!r} already exists"
             raise ValueError(msg)
         # Enforce StyleVolume.page_range start <= end (ADR-039 EC-10).
@@ -445,23 +502,31 @@ class InMemoryAssetStore:
             profile_id=profile_id,
             org_id=org_id,
         )
-        self._books[book_id] = book
+        self._books[key] = book
         return book
 
-    async def get_book(self, book_id: str) -> Book | None:
-        return self._books.get(book_id)
+    async def get_book(self, book_id: str, *, org_id: str) -> Book | None:
+        return self._books.get((org_id, book_id))
 
-    async def update_book(self, book: Book) -> Book:
-        if book.book_id not in self._books:
+    async def update_book(self, book: Book, *, org_id: str) -> Book:
+        key = (org_id, book.book_id)
+        if key not in self._books:
             msg = f"Book {book.book_id!r} not found"
             raise KeyError(msg)
+        if book.org_id and book.org_id != org_id:
+            msg = (
+                f"Book {book.book_id!r} carries scope {book.org_id!r}; "
+                "an update cannot move it to another"
+            )
+            raise ValueError(msg)
         for sv in book.style_volumes:
             start, end = sv.page_range
             if start > end:
                 msg = f"StyleVolume page_range start > end: {sv.page_range!r}"
                 raise ValueError(msg)
-        self._books[book.book_id] = dataclasses.replace(book, updated_at=datetime.now(UTC))
-        return self._books[book.book_id]
+        book = dataclasses.replace(book, org_id=org_id)
+        self._books[key] = dataclasses.replace(book, updated_at=datetime.now(UTC))
+        return self._books[key]
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -470,18 +535,28 @@ class InMemoryAssetStore:
 
 
 class PostgresAssetStore:
-    """Async Postgres store. Same surface as InMemoryAssetStore."""
+    """Async Postgres store. Same surface as InMemoryAssetStore.
+
+    Every read and write predicates on the caller's ``org_id`` (#857):
+    definitions, sheets, instances, profiles and books are rows in an org,
+    and an id addressed under the wrong org is absent. Sheets scope through
+    their definition; instances carry their own ``org_id`` column (migration
+    032) because their ``canvas_id`` is a free Text reference with no
+    canvases row guaranteed to exist.
+    """
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def register_definition(self, defn: AssetDefinition) -> AssetDefinition:
+    async def register_definition(
+        self, defn: AssetDefinition, *, org_id: str
+    ) -> AssetDefinition:
         from sqlalchemy import text
 
         if not defn.asset_id:
             msg = "register_definition requires a non-empty asset_id"
             raise ValueError(msg)
-        existing = await self.get_definition(defn.asset_id)
+        existing = await self.get_definition(defn.asset_id, org_id=org_id)
         if existing is not None:
             if _definitions_equivalent(existing, defn):
                 return existing
@@ -495,12 +570,12 @@ class PostgresAssetStore:
                 """
                 INSERT INTO asset_definitions
                   (asset_id, kind, base_prompt, sockets, skin_set,
-                   default_world_style, pose_geometry)
+                   default_world_style, pose_geometry, org_id)
                 VALUES
                   (:asset_id, :kind, :base_prompt, CAST(:sockets AS JSONB),
                    CAST(:skin_set AS JSONB),
                    CAST(:default_world_style AS JSONB),
-                   CAST(:pose_geometry AS JSONB))
+                   CAST(:pose_geometry AS JSONB), :org_id)
                 """
             ),
             {
@@ -511,53 +586,67 @@ class PostgresAssetStore:
                 "skin_set": json.dumps(ser["skin_set"]),
                 "default_world_style": json.dumps(ser["default_world_style"]),
                 "pose_geometry": json.dumps(ser["pose_geometry"]),
+                "org_id": org_id,
             },
         )
         # Sheet, if any, persists separately.
         if defn.asset_sheet is not None:
-            await self.upsert_sheet(defn.asset_sheet)
+            await self.upsert_sheet(defn.asset_sheet, org_id=org_id)
         return defn
 
-    async def get_definition(self, asset_id: str) -> AssetDefinition | None:
+    async def get_definition(
+        self, asset_id: str, *, org_id: str
+    ) -> AssetDefinition | None:
         from sqlalchemy import text
 
         result = await self._session.execute(
-            text("SELECT * FROM asset_definitions WHERE asset_id = :a"),
-            {"a": asset_id},
+            text(
+                "SELECT * FROM asset_definitions WHERE asset_id = :a AND org_id = :org"
+            ),
+            {"a": asset_id, "org": org_id},
         )
         row = result.mappings().first()
         if row is None:
             return None
         defn = _deser_definition(_row_to_definition_dict(row))
-        sheet = await self.get_sheet(asset_id)
+        sheet = await self.get_sheet(asset_id, org_id=org_id)
         if sheet is not None:
             defn = dataclasses.replace(defn, asset_sheet=sheet)
         return defn
 
-    async def list_definitions_by_kind(self, kind: str) -> list[AssetDefinition]:
+    async def list_definitions_by_kind(
+        self, kind: str, *, org_id: str
+    ) -> list[AssetDefinition]:
         from sqlalchemy import text
 
         result = await self._session.execute(
-            text("SELECT * FROM asset_definitions WHERE kind = :k ORDER BY asset_id"),
-            {"k": kind},
+            text(
+                "SELECT * FROM asset_definitions"
+                " WHERE kind = :k AND org_id = :org ORDER BY asset_id"
+            ),
+            {"k": kind, "org": org_id},
         )
         out: list[AssetDefinition] = []
         for row in result.mappings().all():
             d = _deser_definition(_row_to_definition_dict(row))
-            sheet = await self.get_sheet(d.asset_id)
+            sheet = await self.get_sheet(d.asset_id, org_id=org_id)
             if sheet is not None:
                 d = dataclasses.replace(d, asset_sheet=sheet)
             out.append(d)
         return out
 
-    async def update_definition(self, defn: AssetDefinition) -> AssetDefinition:
+    async def update_definition(
+        self, defn: AssetDefinition, *, org_id: str
+    ) -> AssetDefinition:
         from sqlalchemy import text
 
         ser = _ser_definition(defn)
         # Existence check first; UPDATE doesn't expose a typed rowcount.
         existing = await self._session.execute(
-            text("SELECT 1 FROM asset_definitions WHERE asset_id = :a"),
-            {"a": defn.asset_id},
+            text(
+                "SELECT 1 FROM asset_definitions WHERE asset_id = :a AND org_id = :org"
+            ),
+            {"a": defn.asset_id, "org": org_id},
         )
         if existing.first() is None:
             raise AssetDefinitionNotFoundError(defn.asset_id)
@@ -572,11 +661,12 @@ class PostgresAssetStore:
                   default_world_style = CAST(:default_world_style AS JSONB),
                   pose_geometry = CAST(:pose_geometry AS JSONB),
                   updated_at = now()
-                WHERE asset_id = :asset_id
+                WHERE asset_id = :asset_id AND org_id = :org_id
                 """
             ),
             {
                 "asset_id": ser["asset_id"],
+                "org_id": org_id,
                 "kind": ser["kind"],
                 "base_prompt": ser["base_prompt"],
                 "sockets": json.dumps(ser["sockets"]),
@@ -586,12 +676,22 @@ class PostgresAssetStore:
             },
         )
         if defn.asset_sheet is not None:
-            await self.upsert_sheet(defn.asset_sheet)
+            await self.upsert_sheet(defn.asset_sheet, org_id=org_id)
         return defn
 
-    async def upsert_sheet(self, sheet: AssetSheet) -> AssetSheet:
+    async def upsert_sheet(self, sheet: AssetSheet, *, org_id: str) -> AssetSheet:
         from sqlalchemy import text
 
+        # The sheet's scope is its definition's scope: refuse to write a
+        # sheet against a definition another org owns (#857).
+        owner = await self._session.execute(
+            text(
+                "SELECT 1 FROM asset_definitions WHERE asset_id = :a AND org_id = :org"
+            ),
+            {"a": sheet.asset_id, "org": org_id},
+        )
+        if owner.first() is None:
+            raise AssetDefinitionNotFoundError(sheet.asset_id)
         await self._session.execute(
             text(
                 """
@@ -618,12 +718,16 @@ class PostgresAssetStore:
         )
         return sheet
 
-    async def get_sheet(self, asset_id: str) -> AssetSheet | None:
+    async def get_sheet(self, asset_id: str, *, org_id: str) -> AssetSheet | None:
         from sqlalchemy import text
 
         result = await self._session.execute(
-            text("SELECT * FROM asset_sheets WHERE asset_id = :a"),
-            {"a": asset_id},
+            text(
+                "SELECT s.* FROM asset_sheets s"
+                " JOIN asset_definitions d ON d.asset_id = s.asset_id"
+                " WHERE s.asset_id = :a AND d.org_id = :org"
+            ),
+            {"a": asset_id, "org": org_id},
         )
         row = result.mappings().first()
         if row is None:
@@ -642,15 +746,30 @@ class PostgresAssetStore:
         sheet_image: str,
         refs: tuple[str, ...] | None = None,
         params: dict[str, Any] | None = None,
+        *,
+        org_id: str,
     ) -> AssetSheet:
         from sqlalchemy import text
 
+        if (
+            await self._session.execute(
+                text(
+                    "SELECT 1 FROM asset_definitions WHERE asset_id = :a AND org_id = :org"
+                ),
+                {"a": asset_id, "org": org_id},
+            )
+        ).first() is None:
+            raise AssetDefinitionNotFoundError(asset_id)
         # SELECT FOR UPDATE then INSERT/UPDATE atomically — concurrent
         # regenerates serialise on the row lock and produce strictly
         # increasing revisions.
         result = await self._session.execute(
-            text("SELECT * FROM asset_sheets WHERE asset_id = :a FOR UPDATE"),
-            {"a": asset_id},
+            text(
+                "SELECT s.* FROM asset_sheets s"
+                " JOIN asset_definitions d ON d.asset_id = s.asset_id"
+                " WHERE s.asset_id = :a AND d.org_id = :org FOR UPDATE OF s"
+            ),
+            {"a": asset_id, "org": org_id},
         )
         row = result.mappings().first()
         if row is None:
@@ -673,10 +792,12 @@ class PostgresAssetStore:
                 revision=int(row["revision"]) + 1,
                 generation_params=dict(params) if params is not None else prev_params,
             )
-        await self.upsert_sheet(new)
+        await self.upsert_sheet(new, org_id=org_id)
         return new
 
-    async def upsert_instance(self, instance: AssetInstance) -> AssetInstance:
+    async def upsert_instance(
+        self, instance: AssetInstance, *, org_id: str
+    ) -> AssetInstance:
         from sqlalchemy import text
 
         if isinstance(instance.definition, str):
@@ -685,6 +806,18 @@ class PostgresAssetStore:
             if not definition_id:
                 msg = "AssetInstance.definition string must be non-empty"
                 raise ValueError(msg)
+            # A registered definition is addressed within the caller's org:
+            # pointing an instance at another org's definition would leak its
+            # prompt/sheet geometry through the render plan (#857).
+            owner = await self._session.execute(
+                text(
+                    "SELECT 1 FROM asset_definitions"
+                    " WHERE asset_id = :a AND org_id = :org"
+                ),
+                {"a": definition_id, "org": org_id},
+            )
+            if owner.first() is None:
+                raise AssetDefinitionNotFoundError(definition_id)
         elif isinstance(instance.definition, AssetDefinition):
             definition_id = None
             inline_definition = json.dumps(_ser_definition(instance.definition))
@@ -702,7 +835,7 @@ class PostgresAssetStore:
                   (instance_id, canvas_id, definition_id, inline_definition,
                    parent_id, parent_socket, transform, slot, anchor,
                    occlusion, personalization, skin_binding, prompt_nudge,
-                   visible, locked, history, z_index)
+                   visible, locked, history, z_index, org_id)
                 VALUES
                   (:instance_id, :canvas_id, :definition_id,
                    CAST(:inline_definition AS JSONB),
@@ -710,7 +843,7 @@ class PostgresAssetStore:
                    CAST(:transform AS JSONB), CAST(:slot AS JSONB), :anchor,
                    CAST(:occlusion AS JSONB), CAST(:personalization AS JSONB),
                    CAST(:skin_binding AS JSONB), :prompt_nudge,
-                   :visible, :locked, CAST(:history AS JSONB), :z_index)
+                   :visible, :locked, CAST(:history AS JSONB), :z_index, :org_id)
                 ON CONFLICT (instance_id) DO UPDATE SET
                   canvas_id = EXCLUDED.canvas_id,
                   definition_id = EXCLUDED.definition_id,
@@ -728,6 +861,7 @@ class PostgresAssetStore:
                   locked = EXCLUDED.locked,
                   history = EXCLUDED.history,
                   z_index = EXCLUDED.z_index,
+                  org_id = EXCLUDED.org_id,
                   updated_at = now()
                 """
             ),
@@ -769,54 +903,81 @@ class PostgresAssetStore:
                 "locked": instance.locked,
                 "history": json.dumps(list(instance.history)),
                 "z_index": instance.z_index,
+                "org_id": org_id,
             },
         )
         return instance
 
-    async def get_instance(self, instance_id: str) -> AssetInstance | None:
-        from sqlalchemy import text
-
-        result = await self._session.execute(
-            text("SELECT * FROM asset_instances WHERE instance_id = :i"),
-            {"i": instance_id},
-        )
-        row = result.mappings().first()
-        return _coerce_instance(row) if row is not None else None
-
-    async def list_instances(self, canvas_id: str) -> list[AssetInstance]:
+    async def get_instance(
+        self, instance_id: str, *, org_id: str
+    ) -> AssetInstance | None:
         from sqlalchemy import text
 
         result = await self._session.execute(
             text(
-                "SELECT * FROM asset_instances WHERE canvas_id = :c "
-                "ORDER BY z_index ASC, created_at ASC"
+                "SELECT * FROM asset_instances WHERE instance_id = :i AND org_id = :org"
             ),
-            {"c": canvas_id},
+            {"i": instance_id, "org": org_id},
+        )
+        row = result.mappings().first()
+        return _coerce_instance(row) if row is not None else None
+
+    async def list_instances(
+        self, canvas_id: str, *, org_id: str
+    ) -> list[AssetInstance]:
+        from sqlalchemy import text
+
+        result = await self._session.execute(
+            text(
+                "SELECT * FROM asset_instances"
+                " WHERE canvas_id = :c AND org_id = :org"
+                " ORDER BY z_index ASC, created_at ASC"
+            ),
+            {"c": canvas_id, "org": org_id},
         )
         return [_coerce_instance(row) for row in result.mappings().all()]
 
-    async def remove_instance(self, instance_id: str) -> None:
+    async def remove_instance(self, instance_id: str, *, org_id: str) -> None:
         from sqlalchemy import text
 
         await self._session.execute(
-            text("DELETE FROM asset_instances WHERE instance_id = :i"),
-            {"i": instance_id},
+            text(
+                "DELETE FROM asset_instances WHERE instance_id = :i AND org_id = :org"
+            ),
+            {"i": instance_id, "org": org_id},
         )
 
-    async def upsert_profile(self, profile: ChildProfile) -> ChildProfile:
+    async def upsert_profile(
+        self, profile: ChildProfile, *, org_id: str
+    ) -> ChildProfile:
         from sqlalchemy import text
 
+        # The profile's org is the caller's org, and an upsert cannot move an
+        # existing profile between orgs: a caller that re-registers another
+        # org's profile_id gets a refusal, not a re-scope (#857).
+        existing = await self._session.execute(
+            text(
+                "SELECT 1 FROM child_profiles WHERE profile_id = :p AND org_id <> :org"
+            ),
+            {"p": profile.profile_id, "org": org_id},
+        )
+        if existing.first() is not None:
+            msg = (
+                f"ChildProfile {profile.profile_id!r} belongs to another scope;"
+                " it cannot be rewritten from this one"
+            )
+            raise ValueError(msg)
         await self._session.execute(
             text(
                 """
                 INSERT INTO child_profiles
                   (profile_id, name, pronouns, likeness_refs, accommodations,
-                   age_range, reading_level)
+                   age_range, reading_level, org_id)
                 VALUES
                   (:profile_id, :name, :pronouns,
                    CAST(:likeness_refs AS JSONB),
                    CAST(:accommodations AS JSONB),
-                   :age_range, :reading_level)
+                   :age_range, :reading_level, :org_id)
                 ON CONFLICT (profile_id) DO UPDATE SET
                   name = EXCLUDED.name,
                   pronouns = EXCLUDED.pronouns,
@@ -835,16 +996,21 @@ class PostgresAssetStore:
                 "accommodations": json.dumps(list(profile.accommodations)),
                 "age_range": profile.age_range,
                 "reading_level": profile.reading_level,
+                "org_id": org_id,
             },
         )
         return profile
 
-    async def get_profile(self, profile_id: str) -> ChildProfile | None:
+    async def get_profile(
+        self, profile_id: str, *, org_id: str
+    ) -> ChildProfile | None:
         from sqlalchemy import text
 
         result = await self._session.execute(
-            text("SELECT * FROM child_profiles WHERE profile_id = :p"),
-            {"p": profile_id},
+            text(
+                "SELECT * FROM child_profiles WHERE profile_id = :p AND org_id = :org"
+            ),
+            {"p": profile_id, "org": org_id},
         )
         row = result.mappings().first()
         if row is None:
@@ -871,6 +1037,9 @@ class PostgresAssetStore:
     ) -> Book:
         from sqlalchemy import text
 
+        if not org_id:
+            msg = "a book is created within a scope"
+            raise ValueError(msg)
         for sv in style_volumes:
             start, end = sv.page_range
             if start > end:
@@ -904,12 +1073,14 @@ class PostgresAssetStore:
             org_id=org_id,
         )
 
-    async def get_book(self, book_id: str) -> Book | None:
+    async def get_book(self, book_id: str, *, org_id: str) -> Book | None:
         from sqlalchemy import text
 
         result = await self._session.execute(
-            text("SELECT * FROM books WHERE book_id = :b"),
-            {"b": book_id},
+            text(
+                "SELECT * FROM books WHERE book_id = :b AND org_id = :org"
+            ),
+            {"b": book_id, "org": org_id},
         )
         row = result.mappings().first()
         if row is None:
@@ -925,17 +1096,26 @@ class PostgresAssetStore:
             org_id=str(row.get("org_id", "")),
         )
 
-    async def update_book(self, book: Book) -> Book:
+    async def update_book(self, book: Book, *, org_id: str) -> Book:
         from sqlalchemy import text
 
+        if not org_id:
+            msg = "a book is updated within a scope"
+            raise ValueError(msg)
+        if book.org_id and book.org_id != org_id:
+            msg = (
+                f"Book {book.book_id!r} carries scope {book.org_id!r}; "
+                "an update cannot move it to another"
+            )
+            raise ValueError(msg)
         for sv in book.style_volumes:
             start, end = sv.page_range
             if start > end:
                 msg = f"StyleVolume page_range start > end: {sv.page_range!r}"
                 raise ValueError(msg)
         existing = await self._session.execute(
-            text("SELECT 1 FROM books WHERE book_id = :b"),
-            {"b": book.book_id},
+            text("SELECT 1 FROM books WHERE book_id = :b AND org_id = :org"),
+            {"b": book.book_id, "org": org_id},
         )
         if existing.first() is None:
             msg = f"Book {book.book_id!r} not found"
@@ -949,18 +1129,19 @@ class PostgresAssetStore:
                   style_volumes = CAST(:style_volumes AS JSONB),
                   profile_id = :profile_id,
                   updated_at = now()
-                WHERE book_id = :book_id
+                WHERE book_id = :book_id AND org_id = :org_id
                 """
             ),
             {
                 "book_id": book.book_id,
+                "org_id": org_id,
                 "title": book.title,
                 "world_style": json.dumps(_ser_world_style(book.world_style)),
                 "style_volumes": json.dumps([_ser_style_volume(sv) for sv in book.style_volumes]),
                 "profile_id": book.profile_id,
             },
         )
-        return dataclasses.replace(book, updated_at=datetime.now(UTC))
+        return dataclasses.replace(book, org_id=org_id, updated_at=datetime.now(UTC))
 
 
 # ─────────────────────────────────────────────────────────────────────

@@ -120,6 +120,7 @@ class CanvasExecutor:
         *,
         canvas_id: str,
         layer_id: str,
+        org_id: str,
         action: str,
         model_id: str | None = None,
         prompt: str = "",
@@ -132,15 +133,19 @@ class CanvasExecutor:
     ) -> GenerationJobRecord:
         """Validate preconditions and enqueue a Canvas-domain generation receipt.
 
-        When canonical execution is configured, admission happens only after all
-        Canvas preconditions have passed and before the receipt is persisted, so
-        the durable receipt can carry its canonical Run id in the existing JSON
-        ``params`` column without a schema migration.
+        ``org_id`` is the authenticated request's scope (#857): every store
+        read here predicates on it, and the persisted receipt carries it so
+        the background runner re-resolves the same scope rather than a global
+        one. When canonical execution is configured, admission happens only
+        after all Canvas preconditions have passed and before the receipt is
+        persisted, so the durable receipt can carry its canonical Run id in
+        the existing JSON ``params`` column without a schema migration.
         """
         async with self._layer_lock(layer_id):
             return await self._start_job_locked(
                 canvas_id=canvas_id,
                 layer_id=layer_id,
+                org_id=org_id,
                 action=action,
                 model_id=model_id,
                 prompt=prompt,
@@ -157,6 +162,7 @@ class CanvasExecutor:
         *,
         canvas_id: str,
         layer_id: str,
+        org_id: str,
         action: str,
         model_id: str | None,
         prompt: str,
@@ -167,7 +173,7 @@ class CanvasExecutor:
         strength: float,
         actor_principal_id: str | None,
     ) -> GenerationJobRecord:
-        layer = await self._store.get_layer(layer_id)
+        layer = await self._store.get_layer(layer_id, org_id=org_id)
         if layer is None:
             from maistro_canvas.types import LayerNotFoundError
 
@@ -188,7 +194,7 @@ class CanvasExecutor:
         if action == JobAction.REFINE and not layer.image_path:
             raise RefineNoSourceError(f"layer {layer_id!r} has no image_path; cannot refine")
 
-        active = await self._store.active_job_for_layer(layer_id)
+        active = await self._store.active_job_for_layer(layer_id, org_id=org_id)
         if active is not None:
             raise JobInProgressError(
                 f"layer {layer_id!r} already has an active job ({active.id!r})"
@@ -209,10 +215,11 @@ class CanvasExecutor:
                 "region": region,
                 "strength": strength,
             },
+            org_id=org_id,
         )
 
         if self._canonical_execution is None:
-            return await self._store.create_job(job)
+            return await self._store.create_job(job, org_id=org_id)
 
         run_id = await self._canonical_execution.admit(
             job_id=job.id,
@@ -223,15 +230,15 @@ class CanvasExecutor:
         )
         correlate_run(job.params, run_id)
         try:
-            return await self._store.create_job(job)
+            return await self._store.create_job(job, org_id=org_id)
         except BaseException:
             with contextlib.suppress(Exception):
                 await self._canonical_execution.cancel(run_id)
             raise
 
-    async def run_job(self, job_id: str) -> GenerationJobRecord:
+    async def run_job(self, job_id: str, *, org_id: str) -> GenerationJobRecord:
         """Execute a pending job synchronously (compatibility path for tests/CLI)."""
-        job = await self._store.get_job(job_id)
+        job = await self._store.get_job(job_id, org_id=org_id)
         if job is None:
             raise JobNotFoundError(f"job {job_id!r} not found")
         if job.status != JobStatus.PENDING:
@@ -240,7 +247,7 @@ class CanvasExecutor:
 
         job.status = JobStatus.RUNNING
         job.started_at = datetime.now(UTC)
-        await self._store.update_job(job)
+        await self._store.update_job(job, org_id=org_id)
 
         try:
             result_paths = await self._execute_action(job)
@@ -254,10 +261,21 @@ class CanvasExecutor:
             job.completed_at = datetime.now(UTC)
             logger.warning("Job %s failed: %s", job_id, exc)
 
-        return await self._store.update_job(job)
+        return await self._store.update_job(job, org_id=org_id)
 
     async def _execute_claimed(self, job: GenerationJobRecord) -> None:
-        """Execute one runner-claimed job with correlation integrity checks."""
+        """Execute one runner-claimed job with correlation integrity checks.
+
+        Scope rides the receipt (#857): a job claimed off the queue executes
+        under the org it was admitted in — the record, not the worker, is the
+        authority — and every store read below predicates on it. A claimed
+        receipt carrying no scope (a legacy row) is refused rather than
+        executed globally.
+        """
+        if not job.org_id:
+            raise RuntimeError(
+                f"Canvas job {job.id!r} was claimed with no org scope; refusing to execute globally"
+            )
         run_id = canonical_run_id(job.params)
         if run_id is None and self._canonical_execution is None:
             # Compatibility-only direct call. CanvasJobRunner rejects a real
@@ -288,7 +306,7 @@ class CanvasExecutor:
 
     async def _execute_action(self, job: GenerationJobRecord) -> list[str]:
         """Dispatch to the correct image-gen action; return signed URL list."""
-        canvas = await self._store.get_canvas(job.canvas_id)
+        canvas = await self._store.get_canvas(job.canvas_id, org_id=job.org_id)
         if canvas is None:
             from maistro_canvas.types import CanvasNotFoundError
 
@@ -358,7 +376,7 @@ class CanvasExecutor:
 
     async def _execute_refine(self, job: GenerationJobRecord) -> list[str]:
         params = job.params
-        layer = await self._store.get_layer(job.layer_id)
+        layer = await self._store.get_layer(job.layer_id, org_id=job.org_id)
         if layer is None:
             from maistro_canvas.types import RefineNoSourceError
 
@@ -425,9 +443,11 @@ class CanvasExecutor:
         self,
         job_id: str,
         variant_index: int,
+        *,
+        org_id: str,
     ) -> tuple[GenerationJobRecord, LayerRecord]:
         """Accept a generated variant: update layer.image_path atomically."""
-        job = await self._store.get_job(job_id)
+        job = await self._store.get_job(job_id, org_id=org_id)
         if job is None:
             raise JobNotFoundError(f"job {job_id!r} not found")
 
@@ -441,7 +461,7 @@ class CanvasExecutor:
                 f"variant_index={variant_index} out of range [0, {len(job.result_paths) - 1}]"
             )
 
-        layer = await self._store.get_layer(job.layer_id)
+        layer = await self._store.get_layer(job.layer_id, org_id=org_id)
         if layer is None:
             from maistro_canvas.types import LayerNotFoundError
 
@@ -449,21 +469,21 @@ class CanvasExecutor:
 
         layer.image_path = job.result_paths[variant_index]
         layer.updated_at = datetime.now(UTC)
-        updated_layer = await self._store.update_layer(layer)
+        updated_layer = await self._store.update_layer(layer, org_id=org_id)
 
         job.selected_index = variant_index
-        updated_job = await self._store.update_job(job)
+        updated_job = await self._store.update_job(job, org_id=org_id)
 
-        canvas = await self._store.get_canvas(job.canvas_id)
+        canvas = await self._store.get_canvas(job.canvas_id, org_id=org_id)
         if canvas is not None:
             canvas.updated_at = datetime.now(UTC)
-            await self._store.update_canvas(canvas)
+            await self._store.update_canvas(canvas, org_id=org_id)
 
         return updated_job, updated_layer
 
-    async def cancel_job(self, job_id: str) -> GenerationJobRecord:
+    async def cancel_job(self, job_id: str, *, org_id: str) -> GenerationJobRecord:
         """Cancel a pending or running Canvas receipt and its canonical execution."""
-        job = await self._store.get_job(job_id)
+        job = await self._store.get_job(job_id, org_id=org_id)
         if job is None:
             raise JobNotFoundError(f"job {job_id!r} not found")
 
@@ -482,4 +502,4 @@ class CanvasExecutor:
 
         job.status = JobStatus.CANCELLED
         job.completed_at = datetime.now(UTC)
-        return await self._store.update_job(job)
+        return await self._store.update_job(job, org_id=org_id)
