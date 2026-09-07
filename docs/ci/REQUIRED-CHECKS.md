@@ -93,6 +93,7 @@ wait forever for an `Expected` result.
 | CI | `object storage (MinIO)` | every PR |
 | CI | `postgres (pg17)` | every PR |
 | CI | `postgres (pg18)` | every PR |
+| CI | `pr-base` | every PR |
 | CI | `security` | every PR |
 | CI | `strike-ladder` | every PR |
 | CI | `test` | every PR |

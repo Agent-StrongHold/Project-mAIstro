@@ -15,6 +15,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from adapters.task_backend import TaskRecord
+from protocols.agent import AgentPort
 
 logger = logging.getLogger("hive.engine")
 
@@ -30,7 +31,13 @@ __all__ = ["EngineService", "TaskRecord", "get_engine", "start_engine", "stop_en
 
 class EngineService:
     def __init__(self) -> None:
-        self._agent_port: Any = None
+        # The port, not a concrete adapter: the engine's job is to hold the
+        # seam (ADR-037's provider-agnostic telemetry/agent boundary), and
+        # every consumer below routes through `route()` rather than the
+        # bridge's own surface. `_bind_agent_port` is the one assignment
+        # point, so the conformance of both implementations is checked where
+        # they are chosen, not assumed where they are used (#63).
+        self._agent_port: AgentPort | None = None
         self._backend: Any = None
         self._configured = False
         self._capabilities: Any = None
@@ -148,7 +155,7 @@ class EngineService:
             bridge = MaistroCoreBridge()
             try:
                 await bridge.start(settings)
-                self._agent_port = bridge
+                self._bind_agent_port(bridge)
                 self._configured = True
             except Exception as exc:
                 # The module logger, not a function-local `import logging`:
@@ -157,9 +164,9 @@ class EngineService:
                 # raised UnboundLocalError whenever this branch was not taken —
                 # turning any failure below into a different, wrong error.
                 logger.warning("maistro-core bridge failed (%s) — falling back to stub", exc)
-                self._agent_port = StubAgentPort()
+                self._bind_agent_port(StubAgentPort())
         else:
-            self._agent_port = StubAgentPort()
+            self._bind_agent_port(StubAgentPort())
 
         self._wire_capabilities(settings)
         self._wire_outcome_store()
@@ -182,46 +189,22 @@ class EngineService:
 
         try:
             if settings.hive_mode == "demo":
-                import os
-
                 from adapters.task_backend import LocalTaskBackend
 
-                pm_mode = (
-                    os.getenv("MAISTRO_POC_MODE", os.getenv("HIVE_POC_MODE", "")).strip().lower()
-                    == "pm"
-                )
-                if pm_mode:
-                    from maistro.agents.pm_runner import run_pm_task
+                from maistro.agents.conductor import run_task
 
-                    executor = run_pm_task
-                    # pm_runner makes real Claude calls through the LLM gateway
-                    # for LLM-reasoning capabilities and short-circuits to
-                    # source='no_data' for data tools that need PATs (jira) or
-                    # Chromium (browser-use) when those aren't wired yet.
-                    logger.info(
-                        "LocalTaskBackend (demo) using PM runner — real LLM via LLM gateway "
-                        "(source='no_data' for Jira/Airtable/web until PATs set)"
-                    )
-                else:
-                    from maistro.agents.conductor import run_task
-
-                    executor = run_task
-                    logger.info("LocalTaskBackend (demo) using engineering conductor executor")
-
+                # Demo mode retains the local backend, but not a product-specific
+                # executor switch. Workspace Persona identity is resolved before
+                # submission through the generic materialized roster; execution
+                # has one authority regardless of legacy POC environment values.
                 backend = LocalTaskBackend(
-                    executor=executor,
+                    executor=run_task,
                     admitter=self.task_admitter,
                     run_store=self.run_store,
                 )
                 await backend.start()
                 self._backend = backend
-                if pm_mode:
-                    from maistro.agents.catalog import AgentCatalog
-                    from maistro.agents.pm_fleet import register_pm_fleet
-
-                    catalog = AgentCatalog()
-                    register_pm_fleet(catalog)
-                    self._pm_catalog = catalog
+                logger.info("LocalTaskBackend (demo) using canonical conductor executor")
             else:
                 from adapters.task_backend import MaistroServerTaskBackend
 
@@ -249,6 +232,21 @@ class EngineService:
                 )
         except Exception as exc:
             logger.warning("TaskBackend setup failed (%s) — mission dispatch disabled", exc)
+
+    def _bind_agent_port(self, port: AgentPort) -> None:
+        """Assign the one agent seam, checking the port contract as chosen.
+
+        `AgentPort` is runtime-checkable, so the structural claim both
+        adapters make is verified at the composition point instead of
+        failing later at the first call with a different AttributeError for
+        each implementation (#63).
+        """
+        if not isinstance(port, AgentPort):
+            raise TypeError(
+                f"{type(port).__name__} does not satisfy AgentPort; "
+                "the engine cannot route chat through it"
+            )
+        self._agent_port = port
 
     def _wire_capabilities(self, settings: Settings) -> None:
         """Source the registry (Container when configured, else canonical) and
@@ -324,7 +322,12 @@ class EngineService:
         """
         if self._backend is None:
             raise RuntimeError("TaskQueue not available")
-        from maistro.agents.pm_capabilities import is_gated, normalize_capability
+        from maistro.agents.pm_capabilities import (
+            AUTONOMOUS_CAPABILITIES,
+            GATED_CAPABILITIES,
+            is_gated,
+            normalize_capability,
+        )
         from maistro.tasks.models import TaskCreate
 
         cap = normalize_capability(capability or "")
@@ -332,6 +335,11 @@ class EngineService:
         if is_gated(cap) and not pctx_probe.get("confirmed"):
             raise ValueError(
                 f"Capability {cap!r} must use the work-item draft flow (POST /v1/work-items/suggest → confirm)"
+            )
+        if cap in AUTONOMOUS_CAPABILITIES or cap in GATED_CAPABILITIES:
+            raise ValueError(
+                f"PM capability execution {cap!r} through the generic task queue is retired; "
+                "keep it as a Workspace Persona proposal until canonical Graph execution owns it"
             )
 
         pctx = program_context

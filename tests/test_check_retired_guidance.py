@@ -126,6 +126,15 @@ class TestAgainstTheRealTree:
         assert any(p.startswith("docs/specs/") for p in governed)
         assert any(p.startswith("docs/adr/") for p in governed)
 
+    def test_the_governed_set_reaches_the_user_facing_claim_surfaces(self, check) -> None:
+        """#388: README and the convergence matrix carry the claims a user reads,
+        and stale claims there mislead in both directions — the schedule table
+        said nothing executes after execution shipped, the matrix said recall
+        was live while no client was wired."""
+        governed = {p.relative_to(ROOT).as_posix() for p in check.governed_files()}
+        assert "README.md" in governed
+        assert any(p.startswith("docs/architecture/") for p in governed)
+
     def test_the_current_tree_is_clean(self, check, entries) -> None:
         assert check.scan(entries) == []
 
@@ -169,3 +178,61 @@ class TestTheCommandLine:
         out = capsys.readouterr().out
         assert "governed file(s)" in out
         assert "retired statement(s) checked" in out
+
+
+class TestRetiredUserFacingClaims:
+    """#388: the README and matrix claims that had gone stale in both
+    directions — pessimistic (schedules never execute, after execution
+    shipped) and optimistic (recall is live, with no embedding client wired).
+    Each entry must catch its retired phrasing and accept the cited history.
+    """
+
+    def test_the_schedules_never_execute_claim_is_reported(self, check, entries) -> None:
+        found = _scan(check, entries, "Schedules — execution | TODO | nothing is ever executed.")
+        assert [f.entry.id for f in found] == ["schedules-never-execute"]
+
+    def test_the_timestamp_stamp_claim_is_reported(self, check, entries) -> None:
+        assert _scan(check, entries, '"Run now" only stamps a timestamp.')
+
+    def test_the_scheduler_history_passes_with_its_citation(self, check, entries) -> None:
+        """Recording that the stamp defect existed (#231) is history, not a
+        claim — the marker carries the line."""
+        assert not _scan(
+            check,
+            entries,
+            "The endpoint used to stamp `last_run` and stop — the #231 fix removed that.",
+        )
+
+    def test_the_no_embedding_column_claim_is_reported(self, check, entries) -> None:
+        found = _scan(
+            check,
+            entries,
+            "Not vector-backed: the learnings/outcome Postgres stores have no embedding column.",
+        )
+        assert [f.entry.id for f in found] == ["learnings-no-embedding-column"]
+
+    def test_the_embedding_column_history_passes_with_its_citation(self, check, entries) -> None:
+        assert not _scan(
+            check,
+            entries,
+            "The column is not new — vector(1536) landed with migration 011 (#188).",
+        )
+
+    def test_the_recall_is_live_claim_is_reported(self, check, entries) -> None:
+        found = _scan(check, entries, "scoped pgvector recall is live; archive conformance passes")
+        assert [f.entry.id for f in found] == ["scoped-pgvector-recall-live"]
+
+    def test_the_qualified_recall_claim_passes(self, check, entries) -> None:
+        """The matrix's replacement wording: schema-ready, not live — the
+        precise claim, not the retired one."""
+        assert not _scan(
+            check,
+            entries,
+            "scoped pgvector recall is schema-ready and wired but not live by default (#188).",
+        )
+
+    def test_every_388_entry_names_its_replacement_and_evidence(self, entries) -> None:
+        for entry in entries:
+            if entry.issue == "388":
+                assert entry.replacement, entry.id
+                assert entry.citation_markers, entry.id

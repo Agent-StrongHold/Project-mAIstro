@@ -198,11 +198,29 @@ async def test_base_context_survives_the_handoff_into_a_real_spawn_harness_node(
 
     adapter = _FakeAdapter()
 
+    # The spawn handoff crosses the governed Invocation boundary (#55): the
+    # binding authorizes capability harness_runner for exactly this
+    # Workspace/Project/Node, and dispatch reaches the adapter only through it.
+    from maistro.capabilities.binding import Binding
+    from maistro.capabilities.effect_context import new_in_memory_effect_context
+
+    effects = new_in_memory_effect_context()
+    await effects.bindings.put(
+        Binding(
+            binding_id="b-rsi-pace",
+            workspace_id="test-workspace",
+            project_id="test-project",
+            node_id="spawn",
+            capability=AgentSpawnHarnessNode.capability,
+            provider_name="rsi_cycle",
+        )
+    )
+
     def _resolver(node_id: str, dag: dict) -> BaseNode:  # type: ignore[type-arg]
         if node_id == "trigger":
             return RsiQuotaPaceTriggerNode(InMemoryUsageLog(), now_fn=lambda: 1000.0)
         if node_id == "spawn":
-            return AgentSpawnHarnessNode(adapters={"rsi_cycle": adapter})
+            return AgentSpawnHarnessNode(adapters={"rsi_cycle": adapter}, effect_context=effects)
         return get_node(dag["kind"])()
 
     dag = {
@@ -222,7 +240,7 @@ async def test_base_context_survives_the_handoff_into_a_real_spawn_harness_node(
                     },
                 },
             },
-            {"id": "spawn", "kind": "agent.spawn_harness"},
+            {"id": "spawn", "kind": "agent.spawn_harness", "inputs": {"binding_id": "b-rsi-pace"}},
         ],
         "edges": [{"from_node": "trigger", "to_node": "spawn"}],
         "entry_node": "trigger",

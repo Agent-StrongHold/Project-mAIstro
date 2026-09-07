@@ -301,6 +301,59 @@ async def test_resume_cancels_orphaned_active_attempt_then_creates_recovery_atte
     assert _Start.calls == 1
 
 
+class _RecordingSink:
+    """Stands in for the canonical recovery Event sink (#62)."""
+
+    def __init__(self) -> None:
+        self.facts: list[Any] = []
+
+    async def emit(self, event: Any) -> None:
+        self.facts.append(event)
+
+
+@pytest.mark.asyncio
+async def test_resume_reports_crash_dispositions_on_the_recovery_event_sink() -> None:
+    """A resume that terminalizes process-lost physical work is a recovery
+    disposition (#462), so it must reach the same canonical Event stream the
+    abandoned-Attempt sweep reports on -- not silently persist and return
+    (#62)."""
+    from maistro.runs.recovery_events import RECOVERY_EVENT_TYPE
+
+    _Start.calls = 0
+    store = InMemoryDurableRunStore()
+    await store.create(_single_recovery_record(attempt_status=AttemptStatus.RUNNING))
+    sink = _RecordingSink()
+
+    record = await resume_durable_graph(
+        "recover-run", store=store, node_resolver=_resolver, events=sink
+    )
+
+    assert record.status is RunStatus.COMPLETED
+    assert len(sink.facts) == 1
+    fact = sink.facts[0]
+    assert fact.attempt_id == "recover-attempt"
+    assert fact.disposition == "recovered_and_parked"
+    assert fact.cancellation_cause == "recovered"
+    legacy = fact.to_legacy_event()
+    assert legacy.event_type == RECOVERY_EVENT_TYPE
+    assert legacy.correlation_id == "recover-run"
+
+
+@pytest.mark.asyncio
+async def test_resume_without_a_sink_behaves_exactly_as_before() -> None:
+    """The sink is observability, not execution: a caller with no listener
+    still resumes, because refusing to recover work because nothing is
+    listening would invert the dependency."""
+    _Start.calls = 0
+    store = InMemoryDurableRunStore()
+    await store.create(_single_recovery_record(attempt_status=AttemptStatus.RUNNING))
+
+    record = await resume_durable_graph("recover-run", store=store, node_resolver=_resolver)
+
+    assert record.status is RunStatus.COMPLETED
+    assert _Start.calls == 1
+
+
 @pytest.mark.asyncio
 async def test_resume_folds_completed_attempt_without_redispatching_node() -> None:
     _Start.calls = 0

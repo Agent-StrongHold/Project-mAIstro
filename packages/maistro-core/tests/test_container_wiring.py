@@ -50,6 +50,7 @@ async def test_container_exposes_all_new_subsystems() -> None:
         "identity_linker",
         "harness_adapters",
         "spawn_harness_node",
+        "capability_effects",
         "usage_log",
     ):
         assert getattr(container, attr) is not None, f"container.{attr} is not wired"
@@ -296,19 +297,43 @@ async def test_harness_adapters_default_to_empty() -> None:
 
 
 async def test_spawn_harness_node_has_no_adapters_by_default() -> None:
+    from maistro.capabilities.binding import Binding
+    from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
     from maistro.graph.nodes.base import NodeContext
 
     container = await _container()
-    result = await container.spawn_harness_node.run(
-        {"harness_type": "rsi_cycle", "task": "x"},
-        NodeContext(run_id="r1", dag_id="d1", node_id="n1"),
+    await container.capability_effects.bindings.put(
+        Binding(
+            binding_id="b-rsi-no-adapter",
+            workspace_id="ws-rsi",
+            project_id="p-rsi",
+            node_id="n1",
+            capability=AgentSpawnHarnessNode.capability,
+            provider_name="rsi_cycle",
+        )
     )
-    assert result.output.status == "failed"
-    assert "rsi_cycle" in (result.output.error or "")
+    result = await container.spawn_harness_node.run(
+        {"harness_type": "rsi_cycle", "task": "x", "binding_id": "b-rsi-no-adapter"},
+        NodeContext(
+            run_id="r1",
+            dag_id="d1",
+            node_id="n1",
+            workspace_id="ws-rsi",
+            project_id="p-rsi",
+        ),
+    )
+    # The Binding authorizes the capability, but the container wires no
+    # harness adapters by default, so the governed dispatch still fails
+    # closed naming the missing provider (#55).
+    assert result.success is False
+    assert result.error_code == "CapabilityUnavailable"
+    assert "rsi_cycle" in (result.error_message or "")
 
 
 async def test_injected_harness_adapters_reach_the_container_and_the_node() -> None:
+    from maistro.capabilities.binding import Binding
     from maistro.graph.harness import HarnessHandle, HarnessRequest, HarnessResult
+    from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
     from maistro.graph.nodes.base import NodeContext
 
     class _FakeAdapter:
@@ -326,12 +351,34 @@ async def test_injected_harness_adapters_reach_the_container_and_the_node() -> N
         AgentConfig(router_api_key="test-key"), harness_adapters={"rsi_cycle": fake}
     )
     assert container.harness_adapters == {"rsi_cycle": fake}
-    result = await container.spawn_harness_node.run(
-        {"harness_type": "rsi_cycle", "task": "x"},
-        NodeContext(run_id="r1", dag_id="d1", node_id="n1"),
+    await container.capability_effects.bindings.put(
+        Binding(
+            binding_id="b-rsi-dispatch",
+            workspace_id="ws-rsi",
+            project_id="p-rsi",
+            node_id="n1",
+            capability=AgentSpawnHarnessNode.capability,
+            provider_name="rsi_cycle",
+        )
     )
+    result = await container.spawn_harness_node.run(
+        {"harness_type": "rsi_cycle", "task": "x", "binding_id": "b-rsi-dispatch"},
+        NodeContext(
+            run_id="r1",
+            dag_id="d1",
+            node_id="n1",
+            node_run_id="nr1",
+            attempt_id="a1",
+            workspace_id="ws-rsi",
+            project_id="p-rsi",
+        ),
+    )
+    # The adapter dispatch crosses the container's governed Invocation
+    # boundary: the pause carries the handle plus the Binding/Invocation ids.
     assert result.status == "paused"
     assert result.metadata["handle_id"] == "h1"
+    assert result.metadata["binding_id"] == "b-rsi-dispatch"
+    assert result.metadata["invocation_id"]
 
 
 # --- build_node_resolver (production reachability) --------------------------------

@@ -75,3 +75,30 @@ async def test_workspace_listing_is_membership_driven() -> None:
         personal.workspace_id,
         shared.workspace_id,
     }
+
+
+@pytest.mark.asyncio
+async def test_convergence_import_preserves_existing_workspace_and_root_project_identity() -> None:
+    store = InMemoryWorkspaceStore()
+
+    workspace = await store.create(
+        creator_user_id="alice",
+        name="Imported",
+        workspace_id="legacy-ws-37",
+    )
+    root = await store.project_store.root_for_workspace(workspace.workspace_id)
+
+    assert workspace.workspace_id == "legacy-ws-37"
+    assert root.workspace_id == "legacy-ws-37"
+
+
+@pytest.mark.asyncio
+async def test_ordinary_workspace_creation_still_mints_distinct_canonical_ids() -> None:
+    store = InMemoryWorkspaceStore()
+
+    first = await store.create(creator_user_id="alice", name="One")
+    second = await store.create(creator_user_id="alice", name="Two")
+
+    assert first.workspace_id != second.workspace_id
+    assert first.workspace_id
+    assert second.workspace_id

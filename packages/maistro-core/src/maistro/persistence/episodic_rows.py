@@ -55,6 +55,9 @@ COLUMNS: tuple[str, ...] = (
     "decay_rate",
     "shared",
     "flagged_for_review",
+    "run_id",
+    "node_run_id",
+    "attempt_id",
 )
 
 
@@ -75,6 +78,12 @@ def to_row(memory: EpisodicMemory, *, text_timestamps: bool) -> tuple[Any, ...]:
     timestamp type and asyncpg binds `datetime` to it, while SQLite takes text —
     and passing a `datetime` to sqlite3 works only through an adapter deprecated
     in 3.12.
+
+    The producer ids arrive already resolved by the store that called this
+    (`observed_provenance`, #64); `or None` rather than `""` for the same
+    reason `ExecutionProvenance.as_columns` gives — an empty string in a
+    nullable column reads as a Run whose id is empty, which is a claim no
+    memory outside an execution should be making.
     """
     context = json.dumps(dict(memory.context), sort_keys=True)
     created: Any = memory.created_at
@@ -103,6 +112,9 @@ def to_row(memory: EpisodicMemory, *, text_timestamps: bool) -> tuple[Any, ...]:
         memory.decay_rate,
         memory.shared,
         memory.flagged_for_review,
+        memory.run_id or None,
+        memory.node_run_id or None,
+        memory.attempt_id or None,
     )
 
 
@@ -165,4 +177,18 @@ def from_row(row: Any) -> EpisodicMemory:
         decay_rate=float(row["decay_rate"]),
         shared=bool(row["shared"]),
         flagged_for_review=bool(row["flagged_for_review"]),
+        run_id=_producer(row, "run_id"),
+        node_run_id=_producer(row, "node_run_id"),
+        attempt_id=_producer(row, "attempt_id"),
     )
+
+
+def _producer(row: Any, column: str) -> str:
+    """A producer column as the record holds it: `""`, never `None`.
+
+    `row.get` rather than a subscript because both drivers' row types are
+    Mappings and a `.get` that misses reads as "no producer", which is the
+    truth for any row written before these columns existed (#64).
+    """
+    value = row.get(column)
+    return str(value) if value is not None else ""

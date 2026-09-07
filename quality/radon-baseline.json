@@ -33,36 +33,6 @@
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
-      "key": "packages/maistro-core/src/maistro/agents/pm_fleet.py::build_task_description",
-      "path": "packages/maistro-core/src/maistro/agents/pm_fleet.py",
-      "line": 131,
-      "name": "build_task_description",
-      "classname": null,
-      "rank": "C",
-      "complexity": 11,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/agents/pm_runner.py::_run_browser_driven",
-      "path": "packages/maistro-core/src/maistro/agents/pm_runner.py",
-      "line": 248,
-      "name": "_run_browser_driven",
-      "classname": null,
-      "rank": "C",
-      "complexity": 13,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/agents/pm_runner.py::run_pm_task",
-      "path": "packages/maistro-core/src/maistro/agents/pm_runner.py",
-      "line": 489,
-      "name": "run_pm_task",
-      "classname": null,
-      "rank": "C",
-      "complexity": 16,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
       "key": "packages/maistro-core/src/maistro/agents/spawner/spawner.py::Spawner._apply_recipe",
       "path": "packages/maistro-core/src/maistro/agents/spawner/spawner.py",
       "line": 97,
@@ -93,26 +63,6 @@
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
-      "key": "packages/maistro-core/src/maistro/auth/oauth.py::_validate_oidc_claims",
-      "path": "packages/maistro-core/src/maistro/auth/oauth.py",
-      "line": 190,
-      "name": "_validate_oidc_claims",
-      "classname": null,
-      "rank": "C",
-      "complexity": 11,
-      "rationale": "SPEC-183 OIDC claim validation helper; issuer/aud/exp/nonce checks are intentionally explicit and tested. Tracked under SPEC-264 pending a small extractor refactor if complexity grows."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/auth/oauth.py::OAuth2Client.exchange_code",
-      "path": "packages/maistro-core/src/maistro/auth/oauth.py",
-      "line": 471,
-      "name": "exchange_code",
-      "classname": "OAuth2Client",
-      "rank": "C",
-      "complexity": 11,
-      "rationale": "SPEC-183 Authorization Code + PKCE exchange seam; state validation, token POST, id_token verify, and userinfo merge are sequential security checks. Tracked under SPEC-264 pending split of audit/error branches."
-    },
-    {
       "key": "packages/maistro-core/src/maistro/agents/strategies/builders_learning.py::BuildersLearningStrategy._run_pr_diagnostics",
       "path": "packages/maistro-core/src/maistro/agents/strategies/builders_learning.py",
       "line": 207,
@@ -141,6 +91,26 @@
       "rank": "C",
       "complexity": 13,
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/auth/oauth.py::OAuth2Client.exchange_code",
+      "path": "packages/maistro-core/src/maistro/auth/oauth.py",
+      "line": 471,
+      "name": "exchange_code",
+      "classname": "OAuth2Client",
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "SPEC-183 Authorization Code + PKCE exchange seam; state validation, token POST, id_token verify, and userinfo merge are sequential security checks. Tracked under SPEC-264 pending split of audit/error branches."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/auth/oauth.py::_validate_oidc_claims",
+      "path": "packages/maistro-core/src/maistro/auth/oauth.py",
+      "line": 190,
+      "name": "_validate_oidc_claims",
+      "classname": null,
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "SPEC-183 OIDC claim validation helper; issuer/aud/exp/nonce checks are intentionally explicit and tested. Tracked under SPEC-264 pending a small extractor refactor if complexity grows."
     },
     {
       "key": "packages/maistro-core/src/maistro/capabilities/providers/host_health.py::_norm_docker",
@@ -180,36 +150,6 @@
       "classname": null,
       "rank": "C",
       "complexity": 12,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/credentials/pool.py::CredentialPool.get_stats",
-      "path": "packages/maistro-core/src/maistro/credentials/pool.py",
-      "line": 151,
-      "name": "get_stats",
-      "classname": "CredentialPool",
-      "rank": "C",
-      "complexity": 11,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/credentials/pool.py::CredentialPool.select",
-      "path": "packages/maistro-core/src/maistro/credentials/pool.py",
-      "line": 73,
-      "name": "select",
-      "classname": "CredentialPool",
-      "rank": "C",
-      "complexity": 17,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/credentials/rotation.py::execute_with_pool",
-      "path": "packages/maistro-core/src/maistro/credentials/rotation.py",
-      "line": 48,
-      "name": "execute_with_pool",
-      "classname": null,
-      "rank": "C",
-      "complexity": 11,
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
@@ -261,6 +201,26 @@
       "rank": "C",
       "complexity": 19,
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/graph/durable_runs/stores.py::settle_hitl_record",
+      "path": "packages/maistro-core/src/maistro/graph/durable_runs/stores.py",
+      "line": 139,
+      "name": "settle_hitl_record",
+      "classname": null,
+      "rank": "C",
+      "complexity": 16,
+      "rationale": "Authorized raise per grant #1043 for #737: settle_hitl_record is the single durable HITL settlement rule (answer, timeout, cancellation); the shared predicate for three settlement paths lands at CC 16 (rank C), per-path wrappers stay trivial. Tracked under ADR-083026-6c72."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/graph/executor.py::execute_with_resilience",
+      "path": "packages/maistro-core/src/maistro/graph/executor.py",
+      "line": 46,
+      "name": "execute_with_resilience",
+      "classname": null,
+      "rank": "C",
+      "complexity": 17,
+      "note": "graph resilience wrapper; landed via #262 merge before the checker was wired into CI"
     },
     {
       "key": "packages/maistro-core/src/maistro/graph/node.py::NodeRun._execute_beam",
@@ -329,8 +289,8 @@
       "name": "LlmSummarizeNode",
       "classname": null,
       "rank": "C",
-      "complexity": 19,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+      "complexity": 12,
+      "rationale": "Dropped 19 -> 12 by the #56 governed-egress migration: the node's HTTP/protocol branching moved into the approved llm_gateway Provider, leaving Binding resolution and request/result mapping. The remaining C is class-aggregate; further reduction tracked under SPEC-264."
     },
     {
       "key": "packages/maistro-core/src/maistro/graph/nodes/llm_summarize.py::LlmSummarizeNode._execute",
@@ -473,6 +433,16 @@
       "rationale": "SPEC-262: see docs/specs/SPEC-262-memory-scope-policy-truth-table.md"
     },
     {
+      "key": "packages/maistro-core/src/maistro/orchestrator/master.py::MasterOrchestrator.load_plan",
+      "path": "packages/maistro-core/src/maistro/orchestrator/master.py",
+      "line": 399,
+      "name": "load_plan",
+      "classname": "MasterOrchestrator",
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "Master orchestrator plan validation (task_id presence, uniqueness, reserved root guard) introduced by the output-security gate convergence; tracked at its reviewed introduction value under SPEC-264."
+    },
+    {
       "key": "packages/maistro-core/src/maistro/persistence/__init__.py::run_migrations",
       "path": "packages/maistro-core/src/maistro/persistence/__init__.py",
       "line": 37,
@@ -541,6 +511,26 @@
       "rank": "C",
       "complexity": 13,
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/runs/model.py::_freeze_evidence_value",
+      "path": "packages/maistro-core/src/maistro/runs/model.py",
+      "line": 79,
+      "name": "_freeze_evidence_value",
+      "classname": null,
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "AttemptResult immutable-evidence normalization introduced by execution-spine convergence; tracked by the complexity ratchet at its reviewed introduction value."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/runs/model.py::evidence_values_equal",
+      "path": "packages/maistro-core/src/maistro/runs/model.py",
+      "line": 97,
+      "name": "evidence_values_equal",
+      "classname": null,
+      "rank": "C",
+      "complexity": 15,
+      "rationale": "AttemptResult evidence comparison introduced by execution-spine convergence; tracked by the complexity ratchet at its reviewed introduction value."
     },
     {
       "key": "packages/maistro-core/src/maistro/security/auth_demo_cookie.py::DemoCookieAuthProvider.authenticate",
@@ -653,16 +643,6 @@
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
-      "key": "packages/maistro-core/src/maistro/tools/atlassian/client.py::AtlassianMCPClient._parse_confluence_page",
-      "path": "packages/maistro-core/src/maistro/tools/atlassian/client.py",
-      "line": 382,
-      "name": "_parse_confluence_page",
-      "classname": "AtlassianMCPClient",
-      "rank": "C",
-      "complexity": 13,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
       "key": "packages/maistro-core/src/maistro/tools/browser/client.py::BrowserClient._parse_search_output",
       "path": "packages/maistro-core/src/maistro/tools/browser/client.py",
       "line": 220,
@@ -681,46 +661,6 @@
       "rank": "C",
       "complexity": 11,
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/graph/executor.py::execute_with_resilience",
-      "path": "packages/maistro-core/src/maistro/graph/executor.py",
-      "line": 46,
-      "name": "execute_with_resilience",
-      "classname": null,
-      "rank": "C",
-      "complexity": 17,
-      "note": "graph resilience wrapper; landed via #262 merge before the checker was wired into CI"
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/runs/model.py::_freeze_evidence_value",
-      "path": "packages/maistro-core/src/maistro/runs/model.py",
-      "line": 79,
-      "name": "_freeze_evidence_value",
-      "classname": null,
-      "rank": "C",
-      "complexity": 11,
-      "rationale": "AttemptResult immutable-evidence normalization introduced by execution-spine convergence; tracked by the complexity ratchet at its reviewed introduction value."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/runs/model.py::evidence_values_equal",
-      "path": "packages/maistro-core/src/maistro/runs/model.py",
-      "line": 97,
-      "name": "evidence_values_equal",
-      "classname": null,
-      "rank": "C",
-      "complexity": 15,
-      "rationale": "AttemptResult evidence comparison introduced by execution-spine convergence; tracked by the complexity ratchet at its reviewed introduction value."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/orchestrator/master.py::MasterOrchestrator.load_plan",
-      "path": "packages/maistro-core/src/maistro/orchestrator/master.py",
-      "line": 399,
-      "name": "load_plan",
-      "classname": "MasterOrchestrator",
-      "rank": "C",
-      "complexity": 11,
-      "rationale": "Master orchestrator plan validation (task_id presence, uniqueness, reserved root guard) introduced by the output-security gate convergence; tracked at its reviewed introduction value under SPEC-264."
     }
   ]
 }

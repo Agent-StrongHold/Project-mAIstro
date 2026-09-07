@@ -10,6 +10,7 @@ from maistro.memory.episodic.tiers import reinforce as _reinforce
 from maistro.memory.episodic.tiers import tick_decay as _tick_decay
 from maistro.memory.scopes import build_scope_filter, matches_scope
 from maistro.memory.types import REINFORCE_DELTA, DecaySweep, EpisodicMemory
+from maistro.observability.correlation import observed_provenance
 
 
 def _selected(
@@ -51,6 +52,22 @@ class InMemoryEpisodicStore:
         self._memories: list[EpisodicMemory] = []
 
     async def store(self, memory: EpisodicMemory) -> str:
+        """Store a memory, naming the execution that produced it.
+
+        The volatile store fills provenance too, for the reason
+        `InMemoryLearningStore.store` states: it is the default backend in dev
+        and test, so a store that skipped this would let every behavioural
+        test pass while only the durable ones did the work. Assigned onto the
+        object because this store keeps the caller's instance (#64).
+        """
+        provenance = observed_provenance(
+            run_id=memory.run_id,
+            node_run_id=memory.node_run_id,
+            attempt_id=memory.attempt_id,
+        )
+        memory.run_id = provenance.run_id
+        memory.node_run_id = provenance.node_run_id
+        memory.attempt_id = provenance.attempt_id
         self._memories.append(memory)
         return memory.memory_id
 
@@ -143,3 +160,17 @@ class InMemoryEpisodicStore:
         # limit, with different memories (Codex, #710).
         matched.sort(key=lambda m: (-m.weight, m.memory_id))
         return matched[:limit]
+
+    async def produced_by(self, run_id: str, *, org_id: str = "") -> list[EpisodicMemory]:
+        """The memories this Run stored, newest first.
+
+        The same contract as `LearningStore.produced_by` (#709): an empty
+        `run_id` returns nothing rather than every unattributed memory, and the
+        read is org-scoped so a Run's name never widens what a caller can see
+        (#64).
+        """
+        if not run_id:
+            return []
+        return [
+            m for m in self._memories if m.run_id == run_id and m.org_id == org_id and not m.deleted
+        ][::-1]

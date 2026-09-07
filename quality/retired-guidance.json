@@ -33,6 +33,70 @@
         "used to read"
       ],
       "issue": "386"
+    },
+    {
+      "id": "schedules-never-execute",
+      "pattern": "(?i)(nothing is ever executed|only stamps? a timestamp)",
+      "retired_by": "#231",
+      "also_recorded_in": [
+        "packages/hive-conductor/backend/tests/test_scheduler.py::test_a_manual_run_creates_a_run_and_records_it",
+        "docs/adr/ADR-082126-f69c-recurrence-produces-runs.md"
+      ],
+      "replacement": "Due schedules admit canonical Runs through the Container-wired ScheduleRunAdmitter, and POST /v1/schedules/{id}/run fires a real Run (409 when it cannot); the durable ScheduleStore cursor advances only after a Run exists. Remaining convergence is #251: run_registered_dag DurableRunStore is disjoint from the canonical RunStore.",
+      "citation_markers": [
+        "#231",
+        "fire",
+        "409",
+        "supersed",
+        "stale",
+        "retired",
+        "corrected",
+        "used to"
+      ],
+      "issue": "388"
+    },
+    {
+      "id": "learnings-no-embedding-column",
+      "pattern": "(?i)learnings?/outcome\\s+Postgres stores have no embedding column",
+      "retired_by": "#188",
+      "also_recorded_in": [
+        "alembic/versions/011_memory_embedding_columns.py",
+        "alembic/versions/029_memory_entries_embedding_is_a_vector.py"
+      ],
+      "replacement": "learnings.embedding is vector(1536) with an HNSW cosine index (migration 011); memory_entries.embedding was repaired from text to vector(1536) by migration 029. outcomes and episodic_memories deliberately carry no column until a producer writes one. Similarity is schema-ready but not enabled by default: DurableHybridLearningStore needs a caller-supplied embedding client and no production entrypoint constructs one.",
+      "citation_markers": [
+        "#188",
+        "vector(1536)",
+        "migration 011",
+        "migration 029",
+        "supersed",
+        "stale",
+        "retired",
+        "corrected",
+        "used to"
+      ],
+      "issue": "388"
+    },
+    {
+      "id": "scoped-pgvector-recall-live",
+      "pattern": "(?i)scoped pgvector recall is live",
+      "retired_by": "#188",
+      "also_recorded_in": [
+        "docs/architecture/CONVERGENCE-MATRIX.md Memory row"
+      ],
+      "replacement": "Scoped pgvector recall is schema-ready and wired but not live by default: the column, index and hybrid store exist, yet no production entrypoint constructs an embedding client, so the column stays NULL and retrieval is keyword/attribute matching without one.",
+      "citation_markers": [
+        "#188",
+        "schema-ready",
+        "not enabled",
+        "not live",
+        "supersed",
+        "stale",
+        "retired",
+        "corrected",
+        "used to"
+      ],
+      "issue": "388"
     }
   ]
 }

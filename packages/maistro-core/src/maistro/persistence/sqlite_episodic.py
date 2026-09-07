@@ -18,6 +18,7 @@ from maistro.memory.episodic.tiers import clamp_weight
 from maistro.memory.episodic.tiers import reinforce as _reinforce
 from maistro.memory.episodic.tiers import tick_decay as _tick_decay
 from maistro.memory.scopes import build_scope_filter, scope_predicate
+from maistro.observability.correlation import observed_provenance
 from maistro.persistence.episodic_rows import (
     COLUMNS,
     RETRIEVAL_CANDIDATE_CAP,
@@ -51,7 +52,10 @@ CREATE TABLE IF NOT EXISTS episodic_memories (
     deleted INTEGER NOT NULL DEFAULT 0,
     decay_rate REAL NOT NULL DEFAULT 0.01,
     shared INTEGER NOT NULL DEFAULT 0,
-    flagged_for_review INTEGER NOT NULL DEFAULT 0
+    flagged_for_review INTEGER NOT NULL DEFAULT 0,
+    run_id TEXT,
+    node_run_id TEXT,
+    attempt_id TEXT
 )
 """
 
@@ -69,9 +73,9 @@ _UPSERT = """INSERT INTO episodic_memories (
     memory_id, tier, content, weight, org_id, team_id, agent_id, user_id,
     scope, project_id, source, context, reinforcement_count,
     contradiction_count, created_at, last_accessed_at, deleted, decay_rate,
-    shared, flagged_for_review
+    shared, flagged_for_review, run_id, node_run_id, attempt_id
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 ) ON CONFLICT (memory_id) DO UPDATE SET
     tier = excluded.tier, content = excluded.content,
     weight = excluded.weight, org_id = excluded.org_id,
@@ -85,7 +89,9 @@ _UPSERT = """INSERT INTO episodic_memories (
     last_accessed_at = excluded.last_accessed_at,
     deleted = excluded.deleted, decay_rate = excluded.decay_rate,
     shared = excluded.shared,
-    flagged_for_review = excluded.flagged_for_review
+    flagged_for_review = excluded.flagged_for_review,
+    run_id = excluded.run_id, node_run_id = excluded.node_run_id,
+    attempt_id = excluded.attempt_id
 """
 
 
@@ -121,6 +127,12 @@ class SqliteEpisodicStore:
             ("decay_rate", "REAL NOT NULL DEFAULT 0.01"),
             ("shared", "INTEGER NOT NULL DEFAULT 0"),
             ("flagged_for_review", "INTEGER NOT NULL DEFAULT 0"),
+            # Nullable, matching the PostgreSQL column and migration 026's
+            # shape for the other record kinds: an empty-string default would
+            # make every pre-#64 row claim a Run with an empty id (#64).
+            ("run_id", "TEXT"),
+            ("node_run_id", "TEXT"),
+            ("attempt_id", "TEXT"),
         ):
             if column not in present:
                 await self._conn.execute(f"ALTER TABLE episodic_memories ADD COLUMN {column} {ddl}")
@@ -128,10 +140,26 @@ class SqliteEpisodicStore:
             "CREATE INDEX IF NOT EXISTS idx_episodic_scope_weight "
             "ON episodic_memories (org_id, scope, weight DESC)"
         )
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_episodic_memories_run_id ON episodic_memories (run_id)"
+        )
         await self._conn.commit()
 
     async def store(self, memory: EpisodicMemory) -> str:
-        """Store a memory. Returns its `memory_id`. Upsert, as in PostgreSQL."""
+        """Store a memory, naming the execution that produced it.
+
+        Upsert, as in PostgreSQL. The producer is resolved before the write by
+        the same rule every provenance-bearing store uses: caller first,
+        ambient context second, none stored as NULL (#64).
+        """
+        provenance = observed_provenance(
+            run_id=memory.run_id,
+            node_run_id=memory.node_run_id,
+            attempt_id=memory.attempt_id,
+        )
+        memory.run_id = provenance.run_id
+        memory.node_run_id = provenance.node_run_id
+        memory.attempt_id = provenance.attempt_id
         await self._conn.execute(_UPSERT, to_row(memory, text_timestamps=True))
         await self._conn.commit()
         return memory.memory_id
@@ -248,4 +276,19 @@ class SqliteEpisodicStore:
         return await self._fetch(
             f"{_SELECT} WHERE {' AND '.join(clauses)} ORDER BY weight DESC, memory_id LIMIT ?",
             tuple(params),
+        )
+
+    async def produced_by(self, run_id: str, *, org_id: str = "") -> list[EpisodicMemory]:
+        """The memories this Run stored, newest first.
+
+        Same rule as the PostgreSQL original and `SqliteLearningStore`
+        (#709): a blank `run_id` returns nothing, and `org_id` is a predicate
+        in the WHERE rather than a post-filter (#64).
+        """
+        if not run_id:
+            return []
+        return await self._fetch(
+            f"{_SELECT} WHERE run_id = ? AND org_id = ? AND deleted = 0"
+            " ORDER BY created_at DESC, memory_id",
+            (run_id, org_id),
         )

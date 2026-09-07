@@ -6,6 +6,11 @@ from typing import Any
 import pytest
 
 from maistro.capabilities.binding import Binding, ResolvedBinding
+from maistro.capabilities.binding_store import (
+    BindingNotFound,
+    BindingScopeDenied,
+    InMemoryBindingStore,
+)
 from maistro.capabilities.invocation import (
     EffectNotApplied,
     InMemoryInvocationStore,
@@ -188,3 +193,92 @@ async def test_proven_not_applied_effect_can_retry_as_new_invocation() -> None:
     ]
     assert [item.attempt_id for item in history] == ["attempt-1", "attempt-2"]
     assert second.result == "committed"
+
+
+# --- InMemoryBindingStore: identity and scope resolution (#55) -------------
+
+
+@pytest.mark.asyncio
+async def test_binding_identity_is_immutable_across_re_registration() -> None:
+    store = InMemoryBindingStore()
+    first = await store.put(_binding())
+
+    # Re-registering the exact same definition is idempotent...
+    again = await store.put(first)
+    assert again == first
+
+    # ...but a changed definition behind the same id is refused rather than
+    # silently widening the authority the id already grants.
+    changed = _binding(provider_name="provider-b")
+    with pytest.raises(ValueError, match="immutable and already registered"):
+        await store.put(changed)
+
+
+@pytest.mark.asyncio
+async def test_resolve_requires_every_scope_field() -> None:
+    store = InMemoryBindingStore()
+    await store.put(_binding())
+
+    with pytest.raises(BindingScopeDenied, match="workspace_id is required"):
+        await store.resolve(
+            "binding-1",
+            workspace_id="",
+            project_id="project-1",
+            node_id="node-1",
+            capability="external_write",
+        )
+
+
+@pytest.mark.asyncio
+async def test_resolve_of_an_unregistered_binding_is_not_found() -> None:
+    store = InMemoryBindingStore()
+
+    with pytest.raises(BindingNotFound, match="'binding-404' is not registered"):
+        await store.resolve(
+            "binding-404",
+            workspace_id="ws-1",
+            project_id="project-1",
+            node_id="node-1",
+            capability="external_write",
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("overrides", "fragment"),
+    [
+        ({"project_id": "project-2"}, "belongs to Project 'project-1'"),
+        ({"node_id": "node-2"}, "is restricted to Node 'node-1'"),
+        ({"capability": "external_read"}, "authorizes Capability 'external_write'"),
+    ],
+)
+async def test_resolve_denies_each_scope_mismatch_by_name(
+    overrides: dict[str, str], fragment: str
+) -> None:
+    store = InMemoryBindingStore()
+    await store.put(_binding())
+
+    scope = {
+        "workspace_id": "ws-1",
+        "project_id": "project-1",
+        "node_id": "node-1",
+        "capability": "external_write",
+    } | overrides
+
+    with pytest.raises(BindingScopeDenied, match=fragment):
+        await store.resolve("binding-1", **scope)
+
+
+@pytest.mark.asyncio
+async def test_unrestricted_node_binding_resolves_for_any_node() -> None:
+    store = InMemoryBindingStore()
+    await store.put(_binding().model_copy(update={"node_id": ""}))
+
+    resolved = await store.resolve(
+        "binding-1",
+        workspace_id="ws-1",
+        project_id="project-1",
+        node_id="any-node-at-all",
+        capability="external_write",
+    )
+    assert resolved.binding_id == "binding-1"

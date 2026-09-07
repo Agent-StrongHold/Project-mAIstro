@@ -44,7 +44,7 @@ Three further rules follow from the columns' meanings. A `KEEP` column whose eve
 
 **What is not checked.** A cell may instead describe a non-module owner in prose — “age-encrypted file”, “OS file permissions”, “per-route”. Those are honest and unverifiable, and pretending otherwise would be the same defect this section fixes. The census below is checked, so the size of that gap cannot drift: of the 156 owner cells, 53 name a module, 73 declare there is no module owner, and 30 are prose the checker cannot reach.
 
-<!-- matrix:ownership-census claims=53 declared=73 prose=30 -->
+<!-- matrix:ownership-census claims=52 declared=73 prose=31 -->
 <!-- matrix:ownership -->
 | Subsystem | Modules | Canonical concept | Lifecycle owner | Persistence owner | Authorization owner |
 |---|---|---|---|---|---|
@@ -58,14 +58,14 @@ Three further rules follow from the columns' meanings. A `KEEP` column whose eve
 | Planning and wave orchestration | `maistro.orchestrator` | Graph synthesis | wave state in `orchestrator.waves` | — | — |
 | Builders pipeline | `maistro.builders` | Graph of spec→tests→code→review Nodes | `builders.runtime` (unreachable) + `builders.graph_executor` (unreachable; fourth universal lifecycle) | `builders.logger` (unreachable) | — |
 | Workspace / Project scope | `maistro.workspaces`, `maistro.projects` | Workspace, Project — the scope roots | n/a (scope, not execution) | `projects.store`, `projects.scope_store`, `workspaces.store` | `projects.authorization` |
-| Agents | `maistro.agents` | Node implementation / Provider | per-agent ad-hoc; `agents.pm_runner` emits its own events | `persistence.pg_agents` | `agents.intents` routing table only |
+| Agents | `maistro.agents` | Node implementation / Provider | per-agent ad-hoc | `persistence.pg_agents` | `agents.intents` routing table only |
 | Capability / Provider / Binding / Invocation | `maistro.capabilities` | the canonical effect path | `capabilities.invocation` | `capabilities.invocation_store`, `approval_store` | `capabilities.governed_invocation` |
 | Model providers | `maistro.providers` | Provider implementations | n/a | — | — |
 | Router and classifier | `maistro.router`, `maistro.classifier` | Provider selection policy | n/a (pure decision) | — | — |
 | Tool execution | `maistro.tools` | Invocation | direct call sites | — | `tools.approval` (unreachable), `tools.reversibility_registry` (unreachable) |
 | Sandbox isolation | `maistro.sandbox` | ExecutionRuntime implementation | its own session records | — | — |
 | Skills, code registry, repertoire | `maistro.skills`, `maistro.code_registry`, `maistro.repertoire` | Capability supply chain | per-package registries | `skills.marketplace` stores | `code_registry` signing + trust tiers |
-| Credentials | `maistro.credentials` | Binding material | `credentials.pool` (unreachable) rotation state | encrypted per-user store | — |
+| Credentials | `maistro.credentials` | Binding material | `credentials.router` scoped rotation state, reached from Provider selection on the Invocation path (#58) | encrypted per-user store | — |
 | Quota and billing | `maistro.quota` | Invocation cost accounting | `quota.tracker` | `persistence.pg_quota`, `quota.sqlite_usage_log` (unreachable) | — |
 | External integrations | `maistro.integrations` | Provider implementations | n/a | — | — |
 | Delivery gateway | `maistro.delivery` | Effect channel | its own send records | — | — |
@@ -91,9 +91,9 @@ Three further rules follow from the columns' meanings. A `KEEP` column whose eve
 | Shared contracts and config | `maistro`, `maistro.types`, `maistro.protocols`, `maistro.constants`, `maistro.config`, `maistro.http` | Types and protocols | n/a | — | — |
 | Test scaffolding | `maistro.testing` | Test doubles | n/a | — | — |
 | maistro-server HTTP app | `maistro_server` | Product entry point | `maistro.tasks.queue` (delegated) receipt plus canonical Run spine | inherited | `maistro.auth` + rate limiter |
-| Agent Conductor HTTP surface | `main`, `routes`, `middleware`, `protocols`, `adapters`, `models`, `stores`, `config`, `logging_setup`, `settings_defaults` | Product entry point | mixed: `stores` in-memory dicts, `models` SQLAlchemy | `models` + `services.pg_store` | `middleware` auth + `middleware.privilege` (unreachable) |
+| Agent Conductor HTTP surface | `main`, `routes`, `middleware`, `protocols`, `adapters`, `models`, `stores`, `config`, `logging_setup`, `settings_defaults` | Product entry point | mixed: `stores` in-memory dicts, `models` SQLAlchemy | `models` + `services.pg_store` | `middleware` auth + `middleware.privilege` (installed, empty policy table — #63) |
 | Agent Conductor services | `services` | Product services | `services.dag_run_store` — parallel run identity, event-derived, authoritative for current UI | `services.pg_store` | per-route |
-| Canvas ability | `maistro_canvas` | Graph of canvas Nodes | `canvas.executor` pipeline + `canvas.runner` (unreachable) claim/lease/reap state machine | `canvas.store` (unreachable; PostgreSQL) | `maistro_canvas.auth` |
+| Canvas ability | `maistro_canvas`, `maistro-canvas-frontend-server` | Graph of canvas Nodes | `canvas.executor` pipeline + `canvas.runner` (unreachable) claim/lease/reap state machine | `canvas.store` (unreachable; PostgreSQL) | `maistro_canvas.auth` |
 | Open Design integration | `maistro_design` | Renderer Providers | `design.engine` | `design.stores` | `design.trust` |
 | Evolve tournament optimizer | `maistro_evolve` | Graph of evaluation Nodes | `evolve.cycle` orchestrates; no universal work-state machine of its own | `evolve.serialize` (unreachable) | — |
 | RSI autorun | `maistro_rsi` | Run per improvement cycle | `rsi.coordinator` orchestrates; result records, no universal work-state machine | `rsi.spec_tracker`, quarantine ledger | `rsi.quarantine` gate |
@@ -137,15 +137,15 @@ A share rather than the `19/62` this column used to carry, because the denominat
 | Tool execution | `services.tool_executor`, `maistro.container` | `some` | MIGRATE — tool calls must be governed Invocations | ADR-050, ADR-051, SPEC-252 | tool call produces Invocation + authorization + expected-effect evidence | #57, #59 |
 | Sandbox isolation | `maistro.cli` `sandbox status`; no execution path yet | `none` | CONNECT — ExecutionRuntime story needs it | ADR-093, ADR-054 | Attempt executes inside sandbox with enforced budgets | #42, #34 |
 | Skills, code registry, repertoire | `routes.skills`, `services.mcp_client` | `most` | MIGRATE — one governed supply-chain path | ADR-083, ADR-069, ADR-070 | signed-code verification on real register/load path | #59, #34 |
-| Credentials | `routes.credentials`, `services.credential_store_v2` | `most` | MIGRATE — rotation belongs at Provider selection | ADR-063 | real Invocation outcome triggers scoped rotation | #58 |
+| Credentials | `routes.credentials`, `services.credential_store_v2` | `none` | KEEP — pool/rotation converged onto Provider selection (#58); remaining Hive credential surfaces are product CRUD over the encrypted store | ADR-063 | real Invocation outcome triggers scoped rotation — proven in `tests/capabilities/test_credential_routing.py` (#58); full subsystem adoption lands with #56/#57 | #56, #57 |
 | Quota and billing | `routes.quotas`, `maistro.container` | `most` | MIGRATE — cost attaches to Invocation | ADR-085 | token/cost metadata on Invocation | #56, #63 |
 | External integrations | exported API | `all` | CONNECT — bridges with no shipped caller | ADR-029 | one integration reached from product route | #34 |
 | Delivery gateway | none | `all` | CONNECT | ADR-047 | delivery effect recorded as Invocation | #34, #57 |
 | Warden / Sentinel / Gate | `maistro.container`, `maistro_server` middleware | `few` | MIGRATE — core/server enforcement exists; Hive product-path coverage still incomplete | ADR-073, ADR-072, ADR-072726-0d6b | durable strikes on PostgreSQL are proven (#217); real Hive chat must prove Warden/Sentinel traversal | #66, #67, #74 |
 | Authentication and identity | `routes.auth`, `middleware`, `maistro_server` auth | `none` | KEEP | ADR-059, ADR-084, ADR-077 | Argon2id registration + bcrypt upgrade | #32 |
-| Authorization, privilege, governance | `middleware.privilege` (unreachable), `maistro.policy` | `some` | CONNECT — approver matrix partly unbuilt | ADR-028, ADR-068, ADR-081226-6e34 | beyond-authority action resolves approver scope from policy | #60 |
+| Authorization, privilege, governance | `maistro.policy`, hive `middleware.privilege` (installed #63) | `some` | CONNECT — approver matrix partly unbuilt | ADR-028, ADR-068, ADR-081226-6e34 | beyond-authority action resolves approver scope from policy | #60 |
 | Secrets vault | `maistro.cli`, installer | `none` | KEEP | SPEC-011 | round-trip encryption tests | — |
-| Memory | `routes.memory`, `maistro.container` | `some` | KEEP — domain state; provenance and archive policy still converge | ADR-034, ADR-011, ADR-091, ADR-057, ADR-082226-5104, ADR-082226-d3dd | scoped pgvector recall is live; archive conformance passes; producing Run provenance/policy remain | #64, #133 |
+| Memory | `routes.memory`, `maistro.container` | `some` | KEEP — domain state; provenance and archive policy still converge | ADR-034, ADR-011, ADR-091, ADR-057, ADR-082226-5104, ADR-082226-d3dd | scoped pgvector recall is schema-ready and wired but not live by default: `learnings.embedding vector(1536)` + HNSW cosine exist and `DurableHybridLearningStore` composes scope with the search in one query, yet no production entrypoint constructs an embedding client, so the column stays NULL without one (#188); archive conformance passes; producing Run provenance/policy remain | #64, #133, #188 |
 | Sessions | `routes.chat`, `maistro_server.api.ws` | `some` | KEEP — correlates to Runs, does not own them | ADR-048, ADR-070426-e8a3 | session id correlated on Run without owning lifecycle | #64 |
 | Archive tier | `maistro.container` when `archive_url` is set | `none` | KEEP — storage tier, not lifecycle | ADR-082226-f436, ADR-082226-5104 | filesystem + S3 conformance; archive-eligibility policy still open | #133 |
 | Relational persistence | `maistro.container` (both backends), Alembic | `none` | KEEP — PostgreSQL canonical stores and SQLite homelab adapters are wired | ADR-082226-5104, ADR-087, ADR-012 | container selects durable prompt/audit stores with backend conformance; zero relational modules unreachable | — |
@@ -164,8 +164,8 @@ A share rather than the `19/62` this column used to carry, because the denominat
 | Test scaffolding | test suites only | `all` | LIBRARY — unreachable by construction | ADR-065, ADR-032 | used by checked test suites | — |
 | maistro-server HTTP app | `maistro_server.main` | `none` | MIGRATE — task queue is receipt; chat front door now uses Container/Conduit | ADR-076, ADR-096, ADR-082426-2192 | `/v1/tasks` and `/v1/chat/completions` both yield canonical Run identity | #43, #234 |
 | Agent Conductor HTTP surface | `main` (uvicorn) | `few` | MIGRATE — product surface must read canonical stores | ADR-096, ADR-094 | Run views rendered from canonical stores and surviving restart | #65, #53 |
-| Agent Conductor services | route registration + background loops | `some` | MIGRATE — `dag_run_store`, scheduler and graph/product seams still duplicate canonical responsibilities | ADR-096 | DAG/scheduler/chat paths use canonical Runs and projections only | #53, #35, #231 |
-| Canvas ability | `maistro_canvas.canvas.routes`, `routes.canvas` | `some` | MIGRATE — pipeline stages become NodeRuns | ADR-045, ADR-040, ADR-067 | canvas stages visible as NodeRuns with retries as Attempts | #52 |
+| Agent Conductor services | route registration + background loops | `few` | MIGRATE — `dag_run_store`, scheduler and graph/product seams still duplicate canonical responsibilities | ADR-096 | DAG/scheduler/chat paths use canonical Runs and projections only | #53, #35, #231 |
+| Canvas ability | `maistro_canvas.canvas.routes`, `routes.canvas`, `maistro-canvas-frontend-server` | `some` | MIGRATE — pipeline stages become NodeRuns | ADR-045, ADR-040, ADR-067 | canvas stages visible as NodeRuns with retries as Attempts | #52 |
 | Open Design integration | `routes.design`, `services.design_service` | `few` | MIGRATE — renderers become Providers | ADR-061, ADR-100 | render effect recorded as Invocation | #52, #55 |
 | Evolve tournament optimizer | `routes.evolution`, `services.evolution` | `few` | MIGRATE — cycle is Run, battle is NodeRun | ADR-088, ADR-070126-6386, SPEC-070126-9d37 | tournament history reproducible from canonical Runs | #51 |
 | RSI autorun | `maistro_rsi.cli`, `routes.rsi` | `few` | MIGRATE — cycles become Runs over authorized work source | ADR-088 | every RSI cycle has Run provenance; backlog through adapter | #50 |

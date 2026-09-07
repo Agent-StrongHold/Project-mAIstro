@@ -105,6 +105,36 @@ Tracking: the "not yet" rows in
 [ADR-082126-f69c](docs/adr/ADR-082126-f69c-recurrence-produces-runs.md)'s
 implementation-status table. ADR-046 and SPEC-080126-3a7c are superseded.
 
+### Trace export is build- and config-gated, and the default stack sends none
+
+The conductor agent path and the Conductor's chat path emit
+OpenTelemetry spans, but export is deliberately opt-in at two doors: the
+image must be built with `INSTALL_OBSERVABILITY=1` to carry the OTLP
+exporter packages ([Dockerfile](packages/hive-conductor/Dockerfile), #668),
+and the process must be given `OTEL_EXPORTER_OTLP_ENDPOINT`/`_HEADERS`. The
+default compose stack runs a Langfuse service, but no service in it exports
+traces there — the `LANGFUSE_*` variables configure the Langfuse service's
+own UI/API, not trace export. With no endpoint configured, spans are emitted
+to a no-op tracer at negligible cost and nothing leaves the process (#63's
+doc audit; see `packages/hive-conductor/backend/adapters/telemetry_langfuse.py`).
+
+Tracking: decide whether a compose profile should wire
+`OTEL_EXPORTER_OTLP_ENDPOINT` to the bundled Langfuse/Phoenix services when
+the image is built with the observability extra.
+
+### Reliability signals declared without a producer
+
+ADR-038 declares that circuit state changes also emit a `circuit.state_change`
+event, and the resilience layer ships `context_probe`, `rate_coordination` and
+`retry_policy` primitives. The `maistro_circuit_state` metric is emitted by the
+real conductor circuit path, but the event and the three primitives have no
+production call path — their intended producer is the Invocation/provider
+effect path (#55/#56), which nothing constructs yet (see #63's audit and the
+`resilience-unwired` reachability disposition).
+
+Tracking: wire reliability signals when #55 makes the Invocation the real
+effect path; do not invent a producer for them sooner.
+
 ### Security controls specified but not reachable
 
 Three controls have modules, tests, and specs, but no production call path.

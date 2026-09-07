@@ -215,6 +215,28 @@ def update_draft_fields(draft: WorkItemDraft, updates: dict[str, Any]) -> WorkIt
     )
 
 
+def _stub_create_work_item(
+    work_type: str,
+    fields: dict[str, Any],
+    capability: str,
+) -> dict[str, Any]:
+    """Simulate the confirmed Jira create without the retired PM POC runtime."""
+    project = fields.get("project_key") or "PM"
+    parent = fields.get("parent_key")
+    seq = abs(hash(fields.get("summary", work_type))) % 900 + 100
+    key = f"{project}-{seq}"
+    return {
+        "status": "ok",
+        "issue_key": key,
+        "work_type": work_type,
+        "capability": capability,
+        "parent_key": parent,
+        "summary": fields.get("summary"),
+        "posted_to": "jira",
+        "source": "stub",
+    }
+
+
 def confirm_post_stub(draft: WorkItemDraft) -> tuple[WorkItemDraft, dict[str, Any]]:
     """Simulate Jira create after user confirmation."""
     if draft.status != "ready":
@@ -223,9 +245,7 @@ def confirm_post_stub(draft: WorkItemDraft) -> tuple[WorkItemDraft, dict[str, An
     if not draft.fields.summary.strip():
         raise ValueError("Summary is required before posting.")
 
-    from maistro.tools.pm_stubs import stub_create_work_item
-
-    result = stub_create_work_item(
+    result = _stub_create_work_item(
         draft.work_type,
         draft.fields.model_dump(),
         draft.capability,

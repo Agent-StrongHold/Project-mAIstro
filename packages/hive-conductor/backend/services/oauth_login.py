@@ -22,6 +22,7 @@ from config import (
 from models.schemas import HiveUser
 from routes.audit import log_audit
 
+from maistro.auth.entra import build_entra_provider_config
 from maistro.auth.oauth import (
     IdentityLinker,
     InMemoryStateStore,
@@ -36,6 +37,7 @@ from maistro.auth.oauth import (
     complete_login,
 )
 from maistro.http import get_shared_client
+from services.entra_oauth import ProductIdTokenVerifier
 from services.model_store import JsonStore
 from services.secrets import resolve_secret
 
@@ -243,17 +245,30 @@ class OAuthLoginService:
         # SECURITY-REVIEW: OAuth2Client performs external provider I/O through
         # maistro.http's guarded transport; provider URLs are also registered
         # with core's outbound allowlist and JWKS verification is mandatory.
+        # ProductIdTokenVerifier preserves the generic JWKS path for ordinary
+        # OIDC providers and adds only Entra's verified tid/oid normalization.
         self._client = OAuth2Client(
             providers=providers,
             state_store=self._states,
             http=self._http,
             secret_resolver=self._resolve_client_secret,
+            id_token_verifier=ProductIdTokenVerifier(),
             state_ttl_seconds=OAUTH_STATE_TTL_SECONDS,
             clock=clock,
         )
 
     @staticmethod
     def _core_provider(name: str, provider: OAuthProviderSettings) -> OAuthProviderConfig:
+        if provider.entra_tenant_id is not None:
+            # Tenant-specific Microsoft v2 endpoints, derived from the one
+            # admitted directory UUID. `common`/`organizations` never reach
+            # here: settings validation rejects them as non-UUID tenants.
+            return build_entra_provider_config(
+                tenant_id=provider.entra_tenant_id,
+                client_id=provider.client_id,
+                scopes=provider.scopes,
+                name=name,
+            )
         return OAuthProviderConfig(
             name=name,
             authorization_url=provider.authorization_url,
@@ -314,6 +329,45 @@ class OAuthLoginService:
         self._validate_browser_state(state, browser_state)
 
         user_id, exchange = await self._complete_login(provider, code, state)
+        return self._resolve_active_user(provider, user_id, exchange)
+
+    async def link_authenticated_user(
+        self,
+        *,
+        provider: str,
+        code: str,
+        state: str,
+        browser_state: str | None,
+        user_id: str,
+    ) -> OAuthLoginResult:
+        """Explicitly link a verified provider identity to the current Hive user."""
+        self._provider(provider)
+        self._validate_browser_state(state, browser_state)
+        try:
+            exchange = await self._client.exchange_code(
+                provider,
+                code,
+                state,
+                self.callback_uri(provider),
+            )
+            await self._links.link(provider, exchange.identity.sub, user_id)
+        except OAuthClientSecretUnavailableError as exc:
+            raise OAuthLoginDenied(
+                stage="configuration",
+                reason="secret_unavailable",
+            ) from exc
+        except OAuthStateError as exc:
+            raise OAuthLoginDenied(stage="state", reason="invalid") from exc
+        except OAuthTokenValidationError as exc:
+            raise OAuthLoginDenied(stage="token_validation", reason="invalid") from exc
+        except OAuthExchangeError as exc:
+            raise OAuthLoginDenied(stage="exchange", reason="provider_rejected") from exc
+        except IdentityLinkConflictError as exc:
+            raise OAuthLoginDenied(stage="identity", reason="link_conflict") from exc
+        except OAuthError as exc:
+            raise OAuthLoginDenied(stage="provider", reason="provider_rejected") from exc
+        except Exception as exc:
+            raise OAuthLoginDenied(stage="provider", reason="provider_rejected") from exc
         return self._resolve_active_user(provider, user_id, exchange)
 
     @staticmethod

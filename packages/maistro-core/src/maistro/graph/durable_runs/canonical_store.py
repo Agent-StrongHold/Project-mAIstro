@@ -12,6 +12,8 @@ answer to "what is this Run doing" rather than two that can disagree
 from __future__ import annotations
 
 import asyncio
+import logging
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
@@ -20,10 +22,12 @@ from maistro.runs.store import RunIntegrityError, RunStore
 
 from .continuation import GraphContinuation, GraphContinuationStore
 from .spine import mirror_lifecycle
-from .stores import answer_record
+from .stores import answer_record, settle_hitl_record
 from .types import DurableRunRecord
 
 _RECOVERY_VISIBLE_STATUSES = frozenset({RunStatus.WAITING, RunStatus.PAUSED, RunStatus.RUNNING})
+
+logger = logging.getLogger(__name__)
 
 
 class CanonicalDurableRunStore:
@@ -108,6 +112,16 @@ class CanonicalDurableRunStore:
         canonical = await self._run_store.get_run(run_id)
         if canonical is None:
             # No canonical Run means a true orphan: purge the continuation.
+            # Logged rather than deleted silently, because a Run purge that
+            # outran this reconciliation must remain inspectable evidence
+            # (#62), not a continuation that quietly stopped existing.
+            logger.warning(
+                "purging orphaned Graph continuation %s (status=%s version=%d): "
+                "its canonical Run was purged or never persisted",
+                run_id,
+                continuation.status.value,
+                continuation.version,
+            )
             return await self._continuations.delete(run_id)
         if canonical.status is RunStatus.RUNNING and continuation.status in {
             RunStatus.WAITING,
@@ -164,14 +178,59 @@ class CanonicalDurableRunStore:
         run_id: str,
         node_id: str,
         answer: dict[str, Any],
+        *,
+        at: datetime | None = None,
+    ) -> DurableRunRecord:
+        """Attach an answer and queue the paused canonical Run for resume.
+
+        The rule stays where it already was: `answer_record` decides which
+        paused NodeRun the answer belongs to, what the remaining pause
+        metadata is, and when the Run becomes runnable again. Only where the
+        result lands has changed.
+        """
+        return await self._mutate_hitl(
+            run_id,
+            lambda current: answer_record(current, node_id, answer, at=at),
+        )
+
+    async def timeout_hitl(
+        self,
+        run_id: str,
+        node_id: str,
+        *,
+        at: datetime | None = None,
+    ) -> DurableRunRecord:
+        """Persist an elapsed HITL deadline and mirror its terminal lifecycle."""
+        return await self._mutate_hitl(
+            run_id,
+            lambda current: settle_hitl_record(current, node_id, "timed_out", at=at),
+        )
+
+    async def cancel_hitl(
+        self,
+        run_id: str,
+        node_id: str,
+        *,
+        at: datetime | None = None,
+    ) -> DurableRunRecord:
+        """Persist explicit HITL cancellation and mirror its terminal lifecycle."""
+        return await self._mutate_hitl(
+            run_id,
+            lambda current: settle_hitl_record(current, node_id, "cancelled", at=at),
+        )
+
+    async def _mutate_hitl(
+        self,
+        run_id: str,
+        mutate: Callable[[DurableRunRecord], DurableRunRecord],
     ) -> DurableRunRecord:
         async with self._lock:
             current = await self.get(run_id)
             if current is None:
                 raise KeyError(f"no such run: {run_id!r}")
-            answered = answer_record(current, node_id, answer)
-            await self._continuations.update(GraphContinuation.of(answered))
-            await mirror_lifecycle(answered, run_store=self._run_store)
+            updated = mutate(current)
+            await self._continuations.update(GraphContinuation.of(updated))
+            await mirror_lifecycle(updated, run_store=self._run_store)
             return await self._require(run_id)
 
     async def _attempts_for(self, node_runs: list[NodeRun]) -> tuple[Attempt, ...]:

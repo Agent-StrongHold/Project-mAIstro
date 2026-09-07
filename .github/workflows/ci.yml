@@ -31,6 +31,27 @@ permissions:
   contents: read
 
 jobs:
+  # #383: the PR template used to tell every author to target `main`, which
+  # contradicted CONTRIBUTING, ADR-095 and the actual branch flow — and the
+  # base decides which checks can even report (base-coupled gates run on
+  # main-based PRs; the develop merge contract does not). This job makes the
+  # base a checked fact on every PR: develop normally, main only for a
+  # `release`-labelled promotion, topic branches only as stacked bases.
+  pr-base:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: PR base follows branch policy (ADR-095)
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.ref }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: python scripts/check-pr-base.py --base "$PR_BASE" --labels "$PR_LABELS"
+
   lint-and-type-check:
     runs-on: ubuntu-latest
     steps:
@@ -307,6 +328,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history: the fitness suite resolves its trusted ratchet base
+          # (merge base against origin/develop) the same way quality.yml's
+          # ratchet jobs do; a shallow checkout leaves `origin/develop`
+          # unresolvable, which is a documented non-passing state for a
+          # ratchet, not a pass.
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -377,7 +405,7 @@ jobs:
           REQUIRE_AUTH: "false"
           MAISTRO_DRY_RUN: "1"
           PYTHONPATH: packages/maistro-rsi/src:packages/maistro-evolve/src
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -764,7 +792,7 @@ jobs:
             -e DB_USER=maistro \
             -e DB_PASSWORD=maistro-smoke-password \
             -e ROUTER_API_KEY=0123456789abcdef0123456789abcdef \
-            -e 'API_KEYS=["smoke-access-token"]' \
+            -e 'API_KEYS=["smoke:smoke-access-token"]' \
             -e REQUIRE_AUTH=true \
             -e LITELLM_BASE_URL=http://unused-gateway:4000 \
             -e LITELLM_MASTER_KEY=smoke-gateway-key \

@@ -8,6 +8,19 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 Versions are **lockstep across the monorepo**: every published package carries
 the same version as the root `VERSION` file.
 
+**What requires an Unreleased entry (#385).** Any change a user, operator, or
+security reviewer can observe from outside the code — API surface or behavior,
+CLI, configuration, database schema, dependencies, security posture, and
+anything an operator must do differently. Each entry names its category
+(`Added`/`Changed`/`Deprecated`/`Removed`/`Fixed`/`Security`, plus
+`Dependencies` for upgrades) and links the issue or PR it belongs to
+(`(#1234)`); a change with no tracked issue carries `(no linked issue:
+<reason>)`. Generated churn (formatting, lockfile regeneration, baseline
+re-basing) and purely internal refactors with no observable effect are
+excluded by policy and need no entry. The release-consistency gate checks
+entry shape, not heading presence; at tag time it refuses to publish an empty
+or placeholder-only section.
+
 ## [Unreleased]
 
 ### Security
@@ -20,14 +33,50 @@ the same version as the root `VERSION` file.
   longer leave truncated JSON at the staged path. A pre-existing file is
   reused only after parse-validation — existence alone is no longer treated
   as staged input by the CLI's "already staged" skip either.
+### Added
+
+- **Browser sessions are governed at the Playwright boundary (#855).** Every
+  network request a `BrowserClient` browser makes — main-frame navigations,
+  redirect hops, subresources, and the destinations the browser-use agent
+  invents mid-run — now passes a route handler that applies the same canonical
+  outbound destination policy used by ordinary HTTP effects
+  (ADR-082326-5386), *before* the network stack connects. WebSockets are denied
+  outright (Playwright's route layer cannot govern them), service workers are
+  blocked at context creation, and every decision is audited as an origin-only
+  `BrowserNetEvent`. Operators can layer browser-specific origins via
+  `BROWSER_USE_ALLOWED_ORIGINS`; a browser-use build that cannot be handed a
+  guarded context is refused rather than run unguarded.
 
 ### Changed
 
-- **HALF_OPEN circuit-breaker success is now caller-bound.** `record_success()`
+- **HALF_OPEN circuit-breaker success is now caller-bound (#828).** `record_success()`
   closes a HALF_OPEN circuit only when called by the thread or asyncio task
   whose `allow_request()` call acquired the current exclusive probe lease;
   successes from other callers are ignored. A probe owner can call
   `release_probe()` to let another caller claim the probe.
+
+- **Governance gates read content, not tokens (#385, #387, #391).** The
+  release-consistency gate now requires meaningful categorized, issue-linked
+  `## [Unreleased]` entries and refuses to publish an empty section at tag
+  time; a new registry gate fails ADR/spec body status language that
+  contradicts front matter (28 legacy body status lines are baselined and
+  ratchet down); pytest runs with `--strict-markers` and CONTRIBUTING's
+  marker table is validated against `pyproject.toml`. Operators must do the
+  same in kind: placeholder-only Unreleased content fails, and unknown
+  pytest markers fail collection.
+
+- **Branch guidance is single-sourced and CI-checked (#381, #383).** README
+  no longer recommends the gate-missing `feature/*` spelling; the accepted
+  topic-branch prefixes live once in `.github/branch-protection.json` and
+  the quality/security push triggers cover every documented prefix; the PR
+  template names `develop` as the base and a new `pr-base` CI job fails
+  mis-based PRs with the correction (`main` requires the `release` label).
+
+- **README claims reconciled with code (#388).** Schedules execute (Partial,
+  not TODO — Run admission, `max_runs`, and the #251 convergence limit stated);
+  embedding schema (vector(1536) + HNSW) is stated separately from readiness
+  (no production embedding client is constructed, so the column stays NULL);
+  the matrix no longer claims scoped pgvector recall is live.
 
 ## [1.0.0] - TBD
 

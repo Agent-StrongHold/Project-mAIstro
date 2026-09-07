@@ -24,10 +24,6 @@ def _now() -> datetime:
 
 def _task_to_mission(rec: object) -> Mission:
     """Convert a TaskRecord from EngineService into a hive Mission."""
-    # The engine owns this mission's lifecycle, so `update_mission_status`
-    # refuses every status change on it with a 409. Saying so on the record
-    # lets the UI hide controls that could only ever fail, rather than each
-    # surface guessing from deployment mode which missions are engine-backed.
     metadata: dict[str, object] = {"engine_backed": True}
     err = getattr(rec, "error", None)
     if err:
@@ -60,7 +56,7 @@ def list_missions() -> list[Mission]:
 class ClearMissionsBody(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    status: str | None = None  # "failed", "completed", or None = all terminal
+    status: str | None = None
 
 
 @router.post("/clear")
@@ -92,7 +88,6 @@ def get_steps(mission_id: str) -> list[MissionStep]:
     if engine.is_configured or engine._backend is not None:
         rec = engine.get_task(mission_id)
         if rec is not None:
-            # Synthesise step list from current task phase
             step_status = "running" if rec.mission_status == "running" else rec.mission_status  # type: ignore[attr-defined]
             step: MissionStep | None = None
             current = rec.current_step  # type: ignore[attr-defined]
@@ -127,14 +122,8 @@ def _user_id(request: Request) -> str:
 async def create_mission(
     body: CreateMissionBody, request: Request, workspace_id: str | None = None
 ) -> Mission:
-    """Create a mission, optionally scoped to one of the caller's workspaces.
-
-    `workspace_id` decides which Workspace's Root Project the canonical Run is
-    filed in (#158). Omitted -- every caller before this parameter existed --
-    keeps the old behaviour: the deployment's default Workspace, named
-    explicitly by `AgentConfig.workspace_id` rather than inferred.
-    """
-    if workspace_id and not is_workspace_member(_user_id(request), workspace_id):
+    """Create a mission, optionally scoped to one of the caller's Workspaces."""
+    if workspace_id and not await is_workspace_member(_user_id(request), workspace_id):
         raise HTTPException(status_code=403, detail="only a workspace member can submit work to it")
     engine = get_engine()
     if engine.is_configured or engine._backend is not None:
@@ -143,16 +132,11 @@ async def create_mission(
                 body.name, body.description or body.name, workspace_id=workspace_id
             )
         except WorkspaceNotRoutable as exc:
-            # 501, not 500: the request is well-formed and authorized, and this
-            # deployment simply cannot honour it. The exception text names the
-            # server it would have gone to, which belongs in the log and not in
-            # a response body.
             logger.warning("workspace_not_routable %s", exc)
             raise HTTPException(status_code=501, detail=WORKSPACE_NOT_ROUTABLE_DETAIL) from exc
         log_audit("mission_create", "system", target=rec.id, detail={"name": body.name})
         return _task_to_mission(rec)
 
-    # Fallback: in-memory stub (dev mode without maistro-core)
     mid = str(uuid4())[:12]
     t = _now()
     m = Mission(
@@ -193,7 +177,6 @@ def update_mission_status(
     if engine._backend is not None:
         rec = engine.get_task(mission_id)
         if rec is not None:
-            # Maistro task runner owns lifecycle; UI status buttons are legacy stubs only.
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -266,12 +249,7 @@ async def post_mission_guidance(
     request: Request,
     workspace_id: str | None = None,
 ) -> dict[str, object]:
-    """Human guidance on a mission — feeds the meta hyperagent.
-
-    Takes a `workspace_id` for the same reason `POST /program/guidance` does
-    (#129): the guidance may queue fleet work, and the agents it names resolve
-    against a workspace's own roster rather than a global one.
-    """
+    """Human guidance on a mission — feeds the meta hyperagent."""
     from services.program_hyperagent import (
         apply_guidance_and_pulse,
         require_program_access,
@@ -279,7 +257,7 @@ async def post_mission_guidance(
     )
 
     uid = user_id_from_request(request)
-    require_program_access(uid, workspace_id)
+    await require_program_access(uid, workspace_id)
     if not body.text.strip():
         raise HTTPException(status_code=422, detail="Guidance text required")
 

@@ -107,7 +107,7 @@ request ──► conduit ──► classifier ──► orchestrator ──► 
 - **orchestrator** — plans tasks, manages execution, tracks state
 - **router** — picks model and agent via the scoring formula `quality^(qw·p) / (1 + normalized_cost)^cw`
 - **agents** — base / factory / strategies / roster + A2A delegation
-- **memory** — learning, episodic, outcome stores; episodic decays without reinforcement (driven hourly, see feature table). **Not vector-backed:** the learnings/outcome Postgres stores have no embedding column; retrieval is keyword/attribute matching
+- **memory** — learning, episodic, outcome stores; episodic decays without reinforcement (driven hourly, see feature table). **Vector similarity: schema-ready, not enabled by default.** The Postgres `learnings` and `memory_entries` tables carry `embedding vector(1536)` columns with HNSW cosine indexes (migrations 011/029, #188); `outcomes` and `episodic_memories` deliberately carry none until a producer writes them. `DurableHybridLearningStore` writes embeddings on store and composes scope filters with the vector search in one query — but only when the container is handed an embedding client, and no production entrypoint constructs one: without a client the column stays `NULL` and retrieval is keyword/attribute matching.
 - **security** — Warden (input), Sentinel (output), Gate (boundary), PII filter. ⚠️ **These are library components, not a pipeline the Conductor's chat path currently traverses** — see #350 and `SECURITY.md`
 - **skills** — marketplace + Forge + canary (library only; the Conductor's Skills UI is a separate CRUD store — see feature table)
 - **graph** — DAG execution: nodes, executor, optimizer ([`ADR-062`](docs/adr/ADR-062-graph-execution-protocol.md))
@@ -160,7 +160,7 @@ tested modules with no call path, so "the code is there" is not the bar.
 | Missions | **Partial** | Real when an engine is configured; otherwise silently falls back to inert in-memory records. |
 | Deck builder | **Partial** | AI generation is real; the slide library is hardcoded demo content. |
 | Topology | **Partial** | Agent/MCP/skill graph. Does not use the `/v1/topology` compare API. |
-| **Schedules — execution** | **TODO** | Schedules can be created, the cron matcher ticks, and `last_run` advances — but **nothing is ever executed**. "Run now" only stamps a timestamp. |
+| **Schedules — execution** | **Partial** | Due schedules execute for real: the background runner delegates evaluate → occurrence claim → Run admit → cursor advance to the Container-wired `ScheduleRunAdmitter`, and the durable `ScheduleStore` cursor advances only after a Run exists (#231). "Run now" fires a real Run and returns 409 when it cannot — it no longer stamps a timestamp. `max_runs` is enforced and auto-disables the schedule. Remaining convergence: execution still flows through `run_registered_dag`, whose `DurableRunStore` is disjoint from the canonical `RunStore` (#251); the `/v1/schedules` CRUD row store is in-memory, so rows vanish on restart — the canonical definitions the runner reads are durable only when a database spine is wired. |
 | **Design Studio** | **TODO** | The six-node pipeline is a `setTimeout` animation with template-string output. No image is produced. |
 | **Forge (agents, skills)** | **TODO** | Fabricates a record with a generated name. No LLM is called. |
 | **Scan (agents, skills, MCP)** | **TODO** | Returns `{"findings": [], "status": "clean"}` unconditionally. Nothing is scanned. |
@@ -204,8 +204,10 @@ These exist in the tree with **no production call path** — nothing outside the
 constructs them, so they do nothing in a running system. They are not v1 features and are not
 advertised as working.
 
-*Whole subsystems:* `maistro.builders`, `ontology`, `scheduling`, `governance`, `delivery`,
+*Whole subsystems:* `maistro.builders`, `ontology`, `governance`, `delivery`,
 `portability`, `repertoire`, `collaboration`, `code_registry`, `sandbox`, `integrations`.
+(`maistro.scheduling` left this list: the Conductor's background runner constructs its
+admitter and evaluation from app lifespan — see the Schedules row above.)
 
 *Individual capabilities inside subsystems that otherwise do work* — these are the harder ones
 to spot, because the package around them is live:
@@ -246,7 +248,7 @@ misleading a reader.
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full author guide. The essentials:
 
-- Branch model is `feature/* → develop → integration → main` — base feature work off `develop`, never open PRs against `main` directly ([`ADR-095`](docs/adr/ADR-095-four-tier-branch-model.md)).
+- Branch model is `feat/* → develop → integration → main` — topic branches use the accepted prefixes (`feat/`, `bug/`, `fix/`, `idea/`, `doc/`, `chore/`, the set [`branch-protection.json`](.github/branch-protection.json) defines and CI validates); base feature work off `develop`, never open PRs against `main` directly ([`ADR-095`](docs/adr/ADR-095-four-tier-branch-model.md)).
 - ADRs live in `docs/adr/ADR-NNN-<slug>.md` with required front-matter ([`ADR-031`](docs/adr/ADR-031-front-matter-and-registry.md)); validate with `python -m maistro_registry.cli lint .`.
 - Tests carry `@pytest.mark.contract` and `@pytest.mark.scope(...)` ([`ADR-032`](docs/adr/ADR-032-contracts-as-acceptance-criteria.md)).
 - External-library adoption follows [`ADR-039`](docs/adr/ADR-039-external-library-adoption-policy.md): import / service-boundary / pattern-reference / reject.

@@ -97,7 +97,6 @@ def isolated_lifespan(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(main_mod, "foundation_service", noop)
     monkeypatch.setattr(main_mod, "engine_service", noop)
     monkeypatch.setattr("settings_defaults.apply_default_settings_if_needed", lambda: None)
-    monkeypatch.setattr("services.dag_run_store.install_pm_event_bridge", lambda: None)
     monkeypatch.setattr("services.scheduler.start_scheduler", lambda: None)
     monkeypatch.setattr("services.scheduler.stop_scheduler", lambda: None)
 

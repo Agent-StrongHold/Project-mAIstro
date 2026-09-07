@@ -1,22 +1,20 @@
-# The PM Fleet persona -- Persona/Workspace system, Phase H.
+# The PM Fleet persona -- canonical Workspace Persona.
 #
-# This is the seed-data equivalent of three previously-hardcoded sources,
+# This is the seed-data successor to three previously-hardcoded sources,
 # migrated here verbatim so "PM Fleet" stops being a special case and becomes
-# just the first `kind: workspace` persona:
-#   - maistro.agents.pm_fleet.PM_FLEET (agent roster + capabilities per agent)
+# an ordinary `kind: workspace` persona:
+#   - maistro.agents.pm_fleet.PM_FLEET (historical agent roster + capabilities)
 #   - maistro.agents.program_context.INTERVIEW_TEMPLATES["pm_fleet"] (the
 #     5-question intake script; unchanged, still lives in program_context.py,
 #     listed here only for traceability)
 #   - hive-conductor frontend's src/lib/pmBranding.ts (brand + nav strings,
 #     verbatim)
 #
-# This file is the DATA half of Phase H only. It makes
-# `GET /v1/workspaces/persona-templates/pm_fleet/checklist` return real data
-# instead of 404ing. Re-pointing the ~26 call sites that still gate on
-# is_pm_poc_mode()/HIVE_POC_MODE, and deleting that env-var gate, is its own
-# follow-up pass -- deliberately not bundled here, per the plan's own
-# sequencing note that this is the highest-risk part of the phase by file
-# count and should be its own set of sub-commits, not one diff.
+# Runtime reusable identity is owned here and materialized through the generic
+# Persona/Workspace path (`expand_persona` -> Hive `agent_materialization`).
+# The historical `maistro.agents.pm_fleet.PM_FLEET` symbol is named above only
+# as migration provenance; no PM-specific roster registration or executor
+# switch owns these definitions anymore.
 kind: workspace
 id: pm_fleet
 business_model: internal program-management workspace
@@ -38,13 +36,9 @@ voice:
   audience: engineering teams shipping on a deadline
   tone: direct, calm, structured
 
-# One spawn per maistro.agents.pm_fleet.PM_FLEET entry (the roster that
-# actually drives runtime behavior via register_pm_fleet(), not the
-# divergent agents/*/agent.yaml filesystem tree used by a different,
-# unrelated identity-manifest system). Capabilities land in `skills`,
-# matching register_pm_fleet()'s own AgentCard wiring today
-# (tools=(), skills=defn.capabilities) -- a straight data move, not a
-# reinterpretation of which capabilities count as "tools" vs "skills".
+# One spawn per historical maistro.agents.pm_fleet.PM_FLEET entry. Capabilities
+# remain in `skills` exactly as migrated; the generic Persona expander and
+# Workspace materializer consume these records without a PM-specific adapter.
 spawns:
   - agent: intake
     role: "The Front Door to Structured Execution"

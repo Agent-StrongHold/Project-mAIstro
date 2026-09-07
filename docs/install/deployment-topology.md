@@ -30,6 +30,12 @@ Persistent layer (outside instances):
 - **Instances are stateless.** All persistent state (agents, sessions, memory, audit)
   lives in PostgreSQL/Redis; the only local files are config (in git) and the shared
   file store. Any replica can serve any request.
+- **Rate limits are per-process, not cluster-wide (#842).** The request limiter
+  (`maistro_server.api.rate_limit`) keeps its sliding window in process memory,
+  keyed to the authenticated principal (ADR-085). Each of the N replicas
+  enforces `RATE_LIMIT_PER_MINUTE` independently, so the effective aggregate
+  budget is N × the configured limit. A cluster-wide floor would need the
+  shared store (e.g. the Redis above); none is claimed today.
 - **Health gating.** The LB routes only to replicas passing `/health/ready`
   (nginx passive checks + compose healthchecks). `/health/live` is the unconditional
   liveness probe (ADR-038). `stop_grace_period: 30s` gives replicas a connection-drain

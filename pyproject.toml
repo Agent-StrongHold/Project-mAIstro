@@ -211,7 +211,11 @@ max-complexity = 10
 "packages/maistro-turing/backend/**" = ["B008"]
 
 [tool.pytest.ini_options]
-addopts = "--import-mode=importlib"
+# --strict-markers (#391): an unregistered marker is a claim no gate can
+# read. `ac`, `contract`, and `scope` below are the registered set; anything
+# else a test carries is a typo or an undocumented axis, and both fail loudly
+# here rather than passing silently as inert decoration.
+addopts = "--import-mode=importlib --strict-markers"
 testpaths = [
     "packages/maistro-core/tests",
     "packages/maistro-server/tests",
@@ -307,6 +311,17 @@ ignore_missing_imports = true
 # install — drop it if bip-utils ever ships types.
 [[tool.mypy.overrides]]
 module = ["bip_utils"]
+ignore_missing_imports = true
+
+# playwright is the browser extra (#855/#996): installed by `uv sync --all-extras`
+# (the CI type-check env) and baked into the maistro-engine image, absent in
+# minimal installs. The runtime import is already guarded by try/except; this
+# override describes that optionality to mypy so the import needs no per-line
+# ignore — which flags as *unused* precisely in the envs that install the extra
+# (#996 landed with that latent unused-ignore; strict CI surfaced it once the
+# ac-state step ahead of it stopped failing).
+[[tool.mypy.overrides]]
+module = ["playwright", "playwright.*"]
 ignore_missing_imports = true
 
 # aioboto3/botocore ship no py.typed marker. Same shape as the bip-utils note

@@ -60,6 +60,8 @@ jobs:
         run: uv sync --locked --all-extras
       - name: Require enforced ratchet provenance policy
         run: uv run python scripts/check-ratchet-provenance.py
+      - name: Require classified shipped surfaces
+        run: uv run python scripts/check-shipped-surface-truth.py
       - name: Require exact reviewed Vulture identities
         run: >-
           uv run python scripts/check-vulture-baseline.py

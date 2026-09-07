@@ -28,6 +28,110 @@ _TOOL_PREFIX = "@tool/"
 TOOLING_DIR = "scripts"
 WORKFLOW_GLOB = ".github/workflows/*.yml"
 
+# Explicit, reviewed source-universe classifications for production-shaped
+# Python under packages/ that deliberately sits outside the import graph.
+# This is the escape valve the source-universe guard demands: everything else
+# under packages/ must belong to a packaged src root or a declared flat
+# application, and an unlisted file fails closed rather than being silently
+# ignored. Entries are grouped by what the code is, not by who added it:
+#
+# - developer utilities: runnable by a person, not part of any shipped process;
+# - the department DAG corpus: data-as-code that the eval harness and the
+#   backend test suite execute, with no import path from any process entry
+#   point (listed per file: the corpus is editable, so a new DAG must fail
+#   closed until it is classified here);
+# - the canvas migration environment: `alembic upgrade head` loads `env.py` by
+#   convention and each revision by revision id, so no static import edge to
+#   these files can exist by construction;
+# - book-maker POC backend surfaces with no runtime path: the shipped process
+#   for `packages/maistro-canvas/frontend` is the Express server (`server.js`),
+#   which imports none of `config`/`models`/`orchestrator`/`templates` and
+#   spawns only `server/export_book.py`; those trees predate it, are imported
+#   by nothing in the tree (not even tests), and are classified here rather
+#   than dispositioned unreachable because the baseline may grow only behind
+#   a prior landed reachability authorization (#838 follow-up; see
+#   scripts/ratchet_provenance.py for the two-merge rule).
+_EXCLUDED_PACKAGE_PYTHON = frozenset(
+    {
+        # Developer utilities.
+        "packages/hive-conductor/run_hill_climb.py",
+        "packages/maistro-evolve/examples/builders_swebench_live.py",
+        "packages/maistro-canvas/frontend/server/mcp/generate_golden.py",
+        # Department DAG corpus (packages/hive-conductor/dags/).
+        "packages/hive-conductor/dags/__init__.py",
+        "packages/hive-conductor/dags/author_examples.py",
+        "packages/hive-conductor/dags/author_selector.py",
+        "packages/hive-conductor/dags/creative_writing.py",
+        "packages/hive-conductor/dags/deep_research.py",
+        "packages/hive-conductor/dags/engineering.py",
+        "packages/hive-conductor/dags/finance.py",
+        "packages/hive-conductor/dags/hr_people_ops.py",
+        "packages/hive-conductor/dags/legal.py",
+        "packages/hive-conductor/dags/marketing.py",
+        "packages/hive-conductor/dags/press_releases.py",
+        "packages/hive-conductor/dags/product_management.py",
+        # Canvas migration environment
+        # (packages/maistro-canvas/frontend/alembic/).
+        "packages/maistro-canvas/frontend/alembic/env.py",
+        "packages/maistro-canvas/frontend/alembic/versions/001_initial_schema.py",
+        "packages/maistro-canvas/frontend/alembic/versions/003_canvas_job_lease_203.py",
+        # Book-maker POC backend surfaces with no runtime path
+        # (packages/maistro-canvas/frontend/server/).
+        "packages/maistro-canvas/frontend/server/config.py",
+        "packages/maistro-canvas/frontend/server/mcp/canvas_templates.py",
+        "packages/maistro-canvas/frontend/server/models/__init__.py",
+        "packages/maistro-canvas/frontend/server/models/base.py",
+        "packages/maistro-canvas/frontend/server/models/character.py",
+        "packages/maistro-canvas/frontend/server/models/creator.py",
+        "packages/maistro-canvas/frontend/server/models/customer.py",
+        "packages/maistro-canvas/frontend/server/models/db.py",
+        "packages/maistro-canvas/frontend/server/models/feature_correction.py",
+        "packages/maistro-canvas/frontend/server/models/generation_attempt.py",
+        "packages/maistro-canvas/frontend/server/models/order.py",
+        "packages/maistro-canvas/frontend/server/models/page_layout_version.py",
+        "packages/maistro-canvas/frontend/server/models/product_format.py",
+        "packages/maistro-canvas/frontend/server/models/story_template.py",
+        "packages/maistro-canvas/frontend/server/orchestrator/__init__.py",
+        "packages/maistro-canvas/frontend/server/orchestrator/pipeline_logger.py",
+        "packages/maistro-canvas/frontend/server/templates/__init__.py",
+        "packages/maistro-canvas/frontend/server/templates/loader.py",
+        "packages/maistro-canvas/frontend/server/templates/seed.py",
+    }
+)
+
+# Vendored, immutable enforcement and evaluation suites shipped read-only in
+# the Conductor image (compose/cage-readonly.yml) yet outside every process
+# import path: their only consumers are each other and the backend's test
+# suite. They are classified as whole trees because .github/workflows/
+# cage-guard.yml auto-rejects any diff touching either directory, so this
+# declaration cannot silently absorb new code the way an ignored directory
+# would — the freeze is enforced one gate over. Dispositioning these surfaces
+# as unreachable library code is follow-up work under #838: the baseline may
+# only grow behind a prior landed reachability authorization
+# (scripts/ratchet_provenance.py enforces the two-merge rule).
+_IMMUTABLE_VENDORED_TREES = frozenset(
+    {
+        "packages/hive-conductor/cage",
+        "packages/hive-conductor/eval",
+    }
+)
+
+#: Package-manager install trees: the `node_modules` directory `npm ci`
+#: materializes inside each frontend from its committed package-lock.json.
+#: The npm packages occasionally ship Python (`flatted` carries a
+#: `python/flatted.py`), and CI's test job installs frontend dependencies
+#: before the combined-suite pytest step (.github/workflows/ci.yml), so the
+#: source universe would otherwise differ between a bare checkout and an
+#: installed one — the guard ratcheting on install state is a flake, not a
+#: verdict. Classified by directory segment rather than per file: which npm
+#: packages ship Python shifts with every lockfile bump, so a file list here
+#: would re-review dependency updates they never asked for, while the
+#: declaration stays a segment — `node_modules` — that authored code never
+#: occupies, because the next `npm ci` deletes whatever a person puts there.
+#: What lands in these trees is governed where dependencies are governed: the
+#: lockfiles, the `npm audit --audit-level=high` CI step, and Dependabot.
+_THIRD_PARTY_INSTALL_DIRS = frozenset({"node_modules"})
+
 
 @dataclass(frozen=True)
 class FlatApp:
@@ -42,9 +146,11 @@ class FlatApp:
     report_prefix: str = ""
 
 
-# Standalone production processes outside packages/*/src. Keep this explicit:
-# collection validates every packages/*/backend Python tree has a declaration,
-# so adding another flat backend cannot silently put it outside the analysis.
+# Standalone production processes outside packages/*/src. Keep their runtime
+# roots explicit, but validate coverage against every production-shaped Python
+# file under packages/ rather than assuming all standalone apps are named
+# `backend`. That makes a new `frontend/server`, worker, or other shipped tree
+# fail closed until it is deliberately classified here.
 FLAT_APPS = (
     FlatApp(
         name="hive-conductor",
@@ -69,6 +175,19 @@ FLAT_APPS = (
         path="packages/maistro-turing/backend",
         roots=("main",),
         report_prefix="maistro-turing-backend",
+    ),
+    FlatApp(
+        name="maistro-canvas-frontend-server",
+        path="packages/maistro-canvas/frontend/server",
+        # `lulu.service` is the separately-launched print-fulfilment service the
+        # Express server reaches over LULU_SERVICE_URL (frontend/server.js,
+        # "Lulu Print-on-Demand"). `export_book` is not a long-lived process:
+        # server.js spawns it per /api/export request via
+        # execFile("python3", [EXPORT_SCRIPT]) — a spawned script is still an
+        # entry point the import graph can root, with the workflow-free
+        # equivalent of workflow evidence: the call site is in the shipped tree.
+        roots=("lulu.service", "export_book"),
+        report_prefix="maistro-canvas-frontend-server",
     ),
 )
 
@@ -162,28 +281,75 @@ def _production_python_files(base: Path) -> list[Path]:
     return [path for path in base.rglob("*.py") if _is_production_python(path, base)]
 
 
+def _is_classified_outside_graph(rel_posix: str) -> bool:
+    """Whether a reviewed classification deliberately keeps a file out of the graph.
+
+    The exclusion declarations above are the only way production-shaped Python
+    may sit outside the import graph. Applying them in one place — instead of
+    only in the source-universe guard — keeps the two views from disagreeing:
+    a file classified outside the graph is not a module, whether it sits under
+    an undeclared path the guard catches or inside an otherwise-declared tree.
+    """
+    if rel_posix in _EXCLUDED_PACKAGE_PYTHON:
+        return True
+    if any(rel_posix.startswith(f"{tree}/") for tree in _IMMUTABLE_VENDORED_TREES):
+        return True
+    return bool(_THIRD_PARTY_INSTALL_DIRS.intersection(rel_posix.split("/")))
+
+
+def _all_package_python_files(root: Path) -> set[Path]:
+    """Every production-shaped Python source file under packages/.
+
+    This is the source-universe guard. It is deliberately independent of the
+    package/flat-app declarations that the graph later uses, so a new directory
+    layout cannot disappear merely because collection forgot to glob it.
+    """
+    packages = root / "packages"
+    if not packages.exists():
+        return set()
+    files: set[Path] = set()
+    for path in packages.rglob("*.py"):
+        rel = path.relative_to(root)
+        if "tests" in rel.parts or path.name.startswith("test_"):
+            continue
+        if _is_classified_outside_graph(rel.as_posix()):
+            continue
+        files.add(path)
+    return files
+
+
+def _declared_source_files(root: Path, flat_apps: tuple[FlatApp, ...]) -> set[Path]:
+    covered: set[Path] = set()
+    for src in sorted(root.glob("packages/*/src")):
+        covered.update(_production_python_files(src))
+    for app in flat_apps:
+        covered.update(_production_python_files(root / app.path))
+    return covered
+
+
 def _validate_flat_apps(root: Path, flat_apps: tuple[FlatApp, ...]) -> None:
     declared = {app.path for app in flat_apps}
-    discovered = {
-        path.relative_to(root).as_posix()
-        for path in root.glob("packages/*/backend")
-        if _production_python_files(path)
-    }
-    undeclared = sorted(discovered - declared)
-    missing = sorted(declared - discovered)
-    if undeclared:
-        raise RuntimeError(
-            "standalone backend(s) are outside reachability analysis; declare them in "
-            f"FLAT_APPS: {', '.join(undeclared)}"
-        )
+    missing = sorted(path for path in declared if not _production_python_files(root / path))
     if missing:
         raise RuntimeError(
-            "declared standalone backend(s) contain no production Python modules: "
+            "declared standalone Python tree(s) contain no production modules: "
             f"{', '.join(missing)}"
         )
 
+    uncovered = sorted(
+        path.relative_to(root).as_posix()
+        for path in _all_package_python_files(root) - _declared_source_files(root, flat_apps)
+    )
+    if uncovered:
+        raise RuntimeError(
+            "production Python source is outside reachability analysis; cover it with a "
+            "packaged src root, declare its standalone application root in FLAT_APPS, or "
+            "record a reviewed source-universe classification in this script's exclusion "
+            "declarations: " + ", ".join(uncovered)
+        )
 
-def _validate_no_shadowed_modules(root: Path) -> None:
+
+def _validate_no_shadowed_modules(root: Path, flat_apps: tuple[FlatApp, ...] = FLAT_APPS) -> None:
     """Refuse a flat module sitting beside a package directory of the same name.
 
     `foo.py` next to `foo/__init__.py` is not a warning — Python resolves
@@ -195,7 +361,8 @@ def _validate_no_shadowed_modules(root: Path) -> None:
     reports as unreachable.
     """
     collisions: list[str] = []
-    for base in [*root.glob("packages/*/src"), *root.glob("packages/*/backend")]:
+    bases = [*root.glob("packages/*/src"), *(root / app.path for app in flat_apps)]
+    for base in bases:
         for directory in base.rglob("*"):
             if not directory.is_dir() or directory.name == "__pycache__":
                 continue
@@ -227,11 +394,13 @@ def _collect_modules(
 ) -> dict[str, Path]:
     """Return scoped module identity → file for every production module."""
     _validate_flat_apps(root, flat_apps)
-    _validate_no_shadowed_modules(root)
+    _validate_no_shadowed_modules(root, flat_apps)
     mods: dict[str, Path] = {}
 
     def add_tree(base: Path, prefix: str, app_name: str | None = None) -> None:
         for path in _production_python_files(base):
+            if _is_classified_outside_graph(path.relative_to(root).as_posix()):
+                continue
             parts = list(path.relative_to(base).with_suffix("").parts)
             if parts[-1] == "__init__":
                 parts = parts[:-1]

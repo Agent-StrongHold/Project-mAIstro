@@ -15,29 +15,32 @@ from typing import Any
 
 from maistro.graph.definitions import Graph
 from maistro.graph.execution_state import GraphExecutionState
-from maistro.graph.nodes.base import NodeContext, NodeResult
+from maistro.graph.nodes.base import (
+    TIMER_RESUMABLE_PAUSE_REASONS,
+    NodeContext,
+    NodeResult,
+)
 from maistro.observability.correlation import bind_execution_context
 from maistro.runs.execution import AttemptExecutionService
 from maistro.runs.lifecycle import lease_is_expired, transition_path, transition_run
 from maistro.runs.model import Attempt, AttemptStatus, NodeRun, Run, RunStatus
 from maistro.runs.reconciliation import AttemptLifecycleReconciler, CancellationCause
+from maistro.runs.recovery_events import RecoveryEventSink
 from maistro.runs.store import RunIntegrityError, RunStore
 from maistro.runtime import ExecutionRuntime, PythonExecutionRuntime
 
 from . import executor as traversal
 from .authoritative_fold import fold_authoritative_frontier
 from .execution_store import DurableRunExecutionStore
+from .launch import require_admitted_launch_state
 from .protocol import DurableRunStore
 from .spine import mirror_lifecycle
 from .types import DurableRunRecord
 
+_RESUME_DISPOSITION_SOURCE = "maistro.graph.durable_runs.attempt_executor"
+
 NodeResolver = traversal.NodeResolver
 
-# Durable Graph execution always opts into the canonical lease/fence recovery
-# contract. The claim is deliberately longer than one lease renewal window:
-# continuation recovery may notice an elapsed claim while a long-running
-# Attempt is still alive, but the Attempt lease is the stronger physical-work
-# proof and makes that recovery worker yield.
 GRAPH_ATTEMPT_LEASE_TTL = timedelta(seconds=30)
 GRAPH_RECOVERY_CLAIM_TTL = timedelta(seconds=60)
 
@@ -97,34 +100,25 @@ async def run_durable_graph(
     provenance: Mapping[str, Any] | None = None,
     blackboard_metadata: Mapping[str, Any] | None = None,
     run_store: RunStore | None = None,
+    events: RecoveryEventSink | None = None,
 ) -> DurableRunRecord:
     """Start a durable Graph whose physical node work crosses the Attempt firewall.
 
-    ``parent_run_id``/``parent_node_run_id`` make the launched Run a child of
-    the Run (and NodeRun) that produced it — delegation and sub-graph work
-    say "work is happening" as a child Run, not a second lifecycle.
-
-    ``provenance`` records what admitted the work, and is accepted here as
-    well as in the traversal executor so the two entry points cannot disagree
-    about whether a Run remembers where it came from (#145).
-
-    ``blackboard_metadata`` seeds the child's blackboard metadata. A parent
-    dispatching a sub-graph threads facts the child cannot derive — the
-    recursion depth its own `synth_depth` cap enforces (#520) — without the
-    parent's whole blackboard leaking across the Run boundary.
-
-    ``run_store`` converges the Run's identity onto the canonical spine (#44,
-    ADR-082826-d9f5). With it, checkpoint 1 is persisted while the already
-    admitted Run is still QUEUED; the canonical resume seam then claims it.
-    That ordering makes process death before/after the continuation write
-    rediscoverable. Without a spine, the pre-convergence in-memory mint is
-    unchanged.
+    Against a canonical ``run_store``, any non-empty launch inputs or blackboard
+    metadata must already be snapshotted on the admitted Run. That makes a
+    process loss after admission but before checkpoint 1 reconstruct the same
+    work rather than silently substituting empty launch state.
     """
     if run_store is not None:
         run = await _validated_admitted_run(
             graph,
             run_store=run_store,
             run_id=traversal._require_admitted(run_id),
+        )
+        require_admitted_launch_state(
+            run,
+            inputs=inputs,
+            blackboard_metadata=blackboard_metadata,
         )
     else:
         run = traversal._new_run(
@@ -155,6 +149,7 @@ async def run_durable_graph(
             node_resolver=node_resolver,
             runtime=runtime,
             run_store=run_store,
+            events=events,
         )
     return await _walk(
         record,
@@ -172,6 +167,7 @@ async def resume_durable_graph(
     node_resolver: NodeResolver,
     runtime: ExecutionRuntime | None = None,
     run_store: RunStore | None = None,
+    events: RecoveryEventSink | None = None,
 ) -> DurableRunRecord:
     """Claim and resume persisted Graph work through canonical physical evidence."""
     record = await store.get(run_id)
@@ -187,7 +183,7 @@ async def resume_durable_graph(
         raise ValueError(f"cannot resume run in status {record.run.status!r}")
 
     spine = await traversal._canonical_spine(record, run_store)
-    record = await _reconcile_orphaned_attempts(record, store=store, run_store=spine)
+    record = await _reconcile_orphaned_attempts(record, store=store, run_store=spine, events=events)
 
     claim_until = datetime.now(UTC) + GRAPH_RECOVERY_CLAIM_TTL
     record = await traversal._checkpoint(
@@ -206,9 +202,6 @@ async def resume_durable_graph(
                     canonical = await spine.transition_run(run.run_id, step)
                 stepped = canonical
         if stepped is None:
-            # No spine row to walk stepwise (no spine, or the row was purged
-            # mid-resume): advance the record's own lifecycle instead, the
-            # pre-convergence behavior, rather than attribute-error here.
             record = traversal._replace_record(
                 record,
                 run=transition_run(run, RunStatus.RUNNING),
@@ -230,10 +223,15 @@ async def _reconcile_orphaned_attempts(
     *,
     store: DurableRunStore,
     run_store: RunStore | None = None,
+    events: RecoveryEventSink | None = None,
 ) -> DurableRunRecord:
     """Terminalize process-lost active Attempts and reconcile their NodeRuns."""
     execution_store = DurableRunExecutionStore(store, run_id=record.run_id, run_store=run_store)
-    lifecycle = AttemptLifecycleReconciler(execution_store)
+    lifecycle = AttemptLifecycleReconciler(
+        execution_store,
+        events=events,
+        source=_RESUME_DISPOSITION_SOURCE,
+    )
     active = tuple(
         attempt
         for attempt in record.attempts
@@ -279,6 +277,10 @@ def _requires_continuation_redispatch(
         return False
     if traversal._is_human_pause(result):
         return node_id in record.hitl_answers
+
+    reason = str((result.metadata or {}).get("paused_reason") or "")
+    if reason and reason not in TIMER_RESUMABLE_PAUSE_REASONS:
+        return False
     return result.resume_at is not None and result.resume_at <= datetime.now(UTC)
 
 
@@ -302,7 +304,11 @@ async def _walk(
     )
     steps = 0
 
-    with bind_execution_context(run_id=record.run_id):
+    with bind_execution_context(
+        run_id=record.run_id,
+        workspace_id=record.run.workspace_id,
+        project_id=record.run.project_id,
+    ):
         return await _walk_until_settled(
             record,
             graph=graph,

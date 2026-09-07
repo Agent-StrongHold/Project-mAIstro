@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from logging_setup import configure_logging
 from middleware.auth import AuthMiddleware
+from middleware.privilege import PrivilegeMiddleware
 from middleware.request_log import RequestLogMiddleware
 from middleware.security_headers import SecurityHeadersMiddleware
 from pydantic import BaseModel, ConfigDict
@@ -55,12 +56,8 @@ from routes import (
     workspaces,
     ws,
 )
-from routes import (
-    metrics as metrics_r,
-)
-from routes import (
-    optimizer as optimizer_r,
-)
+from routes import metrics as metrics_r
+from routes import optimizer as optimizer_r
 from routes import settings as settings_r
 from services import engine as engine_service
 from services import foundation as foundation_service
@@ -219,16 +216,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _lifespan_log.warning("design_service_start_failed: %s", exc, exc_info=True)
     try:
-        # Day 8 — wire pm_runner's event bus into the DAG-run store so
-        # /v1/dag-runs/{id}/events SSE streams pick up live pm_node_*
-        # events from PM-fleet invocations. No-op if pm_runner isn't
-        # importable (e.g. when MAISTRO_POC_MODE != "pm").
-        from services.dag_run_store import install_pm_event_bridge
-
-        install_pm_event_bridge()
-    except Exception:
-        _lifespan_log.warning("pm_event_bridge_install_failed", exc_info=True)
-    try:
         from services.scheduler import start_scheduler
 
         start_scheduler()
@@ -266,6 +253,12 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.add_middleware(RequestLogMiddleware)
+    # Privilege boundary — added before Auth so Auth wraps it and the
+    # principal is known when a path-level privilege check runs. Today the
+    # policy table is empty and the middleware passes through; installing the
+    # seam now means the first admin-path restriction is a table entry, not an
+    # application rewiring (#63, the disposition root this fulfils).
+    app.add_middleware(PrivilegeMiddleware)
     app.add_middleware(AuthMiddleware)
 
     # Security headers — the true outermost middleware (added last), so

@@ -285,6 +285,35 @@ async def test_reconcile_purges_a_continuation_whose_run_left_the_spine() -> Non
     assert await store.reconcile_persistence() == 0
 
 
+async def test_reconcile_leaves_purge_evidence_for_a_continuation_whose_run_left_the_spine(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The purge itself must be visible evidence, not a silent delete: a Run
+    purge that outran reconciliation is corruption the operator can still
+    account for after the orphan is gone (#62)."""
+    import logging
+
+    store, _run_store, continuations, _workspace_id, _project_id = await _reconcile_spine()
+    await continuations.create(
+        GraphContinuation(
+            run_id="purged-with-evidence",
+            graph_state=GraphExecutionState(run_id="purged-with-evidence"),
+            status=RunStatus.WAITING,
+            version=3,
+        )
+    )
+
+    with caplog.at_level(logging.WARNING, logger="maistro.graph.durable_runs.canonical_store"):
+        assert await store.reconcile_persistence() == 1
+
+    records = [r for r in caplog.records if "purged-with-evidence" in r.getMessage()]
+    assert len(records) == 1
+    message = records[0].getMessage()
+    assert "status=waiting" in message
+    assert "version=3" in message
+    assert await continuations.get("purged-with-evidence") is None
+
+
 async def test_reconcile_stays_bounded_when_the_budget_runs_out_mid_scan() -> None:
     """The repair is budgeted so one tick cannot lock the table behind a
     decade of crash residue: a second orphan simply waits for the next tick."""

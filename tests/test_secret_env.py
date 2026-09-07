@@ -328,6 +328,71 @@ class TestTheKeyOperations:
             secret_env.ensure_api_keys(env_path, "tok")
 
 
+class TestMigrateApiKeys:
+    """#843: rewriting a legacy plain entry as `principal:secret` is the
+    supported migration — same secret material, now attributed to an
+    explicit canonical principal."""
+
+    def test_plain_entry_is_prefixed_in_place(self, secret_env, env_path) -> None:
+        secret_env.create_exclusive(env_path, 'API_KEYS=["tok"]\n')
+        secret_env.migrate_api_keys(env_path, "tok", "conductor")
+        assert env_path.read_text(encoding="utf-8") == 'API_KEYS=["conductor:tok"]\n'
+
+    def test_other_entries_are_untouched(self, secret_env, env_path) -> None:
+        """Manual keys are the operator's to migrate: the helper rewrites
+        only the secret it was asked about."""
+        secret_env.create_exclusive(env_path, 'API_KEYS=["tok", "manual-key"]\n')
+        secret_env.migrate_api_keys(env_path, "tok", "conductor")
+        content = env_path.read_text(encoding="utf-8")
+        assert '"conductor:tok"' in content
+        assert '"manual-key"' in content
+
+    def test_is_idempotent(self, secret_env, env_path) -> None:
+        secret_env.create_exclusive(env_path, 'API_KEYS=["tok"]\n')
+        secret_env.migrate_api_keys(env_path, "tok", "conductor")
+        secret_env.migrate_api_keys(env_path, "tok", "conductor")
+        assert env_path.read_text(encoding="utf-8").count("tok") == 1
+
+    def test_half_migrated_state_drops_the_stale_plain_entry(self, secret_env, env_path) -> None:
+        """If both the plain and the prefixed entry exist (an interrupted
+        migration), the leftover plain entry would fail the server's boot
+        gate — complete the migration by dropping it."""
+        secret_env.create_exclusive(env_path, 'API_KEYS=["conductor:tok", "tok"]\n')
+        secret_env.migrate_api_keys(env_path, "tok", "conductor")
+        assert env_path.read_text(encoding="utf-8") == 'API_KEYS=["conductor:tok"]\n'
+
+    def test_absent_secret_leaves_the_file_alone(self, secret_env, env_path) -> None:
+        before = 'API_KEYS=["other:entry"]\n'
+        secret_env.create_exclusive(env_path, before)
+        secret_env.migrate_api_keys(env_path, "tok", "conductor")
+        assert env_path.read_text(encoding="utf-8") == before
+
+    def test_a_principal_containing_a_colon_is_refused(self, secret_env, env_path) -> None:
+        """A colon in the principal would silently change the entry's parse."""
+        secret_env.create_exclusive(env_path, 'API_KEYS=["tok"]\n')
+        with pytest.raises(ValueError, match="single segment"):
+            secret_env.migrate_api_keys(env_path, "tok", "a:b")
+        assert env_path.read_text(encoding="utf-8") == 'API_KEYS=["tok"]\n'
+
+    def test_a_corrupt_api_keys_line_is_rejected_without_overwriting_it(
+        self, secret_env, env_path
+    ) -> None:
+        """Same refusal as `ensure_api_keys`: an unreadable array is the
+        operator's to fix, not a file the helper may rewrite around."""
+        secret_env.create_exclusive(env_path, "API_KEYS=not json\n")
+        with pytest.raises(ValueError, match="expected a JSON array"):
+            secret_env.migrate_api_keys(env_path, "tok", "conductor")
+        assert env_path.read_text(encoding="utf-8") == "API_KEYS=not json\n"
+
+    @pytest.mark.parametrize("value", ['{"key": "value"}', '["valid", 3]', '[""]'])
+    def test_non_string_api_key_arrays_are_rejected(self, secret_env, env_path, value: str) -> None:
+        """Valid JSON of the wrong shape is refused rather than migrated
+        through — an entry the helper cannot inspect is one it must not touch."""
+        secret_env.create_exclusive(env_path, f"API_KEYS={value}\n")
+        with pytest.raises(ValueError, match="non-empty strings"):
+            secret_env.migrate_api_keys(env_path, "tok", "conductor")
+
+
 class TestTheInstallersUseIt:
     """A helper nothing calls fixes nothing — the same shape as the guards in
     #419, which needed tests at their call sites rather than on the module."""
@@ -407,6 +472,11 @@ class TestTheCommandLine:
         secret_env.create_exclusive(env_path, "A=1\n")
         assert secret_env.main(["ensure-api-keys", str(env_path), "tok"]) == 0
         assert 'API_KEYS=["tok"]' in env_path.read_text(encoding="utf-8")
+
+    def test_migrate_api_keys(self, secret_env, env_path) -> None:
+        secret_env.create_exclusive(env_path, 'API_KEYS=["tok"]\n')
+        assert secret_env.main(["migrate-api-keys", str(env_path), "tok", "conductor"]) == 0
+        assert 'API_KEYS=["conductor:tok"]' in env_path.read_text(encoding="utf-8")
 
     def test_check_passes_on_a_safe_file(self, secret_env, env_path) -> None:
         secret_env.create_exclusive(env_path, TOKEN)

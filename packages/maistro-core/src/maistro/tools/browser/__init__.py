@@ -18,6 +18,10 @@ from maistro.tools.browser.client import (
     BrowserClient,
     BrowserToolError,
 )
+from maistro.tools.browser.guard import (
+    BrowserNetEvent,
+    BrowserNetworkGuard,
+)
 from maistro.tools.browser.types import (
     BrowseResult,
     Citation,
@@ -27,6 +31,8 @@ from maistro.tools.browser.types import (
 __all__ = [
     "BrowseResult",
     "BrowserClient",
+    "BrowserNetEvent",
+    "BrowserNetworkGuard",
     "BrowserToolError",
     "Citation",
     "SearchResult",

@@ -67,6 +67,7 @@ is also required live on both branches; because it is produced by
 | `object storage (MinIO)` | adv | ● |
 | `postgres (pg17)` | adv | ● |
 | `postgres (pg18)` | adv | ● |
+| `pr-base` | adv | adv |
 | `security` | ● | ● |
 | `strike-ladder` | adv | ● |
 | `test` | ● | ● |

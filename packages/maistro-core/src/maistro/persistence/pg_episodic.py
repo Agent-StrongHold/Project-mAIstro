@@ -29,6 +29,7 @@ from maistro.memory.episodic.tiers import clamp_weight
 from maistro.memory.episodic.tiers import reinforce as _reinforce
 from maistro.memory.episodic.tiers import tick_decay as _tick_decay
 from maistro.memory.scopes import build_scope_filter, scope_predicate
+from maistro.observability.correlation import observed_provenance
 from maistro.persistence.episodic_rows import (
     COLUMNS,
     RETRIEVAL_CANDIDATE_CAP,
@@ -59,10 +60,10 @@ _UPSERT = """INSERT INTO episodic_memories (
     memory_id, tier, content, weight, org_id, team_id, agent_id, user_id,
     scope, project_id, source, context, reinforcement_count,
     contradiction_count, created_at, last_accessed_at, deleted, decay_rate,
-    shared, flagged_for_review
+    shared, flagged_for_review, run_id, node_run_id, attempt_id
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::text::jsonb, $13,
-    $14, $15, $16, $17, $18, $19, $20
+    $14, $15, $16, $17, $18, $19, $20, $21, $22, $23
 ) ON CONFLICT (memory_id) DO UPDATE SET
     tier = EXCLUDED.tier, content = EXCLUDED.content,
     weight = EXCLUDED.weight, org_id = EXCLUDED.org_id,
@@ -76,7 +77,9 @@ _UPSERT = """INSERT INTO episodic_memories (
     last_accessed_at = EXCLUDED.last_accessed_at,
     deleted = EXCLUDED.deleted, decay_rate = EXCLUDED.decay_rate,
     shared = EXCLUDED.shared,
-    flagged_for_review = EXCLUDED.flagged_for_review
+    flagged_for_review = EXCLUDED.flagged_for_review,
+    run_id = EXCLUDED.run_id, node_run_id = EXCLUDED.node_run_id,
+    attempt_id = EXCLUDED.attempt_id
 """
 
 
@@ -92,14 +95,14 @@ class PgEpisodicStore:
         self._pool = pool
 
     async def ensure_schema(self) -> None:
-        """Belt-and-braces for a database migrated before 025.
+        """Belt-and-braces for a database migrated before the columns.
 
         ALTER-only, no CREATE TABLE: `alembic/versions/` owns this table, and
         `PgLearningStore.ensure_schema` records why a store that creates its own
-        is how the schema drifts from the migrations. The four columns here are
-        the ones the record has always carried, so a database one revision
-        behind loses four fields silently rather than failing -- which is worse
-        than a cheap idempotent ALTER at startup.
+        is how the schema drifts from the migrations. The columns here are ones
+        the record carries, so a database a revision behind loses them silently
+        rather than failing -- which is worse than a cheap idempotent ALTER at
+        startup.
         """
         async with self._pool.acquire() as conn:
             for column, ddl in (
@@ -107,19 +110,38 @@ class PgEpisodicStore:
                 ("decay_rate", "DOUBLE PRECISION NOT NULL DEFAULT 0.01"),
                 ("shared", "BOOLEAN NOT NULL DEFAULT FALSE"),
                 ("flagged_for_review", "BOOLEAN NOT NULL DEFAULT FALSE"),
+                # Nullable, the shape migration 026 gave learnings, outcomes
+                # and design_outputs: `NOT NULL DEFAULT ''` would make every
+                # pre-#64 row claim a Run whose id is the empty string (#64).
+                ("run_id", "TEXT"),
+                ("node_run_id", "TEXT"),
+                ("attempt_id", "TEXT"),
             ):
                 await conn.execute(
                     f"ALTER TABLE episodic_memories ADD COLUMN IF NOT EXISTS {column} {ddl}"
                 )
 
     async def store(self, memory: EpisodicMemory) -> str:
-        """Store a memory. Returns its `memory_id`.
+        """Store a memory, naming the execution that produced it. Returns its
+        `memory_id`.
 
         An upsert, because `memory_id` is `UNIQUE` on the table and a second
         `store` of the same id would otherwise raise. `InMemoryEpisodicStore`
         appends and would hold two; one row per id is the durable answer, and
         the id is the record's identity in every other method here.
+
+        The producer is resolved before the write: what the caller named beats
+        the ambient context, and a write with no execution in scope stores NULL
+        rather than an id-shaped empty string (#64).
         """
+        provenance = observed_provenance(
+            run_id=memory.run_id,
+            node_run_id=memory.node_run_id,
+            attempt_id=memory.attempt_id,
+        )
+        memory.run_id = provenance.run_id
+        memory.node_run_id = provenance.node_run_id
+        memory.attempt_id = provenance.attempt_id
         async with self._pool.acquire() as conn:
             await conn.execute(_UPSERT, *to_row(memory, text_timestamps=False))
         return memory.memory_id
@@ -238,6 +260,25 @@ class PgEpisodicStore:
         )
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(sql, *params)
+        return [from_row(row) for row in rows]
+
+    async def produced_by(self, run_id: str, *, org_id: str = "") -> list[EpisodicMemory]:
+        """The memories this Run stored, newest first.
+
+        Same rule as `PgLearningStore.produced_by` (#709): a blank `run_id`
+        returns nothing rather than every unattributed memory, and `org_id` is
+        a predicate in the WHERE clause, so the Run's name cannot widen what a
+        caller can read (#64, building on #844's scope rule).
+        """
+        if not run_id:
+            return []
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"{_SELECT} WHERE run_id = $1 AND org_id = $2 AND deleted = FALSE"
+                " ORDER BY created_at DESC, memory_id",
+                run_id,
+                org_id,
+            )
         return [from_row(row) for row in rows]
 
 

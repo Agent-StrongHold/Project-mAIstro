@@ -568,3 +568,151 @@ async def test_queued_recovery_yields_when_a_live_attempt_already_owns_the_run(
         )
         == 0
     )
+
+
+class _Sink:
+    """Recording stand-in for the canonical recovery Event sink."""
+
+    def __init__(self) -> None:
+        self.facts: list = []
+
+    async def emit(self, event) -> None:
+        self.facts.append(event)
+
+
+def _due_record(run: Run, *, resume_at: datetime) -> object:
+    """A due WAITING candidate whose Run carries provenance a tick must read."""
+    return SimpleNamespace(run_id=run.run_id, run=run, resume_at=resume_at)
+
+
+@pytest.mark.asyncio
+async def test_wakeup_rebuilds_the_resolver_from_each_candidates_own_run(monkeypatch) -> None:
+    """A production wakeup consumer resolves nodes from durable Run facts, not
+    from a resolver this process happened to be wired with at admission."""
+    now = datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
+    run = _queued_run("waiting-owned", source="hive_legacy_dag")
+    waiting = run.model_copy(update={"status": RunStatus.WAITING})
+    store = _Store(_due_record(waiting, resume_at=now - timedelta(seconds=1)))
+    seen_runs: list[str] = []
+    calls: list[str] = []
+
+    def _factory(candidate: Run) -> object:
+        seen_runs.append(candidate.run_id)
+        return lambda _node_id, _graph: calls.append(_node_id)
+
+    async def _resume(run_id: str, **kwargs) -> None:
+        assert kwargs["node_resolver"]("node-1", object()) is None
+
+    monkeypatch.setattr(recovery, "resume_durable_graph", _resume)
+
+    count = await recovery.resume_due_graph_runs(
+        store=store,
+        run_store=object(),
+        node_resolver_factory=_factory,
+        now=now,
+    )
+
+    assert count == 1
+    assert seen_runs == [waiting.run_id]
+
+
+@pytest.mark.asyncio
+async def test_wakeup_never_steals_a_due_continuation_owned_elsewhere(monkeypatch) -> None:
+    """The same admission-source guard the bootstrap tick takes: without it a
+    wakeup consumer would execute another consumer's paused work with resolvers
+    that cannot possibly know how."""
+    now = datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
+    foreign = _queued_run("waiting-foreign", source="some_other_consumer").model_copy(
+        update={"status": RunStatus.WAITING}
+    )
+    store = _Store(_due_record(foreign, resume_at=now - timedelta(seconds=1)))
+    calls: list[str] = []
+
+    async def _resume(run_id: str, **kwargs) -> None:
+        del kwargs
+        calls.append(run_id)
+
+    monkeypatch.setattr(recovery, "resume_durable_graph", _resume)
+
+    assert (
+        await recovery.resume_due_graph_runs(
+            store=store,
+            run_store=object(),
+            node_resolver_factory=lambda _run: lambda _node_id, _graph: None,
+            eligible=lambda candidate: (
+                candidate.provenance.get("admission_source") == "hive_legacy_dag"
+            ),
+            now=now,
+        )
+        == 0
+    )
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_wakeup_requires_exactly_one_resolver_shape() -> None:
+    """Both shapes means the caller cannot say which one wins; neither means
+    the tick has no idea how to execute anything."""
+    with pytest.raises(ValueError, match="exactly one of node_resolver"):
+        await recovery.resume_due_graph_runs(
+            store=_Store(),
+            run_store=object(),
+            node_resolver=lambda _node_id, _graph: None,
+            node_resolver_factory=lambda _run: lambda _node_id, _graph: None,
+        )
+    with pytest.raises(ValueError, match="exactly one of node_resolver"):
+        await recovery.resume_due_graph_runs(store=_Store(), run_store=object())
+
+
+@pytest.mark.asyncio
+async def test_wakeup_threads_the_recovery_event_sink_into_the_resume(monkeypatch) -> None:
+    """The tick's crash dispositions must land on the canonical Event stream
+    through the same sink the abandoned-Attempt sweep uses (#62)."""
+    now = datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
+    run = _queued_run("waiting-events", source="hive_legacy_dag").model_copy(
+        update={"status": RunStatus.WAITING}
+    )
+    store = _Store(_due_record(run, resume_at=now - timedelta(seconds=1)))
+    sink = _Sink()
+    seen: dict[str, object] = {}
+
+    async def _resume(run_id: str, **kwargs) -> None:
+        seen["events"] = kwargs.get("events")
+
+    monkeypatch.setattr(recovery, "resume_durable_graph", _resume)
+
+    await recovery.resume_due_graph_runs(
+        store=store,
+        run_store=object(),
+        node_resolver=lambda _node_id, _graph: None,
+        events=sink,
+        now=now,
+    )
+
+    assert seen["events"] is sink
+
+
+@pytest.mark.asyncio
+async def test_queued_recovery_threads_the_recovery_event_sink_into_the_resume(
+    monkeypatch,
+) -> None:
+    run = _queued_run()
+    store = _BootstrapStore(recovery._initial_queued_record(run))
+    sink = _Sink()
+    seen: dict[str, object] = {}
+
+    async def _resume(run_id: str, **kwargs) -> None:
+        del run_id
+        seen["events"] = kwargs.get("events")
+
+    monkeypatch.setattr(recovery, "resume_durable_graph", _resume)
+
+    await recovery.recover_queued_graph_runs(
+        store=store,
+        run_store=_RunStore(run),
+        node_resolver_factory=lambda _run: lambda _node_id, _graph: None,
+        eligible=lambda _candidate: True,
+        events=sink,
+    )
+
+    assert seen["events"] is sink

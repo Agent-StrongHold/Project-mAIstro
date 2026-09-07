@@ -121,26 +121,7 @@ def test_suggest_without_workspace_id_is_refused(admin_client) -> None:
     assert r.status_code == 404
 
 
-def test_confirm_reads_back_the_drafts_own_project_id(admin_client, monkeypatch) -> None:
-    """POST .../interview/answer (default project) sets program_name; the
-    suggested draft's own project (a different workspace) must NOT see it in
-    its queued task's program context -- proves confirm reads draft.project_id,
-    not always the global default."""
-    import routes.work_items as work_items_routes
-
-    captured: dict = {}
-
-    class _FakeTaskRecord:
-        id = "task-1"
-
-    class _FakeEngine:
-        async def submit_task(self, *args, **kwargs):
-            captured["program_context"] = kwargs.get("program_context")
-            return _FakeTaskRecord()
-
-    monkeypatch.setattr(work_items_routes, "get_engine", lambda: _FakeEngine())
-
-    admin_client.post("/v1/program/interview/answer", json={"answer": "Global Default Program"})
+def test_confirm_preserves_draft_scope_without_queuing_retired_executor(admin_client) -> None:
     ws_id = _create_workspace(admin_client, "pm_fleet")
     r = admin_client.post(
         f"/v1/work-items/suggest?workspace_id={ws_id}",
@@ -157,10 +138,14 @@ def test_confirm_reads_back_the_drafts_own_project_id(admin_client, monkeypatch)
             }
         },
     )
+
     r = admin_client.post(f"/v1/work-items/{draft_id}/confirm")
+
     assert r.status_code == 200
-    assert captured["program_context"]["project_id"] == ws_id
-    assert captured["program_context"]["program_name"] == ""
+    body = r.json()
+    assert body["draft"]["project_id"] == ws_id
+    assert body["task_id"] is None
+    assert "retired" in body["execution_note"].lower()
 
 
 def test_confirm_refuses_before_posting_when_the_persona_lacks_the_agent(
