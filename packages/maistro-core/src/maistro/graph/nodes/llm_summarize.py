@@ -24,9 +24,11 @@ from maistro.capabilities.effect_context import CapabilityEffectContext, default
 from maistro.capabilities.model_chat import (
     MODEL_CHAT_CAPABILITY,
     ModelChatEgress,
+)
+from maistro.capabilities.providers.llm_gateway import (
+    GatewayEndpoint,
     ModelChatRequest,
 )
-from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
 from maistro.providers.registry import InMemoryProviderRegistry
 from maistro.providers.router import CostAwareRouter
 

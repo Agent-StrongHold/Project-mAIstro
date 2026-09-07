@@ -152,7 +152,7 @@ async def execute_model_chat(
             response = await client.post(
                 f"{endpoint._base}/chat/completions",
                 headers=endpoint.authorization_header(),
-                json=_chat_payload(provider, request),  # type: ignore[arg-type]
+                json=_chat_payload(provider, request),
             )
     except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
         raise EffectNotApplied(f"model gateway unreachable, no effect occurred: {exc}") from exc
