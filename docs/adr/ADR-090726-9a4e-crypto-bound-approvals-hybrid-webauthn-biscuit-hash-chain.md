@@ -39,7 +39,6 @@ ac-modules:
   AC-2: maistro.graph.nodes.human_approve_draft
   AC-3: maistro.graph.nodes.human_delegate_to_role
   AC-4: maistro.graph.nodes.human_review_and_edit
-  AC-5: backend.routes.hitl
 ---
 
 # ADR-090726-9a4e: The Hybrid — crypto-bound approvals: WebAuthn presence, Biscuit delegation, hash-chained evidence
@@ -175,7 +174,9 @@ Phase 0/1 installment criteria — proven by the tests below and bound via
   blank verdict; explicit verdicts still route.
 - **AC-4**: `human_review_and_edit` treats a missing or blank verdict as
   pending — never approved; explicit verdicts with edits still resume.
-- **AC-5**: the HITL door stamps the verified session principal into answer
+- **AC-5** *(no module anchor: the reachability graph does not yet track
+  hive-conductor backend modules, so this criterion caps at `passing` until
+  it does)*: the HITL door stamps the verified session principal into answer
   and cancel audit records; an answer with no verified principal is never
   recorded as the literal `"system"`.
 
