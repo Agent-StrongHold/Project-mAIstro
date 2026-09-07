@@ -127,6 +127,81 @@ async def test_answering_resumes_the_run_and_the_answer_is_readable(seeded) -> N
     assert record.hitl_answers["ask"]["answer"] == "yes"
 
 
+def _audit_entries(action: str, target: str) -> list[dict[str, Any]]:
+    import stores
+
+    return [
+        entry
+        for entry in stores.audit_log.values()
+        if isinstance(entry, dict)
+        and entry.get("action") == action
+        and entry.get("target") == target
+    ]
+
+
+@pytest.mark.ac("ADR-090726-9a4e/AC-5")
+async def test_answering_stamps_the_verified_session_principal_into_the_audit(seeded) -> None:
+    """The audit record names who decided, not a convenient "system" (#329).
+
+    A HITL answer is a human decision written through this door. Recording it
+    under the actor "system" claims an unverified system principal settled
+    what a person actually settled — the exact overclaim crypto-bound approval
+    records (ADR-090726-9a4e) exist to prevent. The principal here is the
+    authenticated session's `testadmin`, the same one AuthMiddleware verified
+    and scoped to `dags.write` before the handler ran.
+    """
+    client, _store, seed = seeded
+    await seed("hitl-audited")
+
+    response = client.post("/v1/hitl/hitl-audited/ask/answer", json={"answer": "yes"})
+
+    assert response.status_code == 200
+    entries = _audit_entries("hitl_answer", "hitl-audited")
+    assert len(entries) == 1
+    assert entries[0]["actor"] == "testadmin"
+    assert entries[0]["detail"] == {"node_id": "ask"}
+
+
+@pytest.mark.ac("ADR-090726-9a4e/AC-5")
+async def test_cancelling_stamps_the_verified_session_principal_into_the_audit(seeded) -> None:
+    """Cancellation is the same class of human decision through the same door
+    (#329): the audit entry names the requester, not "system".
+    """
+    client, _store, seed = seeded
+    await seed("hitl-cancel-audited")
+
+    response = client.post("/v1/hitl/hitl-cancel-audited/ask/cancel")
+
+    assert response.status_code == 200
+    entries = _audit_entries("hitl_cancel", "hitl-cancel-audited")
+    assert len(entries) == 1
+    assert entries[0]["actor"] == "testadmin"
+    assert entries[0]["detail"] == {"node_id": "ask"}
+
+
+@pytest.mark.ac("ADR-090726-9a4e/AC-5")
+def test_an_answer_with_no_verified_principal_is_never_recorded_as_system(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A handler reached without a principal records "unauthenticated", not "system".
+
+    The middleware guarantees a verified principal on every authenticated
+    `/v1/` request, so this path is defensive. But the failure mode matters:
+    if it ever fires, the record must say nobody was verified rather than
+    claim the system decided — fail closed on attribution.
+    """
+    from types import SimpleNamespace
+
+    import routes.hitl as hitl_routes
+
+    request = SimpleNamespace(
+        state=SimpleNamespace(),
+        cookies={},
+        headers={"authorization": None},
+    )
+    assert hitl_routes._session_principal(request) == "unauthenticated"
+
+
 async def test_an_unknown_run_is_404(seeded) -> None:
     client, _store, _seed = seeded
     assert client.post("/v1/hitl/no-such-run/ask/answer", json={"a": 1}).status_code == 404
