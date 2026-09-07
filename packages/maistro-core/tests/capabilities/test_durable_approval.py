@@ -468,3 +468,40 @@ async def test_sqlite_concurrent_resolution_commits_only_one_decision(tmp_path) 
         assert persisted is not None
         assert persisted.status == first_result.status
         assert persisted.actor == first_result.actor
+
+
+# --- actor is required, never defaulted (#329 / ADR-090726-9a4e) -------------
+
+
+@pytest.mark.asyncio
+async def test_in_memory_resolve_without_an_actor_is_refused() -> None:
+    """A caller that cannot name who decided must not be able to settle an
+    approval silently: the actor argument has no default, so omitting it is a
+    TypeError, not an approval recorded under an empty principal.
+    """
+    store = InMemoryApprovalStore()
+    approval = await store.create(_durable_approval())
+
+    with pytest.raises(TypeError):
+        await store.resolve(approval.request.request_id, approved=True)  # type: ignore[call-arg]
+
+    untouched = await store.get(approval.request.request_id)
+    assert untouched is not None
+    assert untouched.status is ApprovalStatus.PENDING
+    assert untouched.actor == ""
+
+
+@pytest.mark.asyncio
+async def test_sqlite_resolve_without_an_actor_is_refused(tmp_path) -> None:
+    """Same contract on the durable backend: no default actor, no settlement."""
+    async with aiosqlite.connect(tmp_path / "approvals-no-actor.db") as conn:
+        store = SqliteApprovalStore(conn)
+        await store.ensure_schema()
+        approval = await store.create(_durable_approval())
+
+        with pytest.raises(TypeError):
+            await store.resolve(approval.request.request_id, approved=True)  # type: ignore[call-arg]
+
+        untouched = await store.get(approval.request.request_id)
+        assert untouched is not None
+        assert untouched.status is ApprovalStatus.PENDING
