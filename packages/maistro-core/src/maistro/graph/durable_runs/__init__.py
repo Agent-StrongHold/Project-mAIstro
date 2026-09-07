@@ -33,6 +33,7 @@ from .hitl import (
     HitlSettlementError,
     expire_hitl_pauses,
 )
+from .launch import durable_graph_launch_provenance
 from .legacy_archive import (
     ArchivedGraphRun,
     LegacyGraphRunArchive,
@@ -62,6 +63,7 @@ __all__ = [
     "RunStatus",
     "SqliteDurableRunStore",
     "SqliteGraphContinuationStore",
+    "durable_graph_launch_provenance",
     "expire_hitl_pauses",
     "recover_queued_graph_runs",
     "resume_due_graph_runs",
