@@ -109,6 +109,9 @@ TRUSTED_ADAPTERS: dict[tuple[str, str], str] = {
         "check-reachability-dispositions-provenance"
     ),
     ("tools/lint_lifecycle.py", "quality/lifecycle-baseline.json"): ("check-lifecycle-provenance"),
+    ("check-adr-status-language.py", "quality/adr-status-language-baseline.json"): (
+        "check-adr-status-language-provenance"
+    ),
 }
 
 # These consumers are themselves provenance mechanisms. ac_state_notes.py folds

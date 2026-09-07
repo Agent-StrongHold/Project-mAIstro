@@ -44,6 +44,10 @@ class _Baseline:
             return default
         return json.loads(self.text)
 
+    @property
+    def absent_at_base(self) -> bool:
+        return self.text is None
+
 
 class _Proof:
     def __init__(self, **_kwargs: object) -> None:
@@ -57,8 +61,11 @@ def _provenance(
     payload: object | Callable[[Path], object],
     *,
     authorizations: dict[str, str] | None = None,
+    baseline: _Baseline | None = None,
 ) -> SimpleNamespace:
     def resolve(path: Path, **_kwargs: object) -> _Baseline:
+        if baseline is not None:
+            return baseline
         value = payload(path) if callable(payload) else payload
         return _Baseline(value, path=path)
 
@@ -135,6 +142,62 @@ def test_citation_adapter_covers_success_failure_and_unreadable_oracle(
 
     _wire_adapter(module, monkeypatch, checker, _provenance({"known": []}))
     assert module.main() == 1
+
+    _wire_adapter(module, monkeypatch, checker, _broken_provenance())
+    assert module.main() == 1
+
+
+def test_adr_status_language_adapter_covers_introduction_expansion_and_oracle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_script(
+        "scripts/check-adr-status-language-provenance.py",
+        "_coverage_adr_status_adapter",
+    )
+    _exercise_loader(module, module.PROVENANCE, "_coverage_adr_status_real_provenance")
+    assert module._known(None) == set()
+    assert module._known({"known": "not-a-list"}) == set()
+
+    identity = "docs/adr/ADR-999-example.md :: body-status-line"
+
+    def checker_for(*, candidate: set[str]) -> SimpleNamespace:
+        problem = SimpleNamespace(identity=identity)
+        return SimpleNamespace(
+            DOC_ROOTS=[tmp_path],
+            audit=lambda: [problem],
+            _load_baseline=lambda: frozenset(candidate),
+            LEDGER=tmp_path / "adr-status.json",
+        )
+
+    # First introduction: ledger absent at the trusted base, candidate banks
+    # the corpus exactly -- the introducing change is the review of the ledger.
+    checker = checker_for(candidate={identity})
+    _wire_adapter(module, monkeypatch, checker, _provenance(None))
+    assert module.main() == 0
+
+    # First introduction cannot hide a contradiction from the reviewed ledger.
+    checker = checker_for(candidate=set())
+    _wire_adapter(module, monkeypatch, checker, _provenance(None))
+    assert module.main() == 1
+
+    # Steady state: expansion beyond the trusted base without a landed grant fails.
+    checker = checker_for(candidate={identity})
+    present = _Baseline(text=json.dumps({"known": []}))
+    _wire_adapter(module, monkeypatch, checker, _provenance(None, baseline=present))
+    assert module.main() == 1
+
+    # Steady state: a landed grant authorizes exactly the named addition.
+    _wire_adapter(
+        module,
+        monkeypatch,
+        checker,
+        _provenance(
+            None,
+            baseline=present,
+            authorizations={identity: "#387 -- owner: reason"},
+        ),
+    )
+    assert module.main() == 0
 
     _wire_adapter(module, monkeypatch, checker, _broken_provenance())
     assert module.main() == 1

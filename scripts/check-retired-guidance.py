@@ -45,7 +45,9 @@ REGISTRY = REPO_ROOT / "quality" / "retired-guidance.json"
 
 #: Where normative text lives. Agent-instruction files first, because those are
 #: the ones that direct implementation; then the decision and spec records that
-#: acceptance criteria are drawn from.
+#: acceptance criteria are drawn from; then the user-facing claim surfaces
+#: (#388) — a stale claim in README or the convergence matrix misleads every
+#: reader, which is what the retired-claim entries added there protect.
 SEARCH_GLOBS = (
     "CLAUDE.md",
     "*/CLAUDE.md",
@@ -54,6 +56,8 @@ SEARCH_GLOBS = (
     ".claude/**/*.md",
     "docs/adr/*.md",
     "docs/specs/*.md",
+    "docs/architecture/*.md",
+    "README.md",
     "AGENTS.md",
     "packages/*/AGENTS.md",
 )

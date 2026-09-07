@@ -63,7 +63,9 @@ since the tier/weight-bound primitives it builds on already exist and are tested
 - Cross-scope sharing + consent gating — ADR-080 part (C), tracked in SPEC-242.
 - Hybrid BM25+vector retrieval ranking — ADR-080 part (D), tracked in SPEC-243.
 - A scheduler/cron that calls `tick_decay` on a cadence — this SPEC ships the pure functions;
-  wiring a periodic caller is a follow-up once a scheduler subsystem exists (ADR-046).
+  wiring a periodic caller is a follow-up on the recurrence decision
+  ([ADR-082126-f69c](../adr/ADR-082126-f69c-recurrence-produces-runs.md), which superseded the
+  original ADR-046 scheduler).
 - Tuning the actual decay-rate/boost/drop constants beyond reasonable defaults — ADR-080 already
   marks concrete curve constants as out of scope, follow-up tuning SPEC.
 

@@ -57,7 +57,9 @@ review queue.
 - Cross-scope consent — SPEC-242.
 - Retrieval ranking — SPEC-243.
 - The specific embedding/similarity model choice — defers to ADR-079's existing model registry.
-- A durable job-scheduling system for the "overnight" cadence — depends on ADR-046 (Scheduler);
+- A durable job-scheduling system for the "overnight" cadence — depends on the recurrence
+  decision ([ADR-082126-f69c](../adr/ADR-082126-f69c-recurrence-produces-runs.md), which
+  superseded ADR-046);
   this SPEC defines the consolidation function and its trigger contract, not the cron wiring.
 
 ## Decision
@@ -110,7 +112,9 @@ history survives.
 - [x] The overnight batch runner processes the scope's memory set in batches and reports
       counts (merged, flagged) for observability (`run_batch` / `BatchReport`). Note: `run_batch`
       applies proposals via injected `apply_store_merge`/`apply_store_contradiction` callbacks — the
-      real cron/batch-token-pricing wiring is deferred to ADR-046 (Scheduler), per Non-goals.
+      real cron/batch-token-pricing wiring was deferred to ADR-046 (Scheduler), which
+      [ADR-082126-f69c](../adr/ADR-082126-f69c-recurrence-produces-runs.md) has since superseded,
+      per Non-goals.
 
 ## Testing
 

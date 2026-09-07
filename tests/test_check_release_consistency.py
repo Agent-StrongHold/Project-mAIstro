@@ -13,6 +13,7 @@ proves nothing about it.
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
 from pathlib import Path
 
@@ -149,6 +150,297 @@ def test_a_missing_unreleased_section_fails(gate, tmp_path) -> None:
     problems = gate.check()
 
     assert any("no '## [Unreleased]' section" in p for p in problems)
+
+
+# --- a heading is not an entry: Unreleased content shape (#385) -----------
+
+
+def test_a_categorized_linked_unreleased_entry_passes(gate, tmp_path) -> None:
+    """The shape the policy asks for: category, entry, link."""
+    _write(
+        gate,
+        tmp_path,
+        changelog=(
+            "# Changelog\n\n## [Unreleased]\n\n### Fixed\n\n- **Thing (#9).** Fixed.\n\n"
+            "## [1.0.0] - TBD\n\nnotes\n"
+        ),
+    )
+
+    assert gate.check() == []
+
+
+def test_a_truly_empty_unreleased_section_passes_an_ordinary_run(gate, tmp_path) -> None:
+    """A tree may simply not have accumulated user-visible changes yet.
+
+    Release readiness — where emptiness is a problem — is the `--releasing`
+    path's job, not every run's.
+    """
+    _write(gate, tmp_path)
+
+    assert gate.check() == []
+
+
+def test_a_placeholder_only_unreleased_section_fails(gate, tmp_path) -> None:
+    """TODO defeats a presence check while committing nothing."""
+    _write(
+        gate,
+        tmp_path,
+        changelog=(
+            "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- TODO\n\n## [1.0.0] - TBD\n\nnotes\n"
+        ),
+    )
+
+    problems = gate.check()
+
+    assert any("placeholder-only" in p for p in problems)
+
+
+def test_an_entry_without_a_linked_issue_fails(gate, tmp_path) -> None:
+    _write(
+        gate,
+        tmp_path,
+        changelog=(
+            "# Changelog\n\n## [Unreleased]\n\n### Fixed\n\n- **Something.** Fixed, "
+            "traceably to no issue.\n\n## [1.0.0] - TBD\n\nnotes\n"
+        ),
+    )
+
+    problems = gate.check()
+
+    assert any("links no issue or PR" in p for p in problems)
+
+
+def test_a_linked_issue_on_a_wrapped_line_counts(gate, tmp_path) -> None:
+    """Keep a Changelog entries wrap; the link rides anywhere in the bullet.
+
+    The shipped CHANGELOG's entries are multi-line, so a first-line-only link
+    check would reject exactly the entries that already exist.
+    """
+    _write(
+        gate,
+        tmp_path,
+        changelog=(
+            "# Changelog\n\n## [Unreleased]\n\n### Security\n\n- **A long title that wraps\n"
+            "  onto a second line (#42).** Detail.\n\n## [1.0.0] - TBD\n\nnotes\n"
+        ),
+    )
+
+    assert gate.check() == []
+
+
+def test_the_explicit_no_issue_exclusion_is_accepted(gate, tmp_path) -> None:
+    """Policy allows entries with no tracked issue, annotated as such."""
+    _write(
+        gate,
+        tmp_path,
+        changelog=(
+            "# Changelog\n\n## [Unreleased]\n\n### Fixed\n\n- **Typo (no linked issue: "
+            "prose fix).** One word.\n\n## [1.0.0] - TBD\n\nnotes\n"
+        ),
+    )
+
+    assert gate.check() == []
+
+
+def test_an_entry_outside_a_category_fails(gate, tmp_path) -> None:
+    _write(
+        gate,
+        tmp_path,
+        changelog=(
+            "# Changelog\n\n## [Unreleased]\n\n- **Bare bullet (#7).** No category.\n\n"
+            "## [1.0.0] - TBD\n\nnotes\n"
+        ),
+    )
+
+    problems = gate.check()
+
+    assert any("under no category" in p for p in problems)
+
+
+def test_an_unrecognized_category_fails(gate, tmp_path) -> None:
+    _write(
+        gate,
+        tmp_path,
+        changelog=(
+            "# Changelog\n\n## [Unreleased]\n\n### Misc\n\n- **Thing (#9).** Unclear "
+            "kind of change.\n\n## [1.0.0] - TBD\n\nnotes\n"
+        ),
+    )
+
+    problems = gate.check()
+
+    assert any("under Misc" in p and "Entries belong under" in p for p in problems)
+
+
+def test_the_dependencies_category_is_recognized(gate, tmp_path) -> None:
+    """The explicit home for operator-visible generated churn."""
+    _write(
+        gate,
+        tmp_path,
+        changelog=(
+            "# Changelog\n\n## [Unreleased]\n\n### Dependencies\n\n- **httpx 0.27 → "
+            "0.28 (#60).** No source change required.\n\n## [1.0.0] - TBD\n\nnotes\n"
+        ),
+    )
+
+    assert gate.check() == []
+
+
+def test_content_with_no_entries_at_all_fails(gate, tmp_path) -> None:
+    """Prose under Unreleased is not a categorized entry."""
+    _write(
+        gate,
+        tmp_path,
+        changelog=(
+            "# Changelog\n\n## [Unreleased]\n\nSome words about work.\n\n"
+            "## [1.0.0] - TBD\n\nnotes\n"
+        ),
+    )
+
+    problems = gate.check()
+
+    assert any("no entries under a recognized category" in p for p in problems)
+
+
+def test_a_placeholder_entry_among_real_ones_fails(gate, tmp_path) -> None:
+    """One real entry defeats the section-level placeholder check, so the
+    per-entry one is the only thing still standing between TODO and the
+    release: the section is not placeholder-only, and the TODO bullet is
+    still called out by itself."""
+    _write(
+        gate,
+        tmp_path,
+        changelog=(
+            "# Changelog\n\n## [Unreleased]\n\n### Fixed\n\n"
+            "- **A real fix (#10).** Real words.\n\n- TODO\n\n## [1.0.0] - TBD\n\nnotes\n"
+        ),
+    )
+
+    problems = gate.check()
+
+    assert any("is a placeholder, not an entry" in p for p in problems)
+    assert not any("placeholder-only" in p for p in problems)
+
+
+# --- entry folding: where one bullet ends and the next begins --------------
+
+
+def test_adjacent_entry_bullets_are_separate_entries(gate) -> None:
+    """A second bullet must flush the first, not absorb into it."""
+    body = "### Fixed\n\n- **One (#1).** Words.\n- **Two (#2).** Words.\n"
+
+    entries = gate._entries(body)
+
+    assert [entry[2] for entry in entries] == [
+        "- **One (#1).** Words.",
+        "- **Two (#2).** Words.",
+    ]
+    assert [entry[1] for entry in entries] == ["Fixed", "Fixed"]
+
+
+def test_unindented_prose_terminates_the_entry_above_it(gate) -> None:
+    """Indented continuation lines fold into the bullet; the same words
+    flush-left are section prose and must not ride along as part of the
+    entry's claim."""
+    body = "### Fixed\n\n- **One (#1).** Words.\nTerminating prose.\n- **Two (#2).** More.\n"
+
+    entries = gate._entries(body)
+
+    assert len(entries) == 2
+    assert entries[0][2] == "- **One (#1).** Words."
+    assert entries[1][2] == "- **Two (#2).** More."
+
+
+def test_section_body_is_none_when_the_heading_is_absent(gate) -> None:
+    """Callers distinguish 'empty section' from 'no section at all'; the
+    heading-missing half of that contract lives here, not in the callers."""
+    text = "# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - TBD\n\nnotes\n"
+
+    assert gate.section_body(text, re.compile(r"^##\s*\[2\.0\.0\]", re.M)) is None
+    assert gate.section_body(text, gate._UNRELEASED_RE) is not None
+
+
+def test_releasing_against_an_empty_target_section_fails(gate, tmp_path) -> None:
+    """Release readiness: publish emptiness is not an option.
+
+    `release_notes.py` publishes exactly the curated section, so a tag cut
+    against an empty one publishes empty notes — while passing every other
+    consistency check, which is the state #385 exists to reject.
+    """
+    _write(
+        gate,
+        tmp_path,
+        version="1.0.0",
+        changelog="# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - TBD\n",
+        readme=f"{gate.README_BEGIN}\n{_status(current='1.0.0')}\n{gate.README_END}",
+        tags=["v1.0.0"],
+    )
+
+    problems = gate.check(releasing="v1.0.0")
+
+    assert any("is empty" in p and "v1.0.0" in p for p in problems)
+
+
+def test_releasing_against_a_placeholder_target_section_fails(gate, tmp_path) -> None:
+    _write(
+        gate,
+        tmp_path,
+        version="1.0.0",
+        changelog=("# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - TBD\n\nTBD\n"),
+        readme=f"{gate.README_BEGIN}\n{_status(current='1.0.0')}\n{gate.README_END}",
+        tags=["v1.0.0"],
+    )
+
+    problems = gate.check(releasing="v1.0.0")
+
+    assert any("placeholder-only" in p for p in problems)
+
+
+def test_releasing_an_rc_checks_the_base_version_section(gate, tmp_path) -> None:
+    """A candidate publishes the notes of the release it is a candidate for."""
+    _write(
+        gate,
+        tmp_path,
+        version="1.0.0",
+        changelog=("# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - TBD\n\n- Real curated notes.\n"),
+        readme=f"{gate.README_BEGIN}\n{_status(current='1.0.0')}\n{gate.README_END}",
+        tags=["v1.0.0-rc1"],
+    )
+
+    problems = gate.check(releasing="v1.0.0-rc1")
+
+    assert problems == []
+
+
+def test_releasing_against_a_curated_target_section_passes(gate, tmp_path) -> None:
+    _write(
+        gate,
+        tmp_path,
+        version="1.0.0",
+        changelog=("# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - TBD\n\nCurated notes.\n"),
+        readme=f"{gate.README_BEGIN}\n{_status(current='1.0.0')}\n{gate.README_END}",
+        tags=["v1.0.0"],
+    )
+
+    assert gate.check(releasing="v1.0.0") == []
+
+
+def test_a_non_release_tag_releasing_argument_defers_to_release_guard(gate, tmp_path) -> None:
+    """Tag-shape errors are release_guard's to report; staying quiet here is
+    the division of labour, not a hole — two gates saying the same thing is
+    how one of them stops being read."""
+    _write(gate, tmp_path)
+
+    assert gate.check(releasing="not-a-release-tag") == []
+
+
+def test_releasing_a_version_with_no_heading_defers_to_release_guard(gate, tmp_path) -> None:
+    """The heading's existence is release_guard's check too — a missing
+    section is not silently treated as releasable here, and not double-
+    reported."""
+    _write(gate, tmp_path)
+
+    assert gate.check(releasing="v2.0.0") == []
 
 
 def test_an_rc_suffix_in_version_fails(gate, tmp_path) -> None:
@@ -361,7 +653,8 @@ def test_the_tag_being_released_is_excluded(gate, tmp_path) -> None:
         tmp_path,
         version="1.0.0",
         changelog=(
-            "# Changelog\n\n## [Unreleased]\n\n## [1.1.0] - TBD\n\n## [1.0.0] - 2026-08-23\n"
+            "# Changelog\n\n## [Unreleased]\n\n## [1.1.0] - TBD\n\n## [1.0.0] - "
+            "2026-08-23\n\nCurated release notes.\n"
         ),
         readme=f"{gate.README_BEGIN}\n{_status(current='1.0.0', target='1.1.0')}\n{gate.README_END}",
         tags=["v1.0.0"],
