@@ -4,15 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-from collections.abc import Mapping
-from datetime import UTC, datetime
+from collections.abc import Callable, Mapping
+from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from maistro.graph.execution_state import GraphExecutionState, thaw_json_value
-from maistro.runs.lifecycle import transition_node_run, transition_run
-from maistro.runs.model import RunStatus
+from maistro.runs.lifecycle import settle_open_node_run, transition_node_run, transition_run
+from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
 
+from .hitl import (
+    HitlDeadlineElapsed,
+    HitlDeadlinePending,
+    hitl_deadline,
+    hitl_pause,
+    settlement_time,
+)
 from .types import DurableRunRecord
 
 
@@ -68,6 +75,8 @@ def answer_record(
     record: DurableRunRecord,
     node_id: str,
     answer: dict[str, Any],
+    *,
+    at: datetime | None = None,
 ) -> DurableRunRecord:
     if record.run.status is not RunStatus.PAUSED:
         raise ValueError(f"run {record.run_id!r} not paused on HITL (status={record.run.status})")
@@ -78,6 +87,13 @@ def answer_record(
         )
 
     paused_index = _paused_node_run_index(record, node_id)
+    moment = settlement_time(at)
+    deadline = hitl_deadline(record, node_id, require_pause=False)
+    if deadline is not None and deadline <= moment:
+        raise HitlDeadlineElapsed(
+            f"run {record.run_id!r} HITL deadline elapsed for node {node_id!r} "
+            f"at {deadline.isoformat()}"
+        )
     # The pause payload the *node* wrote is the only server-side fact in a
     # resume, and `_pause_metadata_after_answer` is about to delete it. Stamp it
     # onto the answer first, after the caller's keys so a submitted `_pause`
@@ -90,7 +106,7 @@ def answer_record(
     # ask the party it was waiting for.
     pauses_before = record.graph_state.metadata.get("pauses", {})
     own_pause = pauses_before.get(node_id) if isinstance(pauses_before, Mapping) else None
-    answered: dict[str, Any] = {**answer, "answered_at": datetime.now(UTC).isoformat()}
+    answered: dict[str, Any] = {**answer, "answered_at": moment.isoformat()}
     if isinstance(own_pause, Mapping):
         answered["_pause"] = dict(own_pause)
     metadata = dict(record.graph_state.metadata)
@@ -103,9 +119,12 @@ def answer_record(
     node_runs[paused_index] = transition_node_run(
         node_runs[paused_index],
         RunStatus.QUEUED,
+        at=moment,
     )
     remaining_paused = any(node_run.status is RunStatus.PAUSED for node_run in node_runs)
-    run = record.run if remaining_paused else transition_run(record.run, RunStatus.QUEUED)
+    run = (
+        record.run if remaining_paused else transition_run(record.run, RunStatus.QUEUED, at=moment)
+    )
     graph_state = _replace_state(record.graph_state, metadata=metadata)
     return _replace_record(
         record,
@@ -113,6 +132,91 @@ def answer_record(
         graph_state=graph_state,
         node_runs=tuple(node_runs),
         resume_at=record.resume_at if remaining_paused else None,
+        version=record.version + 1,
+    )
+
+
+def settle_hitl_record(
+    record: DurableRunRecord,
+    node_id: str,
+    outcome: Literal["timed_out", "cancelled"],
+    *,
+    at: datetime | None = None,
+) -> DurableRunRecord:
+    """Apply the one canonical terminal decision for a durable human pause."""
+    if record.run.status is not RunStatus.PAUSED:
+        raise ValueError(f"run {record.run_id!r} not paused on HITL (status={record.run.status})")
+    if node_id not in record.graph_state.active_node_ids:
+        raise ValueError(
+            f"run {record.run_id!r} waiting on frontier "
+            f"{record.graph_state.active_node_ids!r}, not {node_id!r}"
+        )
+
+    paused_index = _paused_node_run_index(record, node_id)
+    pause = hitl_pause(record, node_id)
+    moment = settlement_time(at)
+    deadline = hitl_deadline(record, node_id)
+    if outcome == "timed_out" and (deadline is None or deadline > moment):
+        detail = (
+            "has no deadline" if deadline is None else f"is pending until {deadline.isoformat()}"
+        )
+        raise HitlDeadlinePending(
+            f"run {record.run_id!r} HITL deadline for node {node_id!r} {detail}"
+        )
+
+    # Once the durable deadline is reached, cancellation cannot outrun timeout
+    # merely because the expiry tick has not observed the record yet.
+    settled_outcome: Literal["timed_out", "cancelled"] = outcome
+    if deadline is not None and deadline <= moment:
+        settled_outcome = "timed_out"
+    target = RunStatus.TIMED_OUT if settled_outcome == "timed_out" else RunStatus.CANCELLED
+
+    if target is RunStatus.TIMED_OUT:
+        assert deadline is not None
+        reason = f"human input for node {node_id!r} timed out at {deadline.isoformat()}"
+    else:
+        reason = f"human input for node {node_id!r} was cancelled"
+
+    node_runs = list(record.node_runs)
+    node_runs[paused_index] = transition_node_run(
+        node_runs[paused_index],
+        target,
+        at=moment,
+        error=reason,
+    )
+    for index, node_run in enumerate(node_runs):
+        if index == paused_index or node_run.status in TERMINAL_RUN_STATUSES:
+            continue
+        node_runs[index] = settle_open_node_run(node_run, target, at=moment)
+
+    metadata = dict(record.graph_state.metadata)
+    settlements_raw = metadata.get("hitl_settlements", {})
+    settlements = dict(settlements_raw) if isinstance(settlements_raw, Mapping) else {}
+    settlements[node_id] = {
+        "outcome": settled_outcome,
+        "decided_at": moment.isoformat(),
+        "node_id": node_id,
+        "node_run_id": node_runs[paused_index].node_run_id,
+        "pause": pause,
+    }
+    metadata["hitl_settlements"] = settlements
+    metadata.pop("pauses", None)
+    metadata.pop("pause", None)
+    metadata.pop("deferred_frontier", None)
+    metadata.pop("deferred_fanins", None)
+
+    graph_state = _replace_state(
+        record.graph_state,
+        active_node_ids=(),
+        metadata=metadata,
+    )
+    run = transition_run(record.run, target, at=moment, error=reason)
+    return _replace_record(
+        record,
+        run=run,
+        graph_state=graph_state,
+        node_runs=tuple(node_runs),
+        resume_at=None,
         version=record.version + 1,
     )
 
@@ -175,12 +279,44 @@ class InMemoryDurableRunStore:
         run_id: str,
         node_id: str,
         answer: dict[str, Any],
+        *,
+        at: datetime | None = None,
     ) -> DurableRunRecord:
         async with self._lock:
             record = self._rows.get(run_id)
             if record is None:
                 raise KeyError(f"no such run: {run_id!r}")
-            updated = answer_record(record, node_id, answer)
+            updated = answer_record(record, node_id, answer, at=at)
+            self._rows[run_id] = updated
+            return _clone(updated)
+
+    async def timeout_hitl(
+        self,
+        run_id: str,
+        node_id: str,
+        *,
+        at: datetime | None = None,
+    ) -> DurableRunRecord:
+        async with self._lock:
+            record = self._rows.get(run_id)
+            if record is None:
+                raise KeyError(f"no such run: {run_id!r}")
+            updated = settle_hitl_record(record, node_id, "timed_out", at=at)
+            self._rows[run_id] = updated
+            return _clone(updated)
+
+    async def cancel_hitl(
+        self,
+        run_id: str,
+        node_id: str,
+        *,
+        at: datetime | None = None,
+    ) -> DurableRunRecord:
+        async with self._lock:
+            record = self._rows.get(run_id)
+            if record is None:
+                raise KeyError(f"no such run: {run_id!r}")
+            updated = settle_hitl_record(record, node_id, "cancelled", at=at)
             self._rows[run_id] = updated
             return _clone(updated)
 
@@ -312,15 +448,45 @@ class SqliteDurableRunStore:
         run_id: str,
         node_id: str,
         answer: dict[str, Any],
+        *,
+        at: datetime | None = None,
     ) -> DurableRunRecord:
         async with self._lock:
-            current = await asyncio.to_thread(_get_sync, self, run_id)
-            if current is None:
-                raise KeyError(f"no such run: {run_id!r}")
             return await asyncio.to_thread(
-                _update_sync,
+                _mutate_hitl_sync,
                 self,
-                answer_record(current, node_id, answer),
+                run_id,
+                lambda current: answer_record(current, node_id, answer, at=at),
+            )
+
+    async def timeout_hitl(
+        self,
+        run_id: str,
+        node_id: str,
+        *,
+        at: datetime | None = None,
+    ) -> DurableRunRecord:
+        async with self._lock:
+            return await asyncio.to_thread(
+                _mutate_hitl_sync,
+                self,
+                run_id,
+                lambda current: settle_hitl_record(current, node_id, "timed_out", at=at),
+            )
+
+    async def cancel_hitl(
+        self,
+        run_id: str,
+        node_id: str,
+        *,
+        at: datetime | None = None,
+    ) -> DurableRunRecord:
+        async with self._lock:
+            return await asyncio.to_thread(
+                _mutate_hitl_sync,
+                self,
+                run_id,
+                lambda current: settle_hitl_record(current, node_id, "cancelled", at=at),
             )
 
 
@@ -392,6 +558,44 @@ def _update_sync(
             )
         conn.commit()
     return _clone(record)
+
+
+def _mutate_hitl_sync(
+    store: SqliteDurableRunStore,
+    run_id: str,
+    mutate: Callable[[DurableRunRecord], DurableRunRecord],
+) -> DurableRunRecord:
+    """Serialize one HITL decision and its optimistic write in one transaction."""
+    with store._connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        persisted = conn.execute(
+            "SELECT * FROM durable_graph_runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        if persisted is None:
+            raise KeyError(f"no such run: {run_id!r}")
+
+        current = store._from_row(persisted)
+        updated = mutate(current)
+        row = {**store._to_row(updated), "expected_version": current.version}
+        cursor = conn.execute(
+            """
+            UPDATE durable_graph_runs
+               SET status = :status,
+                   active_node_id = :active_node_id,
+                   project_id = :project_id,
+                   created_at = :created_at,
+                   resume_at = :resume_at,
+                   version = :version,
+                   record_json = :record_json
+             WHERE run_id = :run_id
+               AND version = :expected_version
+            """,
+            row,
+        )
+        if cursor.rowcount != 1:
+            raise ValueError(f"concurrent HITL decision for run {run_id!r}")
+    return _clone(updated)
 
 
 def _list_by_status_sync(
