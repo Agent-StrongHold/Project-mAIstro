@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/maistro-server/tests: +25
-  tests/: +7
+  tests/: +26
 ---
 
 # m2-842-843-principal-identity
@@ -39,11 +39,19 @@ surface of #842 + #843, in two files plus one updated each:
   raw-header-hash bucketing (different bearer strings minting different
   buckets) — were replaced by the principal-based equivalents.
 
-**+7 `tests/`** — a new `TestMigrateApiKeys` class (6 cases) plus a CLI case
-in `tests/test_secret_env.py` for the installer's #843 migration helper:
-plain entry prefixed in place, unrelated manual entries untouched,
-idempotence, a half-migrated state dropping its stale plain duplicate, an
-absent secret leaving the file alone, and a colon-bearing principal refused.
+**+7 `tests/test_secret_env.py`** — a new `TestMigrateApiKeys` class (6 cases) plus a CLI case
+for the installer's #843 migration helper: plain entry prefixed in place,
+unrelated manual entries untouched, idempotence, a half-migrated state
+dropping its stale plain duplicate, an absent secret leaving the file alone,
+and a colon-bearing principal refused.
+
+**+19 `tests/api/`** — the root copies of `test_auth.py` and
+`test_startup.py` are the static halves of the shipped-image smoke
+contract (frozen at the v1 mirror of the server suites). They pinned the
+removed legacy behavior verbatim — `user_id == "default"` on a plain key,
+plain-key startup fixtures — so they are re-synced to the updated server
+suites: +14 principal-contract auth cases and +5 startup-gate cases now
+run against the shipped image too, not only in the package suite.
 
 The behavioral change is the contract itself: plain `API_KEYS` entries no
 longer authenticate, so the suites that exercised them were migrated to the
