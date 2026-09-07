@@ -13,6 +13,7 @@ proves nothing about it.
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
 from pathlib import Path
 
@@ -301,6 +302,64 @@ def test_content_with_no_entries_at_all_fails(gate, tmp_path) -> None:
     assert any("no entries under a recognized category" in p for p in problems)
 
 
+def test_a_placeholder_entry_among_real_ones_fails(gate, tmp_path) -> None:
+    """One real entry defeats the section-level placeholder check, so the
+    per-entry one is the only thing still standing between TODO and the
+    release: the section is not placeholder-only, and the TODO bullet is
+    still called out by itself."""
+    _write(
+        gate,
+        tmp_path,
+        changelog=(
+            "# Changelog\n\n## [Unreleased]\n\n### Fixed\n\n"
+            "- **A real fix (#10).** Real words.\n\n- TODO\n\n## [1.0.0] - TBD\n\nnotes\n"
+        ),
+    )
+
+    problems = gate.check()
+
+    assert any("is a placeholder, not an entry" in p for p in problems)
+    assert not any("placeholder-only" in p for p in problems)
+
+
+# --- entry folding: where one bullet ends and the next begins --------------
+
+
+def test_adjacent_entry_bullets_are_separate_entries(gate) -> None:
+    """A second bullet must flush the first, not absorb into it."""
+    body = "### Fixed\n\n- **One (#1).** Words.\n- **Two (#2).** Words.\n"
+
+    entries = gate._entries(body)
+
+    assert [entry[2] for entry in entries] == [
+        "- **One (#1).** Words.",
+        "- **Two (#2).** Words.",
+    ]
+    assert [entry[1] for entry in entries] == ["Fixed", "Fixed"]
+
+
+def test_unindented_prose_terminates_the_entry_above_it(gate) -> None:
+    """Indented continuation lines fold into the bullet; the same words
+    flush-left are section prose and must not ride along as part of the
+    entry's claim."""
+    body = "### Fixed\n\n- **One (#1).** Words.\nTerminating prose.\n- **Two (#2).** More.\n"
+
+    entries = gate._entries(body)
+
+    assert len(entries) == 2
+    assert entries[0][2] == "- **One (#1).** Words."
+    assert entries[1][2] == "- **Two (#2).** More."
+
+
+def test_section_body_is_none_when_the_heading_is_absent(gate) -> None:
+    """Callers distinguish 'empty section' from 'no section at all'; the
+    heading-missing half of that contract lives here, not in the callers."""
+    text = "# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - TBD\n\nnotes\n"
+
+    assert gate.section_body(text, re.compile(r"^##\s*\[2\.0\.0\]", re.M)) is None
+    assert gate.section_body(text, gate._UNRELEASED_RE) is not None
+
+
 def test_releasing_against_an_empty_target_section_fails(gate, tmp_path) -> None:
     """Release readiness: publish emptiness is not an option.
 
@@ -364,6 +423,24 @@ def test_releasing_against_a_curated_target_section_passes(gate, tmp_path) -> No
     )
 
     assert gate.check(releasing="v1.0.0") == []
+
+
+def test_a_non_release_tag_releasing_argument_defers_to_release_guard(gate, tmp_path) -> None:
+    """Tag-shape errors are release_guard's to report; staying quiet here is
+    the division of labour, not a hole — two gates saying the same thing is
+    how one of them stops being read."""
+    _write(gate, tmp_path)
+
+    assert gate.check(releasing="not-a-release-tag") == []
+
+
+def test_releasing_a_version_with_no_heading_defers_to_release_guard(gate, tmp_path) -> None:
+    """The heading's existence is release_guard's check too — a missing
+    section is not silently treated as releasable here, and not double-
+    reported."""
+    _write(gate, tmp_path)
+
+    assert gate.check(releasing="v2.0.0") == []
 
 
 def test_an_rc_suffix_in_version_fails(gate, tmp_path) -> None:

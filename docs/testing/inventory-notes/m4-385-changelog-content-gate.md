@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +14
+  tests/: +20
 ---
 # m4-385 — CHANGELOG content gate
 
@@ -26,3 +26,15 @@ The +14 node IDs are all in `tests/test_check_release_consistency.py`:
 One existing fixture gained content (`test_the_tag_being_released_is_excluded`)
 because its dated section was empty and the gate now refuses to release
 against emptiness — the same change, seen from the fixture side.
+
+The +6 diff-coverage repair cases (same file) close the gate's remaining
+named-uncovered branches:
+
+- A placeholder bullet among real entries is caught per-entry even though the
+  section is no longer placeholder-only overall.
+- Entry folding: adjacent bullets are separate entries, and flush-left prose
+  terminates the entry above it rather than folding into it.
+- `section_body` returns None when the heading is absent (the empty/no-section
+  distinction callers rely on).
+- The two release_guard hand-offs: a non-release-shaped `--releasing` argument
+  and a releasing version with no CHANGELOG heading both stay quiet here.
