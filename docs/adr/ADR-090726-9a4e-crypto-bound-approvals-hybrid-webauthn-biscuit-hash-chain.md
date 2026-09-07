@@ -175,6 +175,9 @@ Phase 0/1 installment criteria — proven by the tests below and bound via
 - **AC-4**: `human_review_and_edit` treats a missing or blank verdict as
   pending — never approved; explicit verdicts with edits still resume.
 - **AC-5** *(no module anchor: the reachability graph does not yet track
+  <!-- ac-state: unproven AC-5 - the reachability graph does not track hive-conductor
+       backend modules yet; the criterion is proven by the door integration test and
+       reaches `reachable` when the graph learns the backend package -->
   hive-conductor backend modules, so this criterion caps at `passing` until
   it does)*: the HITL door stamps the verified session principal into answer
   and cancel audit records; an answer with no verified principal is never
