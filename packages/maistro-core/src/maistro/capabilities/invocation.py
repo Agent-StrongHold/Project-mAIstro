@@ -64,6 +64,37 @@ TERMINAL_INVOCATION_STATUSES = frozenset(
 )
 
 
+class InvocationUsage(BaseModel):
+    """Usage/provenance metadata for one provider call (ADR-081226-6b46).
+
+    ``input_units``/``output_units`` are measured in ``units`` ("tokens" for
+    model inference). ``cost_cents`` is computed from registry metadata when
+    the selected model is registered and stays ``None`` when it is not -- an
+    unmeasured cost is absent, not zero. ``model_version`` is the concrete
+    version the provider reported, which may differ from the requested alias.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    units: str = "tokens"
+    input_units: int = 0
+    output_units: int = 0
+    cost_cents: float | None = None
+    model: str = ""
+    model_version: str = ""
+    provider: str = ""
+
+    @model_validator(mode="after")
+    def _validate_usage(self) -> InvocationUsage:
+        if not self.units.strip():
+            raise ValueError("units must be a non-empty string")
+        if self.input_units < 0 or self.output_units < 0:
+            raise ValueError("usage units cannot be negative")
+        if self.cost_cents is not None and self.cost_cents < 0:
+            raise ValueError("cost_cents cannot be negative")
+        return self
+
+
 class Invocation(BaseModel):
     """One actual provider call beneath one physical Attempt."""
 
@@ -78,6 +109,7 @@ class Invocation(BaseModel):
     status: InvocationStatus = InvocationStatus.CREATED
     request: Any | None = None
     result: Any | None = None
+    usage: InvocationUsage | None = None
     error: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     started_at: datetime | None = None
@@ -184,6 +216,7 @@ ProviderResolver = Callable[
     Awaitable[ResolvedCapabilityProvider | Unavailable],
 ]
 ProviderExecutor = Callable[[ResolvedCapabilityProvider, Any], Awaitable[Any]]
+UsageExtractor = Callable[[Any], "InvocationUsage | None"]
 
 
 class InvocationExecutionService:
@@ -226,6 +259,7 @@ class InvocationExecutionService:
         request: Any,
         resolver: ProviderResolver,
         executor: ProviderExecutor,
+        usage_from: UsageExtractor | None = None,
     ) -> Invocation:
         """Execute one effect, deduplicating or blocking unsafe recovery.
 
@@ -308,10 +342,13 @@ class InvocationExecutionService:
             )
             raise
 
+        usage = usage_from(result) if usage_from is not None else None
+
         return await self._terminalize(
             invocation,
             InvocationStatus.COMPLETED,
             result=result,
+            usage=usage,
         )
 
     async def _terminalize(
@@ -321,11 +358,13 @@ class InvocationExecutionService:
         *,
         result: Any | None = None,
         error: str | None = None,
+        usage: InvocationUsage | None = None,
     ) -> Invocation:
         terminal = invocation.model_copy(
             update={
                 "status": status,
                 "result": result,
+                "usage": usage,
                 "error": error,
                 "finished_at": datetime.now(UTC),
             }
@@ -341,7 +380,9 @@ __all__ = [
     "InvocationExecutionService",
     "InvocationStatus",
     "InvocationStore",
+    "InvocationUsage",
     "ProviderExecutor",
     "ProviderResolver",
     "UnsafeEffectRetry",
+    "UsageExtractor",
 ]

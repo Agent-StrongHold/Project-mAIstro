@@ -153,36 +153,6 @@
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
-      "key": "packages/maistro-core/src/maistro/credentials/pool.py::CredentialPool.get_stats",
-      "path": "packages/maistro-core/src/maistro/credentials/pool.py",
-      "line": 151,
-      "name": "get_stats",
-      "classname": "CredentialPool",
-      "rank": "C",
-      "complexity": 11,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/credentials/pool.py::CredentialPool.select",
-      "path": "packages/maistro-core/src/maistro/credentials/pool.py",
-      "line": 73,
-      "name": "select",
-      "classname": "CredentialPool",
-      "rank": "C",
-      "complexity": 17,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/credentials/rotation.py::execute_with_pool",
-      "path": "packages/maistro-core/src/maistro/credentials/rotation.py",
-      "line": 48,
-      "name": "execute_with_pool",
-      "classname": null,
-      "rank": "C",
-      "complexity": 11,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
       "key": "packages/maistro-core/src/maistro/events/bus.py::TriggerCondition",
       "path": "packages/maistro-core/src/maistro/events/bus.py",
       "line": 48,
@@ -231,6 +201,16 @@
       "rank": "C",
       "complexity": 19,
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/graph/durable_runs/stores.py::settle_hitl_record",
+      "path": "packages/maistro-core/src/maistro/graph/durable_runs/stores.py",
+      "line": 139,
+      "name": "settle_hitl_record",
+      "classname": null,
+      "rank": "C",
+      "complexity": 16,
+      "rationale": "Authorized raise per grant #1043 for #737: settle_hitl_record is the single durable HITL settlement rule (answer, timeout, cancellation); the shared predicate for three settlement paths lands at CC 16 (rank C), per-path wrappers stay trivial. Tracked under ADR-083026-6c72."
     },
     {
       "key": "packages/maistro-core/src/maistro/graph/executor.py::execute_with_resilience",
@@ -309,8 +289,8 @@
       "name": "LlmSummarizeNode",
       "classname": null,
       "rank": "C",
-      "complexity": 19,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+      "complexity": 12,
+      "rationale": "Dropped 19 -> 12 by the #56 governed-egress migration: the node's HTTP/protocol branching moved into the approved llm_gateway Provider, leaving Binding resolution and request/result mapping. The remaining C is class-aggregate; further reduction tracked under SPEC-264."
     },
     {
       "key": "packages/maistro-core/src/maistro/graph/nodes/llm_summarize.py::LlmSummarizeNode._execute",

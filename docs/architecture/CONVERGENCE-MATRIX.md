@@ -65,7 +65,7 @@ Three further rules follow from the columns' meanings. A `KEEP` column whose eve
 | Tool execution | `maistro.tools` | Invocation | direct call sites | — | `tools.approval` (unreachable), `tools.reversibility_registry` (unreachable) |
 | Sandbox isolation | `maistro.sandbox` | ExecutionRuntime implementation | its own session records | — | — |
 | Skills, code registry, repertoire | `maistro.skills`, `maistro.code_registry`, `maistro.repertoire` | Capability supply chain | per-package registries | `skills.marketplace` stores | `code_registry` signing + trust tiers |
-| Credentials | `maistro.credentials` | Binding material | `credentials.pool` (unreachable) rotation state | encrypted per-user store | — |
+| Credentials | `maistro.credentials` | Binding material | `credentials.router` scoped rotation state, reached from Provider selection on the Invocation path (#58) | encrypted per-user store | — |
 | Quota and billing | `maistro.quota` | Invocation cost accounting | `quota.tracker` | `persistence.pg_quota`, `quota.sqlite_usage_log` (unreachable) | — |
 | External integrations | `maistro.integrations` | Provider implementations | n/a | — | — |
 | Delivery gateway | `maistro.delivery` | Effect channel | its own send records | — | — |
@@ -137,7 +137,7 @@ A share rather than the `19/62` this column used to carry, because the denominat
 | Tool execution | `services.tool_executor`, `maistro.container` | `some` | MIGRATE — tool calls must be governed Invocations | ADR-050, ADR-051, SPEC-252 | tool call produces Invocation + authorization + expected-effect evidence | #57, #59 |
 | Sandbox isolation | `maistro.cli` `sandbox status`; no execution path yet | `none` | CONNECT — ExecutionRuntime story needs it | ADR-093, ADR-054 | Attempt executes inside sandbox with enforced budgets | #42, #34 |
 | Skills, code registry, repertoire | `routes.skills`, `services.mcp_client` | `most` | MIGRATE — one governed supply-chain path | ADR-083, ADR-069, ADR-070 | signed-code verification on real register/load path | #59, #34 |
-| Credentials | `routes.credentials`, `services.credential_store_v2` | `most` | MIGRATE — rotation belongs at Provider selection | ADR-063 | real Invocation outcome triggers scoped rotation | #58 |
+| Credentials | `routes.credentials`, `services.credential_store_v2` | `none` | KEEP — pool/rotation converged onto Provider selection (#58); remaining Hive credential surfaces are product CRUD over the encrypted store | ADR-063 | real Invocation outcome triggers scoped rotation — proven in `tests/capabilities/test_credential_routing.py` (#58); full subsystem adoption lands with #56/#57 | #56, #57 |
 | Quota and billing | `routes.quotas`, `maistro.container` | `most` | MIGRATE — cost attaches to Invocation | ADR-085 | token/cost metadata on Invocation | #56, #63 |
 | External integrations | exported API | `all` | CONNECT — bridges with no shipped caller | ADR-029 | one integration reached from product route | #34 |
 | Delivery gateway | none | `all` | CONNECT | ADR-047 | delivery effect recorded as Invocation | #34, #57 |
@@ -164,7 +164,7 @@ A share rather than the `19/62` this column used to carry, because the denominat
 | Test scaffolding | test suites only | `all` | LIBRARY — unreachable by construction | ADR-065, ADR-032 | used by checked test suites | — |
 | maistro-server HTTP app | `maistro_server.main` | `none` | MIGRATE — task queue is receipt; chat front door now uses Container/Conduit | ADR-076, ADR-096, ADR-082426-2192 | `/v1/tasks` and `/v1/chat/completions` both yield canonical Run identity | #43, #234 |
 | Agent Conductor HTTP surface | `main` (uvicorn) | `few` | MIGRATE — product surface must read canonical stores | ADR-096, ADR-094 | Run views rendered from canonical stores and surviving restart | #65, #53 |
-| Agent Conductor services | route registration + background loops | `few` | MIGRATE — `dag_run_store`, scheduler and graph/product seams still duplicate canonical responsibilities | ADR-096 | DAG/scheduler/chat paths use canonical Runs and projections only | #53, #35, #231 |
+| Agent Conductor services | route registration + background loops | `some` | MIGRATE — `dag_run_store`, scheduler and graph/product seams still duplicate canonical responsibilities | ADR-096 | DAG/scheduler/chat paths use canonical Runs and projections only | #53, #35, #231 |
 | Canvas ability | `maistro_canvas.canvas.routes`, `routes.canvas`, `maistro-canvas-frontend-server` | `some` | MIGRATE — pipeline stages become NodeRuns | ADR-045, ADR-040, ADR-067 | canvas stages visible as NodeRuns with retries as Attempts | #52 |
 | Open Design integration | `routes.design`, `services.design_service` | `few` | MIGRATE — renderers become Providers | ADR-061, ADR-100 | render effect recorded as Invocation | #52, #55 |
 | Evolve tournament optimizer | `routes.evolution`, `services.evolution` | `few` | MIGRATE — cycle is Run, battle is NodeRun | ADR-088, ADR-070126-6386, SPEC-070126-9d37 | tournament history reproducible from canonical Runs | #51 |

@@ -43,8 +43,30 @@ class DurableRunStore(Protocol):
         run_id: str,
         node_id: str,
         answer: dict[str, Any],
+        *,
+        at: datetime | None = None,
     ) -> DurableRunRecord:
         """Attach an answer and queue the paused canonical Run for resume."""
+        ...
+
+    async def timeout_hitl(
+        self,
+        run_id: str,
+        node_id: str,
+        *,
+        at: datetime | None = None,
+    ) -> DurableRunRecord:
+        """Terminalize a human pause whose persisted deadline elapsed."""
+        ...
+
+    async def cancel_hitl(
+        self,
+        run_id: str,
+        node_id: str,
+        *,
+        at: datetime | None = None,
+    ) -> DurableRunRecord:
+        """Terminalize a human pause by explicit cancellation."""
         ...
 
 
