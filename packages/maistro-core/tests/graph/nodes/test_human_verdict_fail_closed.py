@@ -1,4 +1,3 @@
-import pytest
 """Fail-closed verdicts for the human HITL nodes (#329 / ADR-090726-9a4e).
 
 Every verdict node used to default a *missing* `verdict` key to "approved" —
@@ -14,6 +13,8 @@ payload), so the run stays PAUSED and a corrected answer can still settle it.
 from __future__ import annotations
 
 from typing import Any
+
+import pytest
 
 from maistro.graph.nodes import NodeContext, get_node
 
