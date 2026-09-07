@@ -73,9 +73,7 @@ class TestExplicitPrincipalStartupGate:
             _validate_startup(settings)
 
     def test_prefixed_keys_pass_the_gate(self) -> None:
-        settings = Settings(
-            api_keys=["ops:secret-a", "alice:admin:secret-b"], require_auth=True
-        )
+        settings = Settings(api_keys=["ops:secret-a", "alice:admin:secret-b"], require_auth=True)
         _validate_startup(settings)  # Should not raise
 
 
