@@ -295,14 +295,6 @@ async def test_completed_effect_deduplicates_repeat_invocation(
         router=CostAwareRouter(registry),
         endpoint=GatewayEndpoint(base_url="http://gw"),
     )
-    kwargs: dict[str, Any] = dict(
-        binding=_binding(),
-        run_id="r1",
-        node_run_id="nr1",
-        attempt_id="a1",
-        effect_key="test:dedupe",
-        request=ModelChatRequest(messages=[{"role": "user", "content": "hi"}]),
-    )
     kwargs: dict[str, Any] = {
         "binding": _binding(),
         "run_id": "r1",
@@ -344,14 +336,6 @@ async def test_unreachable_gateway_records_failed_retryable_invocation(
         registry=registry,
         router=CostAwareRouter(registry),
         endpoint=GatewayEndpoint(base_url="http://gw"),
-    )
-    kwargs: dict[str, Any] = dict(
-        binding=_binding(),
-        run_id="r1",
-        node_run_id="nr1",
-        attempt_id="a1",
-        effect_key="test:unreachable",
-        request=ModelChatRequest(messages=[{"role": "user", "content": "hi"}]),
     )
     kwargs: dict[str, Any] = {
         "binding": _binding(),
