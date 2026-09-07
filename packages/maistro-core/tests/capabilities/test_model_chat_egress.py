@@ -20,6 +20,7 @@ import pytest
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.effect_context import new_in_memory_effect_context
 from maistro.capabilities.invocation import (
+    CapabilityUnavailable,
     InvocationStatus,
     UnsafeEffectRetry,
 )
@@ -27,9 +28,10 @@ from maistro.capabilities.model_chat import (
     MODEL_CHAT_CAPABILITY,
     ModelChatEgress,
     ModelChatRequest,
+    _gateway_usage,
     resolve_model_chat_provider,
 )
-from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
+from maistro.capabilities.providers.llm_gateway import GatewayEndpoint, LlmGatewayProvider
 from maistro.capabilities.types import Unavailable
 from maistro.providers.errors import NoEligibleModelError
 from maistro.providers.registry import InMemoryProviderRegistry
@@ -421,3 +423,137 @@ async def test_no_eligible_model_is_capability_unavailable() -> None:
     assert isinstance(provider, Unavailable)
     with pytest.raises(NoEligibleModelError):
         await CostAwareRouter(empty).select(RoutingTask())
+
+
+# --- diff-coverage branch closers (model_chat.py arcs 56, 161, 169) --------
+
+
+def test_gateway_usage_requires_dict_body() -> None:
+    """Arc 56 both ways: non-dict bodies carry no usage; dict bodies do."""
+
+    provider = LlmGatewayProvider(_meta("fast-model"), model="fast-model")
+
+    # Arc 56 True: a non-object gateway body has no usage to extract.
+    assert _gateway_usage(provider, ["not", "a", "dict"]) is None
+    assert _gateway_usage(provider, None) is None
+
+    # Arc 56 False: the dict body keeps mapping usage/cost metadata.
+    usage = _gateway_usage(provider, _OK_BODY)
+    assert usage is not None
+    assert usage.input_units == 100
+    assert usage.output_units == 20
+
+
+async def test_unavailable_selection_refuses_before_any_gateway_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Arc 161 False: an Unavailable resolver result is returned untracked.
+
+    ``tracked_resolve`` only records ``LlmGatewayProvider`` handles (arc 161
+    True, covered by every successful egress call above). An unavailable pin
+    crosses the seam as ``Unavailable`` and ``invoke`` refuses it with
+    ``CapabilityUnavailable`` before any HTTP is attempted.
+    """
+
+    effects = new_in_memory_effect_context()
+    registry = _registry()
+    registry.mark_unavailable("fast-model")
+    calls: list[str] = []
+
+    class _Resp:
+        status_code = 200
+
+        def json(self) -> Any:
+            return _OK_BODY
+
+    class _Client:
+        def __init__(self, *a: Any, **kw: Any) -> None: ...
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *a: Any) -> None: ...
+
+        async def post(self, url: str, **kw: Any) -> _Resp:
+            calls.append(url)
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    egress = ModelChatEgress(
+        effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+        endpoint=GatewayEndpoint(base_url="http://gw"),
+    )
+
+    with pytest.raises(CapabilityUnavailable):
+        await egress.complete(
+            binding=_binding(provider_name="fast-model"),
+            run_id="r1",
+            node_run_id="nr1",
+            attempt_id="a1",
+            effect_key="test:unavailable",
+            request=ModelChatRequest(messages=[{"role": "user", "content": "hi"}]),
+        )
+
+    assert calls == []  # refusal happened at resolution, not over HTTP
+
+
+async def test_usage_from_without_tracked_provider_returns_none() -> None:
+    """Arc 169 both ways: unselected usage is absent, selected usage maps."""
+
+    from types import SimpleNamespace
+
+    captured: dict[str, Any] = {}
+
+    class _StubInvocations:
+        async def invoke(
+            self,
+            *,
+            resolver: Any,
+            executor: Any,
+            usage_from: Any,
+            **kwargs: Any,
+        ) -> Any:
+            captured["resolver"] = resolver
+            captured["usage_from"] = usage_from
+            # Arc 169 True: nothing was resolved/tracked yet (a dedupe-shaped
+            # consumer), so usage extraction yields None instead of crashing.
+            assert usage_from(_OK_BODY) is None
+            return SimpleNamespace(
+                invocation_id="inv-stub",
+                binding=SimpleNamespace(provider_name="fast-model"),
+                result={"model": "fast-model"},
+                usage=None,
+            )
+
+    class _StubEffects:
+        invocations = _StubInvocations()
+
+    registry = _registry()
+    egress = ModelChatEgress(
+        _StubEffects(),  # type: ignore[arg-type]
+        registry=registry,
+        router=CostAwareRouter(registry),
+        endpoint=GatewayEndpoint(base_url="http://gw"),
+    )
+
+    result = await egress.complete(
+        binding=_binding(),
+        run_id="r1",
+        node_run_id="nr1",
+        attempt_id="a1",
+        effect_key="test:stub-seam",
+        request=ModelChatRequest(messages=[{"role": "user", "content": "hi"}]),
+    )
+    assert result.usage is None
+    assert result.body == {"model": "fast-model"}
+
+    # Arc 161 True + arc 169 False: once the tracked resolver records a
+    # gateway provider, the same usage_from maps the body via _gateway_usage.
+    provider = await captured["resolver"](_binding())
+    assert isinstance(provider, LlmGatewayProvider)
+    usage = captured["usage_from"](_OK_BODY)
+    assert usage is not None
+    assert usage.input_units == 100
+    assert usage.provider == "test-gw"
