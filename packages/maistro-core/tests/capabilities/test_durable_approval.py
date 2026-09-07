@@ -474,6 +474,7 @@ async def test_sqlite_concurrent_resolution_commits_only_one_decision(tmp_path) 
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("ADR-090726-9a4e/AC-1")
 async def test_in_memory_resolve_without_an_actor_is_refused() -> None:
     """A caller that cannot name who decided must not be able to settle an
     approval silently: the actor argument has no default, so omitting it is a
@@ -492,6 +493,7 @@ async def test_in_memory_resolve_without_an_actor_is_refused() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("ADR-090726-9a4e/AC-1")
 async def test_sqlite_resolve_without_an_actor_is_refused(tmp_path) -> None:
     """Same contract on the durable backend: no default actor, no settlement."""
     async with aiosqlite.connect(tmp_path / "approvals-no-actor.db") as conn:

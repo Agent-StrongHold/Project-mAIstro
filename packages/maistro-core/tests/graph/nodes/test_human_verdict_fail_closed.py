@@ -1,3 +1,4 @@
+import pytest
 """Fail-closed verdicts for the human HITL nodes (#329 / ADR-090726-9a4e).
 
 Every verdict node used to default a *missing* `verdict` key to "approved" —
@@ -32,6 +33,7 @@ def _ctx(node_id: str, answers: dict[str, Any]) -> NodeContext:
 # --- human.approve_draft ------------------------------------------------------
 
 
+@pytest.mark.ac("ADR-090726-9a4e/AC-2")
 async def test_approve_draft_missing_verdict_is_pending_not_approved() -> None:
     """The core fail-closed case: no verdict key, no approval, node re-pauses."""
     node = get_node("human.approve_draft")()
@@ -43,6 +45,7 @@ async def test_approve_draft_missing_verdict_is_pending_not_approved() -> None:
     assert result.output is None  # nothing was approved; there is no verdict
 
 
+@pytest.mark.ac("ADR-090726-9a4e/AC-2")
 async def test_approve_draft_blank_verdict_is_pending_not_approved() -> None:
     """An explicit-but-empty verdict is as absent as a missing key."""
     node = get_node("human.approve_draft")()
@@ -52,6 +55,7 @@ async def test_approve_draft_blank_verdict_is_pending_not_approved() -> None:
     assert result.metadata["paused_reason"] == "awaiting_human_approval"
 
 
+@pytest.mark.ac("ADR-090726-9a4e/AC-2")
 async def test_approve_draft_non_string_verdict_is_pending_not_approved() -> None:
     """A verdict that is not a string cannot be an approval either."""
     node = get_node("human.approve_draft")()
@@ -60,6 +64,7 @@ async def test_approve_draft_non_string_verdict_is_pending_not_approved() -> Non
     assert result.status == "paused"
 
 
+@pytest.mark.ac("ADR-090726-9a4e/AC-2")
 async def test_approve_draft_explicit_verdicts_still_resume() -> None:
     """Regression guard: an answer that states its verdict still completes,
     for every verdict the output schema admits."""
@@ -88,6 +93,7 @@ class _HolderResolver:
         return "alice"
 
 
+@pytest.mark.ac("ADR-090726-9a4e/AC-3")
 async def test_delegate_missing_verdict_never_routes_the_payload() -> None:
     """Fail closed *before* the holder lookup: a verdict nobody asserted must
     not hand the payload to a role holder as if it had been approved."""
@@ -105,6 +111,7 @@ async def test_delegate_missing_verdict_never_routes_the_payload() -> None:
     assert resolver.calls == []  # no routing happened on an asserted-less answer
 
 
+@pytest.mark.ac("ADR-090726-9a4e/AC-3")
 async def test_delegate_blank_verdict_is_pending_not_approved() -> None:
     from maistro.graph.nodes.human_delegate_to_role import HumanDelegateToRoleNode
 
@@ -115,6 +122,7 @@ async def test_delegate_blank_verdict_is_pending_not_approved() -> None:
     assert result.metadata["paused_reason"] == "awaiting_role_delegate"
 
 
+@pytest.mark.ac("ADR-090726-9a4e/AC-3")
 async def test_delegate_explicit_verdict_still_routes() -> None:
     """Regression guard: an explicit verdict still resolves and completes."""
     from maistro.graph.nodes.human_delegate_to_role import HumanDelegateToRoleNode
@@ -133,6 +141,7 @@ async def test_delegate_explicit_verdict_still_routes() -> None:
 # --- human.review_and_edit ----------------------------------------------------
 
 
+@pytest.mark.ac("ADR-090726-9a4e/AC-4")
 async def test_review_missing_verdict_is_pending_not_approved() -> None:
     """The redline gate is the same class of decision as approve_draft."""
     node = get_node("human.review_and_edit")()
@@ -145,6 +154,7 @@ async def test_review_missing_verdict_is_pending_not_approved() -> None:
     assert result.output is None
 
 
+@pytest.mark.ac("ADR-090726-9a4e/AC-4")
 async def test_review_blank_verdict_is_pending_not_approved() -> None:
     node = get_node("human.review_and_edit")()
     result = await node.run(
@@ -155,6 +165,7 @@ async def test_review_blank_verdict_is_pending_not_approved() -> None:
     assert result.metadata["paused_reason"] == "awaiting_human_review"
 
 
+@pytest.mark.ac("ADR-090726-9a4e/AC-4")
 async def test_review_explicit_verdict_with_edits_still_resumes() -> None:
     """Regression guard: an explicit verdict and its edits still complete."""
     node = get_node("human.review_and_edit")()

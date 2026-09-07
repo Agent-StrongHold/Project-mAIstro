@@ -139,6 +139,7 @@ def _audit_entries(action: str, target: str) -> list[dict[str, Any]]:
     ]
 
 
+@pytest.mark.ac("ADR-090726-9a4e/AC-5")
 async def test_answering_stamps_the_verified_session_principal_into_the_audit(seeded) -> None:
     """The audit record names who decided, not a convenient "system" (#329).
 
@@ -161,6 +162,7 @@ async def test_answering_stamps_the_verified_session_principal_into_the_audit(se
     assert entries[0]["detail"] == {"node_id": "ask"}
 
 
+@pytest.mark.ac("ADR-090726-9a4e/AC-5")
 async def test_cancelling_stamps_the_verified_session_principal_into_the_audit(seeded) -> None:
     """Cancellation is the same class of human decision through the same door
     (#329): the audit entry names the requester, not "system".
@@ -177,6 +179,7 @@ async def test_cancelling_stamps_the_verified_session_principal_into_the_audit(s
     assert entries[0]["detail"] == {"node_id": "ask"}
 
 
+@pytest.mark.ac("ADR-090726-9a4e/AC-5")
 def test_an_answer_with_no_verified_principal_is_never_recorded_as_system(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

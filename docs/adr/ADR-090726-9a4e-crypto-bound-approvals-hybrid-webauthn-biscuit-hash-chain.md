@@ -34,6 +34,12 @@ history:
   - status: Accepted
     date: 2026-09-07
     reason: "Operator ratified the full Hybrid for M2 (decision d5, 2026-09-07): WebAuthn + Biscuit + hash-chained log, all phases 0-4."
+ac:
+  AC-1: maistro.capabilities.approval_store
+  AC-2: maistro.graph.nodes.human_approve_draft
+  AC-3: maistro.graph.nodes.human_delegate_to_role
+  AC-4: maistro.graph.nodes.human_review_and_edit
+  AC-5: backend.routes.hitl
 ---
 
 # ADR-090726-9a4e: The Hybrid — crypto-bound approvals: WebAuthn presence, Biscuit delegation, hash-chained evidence
@@ -208,3 +214,21 @@ Front-matter `tests:` enumerates the tests proving the Phase 0/1 installment
 - Issue: #329
 - Phase 0/1 installment (this ADR + seam fixes): PR TBD
 - Follow-up SPECs: WebAuthn ceremony, Biscuit delegation, chain verification (phases 2–4).
+
+## Acceptance Criteria
+
+Phase-1 seam contract (landed and tested; Phases 2-4 machinery remains open
+under #329 and is out of scope for these criteria):
+
+- **AC-1**: `ApprovalStore.resolve` requires the verified principal; a
+  resolution without one is refused, never defaulted or recorded as free text.
+- **AC-2**: `human_approve_draft` treats a missing, blank, or non-string
+  verdict as pending — never as approval; explicit verdicts still resume.
+- **AC-3**: `human_delegate_to_role` never routes a payload on a missing or
+  blank verdict; explicit verdicts still route.
+- **AC-4**: `human_review_and_edit` treats a missing or blank verdict as
+  pending — never as approval; explicit verdicts with edits still resume.
+- **AC-5**: The HITL door stamps the verified session principal into answer
+  and cancel audit records, and an answer with no verified principal is never
+  recorded as `system`.
+
