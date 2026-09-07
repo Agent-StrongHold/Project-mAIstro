@@ -11,7 +11,7 @@ from maistro.capabilities.binding_store import BindingNotFound
 from maistro.capabilities.model_chat import MODEL_CHAT_CAPABILITY
 from maistro.container import Container, build_node_resolver, create_container
 from maistro.graph.nodes.base import NodeContext
-from maistro.graph.nodes.llm_summarize import LlmSummarizeNode
+from maistro.graph.nodes.llm_summarize import LlmSummarizeNode, LlmSummarizeOut
 from maistro.types.config import AgentConfig
 
 
@@ -151,7 +151,8 @@ async def test_container_resolved_summarize_uses_real_authorities_and_governed_i
     )
 
     assert result.success is True
-    assert getattr(result.output, "summary") == "A governed summary."
+    assert isinstance(result.output, LlmSummarizeOut)
+    assert result.output.summary == "A governed summary."
     assert calls == ["yaml-model"]
 
     invocations = await container.capability_effects.invocation_store.list_effect(
