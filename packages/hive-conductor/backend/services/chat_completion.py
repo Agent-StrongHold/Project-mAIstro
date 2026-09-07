@@ -22,6 +22,12 @@ from protocols.llm import LLMPort
 
 from maistro.http import shared_client
 from services.airtable_cache import get_airtable_base_tables_json, get_airtable_records_json
+from services.chat_gate import (
+    gate_tool_dispatch,
+    gate_untrusted,
+    new_gate_id,
+    refusal_content,
+)
 from services.secrets import litellm_api_key as _resolve_litellm_api_key
 from services.tool_primitives import (
     AIRTABLE_PROVIDER_IDS,
@@ -1740,10 +1746,72 @@ _TOOL_HANDLERS["mutate_workflow"] = tool_mutate_workflow
 
 
 async def _execute_tool(tool_name: str, args: dict[str, Any], user_id: str) -> dict[str, Any]:
-    """Execute a PM tool for real. No stubs. Calls Jira REST API directly."""
+    """Execute a PM tool for real. No stubs. Calls Jira REST API directly.
+
+    The #315 dispatch policy is enforced here rather than in each caller, so
+    every path that reaches a handler has crossed the same authorization:
+    privileged effects (destroy/mutate) need an approval the model cannot
+    mint, and networked effects need a principal. Handler-level tests that
+    monkeypatch this function replace the policy with the fake, exactly as
+    they replaced the dispatch before.
+    """
+    refusal = gate_tool_dispatch(tool_name, user_id)
+    if refusal is not None:
+        return {
+            "error": f"tool '{tool_name}' was not run: {refusal.reason}",
+            "blocked": True,
+        }
     jira_pat = _get_jira_pat(user_id)
     handler = _TOOL_HANDLERS.get(tool_name, _tool_poll_jira)
     return await handler(args, user_id, jira_pat)
+
+
+async def _gated_execute_tool(
+    tool_name: str, args: dict[str, Any], user_id: str, gate_id: str
+) -> tuple[dict[str, Any], str]:
+    """One model-authored tool call through the #315 boundaries.
+
+    The call (name + arguments) is untrusted model output and is scanned at
+    the user_input boundary before anything runs; the dispatch policy in
+    `_execute_tool` authorizes the effect; and the result is scanned at the
+    tool_result boundary before it is re-fed to the model, so an indirect
+    injection riding a tool result cannot reach the next turn. Returns the
+    result the model should see and the summary the stream should show —
+    blocked calls return an error result rather than executing.
+    """
+    call_gate = await gate_untrusted(
+        {"tool": tool_name, "args": args},
+        surface="chat_tool_call",
+        user_id=user_id,
+        gate_id=gate_id,
+        tool=tool_name,
+    )
+    if not call_gate.allowed:
+        return (
+            {"error": f"tool call refused by security gate ({call_gate.reason})", "blocked": True},
+            "Blocked by security gate",
+        )
+
+    try:
+        result = await _execute_tool(tool_name, args, user_id)
+    except Exception as tool_exc:
+        logger.warning("tool_execution_error name=%s error=%s", tool_name, tool_exc)
+        result = {"error": f"Tool '{tool_name}' failed: {type(tool_exc).__name__}: {tool_exc}"}
+
+    result_gate = await gate_untrusted(
+        result,
+        boundary="tool_result",
+        surface="chat_tool_result",
+        user_id=user_id,
+        gate_id=gate_id,
+        tool=tool_name,
+    )
+    if not result_gate.allowed:
+        return (
+            {"error": "tool result withheld by security gate", "blocked": True},
+            "Result withheld by security gate",
+        )
+    return result, _summarize_result(result)
 
 
 # ─── Chat metrics (every chat IS a DAG run) ─────────────────────────────────
@@ -1822,6 +1890,19 @@ async def _run_chat_completion_inner(
 
     _t0 = _time.perf_counter()
 
+    # The inbound turn crosses the Warden input boundary before any model or
+    # tool dispatch (#315) — the same detector the route layer and the HITL
+    # door use. A refusal answers as an ordinary assistant message and never
+    # reaches the model or the tool loop.
+    gate_id = new_gate_id()
+    inbound = await gate_untrusted(
+        req.messages, surface="chat_turn", user_id=user_id, gate_id=gate_id
+    )
+    if not inbound.allowed:
+        from services.chat_gate import openai_refusal
+
+        return openai_refusal(inbound)
+
     s = get_settings()
     model = req.model or os.environ.get("CHAT_DEFAULT_MODEL") or s.chat_default_model
     llm = _llm or build_llm_port()
@@ -1867,11 +1948,7 @@ async def _run_chat_completion_inner(
                 args = {}
 
             logger.info("tool_call name=%s args=%s user=%s", name, args, user_id)
-            try:
-                result = await _execute_tool(name, args, user_id)
-            except Exception as tool_exc:
-                logger.warning("tool_execution_error name=%s error=%s", name, tool_exc)
-                result = {"error": f"Tool '{name}' failed: {type(tool_exc).__name__}: {tool_exc}"}
+            result, _summary = await _gated_execute_tool(name, args, user_id, gate_id)
             logger.info(
                 "tool_result name=%s keys=%s",
                 name,
@@ -2076,6 +2153,22 @@ async def run_chat_completion_streaming(  # noqa: C901  streaming state machine
         system_prompt = _build_system_prompt(user_id)
         messages.insert(0, {"role": "system", "content": system_prompt})
 
+    # Same boundary, same policy as the non-streaming loop (#315): a refused
+    # turn streams as an ordinary `done` answer and never reaches the model.
+    gate_id = new_gate_id()
+    inbound = await gate_untrusted(
+        req.messages, surface="chat_stream_turn", user_id=user_id, gate_id=gate_id
+    )
+    if not inbound.allowed:
+        yield {"type": "status", "message": "Checking input security…"}
+        yield {
+            "type": "done",
+            "content": refusal_content(inbound),
+            "model": "chat-gate",
+            "gate_reason": inbound.reason,
+        }
+        return
+
     for iteration in range(5):
         yield {
             "type": "status",
@@ -2201,8 +2294,12 @@ async def run_chat_completion_streaming(  # noqa: C901  streaming state machine
                 metadata={"iteration": iteration, "tool_name": name},
                 allowed_tool_names=registered_tool_names,
             ):
-                result = await _execute_tool(name, args, user_id)
-            yield {"type": "tool_result", "tool": name, "summary": _summarize_result(result)}
+                # `_gated_execute_tool` scans the call, enforces the dispatch
+                # policy, executes, and scans the result at the tool_result
+                # boundary (#315) — indirect injection in a tool result is
+                # withheld before it reaches the next model turn.
+                result, summary = await _gated_execute_tool(name, args, user_id, gate_id)
+            yield {"type": "tool_result", "tool": name, "summary": summary}
 
             messages.append(
                 {

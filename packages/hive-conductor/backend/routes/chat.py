@@ -5,11 +5,18 @@ from typing import Literal
 from uuid import uuid4
 
 import stores
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from models.schemas import ChatCompletionRequest, ChatMessage, ChatSession, ChatSessionSummary
 from pydantic import BaseModel, ConfigDict
 from services.chat_completion import build_llm_port
 from services.chat_completion import conversation_only as _conversation_only
+from services.chat_gate import (
+    REASON_BUDGET_EXCEEDED,
+    REASON_SCANNER_ERROR,
+    REASON_SCANNER_TIMEOUT,
+    gate_untrusted,
+    openai_refusal,
+)
 from services.owned_records import chat_sessions_for
 
 router = APIRouter(tags=["chat"])
@@ -107,15 +114,40 @@ def _disabled_dashboard_response() -> dict:
     return {"choices": [{"message": {"role": "assistant", "content": _DASHBOARD_EDIT_DISABLED}}]}
 
 
+async def _gate_messages(req: ChatCompletionRequest, request: Request, surface: str):
+    """The Warden input boundary every external chat turn crosses (#315).
+
+    One function for both routes so streaming and non-streaming cannot drift:
+    the same scan, the same refusal shape, the same failure policy. A refused
+    turn answers as an ordinary assistant message (`content_filter`, like the
+    engine's #150 gate) and never reaches the model. Scanner failure and
+    oversized input are wiring-level refusals, so they surface as HTTP errors
+    rather than as conversational text a client might mistake for an answer.
+    """
+    user = getattr(request.state, "user", None) or {}
+    decision = await gate_untrusted(
+        req.messages, surface=surface, user_id=str(user.get("id") or user.get("username") or "")
+    )
+    if decision.allowed:
+        return None
+    if decision.reason == REASON_BUDGET_EXCEEDED:
+        raise HTTPException(status_code=413, detail="request exceeds the security scan budget")
+    if decision.reason in (REASON_SCANNER_TIMEOUT, REASON_SCANNER_ERROR):
+        raise HTTPException(status_code=503, detail="security scanner unavailable; request refused")
+    return openai_refusal(decision)
+
+
 @router.post("/complete")
 async def complete(req: ChatCompletionRequest, request: Request) -> dict:
     """Non-streaming conversational completion; model-driven tools are M0-disabled."""
-    del request  # authentication/ownership is enforced by middleware before this route
     if _dashboard_edit_requested(req):
         # Do not send the dashboard builder prompt to a model at all. The SPA
         # interprets textual ```widget_update``` blocks, so tool disabling alone
         # would not contain model-authored widget mutations (#483).
         return _disabled_dashboard_response()
+    refusal = await _gate_messages(req, request, "chat_complete")
+    if refusal is not None:
+        return refusal
     messages = list(req.messages)
     if not any(message.get("role") == "system" for message in messages):
         messages.insert(0, {"role": "system", "content": _CONVERSATION_SYSTEM_PROMPT})
@@ -128,19 +160,31 @@ async def stream_complete(req: ChatCompletionRequest, request: Request):
     """SSE-compatible conversational completion with tool execution disabled.
 
     M0 containment deliberately prefers one final `done` event over preserving
-    token streaming through the tool-capable agent loop. Full streaming parity
-    returns with the canonical Warden boundary in #315.
+    token streaming through the tool-capable agent loop. The Warden input
+    boundary (#315) is crossed before the stream starts, through the same
+    `_gate_messages` the non-streaming route uses — enforcement that lived in
+    the generator would be enforcement only once streaming had begun.
     """
     import json
 
     from fastapi.responses import StreamingResponse
 
-    del request
+    if _dashboard_edit_requested(req):
+        return StreamingResponse(
+            _single_done_event(_DASHBOARD_EDIT_DISABLED),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+    refusal = await _gate_messages(req, request, "chat_stream")
+    if refusal is not None:
+        content = refusal["choices"][0]["message"]["content"]
+        return StreamingResponse(
+            _single_done_event(content),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     async def event_gen():
-        if _dashboard_edit_requested(req):
-            yield f"data: {json.dumps({'type': 'done', 'content': _DASHBOARD_EDIT_DISABLED})}\n\n"
-            return
         try:
             messages = list(req.messages)
             if not any(message.get("role") == "system" for message in messages):
@@ -160,3 +204,13 @@ async def stream_complete(req: ChatCompletionRequest, request: Request):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+def _single_done_event(content: str):
+    """One `done` SSE frame — the shape every contained stream answer takes."""
+    import json
+
+    async def gen():
+        yield f"data: {json.dumps({'type': 'done', 'content': content})}\n\n"
+
+    return gen()
