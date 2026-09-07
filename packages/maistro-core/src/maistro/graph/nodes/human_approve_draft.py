@@ -62,7 +62,24 @@ class HumanApproveDraftNode(BaseNode[ApproveDraftIn, ApproveDraftOut]):
         answers = (ctx.metadata or {}).get("hitl_answers") or {}
         resumed = answers.get(ctx.node_id)
         if resumed is not None:
-            verdict = resumed.get("verdict", "approved")
+            verdict = resumed.get("verdict")
+            if not isinstance(verdict, str) or not verdict.strip():
+                # Fail closed (#329 / ADR-090726-9a4e): a missing or empty
+                # verdict key is not an approval. The absence of a key nobody
+                # asserted must never count as the human having approved, so
+                # the node stays pending — it re-pauses and keeps waiting for
+                # an answer that states a verdict explicitly.
+                pause_until(
+                    PAUSE_AWAITING_HUMAN_APPROVAL,
+                    resume_at=now_utc() + timedelta(seconds=inputs.timeout_seconds),
+                    metadata={
+                        "draft": inputs.draft,
+                        "draft_kind": inputs.draft_kind,
+                        "title": inputs.title,
+                        "timeout_seconds": inputs.timeout_seconds,
+                    },
+                )
+                return ApproveDraftOut()  # unreachable
             return ApproveDraftOut(
                 verdict=verdict,
                 modified_draft=resumed.get("modified_draft"),

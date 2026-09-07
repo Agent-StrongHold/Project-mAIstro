@@ -68,9 +68,25 @@ class HumanReviewAndEditNode(BaseNode[ReviewAndEditIn, ReviewAndEditOut]):
         answers = (ctx.metadata or {}).get("hitl_answers") or {}
         resumed = answers.get(ctx.node_id)
         if resumed is not None:
+            # Fail closed (#329 / ADR-090726-9a4e): the same class of fix as
+            # human.approve_draft — a missing or empty verdict key must not
+            # count as approval of the document under review.
+            verdict = resumed.get("verdict")
+            if not isinstance(verdict, str) or not verdict.strip():
+                pause_until(
+                    PAUSE_AWAITING_HUMAN_REVIEW,
+                    resume_at=now_utc() + timedelta(seconds=inputs.timeout_seconds),
+                    metadata={
+                        "document": inputs.document,
+                        "document_kind": inputs.document_kind,
+                        "title": inputs.title,
+                        "timeout_seconds": inputs.timeout_seconds,
+                    },
+                )
+                return ReviewAndEditOut()  # unreachable
             raw_edits = resumed.get("edits") or []
             return ReviewAndEditOut(
-                verdict=resumed.get("verdict", "approved"),
+                verdict=verdict,
                 edits=[FieldEdit.model_validate(edit) for edit in raw_edits],
                 reviewer_note=str(resumed.get("reviewer_note") or ""),
                 timed_out=bool(resumed.get("timed_out", False)),

@@ -81,13 +81,30 @@ class HumanDelegateToRoleNode(BaseNode[DelegateToRoleIn, DelegateToRoleOut]):
         answers = (ctx.metadata or {}).get("hitl_answers") or {}
         resumed = answers.get(ctx.node_id)
         if resumed is not None:
+            # Fail closed (#329 / ADR-090726-9a4e) before any routing: a
+            # missing or empty verdict key is not an approval, so the node
+            # stays pending rather than handing the payload to a role holder
+            # under a verdict nobody asserted.
+            verdict = resumed.get("verdict")
+            if not isinstance(verdict, str) or not verdict.strip():
+                pause_until(
+                    PAUSE_AWAITING_ROLE_DELEGATE,
+                    resume_at=now_utc() + timedelta(seconds=inputs.timeout_seconds),
+                    metadata={
+                        "role": inputs.role,
+                        "payload": inputs.payload,
+                        "title": inputs.title,
+                        "timeout_seconds": inputs.timeout_seconds,
+                    },
+                )
+                return DelegateToRoleOut()  # unreachable
             resolved_user_id = (
                 self._role_resolver.resolve(inputs.role) if self._role_resolver else None
             )
             if resolved_user_id is None:
                 return DelegateToRoleOut(verdict="no_holder", resolved_user_id=None)
             return DelegateToRoleOut(
-                verdict=resumed.get("verdict", "approved"),
+                verdict=verdict,
                 resolved_user_id=resolved_user_id,
                 modified_payload=resumed.get("modified_payload"),
                 reviewer_note=str(resumed.get("reviewer_note") or ""),
