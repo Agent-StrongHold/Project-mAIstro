@@ -1281,10 +1281,16 @@ async def _tool_create_dashboard_widget(
     `{"created": True}` whatever happened — so a chat that could not persist a
     widget still told the user it had made one. It now goes through the same
     durable path the API does (#340), and reports the failure it gets.
+
+    #314: the config a model proposes is constrained to the declarative
+    capability set before it is stored — and non-conforming fields are
+    *reported*, not silently dropped, so the model can correct the config
+    instead of believing a widget that was never created.
     """
     from uuid import uuid4
 
     from services import dashboard_layouts
+    from services.dashboard_safety import widget_config_violations
 
     if not user_id:
         # The old `user_id or "dev"` pooled every unidentified caller into one
@@ -1297,6 +1303,14 @@ async def _tool_create_dashboard_widget(
     size = args.get("size", "2")
     config = args.get("config", {})
     tab_name = args.get("tab", "")
+
+    violations = widget_config_violations(widget_type, config)
+    if violations:
+        return {
+            "created": False,
+            "error": "widget config was rejected by the declarative capability schema",
+            "violations": violations,
+        }
 
     # `effective`, not `load`: before a first save the route hands the user their
     # preset without storing it, so editing the empty record and saving it
