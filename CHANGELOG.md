@@ -8,6 +8,19 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 Versions are **lockstep across the monorepo**: every published package carries
 the same version as the root `VERSION` file.
 
+**What requires an Unreleased entry (#385).** Any change a user, operator, or
+security reviewer can observe from outside the code — API surface or behavior,
+CLI, configuration, database schema, dependencies, security posture, and
+anything an operator must do differently. Each entry names its category
+(`Added`/`Changed`/`Deprecated`/`Removed`/`Fixed`/`Security`, plus
+`Dependencies` for upgrades) and links the issue or PR it belongs to
+(`(#1234)`); a change with no tracked issue carries `(no linked issue:
+<reason>)`. Generated churn (formatting, lockfile regeneration, baseline
+re-basing) and purely internal refactors with no observable effect are
+excluded by policy and need no entry. The release-consistency gate checks
+entry shape, not heading presence; at tag time it refuses to publish an empty
+or placeholder-only section.
+
 ## [Unreleased]
 
 ### Security
@@ -36,7 +49,7 @@ the same version as the root `VERSION` file.
 
 ### Changed
 
-- **HALF_OPEN circuit-breaker success is now caller-bound.** `record_success()`
+- **HALF_OPEN circuit-breaker success is now caller-bound (#828).** `record_success()`
   closes a HALF_OPEN circuit only when called by the thread or asyncio task
   whose `allow_request()` call acquired the current exclusive probe lease;
   successes from other callers are ignored. A probe owner can call

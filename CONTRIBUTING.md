@@ -103,6 +103,7 @@ Imperative mood, one logical change per commit. PR titles include the backlog id
 - [ ] Front-matter present (registry CI green)
 - [ ] Tests at the right layer per `ADR-032`
 - [ ] Front-matter references resolve
+- [ ] CHANGELOG `## [Unreleased]` entry for user/operator/security-visible changes — categorized and issue-linked; generated churn is excluded by policy ([`CHANGELOG.md`](CHANGELOG.md) preamble, #385)
 - [ ] BACKLOG entry status updated if shipping closes one
 
 ## Where to ask

@@ -67,6 +67,34 @@ Promotion follows from 4 and from `release_guard`: a `vX.Y.Z` tag needs a
 `## [X.Y.Z]` heading *and* `VERSION == X.Y.Z`, so cutting the target release
 means `scripts/bump_version.py <target>` first, which moves all 32 sites at
 once. Until then the two numbers differ on purpose, and this says so.
+
+Why Unreleased *content* is checked, not just the heading (#385)
+----------------------------------------------------------------
+A heading is not an entry. This gate used to accept an `## [Unreleased]`
+section that was empty or held only placeholders while extensive
+user-visible work landed, because "the heading exists" was the whole test.
+The policy this gate now enforces, stated where PR authors write entries:
+
+- A change a user, operator or security reviewer can observe from outside
+  the code — API surface or behaviour, CLI, configuration, database schema,
+  dependencies, security posture, anything an operator must do differently —
+  requires a categorized `## [Unreleased]` entry in the same PR.
+- Generated churn (formatting, lockfile regeneration, baseline re-basing) and
+  purely internal refactors with no observable effect are excluded by
+  policy: they need no entry. Dependency updates get an entry under
+  `Dependencies` linking their PR, so an operator-visible upgrade can never
+  hide as "noise".
+- Every entry sits under a recognized category and links the issue or PR it
+  belongs to (`(#1234)`); a change with no tracked issue carries the explicit
+  exclusion `(no linked issue: <reason>)` instead.
+- Placeholders (TODO/TBD/none/...) are *worse* than an empty section: they
+  defeat a presence check while committing nothing. Placeholder-only
+  content fails; a genuinely empty section passes an ordinary run — a tree
+  may simply not have accumulated user-visible changes yet.
+- Release readiness is the one place emptiness cannot stand: at tag time
+  (`--releasing vX.Y.Z`) the section being published must contain meaningful
+  content, because `release_notes.py` publishes exactly that section and
+  never substitutes generated output for the curated one (E3, #296).
 """
 
 from __future__ import annotations
@@ -93,6 +121,49 @@ _VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 _HEADING_RE = re.compile(r"^##\s*\[(?P<version>\d+\.\d+\.\d+)\]\s*-\s*(?P<when>.+?)\s*$")
 
 _UNRELEASED_RE = re.compile(r"^##\s*\[Unreleased\]\s*$", re.M)
+
+#: The categories an `## [Unreleased]` entry may sit under. Keep a Changelog
+#: 1.1's set, plus `Dependencies` — this repo's explicit home for the one class
+#: of generated churn that is still operator-visible (an upgrade changes what
+#: ships). Without a recognized home a dependency bump either landed under a
+#: wrong category or nowhere, and "nowhere" passed because only the heading's
+#: presence was checked (#385).
+UNRELEASED_CATEGORIES: frozenset[str] = frozenset(
+    {"Added", "Changed", "Deprecated", "Removed", "Fixed", "Security", "Dependencies"}
+)
+
+#: A linked issue or PR, Keep a Changelog style: `(#1234)`. The leading `(`
+#: matters — bare `#1234` in prose ("see #1234") is a mention, not a link, and
+#: a mention is exactly what an entry that ought to name its own issue would
+#: hide behind.
+_ISSUE_LINK_RE = re.compile(r"\(#\d+")
+
+#: The explicit exclusion for an entry with no tracked issue. An annotation,
+#: not a pattern: the reason is part of the text.
+_NO_ISSUE_RE = re.compile(r"\(no linked issue: ", re.I)
+
+#: Words that read as content to a presence check and mean nothing. An
+#: Unreleased section made only of these is *worse* than an empty one: it
+#: satisfies "the heading has something under it" while committing no
+#: information at all (#385).
+_PLACEHOLDER_RE = re.compile(
+    r"(?i)\b(tbd|todo|placeholder|forthcoming|n/?a|nothing here|lorem ipsum)\b"
+)
+
+#: One entry bullet, CommonMark list form. Continuation lines belong to the
+#: bullet above them and carry no claim of their own.
+_ENTRY_RE = re.compile(r"^(?:\*|\+|-) ")
+
+
+def _entry_text(entry_line: str) -> str:
+    """An entry bullet's own text: the marker stripped, whitespace trimmed.
+
+    Placeholder matching is `fullmatch` on purpose — a *line-shaped* token,
+    not a mention — and `- TODO` must therefore be compared as `TODO`, not
+    fail the match because of the list marker every real entry carries.
+    """
+    return _ENTRY_RE.sub("", entry_line, count=1).strip()
+
 
 #: What a heading says when its release has not happened. Everything else in
 #: that field must be a real ISO date — see `classify_headings`.
@@ -195,6 +266,152 @@ def duplicate_versions(headings: list[tuple[str, str]]) -> list[str]:
     return sorted(v for v, count in seen.items() if count > 1)
 
 
+def section_body(text: str, heading_re: re.Pattern[str]) -> str | None:
+    """The body under the first `heading_re` heading, to the next `## ` one.
+
+    None when the heading is absent. Curated sections may open with prose
+    before their first `###` category (the 1.0.0 section does), so the body is
+    returned verbatim and callers decide what counts as an entry.
+    """
+    match = heading_re.search(text)
+    if match is None:
+        return None
+    rest = text[match.end() :]
+    nxt = re.search(r"^## ", rest, re.M)
+    return rest[: nxt.start()] if nxt else rest
+
+
+def _entries(body: str) -> list[tuple[int, str, str]]:
+    """`(line_no, category, entry_text)` for every entry bullet in a section.
+
+    `category` is the `### ` heading the bullet sits under, or "" for bullets
+    before any category heading — which the Unreleased shape rules reject, so
+    the position is kept rather than silently dropped. Continuation lines
+    (indented prose of the same bullet) are folded into `entry_text`: a Keep a
+    Changelog entry carries its issue link anywhere in the bullet, and only
+    reading the first line would reject the well-formed entries that happen to
+    wrap onto a second line — like every entry this file already carries.
+    """
+    out: list[tuple[int, str, str]] = []
+    category = ""
+    current: tuple[int, str, list[str]] | None = None
+    for index, line in enumerate(body.splitlines()):
+        heading = re.match(r"^###\s+(.+?)\s*$", line)
+        if heading is not None:
+            category = heading[1]
+            current = None
+            continue
+        if _ENTRY_RE.match(line):
+            if current is not None:
+                out.append((current[0], current[1], " ".join(current[2])))
+            current = (index, category, [line])
+            continue
+        if current is not None and line[:1].isspace():
+            current[2].append(line)
+        elif line.strip() and current is not None:
+            out.append((current[0], current[1], " ".join(current[2])))
+            current = None
+    if current is not None:
+        out.append((current[0], current[1], " ".join(current[2])))
+    return out
+
+
+def _placeholder_only(body: str) -> bool:
+    """Whether every content line of a section body is a placeholder token.
+
+    `TODO` under `### Added` is the canonical way to defeat a presence check:
+    the heading exists, the category exists, and the entry says nothing.
+    Category headings are structure, not content, so they are ignored — a
+    body of headings plus TODO is placeholder-only in every way that matters.
+    """
+    lines = [
+        line.strip() for line in body.splitlines() if line.strip() and not re.match(r"^###\s", line)
+    ]
+    lines = [
+        _ENTRY_RE.sub("", line, count=1).strip() if _ENTRY_RE.match(line) else line
+        for line in lines
+    ]
+    return bool(lines) and all(_PLACEHOLDER_RE.fullmatch(line) is not None for line in lines)
+
+
+def unreleased_problems(changelog: str) -> list[str]:
+    """Shape problems in the `## [Unreleased]` section (#385).
+
+    A heading is not an entry. When the section carries any content at all,
+    every entry must be categorized, and every entry must link the issue or PR
+    it belongs to or carry the explicit no-issue exclusion — otherwise the
+    section can look populated while nothing in it is traceable. A genuinely
+    empty section is not a problem here: a tree may not have accumulated
+    user-visible changes, and release readiness — where emptiness *is* a
+    problem — is `_release_readiness_problems`'s job.
+    """
+    body = section_body(changelog, _UNRELEASED_RE)
+    if body is None or not body.strip():
+        return []
+    if _placeholder_only(body):
+        return [
+            "CHANGELOG.md's '## [Unreleased]' section is placeholder-only (TODO/TBD/none/...). "
+            "A placeholder defeats the content check while committing nothing: write the "
+            "real entry or remove the placeholder."
+        ]
+    problems: list[str] = []
+    for _, category, line in _entries(body):
+        if category not in UNRELEASED_CATEGORIES:
+            problems.append(
+                f"CHANGELOG.md Unreleased entry {line[:60]!r} sits under "
+                f"{category or 'no category'}. Entries belong under one of: "
+                f"{', '.join(sorted(UNRELEASED_CATEGORIES))}."
+            )
+            continue
+        if _PLACEHOLDER_RE.fullmatch(_entry_text(line)):
+            problems.append(
+                f"CHANGELOG.md Unreleased entry {line[:60]!r} is a placeholder, not an entry."
+            )
+            continue
+        if _ISSUE_LINK_RE.search(line) is None and _NO_ISSUE_RE.search(line) is None:
+            problems.append(
+                f"CHANGELOG.md Unreleased entry {line[:60]!r} links no "
+                "issue or PR. Add (#1234), or '(no linked issue: <reason>)' when the change "
+                "has no tracked issue."
+            )
+    if not _entries(body):
+        problems.append(
+            "CHANGELOG.md's '## [Unreleased]' section has content but no entries under a "
+            "recognized category. User-visible changes need a categorized bullet so the "
+            "entry can be linked, reviewed and released."
+        )
+    return problems
+
+
+def _release_readiness_problems(changelog: str, releasing: str) -> list[str]:
+    """Why the section being published is not releasable (#385).
+
+    `release_notes.py` publishes the curated `## [X.Y.Z]` section verbatim — it
+    never substitutes generated output for the curated one — so a tag cut
+    against an empty or placeholder-only section publishes exactly that. The
+    rc form is reduced the same way `release_guard` reduces it: a candidate
+    publishes the notes of the release it is a candidate for.
+    """
+    match = _RELEASE_TAG_RE.match(releasing) or re.match(
+        r"^v(?P<version>\d+\.\d+\.\d+)-rc\d+$", releasing
+    )
+    if match is None:
+        return []  # release_guard owns tag-shape errors
+    version = match["version"]
+    heading_re = re.compile(rf"^##\s*\[{re.escape(version)}\][^\n]*", re.M)
+    body = section_body(changelog, heading_re)
+    if body is None:
+        return []  # the heading's existence is release_guard's check
+    if body.strip() and not _placeholder_only(body):
+        return []
+    return [
+        f"CHANGELOG.md's '## [{version}]' section is {'placeholder-only' if body.strip() else 'empty'} "
+        f"and tag {releasing} is being cut against it. release_notes.py publishes exactly "
+        "this section; an empty or placeholder-only Unreleased cannot satisfy release "
+        "readiness (#385)."
+    ]
+
+
 def list_release_tags() -> list[str]:
     """Every final `vX.Y.Z` tag in this repository, newest-sorting last.
 
@@ -272,6 +489,8 @@ def check(*, releasing: str | None = None) -> list[str]:
     released = latest_release(list_release_tags(), releasing=releasing)
     problems.extend(_tag_problems(raw_version, version, dated, released))
     problems.extend(_readme_problems(raw_version, target_raw, released))
+    if releasing is not None:
+        problems.extend(_release_readiness_problems(CHANGELOG.read_text(), releasing))
     return problems
 
 
@@ -292,6 +511,10 @@ def _changelog_problems(
             "CHANGELOG.md has no '## [Unreleased]' section — there is nowhere to write "
             "the change you are making now."
         )
+    else:
+        # Presence of the heading is necessary and never sufficient (#385):
+        # content, when it exists, must be categorized and traceable.
+        problems.extend(unreleased_problems(changelog))
 
     headings = changelog_headings(changelog)
     duplicates = duplicate_versions(headings)

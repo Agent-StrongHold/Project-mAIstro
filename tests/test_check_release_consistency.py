@@ -151,6 +151,221 @@ def test_a_missing_unreleased_section_fails(gate, tmp_path) -> None:
     assert any("no '## [Unreleased]' section" in p for p in problems)
 
 
+# --- a heading is not an entry: Unreleased content shape (#385) -----------
+
+
+def test_a_categorized_linked_unreleased_entry_passes(gate, tmp_path) -> None:
+    """The shape the policy asks for: category, entry, link."""
+    _write(
+        gate,
+        tmp_path,
+        changelog=(
+            "# Changelog\n\n## [Unreleased]\n\n### Fixed\n\n- **Thing (#9).** Fixed.\n\n"
+            "## [1.0.0] - TBD\n\nnotes\n"
+        ),
+    )
+
+    assert gate.check() == []
+
+
+def test_a_truly_empty_unreleased_section_passes_an_ordinary_run(gate, tmp_path) -> None:
+    """A tree may simply not have accumulated user-visible changes yet.
+
+    Release readiness — where emptiness is a problem — is the `--releasing`
+    path's job, not every run's.
+    """
+    _write(gate, tmp_path)
+
+    assert gate.check() == []
+
+
+def test_a_placeholder_only_unreleased_section_fails(gate, tmp_path) -> None:
+    """TODO defeats a presence check while committing nothing."""
+    _write(
+        gate,
+        tmp_path,
+        changelog=(
+            "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- TODO\n\n## [1.0.0] - TBD\n\nnotes\n"
+        ),
+    )
+
+    problems = gate.check()
+
+    assert any("placeholder-only" in p for p in problems)
+
+
+def test_an_entry_without_a_linked_issue_fails(gate, tmp_path) -> None:
+    _write(
+        gate,
+        tmp_path,
+        changelog=(
+            "# Changelog\n\n## [Unreleased]\n\n### Fixed\n\n- **Something.** Fixed, "
+            "traceably to no issue.\n\n## [1.0.0] - TBD\n\nnotes\n"
+        ),
+    )
+
+    problems = gate.check()
+
+    assert any("links no issue or PR" in p for p in problems)
+
+
+def test_a_linked_issue_on_a_wrapped_line_counts(gate, tmp_path) -> None:
+    """Keep a Changelog entries wrap; the link rides anywhere in the bullet.
+
+    The shipped CHANGELOG's entries are multi-line, so a first-line-only link
+    check would reject exactly the entries that already exist.
+    """
+    _write(
+        gate,
+        tmp_path,
+        changelog=(
+            "# Changelog\n\n## [Unreleased]\n\n### Security\n\n- **A long title that wraps\n"
+            "  onto a second line (#42).** Detail.\n\n## [1.0.0] - TBD\n\nnotes\n"
+        ),
+    )
+
+    assert gate.check() == []
+
+
+def test_the_explicit_no_issue_exclusion_is_accepted(gate, tmp_path) -> None:
+    """Policy allows entries with no tracked issue, annotated as such."""
+    _write(
+        gate,
+        tmp_path,
+        changelog=(
+            "# Changelog\n\n## [Unreleased]\n\n### Fixed\n\n- **Typo (no linked issue: "
+            "prose fix).** One word.\n\n## [1.0.0] - TBD\n\nnotes\n"
+        ),
+    )
+
+    assert gate.check() == []
+
+
+def test_an_entry_outside_a_category_fails(gate, tmp_path) -> None:
+    _write(
+        gate,
+        tmp_path,
+        changelog=(
+            "# Changelog\n\n## [Unreleased]\n\n- **Bare bullet (#7).** No category.\n\n"
+            "## [1.0.0] - TBD\n\nnotes\n"
+        ),
+    )
+
+    problems = gate.check()
+
+    assert any("under no category" in p for p in problems)
+
+
+def test_an_unrecognized_category_fails(gate, tmp_path) -> None:
+    _write(
+        gate,
+        tmp_path,
+        changelog=(
+            "# Changelog\n\n## [Unreleased]\n\n### Misc\n\n- **Thing (#9).** Unclear "
+            "kind of change.\n\n## [1.0.0] - TBD\n\nnotes\n"
+        ),
+    )
+
+    problems = gate.check()
+
+    assert any("under Misc" in p and "Entries belong under" in p for p in problems)
+
+
+def test_the_dependencies_category_is_recognized(gate, tmp_path) -> None:
+    """The explicit home for operator-visible generated churn."""
+    _write(
+        gate,
+        tmp_path,
+        changelog=(
+            "# Changelog\n\n## [Unreleased]\n\n### Dependencies\n\n- **httpx 0.27 → "
+            "0.28 (#60).** No source change required.\n\n## [1.0.0] - TBD\n\nnotes\n"
+        ),
+    )
+
+    assert gate.check() == []
+
+
+def test_content_with_no_entries_at_all_fails(gate, tmp_path) -> None:
+    """Prose under Unreleased is not a categorized entry."""
+    _write(
+        gate,
+        tmp_path,
+        changelog=(
+            "# Changelog\n\n## [Unreleased]\n\nSome words about work.\n\n"
+            "## [1.0.0] - TBD\n\nnotes\n"
+        ),
+    )
+
+    problems = gate.check()
+
+    assert any("no entries under a recognized category" in p for p in problems)
+
+
+def test_releasing_against_an_empty_target_section_fails(gate, tmp_path) -> None:
+    """Release readiness: publish emptiness is not an option.
+
+    `release_notes.py` publishes exactly the curated section, so a tag cut
+    against an empty one publishes empty notes — while passing every other
+    consistency check, which is the state #385 exists to reject.
+    """
+    _write(
+        gate,
+        tmp_path,
+        version="1.0.0",
+        changelog="# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - TBD\n",
+        readme=f"{gate.README_BEGIN}\n{_status(current='1.0.0')}\n{gate.README_END}",
+        tags=["v1.0.0"],
+    )
+
+    problems = gate.check(releasing="v1.0.0")
+
+    assert any("is empty" in p and "v1.0.0" in p for p in problems)
+
+
+def test_releasing_against_a_placeholder_target_section_fails(gate, tmp_path) -> None:
+    _write(
+        gate,
+        tmp_path,
+        version="1.0.0",
+        changelog=("# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - TBD\n\nTBD\n"),
+        readme=f"{gate.README_BEGIN}\n{_status(current='1.0.0')}\n{gate.README_END}",
+        tags=["v1.0.0"],
+    )
+
+    problems = gate.check(releasing="v1.0.0")
+
+    assert any("placeholder-only" in p for p in problems)
+
+
+def test_releasing_an_rc_checks_the_base_version_section(gate, tmp_path) -> None:
+    """A candidate publishes the notes of the release it is a candidate for."""
+    _write(
+        gate,
+        tmp_path,
+        version="1.0.0",
+        changelog=("# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - TBD\n\n- Real curated notes.\n"),
+        readme=f"{gate.README_BEGIN}\n{_status(current='1.0.0')}\n{gate.README_END}",
+        tags=["v1.0.0-rc1"],
+    )
+
+    problems = gate.check(releasing="v1.0.0-rc1")
+
+    assert problems == []
+
+
+def test_releasing_against_a_curated_target_section_passes(gate, tmp_path) -> None:
+    _write(
+        gate,
+        tmp_path,
+        version="1.0.0",
+        changelog=("# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - TBD\n\nCurated notes.\n"),
+        readme=f"{gate.README_BEGIN}\n{_status(current='1.0.0')}\n{gate.README_END}",
+        tags=["v1.0.0"],
+    )
+
+    assert gate.check(releasing="v1.0.0") == []
+
+
 def test_an_rc_suffix_in_version_fails(gate, tmp_path) -> None:
     """Candidate-ness lives in the tag alone (ADR-073126-c4e1 §2)."""
     _write(gate, tmp_path, version="1.0.0-rc1")
@@ -361,7 +576,8 @@ def test_the_tag_being_released_is_excluded(gate, tmp_path) -> None:
         tmp_path,
         version="1.0.0",
         changelog=(
-            "# Changelog\n\n## [Unreleased]\n\n## [1.1.0] - TBD\n\n## [1.0.0] - 2026-08-23\n"
+            "# Changelog\n\n## [Unreleased]\n\n## [1.1.0] - TBD\n\n## [1.0.0] - "
+            "2026-08-23\n\nCurated release notes.\n"
         ),
         readme=f"{gate.README_BEGIN}\n{_status(current='1.0.0', target='1.1.0')}\n{gate.README_END}",
         tags=["v1.0.0"],
