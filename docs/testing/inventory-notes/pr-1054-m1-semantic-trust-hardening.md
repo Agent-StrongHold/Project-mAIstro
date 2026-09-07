@@ -1,25 +1,29 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +6
+  packages/maistro-core/tests: +7
   packages/hive-conductor/backend/tests: +3
 ---
 # pr-1054-m1-semantic-trust-hardening
 
-M1 semantic-trust hardening (PR #1054) pins four adversarial repairs with nine
-net new node IDs — six in `packages/maistro-core/tests`, three in
+M1 semantic-trust hardening (PR #1054) pins four adversarial repairs with ten
+net new node IDs — seven in `packages/maistro-core/tests`, three in
 `packages/hive-conductor/backend/tests`.
 
-maistro-core (+6), each pinning one mutation this PR exists to kill:
+maistro-core (+7), each pinning one mutation this PR exists to kill:
 
 - `tests/graph/durable_runs/test_launch_state_trust.py` (new file): a crash
   after admission but before checkpoint 1 must never execute empty launch
   state (non-empty launches are refused without a durable
-  `durable_graph_launch` snapshot), and bootstrap recovery must rehydrate the
-  exact admitted inputs/blackboard metadata, detached from caller-owned
-  mutable data. Equality is asserted through `thaw_json_value` because
-  `GraphExecutionState` deliberately freezes JSON-shaped state (nested
-  mappings become read-only proxies, lists become tuples) on both the fresh
-  and recovery construction paths.
+  `durable_graph_launch` snapshot), bootstrap recovery must rehydrate the
+  exact admitted inputs/blackboard metadata detached from caller-owned
+  mutable data, and a corrupted admission snapshot (non-object provenance
+  fact, non-object `initial_inputs`, non-object `blackboard_metadata`) must
+  refuse recovery loudly rather than silently empty-launch — the branch arcs
+  the diff-coverage floor (per-file 80%) flagged when the previously-skipped
+  coverage gate first ran against this PR. Equality is asserted through
+  `thaw_json_value` because `GraphExecutionState` deliberately freezes
+  JSON-shaped state (nested mappings become read-only proxies, lists become
+  tuples) on both the fresh and recovery construction paths.
 - `tests/graph/durable_runs/test_pause_redispatch_trust.py` (new file): an
   elapsed answer-gated pause (remote delegation/harness class) must not
   redispatch physical work merely because a timeout timestamp elapsed, while
@@ -35,6 +39,6 @@ provenance instead of silently suppressing successors, natural-language
 `if x == y` text is not mistaken for a syntactic predicate, and a two-node
 legacy DAG with `condition="if x"` still physically runs the successor.
 
-The six core node IDs were counted against the frozen-state equality fix in
+The seven core node IDs include the frozen-state equality fix in
 `test_bootstrap_recovery_rehydrates_exact_admitted_launch_snapshot`; no
 existing node IDs were removed or renamed.

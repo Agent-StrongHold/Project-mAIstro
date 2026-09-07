@@ -13,6 +13,10 @@ from maistro.graph.durable_runs import (
     recovery,
     run_durable_graph,
 )
+from maistro.graph.durable_runs.launch import (
+    DURABLE_GRAPH_LAUNCH_PROVENANCE,
+    launch_state_from_run,
+)
 from maistro.graph.execution_state import thaw_json_value
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
@@ -57,6 +61,33 @@ async def test_nonempty_launch_state_must_be_durable_before_checkpoint_one() -> 
 
     assert await durable.get(admitted.run_id) is None
     assert (await run_store.get_run(admitted.run_id)).status is RunStatus.QUEUED
+
+
+@pytest.mark.asyncio
+async def test_corrupt_durable_launch_provenance_fails_loudly() -> None:
+    """A corrupted admission snapshot must refuse recovery, not empty-launch."""
+    run_store, graph = await _spine()
+    corrupt_snapshots = (
+        # provenance fact itself is not an object
+        {DURABLE_GRAPH_LAUNCH_PROVENANCE: "corrupted"},
+        # initial_inputs is not an object
+        {DURABLE_GRAPH_LAUNCH_PROVENANCE: {"initial_inputs": "corrupted"}},
+        # blackboard_metadata is not an object
+        {
+            DURABLE_GRAPH_LAUNCH_PROVENANCE: {
+                "initial_inputs": {},
+                "blackboard_metadata": 42,
+            }
+        },
+    )
+    for provenance in corrupt_snapshots:
+        admitted = await run_store.create_run(
+            graph,
+            initial_status=RunStatus.QUEUED,
+            provenance=dict(provenance),
+        )
+        with pytest.raises(RunIntegrityError, match="durable_graph_launch"):
+            launch_state_from_run(admitted)
 
 
 @pytest.mark.asyncio
