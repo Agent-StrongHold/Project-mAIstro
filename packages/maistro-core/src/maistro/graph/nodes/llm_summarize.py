@@ -110,9 +110,7 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
         self._registry: LLMProviderRegistry = (
             registry if registry is not None else InMemoryProviderRegistry()
         )
-        self._router: LLMRouter = (
-            router if router is not None else CostAwareRouter(self._registry)
-        )
+        self._router: LLMRouter = router if router is not None else CostAwareRouter(self._registry)
 
     async def _execute(self, inputs: LlmSummarizeIn, ctx: NodeContext) -> LlmSummarizeOut:
         # LLM gateway endpoint + key — pulled from env (maistro config layer
