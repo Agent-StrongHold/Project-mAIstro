@@ -150,7 +150,12 @@ def test_a_migration_requires_the_predecessor_to_be_pruned(gate) -> None:
 def test_the_shipped_migration_map_is_the_one_reviewed_move(gate) -> None:
     """The exception is scoped per move, like CANDIDATE_AUTHORED: an entry
     nobody reviewed landing here would widen it silently."""
-    assert gate.CANDIDATE_MIGRATIONS == {"services.legacy_dag_node": "services.graph_runner"}
+    assert gate.CANDIDATE_MIGRATIONS == {
+        "services.legacy_dag_node": "services.graph_runner",
+        # Reviewed move #2 (m1/56): llm_summarize retired onto the governed
+        # gateway — operator-approved migration, predecessor pruned (#56).
+        "maistro.capabilities.providers.llm_gateway": "maistro.graph.nodes.llm_summarize",
+    }
 
 
 def test_the_shipped_inventory_matches_the_shipped_code(gate) -> None:
