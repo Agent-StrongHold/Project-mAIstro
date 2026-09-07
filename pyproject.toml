@@ -211,7 +211,11 @@ max-complexity = 10
 "packages/maistro-turing/backend/**" = ["B008"]
 
 [tool.pytest.ini_options]
-addopts = "--import-mode=importlib"
+# --strict-markers (#391): an unregistered marker is a claim no gate can
+# read. `ac`, `contract`, and `scope` below are the registered set; anything
+# else a test carries is a typo or an undocumented axis, and both fail loudly
+# here rather than passing silently as inert decoration.
+addopts = "--import-mode=importlib --strict-markers"
 testpaths = [
     "packages/maistro-core/tests",
     "packages/maistro-server/tests",
