@@ -963,7 +963,6 @@
         "packages/maistro-core/src/maistro/graph/nodes/human_review_and_edit.py::unused class 'HumanReviewAndEditNode'",
         "packages/maistro-core/src/maistro/graph/nodes/jira_poll.py::unused class 'JiraPollNode'",
         "packages/maistro-core/src/maistro/graph/nodes/jira_wait_for_subtasks.py::unused class 'JiraWaitForSubtasksNode'",
-        "packages/maistro-core/src/maistro/graph/nodes/llm_summarize.py::unused class 'LlmSummarizeNode'",
         "packages/maistro-core/src/maistro/graph/nodes/transform_alias_keys.py::unused class 'TransformAliasKeysNode'",
         "packages/maistro-core/src/maistro/graph/nodes/transform_extract_field.py::unused class 'TransformExtractFieldNode'",
         "packages/maistro-core/src/maistro/graph/nodes/transform_filter_by_type.py::unused class 'TransformFilterByTypeNode'",
