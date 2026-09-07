@@ -248,7 +248,7 @@ misleading a reader.
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full author guide. The essentials:
 
-- Branch model is `feature/* → develop → integration → main` — base feature work off `develop`, never open PRs against `main` directly ([`ADR-095`](docs/adr/ADR-095-four-tier-branch-model.md)).
+- Branch model is `feat/* → develop → integration → main` — topic branches use the accepted prefixes (`feat/`, `bug/`, `fix/`, `idea/`, `doc/`, `chore/`, the set [`branch-protection.json`](.github/branch-protection.json) defines and CI validates); base feature work off `develop`, never open PRs against `main` directly ([`ADR-095`](docs/adr/ADR-095-four-tier-branch-model.md)).
 - ADRs live in `docs/adr/ADR-NNN-<slug>.md` with required front-matter ([`ADR-031`](docs/adr/ADR-031-front-matter-and-registry.md)); validate with `python -m maistro_registry.cli lint .`.
 - Tests carry `@pytest.mark.contract` and `@pytest.mark.scope(...)` ([`ADR-032`](docs/adr/ADR-032-contracts-as-acceptance-criteria.md)).
 - External-library adoption follows [`ADR-039`](docs/adr/ADR-039-external-library-adoption-policy.md): import / service-boundary / pattern-reference / reject.

@@ -8,23 +8,54 @@
     "The live topology is topic branches -> develop -> main. `integration` is retired."
   ],
   "$adr": "docs/adr/ADR-095-four-tier-branch-model.md",
+  "topic_branch_policy": {
+    "$comment": [
+      "Accepted topic-branch prefixes (#381). This is the one source: README,",
+      "CONTRIBUTING, docs/WAYS-OF-WORKING.md and the workflows' push filters",
+      "are validated against it by tests/test_branch_policy.py. Push-triggered",
+      "gates must cover every prefix documented here, and PR gates run",
+      "regardless of source prefix (pull_request triggers are unfiltered)."
+    ],
+    "prefixes": [
+      "feat",
+      "bug",
+      "fix",
+      "idea",
+      "doc",
+      "chore"
+    ]
+  },
   "base_coupled_to": {
-    "$comment": ["Checks that report only on main-based PRs."],
-    "Container scan + SBOM + cosign": ["main"]
+    "$comment": [
+      "Checks that report only on main-based PRs."
+    ],
+    "Container scan + SBOM + cosign": [
+      "main"
+    ]
   },
   "branches": {
     "develop": {
-      "$comment": ["Canonical development branch. PR-gated, zero approvals, linear history."],
+      "$comment": [
+        "Canonical development branch. PR-gated, zero approvals, linear history."
+      ],
       "required_status_checks": {
         "strict": true,
         "contexts": [
           "integration-scope",
-          "lint-and-type-check", "security", "test", "workflow-lint",
-          "block", "formal-conformance",
-          "Gate C — canonical clean install", "Validate ADR/spec front-matter",
-          "exact-debt-ledger", "Quality gate (Pillars 1–4, 7, 8)",
-          "SAST (bandit + semgrep + gitleaks)", "Supply chain (pip-audit)",
-          "coverage (no services)", "coverage (MinIO)",
+          "lint-and-type-check",
+          "security",
+          "test",
+          "workflow-lint",
+          "block",
+          "formal-conformance",
+          "Gate C \u2014 canonical clean install",
+          "Validate ADR/spec front-matter",
+          "exact-debt-ledger",
+          "Quality gate (Pillars 1\u20134, 7, 8)",
+          "SAST (bandit + semgrep + gitleaks)",
+          "Supply chain (pip-audit)",
+          "coverage (no services)",
+          "coverage (MinIO)",
           "Coverage gate (publish-set floor + diff coverage)",
           "coverage (PostgreSQL)"
         ]
@@ -47,9 +78,17 @@
       "ruleset": {
         "name": "Pr merge",
         "target": "~DEFAULT_BRANCH",
-        "additional_required_checks": ["gates-ran"],
-        "allowed_merge_methods": ["squash", "rebase"],
-        "bypass": {"OrganizationAdmin": "always", "RepositoryRole:admin": "always"}
+        "additional_required_checks": [
+          "gates-ran"
+        ],
+        "allowed_merge_methods": [
+          "squash",
+          "rebase"
+        ],
+        "bypass": {
+          "OrganizationAdmin": "always",
+          "RepositoryRole:admin": "always"
+        }
       }
     },
     "main": {
@@ -61,18 +100,35 @@
       "required_status_checks": {
         "strict": true,
         "contexts": [
-          "docker-build", "hive-conductor-e2e", "hive-conductor-e2e-ui",
-          "lint-and-type-check", "security", "test", "wheel-imports", "workflow-lint",
-          "block", "formal-conformance",
-          "Gate C — canonical clean install", "Validate ADR/spec front-matter",
-          "exact-debt-ledger", "Quality gate (Pillars 1–4, 7, 8)",
-          "SAST (bandit + semgrep + gitleaks)", "Supply chain (pip-audit)",
-          "coverage (no services)", "coverage (MinIO)",
-          "Coverage gate (publish-set floor + diff coverage)", "strike-ladder",
-          "durable-events", "coverage (PostgreSQL)", "object storage (MinIO)",
-          "postgres (pg17)", "postgres (pg18)",
-          "Container scan + SBOM + cosign", "Analyze (actions)",
-          "Analyze (javascript-typescript)", "Analyze (python)"
+          "docker-build",
+          "hive-conductor-e2e",
+          "hive-conductor-e2e-ui",
+          "lint-and-type-check",
+          "security",
+          "test",
+          "wheel-imports",
+          "workflow-lint",
+          "block",
+          "formal-conformance",
+          "Gate C \u2014 canonical clean install",
+          "Validate ADR/spec front-matter",
+          "exact-debt-ledger",
+          "Quality gate (Pillars 1\u20134, 7, 8)",
+          "SAST (bandit + semgrep + gitleaks)",
+          "Supply chain (pip-audit)",
+          "coverage (no services)",
+          "coverage (MinIO)",
+          "Coverage gate (publish-set floor + diff coverage)",
+          "strike-ladder",
+          "durable-events",
+          "coverage (PostgreSQL)",
+          "object storage (MinIO)",
+          "postgres (pg17)",
+          "postgres (pg18)",
+          "Container scan + SBOM + cosign",
+          "Analyze (actions)",
+          "Analyze (javascript-typescript)",
+          "Analyze (python)"
         ]
       },
       "enforce_admins": false,
@@ -93,13 +149,26 @@
       "ruleset": {
         "name": "Main merge",
         "target": "refs/heads/main",
-        "additional_required_checks": ["gates-ran"],
-        "allowed_merge_methods": ["squash", "rebase", "merge"],
-        "bypass": {"OrganizationAdmin": "pull_request", "RepositoryRole:admin": "pull_request"}
+        "additional_required_checks": [
+          "gates-ran"
+        ],
+        "allowed_merge_methods": [
+          "squash",
+          "rebase",
+          "merge"
+        ],
+        "bypass": {
+          "OrganizationAdmin": "pull_request",
+          "RepositoryRole:admin": "pull_request"
+        }
       }
     }
   },
-  "advisory": {"$comment": ["Checks deliberately non-required must be named here with a reason."]},
+  "advisory": {
+    "$comment": [
+      "Checks deliberately non-required must be named here with a reason."
+    ]
+  },
   "repository": {
     "allow_auto_merge": true,
     "delete_branch_on_merge": true,

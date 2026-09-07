@@ -30,7 +30,10 @@ on:
   merge_group:
     types: [checks_requested]
   push:
-    branches: [main, integration, develop, feat/*]
+    # Every accepted topic-branch prefix (#381), single-sourced in
+    # .github/branch-protection.json (topic_branch_policy) and validated by
+    # tests/test_branch_policy.py. See quality.yml's push block for the rule.
+    branches: [main, integration, develop, feat/*, bug/*, fix/*, idea/*, doc/*, chore/*]
   schedule:
     - cron: "30 7 * * *"
 
