@@ -66,7 +66,7 @@ jobs:
     steps:
       # fetch-depth: 0 is load-bearing, not hygiene — the ancestry check below
       # cannot run on the shallow single-ref clone checkout does by default.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -200,7 +200,7 @@ jobs:
     env:
       PUBLISH_SET: "maistro-core maistro-canvas maistro-evolve maistro-rsi maistro-bootstrap"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -356,7 +356,7 @@ jobs:
       packages: write
       id-token: write # keyless cosign signing
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The immutable vX.Y.Z (or vX.Y.Z-rcN) tag is always pushed. The two
       # MOVING pointers — X.Y and latest — are pushed only when the guard says
@@ -515,7 +515,7 @@ jobs:
     permissions:
       contents: write # creating a release writes to the repository
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
