@@ -7,7 +7,8 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from pydantic import BaseModel, Field, field_validator, StringConstraints
+from pydantic import BaseModel, Field, field_validator
+from pydantic.types import StringConstraints
 
 
 NonBlankStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
