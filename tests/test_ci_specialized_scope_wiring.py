@@ -46,7 +46,7 @@ def test_required_workflow_lint_job_emits_every_specialized_leg() -> None:
     assert all(output_refs_are_scoped)
 
     checkout = scope["steps"][0]
-    assert checkout["uses"] == "actions/checkout@v4"
+    assert checkout["uses"] == "actions/checkout@v7"
     assert checkout["with"]["fetch-depth"] == 0
 
     command = scope["steps"][1]["run"]
