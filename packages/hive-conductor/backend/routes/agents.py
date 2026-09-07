@@ -194,8 +194,13 @@ def _warden() -> Warden:
 _warden_instance: Warden | None = None
 
 
-async def scan_config(config: object) -> dict:
-    """Scan every string in a configuration at the `user_input` boundary."""
+async def scan_config(config: object, *, boundary: str = "user_input") -> dict:
+    """Scan every string in a configuration at a Warden boundary.
+
+    The default boundary is the one inbound configurations cross; `tool_result`
+    selects the detector's second boundary (#315) so tool outputs that will be
+    re-fed to a model are judged by the same detector, not a second check.
+    """
     warden = _warden()
     findings: list[str] = []
     for scanned, (path, text) in enumerate(_text_leaves(config), start=1):
@@ -203,7 +208,7 @@ async def scan_config(config: object) -> dict:
             raise ScanBudgetExceeded(f"config holds more than {MAX_SCAN_NODES} values")
         if len(text) > MAX_SCAN_TEXT:
             raise ScanBudgetExceeded(f"{path} is longer than {MAX_SCAN_TEXT} characters")
-        verdict = await warden.scan(text, "user_input")
+        verdict = await warden.scan(text, boundary)
         if not verdict.clean:
             findings.extend(f"{path}: {flag}" for flag in verdict.flags)
     return {"findings": findings, "status": "clean" if not findings else "flagged"}

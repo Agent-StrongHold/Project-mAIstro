@@ -139,7 +139,11 @@ class ApprovalStore(Protocol):
         request_id: str,
         *,
         approved: bool,
-        actor: str = "",
+        # No default (#329 / ADR-090726-9a4e): resolving an approval is a
+        # human decision, and a caller who cannot name the verified principal
+        # that made it must not be able to settle one silently. Every caller
+        # threads the actor explicitly.
+        actor: str,
     ) -> DurableApproval: ...
 
 
@@ -183,7 +187,9 @@ class InMemoryApprovalStore:
         request_id: str,
         *,
         approved: bool,
-        actor: str = "",
+        # Required, never defaulted (#329 / ADR-090726-9a4e) — matches the
+        # ApprovalStore protocol.
+        actor: str,
     ) -> DurableApproval:
         async with self._lock:
             existing = self._items.get(request_id)
@@ -297,7 +303,9 @@ class SqliteApprovalStore:
         request_id: str,
         *,
         approved: bool,
-        actor: str = "",
+        # Required, never defaulted (#329 / ADR-090726-9a4e) — matches the
+        # ApprovalStore protocol.
+        actor: str,
     ) -> DurableApproval:
         async with self._lock:
             await self._conn.execute("BEGIN IMMEDIATE")

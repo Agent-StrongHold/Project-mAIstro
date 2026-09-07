@@ -20,6 +20,7 @@ from maistro.runtime import ExecutionRuntime
 
 from . import executor as traversal
 from .attempt_executor import LiveAttemptOwned, NodeResolver, resume_durable_graph
+from .launch import launch_state_from_run
 from .protocol import DurableRunStore
 from .types import DurableRunRecord
 
@@ -125,16 +126,18 @@ async def resume_due_graph_runs(
 
 
 def _initial_queued_record(run: Run) -> DurableRunRecord:
+    """Reconstruct checkpoint 1 from the immutable admission snapshot."""
     graph = run.graph.materialize()
+    initial_inputs, blackboard_metadata = launch_state_from_run(run)
     state = GraphExecutionState(
         run_id=run.run_id,
         active_node_ids=(traversal._entry_node(graph),),
         blackboard_snapshot={
             "task_objective": graph.name,
-            "metadata": {},
+            "metadata": blackboard_metadata,
             "node_annotations": {},
         },
-        metadata={"initial_inputs": {}, "hitl_answers": {}},
+        metadata={"initial_inputs": initial_inputs, "hitl_answers": {}},
     )
     return DurableRunRecord(run=run, graph_state=state, version=1)
 
@@ -206,6 +209,12 @@ async def recover_queued_graph_runs(
     events: RecoveryEventSink | None = None,
 ) -> int:
     """Recover admitted durable Graph Runs around checkpoint 1.
+
+    Checkpoint 1 is reconstructed exclusively from durable Run facts. New
+    non-empty launch state is required to be snapshotted in Run provenance by
+    the public admission helper before physical execution can start, so this
+    recovery path never substitutes empty inputs for work the caller actually
+    admitted.
 
     ``events`` carries each recovery's crash dispositions onto the canonical
     Event stream when the caller provides a sink.
