@@ -153,16 +153,6 @@
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
-      "key": "packages/maistro-core/src/maistro/credentials/pool.py::CredentialPool.get_stats",
-      "path": "packages/maistro-core/src/maistro/credentials/pool.py",
-      "line": 151,
-      "name": "get_stats",
-      "classname": "CredentialPool",
-      "rank": "C",
-      "complexity": 11,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
       "key": "packages/maistro-core/src/maistro/events/bus.py::TriggerCondition",
       "path": "packages/maistro-core/src/maistro/events/bus.py",
       "line": 48,
