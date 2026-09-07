@@ -11,7 +11,10 @@ comparing the corpus to itself.
 from __future__ import annotations
 
 import importlib.util
+import json
+import runpy
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -209,3 +212,96 @@ def test_a_new_body_status_line_contradiction_is_not_absorbed_by_the_baseline(
 
     assert sandbox.main([]) == 1
     assert "new body/front-matter status contradiction" in capsys.readouterr().out
+
+
+# --- category 2, the other half: a banner with nothing behind it -------------
+
+
+def test_a_banner_on_a_document_with_no_superseded_by_fails(sandbox) -> None:
+    """The banner claims a replacement the front matter never records.
+
+    ADR-018 is Accepted with no `superseded-by:` at all, so a banner in its
+    body names a replacement that nothing downstream of the front matter
+    knows about — the inverse half of the banner category.
+    """
+    path = sandbox.DOC_ROOTS[0] / "ADR-018-task-record-persistence.md"
+    path.write_text(path.read_text() + "\n**Superseded by [ADR-082126-f69c](x.md)**\n")
+
+    problems = sandbox.audit()
+
+    assert any(
+        p.path.name == "ADR-018-task-record-persistence.md"
+        and p.kind == "banner-without-superseded-by"
+        for p in problems
+    )
+
+
+# --- display, body-splitting, and the ledger plumbing -----------------------
+
+
+def test_a_path_outside_root_is_displayed_verbatim(sandbox) -> None:
+    """A diagnostic must name the file even when it is not under the corpus —
+    crashing on `relative_to` would hide the finding it was reporting."""
+    outside = sandbox.ROOT.parent / "elsewhere.md"
+
+    assert sandbox._display(outside) == str(outside)
+
+
+def test_a_file_without_front_matter_is_all_body(sandbox, tmp_path) -> None:
+    """The splitter's contract for a shape `audit` never feeds it today: no
+    leading `---` means the whole text is body, not a hunt for a closing
+    delimiter that cannot exist."""
+    plain = tmp_path / "plain.md"
+    plain.write_text("# Just a title\n\nNo front matter here.\n", encoding="utf-8")
+
+    assert sandbox._body_without_front_matter(plain) == "# Just a title\n\nNo front matter here.\n"
+
+
+def test_a_missing_ledger_means_no_known_exceptions(sandbox) -> None:
+    """No bank means nothing may be paid for by the ratchet."""
+    sandbox.LEDGER.unlink()
+
+    assert sandbox._load_baseline() == frozenset()
+
+
+def test_update_banks_the_current_state_and_then_passes(sandbox, capsys) -> None:
+    """`--update` is how a reviewed legacy exception is banked: it writes
+    exactly what the audit found, and the next ordinary run passes."""
+    sandbox.LEDGER.unlink()
+    found = {p.identity for p in sandbox.audit()}
+    assert found, "the sandbox corpus carries the legacy contradictions"
+
+    assert sandbox.main(["--update"]) == 0
+    out = capsys.readouterr().out
+    assert "wrote" in out
+    assert f"{len(found)} known contradiction" in out
+
+    payload = json.loads(sandbox.LEDGER.read_text())
+    assert set(payload["known"]) == found
+
+    assert sandbox.main([]) == 0
+
+
+def test_the_main_guard_exits_zero_in_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The guard line itself, executed: `run_name="__main__"` runs the file
+    the way the interpreter does, and `sys.exit(main())` is the exit path."""
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT)])
+
+    with pytest.raises(SystemExit) as excinfo:
+        runpy.run_path(str(SCRIPT), run_name="__main__")
+
+    assert excinfo.value.code == 0
+
+
+def test_the_script_runs_as_a_script() -> None:
+    """The `__main__` guard: CI shells out, so a file that imports but does
+    not run would pass every test above and still fail the pipeline."""
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT)],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr

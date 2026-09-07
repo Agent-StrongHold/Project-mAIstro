@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +9
+  tests/: +17
 ---
 # m4-387 — one authoritative superseded status for ADR-046
 
@@ -21,3 +21,14 @@ The +9 node IDs are all in `tests/test_check_adr_status_language.py` (new):
 - Category 3 (status-asserting prose): the ADR-046 sentence shape fails, the
   line-wrapped spelling still matches, and dated past statements ("the status
   was `Accepted` at that time") are history, not assertions, and pass.
+
+The +8 diff-coverage repair cases (same file) close the gate's last uncovered
+statements:
+
+- Category 2's other half: a banner on a document whose front matter has no
+  `superseded-by` at all (banner-without-superseded-by).
+- Ledger plumbing: a missing ledger reads as no known exceptions; `--update`
+  banks exactly what the audit found and the next ordinary run passes.
+- `_display` falls back to the verbatim path outside the corpus; a file with
+  no front matter is body-only; the `__main__` guard exits 0 both in-process
+  (`runpy`) and as a subprocess the way CI shells out.
