@@ -1,4 +1,4 @@
-"""The door onto pending human work (#244).
+"""The door onto pending and settling human work (#244, #737).
 
 The HITL loop is complete in the library and had no entry point. Four node
 kinds pause, the durable executor maps a human pause onto `RunStatus.PAUSED`
@@ -29,6 +29,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from maistro.graph.durable_runs import expire_hitl_pauses
 from maistro.runs.model import RunStatus
 from routes.agents import ScanBudgetExceeded, scan_config
 from routes.audit import log_audit
@@ -119,6 +120,35 @@ async def list_pending_human_work(
         RunStatus.PAUSED, limit=max(1, min(limit, 200)), project_id=project_id
     )
     return [item for record in records for item in _pending_items(record)]
+
+
+@router.post("/expire")
+async def expire_human_work(limit: int = 100) -> dict[str, Any]:
+    """Run one bounded expiry tick against durable HITL deadlines."""
+    expired = await expire_hitl_pauses(_store(), limit=max(1, min(limit, 200)))
+    run_ids = [record.run_id for record in expired]
+    if run_ids:
+        log_audit("hitl_expire", "system", detail={"run_ids": run_ids})
+    return {"expired": len(run_ids), "run_ids": run_ids}
+
+
+@router.post("/{run_id}/{node_id}/cancel")
+async def cancel_human_work(run_id: str, node_id: str) -> dict[str, Any]:
+    """Request canonical cancellation of one durable human pause."""
+    store = _store()
+    try:
+        updated = await store.cancel_hitl(run_id, node_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="run not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    log_audit("hitl_cancel", "system", target=run_id, detail={"node_id": node_id})
+    return {
+        "run_id": run_id,
+        "node_id": node_id,
+        "run_status": updated.run.status.value,
+    }
 
 
 @router.post("/{run_id}/{node_id}/answer")

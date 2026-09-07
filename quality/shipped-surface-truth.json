@@ -589,6 +589,26 @@
       "effect_owner": "hitl store resumes the paused Run node"
     },
     {
+      "source": "packages/hive-conductor/backend/routes/hitl.py",
+      "method": "POST",
+      "route": "/expire",
+      "handler": "expire_human_work",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "runs one bounded expiry tick against durable HITL deadlines",
+      "effect_owner": "hitl store settles elapsed deadlines"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/hitl.py",
+      "method": "POST",
+      "route": "/{run_id}/{node_id}/cancel",
+      "handler": "cancel_human_work",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "requests canonical cancellation of one durable human pause",
+      "effect_owner": "hitl store settles the cancelled pause"
+    },
+    {
       "source": "packages/hive-conductor/backend/routes/install.py",
       "method": "POST",
       "route": "/session",
