@@ -9,8 +9,10 @@ Security invariants (tested):
 - No identity is ever returned without a verified provider response.
 - ``state`` is single-use and TTL-bound; replay or expiry raises.
 - PKCE ``code_challenge`` is always S256.
-- OIDC ``id_token`` issuer/audience/expiry/nonce are always validated; the
-  production verifier validates its signature against the provider JWKS.
+- OIDC ``id_token`` issuer/audience/expiry/nonce are always validated and the
+  signature is always verified against the provider JWKS (#856). There is NO
+  unverified-claims validator: if PyJWT/its crypto backend or the JWKS is
+  unavailable, authentication fails closed — it is never downgraded.
 - Client secrets are resolved via an injected callable, never stored on config.
 - Tokens are never placed in emitted events or logs (ADR-044).
 """
@@ -19,8 +21,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import json
-import logging
 import secrets
 import time
 from collections.abc import Awaitable, Callable
@@ -28,11 +28,23 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 import httpx
-import jwt as pyjwt
+
+try:
+    import jwt as pyjwt
+    from jwt.exceptions import MissingCryptographyError
+except ModuleNotFoundError as exc:  # pragma: no cover - direct dependency; broken install
+    # #856: PyJWT is a direct maistro-core dependency, so it can only be
+    # missing on a broken install. Authentication libraries being unavailable
+    # is NOT a supported degraded-security mode: refusing to import this
+    # module fails every OIDC login closed rather than parsing claims without
+    # cryptographic verification.
+    raise ImportError(
+        "maistro.auth.oauth requires PyJWT (install pyjwt[crypto]) for mandatory "
+        "OIDC signature verification; there is no unverified-claims fallback "
+        "and authentication fails closed"
+    ) from exc
 
 from maistro.security.outbound import configure_outbound_policy
-
-logger = logging.getLogger("maistro.auth.oauth")
 
 __all__ = [
     "IdTokenVerifier",
@@ -52,7 +64,6 @@ __all__ = [
     "OAuthToken",
     "OAuthTokenValidationError",
     "StateStore",
-    "UnverifiedJWTClaimsValidator",
     "begin_login",
     "complete_login",
     "default_id_token_verifier",
@@ -182,11 +193,6 @@ class InMemoryStateStore:
         return entry
 
 
-def _b64url_decode(segment: str) -> bytes:
-    padding = "=" * (-len(segment) % 4)
-    return base64.urlsafe_b64decode(segment + padding)
-
-
 def _validate_oidc_claims(
     claims: dict[str, Any],
     config: OAuthProviderConfig,
@@ -281,46 +287,16 @@ class JWKSIdTokenVerifier:
             )
         except OAuthTokenValidationError:
             raise
+        except MissingCryptographyError as exc:
+            # #856: a missing verification backend is provider unavailability,
+            # never a reason to accept unverified claims.
+            raise OAuthTokenValidationError(
+                "OIDC signature-verification backend unavailable "
+                f"({exc}); install pyjwt[crypto] — verification is mandatory, "
+                "unverified claims are never accepted"
+            ) from exc
         except Exception as exc:  # pyjwt raises many error types
             raise OAuthTokenValidationError(f"id_token verification failed: {exc}") from exc
-        _validate_oidc_claims(claims, config, nonce, self._clock())
-        return claims
-
-
-class UnverifiedJWTClaimsValidator:
-    """LOUD WARNING — signature is NOT verified.
-
-    Explicit compatibility/test seam only: it base64-parses the id_token
-    payload WITHOUT verifying the signature, then validates issuer / audience /
-    expiry / nonce claims. PyJWT crypto is mandatory and the default verifier
-    never selects this class. Do not inject it in production.
-    """
-
-    def __init__(self, clock: Callable[[], float] = time.time) -> None:
-        self._clock = clock
-
-    async def verify(
-        self,
-        id_token: str,
-        config: OAuthProviderConfig,
-        http: httpx.AsyncClient,
-        nonce: str | None,
-    ) -> dict[str, Any]:
-        parts = id_token.split(".")
-        if len(parts) != 3:
-            raise OAuthTokenValidationError("id_token is not a JWT")
-        try:
-            claims = json.loads(_b64url_decode(parts[1]))
-        except (ValueError, json.JSONDecodeError) as exc:
-            raise OAuthTokenValidationError(f"id_token payload is not valid JSON: {exc}") from exc
-        if not isinstance(claims, dict):
-            raise OAuthTokenValidationError("id_token payload is not an object")
-        # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- logs only the provider name, never token material
-        logger.warning(
-            "id_token for provider %s validated WITHOUT signature verification "
-            "(UnverifiedJWTClaimsValidator); install pyjwt[crypto] for JWKS verification",
-            config.name,
-        )
         _validate_oidc_claims(claims, config, nonce, self._clock())
         return claims
 
