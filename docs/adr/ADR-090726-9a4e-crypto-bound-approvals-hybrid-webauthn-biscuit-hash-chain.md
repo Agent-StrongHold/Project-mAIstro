@@ -161,29 +161,31 @@ land as their own SPECs under this ADR's authority.
 
 ## Acceptance criteria
 
-Behavioral contracts (per [`engine#ADR-032`](ADR-032-contracts-as-acceptance-criteria.md)):
+Behavioral contracts (per [`engine#ADR-032`](ADR-032-contracts-as-acceptance-criteria.md)).
+Phase 0/1 installment criteria — proven by the tests below and bound via
+`@pytest.mark.ac`; the Biscuit/ADR-077 criterion lands with Phase 3.
 
-- **AC-1 (fail closed):** a resumed HITL verdict node whose answer lacks an
-  explicit verdict never returns `approved`; it re-pauses awaiting one.
-- **AC-2 (no default actor):** `ApprovalStore.resolve` refuses calls that do
-  not thread an actor; the persisted `DurableApproval.actor` is the value the
+- **AC-1**: `ApprovalStore.resolve` refuses calls that do not thread a
+  verified actor; the persisted `DurableApproval.actor` is the value the
   caller supplied, never a default.
-- **AC-3 (principal-stamped audit):** the HITL answer audit record names the
-  verified session principal, never the literal `"system"`.
-- **AC-4 (ADR-077 honor, later phase):** Biscuit-granted authority is
-  re-resolved against host state on every use; revocation wins over unexpired
-  caveats.
-
-Front-matter `tests:` enumerates the tests proving the Phase 0/1 installment
-(AC-1..AC-3). AC-4 lands with the Biscuit phase.
+- **AC-2**: `human_approve_draft` treats a resumed answer lacking an
+  explicit, non-blank, string verdict as pending — never `approved` — and
+  re-pauses awaiting one; explicit verdicts still resume.
+- **AC-3**: `human_delegate_to_role` never routes a payload on a missing or
+  blank verdict; explicit verdicts still route.
+- **AC-4**: `human_review_and_edit` treats a missing or blank verdict as
+  pending — never approved; explicit verdicts with edits still resume.
+- **AC-5**: the HITL door stamps the verified session principal into answer
+  and cancel audit records; an answer with no verified principal is never
+  recorded as the literal `"system"`.
 
 ## Test plan
 
 | Test | Type | Covers |
 |---|---|---|
-| `packages/maistro-core/tests/graph/nodes/test_human_verdict_fail_closed.py` | behavioral / unit | AC-1: missing verdict re-pauses, never approves, across the three verdict nodes |
-| `packages/maistro-core/tests/capabilities/test_durable_approval.py` | behavioral / unit | AC-2: resolve without an actor is refused; actor is persisted |
-| `packages/hive-conductor/backend/tests/test_hitl_door.py` | behavioral / integration | AC-3: answer/cancel audit entries name the session principal |
+| `packages/maistro-core/tests/graph/nodes/test_human_verdict_fail_closed.py` | behavioral / unit | AC-2/AC-3/AC-4: missing verdict re-pauses, never approves, across the three verdict nodes |
+| `packages/maistro-core/tests/capabilities/test_durable_approval.py` | behavioral / unit | AC-1: resolve without an actor is refused; actor is persisted |
+| `packages/hive-conductor/backend/tests/test_hitl_door.py` | behavioral / integration | AC-5: answer/cancel audit entries name the session principal |
 
 ## Dependencies
 
@@ -214,21 +216,4 @@ Front-matter `tests:` enumerates the tests proving the Phase 0/1 installment
 - Issue: #329
 - Phase 0/1 installment (this ADR + seam fixes): PR TBD
 - Follow-up SPECs: WebAuthn ceremony, Biscuit delegation, chain verification (phases 2–4).
-
-## Acceptance Criteria
-
-Phase-1 seam contract (landed and tested; Phases 2-4 machinery remains open
-under #329 and is out of scope for these criteria):
-
-- **AC-1**: `ApprovalStore.resolve` requires the verified principal; a
-  resolution without one is refused, never defaulted or recorded as free text.
-- **AC-2**: `human_approve_draft` treats a missing, blank, or non-string
-  verdict as pending — never as approval; explicit verdicts still resume.
-- **AC-3**: `human_delegate_to_role` never routes a payload on a missing or
-  blank verdict; explicit verdicts still route.
-- **AC-4**: `human_review_and_edit` treats a missing or blank verdict as
-  pending — never as approval; explicit verdicts with edits still resume.
-- **AC-5**: The HITL door stamps the verified session principal into answer
-  and cancel audit records, and an answer with no verified principal is never
-  recorded as `system`.
 
