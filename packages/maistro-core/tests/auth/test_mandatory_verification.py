@@ -179,6 +179,53 @@ def test_cryptography_removed_verification_refuses_not_downgrades() -> None:
     assert "DOWNGRADED" not in result.stdout
 
 
+async def test_missing_crypto_backend_in_process_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In-process seam for the same #856 handler the subprocess test proves
+    end-to-end: when ``pyjwt.decode`` reports the cryptography backend as
+    missing, verification raises ``OAuthTokenValidationError`` naming the
+    backend — never returns claims, never parses unverified. Driving the
+    handler here keeps the fail-closed branch inside collected coverage."""
+    import httpx
+    from jwt.exceptions import MissingCryptographyError
+
+    from maistro.auth import oauth
+    from maistro.auth.oauth import (
+        JWKSIdTokenVerifier,
+        OAuthProviderConfig,
+        OAuthTokenValidationError,
+    )
+
+    def raise_missing_backend(*_args: object, **_kwargs: object) -> None:
+        raise MissingCryptographyError("cryptography is not installed")
+
+    monkeypatch.setattr(oauth.pyjwt, "get_unverified_header", lambda _t: {"kid": "kid-1"})
+    monkeypatch.setattr(oauth.pyjwt, "PyJWK", lambda _jwk: object())
+    monkeypatch.setattr(oauth.pyjwt, "decode", raise_missing_backend)
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"keys": [{"kid": "kid-1", "kty": "RSA"}]})
+
+    config = OAuthProviderConfig(
+        name="test",
+        authorization_url="https://idp.example.com/authorize",
+        token_url="https://idp.example.com/token",
+        client_id=_CLIENT_ID,
+        jwks_url=_JWKS_URL,
+        issuer=_ISSUER,
+        require_id_token=True,
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        with pytest.raises(OAuthTokenValidationError) as excinfo:
+            await JWKSIdTokenVerifier().verify("header.payload.signature", config, http, None)
+    message = str(excinfo.value)
+    assert "backend unavailable" in message, message
+    assert "cryptography" in message, message
+    assert "verification is mandatory" in message, message
+    assert "never accepted" in message, message
+
+
 async def test_missing_jwks_dependency_in_flow_refuses_authentication() -> None:
     """In-flow: when the JWKS is unreachable mid-login the exchange must raise
     (provider unavailable) rather than authenticate from unverified claims.
