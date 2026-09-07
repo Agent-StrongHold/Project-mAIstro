@@ -15,7 +15,11 @@ from typing import Any
 
 from maistro.graph.definitions import Graph
 from maistro.graph.execution_state import GraphExecutionState
-from maistro.graph.nodes.base import NodeContext, NodeResult
+from maistro.graph.nodes.base import (
+    TIMER_RESUMABLE_PAUSE_REASONS,
+    NodeContext,
+    NodeResult,
+)
 from maistro.observability.correlation import bind_execution_context
 from maistro.runs.execution import AttemptExecutionService
 from maistro.runs.lifecycle import lease_is_expired, transition_path, transition_run
@@ -303,6 +307,16 @@ def _requires_continuation_redispatch(
         return False
     if traversal._is_human_pause(result):
         return node_id in record.hitl_answers
+
+    # A deadline alone is not authorization to repeat physical work. Remote
+    # delegation and harness waits are answer-gated even when they carry a
+    # timeout timestamp; redispatching them can repeat an external effect. New
+    # records name their pause reason and only the canonical elapsed-resumable
+    # taxonomy may poll again. Historical unclassified timed pauses retain the
+    # pre-taxonomy behavior for compatibility.
+    reason = str((result.metadata or {}).get("paused_reason") or "")
+    if reason and reason not in TIMER_RESUMABLE_PAUSE_REASONS:
+        return False
     return result.resume_at is not None and result.resume_at <= datetime.now(UTC)
 
 
