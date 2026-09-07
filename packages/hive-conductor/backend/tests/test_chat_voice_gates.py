@@ -319,15 +319,20 @@ def _tool_turn(name: str, args: str) -> list[dict]:
             "choices": [
                 {
                     "delta": {
-                        "tool_calls": [
-                            {"index": 0, "id": "call_1", "function": {"name": name}}
-                        ]
+                        "tool_calls": [{"index": 0, "id": "call_1", "function": {"name": name}}]
                     },
                     "finish_reason": None,
                 }
             ]
         },
-        {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": args}}]}, "finish_reason": None}]},
+        {
+            "choices": [
+                {
+                    "delta": {"tool_calls": [{"index": 0, "function": {"arguments": args}}]},
+                    "finish_reason": None,
+                }
+            ]
+        },
         {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
     ]
 
@@ -363,10 +368,13 @@ async def test_tool_loop_blocks_injected_tool_arguments(monkeypatch: pytest.Monk
     ]
     monkeypatch.setattr(service, "build_llm_port", lambda: _ScriptedLLM(turns))
 
-    events = [e async for e in service.run_chat_completion_streaming(
-        ChatCompletionRequest(messages=[{"role": "user", "content": "remember a thing"}]),
-        user_id="user-1",
-    )]
+    events = [
+        e
+        async for e in service.run_chat_completion_streaming(
+            ChatCompletionRequest(messages=[{"role": "user", "content": "remember a thing"}]),
+            user_id="user-1",
+        )
+    ]
 
     assert executed == []  # the call was refused before dispatch
     tool_results = [e for e in events if e["type"] == "tool_result"]
@@ -398,10 +406,13 @@ async def test_tool_loop_withholds_indirect_injection_in_tool_results(
     ]
     monkeypatch.setattr(service, "build_llm_port", lambda: _CapturingLLM(turns))
 
-    events = [e async for e in service.run_chat_completion_streaming(
-        ChatCompletionRequest(messages=[{"role": "user", "content": "blockers?"}]),
-        user_id="user-1",
-    )]
+    events = [
+        e
+        async for e in service.run_chat_completion_streaming(
+            ChatCompletionRequest(messages=[{"role": "user", "content": "blockers?"}]),
+            user_id="user-1",
+        )
+    ]
 
     tool_results = [e for e in events if e["type"] == "tool_result"]
     assert tool_results and "withheld" in tool_results[0]["summary"]
@@ -430,10 +441,13 @@ async def test_tool_loop_records_gate_decisions_for_allowed_calls(
     ]
     monkeypatch.setattr(service, "build_llm_port", lambda: _ScriptedLLM(turns))
 
-    events = [e async for e in service.run_chat_completion_streaming(
-        ChatCompletionRequest(messages=[{"role": "user", "content": "blockers?"}]),
-        user_id="user-1",
-    )]
+    events = [
+        e
+        async for e in service.run_chat_completion_streaming(
+            ChatCompletionRequest(messages=[{"role": "user", "content": "blockers?"}]),
+            user_id="user-1",
+        )
+    ]
     assert events[-1]["type"] == "done"
 
     rows = _audit_entries()
@@ -470,9 +484,7 @@ async def test_nonstreaming_tool_loop_refuses_injected_inbound(
 
 @pytest.mark.asyncio
 async def test_destructive_tool_requires_approval_model_cannot_mint() -> None:
-    result = await service._execute_tool(
-        "remove_agent_button", {"agent_id": "all"}, "user-1"
-    )
+    result = await service._execute_tool("remove_agent_button", {"agent_id": "all"}, "user-1")
     assert result.get("blocked") is True
     assert "approval_required" in result["error"]
 

@@ -56,9 +56,7 @@ SCAN_TIMEOUT_SECONDS = 10.0
 
 #: What a blocked caller is told. One fixed sentence on purpose: the findings
 #: stay in the audit log rather than echoing attacker-controlled text back.
-REFUSAL_TEXT = (
-    "I can't help with that request — it was flagged by the security scanner."
-)
+REFUSAL_TEXT = "I can't help with that request — it was flagged by the security scanner."
 SCANNER_UNAVAILABLE_TEXT = (
     "I can't process requests right now: the security scanner is unavailable. "
     "Nothing was sent to the model."
@@ -294,8 +292,11 @@ def gate_tool_dispatch(
                 "chat_tool_privilege_approved",
                 user_id or "anonymous",
                 target=tool_name,
-                detail={"gate_id": gate_id or new_gate_id(), "effect": effect,
-                        "policy_version": POLICY_VERSION},
+                detail={
+                    "gate_id": gate_id or new_gate_id(),
+                    "effect": effect,
+                    "policy_version": POLICY_VERSION,
+                },
             )
             return None
         decision = GateDecision(
@@ -310,8 +311,11 @@ def gate_tool_dispatch(
             "chat_tool_privilege_blocked",
             user_id or "anonymous",
             target=tool_name,
-            detail={"gate_id": decision.gate_id, "effect": effect,
-                    "policy_version": POLICY_VERSION},
+            detail={
+                "gate_id": decision.gate_id,
+                "effect": effect,
+                "policy_version": POLICY_VERSION,
+            },
             severity="warning",
         )
         return decision

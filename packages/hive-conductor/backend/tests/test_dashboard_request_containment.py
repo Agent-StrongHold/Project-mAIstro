@@ -181,11 +181,11 @@ def test_widget_envelope_fields_are_constrained() -> None:
 
 
 def test_free_text_fields_allow_formula_characters_but_not_traversal() -> None:
-    formula = "{V2 Migration Status}='Next Candidates' AND OR(" ")"
+    formula = "{V2 Migration Status}='Next Candidates' AND OR()"
     assert sanitize_widget_config("custom", {"filter_formula": formula}) == {
         "filter_formula": formula
     }
-    assert sanitize_widget_config("custom", {"jql_extra": "text ~ \"../etc\""}) == {}
+    assert sanitize_widget_config("custom", {"jql_extra": 'text ~ "../etc"'}) == {}
 
 
 async def test_chat_widget_tool_rejects_non_declarative_config() -> None:
