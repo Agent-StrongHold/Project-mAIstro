@@ -34,7 +34,7 @@ jobs:
         run: python -m formal.extractors.extract_security_constants
 
       - name: Restore Hypothesis example database
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .hypothesis/examples
           key: formal-hypothesis-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
@@ -84,7 +84,7 @@ jobs:
 
       - name: Save Hypothesis example database
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .hypothesis/examples
           key: formal-hypothesis-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
