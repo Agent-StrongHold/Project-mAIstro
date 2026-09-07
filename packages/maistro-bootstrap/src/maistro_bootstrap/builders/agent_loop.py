@@ -390,6 +390,14 @@ def _dispatch_tool(session: BuilderSession, name: str, inputs: dict[str, Any]) -
         if result is not None:
             return result
         if name == "run_command":
+            # TODO(#329 / ADR-090726-9a4e): `requires_human_approval` is
+            # model-authored — the same model that wants to run the command
+            # decides whether to flag it — so the gate only binds when the
+            # model cooperates. Phase 1 deliberately does not change these
+            # semantics; the ADR routes the builders' approval gate toward
+            # crypto-bound decisions (WebAuthn presence / Biscuit-delegated
+            # authority) so the flag is not the thing that stands between an
+            # agent and an irreversible command. Residual risk until then.
             if inputs.get("requires_human_approval"):
                 logger.warning("run_command flagged for human approval — cmd=%r", inputs["cmd"])
                 return (
