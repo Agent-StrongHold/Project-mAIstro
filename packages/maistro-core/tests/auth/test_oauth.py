@@ -32,7 +32,7 @@ from maistro.auth.oauth import (
     OAuthStateError,
     OAuthToken,
     OAuthTokenValidationError,
-    UnverifiedJWTClaimsValidator,
+    default_id_token_verifier,
 )
 
 # ---------------------------------------------------------------------------
@@ -49,10 +49,14 @@ REDIRECT_URI = "https://conductor.local/v1/auth/oauth/test/callback"
 
 _RSA_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 _KID = "test-key-1"
+# Second signing key: lets tests prove key-rotation semantics — a JWKS that
+# has moved on must refuse tokens signed by the retired key.
+_RSA_KEY_2 = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+_KID_2 = "test-key-2"
 
 
-def _jwks() -> dict[str, Any]:
-    pub = _RSA_KEY.public_key().public_numbers()
+def _jwks_for(key: Any, kid: str) -> dict[str, Any]:
+    pub = key.public_key().public_numbers()
 
     def b64(n: int, length: int) -> str:
         return base64.urlsafe_b64encode(n.to_bytes(length, "big")).rstrip(b"=").decode()
@@ -61,7 +65,7 @@ def _jwks() -> dict[str, Any]:
         "keys": [
             {
                 "kty": "RSA",
-                "kid": _KID,
+                "kid": kid,
                 "use": "sig",
                 "alg": "RS256",
                 "n": b64(pub.n, 256),
@@ -71,8 +75,14 @@ def _jwks() -> dict[str, Any]:
     }
 
 
+def _jwks() -> dict[str, Any]:
+    return _jwks_for(_RSA_KEY, _KID)
+
+
 def make_id_token(**overrides: Any) -> str:
     now = int(time.time())
+    key = overrides.pop("_key", _RSA_KEY)
+    kid = overrides.pop("_kid", _KID)
     claims: dict[str, Any] = {
         "iss": ISSUER,
         "aud": CLIENT_ID,
@@ -84,8 +94,7 @@ def make_id_token(**overrides: Any) -> str:
         "name": "Alice",
     }
     claims.update(overrides)
-    key = overrides.pop("_key", _RSA_KEY)
-    return pyjwt.encode(claims, key, algorithm="RS256", headers={"kid": _KID})
+    return pyjwt.encode(claims, key, algorithm="RS256", headers={"kid": kid})
 
 
 def provider_config(**overrides: Any) -> OAuthProviderConfig:
@@ -111,11 +120,12 @@ class FakeIdP:
         self.refresh_response: dict[str, Any] | None = None
         self.token_requests: list[dict[str, str]] = []
         self.jwks_status = 200
+        self.jwks: dict[str, Any] = _jwks()  # swappable: key-rotation tests
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         url = str(request.url)
         if url == JWKS_URL:
-            return httpx.Response(self.jwks_status, json=_jwks())
+            return httpx.Response(self.jwks_status, json=self.jwks)
         if url == USERINFO_URL:
             return httpx.Response(200, json=self.userinfo)
         if url == TOKEN_URL:
@@ -492,50 +502,129 @@ async def test_jwks_verifier_requires_jwks_url() -> None:
 
 
 # ---------------------------------------------------------------------------
-# UnverifiedJWTClaimsValidator (claims-only fallback) — still enforces claims
+# #856 — mandatory verification: no unverified fallback anywhere
 # ---------------------------------------------------------------------------
 
 
-def _claims_token(**overrides: Any) -> str:
-    claims: dict[str, Any] = {
-        "iss": ISSUER,
-        "aud": CLIENT_ID,
-        "sub": "s",
-        "exp": int(time.time()) + 300,
+async def test_id_token_not_yet_valid_nbf_raises() -> None:
+    """A token whose nbf is in the future must be refused (#856: expiry /
+    not-before validation is mandatory on every provider)."""
+    idp = FakeIdP()
+    client = make_client(idp)
+    with pytest.raises(OAuthTokenValidationError):
+        await _exchange_with_id_token(idp, client, make_id_token(nbf=int(time.time()) + 300))
+
+
+async def test_id_token_key_rotation_rejects_retired_key_and_accepts_new() -> None:
+    """After the provider rotates its signing keys, a token from the retired
+    key must be refused even though it was verifiable before the rotation,
+    and a token from the new key must succeed (JWKS re-fetch per verify)."""
+    idp = FakeIdP()
+    client = make_client(idp)
+
+    # Pre-rotation: the original key is still served and accepted.
+    state, nonce, _ = await start_flow(client)
+    idp.valid_codes["pre"] = {
+        "access_token": "at",
+        "token_type": "Bearer",
+        "id_token": make_id_token(nonce=nonce),
     }
-    claims.update(overrides)
-    payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).rstrip(b"=").decode()
-    return f"e30.{payload}.sig"
+    exchange = await client.exchange_code("test", "pre", state, REDIRECT_URI)
+    assert exchange.identity.sub == "sub-123"
+
+    # Rotation: the provider's JWKS now serves only the new key.
+    idp.jwks = _jwks_for(_RSA_KEY_2, _KID_2)
+
+    state, nonce, _ = await start_flow(client)
+    idp.valid_codes["old-key"] = {
+        "access_token": "at",
+        "token_type": "Bearer",
+        "id_token": make_id_token(nonce=nonce),  # signed by retired key-1
+    }
+    with pytest.raises(OAuthTokenValidationError):
+        await client.exchange_code("test", "old-key", state, REDIRECT_URI)
+
+    state, nonce, _ = await start_flow(client)
+    idp.valid_codes["new-key"] = {
+        "access_token": "at",
+        "token_type": "Bearer",
+        "id_token": make_id_token(nonce=nonce, _key=_RSA_KEY_2, _kid=_KID_2),
+    }
+    exchange = await client.exchange_code("test", "new-key", state, REDIRECT_URI)
+    assert exchange.identity.sub == "sub-123"
 
 
-async def test_claims_validator_accepts_valid_claims() -> None:
-    v = UnverifiedJWTClaimsValidator()
-    async with httpx.AsyncClient(transport=httpx.MockTransport(FakeIdP().handler)) as http:
-        claims = await v.verify(_claims_token(nonce="n1"), provider_config(), http, "n1")
-    assert claims["sub"] == "s"
+async def test_id_token_malformed_payload_not_json_raises() -> None:
+    """A syntactically JWT-shaped token whose payload is not JSON must be
+    refused — never parsed for claims."""
+    idp = FakeIdP()
+    client = make_client(idp)
+    header = (
+        base64.urlsafe_b64encode(json.dumps({"alg": "RS256", "kid": _KID}).encode())
+        .rstrip(b"=")
+        .decode()
+    )
+    garbage = base64.urlsafe_b64encode(b"this is not json at all").rstrip(b"=").decode()
+    with pytest.raises(OAuthTokenValidationError):
+        await _exchange_with_id_token(idp, client, f"{header}.{garbage}.sig")
 
 
-@pytest.mark.parametrize(
-    "bad",
-    [
-        {"iss": "https://evil.example.com"},
-        {"aud": "someone-else"},
-        {"exp": int(time.time()) - 10},
-        {"nonce": "wrong"},
-    ],
-)
-async def test_claims_validator_rejects_bad_claims(bad: dict[str, Any]) -> None:
-    v = UnverifiedJWTClaimsValidator()
-    async with httpx.AsyncClient(transport=httpx.MockTransport(FakeIdP().handler)) as http:
-        with pytest.raises(OAuthTokenValidationError):
-            await v.verify(_claims_token(**{"nonce": "n1", **bad}), provider_config(), http, "n1")
+async def test_id_token_malformed_payload_not_an_object_raises() -> None:
+    """A payload that decodes to valid JSON but not a claims object must be
+    refused."""
+    idp = FakeIdP()
+    client = make_client(idp)
+    header = (
+        base64.urlsafe_b64encode(json.dumps({"alg": "RS256", "kid": _KID}).encode())
+        .rstrip(b"=")
+        .decode()
+    )
+    array = base64.urlsafe_b64encode(b"[]").rstrip(b"=").decode()
+    with pytest.raises(OAuthTokenValidationError):
+        await _exchange_with_id_token(idp, client, f"{header}.{array}.sig")
 
 
-async def test_claims_validator_rejects_non_jwt() -> None:
-    v = UnverifiedJWTClaimsValidator()
-    async with httpx.AsyncClient(transport=httpx.MockTransport(FakeIdP().handler)) as http:
-        with pytest.raises(OAuthTokenValidationError):
-            await v.verify("not-a-jwt", provider_config(), http, None)
+async def test_id_token_alg_none_rejected() -> None:
+    """The classic alg=none downgrade attack: an unsigned token must be
+    refused by the algorithm allowlist, never accepted as claims (#856)."""
+    idp = FakeIdP()
+    client = make_client(idp)
+    now = int(time.time())
+    header = (
+        base64.urlsafe_b64encode(json.dumps({"alg": "none", "typ": "JWT"}).encode())
+        .rstrip(b"=")
+        .decode()
+    )
+    payload = (
+        base64.urlsafe_b64encode(
+            json.dumps(
+                {
+                    "iss": ISSUER,
+                    "aud": CLIENT_ID,
+                    "sub": "attacker",
+                    "exp": now + 300,
+                    "iat": now,
+                }
+            ).encode()
+        )
+        .rstrip(b"=")
+        .decode()
+    )
+    with pytest.raises(OAuthTokenValidationError):
+        await _exchange_with_id_token(idp, client, f"{header}.{payload}.")
+
+
+def test_no_unverified_claims_validator_on_any_auth_path() -> None:
+    """#856 stop condition: the unverified-claims validator must not exist on
+    any authentication path — not in the module, not in the package exports,
+    and the default verifier must be the cryptographic JWKS one."""
+    import maistro.auth as auth_pkg
+    import maistro.auth.oauth as oauth_mod
+
+    assert not hasattr(oauth_mod, "UnverifiedJWTClaimsValidator")
+    assert not hasattr(auth_pkg, "UnverifiedJWTClaimsValidator")
+    assert "UnverifiedJWTClaimsValidator" not in getattr(auth_pkg, "__all__", ())
+    assert isinstance(default_id_token_verifier(), JWKSIdTokenVerifier)
 
 
 # ---------------------------------------------------------------------------
