@@ -296,6 +296,41 @@ async def test_llm_summarize_500_raises_runtime(
     assert "status=500" in (out.error_message or "")
 
 
+@pytest.mark.parametrize("binding_id", ["", "   "])
+async def test_llm_summarize_blank_binding_id_raises_binding_not_found(
+    monkeypatch: pytest.MonkeyPatch, binding_id: str
+) -> None:
+    """Covers line 128: no pre-authorized binding means no model call.
+
+    The False direction (a binding_id resolves) is covered by every governed
+    llm.summarize test above; this closes the refusing arc — empty and
+    whitespace-only ids raise BindingNotFound before any egress or HTTP.
+    """
+    monkeypatch.setenv("MAISTRO_LLM_BASE_URL", "http://fake")
+    monkeypatch.setenv("MAISTRO_LLM_API_KEY", "k")
+    calls: list[str] = []
+
+    class _Client:
+        def __init__(self, *a: Any, **kw: Any) -> None: ...
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *a: Any) -> None: ...
+
+        async def post(self, url: str, **kw: Any) -> Any:
+            calls.append(url)
+            raise AssertionError("no HTTP may happen without a binding")
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    node = get_node("llm.summarize")()
+    out = await node.run({"text": "x", "binding_id": binding_id}, _ctx())
+    assert out.success is False
+    assert out.error_code == "BindingNotFound"
+    assert "binding_id" in (out.error_message or "")
+    assert calls == []
+
+
 # --- transform_format_markdown: empty-with-footer + missing-field + dot-path ---
 
 
