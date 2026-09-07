@@ -130,6 +130,40 @@ class AuthConfig(BaseModel):
     session_max_age: int = 3600
 
 
+class ModelBindingConfig(BaseModel):
+    """Operator-declared authorization for the canonical ``model.chat`` capability.
+
+    This is authorization/configuration, not a credential container. A blank
+    ``workspace_id`` inherits the deployment's canonical ``AgentConfig.workspace_id``;
+    ``project_id`` and ``binding_id`` are always explicit so a saved Graph cannot
+    authorize itself merely by choosing a model name. ``provider_name`` is the
+    canonical Binding pin used by model routing and may be blank to allow normal
+    router selection.
+    """
+
+    binding_id: str
+    project_id: str
+    workspace_id: str = ""
+    node_id: str = ""
+    provider_name: str = ""
+    credential_refs: tuple[str, ...] = ()
+    policy_refs: tuple[str, ...] = ()
+
+    @field_validator("binding_id", "project_id")
+    @classmethod
+    def _require_scope_identity(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("model Binding identity/scope fields must be non-empty")
+        return value
+
+    @field_validator("credential_refs", "policy_refs")
+    @classmethod
+    def _reject_empty_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not ref.strip() for ref in value):
+            raise ValueError("model Binding refs cannot contain empty values")
+        return value
+
+
 class AgentConfig(BaseModel):
     """Root configuration. Validated at startup."""
 
@@ -144,6 +178,10 @@ class AgentConfig(BaseModel):
     rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
     model_groups: dict[str, dict[str, object]] = Field(default_factory=dict)
+    # Explicit canonical model authorizations loaded by create_container (#1079).
+    # Empty by default: configuring a Provider/model does not itself grant any
+    # Workspace/Project the right to invoke it.
+    model_bindings: list[ModelBindingConfig] = Field(default_factory=list)
     database_url: str = ""
     # The Workspace this instance admits work into (#41). Core keeps the soft
     # scope axes only (ADR-019/ADR-068), and a single-instance deployment is one
