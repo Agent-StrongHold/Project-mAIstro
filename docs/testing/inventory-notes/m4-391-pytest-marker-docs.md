@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +7
+  tests/: +8
 ---
 # m4-391 — registered pytest markers documented and checked
 

@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +17
+  tests/: +18
 ---
 # m4-387 — one authoritative superseded status for ADR-046
 
@@ -22,7 +22,7 @@ The +9 node IDs are all in `tests/test_check_adr_status_language.py` (new):
   line-wrapped spelling still matches, and dated past statements ("the status
   was `Accepted` at that time") are history, not assertions, and pass.
 
-The +8 diff-coverage repair cases (same file) close the gate's last uncovered
+The +9 diff-coverage repair cases (same file) close the gate's last uncovered
 statements:
 
 - Category 2's other half: a banner on a document whose front matter has no
@@ -32,3 +32,12 @@ statements:
 - `_display` falls back to the verbatim path outside the corpus; a file with
   no front matter is body-only; the `__main__` guard exits 0 both in-process
   (`runpy`) and as a subprocess the way CI shells out.
+
+Ledger correction (suite-inventory drift repair): this note also absorbs two
+node IDs that landed under the #387 provenance adapter commit (36ce38e7)
+without a note of their own — one case each in
+`test_ratchet_provenance_integration_base.py` and
+`test_m1_542_policy_coverage.py`
+(`test_adr_status_language_adapter_covers_introduction_expansion_and_oracle`).
+The diff-coverage repair itself added 7 node IDs (the first front-matter
+bump of +8 was an off-by-one, corrected here): 9 + 7 + 2 = 18.
