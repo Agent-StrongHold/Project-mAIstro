@@ -1,15 +1,15 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +29
+  packages/hive-conductor/backend/tests: +35
 ---
 # m2-311-314-315 — the Conductor sanitization cluster
 
 One lane, three issues, one boundary surface: untrusted content crossing into
 Conductor's browser sinks, widget configuration, and chat/voice dispatch.
 
-The +29 backend node IDs are two files:
+The +35 backend node IDs are two files:
 
-- `tests/test_chat_voice_gates.py` (new, 22 IDs) proves the #315 boundary:
+- `tests/test_chat_voice_gates.py` (new, 28 IDs) proves the #315 boundary:
   prompt injection refused on `/v1/chat/complete`, `/v1/chat/stream`, and
   `/v1/voice/intent`; both chat routes share one `gate_untrusted` call
   (parity by construction); encoded variants refused; benign requests pass;
@@ -21,6 +21,13 @@ The +29 backend node IDs are two files:
   gate_id/policy provenance; and the dispatch policy — destroy/mutate need
   an approval the model cannot mint, networked needs a principal, unknown
   tools are refused.
+  The six later IDs close the arcs named by the diff-coverage gate: the
+  streaming refusal answered as an ordinary `done` event with no model
+  call, the non-streaming loop dispatching a clean tool call on the same
+  boundary, a crashing tool reported as a tool result rather than an
+  exception, a non-dict scanner verdict failing closed, the refusal copy
+  distinguishing scanner unavailability, and a caller-presented approval
+  authorizing (with audit) a destructive tool.
 - `tests/test_dashboard_request_containment.py` (+7 IDs, 3 → 10) grows the
   #314 half: the per-type strict schema keeps declarative fields and drops
   unknown ones, scheme/traversal/percent-encoded payloads are rejected and

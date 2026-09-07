@@ -519,3 +519,173 @@ async def test_read_tool_with_principal_runs(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(service, "_TOOL_HANDLERS", {"list_agent_buttons": fake_handler})
     result = await service._execute_tool("list_agent_buttons", {}, "user-1")
     assert result == {"agents": []}
+
+
+# --------------------------------------------------------------------------- #
+# Arcs named by the diff-coverage gate: the exact uncovered lines/branches
+# (chat_completion.py 1811-1813, 1965, 2177-2184; chat_gate.py 166, 180, 290)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_streaming_refusal_answers_done_and_never_reaches_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refused streaming turn answers as an ordinary done event, and the
+    model port is never built for it."""
+    fake = FakeLLM()
+    monkeypatch.setattr(service, "build_llm_port", lambda: fake)
+
+    events = [
+        e
+        async for e in service.run_chat_completion_streaming(
+            ChatCompletionRequest(messages=[{"role": "user", "content": INJECTION}]),
+            user_id="user-1",
+        )
+    ]
+
+    assert fake.requests == []
+    assert events[0]["type"] == "status"
+    done = events[-1]
+    assert done["type"] == "done"
+    assert done["model"] == "chat-gate"
+    assert done["gate_reason"] == chat_gate.REASON_FLAGGED
+    assert done["content"] == chat_gate.REFUSAL_TEXT
+
+
+@pytest.mark.asyncio
+async def test_nonstreaming_loop_dispatches_clean_tool_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The non-streaming loop executes gated tool calls on the same boundary
+    as the streaming loop."""
+    monkeypatch.setattr(service, "_build_system_prompt", lambda uid: "SYS")
+    executed: list[str] = []
+
+    async def recorder(tool_name: str, args: dict, user_id: str) -> dict:
+        executed.append(tool_name)
+        return {"issues": [], "total": 0}
+
+    monkeypatch.setattr(service, "_execute_tool", recorder)
+
+    class _ToolCallingLLM:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, req: ChatCompletionRequest) -> dict:
+            self.calls += 1
+            if self.calls == 1:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {"name": "poll_jira", "arguments": "{}"},
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                }
+            return {"choices": [{"message": {"role": "assistant", "content": "all clear"}}]}
+
+    monkeypatch.setattr(service, "build_llm_port", lambda: _ToolCallingLLM())
+
+    result = await service.run_chat_completion(
+        ChatCompletionRequest(messages=[{"role": "user", "content": "blockers?"}]),
+        user_id="user-1",
+    )
+
+    assert executed == ["poll_jira"]
+    assert result["choices"][0]["message"]["content"] == "all clear"
+
+
+@pytest.mark.asyncio
+async def test_tool_execution_failure_is_reported_not_raised(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A crashing tool becomes a tool result the loop survives, never an
+    exception through the chat turn."""
+    monkeypatch.setattr(service, "_build_system_prompt", lambda uid: "SYS")
+    seen_messages: list[list[dict]] = []
+
+    async def explodes(tool_name: str, args: dict, user_id: str) -> dict:
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr(service, "_execute_tool", explodes)
+
+    class _CapturingLLM(_ScriptedLLM):
+        async def stream(self, req: ChatCompletionRequest):
+            seen_messages.append(list(req.messages))
+            async for chunk in super().stream(req):
+                yield chunk
+
+    turns = [
+        _tool_turn("poll_jira", "{}"),
+        [{"choices": [{"delta": {"content": "recovered"}, "finish_reason": "stop"}]}],
+    ]
+    monkeypatch.setattr(service, "build_llm_port", lambda: _CapturingLLM(turns))
+
+    events = [
+        e
+        async for e in service.run_chat_completion_streaming(
+            ChatCompletionRequest(messages=[{"role": "user", "content": "blockers?"}]),
+            user_id="user-1",
+        )
+    ]
+
+    tool_messages = [m for m in seen_messages[-1] if m.get("role") == "tool"]
+    assert tool_messages and "failed" in tool_messages[0]["content"]
+    assert events[-1]["type"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_non_dict_scanner_verdict_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A scanner that answers with a non-dict is malformed output, and
+    malformed means refused."""
+
+    async def lying_scan(payload: object, **kwargs: Any):
+        return "clean"
+
+    monkeypatch.setattr(chat_gate, "scan_config", lying_scan)
+    decision = await chat_gate.gate_untrusted(
+        [{"role": "user", "content": "hi"}], surface="chat_turn", user_id="user-1"
+    )
+    assert decision.allowed is False
+    assert decision.reason == chat_gate.REASON_SCANNER_ERROR
+
+
+def test_refusal_copy_distinguishes_scanner_unavailability() -> None:
+    """A dead scanner gets its own refusal sentence; a flagged turn gets the
+    standard one."""
+    unavailable = chat_gate.GateDecision(
+        allowed=False, reason=chat_gate.REASON_SCANNER_TIMEOUT, surface="chat_turn", gate_id="g1"
+    )
+    flagged = chat_gate.GateDecision(
+        allowed=False, reason=chat_gate.REASON_FLAGGED, surface="chat_turn", gate_id="g2"
+    )
+    assert chat_gate.refusal_content(unavailable) == chat_gate.SCANNER_UNAVAILABLE_TEXT
+    assert chat_gate.refusal_content(flagged) == chat_gate.REFUSAL_TEXT
+
+
+@pytest.mark.asyncio
+async def test_approved_destructive_tool_is_authorized_and_audited() -> None:
+    """A caller-presented approval — which the model cannot mint — authorizes
+    a destructive tool, and the privilege use is recorded."""
+    _reset_audit()
+    decision = chat_gate.gate_tool_dispatch(
+        "remove_agent_button", "user-1", approved=True, gate_id="gate-approved-1"
+    )
+    assert decision is None
+
+    import stores
+
+    approved_rows = [
+        e for e in stores.audit_log.values() if e["action"] == "chat_tool_privilege_approved"
+    ]
+    assert approved_rows, "the approval must be recorded in audit"
