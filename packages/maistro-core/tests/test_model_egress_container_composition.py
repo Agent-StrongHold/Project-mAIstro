@@ -16,7 +16,9 @@ from maistro.types.config import AgentConfig
 
 
 async def _container(**overrides: object) -> Container:
-    return await create_container(AgentConfig(router_api_key="test-key", **overrides))  # type: ignore[arg-type]
+    return await create_container(
+        AgentConfig(router_api_key="test-key", **overrides)  # type: ignore[arg-type]
+    )
 
 
 async def test_configured_model_bindings_bootstrap_into_the_container_effect_context() -> None:
@@ -116,7 +118,9 @@ async def test_container_resolved_summarize_uses_real_authorities_and_governed_i
 
     calls: list[str] = []
 
-    async def fake_execute_model_chat(provider: Any, payload: Any, *, endpoint: Any) -> dict[str, Any]:
+    async def fake_execute_model_chat(
+        provider: Any, payload: Any, *, endpoint: Any
+    ) -> dict[str, Any]:
         del payload
         calls.append(provider.name)
         assert provider.metadata is metadata
