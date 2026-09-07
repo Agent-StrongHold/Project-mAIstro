@@ -61,6 +61,11 @@
       "issue": "#58",
       "reason": "CapabilityEffectContext.credential_routing is the #58 accessor that wraps the context's CredentialRouter in a CredentialRouting, so slot-specific resolver/executor pairs draw credential selection from the resolved Binding scope and rotation reacts to real Invocation outcomes. maistro-core is a published library; its in-repo readers are the #58 tests (packages/maistro-core/tests/capabilities/test_credential_routing.py, outside the packages/*/src scan set). Deleting it would remove the credential-pool seam's public accessor on the canonical effect context."
     },
+    "packages/maistro-core/src/maistro/capabilities/invocation.py::unused method '_validate_usage'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#56",
+      "reason": "InvocationUsage._validate_usage is the framework-invoked pydantic @model_validator(mode='after') that #56's governed model egress relies on to keep usage accounting honest: it rejects blank units, negative input/output unit counts, and negative cost_cents before an Invocation can settle token and cost totals. Vulture reports it at 60% confidence as an unused method because no in-scan code calls a dunder-style hook by name -- pydantic invokes it on every InvocationUsage construction. Same banked-debt class as approval_store.py::_validate_state. maistro-core is a published library; deleting or renaming the validator to appease the scanner would remove the model's invariant enforcement on PR #1040's recorded-state surface."
+    },
     "packages/maistro-core/src/maistro/personas/schema.py::unused variable 'tagline'": {
       "owner": "@BlakeMatthews-dev",
       "issue": "#129",
