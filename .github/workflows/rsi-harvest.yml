@@ -45,7 +45,7 @@ jobs:
       # TRUSTED code only: check out the ref this workflow runs from (the default
       # branch it lives on), NOT the caller-supplied export_ref. This privileged
       # job (contents+PR write) must never execute code from an untrusted branch.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 

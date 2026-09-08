@@ -47,7 +47,7 @@ jobs:
             && github.event.merge_group.base_sha
             || github.event.before }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Trusted-base resolution uses git merge-base and git show. A depth-1
           # PR checkout has no readable oracle and must never silently become a
