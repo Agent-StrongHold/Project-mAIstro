@@ -156,3 +156,14 @@ async def test_timer_wait_deadline_remains_timer_due() -> None:
 
     assert checkpointed.run.status is RunStatus.WAITING
     assert checkpointed.resume_at == deadline
+
+
+def test_unknown_pause_reason_is_not_resumable() -> None:
+    """A non-empty reason outside the resume taxonomy must not fall through
+    to the legacy elapsed-timer semantics: an unknown pause is a policy
+    decision upstream, and recovery cannot guess its way past it."""
+    paused = _pause("some-future-reason", resume_at=datetime.now(UTC) - timedelta(seconds=1))
+
+    assert not attempt_executor._requires_continuation_redispatch(
+        _record(answered=False), "wait-step", paused
+    )
