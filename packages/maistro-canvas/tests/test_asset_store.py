@@ -292,8 +292,12 @@ async def test_list_instances_scopes_to_canvas():
         AssetDefinition(asset_id="a", kind=LayerKind.STRUCTURE, base_prompt="x"),
         org_id=ORG,
     )
-    await store.upsert_instance(AssetInstance(instance_id="i1", canvas_id="c_1", definition="a"), org_id=ORG)
-    await store.upsert_instance(AssetInstance(instance_id="i2", canvas_id="c_2", definition="a"), org_id=ORG)
+    await store.upsert_instance(
+        AssetInstance(instance_id="i1", canvas_id="c_1", definition="a"), org_id=ORG
+    )
+    await store.upsert_instance(
+        AssetInstance(instance_id="i2", canvas_id="c_2", definition="a"), org_id=ORG
+    )
     only_c1 = await store.list_instances("c_1", org_id=ORG)
     assert {i.instance_id for i in only_c1} == {"i1"}
 

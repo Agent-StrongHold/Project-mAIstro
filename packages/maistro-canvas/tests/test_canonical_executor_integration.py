@@ -69,9 +69,7 @@ class _CanvasStore:
             None,
         )
 
-    async def create_job(
-        self, job: GenerationJobRecord, *, org_id: str
-    ) -> GenerationJobRecord:
+    async def create_job(self, job: GenerationJobRecord, *, org_id: str) -> GenerationJobRecord:
         if self.fail_create:
             raise RuntimeError("receipt store unavailable")
         self.jobs[job.id] = job
@@ -80,9 +78,7 @@ class _CanvasStore:
     async def get_job(self, job_id: str, *, org_id: str) -> GenerationJobRecord | None:
         return self.jobs.get(job_id)
 
-    async def update_job(
-        self, job: GenerationJobRecord, *, org_id: str
-    ) -> GenerationJobRecord:
+    async def update_job(self, job: GenerationJobRecord, *, org_id: str) -> GenerationJobRecord:
         self.jobs[job.id] = job
         return job
 

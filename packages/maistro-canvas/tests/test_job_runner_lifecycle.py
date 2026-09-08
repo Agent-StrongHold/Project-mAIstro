@@ -51,9 +51,7 @@ class InMemoryJobStore:
     async def get_job(self, job_id: str) -> GenerationJobRecord | None:
         return self._jobs.get(job_id)
 
-    async def update_job(
-        self, job: GenerationJobRecord, *, org_id: str
-    ) -> GenerationJobRecord:
+    async def update_job(self, job: GenerationJobRecord, *, org_id: str) -> GenerationJobRecord:
         self._jobs[job.id] = job
         return job
 

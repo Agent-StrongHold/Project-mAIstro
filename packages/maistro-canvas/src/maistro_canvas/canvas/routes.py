@@ -229,7 +229,9 @@ async def _export_image(
     )
 
 
-async def _cancel_active_jobs(store: CanvasStore, executor: CanvasExecutor, canvas_id: str, org_id: str) -> None:
+async def _cancel_active_jobs(
+    store: CanvasStore, executor: CanvasExecutor, canvas_id: str, org_id: str
+) -> None:
     """Best-effort cancel of any active jobs on a canvas before archiving."""
     layers = await store.list_layers(canvas_id, org_id=org_id)
     for lyr in layers:

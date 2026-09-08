@@ -35,9 +35,7 @@ class _SingleJobStore:
         self.job = deepcopy(claimed)
         return deepcopy(self.job)
 
-    async def update_job(
-        self, job: GenerationJobRecord, *, org_id: str
-    ) -> GenerationJobRecord:
+    async def update_job(self, job: GenerationJobRecord, *, org_id: str) -> GenerationJobRecord:
         self.job = deepcopy(job)
         return deepcopy(self.job)
 
