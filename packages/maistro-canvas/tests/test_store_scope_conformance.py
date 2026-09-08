@@ -28,6 +28,7 @@ Backends:
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator
@@ -392,6 +393,44 @@ class TestCanvasTwoTenants:
         assert await canvas_store.latest_composite(canvas.id, org_id=ORG_B) is None
         assert await canvas_store.latest_composite(canvas.id, org_id=ORG_A) is not None
 
+    async def test_a_canvas_can_be_updated_inside_its_org(
+        self, canvas_store: PgCanvasStore
+    ) -> None:
+        canvas = await _canvas(canvas_store, ORG_A)
+        canvas.name = "Renamed in place"
+        await canvas_store.update_canvas(canvas, org_id=ORG_A)
+        fresh = await canvas_store.get_canvas(canvas.id, org_id=ORG_A)
+        assert fresh is not None and fresh.name == "Renamed in place"
+
+    async def test_a_layer_can_be_updated_inside_its_org(self, canvas_store: PgCanvasStore) -> None:
+        canvas = await _canvas(canvas_store, ORG_A)
+        layer = await _layer(canvas_store, canvas.id, ORG_A)
+        layer.name = "Retitled"
+        layer.z_index = 4
+        await canvas_store.update_layer(layer, org_id=ORG_A)
+        fresh = await canvas_store.get_layer(layer.id, org_id=ORG_A)
+        assert fresh is not None and fresh.name == "Retitled" and fresh.z_index == 4
+
+    async def test_a_job_can_be_updated_inside_its_org(self, canvas_store: PgCanvasStore) -> None:
+        job = await self._job(canvas_store, ORG_A)
+        job.status = "done"
+        job.result_paths = ["/done/a.png"]
+        await canvas_store.update_job(job, org_id=ORG_A)
+        fresh = await canvas_store.get_job(job.id, org_id=ORG_A)
+        assert (
+            fresh is not None and fresh.status == "done" and fresh.result_paths == ["/done/a.png"]
+        )
+
+    async def test_a_job_update_from_another_org_is_refused(
+        self, canvas_store: PgCanvasStore
+    ) -> None:
+        from maistro_canvas.types import JobNotFoundError
+
+        job = await self._job(canvas_store, ORG_A)
+        job.status = "cancelled"
+        with pytest.raises(JobNotFoundError):
+            await canvas_store.update_job(job, org_id=ORG_B)
+
     async def test_a_composite_cannot_be_saved_for_another_orgs_canvas(
         self, canvas_store: PgCanvasStore
     ) -> None:
@@ -576,6 +615,55 @@ class TestAssetTwoTenants:
         book.org_id = ORG_B
         with pytest.raises(ValueError, match="cannot move"):
             await store.update_book(book, org_id=ORG_A)
+
+    # ── success arcs the refusal tests never reach ─────────────────
+
+    async def test_a_definition_can_be_updated_inside_its_org(self, store: Any) -> None:
+        await store.register_definition(_definition(), org_id=ORG_A)
+        defn = await store.get_definition("farmhouse", org_id=ORG_A)
+        assert defn is not None
+        updated = dataclasses.replace(defn, base_prompt="a red farmhouse")
+        await store.update_definition(updated, org_id=ORG_A)
+        fresh = await store.get_definition("farmhouse", org_id=ORG_A)
+        assert fresh is not None and fresh.base_prompt == "a red farmhouse"
+
+    async def test_register_definition_requires_a_non_empty_id(self, store: Any) -> None:
+        with pytest.raises(ValueError, match="non-empty asset_id"):
+            await store.register_definition(_definition(asset_id=""), org_id=ORG_A)
+
+    async def test_a_book_requires_a_scope_to_be_created(self, store: Any) -> None:
+        with pytest.raises(ValueError, match="within a scope"):
+            await store.create_book(
+                book_id="b0",
+                title="Scopeless",
+                world_style=_world_style(),
+                org_id="",
+            )
+
+    async def test_a_book_id_cannot_collide_inside_one_org(self, store: Any) -> None:
+        await self._book(store, ORG_A)
+        with pytest.raises(ValueError, match="already exists"):
+            await self._book(store, ORG_A)
+
+    async def test_a_book_can_be_updated_inside_its_org(self, store: Any) -> None:
+        book = await self._book(store, ORG_A)
+        book.title = "Second edition"
+        await store.update_book(book, org_id=ORG_A)
+        fresh = await store.get_book("b1", org_id=ORG_A)
+        assert fresh is not None and fresh.title == "Second edition"
+
+    async def test_a_sheet_can_be_regenerated_inside_its_org(self, store: Any) -> None:
+        await store.register_definition(_definition(), org_id=ORG_A)
+        await store.upsert_sheet(
+            AssetSheet(asset_id="farmhouse", refs=("/r.png",), sheet_image="/s.png"),
+            org_id=ORG_A,
+        )
+        regen = await store.regenerate_sheet(
+            "farmhouse", "/s2.png", refs=("/r.png", "/r2.png"), org_id=ORG_A
+        )
+        assert regen.sheet_image == "/s2.png"
+        stored = await store.get_sheet("farmhouse", org_id=ORG_A)
+        assert stored is not None and stored.sheet_image == "/s2.png"
 
 
 class _PgAssetFacade:

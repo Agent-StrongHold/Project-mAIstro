@@ -529,3 +529,15 @@ async def test_tool_complex_scene_round_trip(tool: AssetTool) -> None:
         },
     )
     assert len(render_out["results"]) == 2
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Org-scope guard (#857): the executor is constructed with the scope
+# every action runs under; constructing without one fails closed.
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_executor_requires_org_scope() -> None:
+    store = InMemoryAssetStore()
+    with pytest.raises(ValueError, match="requires the org scope"):
+        AssetExecutor(store, FakeImageGenClient(), org_id="")  # type: ignore[arg-type]

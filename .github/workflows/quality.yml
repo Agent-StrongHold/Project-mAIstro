@@ -342,6 +342,18 @@ jobs:
             packages/maistro-core/tests/projects \
             packages/maistro-core/tests/workspaces \
             packages/maistro-core/tests/scheduling -v --tb=short
+          # The canvas org-scope lane (#857) put PostgresAssetStore and the
+          # PgCanvasStore job/composite writers behind MAISTRO_TEST_PG_DSN.
+          # Their suites are dual-leg: the PostgreSQL half skips in
+          # `coverage (no services)`, so without a producer here the diff
+          # gate scored every changed PG-store line as untested code while
+          # the very same arcs were passing against a real server in
+          # ci.yml. The suite builds its own throwaway schema (the pg_engine
+          # fixture), so it does not depend on the alembic chain above; it
+          # runs in the same step only to share the service and env.
+          uv run coverage run --append --branch \
+            --source=packages/maistro-canvas/src/maistro_canvas \
+            -m pytest packages/maistro-canvas/tests --timeout=30 -q
       - name: upload coverage data
         uses: actions/upload-artifact@v4
         with:

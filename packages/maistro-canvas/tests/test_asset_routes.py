@@ -458,3 +458,115 @@ def test_plan_endpoint_is_pure(client: TestClient) -> None:
     a = client.post("/v2/canvas/canvases/c1/plan", json=body).json()
     b = client.post("/v2/canvas/canvases/c1/plan", json=body).json()
     assert a == b
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Org-scope lane (#857) route-body coverage: book update guard, store
+# error mapping, and the render-plan resolution branches.
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_update_book_mainline(client: TestClient) -> None:
+    client.post(
+        "/v2/canvas/books", json={"book_id": "b1", "title": "V1", "world_style": _world_style()}
+    )
+    r = client.put(
+        "/v2/canvas/books/b1",
+        json={"book_id": "b1", "title": "V2", "world_style": _world_style()},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["title"] == "V2"
+
+
+def test_update_book_rejects_foreign_org_claim(client: TestClient) -> None:
+    r = client.put(
+        "/v2/canvas/books/b1",
+        json={
+            "book_id": "b1",
+            "title": "V1",
+            "world_style": _world_style(),
+            "org_id": "some-other-org",
+        },
+    )
+    assert r.status_code == 403, r.text
+
+
+def test_upsert_sheet_maps_store_error_to_404(client: TestClient) -> None:
+    """A sheet for an unregistered definition surfaces as a 404, not a 500."""
+    r = client.put(
+        "/v2/canvas/assets/ghost/sheet",
+        json={
+            "asset_id": "ghost",
+            "refs": ["/x.png"],
+            "sheet_image": "/sheet.png",
+            "revision": 1,
+            "generation_params": {},
+        },
+    )
+    assert r.status_code == 404, r.text
+
+
+async def test_upsert_profile_maps_store_error_to_4xx(
+    client: TestClient, store: InMemoryAssetStore
+) -> None:
+    """A profile_id owned by another org is refused, not re-scoped."""
+    from maistro_canvas.layers import ChildProfile
+
+    await store.upsert_profile(
+        ChildProfile(
+            profile_id="p1", name="Foreign", pronouns="", likeness_refs=(), accommodations=()
+        ),
+        org_id="other-org",
+    )
+    r = client.put(
+        "/v2/canvas/child-profiles/p1",
+        json={
+            "profile_id": "p1",
+            "name": "Impostor",
+            "pronouns": "",
+            "likeness_refs": [],
+            "accommodations": [],
+        },
+    )
+    assert 400 <= r.status_code < 500, r.text
+
+
+def test_plan_resolves_book_profile_and_definitions(client: TestClient) -> None:
+    _seed_def(client)
+    client.post(
+        "/v2/canvas/asset-instances",
+        json={"instance_id": "x", "canvas_id": "c1", "definition": "a"},
+    )
+    pr = client.put(
+        "/v2/canvas/child-profiles/p1",
+        json={
+            "profile_id": "p1",
+            "name": "Sarah",
+            "pronouns": "she/her",
+            "likeness_refs": ["/a.jpg"],
+            "accommodations": [],
+        },
+    )
+    assert pr.status_code == 200, pr.text
+    br = client.post(
+        "/v2/canvas/books",
+        json={
+            "book_id": "b1",
+            "title": "Booked",
+            "world_style": _world_style(),
+            "profile_id": "p1",
+        },
+    )
+    assert br.status_code == 201, br.text
+
+    # book_id path: world_style + profile resolve from the book row, and the
+    # instance's definition id goes through the registry lookup.
+    r = client.post("/v2/canvas/canvases/c1/plan", json={"book_id": "b1"})
+    assert r.status_code == 200, r.text
+
+    # explicit profile_id override path
+    r2 = client.post(
+        "/v2/canvas/canvases/c1/plan",
+        json={"profile_id": "p1", "world_style": _world_style()},
+    )
+    assert r2.status_code == 200, r2.text
