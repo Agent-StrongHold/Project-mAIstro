@@ -6,13 +6,18 @@ silently rejects previously-valid input. These are subtle-semantics bugs a
 careful reader catches by inspection, not by running the existing suite —
 that suite, by definition, doesn't yet know to look for the regression.
 
-Deliberately narrow and conservative (see ADR-070126-6386 v3's W2S posture):
-the objective gates (tests, coverage, syntax, collectability) stay the primary,
-dumb, reliable defense; this judge only supplements them, is only consulted
-when a candidate has already cleared every other gate (so a doomed candidate
-never burns an LLM call), and defaults to a passing score on any judge
-failure — it must never become the thing that blocks promotion when the
-gateway hiccups.
+Deliberately narrow (see ADR-070126-6386 v3's W2S posture) and FAIL-CLOSED
+(#307, superseding this module's original "must never become the thing that
+blocks promotion" rationale): the objective gates (tests, coverage, syntax,
+collectability) stay the primary, dumb, reliable defense and this judge only
+supplements them, but when the judge is ENABLED it is REQUIRED — a gateway
+error, timeout, unparsable reply, or oversized diff yields an *unavailable*
+verdict (``score=None``) that fails the ``no_flagged_regression`` gate rather
+than masquerading as a passing 0.7. An unavailable judge saying "promote"
+is indistinguishable from no judge at all, and a silent fail-open is exactly
+the posture #307 removes. Operators who prefer the old lenient behavior
+disable the judge entirely (``regression_judge=false``) instead of relying
+on an unobserved failure mode.
 """
 
 from __future__ import annotations
@@ -20,9 +25,23 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Literal
 
 LlmCall = Callable[..., dict[str, Any]]
+
+# A parsed score below this is a flagged regression: the verdict becomes
+# "reject" and the promotion gate vetoes. Single-sourced here so the judge's
+# status mapping and the gate in candidate_fitness can never drift apart
+# (the system prompt below tells the model the same threshold).
+REJECT_BELOW = 0.4
+
+# The judge only ever sees this many leading characters of the diff — enough
+# context to rule, bounded prompt cost.
+_MAX_DIFF_CHARS = 8000
+# But slicing below half the real diff means the judge would rule on a
+# partial view that hides most of the change — unavailable instead (#307).
+_MIN_RETAINED_FRACTION = 0.5
 
 _SYSTEM = (
     "You are reviewing a code diff for regressions the automated test suite "
@@ -45,39 +64,80 @@ _SYSTEM = (
 )
 
 
-def judge_regression(
-    diff_text: str, target: str, llm_call: LlmCall, *, fallback_score: float = 0.7
-) -> tuple[float, str]:
+@dataclass(frozen=True)
+class JudgeVerdict:
+    """One regression-judge consultation, availability kept separate from score.
+
+    ``status`` is "pass"/"reject" only when the judge actually RULED — "reject"
+    means a parsed score below :data:`REJECT_BELOW` (a flagged regression).
+    Any judge failure is "unavailable" with ``score=None`` and a ``cause``
+    naming the failure class ("gateway_error", "timeout", "unparsable_reply",
+    "oversized_diff"). The score of an unavailable verdict must never be
+    coerced to a number — that is the fail-open posture #307 removes.
+    """
+
+    status: Literal["pass", "reject", "unavailable"]
+    score: float | None  # None iff status == "unavailable"
+    rationale: str
+    cause: str | None = None  # failure class; None whenever the judge ruled
+
+
+def judge_regression_verdict(diff_text: str, target: str, llm_call: LlmCall) -> JudgeVerdict:
     """Single-candidate LLM judge of regression risk for an already-passing diff.
 
-    Never raises: an unavailable/erroring/unparsable judge reply returns
-    ``fallback_score`` (a passing-leaning default) rather than blocking
-    promotion on an infra hiccup — the deterministic gates remain the primary
-    defense; this is only ever a supplement.
+    Never raises: every judge failure returns a ``JudgeVerdict`` with
+    status "unavailable" and ``score=None`` — the promotion gate then fails
+    the candidate (fail closed, #307). An empty diff needs no second opinion:
+    "pass" with score 1.0, no LLM call.
     """
     if not diff_text.strip():
-        return 1.0, "empty diff"
+        return JudgeVerdict("pass", 1.0, "empty diff")
+    sliced = diff_text[:_MAX_DIFF_CHARS]
+    if len(sliced) < _MIN_RETAINED_FRACTION * len(diff_text):
+        return JudgeVerdict(
+            "unavailable",
+            None,
+            f"diff too large to judge whole ({len(diff_text)} chars, cap {_MAX_DIFF_CHARS}) "
+            "— refusing to rule on a partial view",
+            "oversized_diff",
+        )
     messages = [
         {"role": "system", "content": _SYSTEM},
-        {"role": "user", "content": f"Target: {target}\n\nDiff:\n{diff_text[:8000]}"},
+        {"role": "user", "content": f"Target: {target}\n\nDiff:\n{sliced}"},
     ]
     try:
         result = llm_call(messages, max_tokens=400)
+    except TimeoutError:
+        return JudgeVerdict("unavailable", None, "judge timed out", "timeout")
     except Exception:
-        return fallback_score, "judge unavailable"
+        return JudgeVerdict("unavailable", None, "judge gateway error", "gateway_error")
     content = result.get("content", "") if isinstance(result, dict) else result
     text = content if isinstance(content, str) else str(content)
-    return _parse_verdict(text, fallback_score)
+    return _parse_verdict(text)
 
 
-def _parse_verdict(text: str, fallback_score: float) -> tuple[float, str]:
+def _parse_verdict(text: str) -> JudgeVerdict:
+    """Parse the model's reply into a ruling; anything short of a usable
+    ``{"score": <number>, ...}`` object is unavailable/unparsable_reply."""
     match = re.search(r"\{.*\}", text, re.DOTALL)
     if not match:
-        return fallback_score, "judge reply unparsable"
+        return _unparsable("no JSON object found in reply")
     try:
         data = json.loads(match.group(0))
-        score = max(0.0, min(1.0, float(data.get("score", fallback_score))))
-        rationale = str(data.get("rationale", "")).strip()[:500]
-        return score, rationale or "no rationale given"
-    except (json.JSONDecodeError, TypeError, ValueError):
-        return fallback_score, "judge reply unparsable"
+    except json.JSONDecodeError:
+        return _unparsable("reply was not valid JSON")
+    if not isinstance(data, dict):
+        return _unparsable("reply JSON was not an object")
+    if "score" not in data:
+        return _unparsable("reply JSON has no 'score' key")
+    try:
+        score = max(0.0, min(1.0, float(data["score"])))
+    except (TypeError, ValueError):
+        return _unparsable("'score' was not numeric")
+    rationale = str(data.get("rationale", "")).strip()[:500]
+    status: Literal["pass", "reject"] = "reject" if score < REJECT_BELOW else "pass"
+    return JudgeVerdict(status, score, rationale or "no rationale given")
+
+
+def _unparsable(why: str) -> JudgeVerdict:
+    return JudgeVerdict("unavailable", None, f"judge reply unusable: {why}", "unparsable_reply")
