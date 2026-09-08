@@ -569,7 +569,7 @@ class PostgresAssetStore:
         # params. Identifiers cannot be parameterized, so a raw text()
         # statement is the only correct form here — hence nosemgrep.
         sql = f"SELECT 1 FROM {table} WHERE {id_column} = :rid AND org_id <> :org"
-        stmt = text(sql)  # nosemgrep: code-controlled identifiers, bound values
+        stmt = text(sql)  # nosemgrep
         foreign = await self._session.execute(stmt, {"rid": row_id, "org": org_id})
         if foreign.first() is not None:
             msg = f"{kind} {row_id!r} already exists in another scope"

@@ -241,7 +241,11 @@ async def pg_engine():
     dsn = _require_pg()
     schema = f"canvas_scope_conf_{uuid.uuid4().hex[:12]}"
     engine = create_async_engine(
-        dsn,
+        # Same normalization as the core persistence fixtures: the shared
+        # env DSN is driver-neutral (`postgresql://`), and left verbatim
+        # SQLAlchemy resolves the sync psycopg2 dialect, which is absent
+        # from lean CI environments. asyncpg is the declared driver.
+        dsn.replace("postgresql://", "postgresql+asyncpg://", 1),
         connect_args={"server_settings": {"search_path": f"{schema},public"}},
     )
     async with engine.begin() as conn:

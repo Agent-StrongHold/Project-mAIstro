@@ -1,3 +1,8 @@
+---
+inventory-delta:
+  packages/maistro-canvas/tests: +38
+---
+
 # 857-canvas-scope-coverage
 
 Thirty-eight new tests, all additions, no removals or compensating changes:
