@@ -16,7 +16,9 @@ from typing import Any
 from maistro.graph.definitions import Graph
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.graph.nodes.base import (
-    TIMER_RESUMABLE_PAUSE_REASONS,
+    PAUSE_RESUME_CONDITIONS,
+    RESUME_ON_ANSWER,
+    RESUME_ON_ELAPSED,
     NodeContext,
     NodeResult,
 )
@@ -275,11 +277,12 @@ def _requires_continuation_redispatch(
     """Whether accepted pause evidence now requires a fresh physical try."""
     if result.status != "paused":
         return False
-    if traversal._is_human_pause(result):
-        return node_id in record.hitl_answers
 
     reason = str((result.metadata or {}).get("paused_reason") or "")
-    if reason and reason not in TIMER_RESUMABLE_PAUSE_REASONS:
+    resume_condition = PAUSE_RESUME_CONDITIONS.get(reason)
+    if resume_condition == RESUME_ON_ANSWER:
+        return node_id in record.hitl_answers
+    if resume_condition != RESUME_ON_ELAPSED:
         return False
     return result.resume_at is not None and result.resume_at <= datetime.now(UTC)
 
