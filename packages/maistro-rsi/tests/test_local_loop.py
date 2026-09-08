@@ -108,6 +108,46 @@ def test_failing_tests_block_promotion(tmp_path: Path) -> None:
     assert all(c.changed and not c.tests_passed and not c.promoted for c in result.cycles)
 
 
+def test_failed_audit_write_rolls_the_promotion_back(tmp_path: Path, monkeypatch) -> None:
+    """#342: the git-notes trace is the promotion's durable audit record.
+    When it cannot be written, the fast-forward is rolled back and the
+    cycle is reported as not promoted — the ratchet never advances
+    without its evidence, so a state change with a silent audit trail is
+    unconstructible here too, not just in the formal model."""
+    import maistro_rsi.trace_notes as trace_notes
+
+    repo = _make_repo(tmp_path / "src")
+
+    def bump(ws: Path) -> None:
+        f = ws / "value.txt"
+        f.write_text(f.read_text() + "x\n", encoding="utf-8")
+
+    # _annotate_promotion imports write_trace_note at call time, so patching
+    # the module attribute is what the loop actually sees.
+    monkeypatch.setattr(trace_notes, "write_trace_note", lambda repo_dir, sha, note: False)
+
+    config = LocalRsiConfig(
+        repo_path=str(repo),
+        test_command="exit 0",
+        work_root=str(tmp_path / "work"),
+        max_cycles=1,
+    )
+    result = LocalRsiLoop(config, apply_patch=_make_apply(bump)).run()
+
+    assert result.promotions == 0
+    cycle = result.cycles[0]
+    assert cycle.changed and cycle.tests_passed and not cycle.promoted
+    assert "audit" in cycle.note
+    # The promotion did not land on the baseline branch: only the init commit
+    # remains — the ff-merge was reset, not left dangling.
+    baseline = Path(config.work_root) / "baseline"
+    log = subprocess.run(
+        ["git", "log", "--oneline"], cwd=str(baseline), capture_output=True, text=True, check=True
+    )
+    assert len(log.stdout.strip().splitlines()) == 1
+    assert (baseline / "value.txt").read_text(encoding="utf-8") == "0\n"
+
+
 def test_respects_cycle_cap(tmp_path: Path) -> None:
     repo = _make_repo(tmp_path / "src")
     config = LocalRsiConfig(

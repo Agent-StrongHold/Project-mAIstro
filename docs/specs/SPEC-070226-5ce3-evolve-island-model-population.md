@@ -63,7 +63,8 @@ individual emerges.
 - Parallel or async island execution (islands run sequentially within
   `run_cycle`; async execution is a future scaling concern).
 - Per-island fitness functions or benchmark assignments.
-- Changing how individual genomes are evaluated or how `PopulationStore.promote()`
+- Changing how individual genomes are evaluated or how the audited promotion
+  path (`PopulationStore.promote_audited`)
   works.
 
 ## Decision
