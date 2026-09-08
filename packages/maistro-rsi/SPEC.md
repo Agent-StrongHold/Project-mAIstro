@@ -75,10 +75,16 @@ and unreviewed," not "some files are permanently off-limits."
 into the sandboxed workspace, creates a uniquely-named branch, hands control to
 an agent-supplied `apply_patch` callback, commits, runs the test command
 *inside the sandbox*, runs the diff through the injected quarantine check, and
-— only if tests pass **and** quarantine clears — opens a draft PR. A
-self-modifying agent does not get to propose changes to its own codebase that
-fail its own test suite, nor to ship anything (including changes to its own
-harness) that hasn't been scanned and, where warranted, adversarially reviewed.
+— only if tests pass **and** a *present* quarantine check has *executed against
+the shipped diff* and *returned a cleared verdict* — opens a draft PR. The
+check is a required gate, not optional wiring: shipping demands affirmative
+quarantine evidence, so an absent, unwired, or never-executed check is a
+refusal, never a bypass (#347 — supersedes earlier text that let a PR open when
+the check was "absent or cleared", a fail-open path production code never
+had). A self-modifying agent does not get to propose changes to its own
+codebase that fail its own test suite, nor to ship anything (including changes
+to its own harness) that hasn't been scanned and, where warranted,
+adversarially reviewed.
 
 | AC | Criterion |
 |----|-----------|
@@ -86,7 +92,7 @@ harness) that hasn't been scanned and, where warranted, adversarially reviewed.
 | selfbranch-2 | A failed clone short-circuits the workflow: no branch/patch/test/PR/quarantine steps run, and the result carries a non-`None` `error`. |
 | selfbranch-3 | On a successful clone, the workflow calls `git_branch`, then `apply_patch`, then `git_commit`, in that order, before running tests. |
 | selfbranch-4 | `tests_passed` is `True` iff the sandboxed test command exits `0` *and* no error was recorded — a clone failure must never read as "tests passed". |
-| selfbranch-5 | A PR is opened (`github_create_pr` invoked, `pr_url` populated) only when `open_pr=True` **and** the test command exits `0` **and** (`quarantine_check` is absent **or** returns a cleared verdict). A failing test suite or an uncleared quarantine verdict must never produce a PR, regardless of `open_pr`. |
+| selfbranch-5 | A PR is opened (`github_create_pr` invoked, `pr_url` populated) only when `open_pr=True` **and** the test command exits `0` **and** a `quarantine_check` is present, executed against the diff that ships, and returning a cleared verdict. The gate fails closed: a failing test suite, an absent or unwired check, or an uncleared verdict must never produce a PR, regardless of `open_pr` — no affirmative cleared verdict means refusal, not bypass. (#347 supersedes the earlier "absent **or** cleared" wording, which described a fail-open path production code never implemented.) |
 | selfbranch-6 | The returned `diff` reflects `git diff` output captured after the patch is applied and committed. |
 | selfbranch-7 | `paths_touched_by_diff` extracts every `a/...`/`b/...` path named in a unified diff's `diff --git` headers, de-duplicated and in first-seen order. |
 | selfbranch-8 | The `quarantine` field on the result carries the verdict `quarantine_check` returned, so callers can inspect *why* a change was held without re-deriving it. |
