@@ -8,6 +8,7 @@ signatures exposed by `maistro.security.ssrf`.
 
 from __future__ import annotations
 
+import ipaddress
 import socket
 
 import pytest
@@ -150,6 +151,130 @@ class TestInternalTargets:
     def test_case_insensitive_match(self) -> None:
         with pytest.raises(SSRFBlockedError):
             validate_outbound_url("HTTP://LOCALHOST/x")
+
+
+class TestIPv4MappedSpelling:
+    """`::ffff:100.64.0.1` is the same target as `100.64.0.1` (#67, reopened).
+
+    An IPv4-mapped IPv6 literal reaches the resolution stage as an
+    `IPv6Address`. Python 3.12's predicates unwrap *some* embeddings —
+    `is_private`/`is_loopback` inspect the mapped address, which is why
+    `::ffff:127.0.0.1` was refused all along — but not the ones the stdlib
+    does not itself classify: the mapped CGNAT range passed every predicate
+    *and* the IPv4-only `_BLOCKED_NETWORKS` loop, whose membership check
+    answers `False` for an IPv6 address rather than raising. A hostname whose
+    AAAA answer is the mapped spelling reaches the same hole, which is why
+    the pins run through both the literal-URL path and the resolver-string
+    path.
+
+    The mapped pins are the mutation check for the normalization in
+    `_is_blocked_address`: remove the `ipv4_mapped` reassignment and every
+    CGNAT case below fails, on every platform, because it asserts on the
+    exact resolver string rather than on whatever `getaddrinfo` does with a
+    literal on the platform running the suite.
+    """
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "::ffff:100.64.0.0",  # first address of the /10
+            "::ffff:100.64.0.1",  # the address the reopened finding spelled
+            "::ffff:100.100.5.5",  # mid-range, the address a carrier NAT hands out
+            "::ffff:100.127.255.255",  # last address of the /10
+        ],
+    )
+    def test_mapped_cgnat_is_blocked(self, host: str) -> None:
+        """Both /10 boundaries and the finding's own spelling, pinned.
+
+        `getaddrinfo` returns a mapped literal unchanged on this runtime, so
+        these exercise the URL end to end; on a stack that demaps it to the
+        IPv4 form the plain `100.64.0.0/10` entry refuses it, so the outcome
+        is blocked either way and the test holds on both.
+        """
+        with pytest.raises(SSRFBlockedError):
+            validate_outbound_url(f"http://[{host}]/x")
+
+    @pytest.mark.parametrize("host", ["::ffff:100.63.255.255", "::ffff:100.128.0.0"])
+    def test_mapped_public_space_just_outside_the_prefix_is_allowed(self, host: str) -> None:
+        """The mask, not the mapping, does the refusing: mapped public
+        addresses on either side of /10 are ordinary public space."""
+        validate_outbound_url(f"http://[{host}]/x")
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "::ffff:127.0.0.1",
+            "::ffff:10.0.0.1",
+            "::ffff:172.16.0.1",
+            "::ffff:192.168.1.1",
+            "::ffff:169.254.169.254",
+            "::ffff:0.0.0.0",
+        ],
+    )
+    def test_mapped_rfc1918_loopback_and_metadata_stay_blocked(self, host: str) -> None:
+        """Refused today by the stdlib predicates, pinned so neither a Python
+        upgrade that moves them nor a refactor of the check can quietly change
+        that — after normalization they are checked as the plain IPv4
+        addresses they are, which is the only reason the guarantee holds for
+        them too and not just for CGNAT."""
+        with pytest.raises(SSRFBlockedError):
+            validate_outbound_url(f"http://[{host}]/x")
+
+    def test_a_hostname_resolving_to_a_mapped_cgnat_aaaa_is_blocked(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """DNS can answer with the mapped spelling directly; the guard must
+        refuse the string `getaddrinfo` hands back, not only the URL form.
+
+        The refusal reports the resolver's own spelling — the operator sees
+        the address their DNS actually answered, while the policy ran on the
+        embedded IPv4.
+        """
+
+        def fake_gai(*a: object, **k: object) -> list[object]:
+            return [_addrinfo_entry("::ffff:100.64.0.1")]
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake_gai)
+        with pytest.raises(SSRFBlockedError, match=r"::ffff:100\.64\.0\.1"):
+            validate_outbound_url("https://cgnat-behind-dns.example.com/x")
+
+    def test_every_network_entry_is_enforced_in_both_spellings_by_construction(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The re-audit the reopened finding asked for, as a standing test.
+
+        Normalization happens before the `_BLOCKED_NETWORKS` loop in
+        `_is_blocked_address`, so a range added to that tuple later cannot be
+        spelled around — this feeds the mapped form of every entry's first
+        address through the same check the loop applies and requires a
+        refusal, which fails if a future edit moves the normalization below
+        the loop or drops it behind a condition.
+        """
+        from maistro.security import ssrf
+
+        for network in ssrf._BLOCKED_NETWORKS:
+            first = ipaddress.ip_address(int(network.network_address))
+            mapped = ipaddress.IPv6Address(0xFFFF00000000 + int(first))
+            assert ssrf._is_blocked_address(mapped), (
+                f"{network} is not enforced against its mapped spelling "
+                f"{mapped} — normalization is no longer ahead of the block loop"
+            )
+
+    @pytest.mark.parametrize(
+        ("url", "what"),
+        [
+            ("http://[2002:7f00:1::]/", "6to4 embedding 127.0.0.1"),
+            ("http://[64:ff9b::7f00:1]/", "NAT64 embedding 127.0.0.1"),
+            ("http://[::a00:1]/", "IPv4-compatible embedding 10.0.0.1"),
+        ],
+    )
+    def test_embeddings_with_no_ipv4_form_are_still_refused(self, url: str, what: str) -> None:
+        """Not normalized — they have no `ipv4_mapped` value — so these ride
+        on the stdlib predicates (`is_private`, `is_reserved`, `is_reserved`
+        on this runtime). Pinned so a Python upgrade that moves either is
+        loud here rather than silent in production."""
+        with pytest.raises(SSRFBlockedError):
+            validate_outbound_url(url)
 
 
 class TestDNSRebinding:
