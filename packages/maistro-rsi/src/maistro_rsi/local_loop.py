@@ -1841,8 +1841,47 @@ class LocalRsiLoop:
             promote_branch, composite, files, kept_n, judge_score, promoted_trace = (
                 self._select_and_merge(index, target, accepted, created)
             )
+            pre_promotion_sha = _git(self._baseline, "rev-parse", "HEAD").stdout.strip()
             _git(self._baseline, "merge", "--ff-only", promote_branch)
             promoted_sha = _git(self._baseline, "rev-parse", "HEAD").stdout.strip()
+            note = (
+                f"tournament: {len(competitors)} competitor(s), {len(accepted)} passed, "
+                f"kept {kept_n} (composite={composite})"
+            )
+            if not self._annotate_promotion(
+                promoted_sha,
+                index,
+                target,
+                accepted[0],
+                composite,
+                files,
+                note,
+                trace=promoted_trace,
+            ):
+                # The git-notes trace is the promotion's durable audit record
+                # (#342): a promotion that landed without it would be exactly
+                # the unaudited state change the formal conformance model
+                # forbids. Roll the fast-forward back and report the cycle as
+                # not promoted — the ratchet only advances with its evidence.
+                _git(self._baseline, "reset", "--hard", pre_promotion_sha)
+                logger.error(
+                    "rsi_local_promotion_audit_write_failed",
+                    index=index,
+                    sha=promoted_sha,
+                    target=target,
+                )
+                return CycleOutcome(
+                    index,
+                    changed=True,
+                    tests_passed=True,
+                    promoted=False,
+                    files_touched=files,
+                    target=target,
+                    composite=composite,
+                    note="promotion audit record failed to write — promotion rolled back",
+                    kind=accepted[0].kind,
+                    regression_judge_score=judge_score,
+                )
             self._record_scout_success(self._last_scout_model)
             # Baseline advanced — recompute coverage/uncovered/spec-gaps next
             # cycle (a promotion may have covered lines or claimed AC gaps).
@@ -1853,20 +1892,6 @@ class LocalRsiLoop:
             # diff against the suite as it NOW stands, not the one this cycle
             # started from.
             self._baseline_test_inventory_cache = None
-            note = (
-                f"tournament: {len(competitors)} competitor(s), {len(accepted)} passed, "
-                f"kept {kept_n} (composite={composite})"
-            )
-            self._annotate_promotion(
-                promoted_sha,
-                index,
-                target,
-                accepted[0],
-                composite,
-                files,
-                note,
-                trace=promoted_trace,
-            )
             logger.info(
                 "rsi_local_cycle_promoted",
                 index=index,
@@ -2311,17 +2336,23 @@ class LocalRsiLoop:
         files: int,
         summary: str,
         trace: dict[str, Any] | None = None,
-    ) -> None:
+    ) -> bool:
         """Attach a git-notes trace record to a just-promoted commit (SPEC: the
-        HORIZON-style acceptance/reward substrate). Best-effort — write_trace_note
-        never raises — so annotating the ratchet can never fail a landed promotion.
-        The record makes the promotion reconstructable from git alone: its verdict
-        (per-gate pass/fail) and reward vector (pass/composite/mutation/judge),
-        plus — #306 — the protected-test-inventory evidence (base/candidate
-        counts, deleted/added lists, and the override flag when a governance-
-        authorized shrink passed). ``trace`` is the promoted tree's evidence
-        (the merge's when a combination won); it defaults to the top
-        variant's for single-winner cycles."""
+        HORIZON-style acceptance/reward substrate) and report whether it landed
+        (#342). The note is the promotion's durable audit record — who (model),
+        what (target/kind/files), when (the commit it annotates), outcome
+        (verdict + reward) — and carries no diff text. ``write_trace_note``
+        never raises; it returns False on failure, and the caller rolls the
+        promotion back on False rather than letting state advance without its
+        evidence: annotating the ratchet is load-bearing, not best-effort
+        observability. The record makes the promotion reconstructable from git
+        alone: its verdict (per-gate pass/fail) and reward vector
+        (pass/composite/mutation/judge), plus — #306 — the
+        protected-test-inventory evidence (base/candidate counts, deleted/added
+        lists, and the override flag when a governance-authorized shrink
+        passed). ``trace`` is the promoted tree's evidence (the merge's when a
+        combination won); it defaults to the top variant's for single-winner
+        cycles."""
         from maistro_rsi.trace_notes import RewardVector, TraceNote, write_trace_note
 
         source = trace if trace is not None else top.trace
@@ -2343,7 +2374,7 @@ class LocalRsiLoop:
             note=summary,
             inventory=source.get("inventory"),
         )
-        write_trace_note(self._baseline, sha, trace_note)
+        return write_trace_note(self._baseline, sha, trace_note)
 
     def _sandbox_for(self, cycle_dir: Path) -> MicroVmSandbox:
         """The sandbox handed to the apply function for one cycle.

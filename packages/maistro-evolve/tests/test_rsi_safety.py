@@ -7,10 +7,12 @@ Covers four areas from the Phase 16 RSI safety review:
    they cannot be set unboundedly high.
 2. Trust/permission immutability — TrustTier/Provenance are frozen and
    maistro-evolve never imports or writes them (no write path exists).
-3. Human-approval gate before promotion to live traffic — PopulationStore.promote()
-   fails closed unless approved_for_promotion is explicitly set.
-4. Kill-switch/rollback — PopulationStore.rollback() reverts to the prior
-   promoted genome.
+3. Human-approval gate before promotion to live traffic —
+   PopulationStore.promote_audited() fails closed unless
+   approved_for_promotion is explicitly set (the raw transition is
+   private, #342 — there is no unaudited public entrypoint).
+4. Kill-switch/rollback — PopulationStore.rollback_audited() reverts to
+   the prior promoted genome.
 
 Note: the hard *fitness* gate (a genome failing a per-benchmark minimum
 cannot breed/pass) is already covered by test_fitness.py's TestHardGate —
@@ -19,12 +21,14 @@ not duplicated here.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 from datetime import UTC, datetime
 
 import pytest
 from pydantic import ValidationError
 
+from maistro_evolve.audit import GenomeAuditTrail
 from maistro_evolve.cycle import (
     MAX_EVAL_BATCH_SIZE,
     MAX_POPULATION_SIZE,
@@ -70,6 +74,19 @@ def _genome(
         updated_at=datetime.now(UTC).isoformat(),
         approved_for_promotion=approved_for_promotion,
     )
+
+
+class _NoopAuditSink:
+    """Audit sink that accepts every entry: these tests exercise the gates
+    and the kill-switch, not the trail's durability (that is
+    test_population_audit.py and the formal conformance models)."""
+
+    async def log_delegation(self, peer_name: str, agent_id: str, detail: str) -> None:
+        return None
+
+
+def _trail() -> GenomeAuditTrail:
+    return GenomeAuditTrail(_NoopAuditSink())
 
 
 # --------------------------------------------------------------------------
@@ -190,20 +207,20 @@ class TestPromotionGate:
         g = _genome("g1", fitness_score=99.0, approved_for_promotion=False)
         store.add(g)
         with pytest.raises(PermissionError):
-            store.promote("g1")
+            asyncio.run(store.promote_audited("g1", _trail()))
         # Fail closed: still inactive after the rejected promotion attempt.
         assert store.get("g1").is_active is False
 
     def test_promote_unknown_genome_raises_value_error(self, tmp_path):
         store = PopulationStore(tmp_path / "pop.db")
         with pytest.raises(ValueError):
-            store.promote("does-not-exist")
+            asyncio.run(store.promote_audited("does-not-exist", _trail()))
 
     def test_promote_approved_genome_succeeds(self, tmp_path):
         store = PopulationStore(tmp_path / "pop.db")
         g = _genome("g1", fitness_score=99.0, approved_for_promotion=True)
         store.add(g)
-        promoted = store.promote("g1")
+        promoted = asyncio.run(store.promote_audited("g1", _trail()))
         assert promoted.is_active is True
         assert store.get_active().id == "g1"
 
@@ -221,7 +238,7 @@ class TestPromotionGate:
         winner = _genome("winner", fitness_score=1000.0, approved_for_promotion=False)
         store.add(winner)
         with pytest.raises(PermissionError):
-            store.promote("winner")
+            asyncio.run(store.promote_audited("winner", _trail()))
 
 
 # --------------------------------------------------------------------------
@@ -234,8 +251,8 @@ class TestRollback:
         store = PopulationStore(tmp_path / "pop.db")
         g = _genome("g1", approved_for_promotion=True)
         store.add(g)
-        store.promote("g1")
-        assert store.rollback() is None
+        asyncio.run(store.promote_audited("g1", _trail()))
+        assert asyncio.run(store.rollback_audited(_trail())) is None
         # First promotion has no predecessor, so it remains active.
         assert store.get_active().id == "g1"
 
@@ -246,11 +263,11 @@ class TestRollback:
         store.add(old)
         store.add(new)
 
-        store.promote("old")
-        store.promote("new")
+        asyncio.run(store.promote_audited("old", _trail()))
+        asyncio.run(store.promote_audited("new", _trail()))
         assert store.get_active().id == "new"
 
-        restored = store.rollback()
+        restored = asyncio.run(store.rollback_audited(_trail()))
         assert restored is not None
         assert restored.id == "old"
         assert store.get_active().id == "old"
@@ -258,4 +275,4 @@ class TestRollback:
 
     def test_rollback_on_empty_store_returns_none(self, tmp_path):
         store = PopulationStore(tmp_path / "pop.db")
-        assert store.rollback() is None
+        assert asyncio.run(store.rollback_audited(_trail())) is None

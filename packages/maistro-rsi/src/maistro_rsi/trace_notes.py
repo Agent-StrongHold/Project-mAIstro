@@ -16,8 +16,10 @@ ranked, replayed — from the git history with no external state.
 
 Notes live on their OWN ref, never the default ``refs/notes/commits``, so they
 never collide with a user's notes and are trivially fetched or dropped as a set.
-Writing a note must never sink a promotion: the ratchet has already advanced by
-the time we annotate it, so every failure here is swallowed and logged.
+A note is the promotion's durable audit record (#342): ``write_trace_note``
+itself never raises — it returns False on failure — but the promotion path in
+``local_loop`` treats False as fatal to the promotion and rolls the fast-forward
+back, so the ratchet only ever advances with its evidence attached.
 """
 
 from __future__ import annotations
@@ -118,9 +120,9 @@ def write_trace_note(repo_dir: str | Path, sha: str, note: TraceNote) -> bool:
     """Attach ``note`` to commit ``sha`` on the RSI notes ref. Idempotent: ``-f``
     replaces any existing RSI note on the same commit (a re-annotated resume).
 
-    Returns True on success. Never raises — annotating the ratchet is
-    best-effort observability, so a git-notes hiccup can never fail a promotion
-    that has already landed.
+    Returns True on success, False on failure (never raises — the caller
+    decides what a failed audit write means; for promotions that is rolling
+    the state change back, #342).
     """
     try:
         _git(

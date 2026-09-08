@@ -88,7 +88,8 @@ class PipelineGenome(BaseModel):
     # approval gate (set externally, e.g. via human.approve_draft) — winning
     # tournament/fitness evaluation alone never sets this. Defaults closed.
     approved_for_promotion: bool = False
-    # Set by PopulationStore.promote(); tracks which genome is currently
+    # Set by the audited promotion path (PopulationStore.promote_audited —
+    # the raw transition is private, #342); tracks which genome is currently
     # serving live traffic, and what to roll back to if it regresses.
     is_active: bool = False
     rollback_target_id: str | None = None

@@ -1,22 +1,32 @@
-"""Phase 16.5 item 3: audit-trail completeness for self-modification.
+"""Phase 16.5 item 3 (#342): audit-trail completeness for self-modification.
 
 Property: every state transition that changes the active/promoted genome
 has a corresponding audit log entry with a strictly increasing sequence
-number and no gaps.
+number and no gaps — and, since #342 closed the hole this model used to
+merely observe, the converse holds too: a state change without its
+immutable audit record cannot be constructed. The raw
+``promote()``/``rollback()`` entrypoints are retired
+(``promote_audited``/``rollback_audited`` are the only public path), an
+audit sink that is down blocks the mutation outright, and a failed commit
+entry compensates the mutation back.
 
 Adversarial angles covered: an audit sink that fails mid-sequence (must
-block the state mutation rather than let it through silently), an
-alternate entrypoint that bypasses ``promote_audited``/``rollback_audited``
-(``promote()``/``rollback()`` called directly — confirmed observable as a
-state change with no matching audit entry, which is the actual bypass this
-property exists to catch and which callers must avoid), and randomly
+block or compensate the state mutation rather than let it through
+silently), the absence of any alternate entrypoint that could bypass
+``promote_audited``/``rollback_audited`` (asserted structurally — the raw
+methods no longer exist on the public surface), a rejected promotion
+(attempt recorded, no commit entry, no state change), tampering with the
+recorded trail from outside (it is a copy of frozen entries), replaying
+the committed entries alone to reconstruct the active genome, and randomly
 interleaved failure injection across a long event sequence.
 """
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import UTC, datetime
 
+import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from hypothesis.stateful import Bundle, RuleBasedStateMachine, invariant, rule
@@ -72,6 +82,13 @@ class _FlakySink:
         self.calls += 1
         if self.calls % self.fail_every == 0:
             raise RuntimeError("flaky sink failure")
+
+
+class _DeadSink:
+    """Fails every call: an audit backend that is down."""
+
+    async def log_delegation(self, peer_name: str, agent_id: str, detail: str) -> None:
+        raise RuntimeError("audit sink down")
 
 
 def _active_genome_id(store: PopulationStore) -> str | None:
@@ -135,10 +152,12 @@ def test_every_active_genome_change_has_a_gapless_audit_trail(fail_every, op_cou
 
 class AuditedSelfModificationMachine(RuleBasedStateMachine):
     """Stateful model: only ``promote_audited``/``rollback_audited`` are
-    exercised, so this machine proves the audited path itself never lets
-    state drift away from its audit trail — the companion bypass test
-    below proves the *unaudited* entrypoints are a real, detectable gap
-    that callers must route around, not a hypothetical concern.
+    exercised — and since #342 retired the raw entrypoints, they are the only
+    methods that exist to exercise. This machine proves the audited path
+    itself never lets state drift away from its audit trail, that the trail
+    replays to the active genome, and that its sequence stays gapless; the
+    companion test below proves the unaudited hole is unconstructible rather
+    than merely detectable.
     """
 
     GenomeIds = Bundle("genome_ids")
@@ -181,33 +200,105 @@ class AuditedSelfModificationMachine(RuleBasedStateMachine):
         seqs = [e.sequence for e in self.trail.entries]
         assert seqs == list(range(1, len(seqs) + 1))
 
+    @invariant()
+    def replaying_the_trail_reconstructs_the_active_genome(self):
+        """Replay angle (#342): the committed entries alone are sufficient
+        evidence of which genome is active — a promotion commit sets it, a
+        rollback commit restores the target, and an empty rollback commit
+        (nothing to roll back to) leaves it alone."""
+        current: str | None = None
+        for entry in self.trail.entries:
+            if entry.event == "promotion_committed":
+                current = entry.genome_id
+            elif entry.event == "rollback_committed" and entry.genome_id:
+                current = entry.genome_id
+        assert current == _active_genome_id(self.store)
+
 
 TestAuditedSelfModificationMachine = AuditedSelfModificationMachine.TestCase
 
 
-def test_bypassing_the_audited_wrapper_is_a_real_detectable_gap():
-    """Adversarial: calling promote()/rollback() directly (the alternate,
-    unaudited entrypoint) changes the active genome with zero matching
-    audit entries. This is *expected* of the raw methods — the property
-    this test enforces is that the gap is reliably observable (active
-    genome changed, audit trail didn't), so any caller that skips the
-    audited wrapper is leaving a detectable, not a silent, hole. RSI
-    callers (EvolutionCycle, reflective_improve) must route every
-    promotion/rollback through promote_audited/rollback_audited — this
-    test is the regression guard if a future change reintroduces a
-    direct, unaudited call on that path.
+def test_a_state_change_without_an_audit_record_cannot_land():
+    """REPLACES the old "detectable gap" guard (#342), which asserted that
+    calling promote()/rollback() directly moved the active genome while the
+    audit trail stayed silent — and labeled that observable hole *expected*
+    of the raw methods. The hole is closed from both sides:
+
+    - structurally: the raw entrypoints are retired.
+      ``promote_audited``/``rollback_audited`` are the only public
+      promotion/rollback APIs, and the trail is a required argument of each,
+      so an unaudited state change cannot be constructed — only forgotten.
+    - behaviorally: an audit sink that is down blocks the mutation outright.
+      Where the old test asserted ``after_entries == before_entries`` next
+      to a changed active genome (state moved, audit silent — the enforced
+      hole), the flipped assertions require the opposite: no state change,
+      no committed record, the store untouched.
+
+    This is the regression guard if a future change reintroduces a direct,
+    unaudited call on the promotion path: it fails the moment a state
+    change can happen without an immutable audit record again.
     """
+    import asyncio
+    import inspect
+
+    # Structural: no public raw promotion/rollback entrypoint exists, and
+    # every public one takes the audit trail as a required argument.
+    assert not hasattr(PopulationStore, "promote")
+    assert not hasattr(PopulationStore, "rollback")
+    for name in ("promote_audited", "rollback_audited"):
+        params = inspect.signature(getattr(PopulationStore, name)).parameters
+        assert "audit" in params
+        assert params["audit"].default is inspect.Parameter.empty
+
+    # Behavioral: a dead audit sink cannot be routed around.
     store = PopulationStore()
-    trail = GenomeAuditTrail(_RecordingSink())
-    store.add(_genome("g-bypass"))
+    trail = GenomeAuditTrail(_DeadSink())
+    store.add(_genome("g-blocked"))
 
     before_active = _active_genome_id(store)
     before_entries = len(trail.entries)
 
-    store.promote("g-bypass")  # bypasses promote_audited on purpose
+    with pytest.raises(RuntimeError, match="audit sink down"):
+        asyncio.run(store.promote_audited("g-blocked", trail))
 
-    after_active = _active_genome_id(store)
-    after_entries = len(trail.entries)
+    assert _active_genome_id(store) == before_active
+    assert store.get("g-blocked").is_active is False
+    assert len(trail.entries) == before_entries
 
-    assert before_active != after_active
-    assert after_entries == before_entries  # the gap: state moved, audit didn't
+
+def test_a_rejected_promotion_is_audited_as_an_attempt_without_a_commit():
+    """Rejection angle (#342): the approval gate refusing a genome is itself
+    an auditable outcome — the attempt is recorded, no commit entry ever
+    appears, and the state never moves."""
+    import asyncio
+
+    store = PopulationStore()
+    trail = GenomeAuditTrail(_RecordingSink())
+    store.add(_genome("g-unapproved", approved=False))
+
+    with pytest.raises(PermissionError):
+        asyncio.run(store.promote_audited("g-unapproved", trail))
+
+    events = [(e.event, e.genome_id) for e in trail.entries]
+    assert events == [("promotion_attempt", "g-unapproved")]
+    assert _active_genome_id(store) is None
+
+
+def test_recorded_entries_cannot_be_forged_or_erased_from_outside():
+    """Tampering angle (#342): the trail's public surface is a copy of frozen
+    entries — mutating what an outside caller can reach neither erases a
+    record nor forges one, so replaying the trail stays trustworthy."""
+    import asyncio
+
+    store = PopulationStore()
+    trail = GenomeAuditTrail(_RecordingSink())
+    store.add(_genome("g-tamper"))
+    asyncio.run(store.promote_audited("g-tamper", trail))
+    recorded = [(e.sequence, e.event, e.genome_id) for e in trail.entries]
+
+    trail.entries.clear()  # erasing through the returned list must not stick
+    assert [(e.sequence, e.event, e.genome_id) for e in trail.entries] == recorded
+
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        trail.entries[0].event = "promotion_forged"
+    assert [(e.sequence, e.event, e.genome_id) for e in trail.entries] == recorded
