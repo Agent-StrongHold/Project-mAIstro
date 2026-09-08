@@ -169,6 +169,68 @@ problem.
 **Check.** `scripts/check-cross-package-imports.py` rejects a new top-level module under
 `packages/*/backend/` that is not inside a package with `__init__.py`.
 
+### P0.7 Crash-window invariants on the execution spine
+
+**Invariant.** No Run can remain RUNNING with no Attempt owning it and no sweep that will
+re-derive its state. Every two-write sequence on the spine (NodeRun terminal → Run
+settlement; frontier NodeRun creation → continuation checkpoint; Attempt completion write;
+terminal continuation → canonical mirror) either commits atomically or is repaired by a sweep.
+
+**Today.** Four windows leave a Run RUNNING and invisible to both recovery paths
+(`recovery.py` selects QUEUED or due-by-`resume_at` only): `runs/reconciliation.py:206-207`
+(last NodeRun commits, process dies before `_settle_run_if_fully_observed`, nothing calls it
+again); `attempt_executor.py:414-419` (`_ensure_frontier_node_runs` outside the try, prior
+checkpoint already cleared `resume_at`); `runs/execution.py:430` (a successful Attempt's
+terminal write outside the try → whole-Run `PhysicalExecutionError`, result discarded, retry
+budget skipped); `canonical_store.py:126-131` (`_reconcile_run` repairs WAITING/PAUSED only,
+not a terminal continuation). The 2026-09-08 core-foundation review, §2.1 and §3.1–3.4.
+
+**Check.** One sweep that lists RUNNING Runs and re-derives terminal state from NodeRuns and
+continuations, wired on the same cadence as `dag_recovery.py`; a crash-injection test per
+window using the forced-interleaving pattern already in
+`tests/workspaces/test_workspace_store_conformance.py:369-432`.
+
+**AC text (for #804 / #62).** "AC-P7: a process killed at any of the four named points leaves a
+Run that the next recovery tick settles or resumes; no Run is RUNNING with no live Attempt
+after one tick."
+
+### P0.8 Store-boundary scope, named
+
+**Invariant.** #364's principle ("scope enforced at the durable store boundary") has an
+explicit child for every store the Workspace consumes.
+
+**Today.** Untracked leaves: no `WorkspaceStore`/`ProjectScopeStore` method takes a principal
+and `EffectiveAuthorization` is consulted by one function; `Run.actor_principal_id` is an
+unvalidated optional string that becomes accounting `user_id` (`runs/model.py:272`,
+`consumption.py:301`); `get_run/get_node_run/get_attempt` are unscoped primary-key lookups;
+`AuditLog.get_entries(org_id=...)` accepts the argument and ignores it because the column does
+not exist (`pg_audit.py:13-18`, migration 005).
+
+**Check.** A conformance test per store that a principal outside the scope cannot read or
+mutate by id, run against all three backends.
+
+**AC text (for #364).** "AC-P8: workspaces, projects, runs and audit each have a
+store-boundary scope test; `actor_principal_id` is required and validated at admission;
+audit rows carry and filter by `org_id`."
+
+### P0.9 The Agent scans what the model sees, not the last raw turn
+
+**Invariant.** Warden receives the normalized, turn-aggregated text the model will receive.
+
+**Today.** `Warden.scan(content, boundary)` takes one string; the override patterns are
+whole-word and are defeated by letter spacing and leetspeak (reproduced); the PII redactor
+misses Slack tokens, bare AWS secret keys and `my_secret = '…'` (reproduced); a payload split
+across two user turns scans clean on each. Sentinel defaults to allow for a tool absent from
+the permission table (ADR-072726-0d6b, proposed fail-closed not built).
+
+**Check.** A boundary test in the Workspace Agent's chat path asserting the scanned string is
+the aggregated context; the spaced/leet/split cases added to the Warden suite as expected
+detections; `permission_table` non-empty asserted at Workspace deploy.
+
+**AC text (for #1037 / #66).** "AC-P9: the Workspace Agent's inbound scan covers the
+aggregated turn context after normalization; the three reproduced evasions are detected; the
+Sentinel permission table is armed in every supported profile."
+
 ## Phase 1 — build the Workspace on the contract
 
 The #1046 children (#776, #1047–#1051) and #804/#805/#806 proceed **only** through P0
@@ -187,8 +249,8 @@ Sequencing inside Phase 1 (each row blocks the next):
 | Step | Builds | Retires (ledger entry) | Needs |
 |---|---|---|---|
 | 1 | Workspace Home shell + generated client + Principal-aware nav (#1048 first slice) | `Dashboard.tsx`, `AppShell` static nav, `dashboard_layouts` JsonStore | P0.1–P0.3 |
-| 2 | Goal/Run inspection projections (#65, #1036) | `DagRuns.tsx`, `dag_runs` JsonStore, `services/dag_run_store.py` | step 1, #53 |
-| 3 | Workspace Agent chat as the front door (#1037, #53) | `Chat.tsx` raw `/v1/chat/stream` path, `chat_sessions` scoping shim | P0.4, A |
+| 2 | Goal/Run inspection projections (#65, #1036) | `DagRuns.tsx`, `dag_runs` JsonStore, `services/dag_run_store.py` | step 1, #53, P0.8 |
+| 3 | Workspace Agent chat as the front door (#1037, #53) | `Chat.tsx` raw `/v1/chat/stream` path, `chat_sessions` scoping shim | P0.4, P0.7, P0.9, A |
 | 4 | Backlog / work items (#82, #98–#103) | `WorkItems.tsx`, `Missions.tsx`, `missions`/`mission_steps`/`work_item_drafts` | step 2 |
 | 5 | Attention + Waiting (#1049), settings via canonical service (#1050) | `Settings.tsx` elevation body, `user_provider_config`, `Profile.tsx` | P0.5 |
 | 6 | Memory / user model (#776, #1047) | `Memory.tsx`, `KnowledgeBase.tsx`, `memory_entries`/`memory_namespaces` dicts, `routes/memory.py` global handlers | #364 |
