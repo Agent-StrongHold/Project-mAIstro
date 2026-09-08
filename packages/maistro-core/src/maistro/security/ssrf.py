@@ -114,12 +114,21 @@ _BLOCKED_HOSTNAME_SUFFIXES = (
 #: probe that lands there reaches infrastructure the public internet is not
 #: supposed to see.
 #:
-#: The other translation/embedding spellings are already refused by the stdlib
-#: predicates on every supported Python and are pinned by tests rather than
-#: listed here: IPv4-mapped (`::ffff:127.0.0.1` — `is_private`/`is_loopback`
-#: inspect the embedded v4 address), 6to4 (`2002:7f00:1::` — private), and the
-#: NAT64 well-known prefix (`64:ff9b::7f00:1` — reserved). A range belongs
-#: below only when a supported Python lets it through.
+#: The other translation/embedding spellings are handled by normalization
+#: inside `_is_blocked_address` rather than by trusting the stdlib predicates:
+#: an IPv4-mapped IPv6 address is converted to the IPv4 address it embeds
+#: **before** the `_BLOCKED_NETWORKS` loop and before the predicates run, so a
+#: mapped spelling cannot slip past an IPv4-only range — which is exactly the
+#: bypass #67 was reopened over: `::ffff:100.64.0.1` passed every predicate
+#: (the embedded CGNAT address is not private by the stdlib's reading) and the
+#: IPv4 network membership check, which is version-checked to `False` for an
+#: IPv6 address. 6to4 (`2002:7f00:1::`) and NAT64 (`64:ff9b::7f00:1`) have no
+#: IPv4 form to normalize to and remain refused by the stdlib predicates
+#: (`is_private` / `is_reserved` respectively, pinned by tests so a Python
+#: upgrade that moves either is loud). A range belongs below only when a
+#: supported Python lets it through **in both spellings** — the mapped form is
+#: covered by construction the moment it is listed, because normalization
+#: happens before the loop that reads this tuple.
 _BLOCKED_NETWORKS = (
     ipaddress.ip_network("100.64.0.0/10"),  # RFC 6598 shared address space (CGNAT)
 )
@@ -167,11 +176,29 @@ class SSRFBlockedError(ToolError):
 def _is_blocked_address(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """Whether `addr` names something outside the public internet.
 
+    An IPv4-mapped IPv6 address is first normalized to the IPv4 address it
+    embeds, and every rule below then runs on that address. This is the one
+    point both policy checks converge on — the `_BLOCKED_NETWORKS` loop and
+    the stdlib predicates — so normalizing here is normalizing for all of
+    them, and no other spelling of a target can reach either check unnormalized.
+
+    Why the predicates cannot be left to see through the mapping themselves:
+    they do for *some* embeddings on *some* Pythons — 3.12's `is_private` and
+    `is_loopback` inspect the embedded address, which is why `::ffff:127.0.0.1`
+    was refused all along — but not for all of them: `::ffff:100.64.0.1` passed
+    every predicate (the stdlib does not file RFC 6598 under *private*, which
+    is the entire reason `_BLOCKED_NETWORKS` exists), and `IPv4Network.__contains__`
+    answers `False` for an IPv6 address of any spelling rather than raising.
+    Relying on which embeddings the predicates happen to unwrap is how the
+    mapped-CGNAT bypass shipped (#67, reopened).
+
     `is_unspecified` is listed explicitly. `0.0.0.0` is not `is_reserved`, and
     on many stacks connecting to it reaches localhost — so leaving it to the
     other predicates would let the most quietly dangerous address through.
     `_BLOCKED_NETWORKS` covers the ranges no predicate names; see its comment.
     """
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
     if any(addr in network for network in _BLOCKED_NETWORKS):
         return True
     return bool(
