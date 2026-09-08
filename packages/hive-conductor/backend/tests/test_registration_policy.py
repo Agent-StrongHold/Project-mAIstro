@@ -26,6 +26,7 @@ import json
 import pathlib
 import sys
 import threading
+import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -229,6 +230,28 @@ class TestAdminPolicySurface:
         assert "updated_by" in view
 
 
+def _park_in_store_window(monkeypatch: pytest.MonkeyPatch, seconds: float = 0.05) -> None:
+    """Hold `JsonStore.put_if_absent`'s check-to-write window open under racers.
+
+    `json.dumps` is the one step between the store's "key absent" check and
+    the write. Slowing it — for the redemption marker only, so the rest of
+    the request path runs at normal speed — parks every racing thread inside
+    that window with the GIL released, which makes the pre-#1126 unlocked
+    check-then-set fail deterministically instead of by timing luck: every
+    thread observes the redemption key absent before any of them writes it.
+    """
+    import services.model_store as model_store
+
+    real_dumps = json.dumps
+
+    def _parking_dumps(value: object, *args: object, **kwargs: object) -> str:
+        if isinstance(value, dict) and "redeemed_by_username" in value:
+            time.sleep(seconds)
+        return real_dumps(value, *args, **kwargs)  # type: ignore[return-value,arg-type]
+
+    monkeypatch.setattr(model_store.json, "dumps", _parking_dumps)
+
+
 class TestInvitations:
     """A valid invitation is the only anonymous path when the policy is closed."""
 
@@ -338,6 +361,89 @@ class TestInvitations:
 
         assert outcomes.count(200) == 1
         assert outcomes.count(403) == 3
+        assert len(stores.users) == before + 1
+
+    def test_concurrent_redeem_invitation_spends_the_token_exactly_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Eight threads, one token, the store window forced open: one winner (#1126).
+
+        `redeem_invitation` is the spend the register route relies on, and in
+        the in-memory Foundation fallback (`State unavailable — using
+        in-memory stores`) the durable half never runs: single use *is*
+        `JsonStore.put_if_absent`'s critical section. With every racer parked
+        between the "key absent" check and the write, exactly one insert may
+        succeed, and the surviving marker must be the winner's — not the last
+        writer's.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        import stores
+        from services import registration_policy as rp
+
+        token = rp.issue_invitation(actor="admin:test")["token"]
+        _park_in_store_window(monkeypatch)
+        barrier = threading.Barrier(8)
+
+        def redeem(i: int) -> bool:
+            barrier.wait(timeout=10)
+            return rp.redeem_invitation(token, username=f"racer-{i}")
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            outcomes = list(pool.map(redeem, range(8)))
+
+        assert outcomes.count(True) == 1
+        assert outcomes.count(False) == 7
+        winner = outcomes.index(True)
+        marker = stores.registration_invitations.get(f"used:{rp._token_id(token)}")
+        assert isinstance(marker, dict)
+        assert marker["redeemed_by_username"] == f"racer-{winner}"
+
+    def test_concurrent_register_race_through_the_open_window_mints_one_account(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The register route itself cannot spend one invitation twice (#1126).
+
+        The acceptance shape of #1126: in the in-memory Foundation fallback,
+        two requests that both clear `evaluate_registration` before either
+        redemption marker lands must still produce one account. Eight
+        requests run the real synchronous route in worker threads — the same
+        path FastAPI serves — with the store's check-to-write window held
+        open under them; one succeeds, seven are refused, one user exists.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        import stores
+        from main import app
+        from routes import auth as auth_routes
+        from services import registration_policy as rp
+
+        from maistro.security.auth_throttle import AuthThrottle
+
+        token = rp.issue_invitation(actor="admin:test")["token"]
+        _park_in_store_window(monkeypatch)
+        # A fresh register throttle: the module-level one is process-global,
+        # and failures earlier suites charged to the TestClient's bucket must
+        # not turn this race's losers into 429s.
+        monkeypatch.setattr(
+            auth_routes, "_REGISTER_THROTTLE", AuthThrottle(auth_routes._STRICTER.register)
+        )
+
+        before = len(stores.users)
+        outcomes: list[int] = []
+        barrier = threading.Barrier(8)
+
+        def attempt(i: int) -> None:
+            client = TestClient(app)
+            barrier.wait(timeout=10)
+            r = client.post("/v1/auth/register", json=_register_body(f"forced-race-{i}", token))
+            outcomes.append(r.status_code)
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(attempt, range(8)))
+
+        assert outcomes.count(200) == 1
+        assert outcomes.count(403) == 7
         assert len(stores.users) == before + 1
 
     def test_invitation_that_loses_the_redemption_race_is_refused(
