@@ -266,6 +266,13 @@ class GenerationJobRecord:
     max_attempts: int = 3
     leased_by: str | None = None
     lease_expires_at: datetime | None = None
+    # The soft org scope this job belongs to (#857). The route stamps it from
+    # the authenticated principal when the job is admitted; the background
+    # runner reads it back off the claimed record so execution resolves the
+    # same scope the request did, rather than a global one. Empty on legacy
+    # records claimed before scope was threaded; those rows still cannot be
+    # read through any route, which now predicate on the canvas's org.
+    org_id: str = ""
 
     def is_terminal(self) -> bool:
         return self.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED)
@@ -289,6 +296,7 @@ class GenerationJobRecord:
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "created_at": self.created_at.isoformat(),
+            "org_id": self.org_id,
         }
 
 

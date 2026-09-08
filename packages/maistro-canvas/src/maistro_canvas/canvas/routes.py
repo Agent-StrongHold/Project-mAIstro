@@ -174,8 +174,12 @@ def _validation_error_response(exc: ValueError, org_id: str) -> JSONResponse:
 
 
 async def _require_canvas(store: CanvasStore, canvas_id: str, org_id: str) -> CanvasRecord:
-    """Fetch a canvas for the caller's org or raise the right HTTP error."""
-    canvas = await store.get_canvas(canvas_id)
+    """Fetch a canvas for the caller's org or raise the right HTTP error.
+
+    The store predicates the query on ``org_id`` (#857); the equality
+    re-check below stays as defence in depth, not as the scope guard.
+    """
+    canvas = await store.get_canvas(canvas_id, org_id=org_id)
     if canvas is None or canvas.org_id != org_id:
         raise HTTPException(status_code=404)
     if canvas.is_archived():
@@ -198,14 +202,15 @@ async def _export_image(
     canvas_id: str,
     fmt: str,
     quality: int,
+    org_id: str,
 ) -> Response:
     """Composite (on demand) and encode a canvas to the requested image format."""
     # Composite on-demand if nothing stored
-    comp = await store.latest_composite(canvas_id)
+    comp = await store.latest_composite(canvas_id, org_id=org_id)
     if comp is None:
-        layers = await store.list_layers(canvas_id)
+        layers = await store.list_layers(canvas_id, org_id=org_id)
         comp = await compositor.composite(canvas, layers)
-        await store.save_composite(comp)
+        await store.save_composite(comp, org_id=org_id)
 
     # Re-encode to the requested format
     from maistro_canvas.canvas.compositor import PilCompositorService
@@ -224,31 +229,38 @@ async def _export_image(
     )
 
 
-async def _cancel_active_jobs(store: CanvasStore, executor: CanvasExecutor, canvas_id: str) -> None:
+async def _cancel_active_jobs(
+    store: CanvasStore, executor: CanvasExecutor, canvas_id: str, org_id: str
+) -> None:
     """Best-effort cancel of any active jobs on a canvas before archiving."""
-    layers = await store.list_layers(canvas_id)
+    layers = await store.list_layers(canvas_id, org_id=org_id)
     for lyr in layers:
-        active = await store.active_job_for_layer(lyr.id)
+        active = await store.active_job_for_layer(lyr.id, org_id=org_id)
         if active is not None:
             with contextlib.suppress(Exception):
-                await executor.cancel_job(active.id)
+                await executor.cancel_job(active.id, org_id=org_id)
 
 
-async def _require_layer(store: CanvasStore, canvas_id: str, layer_id: str) -> LayerRecord:
-    """Fetch a layer that belongs to ``canvas_id`` or raise 404."""
-    layer = await store.get_layer(layer_id)
+async def _require_layer(
+    store: CanvasStore, canvas_id: str, layer_id: str, org_id: str
+) -> LayerRecord:
+    """Fetch a layer that belongs to ``canvas_id`` in ``org_id`` or raise 404."""
+    layer = await store.get_layer(layer_id, org_id=org_id)
     if layer is None or layer.canvas_id != canvas_id:
         raise HTTPException(status_code=404)
     return layer
 
 
 async def _require_job(store: CanvasStore, job_id: str, org_id: str) -> GenerationJobRecord:
-    """Fetch a job and verify its canvas belongs to ``org_id`` or raise 404."""
-    job = await store.get_job(job_id)
+    """Fetch a job whose canvas belongs to ``org_id`` or raise 404.
+
+    The store joins the job to its layer and the layer to its canvas, so
+    the org predicate is in the query itself rather than a fetch-then-check
+    (#857). Whether a job with that id exists in another org is itself
+    scoped information.
+    """
+    job = await store.get_job(job_id, org_id=org_id)
     if job is None:
-        raise HTTPException(status_code=404)
-    canvas = await store.get_canvas(job.canvas_id)
-    if canvas is None or canvas.org_id != org_id:
         raise HTTPException(status_code=404)
     return job
 
@@ -369,7 +381,7 @@ def _register_canvas_routes(
         auth: CurrentUser = Depends(get_current_user),
     ) -> JSONResponse:
         canvas = await _require_canvas(store, canvas_id, auth.org_id)
-        layers = await store.list_layers(canvas_id)
+        layers = await store.list_layers(canvas_id, org_id=auth.org_id)
         data = canvas.to_dict()
         data["layers"] = [lyr.to_dict() for lyr in layers]
         return JSONResponse(content=data)
@@ -388,7 +400,7 @@ def _register_canvas_routes(
 
         _apply_canvas_updates(canvas, body)
 
-        updated = await store.update_canvas(canvas)
+        updated = await store.update_canvas(canvas, org_id=auth.org_id)
         return JSONResponse(content=updated.to_dict())
 
     @router.delete("/{canvas_id}")
@@ -396,15 +408,15 @@ def _register_canvas_routes(
         canvas_id: str,
         auth: CurrentUser = Depends(get_current_user),
     ) -> JSONResponse:
-        canvas = await store.get_canvas(canvas_id)
+        canvas = await store.get_canvas(canvas_id, org_id=auth.org_id)
         if canvas is None or canvas.org_id != auth.org_id:
             raise HTTPException(status_code=404)
 
         # Cancel any active jobs on this canvas before archiving
-        await _cancel_active_jobs(store, executor, canvas_id)
+        await _cancel_active_jobs(store, executor, canvas_id, auth.org_id)
 
         canvas.archived_at = datetime.now(UTC)
-        await store.update_canvas(canvas)
+        await store.update_canvas(canvas, org_id=auth.org_id)
         return JSONResponse(content={"archived": True, "id": canvas_id})
 
 
@@ -426,6 +438,7 @@ def _register_layer_routes(
         try:
             layer = await store.add_layer(
                 canvas_id,
+                org_id=auth.org_id,
                 name=str(body.get("name", "Layer")).strip(),
                 layer_type=str(body.get("layer_type", "background")),
                 z_index=body.get("z_index"),
@@ -448,7 +461,7 @@ def _register_layer_routes(
         auth: CurrentUser = Depends(get_current_user),
     ) -> JSONResponse:
         await _require_canvas(store, canvas_id, auth.org_id)
-        layers = await store.list_layers(canvas_id)
+        layers = await store.list_layers(canvas_id, org_id=auth.org_id)
         return JSONResponse(content=[lyr.to_dict() for lyr in layers])
 
     @router.patch("/{canvas_id}/layers/{layer_id}")
@@ -459,7 +472,7 @@ def _register_layer_routes(
         auth: CurrentUser = Depends(get_current_user),
     ) -> JSONResponse:
         await _require_canvas(store, canvas_id, auth.org_id)
-        layer = await _require_layer(store, canvas_id, layer_id)
+        layer = await _require_layer(store, canvas_id, layer_id, auth.org_id)
 
         # Lock guard: positional fields forbidden on locked layers
         positional_changes = _POSITIONAL_FIELDS.intersection(body)
@@ -476,7 +489,7 @@ def _register_layer_routes(
 
         _apply_layer_updates(layer, body)
 
-        updated = await store.update_layer(layer)
+        updated = await store.update_layer(layer, org_id=auth.org_id)
         return JSONResponse(content=updated.to_dict())
 
     @router.delete("/{canvas_id}/layers/{layer_id}")
@@ -486,8 +499,8 @@ def _register_layer_routes(
         auth: CurrentUser = Depends(get_current_user),
     ) -> JSONResponse:
         await _require_canvas(store, canvas_id, auth.org_id)
-        await _require_layer(store, canvas_id, layer_id)
-        await store.remove_layer(layer_id)
+        await _require_layer(store, canvas_id, layer_id, auth.org_id)
+        await store.remove_layer(layer_id, org_id=auth.org_id)
         return JSONResponse(content={"deleted": True, "id": layer_id})
 
     @router.post("/{canvas_id}/layers/reorder")
@@ -498,7 +511,7 @@ def _register_layer_routes(
     ) -> JSONResponse:
         await _require_canvas(store, canvas_id, auth.org_id)
         try:
-            layers = await store.reorder_layers(canvas_id, assignments)
+            layers = await store.reorder_layers(canvas_id, assignments, org_id=auth.org_id)
         except (DuplicateZIndexError, IncompleteReorderError) as exc:
             return _error(exc)
         return JSONResponse(content=[lyr.to_dict() for lyr in layers])
@@ -520,7 +533,7 @@ def _register_job_routes(  # noqa: C901  route-registration closure: independent
         auth: CurrentUser = Depends(get_current_user),
     ) -> JSONResponse:
         await _require_canvas(store, canvas_id, auth.org_id)
-        await _require_layer(store, canvas_id, layer_id)
+        await _require_layer(store, canvas_id, layer_id, auth.org_id)
 
         count = int(body.get("count", 1))
         if not (1 <= count <= _MAX_GENERATE_COUNT):
@@ -533,6 +546,7 @@ def _register_job_routes(  # noqa: C901  route-registration closure: independent
             job = await executor.start_job(
                 canvas_id=canvas_id,
                 layer_id=layer_id,
+                org_id=auth.org_id,
                 action=str(body.get("action", "generate")),
                 model_id=body.get("model_id"),
                 prompt=str(body.get("prompt", "")),
@@ -563,8 +577,8 @@ def _register_job_routes(  # noqa: C901  route-registration closure: independent
         auth: CurrentUser = Depends(get_current_user),
     ) -> JSONResponse:
         await _require_canvas(store, canvas_id, auth.org_id)
-        await _require_layer(store, canvas_id, layer_id)
-        jobs = await store.list_jobs_for_layer(layer_id)
+        await _require_layer(store, canvas_id, layer_id, auth.org_id)
+        jobs = await store.list_jobs_for_layer(layer_id, org_id=auth.org_id)
         return JSONResponse(content=[j.to_dict() for j in jobs])
 
     @router.get("/jobs/{job_id}")
@@ -582,7 +596,7 @@ def _register_job_routes(  # noqa: C901  route-registration closure: independent
     ) -> JSONResponse:
         await _require_job(store, job_id, auth.org_id)
         try:
-            updated = await executor.cancel_job(job_id)
+            updated = await executor.cancel_job(job_id, org_id=auth.org_id)
         except JobAlreadyTerminalError as exc:
             return _error(exc)
         return JSONResponse(content=updated.to_dict())
@@ -595,7 +609,9 @@ def _register_job_routes(  # noqa: C901  route-registration closure: independent
     ) -> JSONResponse:
         await _require_job(store, job_id, auth.org_id)
         try:
-            updated_job, updated_layer = await executor.accept_variant(job_id, variant_index)
+            updated_job, updated_layer = await executor.accept_variant(
+                job_id, variant_index, org_id=auth.org_id
+            )
         except (JobNotDoneError, JobAlreadyTerminalError) as exc:
             return _error(exc)
         except VariantIndexOutOfRangeError as exc:
@@ -619,9 +635,9 @@ def _register_composite_routes(
         auth: CurrentUser = Depends(get_current_user),
     ) -> JSONResponse:
         canvas = await _require_canvas(store, canvas_id, auth.org_id)
-        layers = await store.list_layers(canvas_id)
+        layers = await store.list_layers(canvas_id, org_id=auth.org_id)
         result = await compositor.composite(canvas, layers)
-        saved = await store.save_composite(result)
+        saved = await store.save_composite(result, org_id=auth.org_id)
         return JSONResponse(
             content={
                 "canvas_id": saved.canvas_id,
@@ -636,10 +652,10 @@ def _register_composite_routes(
         canvas_id: str,
         auth: CurrentUser = Depends(get_current_user),
     ) -> JSONResponse:
-        canvas = await store.get_canvas(canvas_id)
+        canvas = await store.get_canvas(canvas_id, org_id=auth.org_id)
         if canvas is None or canvas.org_id != auth.org_id:
             raise HTTPException(status_code=404)
-        comp = await store.latest_composite(canvas_id)
+        comp = await store.latest_composite(canvas_id, org_id=auth.org_id)
         if comp is None:
             raise HTTPException(status_code=404, detail="no composite exists yet")
         return JSONResponse(
@@ -667,7 +683,7 @@ def _register_export_routes(
         format: str = Query(default="png"),
         quality: int = Query(default=90),
     ) -> Response:
-        canvas = await store.get_canvas(canvas_id)
+        canvas = await store.get_canvas(canvas_id, org_id=auth.org_id)
         if canvas is None or canvas.org_id != auth.org_id:
             raise HTTPException(status_code=404)
         if canvas.is_archived():
@@ -679,7 +695,7 @@ def _register_export_routes(
         if not (1 <= quality <= 100):
             raise HTTPException(status_code=422, detail="quality must be between 1 and 100")
 
-        return await _export_image(store, compositor, canvas, canvas_id, fmt, quality)
+        return await _export_image(store, compositor, canvas, canvas_id, fmt, quality, auth.org_id)
 
     # ── Models ─────────────────────────────────────────────────────────
 

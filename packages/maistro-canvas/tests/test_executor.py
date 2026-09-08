@@ -71,36 +71,67 @@ class FakeStore:
         #: outcomes alone cannot tell those apart, because both produce two jobs.
         self.trace: list[str] = []
 
-    async def get_canvas(self, canvas_id):
-        return self.canvases.get(canvas_id)
+    #: The org every canvas/layer/job in this fake belongs to. Scoping is
+    #: real here (#857): a read under another org answers None, exactly as
+    #: the Postgres predicates do, so executor tests that forget the scope
+    #: fail rather than silently run globally.
+    ORG = "org-1"
 
-    async def update_canvas(self, canvas):
+    def _in_org(self, org_id: str, *records) -> bool:
+        return all(r is not None and getattr(r, "org_id", self.ORG) == org_id for r in records)
+
+    async def get_canvas(self, canvas_id, *, org_id):
+        canvas = self.canvases.get(canvas_id)
+        return canvas if self._in_org(org_id, canvas) else None
+
+    async def update_canvas(self, canvas, *, org_id):
         self.writes.append(f"update_canvas:{canvas.id}")
         self.canvases[canvas.id] = canvas
         return canvas
 
-    async def get_layer(self, layer_id):
-        return self.layers.get(layer_id)
+    async def get_layer(self, layer_id, *, org_id):
+        layer = self.layers.get(layer_id)
+        if layer is None:
+            return None
+        canvas = self.canvases.get(layer.canvas_id)
+        # Scope through the owning canvas when it exists; a layer whose canvas
+        # row vanished is an orphan the executor's own tests exercise, not a
+        # cross-org read. The Postgres join semantics live in the conformance
+        # suite, not in this fake.
+        if canvas is not None and canvas.org_id != org_id:
+            return None
+        return layer
 
-    async def update_layer(self, layer):
+    async def update_layer(self, layer, *, org_id):
         self.writes.append(f"update_layer:{layer.id}")
         self.layers[layer.id] = layer
         return layer
 
-    async def get_job(self, job_id):
-        return self.jobs.get(job_id)
+    async def get_job(self, job_id, *, org_id):
+        job = self.jobs.get(job_id)
+        if job is None:
+            return None
+        layer = self.layers.get(job.layer_id)
+        if layer is not None:
+            canvas = self.canvases.get(layer.canvas_id)
+            if canvas is not None and canvas.org_id != org_id:
+                return None
+        return job
 
-    async def create_job(self, job):
+    async def create_job(self, job, *, org_id):
+        canvas = self.canvases.get(job.canvas_id)
+        if not self._in_org(org_id, canvas):
+            raise CanvasNotFoundError(job.canvas_id)
         self.writes.append(f"create_job:{job.id}")
         self.jobs[job.id] = job
         return job
 
-    async def update_job(self, job):
+    async def update_job(self, job, *, org_id):
         self.writes.append(f"update_job:{job.id}")
         self.jobs[job.id] = job
         return job
 
-    async def active_job_for_layer(self, layer_id):
+    async def active_job_for_layer(self, layer_id, *, org_id):
         self.trace.append(f"enter:{layer_id}")
         active = next(
             (j for j in self.jobs.values() if j.layer_id == layer_id and j.is_active()), None
@@ -161,7 +192,7 @@ class FakeWarden:
 @pytest.fixture
 def store():
     s = FakeStore()
-    s.canvases["c1"] = CanvasRecord(id="c1", name="c", width=64, height=48)
+    s.canvases["c1"] = CanvasRecord(id="c1", name="c", width=64, height=48, org_id=FakeStore.ORG)
     s.layers["l1"] = LayerRecord(id="l1", canvas_id="c1", name="l", layer_type=LayerType.BACKGROUND)
     return s
 
@@ -246,7 +277,11 @@ class TestStartJobPreconditions:
 
     async def test_a_valid_request_creates_a_pending_job(self, executor, store):
         job = await executor.start_job(
-            canvas_id="c1", layer_id="l1", action=JobAction.GENERATE, prompt="a cat"
+            org_id=FakeStore.ORG,
+            canvas_id="c1",
+            layer_id="l1",
+            action=JobAction.GENERATE,
+            prompt="a cat",
         )
         assert job.status == JobStatus.PENDING
         assert store.jobs[job.id] is job
@@ -254,7 +289,9 @@ class TestStartJobPreconditions:
 
     async def test_an_unknown_layer_is_rejected(self, executor, store):
         with pytest.raises(LayerNotFoundError, match="nope"):
-            await executor.start_job(canvas_id="c1", layer_id="nope", action=JobAction.GENERATE)
+            await executor.start_job(
+                org_id=FakeStore.ORG, canvas_id="c1", layer_id="nope", action=JobAction.GENERATE
+            )
         assert store.writes == []
 
     async def test_a_text_layer_cannot_use_an_image_gen_action(self, executor, store):
@@ -262,25 +299,35 @@ class TestStartJobPreconditions:
             id="t1", canvas_id="c1", name="t", layer_type=LayerType.TEXT
         )
         with pytest.raises(TextLayerNoGenError):
-            await executor.start_job(canvas_id="c1", layer_id="t1", action=JobAction.GENERATE)
+            await executor.start_job(
+                org_id=FakeStore.ORG, canvas_id="c1", layer_id="t1", action=JobAction.GENERATE
+            )
         assert store.writes == []
 
     async def test_a_text_layer_may_still_use_a_non_image_action(self, executor, store):
         store.layers["t1"] = LayerRecord(
             id="t1", canvas_id="c1", name="t", layer_type=LayerType.TEXT
         )
-        job = await executor.start_job(canvas_id="c1", layer_id="t1", action=JobAction.TEXT)
+        job = await executor.start_job(
+            org_id=FakeStore.ORG, canvas_id="c1", layer_id="t1", action=JobAction.TEXT
+        )
         assert job.status == JobStatus.PENDING
 
     async def test_an_unregistered_model_is_rejected(self, executor, store):
         with pytest.raises(UnknownModelError, match="ghost"):
             await executor.start_job(
-                canvas_id="c1", layer_id="l1", action=JobAction.GENERATE, model_id="ghost"
+                org_id=FakeStore.ORG,
+                canvas_id="c1",
+                layer_id="l1",
+                action=JobAction.GENERATE,
+                model_id="ghost",
             )
         assert store.writes == []
 
     async def test_the_default_draft_model_is_used_when_none_is_given(self, executor):
-        job = await executor.start_job(canvas_id="c1", layer_id="l1", action=JobAction.GENERATE)
+        job = await executor.start_job(
+            org_id=FakeStore.ORG, canvas_id="c1", layer_id="l1", action=JobAction.GENERATE
+        )
         assert job.model_id == "m1"
 
     async def test_a_blocked_prompt_is_rejected_and_nothing_is_stored(self, store, client):
@@ -294,39 +341,61 @@ class TestStartJobPreconditions:
         )
         with pytest.raises(PromptBlockedError):
             await blocked.start_job(
-                canvas_id="c1", layer_id="l1", action=JobAction.GENERATE, prompt="bad"
+                org_id=FakeStore.ORG,
+                canvas_id="c1",
+                layer_id="l1",
+                action=JobAction.GENERATE,
+                prompt="bad",
             )
         assert store.writes == []
 
     async def test_an_empty_prompt_is_not_scanned(self, executor, warden):
-        await executor.start_job(canvas_id="c1", layer_id="l1", action=JobAction.GENERATE)
+        await executor.start_job(
+            org_id=FakeStore.ORG, canvas_id="c1", layer_id="l1", action=JobAction.GENERATE
+        )
         assert warden.scanned == []
 
     async def test_a_non_empty_prompt_is_scanned(self, executor, warden):
         await executor.start_job(
-            canvas_id="c1", layer_id="l1", action=JobAction.GENERATE, prompt="a cat"
+            org_id=FakeStore.ORG,
+            canvas_id="c1",
+            layer_id="l1",
+            action=JobAction.GENERATE,
+            prompt="a cat",
         )
         assert warden.scanned == ["a cat"]
 
     async def test_refine_without_a_source_image_is_rejected(self, executor, store):
         with pytest.raises(RefineNoSourceError, match="l1"):
-            await executor.start_job(canvas_id="c1", layer_id="l1", action=JobAction.REFINE)
+            await executor.start_job(
+                org_id=FakeStore.ORG, canvas_id="c1", layer_id="l1", action=JobAction.REFINE
+            )
         assert store.writes == []
 
     async def test_refine_with_a_source_image_is_accepted(self, executor, store):
         store.layers["l1"].image_path = "existing.png"
-        job = await executor.start_job(canvas_id="c1", layer_id="l1", action=JobAction.REFINE)
+        job = await executor.start_job(
+            org_id=FakeStore.ORG, canvas_id="c1", layer_id="l1", action=JobAction.REFINE
+        )
         assert job.action == JobAction.REFINE
 
     async def test_a_second_job_on_a_busy_layer_is_rejected(self, executor, store):
-        first = await executor.start_job(canvas_id="c1", layer_id="l1", action=JobAction.GENERATE)
+        first = await executor.start_job(
+            org_id=FakeStore.ORG, canvas_id="c1", layer_id="l1", action=JobAction.GENERATE
+        )
         with pytest.raises(JobInProgressError, match=first.id):
-            await executor.start_job(canvas_id="c1", layer_id="l1", action=JobAction.GENERATE)
+            await executor.start_job(
+                org_id=FakeStore.ORG, canvas_id="c1", layer_id="l1", action=JobAction.GENERATE
+            )
 
     async def test_a_layer_is_free_again_once_its_job_is_terminal(self, executor, store):
-        first = await executor.start_job(canvas_id="c1", layer_id="l1", action=JobAction.GENERATE)
+        first = await executor.start_job(
+            org_id=FakeStore.ORG, canvas_id="c1", layer_id="l1", action=JobAction.GENERATE
+        )
         first.status = JobStatus.DONE
-        second = await executor.start_job(canvas_id="c1", layer_id="l1", action=JobAction.GENERATE)
+        second = await executor.start_job(
+            org_id=FakeStore.ORG, canvas_id="c1", layer_id="l1", action=JobAction.GENERATE
+        )
         assert second.id != first.id
 
     async def test_concurrent_starts_on_one_layer_serialise_to_one_job(self, executor, store):
@@ -344,8 +413,12 @@ class TestStartJobPreconditions:
         """
         store.interleave = True
         results = await asyncio.gather(
-            executor.start_job(canvas_id="c1", layer_id="l1", action=JobAction.GENERATE),
-            executor.start_job(canvas_id="c1", layer_id="l1", action=JobAction.GENERATE),
+            executor.start_job(
+                org_id=FakeStore.ORG, canvas_id="c1", layer_id="l1", action=JobAction.GENERATE
+            ),
+            executor.start_job(
+                org_id=FakeStore.ORG, canvas_id="c1", layer_id="l1", action=JobAction.GENERATE
+            ),
             return_exceptions=True,
         )
         created = [r for r in results if isinstance(r, GenerationJobRecord)]
@@ -364,8 +437,12 @@ class TestStartJobPreconditions:
         store.layers["l2"] = LayerRecord(id="l2", canvas_id="c1", name="l2")
         store.interleave = True
         results = await asyncio.gather(
-            executor.start_job(canvas_id="c1", layer_id="l1", action=JobAction.GENERATE),
-            executor.start_job(canvas_id="c1", layer_id="l2", action=JobAction.GENERATE),
+            executor.start_job(
+                org_id=FakeStore.ORG, canvas_id="c1", layer_id="l1", action=JobAction.GENERATE
+            ),
+            executor.start_job(
+                org_id=FakeStore.ORG, canvas_id="c1", layer_id="l2", action=JobAction.GENERATE
+            ),
         )
         assert len({job.id for job in results}) == 2
         assert store.trace == ["enter:l1", "enter:l2", "exit:l1", "exit:l2"], (
@@ -375,6 +452,7 @@ class TestStartJobPreconditions:
 
     async def test_the_params_are_carried_onto_the_job(self, executor):
         job = await executor.start_job(
+            org_id=FakeStore.ORG,
             canvas_id="c1",
             layer_id="l1",
             action=JobAction.GENERATE,
@@ -396,12 +474,12 @@ class TestStartJobPreconditions:
 class TestRunJob:
     async def _pending(self, executor, **kwargs):
         return await executor.start_job(
-            canvas_id="c1", layer_id="l1", action=JobAction.GENERATE, **kwargs
+            org_id=FakeStore.ORG, canvas_id="c1", layer_id="l1", action=JobAction.GENERATE, **kwargs
         )
 
     async def test_a_successful_run_records_the_result_paths(self, executor, store):
         job = await self._pending(executor)
-        done = await executor.run_job(job.id)
+        done = await executor.run_job(job.id, org_id=FakeStore.ORG)
         assert done.status == JobStatus.DONE
         assert done.result_paths == ["u1"]
         assert done.started_at is not None
@@ -409,13 +487,13 @@ class TestRunJob:
 
     async def test_an_unknown_job_raises(self, executor):
         with pytest.raises(JobNotFoundError, match="ghost"):
-            await executor.run_job("ghost")
+            await executor.run_job("ghost", org_id=FakeStore.ORG)
 
     async def test_a_non_pending_job_is_returned_unchanged(self, executor, store):
         job = await self._pending(executor)
         job.status = JobStatus.DONE
         before = len(store.writes)
-        assert (await executor.run_job(job.id)).status == JobStatus.DONE
+        assert (await executor.run_job(job.id, org_id=FakeStore.ORG)).status == JobStatus.DONE
         assert len(store.writes) == before, "a terminal job was written again"
 
     async def test_a_provider_failure_marks_the_job_failed_with_a_safe_message(self, store, warden):
@@ -429,7 +507,7 @@ class TestRunJob:
             warden=warden,
         )
         job = await self._pending(executor)
-        failed = await executor.run_job(job.id)
+        failed = await executor.run_job(job.id, org_id=FakeStore.ORG)
         assert failed.status == JobStatus.FAILED
         assert "10.0.0.9" not in failed.error_message
         assert "pw" not in failed.error_message
@@ -438,7 +516,7 @@ class TestRunJob:
     async def test_a_missing_canvas_fails_the_job_rather_than_raising(self, executor, store):
         job = await self._pending(executor)
         del store.canvases["c1"]
-        failed = await executor.run_job(job.id)
+        failed = await executor.run_job(job.id, org_id=FakeStore.ORG)
         assert failed.status == JobStatus.FAILED
 
     async def test_execute_action_surfaces_the_missing_canvas_directly(self, executor, store):
@@ -448,7 +526,9 @@ class TestRunJob:
             await executor._execute_action(job)
 
     async def test_a_non_image_gen_action_is_refused_by_the_dispatcher(self, executor, store):
-        job = GenerationJobRecord(id="j", layer_id="l1", canvas_id="c1", action=JobAction.COMPOSITE)
+        job = GenerationJobRecord(
+            id="j", layer_id="l1", canvas_id="c1", action=JobAction.COMPOSITE, org_id=FakeStore.ORG
+        )
         with pytest.raises(ValueError, match="not an image-gen action"):
             await executor._execute_action(job)
 
@@ -466,9 +546,14 @@ class TestRunJob:
 class TestGenerate:
     async def test_the_canvas_dimensions_are_passed_to_the_provider(self, executor, client):
         job = await executor.start_job(
-            canvas_id="c1", layer_id="l1", action=JobAction.GENERATE, count=1, seed=7
+            org_id=FakeStore.ORG,
+            canvas_id="c1",
+            layer_id="l1",
+            action=JobAction.GENERATE,
+            count=1,
+            seed=7,
         )
-        await executor.run_job(job.id)
+        await executor.run_job(job.id, org_id=FakeStore.ORG)
         call = client.generate_calls[0]
         assert (call["width"], call["height"]) == (64, 48)
         assert call["seed"] == 7
@@ -477,9 +562,9 @@ class TestGenerate:
         """`0` is a valid seed and falsy. A `params.get("seed") or None` would
         silently make every seed-0 generation non-reproducible."""
         job = await executor.start_job(
-            canvas_id="c1", layer_id="l1", action=JobAction.GENERATE, seed=0
+            org_id=FakeStore.ORG, canvas_id="c1", layer_id="l1", action=JobAction.GENERATE, seed=0
         )
-        await executor.run_job(job.id)
+        await executor.run_job(job.id, org_id=FakeStore.ORG)
         assert client.generate_calls[0]["seed"] == 0
 
     async def test_urls_without_a_value_are_dropped(self, store, warden):
@@ -490,9 +575,9 @@ class TestGenerate:
             warden=warden,
         )
         job = await executor.start_job(
-            canvas_id="c1", layer_id="l1", action=JobAction.GENERATE, count=3
+            org_id=FakeStore.ORG, canvas_id="c1", layer_id="l1", action=JobAction.GENERATE, count=3
         )
-        assert (await executor.run_job(job.id)).result_paths == ["a", "b"]
+        assert (await executor.run_job(job.id, org_id=FakeStore.ORG)).result_paths == ["a", "b"]
 
     async def test_no_usable_urls_fails_the_job(self, store, warden):
         """A provider that returns 200 with empty URLs must not read as success
@@ -503,8 +588,10 @@ class TestGenerate:
             model_registry=FakeRegistry(),
             warden=warden,
         )
-        job = await executor.start_job(canvas_id="c1", layer_id="l1", action=JobAction.GENERATE)
-        failed = await executor.run_job(job.id)
+        job = await executor.start_job(
+            org_id=FakeStore.ORG, canvas_id="c1", layer_id="l1", action=JobAction.GENERATE
+        )
+        failed = await executor.run_job(job.id, org_id=FakeStore.ORG)
         assert failed.status == JobStatus.FAILED
         assert "provider error" in failed.error_message
 
@@ -516,9 +603,9 @@ class TestGenerate:
             warden=warden,
         )
         job = await executor.start_job(
-            canvas_id="c1", layer_id="l1", action=JobAction.GENERATE, count=4
+            org_id=FakeStore.ORG, canvas_id="c1", layer_id="l1", action=JobAction.GENERATE, count=4
         )
-        done = await executor.run_job(job.id)
+        done = await executor.run_job(job.id, org_id=FakeStore.ORG)
         assert done.status == JobStatus.DONE
         assert done.result_paths == ["only-one"]
 
@@ -527,9 +614,14 @@ class TestRefine:
     async def test_the_layers_current_image_is_the_refine_source(self, executor, store, client):
         store.layers["l1"].image_path = "before.png"
         job = await executor.start_job(
-            canvas_id="c1", layer_id="l1", action=JobAction.REFINE, region="top", strength=0.3
+            org_id=FakeStore.ORG,
+            canvas_id="c1",
+            layer_id="l1",
+            action=JobAction.REFINE,
+            region="top",
+            strength=0.3,
         )
-        done = await executor.run_job(job.id)
+        done = await executor.run_job(job.id, org_id=FakeStore.ORG)
         assert client.refine_calls[0]["source_url"] == "before.png"
         assert client.refine_calls[0]["region"] == "top"
         assert client.refine_calls[0]["strength"] == 0.3
@@ -539,9 +631,11 @@ class TestRefine:
         """Checked again at execution time, not only at start: the two are
         separated by a queue, and the layer can change in between."""
         store.layers["l1"].image_path = "before.png"
-        job = await executor.start_job(canvas_id="c1", layer_id="l1", action=JobAction.REFINE)
+        job = await executor.start_job(
+            org_id=FakeStore.ORG, canvas_id="c1", layer_id="l1", action=JobAction.REFINE
+        )
         store.layers["l1"].image_path = None
-        assert (await executor.run_job(job.id)).status == JobStatus.FAILED
+        assert (await executor.run_job(job.id, org_id=FakeStore.ORG)).status == JobStatus.FAILED
 
     async def test_a_refine_returning_no_url_yields_no_paths(self, store, warden):
         executor = CanvasExecutor(
@@ -551,16 +645,22 @@ class TestRefine:
             warden=warden,
         )
         store.layers["l1"].image_path = "before.png"
-        job = await executor.start_job(canvas_id="c1", layer_id="l1", action=JobAction.REFINE)
-        assert (await executor.run_job(job.id)).result_paths == []
+        job = await executor.start_job(
+            org_id=FakeStore.ORG, canvas_id="c1", layer_id="l1", action=JobAction.REFINE
+        )
+        assert (await executor.run_job(job.id, org_id=FakeStore.ORG)).result_paths == []
 
 
 class TestReference:
     async def test_a_hero_image_plus_three_turnaround_views(self, executor, store, client):
         job = await executor.start_job(
-            canvas_id="c1", layer_id="l1", action=JobAction.REFERENCE, prompt="a knight"
+            org_id=FakeStore.ORG,
+            canvas_id="c1",
+            layer_id="l1",
+            action=JobAction.REFERENCE,
+            prompt="a knight",
         )
-        done = await executor.run_job(job.id)
+        done = await executor.run_job(job.id, org_id=FakeStore.ORG)
         assert done.result_paths == ["u1", "r1", "r1", "r1"]
         assert [c["prompt"].rsplit(",", 1)[0].split()[-2:] for c in client.refine_calls] == [
             ["side", "view"],
@@ -570,9 +670,13 @@ class TestReference:
 
     async def test_the_hero_is_generated_from_the_front(self, executor, client):
         job = await executor.start_job(
-            canvas_id="c1", layer_id="l1", action=JobAction.REFERENCE, prompt="a knight"
+            org_id=FakeStore.ORG,
+            canvas_id="c1",
+            layer_id="l1",
+            action=JobAction.REFERENCE,
+            prompt="a knight",
         )
-        await executor.run_job(job.id)
+        await executor.run_job(job.id, org_id=FakeStore.ORG)
         assert "front view" in client.generate_calls[0]["prompt"]
 
     async def test_no_hero_means_no_views_are_attempted(self, store, warden):
@@ -582,8 +686,10 @@ class TestReference:
         executor = CanvasExecutor(
             store=store, image_client=client, model_registry=FakeRegistry(), warden=warden
         )
-        job = await executor.start_job(canvas_id="c1", layer_id="l1", action=JobAction.REFERENCE)
-        assert (await executor.run_job(job.id)).result_paths == []
+        job = await executor.start_job(
+            org_id=FakeStore.ORG, canvas_id="c1", layer_id="l1", action=JobAction.REFERENCE
+        )
+        assert (await executor.run_job(job.id, org_id=FakeStore.ORG)).result_paths == []
         assert client.refine_calls == []
 
     async def test_views_that_come_back_empty_are_dropped_not_padded(self, store, warden):
@@ -591,20 +697,24 @@ class TestReference:
         executor = CanvasExecutor(
             store=store, image_client=client, model_registry=FakeRegistry(), warden=warden
         )
-        job = await executor.start_job(canvas_id="c1", layer_id="l1", action=JobAction.REFERENCE)
-        assert (await executor.run_job(job.id)).result_paths == ["hero"]
+        job = await executor.start_job(
+            org_id=FakeStore.ORG, canvas_id="c1", layer_id="l1", action=JobAction.REFERENCE
+        )
+        assert (await executor.run_job(job.id, org_id=FakeStore.ORG)).result_paths == ["hero"]
 
 
 class TestAcceptVariant:
     async def _done(self, executor, store, paths=("a", "b", "c")):
-        job = await executor.start_job(canvas_id="c1", layer_id="l1", action=JobAction.GENERATE)
+        job = await executor.start_job(
+            org_id=FakeStore.ORG, canvas_id="c1", layer_id="l1", action=JobAction.GENERATE
+        )
         job.status = JobStatus.DONE
         job.result_paths = list(paths)
         return job
 
     async def test_accepting_sets_the_layer_image_and_records_the_index(self, executor, store):
         job = await self._done(executor, store)
-        updated_job, layer = await executor.accept_variant(job.id, 1)
+        updated_job, layer = await executor.accept_variant(job.id, 1, org_id=FakeStore.ORG)
         assert layer.image_path == "b"
         assert updated_job.selected_index == 1
 
@@ -613,17 +723,19 @@ class TestAcceptVariant:
         `updated_at` for changes would otherwise never see the new image."""
         job = await self._done(executor, store)
         before = store.canvases["c1"].updated_at
-        await executor.accept_variant(job.id, 0)
+        await executor.accept_variant(job.id, 0, org_id=FakeStore.ORG)
         assert store.canvases["c1"].updated_at > before
 
     async def test_an_unknown_job_raises(self, executor):
         with pytest.raises(JobNotFoundError):
-            await executor.accept_variant("ghost", 0)
+            await executor.accept_variant("ghost", 0, org_id=FakeStore.ORG)
 
     async def test_a_job_that_is_not_done_cannot_be_accepted(self, executor, store):
-        job = await executor.start_job(canvas_id="c1", layer_id="l1", action=JobAction.GENERATE)
+        job = await executor.start_job(
+            org_id=FakeStore.ORG, canvas_id="c1", layer_id="l1", action=JobAction.GENERATE
+        )
         with pytest.raises(JobNotDoneError, match="pending"):
-            await executor.accept_variant(job.id, 0)
+            await executor.accept_variant(job.id, 0, org_id=FakeStore.ORG)
 
     @pytest.mark.parametrize("index", [-1, 3, 99])
     async def test_an_out_of_range_index_is_refused(self, executor, store, index):
@@ -631,48 +743,56 @@ class TestAcceptVariant:
         accepting the last variant when the caller asked for something else."""
         job = await self._done(executor, store)
         with pytest.raises(VariantIndexOutOfRangeError):
-            await executor.accept_variant(job.id, index)
+            await executor.accept_variant(job.id, index, org_id=FakeStore.ORG)
         assert store.layers["l1"].image_path is None
 
     async def test_a_job_whose_layer_vanished_raises(self, executor, store):
         job = await self._done(executor, store)
         del store.layers["l1"]
         with pytest.raises(LayerNotFoundError):
-            await executor.accept_variant(job.id, 0)
+            await executor.accept_variant(job.id, 0, org_id=FakeStore.ORG)
 
     async def test_a_vanished_canvas_does_not_undo_the_accepted_layer(self, executor, store):
         """The canvas touch is best-effort; losing it must not cost the user
         the variant they accepted."""
         job = await self._done(executor, store)
         del store.canvases["c1"]
-        _, layer = await executor.accept_variant(job.id, 2)
+        _, layer = await executor.accept_variant(job.id, 2, org_id=FakeStore.ORG)
         assert layer.image_path == "c"
 
 
 class TestCancelJob:
     async def test_a_pending_job_can_be_cancelled(self, executor, store):
-        job = await executor.start_job(canvas_id="c1", layer_id="l1", action=JobAction.GENERATE)
-        cancelled = await executor.cancel_job(job.id)
+        job = await executor.start_job(
+            org_id=FakeStore.ORG, canvas_id="c1", layer_id="l1", action=JobAction.GENERATE
+        )
+        cancelled = await executor.cancel_job(job.id, org_id=FakeStore.ORG)
         assert cancelled.status == JobStatus.CANCELLED
         assert cancelled.completed_at is not None
 
     async def test_a_running_job_can_be_cancelled(self, executor, store):
-        job = await executor.start_job(canvas_id="c1", layer_id="l1", action=JobAction.GENERATE)
+        job = await executor.start_job(
+            org_id=FakeStore.ORG, canvas_id="c1", layer_id="l1", action=JobAction.GENERATE
+        )
         job.status = JobStatus.RUNNING
-        assert (await executor.cancel_job(job.id)).status == JobStatus.CANCELLED
+        assert (
+            await executor.cancel_job(job.id, org_id=FakeStore.ORG)
+        ).status == JobStatus.CANCELLED
 
     async def test_an_unknown_job_raises(self, executor):
         with pytest.raises(JobNotFoundError):
-            await executor.cancel_job("ghost")
+            await executor.cancel_job("ghost", org_id=FakeStore.ORG)
 
     @pytest.mark.parametrize("status", [JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED])
     async def test_a_terminal_job_cannot_be_cancelled(self, executor, store, status):
         """Re-cancelling a done job would rewrite `completed_at` and lose when
         the work actually finished."""
-        job = await executor.start_job(canvas_id="c1", layer_id="l1", action=JobAction.GENERATE)
+        job = await executor.start_job(
+            org_id=FakeStore.ORG, canvas_id="c1", layer_id="l1", action=JobAction.GENERATE
+        )
         job.status = status
         with pytest.raises(JobAlreadyTerminalError):
-            await executor.cancel_job(job.id)
+            await executor.cancel_job(job.id, org_id=FakeStore.ORG)
 
 
 class TestLayerLocks:
