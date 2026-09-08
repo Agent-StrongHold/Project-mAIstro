@@ -564,8 +564,14 @@ class PostgresAssetStore:
         """
         from sqlalchemy import text
 
+        # table/id_column are code-controlled literals at every call site
+        # ("assets"/asset_id, "books"/book_id, ...); values are bound params.
+        # Identifiers cannot be parameterized, so text() with literals is the
+        # only correct form here.
         foreign = await self._session.execute(
-            text(f"SELECT 1 FROM {table} WHERE {id_column} = :rid AND org_id <> :org"),
+            text(
+                f"SELECT 1 FROM {table} WHERE {id_column} = :rid AND org_id <> :org"
+            ),  # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
             {"rid": row_id, "org": org_id},
         )
         if foreign.first() is not None:

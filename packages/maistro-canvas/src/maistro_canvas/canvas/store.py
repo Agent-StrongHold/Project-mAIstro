@@ -261,7 +261,7 @@ class PgCanvasStore:
                     "updated": canvas.updated_at,
                 },
             )
-            if cast("CursorResult[Any]", result).rowcount == 0:
+            if cast(CursorResult[Any], result).rowcount == 0:
                 raise CanvasNotFoundError(canvas.id)
             await session.commit()
         return canvas
@@ -478,7 +478,7 @@ class PgCanvasStore:
                     "updated": layer.updated_at,
                 },
             )
-            if cast("CursorResult[Any]", result).rowcount == 0:
+            if cast(CursorResult[Any], result).rowcount == 0:
                 raise LayerNotFoundError(layer.id)
             await session.commit()
         return layer
@@ -662,7 +662,7 @@ class PgCanvasStore:
                     "done": job.completed_at,
                 },
             )
-            if cast("CursorResult[Any]", result).rowcount == 0:
+            if cast(CursorResult[Any], result).rowcount == 0:
                 raise JobNotFoundError(job.id)
             await session.commit()
         return job
