@@ -21,6 +21,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from maistro_evolve._candidate_env import candidate_env
 from maistro_evolve.assertion_strength import score_assertions
 from maistro_evolve.code_quality import score_path
 from maistro_evolve.coverage_gate import (
@@ -400,6 +401,10 @@ def _run(cmd: str, cwd: Path, timeout: int = 900, argv: tuple[str, ...] = ()) ->
     fallback rather than a convenient one -- a token containing a space would
     re-split into two arguments, so the thing that ran would not be the thing
     the policy named.
+
+    Both paths run behind the credential boundary (#78): the command imports
+    and executes candidate code, so it gets the minimal base environment —
+    never the harness's ambient credentials.
     """
     try:
         if argv:
@@ -409,6 +414,7 @@ def _run(cmd: str, cwd: Path, timeout: int = 900, argv: tuple[str, ...] = ()) ->
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                env=candidate_env(),
             )
         else:
             # shell=True: the CLI path, where `cmd` is what an operator typed.
@@ -419,6 +425,7 @@ def _run(cmd: str, cwd: Path, timeout: int = 900, argv: tuple[str, ...] = ()) ->
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                env=candidate_env(),
             )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return False, f"test command errored: {exc}"

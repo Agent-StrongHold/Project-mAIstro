@@ -13,6 +13,24 @@ Everything downstream of the sandbox is unchanged — the RSI quarantine gate
 (Warden + adversarial review) still governs what may leave the sandbox as a PR,
 so "run directly on the local FS" is safe precisely because that FS is the
 disposable microVM ``sbx`` handed us.
+
+Credential boundary (#78): candidate commands get exactly the candidate
+environment — the fixed minimal base plus explicit constructor grants,
+never the harness's environment. The environment itself is specified by
+``maistro.sandbox.credential_boundary`` in maistro-core (the canonical
+module) and re-implemented by the ``maistro_evolve._candidate_env`` seam
+this package imports: the promotion-surface gate walks the import graph
+from the promotion roots, and ``maistro/sandbox/__init__.py`` re-exports
+the whole sandbox subsystem, so importing the canonical leaf from here
+would pull the unprotected core cascade onto the promotion path. Parity
+between seam and canonical is pinned by test.
+This matters *inside* the microVM too: the RSI process itself holds the
+gateway key (``LITELLM_MASTER_KEY``/``LITELLM_PROXY_KEY``, see
+``maistro_rsi.gateway``), and before the boundary a candidate's ``bash -c``
+inherited it whole. Secrets a candidate legitimately needs cross only as
+Provider-mediated grants (``grant_from_credential`` off a CredentialRouter
+acquisition), and the sbx posture needs none of those — provider endpoints are
+proxied host-side by the sbx kit, keys never enter the sandbox.
 """
 
 from __future__ import annotations
@@ -22,9 +40,12 @@ import contextlib
 import os
 import signal
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 
 import structlog
+
+from maistro_evolve._candidate_env import candidate_env
 
 logger = structlog.get_logger()
 
@@ -37,8 +58,9 @@ _REAP_GRACE_SECONDS = 1.0
 class LocalSandbox:
     """Run RSI commands on the local filesystem (already inside an sbx microVM)."""
 
-    def __init__(self, workspace: str) -> None:
+    def __init__(self, workspace: str, *, grants: Mapping[str, str] | None = None) -> None:
         self._workspace = workspace
+        self._grants: Mapping[str, str] | None = grants
         self._snapshots: dict[str, str] = {}
         Path(workspace).mkdir(parents=True, exist_ok=True)
         self._root = Path(workspace).resolve()
@@ -61,6 +83,10 @@ class LocalSandbox:
         # Runs inside the isolated sbx microVM, which is the trust boundary —
         # the RSI quarantine gate governs what may leave it. Its own session/
         # process group, so a timeout kills the whole tree, not just the shell.
+        # The environment is the credential boundary's (#78): rebuilt from the
+        # minimal base + explicit grants on every exec, so ambient harness
+        # credentials are never inherited and a candidate's own `export` in
+        # one exec cannot widen the next one.
         proc = await asyncio.create_subprocess_exec(  # nosec B603
             "bash",
             "-c",
@@ -69,6 +95,7 @@ class LocalSandbox:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             start_new_session=True,
+            env=candidate_env(self._grants),
         )
         try:
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
