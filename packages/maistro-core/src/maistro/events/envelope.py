@@ -77,6 +77,19 @@ class EventEnvelope:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class EventAppendResult:
+    """Atomic canonical append outcome used by compatibility projections.
+
+    ``inserted`` is decided under the same lock/transaction that owns Event
+    idempotency and sequence allocation. Consumers must not infer this fact with
+    a pre-read because two replicas can race between that read and append.
+    """
+
+    event: EventEnvelope
+    inserted: bool
+
+
 #: Envelope fields filled from an identically named id on the execution context.
 _CORRELATABLE_FIELDS: tuple[str, ...] = (
     "project_id",
@@ -155,6 +168,15 @@ class EventStore(Protocol):
         ...
 
 
+@runtime_checkable
+class EventAppendDispositionStore(EventStore, Protocol):
+    """EventStore that exposes the atomic outcome of an idempotent append."""
+
+    async def append_with_disposition(self, event: EventEnvelope) -> EventAppendResult:
+        """Append and report whether this call inserted the canonical Event."""
+        ...
+
+
 class InMemoryEventStore:
     """Concurrency-safe in-memory EventStore for tests and local execution."""
 
@@ -164,6 +186,9 @@ class InMemoryEventStore:
         self._lock = asyncio.Lock()
 
     async def append(self, event: EventEnvelope) -> EventEnvelope:
+        return (await self.append_with_disposition(event)).event
+
+    async def append_with_disposition(self, event: EventEnvelope) -> EventAppendResult:
         async with self._lock:
             # Before the idempotency check, not after: the fill has to happen
             # on the event that will be written, and an event already present
@@ -171,7 +196,7 @@ class InMemoryEventStore:
             event = correlated(event)
             existing = self._events_by_id.get(event.event_id)
             if existing is not None:
-                return existing
+                return EventAppendResult(existing, inserted=False)
             if event.sequence is not None:
                 raise ValueError("sequence is store-assigned and must be None on append")
 
@@ -184,7 +209,7 @@ class InMemoryEventStore:
             )
             stream.append(persisted)
             self._events_by_id[persisted.event_id] = persisted
-            return persisted
+            return EventAppendResult(persisted, inserted=True)
 
     async def get(self, event_id: str) -> EventEnvelope | None:
         return self._events_by_id.get(event_id)
@@ -251,6 +276,9 @@ class SqliteEventStore:
         await self._conn.commit()
 
     async def append(self, event: EventEnvelope) -> EventEnvelope:
+        return (await self.append_with_disposition(event)).event
+
+    async def append_with_disposition(self, event: EventEnvelope) -> EventAppendResult:
         async with self._lock:
             # Before the idempotency check, not after: the fill has to happen
             # on the event that will be written, and an event already present
@@ -268,7 +296,10 @@ class SqliteEventStore:
                 existing = await cursor.fetchone()
                 if existing is not None:
                     await self._conn.commit()
-                    return self._row_to_event(tuple(existing))
+                    return EventAppendResult(
+                        self._row_to_event(tuple(existing)),
+                        inserted=False,
+                    )
 
                 cursor = await self._conn.execute(
                     "SELECT COALESCE(MAX(sequence), 0) + 1 "
@@ -313,7 +344,7 @@ class SqliteEventStore:
                     ),
                 )
                 await self._conn.commit()
-                return persisted
+                return EventAppendResult(persisted, inserted=True)
             except Exception:
                 await self._conn.rollback()
                 raise
