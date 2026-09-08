@@ -43,6 +43,7 @@ from typing import Any
 
 import structlog
 
+from maistro_evolve._candidate_env import candidate_env
 from maistro_evolve.improvement import BudgetTier, ImprovementKind
 from maistro_rsi.competitors import Competitor
 from maistro_rsi.contained_validation import (
@@ -353,7 +354,12 @@ class LocalSandbox:
     async def exec(self, command: str, timeout: int = 60) -> tuple[int, str]:
         def _run() -> tuple[int, str]:
             # shell=True: `command` is operator-supplied test/health config
-            # (e.g. "pytest -q && ruff check"), not agent-controlled input.
+            # (e.g. "pytest -q && ruff check"), not agent-controlled input —
+            # but what it *imports* is candidate code (pytest loads the
+            # worktree's conftest and plugins), so it runs behind the
+            # credential boundary (#78): minimal base env, no ambient
+            # inheritance, so the operator's/harness's secrets never reach a
+            # candidate-importing process.
             proc = subprocess.run(  # nosemgrep
                 command,
                 shell=True,  # nosemgrep
@@ -361,6 +367,7 @@ class LocalSandbox:
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                env=candidate_env(),
             )
             return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
@@ -748,7 +755,14 @@ class _NoHostExecSandbox(LocalSandbox):
 
 @dataclass
 class LocalRsiConfig:
-    """Inputs for one capped local self-improvement run."""
+    """Inputs for one capped local self-improvement run.
+
+    Both test fields run behind the credential boundary (#78): the command's
+    process starts from a fixed minimal environment (PATH, locale, TERM —
+    nothing ambient), because its imports execute candidate code. A command
+    that needs a specific interpreter should name it absolutely or rely on
+    `python3` being on the base PATH, not on the operator's ambient PATH.
+    """
 
     repo_path: str
     #: The test command as a shell string. Kept for the CLI, where an operator
@@ -2291,17 +2305,24 @@ class LocalRsiLoop:
         if self._config.test_argv:
             # No shell: the vector was chosen from server-side policy, and a
             # metacharacter in any token stays a character in an argument.
+            # Behind the credential boundary (#78): the candidate's conftest
+            # and plugins run in this process tree, so it gets the minimal
+            # base env — never the operator's/harness's ambient secrets.
             proc = subprocess.run(
                 list(self._config.test_argv),
                 cwd=str(cycle_dir),
                 capture_output=True,
                 text=True,
                 timeout=self._config.test_timeout,
+                env=candidate_env(),
             )
         else:
             # shell=True: the CLI path, where `test_command` is what an operator
             # typed at a terminal. Every non-terminal caller supplies test_argv
             # above instead -- see #305 for why that distinction is load-bearing.
+            # Same credential boundary as the argv path: an operator's shell
+            # carries their credentials, and the candidate code this command
+            # imports must not inherit them (#78).
             proc = subprocess.run(  # nosemgrep
                 self._config.test_command,
                 shell=True,  # nosemgrep
@@ -2309,6 +2330,7 @@ class LocalRsiLoop:
                 capture_output=True,
                 text=True,
                 timeout=self._config.test_timeout,
+                env=candidate_env(),
             )
         if proc.returncode != 0:
             logger.info("rsi_local_tests_failed", tail=(proc.stdout + proc.stderr)[-500:])

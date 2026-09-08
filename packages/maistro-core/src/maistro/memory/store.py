@@ -18,8 +18,13 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+# pgvector is optional at runtime. 0.5.0 ships inline types (py.typed) and names
+# the SQLAlchemy type VECTOR (Vector is only an alias export), so pre-annotate
+# the name as Any instead of rebinding it to None, which mypy rejects as a
+# type reassignment.
+Vector: Any
 try:
-    from pgvector.sqlalchemy import Vector  # type: ignore[import-untyped]
+    from pgvector.sqlalchemy import Vector
 except ImportError:
     Vector = None
 
