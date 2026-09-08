@@ -1,7 +1,3 @@
----
-inventory-delta: {}
----
-
 # pgvector 0.5.0 typing shim repair (#1025)
 
 Typing-only fix, no test delta. pgvector 0.5.0 began shipping inline types
