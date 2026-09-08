@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict
 
 from maistro.capabilities.binding import Binding, ResolvedCapabilityProvider
+from maistro.capabilities.credential_routing import CredentialBackedProvider
 from maistro.capabilities.invocation import (
     Invocation,
     InvocationUsage,
@@ -163,7 +164,21 @@ class ModelChatEgress:
             return provider
 
         async def execute(provider: ResolvedCapabilityProvider, payload: Any) -> Any:
-            return await execute_model_chat(provider, payload, endpoint=self._endpoint)
+            if not isinstance(provider, CredentialBackedProvider):
+                raise TypeError(
+                    "model-chat physical execution requires a Binding-scoped credential"
+                )
+            base = provider.base
+            if not isinstance(base, LlmGatewayProvider):
+                raise TypeError(f"credential routed a non-gateway provider: {base!r}")
+            endpoint = self._endpoint.model_copy(
+                update={"api_key": provider.credential.api_key}
+            )
+            return await execute_model_chat(base, payload, endpoint=endpoint)
+
+        routing = self._effects.credential_routing()
+        routed_resolver = routing.resolver(tracked_resolve)
+        routed_executor = routing.executor(execute)
 
         def usage_from(body: Any) -> InvocationUsage | None:
             if not selected:
@@ -177,8 +192,8 @@ class ModelChatEgress:
             attempt_id=attempt_id,
             effect_key=effect_key,
             request=request,
-            resolver=tracked_resolve,
-            executor=execute,
+            resolver=routed_resolver,
+            executor=routed_executor,
             usage_from=usage_from,
         )
         body = invocation.result if isinstance(invocation.result, dict) else {}
