@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import subprocess
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -124,7 +126,7 @@ class TestBuildParser:
         )
         assert args.repo_url == "https://x/y"
         assert args.base_branch == "main"
-        assert args.workspace_root == "/tmp/maistro-workspace/rsi"
+        assert args.workspace_root == str(Path(tempfile.gettempdir()) / "maistro-workspace" / "rsi")
         assert args.open_prs is False
         assert args.max_turns == 10
 
