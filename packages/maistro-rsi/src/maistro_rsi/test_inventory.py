@@ -213,12 +213,6 @@ def collect_inventory(
     )
 
 
-def skipped_ids(root: Path, pytest_args: list[str], *, timeout: int = _COLLECT_TIMEOUT) -> set[str]:
-    """The node IDs gated behind skip/skipif markers in ``root`` (differential
-    collection — see :func:`collect_inventory`)."""
-    return collect_inventory(root, pytest_args, timeout=timeout).skip_gated
-
-
 def diff_inventory(base: InventoryResult, cand: InventoryResult) -> InventoryDiff:
     """Diff the protected (servable) sets. A rename is the old ID deleted plus
     the new one added; a newly skip-marked test is deleted from the servable

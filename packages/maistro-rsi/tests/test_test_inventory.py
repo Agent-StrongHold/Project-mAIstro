@@ -17,7 +17,6 @@ from maistro_rsi.test_inventory import (
     changed_config_files,
     collect_inventory,
     diff_inventory,
-    skipped_ids,
 )
 from maistro_rsi.test_inventory import test_config_paths as the_config_surface
 
@@ -121,9 +120,9 @@ def test_collect_inventory_times_out_fail_closed(
 # --- skip detection (differential collection) ------------------------------
 
 
-def test_skipped_ids_via_differential_collection(tmp_path: Path) -> None:
+def test_skip_gated_via_differential_collection(tmp_path: Path) -> None:
     root = _make_project(tmp_path, MARKED)
-    gated = skipped_ids(root, [])
+    gated = collect_inventory(root, []).skip_gated
     assert gated == {"tests/test_m.py::test_skipped", "tests/test_m.py::test_skipif"}
     # xfail is NOT skip-gated — it still runs (and reports), so it stays protected.
     inv = collect_inventory(root, [])

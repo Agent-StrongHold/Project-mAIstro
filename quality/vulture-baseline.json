@@ -602,6 +602,7 @@
         "packages/maistro-rsi/src/maistro_rsi/scout.py::unused variable 'location'",
         "packages/maistro-rsi/src/maistro_rsi/trace_notes.py::unused variable 'delta_coverage'",
         "packages/maistro-rsi/src/maistro_rsi/trace_notes.py::unused variable 'delta_pass'",
+        "packages/maistro-rsi/src/maistro_rsi/trace_notes.py::unused variable 'inventory'",
         "packages/maistro-rsi/src/maistro_rsi/trace_notes.py::unused variable 'mutation_score'",
         "packages/maistro-rsi/src/maistro_rsi/trace_notes.py::unused variable 'neg_seconds'",
         "packages/maistro-rsi/src/maistro_rsi/trace_notes.py::unused variable 'neg_tokens'",
