@@ -250,8 +250,14 @@ async def pg_engine():
     )
     async with engine.begin() as conn:
         await conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
+        # asyncpg speaks prepared statements: a multi-statement blob fails
+        # with `cannot insert multiple commands into a prepared statement`,
+        # so run each DDL statement on its own. The DDL strings carry no
+        # semicolons inside literals (asserted by these suites passing).
         for ddl in (_CANVAS_DDL, _ASSET_DDL):
-            await conn.execute(text(ddl))
+            for statement in ddl.split(";"):
+                if statement.strip():
+                    await conn.execute(text(statement))
     yield engine
     async with engine.begin() as conn:
         await conn.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
