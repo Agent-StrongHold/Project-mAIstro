@@ -164,7 +164,7 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
 | Stronghold had | Engine has | Status |
 |---|---|---|
 | Tool-argument size limit (100 KB, JSON-bomb protection) | No dedicated tool-arg size cap found in `security/sentinel/validator.py` or `tools/` | `gap-impl` |
-| SSRF blocklist (private networks, cloud metadata endpoints, loopback) for outbound tool/skill HTTP calls | **Present** — `security/ssrf.py::validate_outbound_url` refuses any URL that is not http(s) with a resolvable host on the public internet, checking every address the host resolves to (private, loopback, link-local, reserved, multicast, unspecified) and refusing a name it cannot resolve at all. Applied at `maistro.http`'s pooled transport by `security/outbound.py` (ADR-082326-5386), so a module is covered by routing through the shared pool rather than by remembering to call the guard — redirect hops included, since httpx re-enters the transport for each one. Configured endpoints — the LiteLLM/Ollama gateway, ntfy, a Home Assistant URL — are allowed by exact origin, seeded from settings. The **filesystem** path blocklist (`security/patterns.py:BLOCKED_HOST_PATHS`) is separate and unrelated | `partial` — covered at the seam, proxy mounts included; the measured reach and the one bypass are in Known Limitation 1 rather than restated here, and the rebinding window between the guard's lookup and the client's remains open |
+| SSRF blocklist (private networks, cloud metadata endpoints, loopback) for outbound tool/skill HTTP calls | **Present** — `security/ssrf.py::validate_outbound_url` refuses any URL that is not http(s) with a resolvable host on the public internet, checking every address the host resolves to (private, loopback, link-local, reserved, multicast, unspecified, and the RFC 6598 shared range `100.64.0.0/10`, which no stdlib predicate names) and refusing a name it cannot resolve at all. Applied at `maistro.http`'s pooled transport by `security/outbound.py` (ADR-082326-5386), and at the sync seam `maistro.http::sync_client` builds for the approvals CLI, so a module is covered by routing through the shared pool rather than by remembering to call the guard — redirect hops included, since httpx re-enters the transport for each one. Configured endpoints — the LiteLLM/Ollama gateway, ntfy, a Home Assistant URL — are allowed by exact origin, seeded from settings. The **filesystem** path blocklist (`security/patterns.py:BLOCKED_HOST_PATHS`) is separate and unrelated | `partial` — covered at both the async and sync seams, proxy mounts included; the measured reach is in Known Limitation 1, and the rebinding window between the guard's lookup and the client's remains open |
 | `hmac.compare_digest`-based constant-time comparison for API keys | Present: `security/secret_equal.py` | ✅ (engine has this) |
 | PostgreSQL persistence with org-scoped queries by default | InMemory stores are the default; PostgreSQL implementations exist (`persistence/`) but require explicit configuration | Matches engine's own known limitation below, not a regression |
 
@@ -208,18 +208,22 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
 
    What replaced it: `security/outbound.py` applies the policy at the transport `maistro.http`
    hands to every pooled client (ADR-082326-5386), so a module is covered by routing through the
-   shared pool. Measured (`measured-outbound-seam`) — **32** of the census route through the pool
-   and **1** builds its own client. Redirect hops are validated per hop, because httpx re-enters
+   shared pool. Measured (`measured-outbound-seam`) — **33** of the census route through the pool
+   and **0** build their own client. Redirect hops are validated per hop, because httpx re-enters
    the transport for each one; the browser seam re-validates per hop the same way, because
    Chromium consults the route handler for every navigation, redirect and subresource before the
    network stack connects. `tasks/progress_webhook` and `integrations/ntfy` built private
    clients and were moved onto the pool so the seam actually reaches them.
 
-   The remaining bypass is `cli/_approvals.py`, and it is not an oversight: it builds a
-   *synchronous* `httpx.Client` against the operator's own conductor at `127.0.0.1:8101`, and the
-   pool is async-only, so there is nothing for it to borrow. It is named here rather than
-   exempted in the checker, because a bypass that stops being counted is a bypass nobody will
-   notice growing.
+   The last private client was `cli/_approvals.py`, a *synchronous* `httpx.Client` the async-only
+   pool had nothing to lend. It now builds through `maistro.http::sync_client`, whose transports
+   (`security/outbound.py::SyncGuardedTransport`) carry the same policy object and the same
+   validator the pooled transports do, and it registers its operator-configured conductor origin
+   as its one allowance when the client is built (#67). Refused classes now include the RFC 6598
+   shared range (`100.64.0.0/10`, carrier-grade NAT) explicitly — the stdlib predicates file it
+   under "shared address space" rather than "private", so no Python release this repo runs on
+   names it — and the IPv6 translation forms (IPv4-mapped, 6to4, NAT64 well-known prefix) are
+   covered by the stdlib predicates and pinned by tests.
 
    Configured destinations are allowed by exact origin (scheme, host, port), seeded from settings
    rather than a hand-maintained list, so the engine still reaches its own LiteLLM/Ollama

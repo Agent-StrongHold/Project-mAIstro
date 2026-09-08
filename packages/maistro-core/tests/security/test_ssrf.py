@@ -82,6 +82,35 @@ class TestInternalTargets:
         with pytest.raises(SSRFBlockedError):
             validate_outbound_url("http://192.168.1.1/x")
 
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "100.64.0.1",  # first address of the range
+            "100.100.5.5",  # mid-range, the address a carrier NAT actually hands out
+            "100.127.255.255",  # last address of the range
+        ],
+    )
+    def test_blocks_cgnat_shared_address_space(self, host: str) -> None:
+        """RFC 6598 (100.64.0.0/10) is refused (#67).
+
+        The stdlib predicates do not name it: `is_private` is built from the
+        IANA registry's *private* fragment and the registry files this range as
+        *shared address space*, so `100.64.0.1` passes every predicate on every
+        Python this repo supports. Behind carrier-grade NAT it is as internal
+        as RFC 1918, and `_BLOCKED_NETWORKS` says so explicitly.
+        """
+        with pytest.raises(SSRFBlockedError):
+            validate_outbound_url(f"http://{host}/x")
+
+    @pytest.mark.parametrize("host", ["100.63.255.255", "100.128.0.1"])
+    def test_the_cgnat_block_stops_at_the_prefix(self, host: str) -> None:
+        """The addresses on either side of /10 are ordinary public space.
+
+        A range check that leaks past its mask would block them; these are
+        literals, so no resolver is consulted and the test is about the mask.
+        """
+        validate_outbound_url(f"http://{host}/x")
+
     def test_blocks_ipv6_loopback(self) -> None:
         with pytest.raises(SSRFBlockedError):
             validate_outbound_url("http://[::1]/x")
