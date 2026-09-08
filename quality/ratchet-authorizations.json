@@ -115,6 +115,16 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#737",
       "reason": "InMemoryDurableRunStore and SqliteDurableRunStore cancel_hitl implementations (#737): the store-level cancellation settlement the conductor's cancel route dispatches to. Both occurrences share this identity because the scan keys name, not class; neither has an in-scan caller by design."
+    },
+    "packages/maistro-rsi/src/maistro_rsi/trace_notes.py::unused variable 'inventory'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#306",
+      "reason": "TraceNote.inventory is the #306 promotion-record evidence field: _annotate_promotion writes the inventory diff (base/candidate/deleted/override) into the git-notes record that the #306 definition of done requires. It is deliberately write-only in-process - the reader is the promotion record itself, like the trace's other evidence bundles - and from_json already tolerates the field for older notes."
+    },
+    "packages/maistro-rsi/src/maistro_rsi/test_inventory.py::unused property 'skip_gated'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#306",
+      "reason": "InventoryResult.skip_gated is the named half of differential collection: collect_inventory runs a second -m \"not skip and not skipif\" pass, and the set difference (collected minus servable) is how a newly skip-marked test becomes a deletion in the protected inventory. The property's readers are the test suite (test_skip_gated_via_differential_collection asserts the gated IDs) - CI's vulture scan covers packages/*/src only and cannot see test-file reads - plus downstream gate authors who need the gated set itself rather than the derived diff. Retained as the module's public surface for the concept, derived from the collected and servable fields."
     }
   },
   "model-egress": {
