@@ -122,7 +122,15 @@ class TestLocalLoopSandboxExec:
         assert rc == 0
         assert "sk-live-harness-secret" not in output
         seen = {line.split("=", 1)[0] for line in output.splitlines() if "=" in line}
-        assert seen == set(candidate_env()) | _SHELL_PROVIDED
+        # Two-sided pin, portable across the spawning shell: every boundary
+        # var must be present (nothing dropped), and nothing outside the
+        # boundary plus shell-internal additions (bash exports SHLVL/_; dash
+        # does not) may appear — a future passthrough edit fails either way.
+        boundary = set(candidate_env())
+        assert boundary <= seen, f"boundary vars missing: {sorted(boundary - seen)}"
+        assert seen <= boundary | _SHELL_PROVIDED, (
+            f"foreign passthrough: {sorted(seen - boundary - _SHELL_PROVIDED)}"
+        )
 
 
 class TestLocalLoopHostTestPaths:
