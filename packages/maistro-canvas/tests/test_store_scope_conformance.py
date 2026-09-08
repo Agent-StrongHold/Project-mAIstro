@@ -36,6 +36,7 @@ from contextlib import contextmanager
 from typing import Any, ClassVar
 
 import pytest
+import pytest_asyncio
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -232,7 +233,15 @@ def _require_pg() -> str:
     pytest.skip("MAISTRO_TEST_PG_DSN is unset; the PostgreSQL leg needs a real server")
 
 
-@pytest.fixture(scope="module")
+# One event loop for the whole module: the module-scoped engine pools
+# connections that are bound to the loop that created them, and with
+# pytest-asyncio's default function-scoped loops every test after the
+# first would drive them from a foreign loop ("another operation is in
+# progress").
+pytestmark = pytest.mark.asyncio(loop_scope="module")
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def pg_engine():
     """One engine per module, bound to a throwaway schema."""
     from sqlalchemy import text
