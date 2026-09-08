@@ -516,7 +516,7 @@ class TestAssetTwoTenants:
             await session.rollback()
             await session.close()
 
-    @pytest.fixture(autouse=True)
+    @pytest_asyncio.fixture(autouse=True, loop_scope="module")
     async def _pg_tables_fresh_per_test(
         self, request: pytest.FixtureRequest
     ) -> AsyncIterator[None]:
