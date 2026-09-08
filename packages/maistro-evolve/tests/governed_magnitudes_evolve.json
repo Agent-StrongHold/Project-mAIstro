@@ -1,0 +1,41 @@
+{
+  "schema": "governed-magnitude/1",
+  "issue": 350,
+  "governance": "Independently governed expected magnitudes for the fitness-score family (maistro-evolve). This file states the values the implementation must produce; it is NOT generated from or imported by production code, so a mutation of a production weight cannot silently rewrite its own expectation. Changing a value here is a policy change: it needs the same review as changing the production constant, plus the cited ADR updated in lockstep. The two ladder invariants are governed separately from the raw table because they are the product contract the ADR states in words: finishing contracted work outranks proposing new work, and that top reward is the largest weight in the system.",
+  "entries": {
+    "scorecard.FitnessWeights": {
+      "value": {
+        "spec_completion": 0.45,
+        "spec_proposed": 0.4,
+        "new_test": 0.3,
+        "capability": 0.28,
+        "assertion_strength": 0.2,
+        "mutation_strength": 0.18,
+        "red_green": 0.14,
+        "feature_judge": 0.14,
+        "coverage": 0.1,
+        "architecture_fit": 0.1,
+        "personalized_judge": 0.1,
+        "perf": 0.1,
+        "code_quality": 0.04
+      },
+      "mode": "exact",
+      "source": "packages/maistro-evolve/src/maistro_evolve/scorecard.py:77-89",
+      "provenance": "ADR-070126-6386 v3 (2026-07-04 amendment): spec_completion=0.45 is 'the largest weight in the system'; spec_proposed=0.40 is 'deliberately just below spec_completion: proposing new work never outranks finishing promised work'",
+      "protects": "which improvement moves the RSI loop actually chases: the maturity ladder's reward ordering. Weights need not sum to 1 (composite renormalises over present signals), so each weight's MAGNITUDE is its pull relative to the other signals that fire",
+      "kills": "doubling/halving any weight silently reorders what the loop optimizes for (e.g. code_quality 0.04 -> 0.4 makes docstring churn outrank capability); swapping 0.45/0.40 makes proposing new work outrank finishing promised work"
+    },
+    "scorecard.FitnessWeights.ladder_invariants": {
+      "value": {
+        "spec_completion_is_max": true,
+        "spec_completion_above_spec_proposed_by_at_most": 0.1,
+        "code_quality_is_min": true
+      },
+      "mode": "exact",
+      "source": "packages/maistro-evolve/src/maistro_evolve/scorecard.py:77-89",
+      "provenance": "ADR-070126-6386 v3 wording: largest weight in the system; 'deliberately just below'; docstring: code_quality 'lowest — docstring/style; presence, not substance'",
+      "protects": "the ladder's product invariants independent of the exact table: no signal may out-rank finishing a contracted AC, the gap to spec_proposed stays small (finishing wins, but not by a chasm that starves backlog work), and style churn stays the weakest signal",
+      "kills": "table mutations that keep plausible-looking values but break the contract (e.g. capability 0.5 becoming the max, or spec_proposed 0.2 starving backlog)"
+    }
+  }
+}
