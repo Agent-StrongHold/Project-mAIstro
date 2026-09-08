@@ -26,6 +26,7 @@ from maistro.graph.execution_state import (
 )
 from maistro.graph.nodes.base import (
     HUMAN_PAUSE_REASONS,
+    TIMER_RESUMABLE_PAUSE_REASONS,
     BaseNode,
     NodeContext,
     NodeResult,
@@ -698,6 +699,14 @@ def _with_deferred_fanins(
     return _replace_record(record, graph_state=state)
 
 
+def _timer_resume_at(result: NodeResult) -> datetime | None:
+    """Return a pause deadline only when elapsed time is allowed to re-enter it."""
+    reason = str((result.metadata or {}).get("paused_reason") or "")
+    if reason not in TIMER_RESUMABLE_PAUSE_REASONS:
+        return None
+    return result.resume_at
+
+
 async def _checkpoint_paused_frontier(
     record: DurableRunRecord,
     paused: tuple[_FrontierItem, ...],
@@ -732,7 +741,7 @@ async def _checkpoint_paused_frontier(
         record.run,
         RunStatus.PAUSED if human else RunStatus.WAITING,
     )
-    resume_at = _earliest_resume(item.result.resume_at for item in paused)
+    resume_at = _earliest_resume(_timer_resume_at(item.result) for item in paused)
     return await _checkpoint(
         record,
         store=store,
