@@ -14,6 +14,7 @@ from maistro_rsi.promotion_review import (
     PendingReview,
     RlphdStateStore,
     action_class_for,
+    explain_prediction,
     extract_features,
     flag_for_review,
     load_pending_reviews,
@@ -37,14 +38,43 @@ def test_extract_features_shape_and_defaults() -> None:
         "is_spec_completion": 1.0,
         "is_feature": 0.0,
     }
-    # judge never ran (None) -> neutral default, matching the judge's own
-    # unavailable-fallback convention, not zero (which would read as "terrible").
+    # judge never ran / was unavailable (None) -> recorded as None, never
+    # coerced to a passing number (#307). The old 0.7 default laundered an
+    # unavailable judge into a "good" feature.
     assert (
         extract_features(regression_judge_score=None, composite=0.5, kind=ImprovementKind.DOC)[
             "judge_score"
         ]
-        == 0.7
+        is None
     )
+
+
+def test_none_feature_contributes_nothing_and_learns_nothing(tmp_path: Path) -> None:
+    # A None-valued feature is *no evidence*: it contributes nothing to the
+    # weighted sum (same p as the feature being absent) and its weight is
+    # untouched by a decision built on that feature set (#307).
+    store = RlphdStateStore(tmp_path / "state.json")
+    features = {"bias": 1.0, "judge_score": 0.9}
+    p_known, theta = store.predict("rsi_promotion", features)
+    store.record_decision("rsi_promotion", features, p_known, theta, "approve")
+    weight_after_first = store.model_for("rsi_promotion").feature_weights["judge_score"]
+
+    p_unknown, _ = store.predict("rsi_promotion", {"bias": 1.0, "judge_score": None})
+    p_absent, _ = store.predict("rsi_promotion", {"bias": 1.0})
+    assert p_unknown == p_absent  # None == absent for the weighted sum
+
+    store.record_decision(
+        "rsi_promotion", {"bias": 1.0, "judge_score": None}, p_unknown, theta, "deny"
+    )
+    # The deny had no judge evidence, so the judge_score weight must not move.
+    assert store.model_for("rsi_promotion").feature_weights["judge_score"] == weight_after_first
+
+
+def test_explain_prediction_handles_none_valued_feature() -> None:
+    items = explain_prediction({"bias": 1.0, "judge_score": None}, {"judge_score": 0.5})
+    by_name = {i["feature"]: i for i in items}
+    assert by_name["judge_score"]["value"] is None
+    assert by_name["judge_score"]["contribution"] == 0.0
 
 
 def test_cold_start_predicts_neutral_below_default_theta(tmp_path: Path) -> None:

@@ -52,6 +52,7 @@ from maistro_rsi.contained_validation import (
 )
 from maistro_rsi.merge import greedy_merge
 from maistro_rsi.protocols import ApplyPatchFn, MicroVmSandbox
+from maistro_rsi.regression_judge import JudgeVerdict, judge_regression_verdict
 
 logger = structlog.get_logger()
 
@@ -2142,17 +2143,32 @@ class LocalRsiLoop:
             kept[0].regression_judge_score,
         )
 
-    def _judge_regression(self, diff_text: str, target: str) -> tuple[float, str]:
-        """Second-opinion LLM regression check — see regression_judge.py. Never
-        raises: an unavailable/erroring gateway must not block promotion."""
+    def _judge_regression(self, diff_text: str, target: str) -> JudgeVerdict:
+        """Second-opinion LLM regression check — see regression_judge.py.
+
+        Fail-closed (#307): an unavailable judge (gateway error, timeout,
+        unparsable reply, oversized diff) is returned as a verdict with
+        ``score=None`` and fails the candidate's regression-judge gate —
+        never a fail-open 0.7. Never raises: a judge that cannot even be
+        constructed is itself an unavailable verdict. The failure cause is
+        logged at warning level; the diff text never reaches the logs.
+        """
         try:
             from maistro_bootstrap.builders.responses_callable import ResponsesAPICallable
-            from maistro_rsi.regression_judge import judge_regression
 
             llm = ResponsesAPICallable(model=self._config.scout_model or self._config.model)
-            return judge_regression(diff_text, target, llm)
+            verdict = judge_regression_verdict(diff_text, target, llm)
         except Exception:
-            return 0.7, "judge unavailable"
+            verdict = JudgeVerdict(
+                status="unavailable",
+                score=None,
+                rationale="judge could not be constructed",
+                cause="gateway_error",
+            )
+        if verdict.status == "unavailable":
+            # Cause only — the diff (candidate code) must never be logged.
+            logger.warning("rsi_regression_judge_unavailable", cause=verdict.cause)
+        return verdict
 
     def _fitness_decision(
         self, index: int, cycle_dir: Path, changed_files: list[str], *, target: str = ""
@@ -2191,7 +2207,9 @@ class LocalRsiLoop:
             (g.detail.get("score") for g in scorecard.gates if g.name == "no_flagged_regression"),
             None,
         )
-        # detail is dict[str, object]; the regression judge stores a float score.
+        # detail is dict[str, object]; the judge gate stores verdict.score —
+        # None when the judge was unavailable (fail closed, #307). That None
+        # must survive to the promotion evidence, never coerced to a number.
         judge_score = float(judge_raw) if isinstance(judge_raw, int | float) else None
         mut_raw = next(
             (g.detail.get("score") for g in scorecard.gates if g.name == "tests_pin_behavior"),
