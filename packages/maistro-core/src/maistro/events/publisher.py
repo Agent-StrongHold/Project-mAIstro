@@ -32,12 +32,9 @@ class CanonicalEventPublisher:
     """
 
     def __init__(self, store: EventStore, *, legacy_bus: EventBus | None = None) -> None:
-        if legacy_bus is not None and not isinstance(
-            store, EventAppendDispositionStore
-        ):
+        if legacy_bus is not None and not isinstance(store, EventAppendDispositionStore):
             raise TypeError(
-                "legacy EventBus projection requires an EventStore with atomic "
-                "append disposition"
+                "legacy EventBus projection requires an EventStore with atomic append disposition"
             )
         self._store = store
         self._legacy_bus = legacy_bus
@@ -57,8 +54,7 @@ class CanonicalEventPublisher:
         # exotic mutable proxy changes shape after construction.
         if not isinstance(self._store, EventAppendDispositionStore):
             raise TypeError(
-                "legacy EventBus projection requires an EventStore with atomic "
-                "append disposition"
+                "legacy EventBus projection requires an EventStore with atomic append disposition"
             )
         outcome = await self._store.append_with_disposition(event)
         if outcome.inserted:
