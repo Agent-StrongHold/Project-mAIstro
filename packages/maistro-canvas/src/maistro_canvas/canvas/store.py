@@ -338,7 +338,7 @@ class PgCanvasStore:
                         (:id, :cid, :name, :lt, :z, :x, :y, :sc,
                          :rot, :op, :bm, :vis, :lk,
                          :ip, :pr, :np, :mi, :ti,
-                         :gs, :tc::jsonb, :now, :now)
+                         :gs, CAST(:tc AS jsonb), :now, :now)
                 """),
                 {
                     "id": layer_id,
@@ -451,7 +451,7 @@ class PgCanvasStore:
                         visible = :vis, locked = :lk, image_path = :ip,
                         prompt = :pr, negative_prompt = :np, model_id = :mi,
                         tier = :ti, generation_seed = :gs,
-                        text_config = :tc::jsonb, updated_at = :updated
+                        text_config = CAST(:tc AS jsonb), updated_at = :updated
                     WHERE id = :id AND canvas_id IN
                         (SELECT id FROM canvases WHERE org_id = :org)
                 """),
@@ -600,7 +600,7 @@ class PgCanvasStore:
                          error_message, started_at, completed_at, created_at)
                     VALUES
                         (:id, :lid, :cid, :action, :status, :model,
-                         :prompt, :params::jsonb, :paths::jsonb, :sel,
+                         :prompt, CAST(:params AS jsonb), CAST(:paths AS jsonb), :sel,
                          :err, :start, :done, :created)
                 """),
                 {
@@ -643,7 +643,7 @@ class PgCanvasStore:
             result = await session.execute(
                 text("""
                     UPDATE generation_jobs SET
-                        status = :status, result_paths = :paths::jsonb,
+                        status = :status, result_paths = CAST(:paths AS jsonb),
                         selected_index = :sel, error_message = :err,
                         started_at = :start, completed_at = :done
                     WHERE id = :id AND layer_id IN
@@ -720,7 +720,7 @@ class PgCanvasStore:
                         (id, canvas_id, image_bytes, width, height,
                          layer_snapshot, created_at)
                     VALUES
-                        (:id, :cid, :img, :w, :h, :snap::jsonb, :now)
+                        (:id, :cid, :img, :w, :h, CAST(:snap AS jsonb), :now)
                 """),
                 {
                     "id": composite_id,
@@ -767,7 +767,7 @@ class PgCanvasStore:
                     INSERT INTO canvas_blobs
                         (id, data, format, metadata, created_at)
                     VALUES
-                        (:id, :data, :format, :metadata::jsonb, :now)
+                        (:id, :data, :format, CAST(:metadata AS jsonb), :now)
                 """),
                 {
                     "id": blob_id,
