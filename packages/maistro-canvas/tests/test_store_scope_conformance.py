@@ -516,6 +516,26 @@ class TestAssetTwoTenants:
             await session.rollback()
             await session.close()
 
+    @pytest.fixture(autouse=True)
+    async def _pg_tables_fresh_per_test(self, request: pytest.FixtureRequest) -> AsyncIterator[None]:
+        """Give the PostgreSQL leg the same freshness the in-memory twin
+        gets from its per-test store: without this, the rows one test
+        commits (book b1, farmhouse, instance i1) collide with the next
+        test's setup on the shared throwaway schema."""
+        yield
+        params = getattr(getattr(request.node, "callspec", None), "params", {}) or {}
+        if params.get("store") != "postgres":
+            return
+        pg_engine = request.getfixturevalue("pg_engine")
+        from sqlalchemy import text
+
+        async with pg_engine.begin() as conn:
+            await conn.execute(text(
+                'TRUNCATE books, asset_instances, asset_sheets, '
+                'asset_definitions, child_profiles, composite_records, '
+                'generation_jobs, layers, canvases CASCADE'
+            ))
+
     # ── definitions ────────────────────────────────────────────────
 
     async def test_a_definition_reads_only_inside_its_org(self, store: Any) -> None:
