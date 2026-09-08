@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import pathlib
 import sys
+import threading
+import time
 from typing import Any
 
 import pytest
@@ -266,3 +268,51 @@ def test_json_store_put_if_absent_loads_durable_winner_on_conflict() -> None:
     s = JsonStore("js", persisted=p)
     with pytest.raises(RuntimeError, match="conflicting durable record"):
         s.put_if_absent("k", {"owner": "first"})
+
+
+class _SlowToSerialize:
+    """str() parks inside the check-to-write window `put_if_absent` opens.
+
+    `json.dumps(value, default=str)` calls `str()` on non-serializable
+    payloads, and `time.sleep` releases the GIL — so a racing thread holding
+    nothing (the pre-#1126 shape) sits between "key absent" and "key
+    written" long enough for every other thread to pass the same check.
+    """
+
+    def __str__(self) -> str:
+        time.sleep(0.05)
+        return "slow"
+
+
+def test_json_store_put_if_absent_is_atomic_under_in_memory_contention() -> None:
+    """One critical section, not GIL luck: exactly one racing insert wins (#1126).
+
+    Eight threads released together all claim the same key. The loser's
+    `put_if_absent` must return False without overwriting the winner's value
+    — the in-memory half of the contract the SQLite `ON CONFLICT DO NOTHING`
+    insert has always provided, and what invitation redemption (#1126)
+    depends on in the Foundation fallback where `persisted is None`.
+    """
+    from services.model_store import JsonStore
+
+    s = JsonStore("js")
+    outcomes: list[tuple[int, bool]] = []
+    barrier = threading.Barrier(8)
+
+    def claim(i: int) -> None:
+        barrier.wait()
+        outcomes.append(
+            (i, s.put_if_absent("claim", {"owner": f"t{i}", "payload": _SlowToSerialize()}))
+        )
+
+    threads = [threading.Thread(target=claim, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    winners = [i for i, won in outcomes if won]
+    assert len(winners) == 1, f"exactly one claim must win, got {len(winners)} of 8"
+    # Not just one True: the first writer's record is what survives — the
+    # losers must not have overwritten it on their way to returning False.
+    assert s["claim"]["owner"] == f"t{winners[0]}"
