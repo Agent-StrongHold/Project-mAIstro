@@ -21,6 +21,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import structlog
+
 from maistro_evolve._candidate_env import candidate_env
 from maistro_evolve.assertion_strength import score_assertions
 from maistro_evolve.code_quality import score_path
@@ -53,6 +55,14 @@ from maistro_evolve.tdd_gate import (
     run_test_selection,
 )
 from maistro_rsi.regression_judge import REJECT_BELOW, JudgeVerdict
+from maistro_rsi.test_inventory import (
+    InventoryResult,
+    changed_config_files,
+    collect_inventory,
+    diff_inventory,
+)
+
+logger = structlog.get_logger()
 
 _TEST_HINTS = ("test_", "_test.py", "/tests/", "conftest.py")
 
@@ -66,6 +76,12 @@ _MUTATION_KILL_THRESHOLD = 0.5
 # Cap on mutants run per candidate. Each mutant reruns the changed tests once, so
 # this bounds the probe's cost; the site list is truncated deterministically.
 _MUTATION_MAX_MUTANTS = 6
+
+# How many deleted node IDs the inventory gate's reason/detail/trace carry —
+# enough to name every deletion in any realistic diff while keeping a hostile
+# mass-deletion from bloating the promotion record. The full count always
+# rides along as ``deleted_count``.
+_DELETED_TRACE_CAP = 20
 
 
 def _is_test(path: str) -> bool:
@@ -168,6 +184,22 @@ def _uncollectable_tests(
 
 
 @dataclass
+class InventoryEvidence:
+    """What the ``protected_test_inventory`` gate rules on (#306): the
+    candidate's own collection result, the baseline's (when the caller has one
+    — the loop computes it once per cycle), which changed files touch test
+    configuration, and the governance override flag.
+
+    The diff is derived (servable sets), not stored, so the evidence can never
+    disagree with the results it was computed from."""
+
+    candidate: InventoryResult = field(default_factory=InventoryResult)
+    base: InventoryResult | None = None
+    config_files_changed: list[str] = field(default_factory=list)
+    allow_shrink: bool = False
+
+
+@dataclass
 class FitnessInputs:
     tests_passed: bool
     test_reason: str = ""
@@ -227,6 +259,13 @@ class FitnessInputs:
     # runs the tests once per mutant). An unavailable probe (no changed tests, no
     # mutable new lines) adds no gate — never a false rejection.
     mutation_probe: MutationProbe | None = None
+    # Protected test-inventory evidence (#306): ALWAYS gathered by
+    # ``evaluate_candidate`` (collection failure on the candidate fails the gate
+    # even without a baseline), diffed against ``base`` when one is given. None
+    # only on compose-only calls that measured nothing — there is no measurement
+    # to fail on, so the gate passes without verifying rather than inventing a
+    # failure the caller never asked about.
+    test_inventory: InventoryEvidence | None = None
 
 
 def _ladder_signals(inp: FitnessInputs, w: FitnessWeights) -> list[SignalScore]:
@@ -271,6 +310,98 @@ def _mutation_gate(inp: FitnessInputs) -> GateResult | None:
         mp.score >= _MUTATION_KILL_THRESHOLD,
         mp.summary(),
         detail={"score": mp.score, "killed": mp.killed, "survived": mp.survived},
+    )
+
+
+def protected_inventory_gate(ev: InventoryEvidence | None) -> GateResult:
+    """The protected-inventory veto (#306): a candidate may not shrink the
+    oracle that judges it. ALWAYS present in the Scorecard — unlike the
+    conditional gates, this one is not optional evidence, it is the ratchet's
+    own foundation (a loop whose candidates can delete the tests that catch
+    them improves nothing, it just forgets).
+
+    - FAIL when the candidate's collection failed (unverifiable inventory).
+    - FAIL when the baseline's collection failed (no trustworthy base to
+      diff against — fail closed, #307 doctrine).
+    - FAIL when a test-config file changed AND anything shrank (deletions or
+      a reduced unchanged core) — config change + shrink is presumed hiding,
+      and the ``allow_shrink`` override does NOT cover it.
+    - FAIL when protected IDs were deleted/renamed/disabled, unless
+      ``allow_shrink`` (the explicit governance override) is set — in which
+      case the gate passes with a WARNING and the deleted list recorded on
+      the gate detail, so a shrink is never silent.
+    - PASS otherwise, with the base/candidate counts and the (capped) deleted
+      and added lists as evidence.
+    """
+    if ev is None:
+        return GateResult("protected_test_inventory", True, "not measured (no inventory inputs)")
+    if not ev.candidate.collection_ok:
+        return GateResult(
+            "protected_test_inventory",
+            False,
+            "inventory unverifiable: collection failed "
+            f"({ev.candidate.collection_error or 'unknown cause'})",
+            detail={"collection_ok": False},
+        )
+    if ev.base is None:
+        return GateResult(
+            "protected_test_inventory",
+            True,
+            "base inventory unavailable — candidate collected "
+            f"{len(ev.candidate.servable)} servable test(s), nothing to diff",
+            detail={"candidate": len(ev.candidate.servable)},
+        )
+    if not ev.base.collection_ok:
+        return GateResult(
+            "protected_test_inventory",
+            False,
+            "inventory unverifiable: base collection failed "
+            f"({ev.base.collection_error or 'unknown cause'})",
+            detail={"collection_ok": False},
+        )
+    diff = diff_inventory(ev.base, ev.candidate)
+    detail: dict[str, object] = {
+        "base": len(ev.base.servable),
+        "candidate": len(ev.candidate.servable),
+        "deleted": diff.deleted[:_DELETED_TRACE_CAP],
+        "deleted_count": len(diff.deleted),
+        "added": diff.added[:_DELETED_TRACE_CAP],
+    }
+    capped = ", ".join(diff.deleted[:_DELETED_TRACE_CAP]) or "(none)"
+    if ev.config_files_changed and (diff.shrinks or diff.unchanged_count < len(ev.base.servable)):
+        return GateResult(
+            "protected_test_inventory",
+            False,
+            "test configuration changed while the inventory shrank (presumed "
+            f"hiding): {', '.join(ev.config_files_changed)}; deleted: {capped}",
+            detail={**detail, "config_files_changed": list(ev.config_files_changed)},
+        )
+    if diff.deleted and not ev.allow_shrink:
+        return GateResult(
+            "protected_test_inventory",
+            False,
+            f"{len(diff.deleted)} protected test(s) deleted/renamed/disabled: {capped}",
+            detail=detail,
+        )
+    if diff.deleted and ev.allow_shrink:
+        logger.warning(
+            "rsi_test_inventory_shrink_allowed",
+            deleted_count=len(diff.deleted),
+            deleted=diff.deleted[:_DELETED_TRACE_CAP],
+        )
+        return GateResult(
+            "protected_test_inventory",
+            True,
+            "GOVERNANCE OVERRIDE (allow_test_inventory_shrink): "
+            f"{len(diff.deleted)} protected test(s) removed: {capped}",
+            detail={**detail, "override": True},
+        )
+    return GateResult(
+        "protected_test_inventory",
+        True,
+        f"{len(ev.base.servable)} -> {len(ev.candidate.servable)} protected tests "
+        f"(+{len(diff.added)}, -{len(diff.deleted)})",
+        detail=detail,
     )
 
 
@@ -335,6 +466,7 @@ def compose_scorecard(inp: FitnessInputs, weights: FitnessWeights | None = None)
             inp.test_reason or ("ok" if inp.tests_passed else "failed"),
         ),
         coverage_gate(inp.baseline_coverage, inp.candidate_coverage),
+        protected_inventory_gate(inp.test_inventory),
         GateResult(
             "no_doc_regression",
             not inp.doc_regression_reasons,
@@ -643,12 +775,22 @@ def evaluate_candidate(
     regression_judge_fn: Callable[[str, str], JudgeVerdict] | None = None,
     target: str = "",
     test_argv: tuple[str, ...] = (),
+    baseline_inventory: InventoryResult | None = None,
+    allow_test_inventory_shrink: bool = False,
 ) -> Scorecard:
     """Run the local signals for a candidate and compose the Scorecard.
 
     ``feature_judge`` (score, rationale) and ``perf`` (baseline_s, candidate_s) are
     injected by callers that have a judge gateway / timing harness; without them
     those signals are simply absent (composite renormalises over present signals).
+
+    ``baseline_inventory`` (see test_inventory.collect_inventory) is the base
+    revision's collected test inventory — the loop computes it once per cycle
+    against the baseline worktree. Without it the candidate is still collection-
+    checked (a broken collection fails the gate on its own), just not diffed.
+    ``allow_test_inventory_shrink`` is the explicit governance override (#306):
+    when True, deletions pass the gate with a WARNING and are recorded, never
+    silently absorbed.
 
     ``regression_judge_fn`` (diff_text, target) -> JudgeVerdict is called
     lazily, and ONLY if every other gate already passes: a candidate that's
@@ -688,6 +830,18 @@ def evaluate_candidate(
     new_src_lines = new_source_lines(cwd, baseline_ref, src) if (baseline_ref and src) else {}
     uncovered_new = uncovered_new_lines(new_src_lines, missing) if new_src_lines else {}
     vacuous_reasons = _vacuous_test_reasons(src, tests, tdd)
+    # Protected test inventory (#306): always collected for the candidate —
+    # a broken collection is itself disqualifying — and diffed against the
+    # caller-supplied baseline inventory when one exists. Collection is cheap
+    # (no test execution) and runs before the scorecard is first composed, so
+    # a shrinking candidate is vetoed in ``prelim`` and never pays for the
+    # mutation probe or the LLM judge.
+    inventory_evidence = InventoryEvidence(
+        candidate=collect_inventory(cwd, shlex.split(coverage_pytest_args)),
+        base=baseline_inventory,
+        config_files_changed=changed_config_files(changed_files),
+        allow_shrink=allow_test_inventory_shrink,
+    )
 
     inputs = FitnessInputs(
         tests_passed=tests_passed,
@@ -712,6 +866,7 @@ def evaluate_candidate(
         syntax_error_reasons=syntax_reasons,
         uncollectable_test_reasons=uncollectable,
         vacuous_test_reasons=vacuous_reasons,
+        test_inventory=inventory_evidence,
     )
     prelim = compose_scorecard(inputs, weights)
     if not prelim.gates_passed:

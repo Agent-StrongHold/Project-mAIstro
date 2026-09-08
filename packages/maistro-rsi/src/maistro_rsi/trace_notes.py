@@ -81,6 +81,11 @@ class TraceNote:
     reward: RewardVector = field(default_factory=RewardVector)
     # Per-gate pass/fail, so the note carries the whole verdict, not just a score.
     gates: dict[str, bool] = field(default_factory=dict)
+    # Protected-test-inventory evidence (#306): base/candidate servable counts,
+    # the (capped) deleted/added node-ID lists, and the override flag when a
+    # governance-authorized shrink passed. Present on fitness promotions;
+    # older notes (and non-fitness runs) simply omit it.
+    inventory: dict[str, object] | None = None
     note: str = ""
     version: int = NOTE_VERSION
 
