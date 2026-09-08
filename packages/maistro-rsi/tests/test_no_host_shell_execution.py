@@ -208,9 +208,7 @@ class TestTheFitnessScorecardsOwnTestGate:
 
         from maistro_rsi.candidate_fitness import _run
 
-        passed, reason = _run(
-            "", tmp_path, argv=(sys.executable, "-c", "import sys; sys.exit(3)")
-        )
+        passed, reason = _run("", tmp_path, argv=(sys.executable, "-c", "import sys; sys.exit(3)"))
 
         assert not passed
         assert "exit 3" in reason
