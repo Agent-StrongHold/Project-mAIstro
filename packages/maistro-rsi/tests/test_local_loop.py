@@ -481,3 +481,102 @@ class TestTrimForResumeProperties:
                 if isinstance(blocks, list) and blocks and blocks[0].get("type") == "tool_result":
                     prev = trimmed[i - 1]
                     assert prev.get("role") == "assistant", "orphaned tool_result"
+
+
+# ── fail-closed regression judge (#307) ──────────────────────────────────────
+# _judge_regression must surface judge failures as unavailable verdicts —
+# status "unavailable", score None, named cause — never the old fail-open
+# (0.7, "judge unavailable").
+
+
+def _bare_loop(tmp_path: Path) -> LocalRsiLoop:
+    repo = _make_repo(tmp_path / "src")
+    config = LocalRsiConfig(
+        repo_path=str(repo),
+        test_command="exit 0",
+        work_root=str(tmp_path / "work"),
+        max_cycles=1,
+    )
+    return LocalRsiLoop(config, apply_patch=None)
+
+
+def test_judge_regression_gateway_error_fails_closed(tmp_path, monkeypatch) -> None:
+    import maistro_bootstrap.builders.responses_callable as responses_callable
+
+    class RaisingCallable:
+        def __init__(self, *a, **k) -> None: ...
+
+        def __call__(self, messages, **k):
+            raise RuntimeError("gateway 500")
+
+    monkeypatch.setattr(responses_callable, "ResponsesAPICallable", RaisingCallable)
+    verdict = _bare_loop(tmp_path)._judge_regression("a real diff", "x.py")
+    assert verdict.status == "unavailable"
+    assert verdict.score is None
+    assert verdict.cause == "gateway_error"
+
+
+def test_judge_regression_construction_failure_fails_closed(tmp_path, monkeypatch) -> None:
+    import maistro_bootstrap.builders.responses_callable as responses_callable
+
+    class ExplodingCallable:
+        def __init__(self, *a, **k) -> None:
+            raise RuntimeError("no gateway configured")
+
+    monkeypatch.setattr(responses_callable, "ResponsesAPICallable", ExplodingCallable)
+    verdict = _bare_loop(tmp_path)._judge_regression("a real diff", "x.py")
+    assert verdict.status == "unavailable"
+    assert verdict.score is None
+    assert verdict.cause == "gateway_error"
+
+
+def test_judge_regression_ruling_passes_through(tmp_path, monkeypatch) -> None:
+    import maistro_bootstrap.builders.responses_callable as responses_callable
+
+    class StubCallable:
+        def __init__(self, *a, **k) -> None: ...
+
+        def __call__(self, messages, **k):
+            return {"content": '{"score": 0.2, "rationale": "narrows list to str()"}'}
+
+    monkeypatch.setattr(responses_callable, "ResponsesAPICallable", StubCallable)
+    verdict = _bare_loop(tmp_path)._judge_regression("a real diff", "x.py")
+    assert verdict.status == "reject"
+    assert verdict.score == 0.2
+
+
+def test_fitness_pipeline_fails_closed_on_unavailable_judge(tmp_path: Path, monkeypatch) -> None:
+    """End-to-end (#307): a candidate that clears every deterministic gate is
+    still NOT accepted when the second-opinion judge comes back unavailable —
+    the no_flagged_regression gate fails with the cause, and the judge score
+    recorded on the scorecard is None, never a numeric fallback."""
+    from maistro_rsi import candidate_fitness
+    from maistro_rsi.regression_judge import JudgeVerdict
+
+    repo = _make_repo(tmp_path / "src")
+    (repo / "x.py").write_text("x = 1\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "add x.py")
+    (repo / "x.py").write_text("x = 2\n", encoding="utf-8")  # uncommitted diff vs HEAD
+
+    monkeypatch.setattr(candidate_fitness, "_run", lambda *a, **k: (True, "exit 0"))
+    monkeypatch.setattr(candidate_fitness, "measure_coverage_detailed", lambda *a, **k: (80.0, {}))
+
+    scorecard = candidate_fitness.evaluate_candidate(
+        str(repo),
+        ["x.py"],
+        test_command="exit 0",
+        baseline_ref="HEAD",
+        baseline_coverage=80.0,
+        regression_judge_fn=lambda diff, target: JudgeVerdict(
+            status="unavailable",
+            score=None,
+            rationale="judge gateway error",
+            cause="gateway_error",
+        ),
+    )
+    assert scorecard.accepted is False
+    gate = next(g for g in scorecard.gates if g.name == "no_flagged_regression")
+    assert gate.passed is False
+    assert "gateway_error" in gate.reason
+    assert gate.detail["score"] is None

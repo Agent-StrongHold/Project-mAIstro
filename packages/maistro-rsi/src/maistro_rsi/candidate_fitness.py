@@ -52,6 +52,7 @@ from maistro_evolve.tdd_gate import (
     red_green_signal,
     run_test_selection,
 )
+from maistro_rsi.regression_judge import REJECT_BELOW, JudgeVerdict
 
 _TEST_HINTS = ("test_", "_test.py", "/tests/", "conftest.py")
 
@@ -214,10 +215,13 @@ class FitnessInputs:
     # from a genuine characterization test (no source change at all in the
     # diff), which never triggers this.
     vacuous_test_reasons: list[str] = field(default_factory=list)
-    # Second-opinion LLM regression check (score 0..1, rationale) — only ever
-    # populated after every other gate already passed (see evaluate_candidate),
-    # so a doomed candidate never burns the extra LLM call.
-    regression_judge: tuple[float, str] | None = None
+    # Second-opinion LLM regression judge verdict — only ever populated after
+    # every other gate already passed (see evaluate_candidate), so a doomed
+    # candidate never burns the extra LLM call. Availability is kept separate
+    # from score (#307): an UNAVAILABLE verdict (gateway error, timeout,
+    # unparsable reply, oversized diff) carries score=None and FAILS the
+    # regression-judge gate — fail closed, never a numeric fallback.
+    regression_judge: JudgeVerdict | None = None
     # Diff-scoped mutation probe: do the candidate's own tests catch mutations of
     # the lines it added? Only populated after the cheap gates pass (mutation
     # runs the tests once per mutant). An unavailable probe (no changed tests, no
@@ -276,10 +280,30 @@ def _conditional_gates(inp: FitnessInputs) -> list[GateResult]:
     Kept out of ``compose_scorecard`` so the assembly there stays flat."""
     gates: list[GateResult] = []
     if inp.regression_judge is not None:
-        score, rationale = inp.regression_judge
-        gates.append(
-            GateResult("no_flagged_regression", score >= 0.4, rationale, detail={"score": score})
-        )
+        verdict = inp.regression_judge
+        if verdict.status == "unavailable":
+            # Fail closed (#307): an unavailable judge is a FAILED gate, and
+            # its score stays None — never substituted with a passing number.
+            gates.append(
+                GateResult(
+                    "no_flagged_regression",
+                    False,
+                    f"judge unavailable: {verdict.cause or 'unknown cause'} — fail closed",
+                    detail={"score": verdict.score, "status": verdict.status},
+                )
+            )
+        else:
+            # A ruling: pass/reject behave exactly as before the verdict
+            # refactor — a score below REJECT_BELOW ("reject") vetoes.
+            score = verdict.score
+            gates.append(
+                GateResult(
+                    "no_flagged_regression",
+                    score is not None and score >= REJECT_BELOW,
+                    verdict.rationale,
+                    detail={"score": score, "status": verdict.status},
+                )
+            )
     mut_gate = _mutation_gate(inp)
     if mut_gate is not None:
         gates.append(mut_gate)
@@ -616,7 +640,7 @@ def evaluate_candidate(
     feature_judge: tuple[float, str] | None = None,
     perf: tuple[float, float] | None = None,
     timeout: int = 900,
-    regression_judge_fn: Callable[[str, str], tuple[float, str]] | None = None,
+    regression_judge_fn: Callable[[str, str], JudgeVerdict] | None = None,
     target: str = "",
     test_argv: tuple[str, ...] = (),
 ) -> Scorecard:
@@ -626,10 +650,13 @@ def evaluate_candidate(
     injected by callers that have a judge gateway / timing harness; without them
     those signals are simply absent (composite renormalises over present signals).
 
-    ``regression_judge_fn`` (diff_text, target) -> (score, rationale) is called
+    ``regression_judge_fn`` (diff_text, target) -> JudgeVerdict is called
     lazily, and ONLY if every other gate already passes: a candidate that's
     going to be rejected on tests/coverage/syntax/etc. never burns the extra
     LLM call, so this second-opinion safety net stays cheap in aggregate.
+    When it does run, an unavailable verdict fails the candidate (fail
+    closed, #307) — the score of a judge that never ruled is None, not a
+    number.
     """
     cwd = Path(candidate_dir)
     src = [f for f in changed_files if f.endswith(".py") and not _is_test(f)]

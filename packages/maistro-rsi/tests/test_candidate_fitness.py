@@ -5,6 +5,7 @@ from __future__ import annotations
 from maistro_evolve.scorecard import GateResult
 from maistro_evolve.tdd_gate import TddEvidence
 from maistro_rsi.candidate_fitness import FitnessInputs, compose_scorecard
+from maistro_rsi.regression_judge import JudgeVerdict
 
 
 def test_failing_tests_veto() -> None:
@@ -79,17 +80,66 @@ def test_vacuous_test_vetoes() -> None:
 
 def test_flagged_regression_vetoes_below_threshold() -> None:
     sc = compose_scorecard(
-        FitnessInputs(tests_passed=True, regression_judge=(0.2, "narrows list to str()"))
+        FitnessInputs(
+            tests_passed=True,
+            regression_judge=JudgeVerdict(
+                status="reject", score=0.2, rationale="narrows list to str()"
+            ),
+        )
     )
     assert sc.accepted is False
     gate = next(g for g in sc.gates if g.name == "no_flagged_regression")
     assert gate.passed is False and "narrows list to str()" in gate.reason
+    assert gate.detail["score"] == 0.2
 
 
 def test_regression_judge_above_threshold_passes() -> None:
-    sc = compose_scorecard(FitnessInputs(tests_passed=True, regression_judge=(0.9, "no concerns")))
+    sc = compose_scorecard(
+        FitnessInputs(
+            tests_passed=True,
+            regression_judge=JudgeVerdict(status="pass", score=0.9, rationale="no concerns"),
+        )
+    )
     gate = next(g for g in sc.gates if g.name == "no_flagged_regression")
     assert gate.passed is True
+    assert sc.accepted is True
+
+
+def test_unavailable_judge_fails_the_gate_fail_closed() -> None:
+    # #307: an unavailable judge (here: gateway error) is a FAILED gate with
+    # the cause in the reason — the candidate is NOT accepted, and the
+    # scorecard's judge score stays None rather than a passing fallback.
+    sc = compose_scorecard(
+        FitnessInputs(
+            tests_passed=True,
+            regression_judge=JudgeVerdict(
+                status="unavailable",
+                score=None,
+                rationale="judge gateway error",
+                cause="gateway_error",
+            ),
+        )
+    )
+    assert sc.accepted is False
+    gate = next(g for g in sc.gates if g.name == "no_flagged_regression")
+    assert gate.passed is False
+    assert "gateway_error" in gate.reason
+    assert gate.detail["score"] is None
+
+
+def test_unavailable_judge_cause_named_in_gate_reason() -> None:
+    for cause in ("gateway_error", "timeout", "unparsable_reply", "oversized_diff"):
+        sc = compose_scorecard(
+            FitnessInputs(
+                tests_passed=True,
+                regression_judge=JudgeVerdict(
+                    status="unavailable", score=None, rationale="judge unavailable", cause=cause
+                ),
+            )
+        )
+        assert sc.accepted is False, cause
+        gate = next(g for g in sc.gates if g.name == "no_flagged_regression")
+        assert gate.passed is False and cause in gate.reason, cause
 
 
 def test_regression_judge_absent_by_default_no_gate_added() -> None:
