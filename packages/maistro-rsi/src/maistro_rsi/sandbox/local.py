@@ -14,9 +14,16 @@ Everything downstream of the sandbox is unchanged — the RSI quarantine gate
 so "run directly on the local FS" is safe precisely because that FS is the
 disposable microVM ``sbx`` handed us.
 
-Credential boundary (#78): candidate commands get exactly
-:func:`maistro.sandbox.credential_boundary.candidate_env` — the fixed minimal
-base plus explicit constructor grants — and never the harness's environment.
+Credential boundary (#78): candidate commands get exactly the candidate
+environment — the fixed minimal base plus explicit constructor grants,
+never the harness's environment. The environment itself is specified by
+``maistro.sandbox.credential_boundary`` in maistro-core (the canonical
+module) and re-implemented by the ``maistro_evolve._candidate_env`` seam
+this package imports: the promotion-surface gate walks the import graph
+from the promotion roots, and ``maistro/sandbox/__init__.py`` re-exports
+the whole sandbox subsystem, so importing the canonical leaf from here
+would pull the unprotected core cascade onto the promotion path. Parity
+between seam and canonical is pinned by test.
 This matters *inside* the microVM too: the RSI process itself holds the
 gateway key (``LITELLM_MASTER_KEY``/``LITELLM_PROXY_KEY``, see
 ``maistro_rsi.gateway``), and before the boundary a candidate's ``bash -c``
@@ -38,7 +45,7 @@ from pathlib import Path
 
 import structlog
 
-from maistro.sandbox.credential_boundary import candidate_env
+from maistro_evolve._candidate_env import candidate_env
 
 logger = structlog.get_logger()
 

@@ -43,7 +43,7 @@ from typing import Any
 
 import structlog
 
-from maistro.sandbox.credential_boundary import candidate_env
+from maistro_evolve._candidate_env import candidate_env
 from maistro_evolve.improvement import BudgetTier, ImprovementKind
 from maistro_rsi.competitors import Competitor
 from maistro_rsi.contained_validation import (

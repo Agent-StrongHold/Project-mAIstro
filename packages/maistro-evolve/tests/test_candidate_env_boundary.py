@@ -4,8 +4,11 @@
 `measure_coverage_detailed` spawn pytest over the candidate's tree — its
 conftest, fixtures and declared plugins execute in that process tree. These
 tests pin that those subprocesses receive the boundary environment, never the
-harness's ambient one, and that the evolve fallback stays equivalent to the
-canonical base when maistro-core is importable.
+harness's ambient one, and that the ``maistro_evolve._candidate_env`` seam
+stays exactly equivalent to the canonical boundary in maistro-core (the seam
+cannot import the canonical module — the promotion-surface gate forbids the
+import edge — so equivalence is pinned by importing both here, in test code,
+which is not on the promotion path).
 """
 
 from __future__ import annotations
@@ -79,64 +82,58 @@ def test_measure_coverage_runs_pytest_behind_the_boundary(
         assert call["env"]["PATH"] == "/usr/local/bin:/usr/bin:/bin"
 
 
-def test_fallback_base_matches_the_canonical_boundary() -> None:
-    """The inline fallback (standalone evolve installs) must mirror the
-    canonical base exactly — a drift here would make the two runtimes give
-    candidates different environments, and the weaker one would win."""
+def test_candidate_env_equivalence() -> None:
+    """The seam must mirror the canonical boundary exactly — a drift here
+    would make the two runtimes give candidates different environments, and
+    the weaker one would win. The seam cannot import the canonical module
+    (the promotion-surface gate forbids the edge: maistro/sandbox/__init__
+    re-exports the whole subsystem), so both are imported here, in test
+    code, and compared behaviorally — base, grants, and the shadow refusal."""
     import maistro_evolve._candidate_env as ce
-    from maistro.sandbox.credential_boundary import CANDIDATE_BASE_ENV
+    from maistro.sandbox.credential_boundary import (
+        CANDIDATE_BASE_ENV as CORE_BASE,
+    )
+    from maistro.sandbox.credential_boundary import (
+        candidate_env as core_candidate_env,
+    )
 
-    assert dict(CANDIDATE_BASE_ENV) == ce._FALLBACK_BASE
-    # With core importable (the integrated RSI runtime), delegation is exact.
-    assert ce.candidate_env() == dict(CANDIDATE_BASE_ENV)
-
-
-def _block_canonical_import(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make importing the canonical module raise ImportError — the
-    standalone-evolve condition the fallback exists for.
-
-    Poisoning sys.modules with None is not enough here: the workspace's
-    editable-install finder resolves the module anyway, so the test must
-    block the import machinery itself to be sure the fallback actually ran
-    (otherwise the assertion passes vacuously — the canonical env equals the
-    fallback by design)."""
-    import builtins
-
-    real_import = builtins.__import__
-
-    def _blocked(name: str, *args: object, **kwargs: object) -> object:
-        if name == "maistro.sandbox.credential_boundary":
-            raise ImportError(f"blocked for test: {name}")
-        return real_import(name, *args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(builtins, "__import__", _blocked)
+    assert dict(ce.CANDIDATE_BASE_ENV) == dict(CORE_BASE)
+    assert ce.candidate_env() == core_candidate_env()
+    # The grants channel behaves identically, including the refusal.
+    assert ce.candidate_env({"PROVIDER_KEY": "granted"}) == core_candidate_env(
+        {"PROVIDER_KEY": "granted"}
+    )
+    with pytest.raises(ValueError, match="shadows the sandbox base environment"):
+        ce.candidate_env({"PATH": "/hax"})
+    with pytest.raises(ValueError, match="shadows the sandbox base environment"):
+        core_candidate_env({"PATH": "/hax"})
 
 
-def test_fallback_without_core_keeps_the_same_minimal_posture(
+def test_the_seam_reads_nothing_ambient_on_posix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A standalone evolve install (no maistro-core) must get the identical
-    minimal environment, not a weakened variant: a fallback that inverted
-    into ambient inheritance would be the exact bug #78 closes."""
+    """The seam itself is the implementation now (no delegation to core), so
+    its no-ambient-inheritance property is asserted directly: with harness
+    secrets in the environment, the candidate env contains exactly the base.
+    A fallback that inverted into ambient inheritance would be the exact bug
+    #78 closes."""
     import maistro_evolve._candidate_env as ce
 
-    _block_canonical_import(monkeypatch)
     monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-live-harness-secret")
     env = ce.candidate_env()
-    assert env == ce._FALLBACK_BASE
+    assert env == dict(ce.CANDIDATE_BASE_ENV)
     assert "LITELLM_MASTER_KEY" not in env
 
 
-def test_fallback_on_windows_forwards_system_basics_by_name(
+def test_windows_forwards_system_basics_by_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The fallback's Windows branch mirrors the canonical one: system basics
-    by NAME only (python.exe cannot start without SYSTEMROOT), never a spread."""
+    """The Windows branch mirrors the canonical one: system basics by NAME
+    only (python.exe cannot start without SYSTEMROOT), never a spread."""
     import os
 
     import maistro_evolve._candidate_env as ce
 
-    _block_canonical_import(monkeypatch)
     monkeypatch.setattr(os, "name", "nt", raising=False)
     monkeypatch.setenv("SYSTEMROOT", "C:\\Windows")
     monkeypatch.setenv("SECRET_HARNESS_KEY", "sk-should-not-forward")

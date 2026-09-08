@@ -21,7 +21,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from maistro.sandbox.credential_boundary import candidate_env
+from maistro_evolve._candidate_env import candidate_env
 from maistro_evolve.assertion_strength import score_assertions
 from maistro_evolve.code_quality import score_path
 from maistro_evolve.coverage_gate import (
