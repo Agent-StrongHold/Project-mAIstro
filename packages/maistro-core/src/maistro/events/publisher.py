@@ -32,7 +32,9 @@ class CanonicalEventPublisher:
     """
 
     def __init__(self, store: EventStore, *, legacy_bus: EventBus | None = None) -> None:
-        if legacy_bus is not None and not isinstance(store, EventAppendDispositionStore):
+        if legacy_bus is not None and not isinstance(
+            store, EventAppendDispositionStore
+        ):
             raise TypeError(
                 "legacy EventBus projection requires an EventStore with atomic "
                 "append disposition"
