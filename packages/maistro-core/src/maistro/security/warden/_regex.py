@@ -48,7 +48,7 @@ from collections.abc import Iterator
 from typing import Any, Protocol
 
 try:  # pragma: no cover - exercised by whichever branch the environment has
-    import re2 as _re2  # type: ignore[import-untyped]
+    import re2 as _re2  # type: ignore[import-untyped, import-not-found, unused-ignore]
 
     _RE2_AVAILABLE = True
 except ImportError:  # pragma: no cover
