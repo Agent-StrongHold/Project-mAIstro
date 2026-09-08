@@ -282,9 +282,14 @@ def _requires_continuation_redispatch(
     resume_condition = PAUSE_RESUME_CONDITIONS.get(reason)
     if resume_condition == RESUME_ON_ANSWER:
         return node_id in record.hitl_answers
-    if resume_condition != RESUME_ON_ELAPSED:
-        return False
-    return result.resume_at is not None and result.resume_at <= datetime.now(UTC)
+    if resume_condition == RESUME_ON_ELAPSED:
+        return result.resume_at is not None and result.resume_at <= datetime.now(UTC)
+    # Pre-taxonomy durable records and compatibility nodes could carry only a
+    # timestamp. Preserve their historical timer semantics without treating a
+    # known answer-gated reason as elapsed-resumable.
+    if not reason:
+        return result.resume_at is not None and result.resume_at <= datetime.now(UTC)
+    return False
 
 
 async def _walk(
