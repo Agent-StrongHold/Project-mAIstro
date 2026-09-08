@@ -13,16 +13,19 @@ records are migration input, never a live authorization source.
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import re
 from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime
+from typing import Literal
 from uuid import uuid4
 
 import stores
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from models.schemas import Agent
-from pydantic import BaseModel, ConfigDict
-from services.agent_materialization import workspace_agents
+from pydantic import BaseModel, ConfigDict, Field
+from services.agent_materialization import agent_id_for, workspace_agents
 from services.workspace_authority import is_member, member_role
 
 from maistro.security.warden.detector import Warden
@@ -238,37 +241,176 @@ async def scan_agent(agent_id: str) -> dict:
 class ForgeAgentBody(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    description: str
-    strategy: str = "react"
-    model: str = "gpt-4.1"
+    description: str = Field(min_length=1, max_length=4000)
+    #: The strategies the runtime actually ships (`maistro.agents.strategies`:
+    #: react, direct, plan_execute, delegate) -- the same four the Builder
+    #: offers. Anything else is an invalid configuration, not an artifact.
+    strategy: Literal["react", "plan_execute", "direct", "delegate"] = "react"
+    model: str = Field(min_length=1, default="gpt-4.1")
     workspace_id: str | None = None
 
 
-@router.post("/forge", response_model=Agent)
-async def forge_agent(body: ForgeAgentBody, request: Request) -> Agent:
+#: How a description binds capabilities (#294). The roster's execution path
+#: (`services/agent_invocation.resolve_agent_task` / `pulse_roster`) dispatches
+#: on declared capabilities, so a forged agent that declared none would be
+#: undispatchable. Substrings of the lowercased description, in map order;
+#: the map is a versioned product contract, not a silent heuristic.
+_FORGE_CAPABILITY_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("research", ("research", "search", "analy", "summar", "competitive", "trend", "report")),
+    ("code", ("code", "refactor", "debug", "program", "software", "review")),
+    ("missions", ("mission", "orchestrat", "plan", "coordinat", "project")),
+    ("tools", ("tool", "api", "integrat", "automat", "workflow")),
+    ("monitoring", ("monitor", "health", "uptime", "alert", "watch")),
+    ("security", ("security", "vulnerab", "penetration", "audit", "exploit")),
+    ("memory", ("memory", "embedding", "pattern", "recall", "forget")),
+    ("ha_control", ("home assistant", "iot", "smart home", "thermostat", "smart light")),
+    ("chat", ("chat", "conversation", "assistant", "support", "answer")),
+)
+_FORGE_DEFAULT_CAPABILITY = "general"
+
+
+def _forge_capabilities(description: str) -> list[str]:
+    """The capabilities a description binds, deterministically.
+
+    Every forged agent gets at least one capability so the execution path
+    can dispatch to it like any other roster member.
+    """
+    text = description.lower()
+    bound = [
+        cap for cap, keywords in _FORGE_CAPABILITY_KEYWORDS if any(k in text for k in keywords)
+    ]
+    return bound or [_FORGE_DEFAULT_CAPABILITY]
+
+
+def _forge_slug(text: str, *, limit: int = 32) -> str:
+    """A readable, stable, id-safe slug for a description."""
+    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return slug[:limit].rstrip("-") or "agent"
+
+
+def _forge_fingerprint(
+    *, workspace_id: str | None, description: str, strategy: str, model: str
+) -> str:
+    """The content hash behind artifact identity: the same request forges
+    the same artifact (idempotent), any changed field forges a new one."""
+    payload = "\x1f".join((workspace_id or "", description, strategy, model))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:8]
+
+
+@router.post("/forge", response_model=Agent, status_code=201)
+async def forge_agent(body: ForgeAgentBody, request: Request, response: Response) -> Agent:
+    """Forge one agent artifact -- the contract #294 pins.
+
+    - **Deterministic generation.** The artifact (name, soul, capabilities,
+      strategy) is derived from the request alone; no random identifiers and
+      no LLM -- the description becomes the soul verbatim. The id embeds a
+      content fingerprint, so re-submitting the same request returns the
+      same durable artifact (idempotent, 200) instead of piling up drafts,
+      and a changed request forges a new artifact (201).
+    - **Schema validation.** `strategy` must be one the runtime ships; a
+      missing or oversized description is a 422, not an artifact.
+    - **Capability binding.** Capabilities come from the description via
+      `_FORGE_CAPABILITY_KEYWORDS`, and the artifact is keyed the way the
+      roster resolves (`{workspace}.{name}`, `agent_id_for`), so the normal
+      execution path -- `resolve_agent` / `resolve_agent_task` /
+      `pulse_roster` -- dispatches to it like any materialized spawn.
+    - **Security scan, fail-closed.** Every text field of the artifact is
+      Warden-scanned (`scan_config`, `user_input` boundary) *before* the
+      artifact is stored. Flagged is a 400, a scanner that cannot run is a
+      503, and neither stores anything: a scan that did not complete can
+      never surface as a forged state.
+    - **Durable identity + validation provenance.** The stored record
+      carries `config.forge` -- spec version, what was generated from, and
+      the scan verdict with a timestamp -- and `GET /v1/agents/{id}`
+      reloads it.
+
+    What Forge does *not* claim: no publish step and no versioning -- a
+    re-forge of the same spec returns the stored artifact unchanged.
+    """
     if body.workspace_id and not await _is_workspace_owner(_user_id(request), body.workspace_id):
         raise HTTPException(status_code=403, detail="only a workspace owner can add agents to it")
-    import random
-    import string
 
-    suffix = "".join(random.choices(string.ascii_lowercase, k=6))  # nosec B311 — display-only id suffix; UUID4 is the actual identity
-    aid = str(uuid4())
     t = _now()
+    fingerprint = _forge_fingerprint(
+        workspace_id=body.workspace_id,
+        description=body.description,
+        strategy=body.strategy,
+        model=body.model,
+    )
+    # The name carries the fingerprint so the roster's spawn-name resolution
+    # (`{workspace}.{spawn}`) finds this artifact by name alone -- the same
+    # convention `materialize_workspace_agents` keys persona spawns by.
+    name = f"forge-{_forge_slug(body.description)}-{fingerprint}"
+    aid = agent_id_for(body.workspace_id, name) if body.workspace_id else name
+
+    existing = stores.agents.get(aid)
+    if existing is not None:
+        # Idempotent re-submission: the same spec forges the same artifact.
+        response.status_code = 200
+        return existing
+
+    capabilities = _forge_capabilities(body.description)
+    artifact_for_scan = {
+        "name": name,
+        "description": body.description,
+        "capabilities": capabilities,
+        "config": {"strategy": body.strategy, "model": body.model, "role": "worker"},
+    }
+    try:
+        scan = await scan_config(artifact_for_scan)
+    except ScanBudgetExceeded as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.warning("agent forge scan failed closed for %s: %s", aid, exc)
+        raise HTTPException(
+            status_code=503,
+            detail="forge unavailable: the security scan could not run; no artifact was stored",
+        ) from exc
+    if scan["findings"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"forged agent rejected by security scan: {'; '.join(scan['findings'])}",
+        )
+
     agent = Agent(
         id=aid,
         workspace_id=body.workspace_id,
-        name=f"forge-{suffix}",
+        name=name,
         description=body.description,
         model=body.model,
         status="idle",
-        capabilities=[],
+        capabilities=capabilities,
         skills=[],
         current_mission=None,
         tasks_completed=0,
         avg_response_time_ms=0.0,
         last_active=t,
         created_at=t,
-        config={"strategy": body.strategy, "role": "worker"},
+        config={
+            "strategy": body.strategy,
+            "role": "worker",
+            "soul": body.description,
+            "forge": {
+                "spec": 1,
+                "generated_from": {
+                    "description": body.description,
+                    "strategy": body.strategy,
+                    "model": body.model,
+                },
+                "scan": {
+                    "boundary": "user_input",
+                    "status": scan["status"],
+                    "findings": scan["findings"],
+                    "scanned_at": t.isoformat(),
+                },
+            },
+        },
     )
     stores.agents[aid] = agent
+    log_audit(
+        "agent_forge",
+        "system",
+        target=aid,
+        detail={"name": name, "capabilities": capabilities, "scan": scan["status"]},
+    )
     return agent

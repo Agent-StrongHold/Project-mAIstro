@@ -40,6 +40,15 @@ type IntentRow = {
   strategy: Strategy;
 };
 
+// The validation provenance the backend stores inside a forged agent's
+// config (#294): what was generated from and the security-scan verdict the
+// artifact was allowed to be stored with.
+type ForgeProvenance = {
+  spec?: number;
+  generated_from?: { description?: string; strategy?: string; model?: string };
+  scan?: { boundary?: string; status?: string; findings?: string[]; scanned_at?: string };
+};
+
 const MODELS = [
   "gpt-4o", "gpt-4o-mini", "claude-3.5-sonnet", "claude-3.5-haiku",
   "gemini-3.5-flash", "gemini-3.5-pro", "qwen-2.5-coder-32b",
@@ -78,7 +87,11 @@ const DEFAULT_INTENTS: IntentRow[] = [
   { intent: "exploration", agent: "Phantom", model: "gemini-3.5-flash", strategy: "react" },
 ];
 
-const STEP_LABELS = ["Describe", "Strategy", "Model", "Generate", "Review", "Scan", "Save"];
+// Forging stores the real artifact at the Forge step (#294): derived
+// capabilities, security-scanned before it lands, provenance kept on the
+// record. The remaining steps review what was stored — they do not create a
+// second agent the way the old "Save" step's plain POST /v1/agents did.
+const STEP_LABELS = ["Describe", "Strategy", "Model", "Forge", "Review", "Provenance", "Done"];
 
 const inp = {
   width: "100%", padding: "6px 10px", fontFamily: "var(--mono)", fontSize: 10,
@@ -158,6 +171,10 @@ export default function Agents() {
   const [bStrat, setBStrat] = useState<Strategy>("react");
   const [bModel, setBModel] = useState("gpt-4o");
   const [bConfig, setBConfig] = useState("");
+  // The stored artifact returned by POST /v1/agents/forge — read-only from
+  // here on; editing a stored agent is the roster drawer's job, not the
+  // wizard's.
+  const [bArtifact, setBArtifact] = useState<Agent | null>(null);
   const [bBusy, setBBusy] = useState(false);
   // Three states, not two. `null` is "not run yet"; the discriminated union
   // separates "ran, here is what it found" from "did not run". Holding this
@@ -288,27 +305,44 @@ export default function Agents() {
   const handleForge = useCallback(async () => {
     setBBusy(true);
     try {
+      // The backend forges the real artifact here: derives capabilities,
+      // Warden-scans every field, and stores it with validation provenance
+      // (config.forge) before answering (#294). Re-running with the same
+      // inputs is idempotent — same agent, not another draft.
       const res = await apiPost<Record<string, unknown>>("/v1/agents/forge", {
         description: bDesc, strategy: bStrat, model: bModel,
         ...(activeWorkspaceId ? { workspace_id: activeWorkspaceId } : {}),
       });
+      const artifact = res as unknown as Agent;
+      setBArtifact(artifact);
       setBConfig(JSON.stringify(res, null, 2));
       setBStep(4);
-    } catch {
-      toast("Forge failed", "error");
+    } catch (e) {
+      // A rejected forge (flagged content, unknown strategy, scanner down)
+      // stored nothing — say why rather than "Forge failed" generically.
+      const msg = e instanceof Error ? e.message : "forge did not run";
+      toast(`Forge rejected — nothing was stored: ${msg}`, "error");
     } finally {
       setBBusy(false);
     }
   }, [bDesc, bStrat, bModel, toast, activeWorkspaceId]);
 
+  const bProvenance: ForgeProvenance | null = (() => {
+    if (!bArtifact) return null;
+    const cfg = bArtifact.config as Record<string, unknown>;
+    return ((cfg.forge ?? null) as ForgeProvenance | null);
+  })();
+
   const handleBuilderScan = useCallback(async () => {
+    if (!bArtifact) return;
     setBBusy(true);
     // Clear first: whatever the previous run said is no longer true of this
     // one, and leaving it up through the request is the same stale-green.
     setBScan(null);
     try {
-      const config = JSON.parse(bConfig);
-      const res = await apiPost<{ findings?: string[] }>("/v1/agents/scan", config);
+      // Re-scan the *stored* artifact (the by-id route walks the saved
+      // record), on top of the scan provenance it was stored with.
+      const res = await apiPost<{ findings?: string[] }>(`/v1/agents/${bArtifact.id}/scan`);
       if (!Array.isArray(res.findings)) {
         // A 200 whose body is not a findings list is a scan that did not
         // report, not a scan that found nothing.
@@ -321,25 +355,12 @@ export default function Agents() {
     } finally {
       setBBusy(false);
     }
-  }, [bConfig, toast]);
+  }, [bArtifact, toast]);
 
-  const handleBuilderSave = useCallback(async () => {
-    setBBusy(true);
-    try {
-      const config = JSON.parse(bConfig);
-      await apiPost("/v1/agents", {
-        ...config,
-        ...(activeWorkspaceId ? { workspace_id: activeWorkspaceId } : {}),
-      });
-      toast("Agent created from forge");
-      setBStep(0); setBDesc(""); setBConfig(""); setBScan(null);
-      await load();
-    } catch {
-      toast("Forge save failed", "error");
-    } finally {
-      setBBusy(false);
-    }
-  }, [bConfig, load, toast, activeWorkspaceId]);
+  const handleBuilderFinish = useCallback(async () => {
+    setBStep(0); setBDesc(""); setBConfig(""); setBScan(null); setBArtifact(null);
+    await load();
+  }, [load]);
 
   const toggleCap = (cap: string) => {
     setCCaps((prev) => prev.includes(cap) ? prev.filter((c) => c !== cap) : [...prev, cap]);
@@ -480,19 +501,36 @@ export default function Agents() {
 
           {bStep === 4 && (
             <div style={{ maxWidth: 600, margin: "0 auto" }}>
-              <label style={lbl}>Generated config</label>
-              <textarea value={bConfig} onChange={(e) => setBConfig(e.target.value)} rows={16} style={{ ...inp, resize: "vertical" as const, fontFamily: "var(--mono)", fontSize: 9 }} />
+              <label style={lbl}>Forged artifact — stored in the roster</label>
+              {/* Read-only: this is the stored record, not a draft to edit and
+                  re-post. Editing a saved agent is the roster drawer's job. */}
+              <pre style={{ ...inp, margin: 0, padding: "8px 10px", whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "var(--mono)", fontSize: 9 }}>{bConfig}</pre>
               <div style={{ marginTop: 12, display: "flex", justifyContent: "space-between" }}>
                 <button onClick={() => setBStep(3)} style={{ ...btn, background: "var(--paper)", color: "var(--ink)", borderColor: "var(--rule)" }}>\u2190 Back</button>
-                <button onClick={() => { setBScan(null); setBStep(5); }} style={{ ...btn, background: "var(--accent)", color: "var(--paper)", borderColor: "var(--accent)" }}>Scan \u2192</button>
+                <button onClick={() => { setBScan(null); setBStep(5); }} style={{ ...btn, background: "var(--accent)", color: "var(--paper)", borderColor: "var(--accent)" }}>Provenance \u2192</button>
               </div>
             </div>
           )}
 
           {bStep === 5 && (
             <div style={{ maxWidth: 500, margin: "0 auto" }}>
+              <div style={{ marginBottom: 12, borderRadius: 4, padding: 10, background: "rgba(90,154,74,0.08)", border: "1px solid rgba(90,154,74,0.3)" }}>
+                <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", textTransform: "uppercase", marginBottom: 4 }}>Stored validation provenance</div>
+                {bProvenance?.scan ? (
+                  <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "#5a9a4a" }}>
+                    \u2713 Security scan: {bProvenance.scan.status} \u00B7 boundary {bProvenance.scan.boundary} \u00B7 {bProvenance.scan.scanned_at}
+                  </div>
+                ) : (
+                  <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "#c4452a" }}>\u26A0 This record carries no forge provenance.</div>
+                )}
+                {bProvenance?.generated_from && (
+                  <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginTop: 4 }}>
+                    Forged from: strategy {bProvenance.generated_from.strategy} \u00B7 model {bProvenance.generated_from.model} \u00B7 capabilities {bArtifact?.capabilities.join(", ")}
+                  </div>
+                )}
+              </div>
               <button disabled={bBusy} onClick={handleBuilderScan} style={{ ...btn, background: "var(--accent)", color: "var(--paper)", borderColor: "var(--accent)", padding: "8px 24px", fontSize: 11 }}>
-                {bBusy ? "Scanning..." : "\uD83D\uDEE1\uFE0F Run Security Scan"}
+                {bBusy ? "Scanning..." : "\uD83D\uDEE1\uFE0F Re-scan saved agent"}
               </button>
               {bScan !== null && (
                 <div style={{
@@ -512,26 +550,26 @@ export default function Agents() {
               )}
               <div style={{ marginTop: 12, display: "flex", justifyContent: "space-between" }}>
                 <button onClick={() => setBStep(4)} style={{ ...btn, background: "var(--paper)", color: "var(--ink)", borderColor: "var(--rule)" }}>\u2190 Back</button>
-                <button onClick={() => setBStep(6)} style={{ ...btn, background: "var(--accent)", color: "var(--paper)", borderColor: "var(--accent)" }}>Next \u2192 Save</button>
+                <button onClick={() => setBStep(6)} style={{ ...btn, background: "var(--accent)", color: "var(--paper)", borderColor: "var(--accent)" }}>Done \u2192</button>
               </div>
             </div>
           )}
 
           {bStep === 6 && (
             <div style={{ maxWidth: 500, margin: "0 auto", textAlign: "center" }}>
-              <div style={{ fontFamily: "var(--hand)", fontSize: 18, marginBottom: 16 }}>Save forged agent</div>
-              {bScan?.ok === false && (
-                <div style={{ background: "rgba(140,140,140,0.10)", border: "1px solid rgba(140,140,140,0.35)", borderRadius: 4, padding: 10, marginBottom: 12, textAlign: "left" }}>
-                  <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--ink)" }}>\u2014 Saving without a completed scan: {bScan.error}</div>
+              <div style={{ fontFamily: "var(--hand)", fontSize: 18, marginBottom: 16 }}>Forged agent saved</div>
+              {bArtifact && (
+                <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--pencil)", marginBottom: 8 }}>
+                  {bArtifact.name} \u00B7 {bArtifact.id}
                 </div>
               )}
-              {bScan?.ok && bScan.findings.length > 0 && (
-                <div style={{ background: "rgba(196,69,42,0.08)", border: "1px solid rgba(196,69,42,0.3)", borderRadius: 4, padding: 10, marginBottom: 12, textAlign: "left" }}>
-                  {bScan.findings.map((f, i) => <div key={i} style={{ fontFamily: "var(--mono)", fontSize: 9, color: "#c4452a" }}>\u26A0 {f}</div>)}
+              {bProvenance?.scan && (
+                <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "#5a9a4a", marginBottom: 12 }}>
+                  \u2713 Scanned {bProvenance.scan.status} before it was stored \u00B7 ready for the roster
                 </div>
               )}
-              <button disabled={bBusy} onClick={handleBuilderSave} style={{ ...btn, background: "#5a9a4a", color: "var(--paper)", borderColor: "#5a9a4a", padding: "8px 24px", fontSize: 11 }}>
-                {bBusy ? "Saving..." : "\uD83D\uDCBE Save Agent"}
+              <button disabled={bBusy} onClick={handleBuilderFinish} style={{ ...btn, background: "#5a9a4a", color: "var(--paper)", borderColor: "#5a9a4a", padding: "8px 24px", fontSize: 11 }}>
+                {bBusy ? "Finishing..." : "\uD83D\uDCBE Finish"}
               </button>
               <div style={{ marginTop: 12 }}>
                 <button onClick={() => setBStep(5)} style={{ ...btn, background: "var(--paper)", color: "var(--ink)", borderColor: "var(--rule)" }}>\u2190 Back</button>

@@ -55,7 +55,7 @@ Each agent has:
 - A **strategy** — how it approaches problems (see Strategies below)
 - **Capabilities** — what kinds of tasks it can handle
 
-You can create new agents, edit their behavior, or forge them using the step-by-step Builder.
+You can create new agents, edit their behavior, or forge new ones with the step-by-step Builder. Forging is real agent creation, not a draft: capabilities are derived from your description, every field is security-scanned before anything is stored (a flagged or failed scan forges nothing), and the finished agent — with its scan provenance — lands straight in the roster, ready to run.
 
 **Intent Map**: Shows which agent handles which type of request. For example, "research" requests go to the Researcher agent.`,
   },
