@@ -580,3 +580,166 @@ def test_fitness_pipeline_fails_closed_on_unavailable_judge(tmp_path: Path, monk
     assert gate.passed is False
     assert "gateway_error" in gate.reason
     assert gate.detail["score"] is None
+
+
+# --- protected test inventory wiring (#306) -----------------------------------
+#
+# The gate itself is tested in test_candidate_fitness.py (pure) and
+# test_test_inventory.py (real collection); these cover the LOOP's side:
+# baseline inventory computed once per cycle, diff evidence lifted into the
+# fitness trace, and the promotion record (git-notes TraceNote) carrying it.
+
+
+def _mini_pytest_repo(path: Path) -> Path:
+    """A repo whose suite has two tests in one file (plus a pyproject so
+    pytest treats the root as rootdir)."""
+    _make_repo(path)
+    (path / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
+    (path / "tests").mkdir()
+    (path / "tests" / "test_value.py").write_text(
+        "def test_one():\n    assert True\n\n\ndef test_two():\n    assert True\n",
+        encoding="utf-8",
+    )
+    _git(path, "add", "-A")
+    _git(path, "commit", "-q", "-m", "suite")
+    return path
+
+
+def test_baseline_inventory_cached_per_cycle_and_off_without_fitness(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from maistro_rsi.test_inventory import collect_inventory
+
+    repo = _mini_pytest_repo(tmp_path / "src")
+    loop = LocalRsiLoop(
+        LocalRsiConfig(
+            repo_path=str(repo),
+            test_command="exit 0",
+            work_root=str(tmp_path / "work"),
+            coverage_pytest_args="tests",
+        )
+    )
+    loop._setup_baseline()
+    assert loop._baseline_test_inventory() is None  # fitness off: no gate to feed
+
+    fit_loop = LocalRsiLoop(
+        LocalRsiConfig(
+            repo_path=str(repo),
+            test_command="exit 0",
+            work_root=str(tmp_path / "work2"),
+            use_fitness=True,
+            coverage_pytest_args="tests",
+        )
+    )
+    fit_loop._setup_baseline()
+    calls = []
+    real = collect_inventory
+
+    def counting(root, args, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append((str(root), list(args)))
+        return real(root, args, **kwargs)
+
+    # local_loop binds collect_inventory at import time, so patch its name.
+    monkeypatch.setattr(local_loop, "collect_inventory", counting)
+    inv1 = fit_loop._baseline_test_inventory()
+    inv2 = fit_loop._baseline_test_inventory()
+    assert len(calls) == 1  # cached: one collection per baseline state
+    assert inv1 is inv2
+    assert inv1.collection_ok is True
+    assert len(inv1.servable) == 2
+
+    fit_loop._baseline_test_inventory_cache = None  # what a promote does
+    fit_loop._baseline_test_inventory()
+    assert len(calls) == 2  # invalidated -> recomputed against the new baseline
+
+
+def test_fitness_trace_carries_inventory_evidence(tmp_path: Path, monkeypatch) -> None:
+    """End-to-end (#306 DoD): a candidate that DELETES the test exposing its
+    regression is not promoted — the protected_test_inventory gate vetoes it —
+    and with the governance override it promotes WITH the deleted ID recorded
+    on the promotion's git-notes trace."""
+    from maistro_rsi import candidate_fitness
+    from maistro_rsi.trace_notes import read_trace_note
+
+    repo = _mini_pytest_repo(tmp_path / "src")
+
+    def delete_a_test(ws: Path) -> None:
+        f = ws / "tests" / "test_value.py"
+        f.write_text("def test_one():\n    assert True\n", encoding="utf-8")
+
+    monkeypatch.setattr(candidate_fitness, "_run", lambda *a, **k: (True, "exit 0"))
+    monkeypatch.setattr(candidate_fitness, "measure_coverage_detailed", lambda *a, **k: (80.0, {}))
+    # The baseline's real coverage is irrelevant here (the tiny suite measures
+    # 100%, which would fail the coverage gate before the inventory gate got to
+    # speak in the cycle note) — keep this test about the inventory veto.
+    monkeypatch.setattr(local_loop.LocalRsiLoop, "_baseline_coverage", lambda self: None)
+
+    def _run_loop(work: str, allow_shrink: bool) -> object:
+        config = LocalRsiConfig(
+            repo_path=str(repo),
+            test_command="exit 0",
+            work_root=work,
+            max_cycles=1,
+            use_fitness=True,
+            coverage_pytest_args="tests",
+            regression_judge=False,
+            allow_test_inventory_shrink=allow_shrink,
+        )
+        return LocalRsiLoop(config, apply_patch=_make_apply(delete_a_test)).run()
+
+    # Without the override: the deletion vetoes promotion even though the
+    # (now smaller) suite is green.
+    result = _run_loop(str(tmp_path / "work"), allow_shrink=False)
+    assert result.promotions == 0
+    assert result.cycles[0].changed is True
+    assert "protected_test_inventory" in result.cycles[0].note
+
+    # With the override: it promotes, and the promotion record carries the
+    # deleted node ID — the shrink is recorded, never silent.
+    allowed = _run_loop(str(tmp_path / "work2"), allow_shrink=True)
+    assert allowed.promotions == 1
+    sha = allowed.cycles[0].sha
+    note = read_trace_note(Path(allowed.baseline_dir), sha)
+    assert note is not None
+    assert note.inventory is not None
+    assert note.inventory["deleted"] == ["tests/test_value.py::test_two"]
+    assert note.inventory["override"] is True
+    assert note.gates.get("protected_test_inventory") is True
+
+
+def test_evaluate_candidate_vetoes_deleted_test_with_real_collection(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """evaluate_candidate (#306) with REAL collection on both sides: the base
+    inventory is collected before the deletion, passed in, and the candidate's
+    own collection then shows the missing node ID — the gate fails, the
+    scorecard rejects, and no other gate has to notice the missing file."""
+    from maistro_rsi import candidate_fitness
+    from maistro_rsi.test_inventory import collect_inventory
+
+    repo = _mini_pytest_repo(tmp_path / "src")
+    base_inv = collect_inventory(repo, ["tests"])
+    assert len(base_inv.servable) == 2
+
+    (repo / "tests" / "test_value.py").write_text(
+        "def test_one():\n    assert True\n", encoding="utf-8"
+    )  # uncommitted candidate diff vs HEAD: test_two deleted
+
+    monkeypatch.setattr(candidate_fitness, "_run", lambda *a, **k: (True, "exit 0"))
+    monkeypatch.setattr(candidate_fitness, "measure_coverage_detailed", lambda *a, **k: (80.0, {}))
+
+    scorecard = candidate_fitness.evaluate_candidate(
+        str(repo),
+        ["tests/test_value.py"],
+        test_command="exit 0",
+        coverage_pytest_args="tests",
+        baseline_ref="HEAD",
+        baseline_coverage=None,
+        baseline_inventory=base_inv,
+    )
+    assert scorecard.accepted is False
+    gate = next(g for g in scorecard.gates if g.name == "protected_test_inventory")
+    assert gate.passed is False
+    assert gate.detail["deleted"] == ["tests/test_value.py::test_two"]
+    assert gate.detail["base"] == 2
+    assert gate.detail["candidate"] == 1
