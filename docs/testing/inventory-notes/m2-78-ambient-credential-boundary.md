@@ -32,13 +32,15 @@ The +27 node IDs are four files, one per seam:
   env; the host-backed worktree sandbox likewise.
 - `packages/maistro-evolve/tests/test_candidate_env_boundary.py` (new, 5)
   pins `run_test_selection` (tdd evidence and the mutation probe's executor)
-  and `measure_coverage_detailed` behind the boundary, pins the evolve
-  inline fallback equal to the canonical base so the two runtimes cannot
-  drift (evolve cannot depend on maistro-core; the fallback mirrors the
-  canonical module and delegates when core is importable), and exercises the
-  no-core fallback path itself (import blocked) — POSIX minimal posture and
-  the Windows by-name forwarding — so the fallback is proven equally strict,
-  not trusted to be.
+  and `measure_coverage_detailed` behind the boundary, and pins the
+  `maistro_evolve._candidate_env` seam exactly equal to the canonical
+  `maistro.sandbox.credential_boundary` module (base, grants channel, and
+  reserved-name refusal, imported side by side in test code) so the two
+  runtimes cannot drift. The seam cannot import the canonical module — the
+  promotion-surface gate walks imports from the promotion roots, and
+  `maistro/sandbox/__init__.py` re-exports the whole sandbox subsystem — so
+  parity is a tested property, not a delegation; the seam's own POSIX
+  minimal posture and Windows by-name forwarding are exercised directly.
 - `packages/maistro-bootstrap/tests/test_container_sandbox_hardening.py`
   (+1) pins the container sandbox's env minimality: `HOME=/tmp` is the only
   env assignment in any `docker run`/`exec` argv, so no future edit can add
