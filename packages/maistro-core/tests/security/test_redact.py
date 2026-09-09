@@ -32,7 +32,7 @@ class TestRedactNoneAndEmpty:
     @pytest.mark.ac("ADR-064/AC-41")
     def test_none_returns_empty_string(self):
         """None is outside the declared domain (`text: str`); redaction fails closed."""
-        assert redact(None) == ""
+        assert redact(None) == ""  # type: ignore[arg-type]  deliberate: pins the fail-closed contract
 
     @pytest.mark.ac("ADR-064/AC-40")
     def test_empty_string_returns_empty(self):
@@ -115,6 +115,253 @@ class TestRedactAWSKeys:
         result = redact(f"credentials: access_key={key} region=us-east-1")
         assert "[REDACTED_AWS_KEY]" in result
         assert "us-east-1" in result
+
+
+class TestRedactSlackTokenFamily:
+    """#1159 — the whole xox* family, one shared shape.
+
+    Only xoxb/xoxp were covered before; xoxa (app), xoxr (refresh) and xoxs
+    (session) went through verbatim. The compiled shape now lives in
+    `secret_policy.SLACK_TOKEN_PATTERN` so the log path and the Sentinel PII
+    filter cannot drift. Literals are concatenated like the rest of this file:
+    a contiguous token-shaped string is a real gitleaks hit even when invented.
+    """
+
+    @pytest.mark.parametrize("prefix", ["xoxa", "xoxb", "xoxp", "xoxr", "xoxs"])
+    def test_slack_prefix(self, prefix):
+        token = prefix + "-FAKEVALUE123456"
+        result = redact(f"slack {token} end")
+        assert "[REDACTED_API_KEY]" in result, prefix
+        assert "FAKEVALUE" not in result, prefix
+
+    def test_longer_word_containing_xox_is_not_a_token(self):
+        # The left boundary keeps a word that merely contains `xox` from
+        # matching — only a token at the start of its own token dies.
+        text = "woxoxb-FAKEVALUE123456 xoxbox-FAKEVALUE123456"
+        assert redact(text) == text
+
+    def test_short_tail_is_not_a_token(self):
+        text = "xoxb-123"
+        assert redact(text) == text
+
+    def test_slack_token_inside_json_value_gets_json_label(self):
+        # Precedence, not survival: the JSON-field span contains the token, so
+        # the JSON label wins the merge and the token is gone either way.
+        token = "xoxb-" + "FAKEVALUE123456"
+        result = redact('{"slack_token": "' + token + '"}')
+        assert "[REDACTED_JSON_SECRET]" in result
+        assert "FAKEVALUE" not in result
+
+
+class TestRedactAWSSecretAccessKey:
+    """#1159 — the 40-character secret paired with an AKIA access key ID.
+
+    The shape is validated, not merely matched: a raw 40-char charset run
+    would swallow the dominant look-alikes (git SHAs) and still miss nothing
+    that matters. The AKIA ID itself stays on the identifier-redaction path
+    ([REDACTED_AWS_KEY]) — it is an identifier, not a reusable credential.
+    """
+
+    @staticmethod
+    def _canonical_secret() -> str:
+        # The classic AWS documentation example, concatenated so no source
+        # line carries the whole 40-char run.
+        return "wJalr" + "XUtnFEMI/K7MDENG/bPxRfiCY" + "EXAMPLEKEY"
+
+    @staticmethod
+    def _hex_run(length: int, case: str) -> str:
+        digits = "0123456789abcdef" if case == "lower" else "0123456789ABCDEF"
+        return (digits * ((length // 16) + 1))[:length]
+
+    def test_canonical_secret_redacted_with_its_own_label(self):
+        secret = self._canonical_secret()
+        assert len(secret) == 40
+        result = redact(f"aws secret {secret} end")
+        assert "[REDACTED_AWS_SECRET_KEY]" in result
+        assert secret not in result
+
+    def test_secret_redacted_alongside_its_akia_id(self):
+        secret = self._canonical_secret()
+        result = redact(f"id AKIAFAKE1234567890AB and secret {secret}")
+        assert "[REDACTED_AWS_KEY]" in result
+        assert "[REDACTED_AWS_SECRET_KEY]" in result
+        assert secret not in result
+
+    def test_value_adjacent_to_equals_gets_assignment_label(self):
+        # The AWS shape requires a maximal charset run, and `=` is part of the
+        # AWS charset — so the `name=<secret>` form is claimed by the generic
+        # assignment instead. The label differs; the secret does not survive.
+        secret = self._canonical_secret()
+        result = redact(f"secret_access_key={secret} end")
+        assert "[REDACTED_SECRET_ASSIGNMENT]" in result
+        assert "[REDACTED_AWS_SECRET_KEY]" not in result
+        assert secret not in result
+        assert "secret_access_key" in result
+
+    def test_lowercase_hex_sha_is_not_an_aws_secret(self):
+        # A 40-char single-case hex run is a git commit SHA, not base64-ish
+        # key material — the validator's mixed-case requirement exists for it.
+        sha = self._hex_run(40, "lower")
+        assert redact(f"commit {sha} ok") == f"commit {sha} ok"
+
+    def test_uppercase_hex_run_is_not_an_aws_secret(self):
+        run = self._hex_run(40, "upper")
+        assert redact(f"ref {run} ok") == f"ref {run} ok"
+
+    @pytest.mark.parametrize("length", [39, 41])
+    def test_length_is_exactly_40(self, length):
+        run = self._hex_run(length, "lower")
+        assert redact(f"run {run} end") == f"run {run} end"
+
+    def test_akia_id_is_not_labeled_aws_secret(self):
+        # 20 characters can never be the 40-char secret; the ID keeps its
+        # identifier redaction instead.
+        result = redact("id AKIAIOSFODNN7EXAMPLE end")
+        assert "[REDACTED_AWS_KEY]" in result
+        assert "[REDACTED_AWS_SECRET_KEY]" not in result
+
+    def test_no_digits_means_not_an_aws_secret(self):
+        run = "wJ" * 20  # 40 chars, mixed case, no digit
+        assert redact(f"run {run} end") == f"run {run} end"
+
+
+class TestRedactSecretAssignments:
+    """#1159 — generic secret assignments: `name = value` in every quoting,
+    spacing, and case variant. Only the *value* span is redacted; the field
+    name stays readable so the audit trail keeps the fact and type of the
+    action without the credential. A more specific detector that fired inside
+    the value keeps its label (the assignment span is skipped on overlap).
+    """
+
+    @pytest.mark.parametrize(
+        ("assignment", "name"),
+        [
+            ("my_secret = 'hunter2pass'", "my_secret"),
+            ("my_secret='hunter2pass'", "my_secret"),
+            ('db_password: "hunter2pass"', "db_password"),
+            ('db_password:"hunter2pass"', "db_password"),
+            ("client_key=barevalue9", "client_key"),
+            ("apiKey = value1234567", "apiKey"),
+            ('token="abcdef12345"', "token"),
+            ("DB_PASSWORD: hunter2pass2", "DB_PASSWORD"),
+        ],
+        ids=[
+            "sq-spaced",
+            "sq-tight",
+            "dq-colon",
+            "dq-tight",
+            "bare",
+            "camel",
+            "dq-token",
+            "upper-colon",
+        ],
+    )
+    def test_value_redacted_name_preserved(self, assignment, name):
+        result = redact(f"config {assignment} end")
+        assert "[REDACTED_SECRET_ASSIGNMENT]" in result, assignment
+        assert "hunter2pass" not in result and "barevalue" not in result, assignment
+        assert name in result, assignment
+
+    def test_prefixed_name_still_classified(self):
+        # The bare value must not swallow a following assignment: an outer
+        # regex-valid name (`credentials: `) cannot consume the inner name as
+        # its value and leave the real credential behind.
+        result = redact('credentials: signing_key = "hunter2pass" end')
+        assert "[REDACTED_SECRET_ASSIGNMENT]" in result
+        assert "hunter2pass" not in result
+        assert "signing_key" in result
+
+    def test_base64_padded_bare_value_fully_redacted(self):
+        result = redact("client_key=c2VjcmV0dmFsdWU=")
+        assert "[REDACTED_SECRET_ASSIGNMENT]" in result
+        assert "c2VjcmV0dmFsdWU" not in result
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "tokenizer = cl100k_base-vocab",
+            "secretary = JaneDoe99",
+            "monkey = bongo1234",
+            "author = aside99",
+        ],
+        ids=["tokenizer", "secretary", "monkey", "author"],
+    )
+    def test_ordinary_words_are_not_assignment_names(self, text):
+        assert redact(text) == text
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "https://example.com/path?q=1",
+            "see https://example.com/docs for details",
+        ],
+        ids=["url-with-query", "url-in-prose"],
+    )
+    def test_urls_are_not_assignments(self, text):
+        result = redact(text)
+        assert "[REDACTED_SECRET_ASSIGNMENT]" not in result
+
+    def test_url_credentials_keep_url_label(self):
+        result = redact("https://fakeuser:fakepass@example.com/path")
+        assert "[REDACTED_URL_CREDENTIALS]" in result
+        assert "[REDACTED_SECRET_ASSIGNMENT]" not in result
+
+    def test_short_values_are_left_alone(self):
+        text = "my_secret = abc"
+        assert redact(text) == text
+
+    def test_specific_label_inside_value_wins(self):
+        # The value span a more specific detector already claimed (AKIA)
+        # keeps its label; what stays visible around it is filler.
+        result = redact("my_secret = 'AKIAIOSFODNN7EXAMPLE and more'")
+        assert "[REDACTED_AWS_KEY]" in result
+        assert "[REDACTED_SECRET_ASSIGNMENT]" not in result
+        assert "AKIAIOSFODNN7EXAMPLE" not in result
+        assert "my_secret" in result
+
+    def test_chained_access_key_keeps_aws_label(self):
+        # `credentials: access_key=<AKIA>` — the assignment whose value the
+        # AKIA pattern claims is skipped wholesale, so the ID keeps the
+        # ADR-064/AC-8 label and the inner field name stays readable.
+        result = redact("credentials: access_key=AKIAFAKE1234567890AB region=us-east-1")
+        assert "[REDACTED_AWS_KEY]" in result
+        assert "[REDACTED_SECRET_ASSIGNMENT]" not in result
+        assert "AKIAFAKE1234567890AB" not in result
+        assert "us-east-1" in result
+        assert "access_key=" in result
+
+    def test_high_entropy_value_still_redacted(self):
+        value = "Ab3xK9mP2qR7sT5uV1wX4yZ6aB8cD0eF"  # 32 chars, mixed
+        result = redact("client_key=" + value)
+        assert value not in result
+        assert "[REDACTED_" in result
+
+
+class TestRedactJSONBareKeyName:
+    """#1159 — bare `key` joined the JSON field-name alternation.
+
+    The term stays segment-anchored: it must be the whole name or sit at a
+    `_`/`-`/`.` boundary, so `keynote` and `monkey` cannot match.
+    """
+
+    def test_bare_key_field_redacted(self):
+        result = redact('{"key": "opensesame1"}')
+        assert "[REDACTED_JSON_SECRET]" in result
+        assert "opensesame1" not in result
+
+    @pytest.mark.parametrize(
+        "field",
+        ["ssh_key", "signing_key", "access-key", "key_id", "my.key"],
+        ids=["ssh", "signing", "dashed", "suffixed", "dotted"],
+    )
+    def test_key_segment_fields_redacted(self, field):
+        result = redact('{"' + field + '": "hunter2pass"}')
+        assert "[REDACTED_JSON_SECRET]" in result, field
+        assert "hunter2pass" not in result, field
+
+    def test_keynote_is_not_a_key_field(self):
+        text = '{"keynote": "intro1"}'
+        assert redact(text) == text
 
 
 class TestRedactENV:

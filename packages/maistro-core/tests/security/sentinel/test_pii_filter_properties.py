@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import unicodedata
 
+import pytest
+
 from maistro.security.sentinel.pii_filter import (
     PIIMatch,
     redact,
@@ -113,6 +115,89 @@ class TestPersonalDataDetectors:
         assert "219-09-9999" not in redacted
         assert "[REDACTED:payment_card]" in redacted
         assert "[REDACTED:ssn]" in redacted
+
+
+class TestCredentialShapes:
+    """#1159 — credential detectors beyond prefixes, typed and ordered.
+
+    The three new detectors (``aws_secret_key``, ``slack_token``,
+    ``secret_assignment``) share their compiled shapes with
+    ``security/redact.py`` through ``security/secret_policy.py``. Detector
+    order is load-bearing: ``secret_assignment`` sits LAST, so a more
+    specific detector that claims the value keeps it and the overlap-drop
+    rule leaves no partial span.
+    """
+
+    def test_slack_token_typed_and_redacted(self) -> None:
+        redacted, matches = scan_and_redact("upload xoxb-FAKEVALUE123456 done")
+        assert [m.pii_type for m in matches] == ["slack_token"]
+        assert "[REDACTED:slack_token]" in redacted
+        assert "FAKEVALUE" not in redacted
+
+    @pytest.mark.parametrize("prefix", ["xoxa", "xoxb", "xoxp", "xoxr", "xoxs"])
+    def test_whole_slack_family_detected(self, prefix: str) -> None:
+        matches = scan_for_pii(f"slack {prefix}-FAKEVALUE123456 end")
+        assert [m.pii_type for m in matches] == ["slack_token"], prefix
+
+    def test_aws_secret_key_typed_and_redacted(self) -> None:
+        # Space-delimited: the 40-char run is a maximal AWS-charset run. (In
+        # the `name=<secret>` form the value sits next to `=`, which is part
+        # of the AWS charset, so the generic assignment claims it instead.)
+        secret = "wJalr" + "XUtnFEMI/K7MDENG/bPxRfiCY" + "EXAMPLEKEY"
+        redacted, matches = scan_and_redact(f"leaked secret {secret} in args")
+        assert [m.pii_type for m in matches] == ["aws_secret_key"]
+        assert "[REDACTED:aws_secret_key]" in redacted
+        assert secret not in redacted
+
+    def test_secret_adjacent_to_equals_gets_assignment_label(self) -> None:
+        secret = "wJalr" + "XUtnFEMI/K7MDENG/bPxRfiCY" + "EXAMPLEKEY"
+        matches = scan_for_pii(f"secret_access_key={secret} end")
+        assert [m.pii_type for m in matches] == ["secret_assignment"]
+
+    def test_generic_secret_assignment_typed_and_redacted(self) -> None:
+        redacted, matches = scan_and_redact("config my_secret = 'hunter2pass' end")
+        assert [m.pii_type for m in matches] == ["secret_assignment"]
+        assert "[REDACTED:secret_assignment]" in redacted
+        assert "hunter2pass" not in redacted
+
+    def test_key_equals_akia_stays_typed_aws_key(self) -> None:
+        # Ordering rule: aws_key is earlier in _PII_PATTERNS and its span is
+        # the whole assignment value, so secret_assignment (last) is dropped.
+        matches = scan_for_pii("key=AKIAIOSFODNN7EXAMPLE end")
+        assert [m.pii_type for m in matches] == ["aws_key"]
+
+    def test_named_password_stays_typed_password(self) -> None:
+        matches = scan_for_pii("db_password=hunter2pass end")
+        assert [m.pii_type for m in matches] == ["password"]
+
+    def test_lowercase_hex_sha_is_not_detected(self) -> None:
+        sha = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+        assert scan_for_pii(f"commit {sha} ok") == []
+
+    def test_akia_id_is_not_typed_aws_secret_key(self) -> None:
+        matches = scan_for_pii("id AKIAIOSFODNN7EXAMPLE end")
+        assert matches and all(m.pii_type == "aws_key" for m in matches)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "tokenizer = cl100k_base-vocab",
+            "secretary = JaneDoe99",
+            "monkey = bongo1234",
+        ],
+        ids=["tokenizer", "secretary", "monkey"],
+    )
+    def test_ordinary_words_are_not_secret_assignments(self, text: str) -> None:
+        assert scan_for_pii(text) == []
+
+    def test_url_is_not_a_secret_assignment(self) -> None:
+        assert scan_for_pii("https://example.com/path?q=1") == []
+
+    def test_email_and_card_detection_unchanged(self) -> None:
+        # The new detectors sit last and claim nothing the older detectors
+        # already cover — personal-data detection is untouched (#1159).
+        matches = scan_for_pii("user@example.com paid 4111 1111 1111 1111")
+        assert [m.pii_type for m in matches] == ["email", "payment_card"]
 
 
 class TestMatchInvariants:
