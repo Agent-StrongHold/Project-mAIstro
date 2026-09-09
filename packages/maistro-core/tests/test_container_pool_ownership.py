@@ -23,14 +23,23 @@ staking a criterion on a `requires_postgres` test would report it *unproven*
 wherever the database is absent — which is what left AC-1 through AC-4 sitting
 at `covered` while reading as proven. The PostgreSQL tests are corroboration,
 against the real thing; the marked tests are the evidence.
+
+The SQLite ownership tests at the bottom (#1161) apply the same discipline: like
+the pool tests above they count rather than trust prose, because an `aclose`
+that forgot a connection is the sqlite twin of leaked pool slots. They build
+real containers on file-backed SQLite, which needs no server either, and stake
+no criterion of their own, so they carry no `ac` marker.
 """
 
 from __future__ import annotations
 
 import contextlib
+import gc
+import warnings
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+import aiosqlite
 import asyncpg
 import pytest
 
@@ -590,3 +599,150 @@ async def test_forgetting_an_unregistered_pool_leaves_the_registry_alone(
 
     assert pool_count() == 1
     assert await get_pool(DSN) is registered
+
+
+# --- #1161: the SQLite connections are the container's to close ---------------
+
+
+class FakeSqliteConnection:
+    """Counts its own closes, so "closed exactly once" is checkable."""
+
+    def __init__(self, *, close_raises: bool = False) -> None:
+        self.closes = 0
+        self._close_raises = close_raises
+
+    async def close(self) -> None:
+        self.closes += 1
+        if self._close_raises:
+            raise RuntimeError("the connection refused to close")
+
+
+async def _ephemeral_sqlite_container(
+    db_pool: Any,
+    session_conn: Any = None,
+    *,
+    held: bool,
+) -> Container:
+    """A container with no database, holding SQLite connections it may or may
+    not have taken.
+
+    Same reasoning as `_ephemeral_container`: `aclose` is about ownership, not
+    about which database. Assignment after the fact is the only way a
+    caller-supplied connection reaches a container, because `create_container`
+    opens SQLite itself and takes no connection parameter — so this is not a
+    state the real wiring cannot produce.
+    """
+    container = await create_container(_config("memory://"))
+    container.db_pool = db_pool
+    container.session_conn = session_conn
+    container.holds_db_pool = held
+    return container
+
+
+@pytest.mark.asyncio
+async def test_closing_the_container_closes_the_sqlite_connections_it_opened(
+    tmp_path: Any,
+) -> None:
+    """Both connections `_wire_sqlite_backend` opens — the shared one and the
+    session store's (#327) — are closed by aclose, and a use after that fails
+    loudly instead of queueing onto a worker thread that is about to die."""
+    container = await create_container(_config(f"sqlite:///{tmp_path}/owned.db"))
+
+    assert container.holds_db_pool is True
+    conn = container.db_pool
+    session_conn = container.session_conn
+    assert conn is not None
+    assert session_conn is not None
+
+    await container.aclose()
+
+    assert container.db_pool is None
+    assert container.session_conn is None
+    assert container.holds_db_pool is False
+    with pytest.raises(ValueError, match="no active connection"):
+        await conn.execute("SELECT 1")
+    with pytest.raises(ValueError, match="no active connection"):
+        await session_conn.execute("SELECT 1")
+
+
+@pytest.mark.asyncio
+async def test_a_supplied_sqlite_connection_survives_aclose(tmp_path: Any) -> None:
+    """The mirror of the pool rule (#335): a connection the caller opened is
+    the caller's, and aclose must not close it out from under them."""
+    supplied = await aiosqlite.connect(str(tmp_path / "callers.db"))
+    container = await _ephemeral_sqlite_container(supplied, held=False)
+
+    assert container.holds_db_pool is False
+    await container.aclose()
+
+    assert container.db_pool is supplied
+    cursor = await supplied.execute("SELECT 1")
+    assert await cursor.fetchone() == (1,)
+    await supplied.close()
+
+
+@pytest.mark.asyncio
+async def test_closing_twice_closes_sqlite_exactly_once() -> None:
+    """The `closed` guard covers the connections as well as the pool: a second
+    aclose must not find them and close them again."""
+    shared = FakeSqliteConnection()
+    session_conn = FakeSqliteConnection()
+    container = await _ephemeral_sqlite_container(shared, session_conn, held=True)
+
+    await container.aclose()
+    await container.aclose()
+
+    assert shared.closes == 1
+    assert session_conn.closes == 1
+
+
+@pytest.mark.asyncio
+async def test_a_sqlite_close_that_raises_does_not_strand_the_other_connection(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The sqlite twin of the pg rule: stopping at the first failure would
+    leave the session store's connection — and its non-daemon worker thread —
+    alive to block interpreter exit."""
+    shared = FakeSqliteConnection(close_raises=True)
+    session_conn = FakeSqliteConnection()
+    container = await _ephemeral_sqlite_container(shared, session_conn, held=True)
+
+    await container.aclose()
+
+    assert container.closed is True
+    assert shared.closes == 1
+    assert session_conn.closes == 1, "a later connection was left open by an earlier failure"
+    assert container.db_pool is None
+    assert container.session_conn is None
+    assert "did not close cleanly" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_sqlite_teardown_emits_no_resource_warning(tmp_path: Any) -> None:
+    """aiosqlite turns a connection dropped without close into a ResourceWarning
+    from `__del__`, and its worker thread is a non-daemon thread that blocks
+    interpreter shutdown — the leak's other symptom. Closing both connections
+    in aclose must leave nothing for finalization to complain about."""
+    container = await create_container(_config(f"sqlite:///{tmp_path}/teardown.db"))
+    # aiosqlite's __del__ warning names the connection's repr, so capture the
+    # identity of the two connections this container owns while aclose can
+    # still be checked against it. Without this, a connection some other test
+    # leaked -- finalized by this test's gc.collect() -- would be mistaken for
+    # one of ours, and the assertion would fail on somebody else's leak.
+    own = [repr(container.db_pool), repr(container.session_conn)]
+
+    await container.aclose()
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        del container
+        gc.collect()
+        gc.collect()
+    leaked = [
+        warning
+        for warning in caught
+        if issubclass(warning.category, ResourceWarning)
+        and "deleted before being closed" in str(warning.message)
+        and any(repr_ in str(warning.message) for repr_ in own)
+    ]
+    assert leaked == []
