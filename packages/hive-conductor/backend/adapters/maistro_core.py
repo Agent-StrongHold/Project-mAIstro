@@ -178,7 +178,16 @@ class MaistroCoreBridge:
             tracer=None,
             require_agents=True,
         )
-        self._container.agents = agents
+        # Mutate the dict the container wired; never rebind the attribute.
+        # `create_container` initializes an empty `agents` dict and hands that
+        # same object to `_wire_hierarchy`, whose `_AgentMapSource` resolves
+        # through the captured dict -- the closures capture the object, not its
+        # contents. Assigning a fresh dict here (the old code) would leave the
+        # hierarchy reading the original empty map forever: every hierarchical
+        # resolution would raise `HierarchyError("unknown local agent ...")`
+        # while `container.agents` itself looked perfectly populated.
+        self._container.agents.clear()
+        self._container.agents.update(agents)
 
     async def route(
         self,

@@ -25,9 +25,13 @@ async def test_start_passes_container_prompt_manager_to_agent_factory(monkeypatc
         outcome_store=object(),
         session_store=object(),
         quota_tracker=object(),
-        agents=None,
     )
     captured: dict[str, object] = {}
+    # The real Container always initializes `agents` to an empty dict and
+    # hands that object to `_wire_hierarchy`; the fake mirrors the contract
+    # the bridge is written against.
+    wired_agents: dict[str, object] = {}
+    container.agents = wired_agents
 
     async def fake_create_container(config):
         captured["config"] = config
@@ -35,7 +39,7 @@ async def test_start_passes_container_prompt_manager_to_agent_factory(monkeypatc
 
     async def fake_create_agents(**kwargs):
         captured.update(kwargs)
-        return ["wired-agent"]
+        return {"wired-agent": SimpleNamespace(identity=None)}
 
     monkeypatch.setattr("maistro.container.create_container", fake_create_container)
     monkeypatch.setattr("maistro.agents.factory.create_agents", fake_create_agents)
@@ -54,5 +58,69 @@ async def test_start_passes_container_prompt_manager_to_agent_factory(monkeypatc
     # selected has to be the one the agents get, or the Conductor's episodic
     # memories reach no prompt (#622).
     assert captured["context_assembly_policy"] is selected_assembly_policy
-    assert container.agents == ["wired-agent"]
+    assert list(container.agents) == ["wired-agent"]
     assert bridge.container is container
+
+
+@pytest.mark.asyncio
+async def test_start_populates_the_dict_the_hierarchy_closed_over(monkeypatch):
+    """The bridge must mutate the container's agents dict in place.
+
+    `create_container` initializes an empty `agents` dict and hands that SAME
+    object to `_wire_hierarchy`, whose `_AgentMapSource` resolves through the
+    captured dict -- the closure captures the object, not its contents. The
+    old code assigned a fresh dict (`container.agents = agents`), which left
+    the hierarchy reading the original empty map forever: every hierarchical
+    resolution would raise `HierarchyError("unknown local agent ...")` while
+    `container.agents` itself looked fully populated.
+
+    Proved against the REAL `_wire_hierarchy` closure, not a re-statement of
+    it: wire the fake container's dict through maistro's own wiring, start the
+    bridge, and resolve a roster name through the closure the way the ADR-101
+    orchestrator does.
+    """
+    from maistro.container import _wire_hierarchy
+    from maistro.skills.registry import InMemorySkillRegistry
+
+    # The dict the container wired: `_wire_hierarchy` closes over exactly this
+    # object, before any agent exists in it.
+    wired_agents: dict[str, object] = {}
+    _registry, orchestrator = _wire_hierarchy(wired_agents, InMemorySkillRegistry())
+
+    roster_agent = SimpleNamespace(identity=SimpleNamespace(name="delivery", skills=()))
+    container = SimpleNamespace(
+        prompt_manager=object(),
+        context_assembly_policy=object(),
+        context_builder=object(),
+        warden=object(),
+        sentinel=object(),
+        learning_store=object(),
+        learning_extractor=object(),
+        outcome_store=object(),
+        session_store=object(),
+        quota_tracker=object(),
+        agents=wired_agents,
+    )
+
+    async def fake_create_container(config):
+        return container
+
+    async def fake_create_agents(**kwargs):
+        return {"delivery": roster_agent}
+
+    monkeypatch.setattr("maistro.container.create_container", fake_create_container)
+    monkeypatch.setattr("maistro.agents.factory.create_agents", fake_create_agents)
+    monkeypatch.setattr("services.secrets.maistro_llm_api_key", lambda _settings: "")
+
+    bridge = MaistroCoreBridge()
+    await bridge.start(Settings(maistro_agents_dir="agents"))
+
+    # The wired map is still the wired map: populated in place, never replaced.
+    assert bridge.container.agents is wired_agents
+    assert bridge.container.agents is container.agents
+    assert set(bridge.container.agents) == {"delivery"}
+
+    # And the closure that the container built BEFORE the roster existed now
+    # resolves it -- which the old rebinding silently broke.
+    identity, _skills = await orchestrator._agent_source.resolve("delivery")
+    assert identity.name == "delivery"
