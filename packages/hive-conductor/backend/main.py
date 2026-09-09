@@ -204,6 +204,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _lifespan_log.warning("engine_start_failed: %s", exc, exc_info=True)
     try:
+        # #840: the product roster is a projection of the canonical manifest
+        # roster, re-materialized on EVERY boot in non-demo, non-POC modes --
+        # the store is durable, so a when-empty seed branch could neither
+        # re-materialize it nor reap stale rows. Fail-closed: a roster that
+        # cannot be built leaves NO rows and logs loudly; the fabricated demo
+        # rows are demo-mode-only and never substitute for it.
+        from services.agent_materialization import materialize_boot_roster
+
+        await materialize_boot_roster(get_settings(), engine_service.get_engine().agent_port)
+    except Exception as exc:
+        _lifespan_log.error("agent_roster_materialization_failed: %s", exc, exc_info=True)
+    try:
         from services.design_service import start_design_service
 
         await start_design_service(get_settings())

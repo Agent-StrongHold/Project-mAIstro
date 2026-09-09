@@ -234,3 +234,88 @@ class TestPulseRoster:
         """And an empty roster proposes nothing, which is the honest answer
         rather than a list of actions that cannot run."""
         assert pulse_roster("ws-nobody") == []
+
+
+class TestDispatchWithManifestRowsPresent:
+    """Slice 3 fills the global tail with real manifest-roster rows
+    (`materialize_manifest_roster`); the ordering invariants the pulse and
+    task resolution depend on must hold with them in the store -- a workspace's
+    own agent still wins, and a capability is still matched to the first
+    declarer (#840)."""
+
+    def test_a_manifest_row_keeps_the_global_tail_without_shadowing_a_workspace(
+        self,
+    ) -> None:
+        from types import SimpleNamespace
+
+        from services.agent_materialization import materialize_manifest_roster
+
+        materialize_manifest_roster(
+            {
+                "delivery": SimpleNamespace(
+                    identity=SimpleNamespace(
+                        name="delivery",
+                        description="",
+                        model="auto",
+                        tools=("poll_jira",),
+                        skills=(),
+                    )
+                )
+            }
+        )
+        _materialized("ws-1", "delivery", skills=["poll_jira"])
+
+        # Scoped-first: the workspace's own materialized agent answers.
+        found = resolve_agent("delivery", workspace_id="ws-1")
+        assert found is not None and found.id == "ws-1.delivery"
+
+        # And the pulse still orders the workspace's own agent before the
+        # global manifest row -- first-declarer-wins is what makes that
+        # precedence, so the ordering itself is the assertion.
+        roster = pulse_roster("ws-1")
+        assert [a.name for a in roster] == ["delivery", "delivery"]
+        assert "poll_jira" in roster[0].capabilities
+
+    def test_a_manifest_row_resolves_globally_by_its_name(self) -> None:
+        from types import SimpleNamespace
+
+        from services.agent_materialization import materialize_manifest_roster
+
+        materialize_manifest_roster(
+            {
+                "reporting": SimpleNamespace(
+                    identity=SimpleNamespace(
+                        name="reporting",
+                        description="",
+                        model="auto",
+                        tools=("generate_exec_summary",),
+                        skills=(),
+                    )
+                )
+            }
+        )
+
+        found = resolve_agent("reporting")
+        assert found is not None and found.id == "reporting" and found.workspace_id is None
+        task_type, _description, resolved = resolve_agent_task(
+            "reporting", "generate_exec_summary", {}
+        )
+        assert task_type == "reporting" and resolved == "reporting"
+
+    def test_a_manifest_row_capability_the_agent_does_not_declare_is_refused(self) -> None:
+        from types import SimpleNamespace
+
+        from services.agent_materialization import materialize_manifest_roster
+
+        materialize_manifest_roster(
+            {
+                "intake": SimpleNamespace(
+                    identity=SimpleNamespace(
+                        name="intake", description="", model="auto", tools=(), skills=()
+                    )
+                )
+            }
+        )
+
+        with pytest.raises(ValueError, match="not valid for"):
+            resolve_agent_task("intake", "poll_jira", {})

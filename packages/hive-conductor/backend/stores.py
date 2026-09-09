@@ -1,11 +1,15 @@
 """In-memory stores with optional SQLite persistence for the Hive Conductor API.
 
-When a PersistedStore is configured via ``configure_persistence()``, all
-mutable stores (missions, chat_sessions, memory_entries, etc.) are backed
-by SQLite. Read-only stores (agents, skills, containers, mcp_servers,
-mcp_tools, schedules) stay in-memory since they reflect live system state.
+When a PersistedStore is configured via ``configure_persistence()``, every
+ModelStore listed in ``_all_model_stores`` -- ``agents`` included -- is backed
+by SQLite, and its rows survive restarts. ``stores.agents`` is therefore a
+durable *product projection*: a card index maintained through exactly one
+writer (``services.agent_materialization`` -- boot materialization of the
+canonical roster, persona spawns, and the CRUD/Forge/chat definition fronts),
+not live system state and not an execution authority.
 
-Seed data is loaded when the store is empty and no persisted data exists.
+Seed data is loaded when the store is empty and no persisted data exists; the
+agents seed is demo-mode-only (#840).
 """
 
 from __future__ import annotations
@@ -305,6 +309,20 @@ def _seed_skills() -> None:
 
 
 def _seed_agents() -> None:
+    """The fabricated starter roster -- demo mode only.
+
+    Everywhere else the product roster comes from boot materialization of the
+    canonical manifest roster (``services.agent_materialization.
+    materialize_boot_roster``, wired into the lifespan in ``main.py``):
+    idempotent per boot and reaping stale rows, because this store is durable
+    -- none of which a when-empty seed branch could do. Demo mode keeps this
+    seeding exactly as it always was, and PM-POC never seeded agents (the
+    early return in ``_seed_if_empty``) and still does not.
+    """
+    from config import get_settings
+
+    if get_settings().hive_mode != "demo":
+        return
     if len(agents) == 0:
         t = now()
         _real_agents = [

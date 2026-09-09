@@ -124,6 +124,89 @@ def test_delete_agent_normal_mode_missing_404(admin_client: Any, monkeypatch) ->
 
 
 # --------------------------------------------------------------------------- #
+# The one-writer refusal contract on the CRUD routes
+#
+# create/update funnel their definition write through `_store_or_refuse`, which
+# maps the materialization service's fail-closed refusals onto HTTP: flagged is
+# 400, a scanner that cannot run is 503, an unscannable config is 413 -- and
+# nothing is stored in any of them. The Forge has its own fail-closed tests
+# above; these pin the same contract for the plain CRUD producers.
+# --------------------------------------------------------------------------- #
+
+
+class TestCrudWritePathRefusesFailClosed:
+    def _patch_upsert(self, monkeypatch, exc: Exception) -> None:
+        import routes.agents as agents_routes
+
+        async def _refuse(*args: Any, **kwargs: Any) -> Any:
+            raise exc
+
+        monkeypatch.setattr(agents_routes, "upsert_agent_definition", _refuse)
+
+    def test_a_rejected_definition_answers_400_and_stores_nothing(
+        self, admin_client: Any, monkeypatch
+    ) -> None:
+        from services.agent_materialization import AgentDefinitionRejected
+
+        self._patch_upsert(monkeypatch, AgentDefinitionRejected("injected config"))
+        r = admin_client.post(
+            "/v1/agents",
+            json={"name": "New Agent", "description": "d", "model": "gpt-4.1"},
+        )
+        assert r.status_code == 400
+        assert "rejected by security scan" in r.json()["detail"]
+        assert len(stores.agents) == 0
+
+    def test_an_unavailable_scanner_answers_503_and_stores_nothing(
+        self, admin_client: Any, monkeypatch
+    ) -> None:
+        from services.agent_materialization import AgentScannerUnavailable
+
+        self._patch_upsert(monkeypatch, AgentScannerUnavailable("detector offline"))
+        r = admin_client.post(
+            "/v1/agents",
+            json={"name": "New Agent", "description": "d", "model": "gpt-4.1"},
+        )
+        assert r.status_code == 503
+        assert r.json()["detail"] == (
+            "agent unavailable: the security scan could not run; nothing was stored"
+        )
+        assert len(stores.agents) == 0
+
+    def test_an_unscannable_config_answers_413_and_stores_nothing(
+        self, admin_client: Any, monkeypatch
+    ) -> None:
+        from services.agent_materialization import ScanBudgetExceeded
+
+        self._patch_upsert(monkeypatch, ScanBudgetExceeded("config past the scan budget"))
+        r = admin_client.post(
+            "/v1/agents",
+            json={"name": "New Agent", "description": "d", "model": "gpt-4.1"},
+        )
+        assert r.status_code == 413
+        assert r.json()["detail"] == "config past the scan budget"
+        assert len(stores.agents) == 0
+
+    def test_update_refuses_and_leaves_the_stored_row_untouched(
+        self, admin_client: Any, monkeypatch
+    ) -> None:
+        import routes.agents as agents_routes
+        from services.agent_materialization import AgentDefinitionRejected
+
+        async def _refuse(*args: Any, **kwargs: Any) -> Any:
+            raise AgentDefinitionRejected("injected config")
+
+        monkeypatch.setattr(agents_routes, "update_agent_definition", _refuse)
+        stores.agents["a1"] = _make_agent()
+        r = admin_client.put("/v1/agents/a1", json={"name": "Renamed"})
+        assert r.status_code == 400
+        assert "rejected by security scan" in r.json()["detail"]
+        # The refusal is total: the row the write would have mutated is exactly
+        # as it was.
+        assert stores.agents["a1"].name == "Agent One"
+
+
+# --------------------------------------------------------------------------- #
 # /scan
 # --------------------------------------------------------------------------- #
 
@@ -287,13 +370,15 @@ class TestForgeValidatesAndFailsClosed:
         assert len(stores.agents) == 0
 
     def test_a_scanner_that_cannot_run_forges_nothing(self, admin_client: Any, monkeypatch) -> None:
-        import routes.agents as agents_routes
+        import services.agent_materialization as materialization
 
         class _BrokenWarden:
             async def scan(self, text: str, boundary: str) -> None:
                 raise RuntimeError("detector offline")
 
-        monkeypatch.setattr(agents_routes, "_warden_instance", _BrokenWarden())
+        # The detector instance lives with the scan it owns -- the one writer
+        # this store has -- since the write-path scan moved there.
+        monkeypatch.setattr(materialization, "_warden_instance", _BrokenWarden())
         r = admin_client.post("/v1/agents/forge", json={"description": FORGE_DESCRIPTION})
         assert r.status_code == 503
         assert "no artifact was stored" in r.json()["detail"]

@@ -580,3 +580,35 @@ async def test_schedule_admitter_exposes_the_container_seam_when_bridged() -> No
     svc._agent_port = _Bridge()
 
     assert svc.schedule_admitter == "the-admitter"
+
+
+def test_agent_port_is_none_before_a_bridge_is_bound() -> None:
+    """Unconfigured engine: the boot seams read None off the port accessor,
+    the same answer `schedule_admitter` gives without a bridge."""
+    from services.engine import EngineService
+
+    svc = EngineService()
+
+    assert svc.agent_port is None
+
+
+def test_agent_port_exposes_the_bound_runtime() -> None:
+    """The property is the one read-side of `_bind_agent_port`: boot seams
+    (the roster materializer) get the port object itself back, not a copy."""
+    from services.engine import EngineService
+
+    class _Bridge:
+        async def route(
+            self,
+            messages: list[dict[str, Any]],
+            *,
+            session_id: str | None = None,
+            intent_hint: str = "",
+        ) -> dict[str, Any]:
+            return {}
+
+    port = _Bridge()
+    svc = EngineService()
+    svc._agent_port = port
+
+    assert svc.agent_port is port
