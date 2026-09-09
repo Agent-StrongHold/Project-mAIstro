@@ -47,6 +47,12 @@ class EngineService:
         return self._configured
 
     @property
+    def agent_port(self) -> AgentPort | None:
+        """The bound AgentPort, for boot seams that need the runtime itself
+        (the roster materializer reads the bridge's container off it)."""
+        return self._agent_port
+
+    @property
     def capabilities(self) -> Any:
         """The CapabilityRegistry backing the API. Sourced from the core Container
         when configured, else a standalone canonical registry (stub/dev mode)."""

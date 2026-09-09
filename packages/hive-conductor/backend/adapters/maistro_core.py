@@ -96,6 +96,105 @@ class _HttpOpenAILLMClient:
         yield content
 
 
+async def _construct_runtime(settings: Settings) -> tuple[Any, dict[str, Any]]:
+    """Compose what an embedded runtime needs: the wired Container and the
+    canonical agent roster built over ``settings.maistro_agents_dir``.
+
+    Shared by ``MaistroCoreBridge.start()`` and ``build_canonical_roster()``
+    so a deployment materializing the roster without a bridge projects exactly
+    the roster the bridge would have built -- one construction, one roster.
+    Fail-closed by the factory's own contract: with ``require_agents=True`` a
+    missing or empty roster raises rather than fabricating.
+    """
+    import os
+
+    from services.secrets import maistro_llm_api_key
+
+    from maistro.agents.factory import create_agents
+    from maistro.config.database import resolve_database_url
+    from maistro.container import create_container
+    from maistro.types.config import AgentConfig
+
+    llm_base = (settings.litellm_api_base or "").strip()
+    llm_key = maistro_llm_api_key(settings) or ""
+    model = settings.maistro_model
+
+    config = AgentConfig(
+        router_api_key=settings.maistro_router_api_key or "",
+        litellm_url=llm_base or "http://localhost:4000",
+        litellm_key=llm_key,
+        agents_dir=settings.maistro_agents_dir,
+        # Stated, not inherited (#158). Core defaults this to "default" too,
+        # so the value is the same today — but a Hive that changed its
+        # default Workspace and a core that did not would then disagree
+        # about where unscoped Runs live, silently.
+        workspace_id=settings.hive_default_workspace_id,
+        # Without this the container took the ephemeral branch and built
+        # in-memory stores, however the deployment was configured -- the
+        # bridge constructs `AgentConfig` directly, so it never passed
+        # through `config.loader`, which is the only other caller that
+        # resolves this. Binding the container's outcome store as "durable"
+        # while it was in-memory is what made the omission visible (#696).
+        #
+        # `resolve_database_url` rather than a new Hive setting: it is the
+        # one answer to "which database" for every caller, and it already
+        # reads both `DATABASE_URL` and the `DB_*` set the shipped compose
+        # file passes.
+        database_url=resolve_database_url(),
+    )
+
+    container = await create_container(config)
+
+    llm_client = _HttpOpenAILLMClient(
+        base_url=llm_base or "http://localhost:4000/v1",
+        api_key=llm_key or "sk-noop",
+        model=model,
+    )
+    prompt_manager = container.prompt_manager
+
+    agents_dir = settings.maistro_agents_dir
+    if not os.path.isabs(agents_dir):
+        # Resolve relative to hive-conductor backend directory
+        agents_dir = os.path.join(os.path.dirname(__file__), "..", agents_dir)
+
+    agents = await create_agents(
+        agents_dir=agents_dir,
+        prompt_manager=prompt_manager,
+        llm=llm_client,
+        context_builder=container.context_builder,
+        warden=container.warden,
+        sentinel=container.sentinel,
+        learning_store=container.learning_store,
+        # ADR-091's Layer 0-4 assembly. The container has always built this
+        # and nothing read it back, so the episodic memories the Conductor
+        # stores never reached a prompt (#622).
+        context_assembly_policy=container.context_assembly_policy,
+        learning_extractor=container.learning_extractor,
+        outcome_store=container.outcome_store,
+        session_store=container.session_store,
+        quota_tracker=container.quota_tracker,
+        tracer=None,
+        require_agents=True,
+    )
+    return container, agents
+
+
+async def build_canonical_roster(settings: Settings) -> dict[str, Any]:
+    """The canonical agent roster, built exactly the way the embedded bridge
+    builds it (``create_container`` + ``create_agents`` over
+    ``settings.maistro_agents_dir``, fail-closed on a missing or empty
+    roster).
+
+    Used by the boot materializer when no bridge container exists. The
+    container is constructed for its wiring dependencies and deliberately not
+    retained: without a bridge there is no runtime to bind it to, which is
+    exactly why materialized rows are then stamped ``dispatchable=False``
+    rather than wearing the shape of an executable roster.
+    """
+    _container, agents = await _construct_runtime(settings)
+    return agents
+
+
 class MaistroCoreBridge:
     """AgentPort implementation that embeds maistro-core directly (one process, one port)."""
 
@@ -108,76 +207,8 @@ class MaistroCoreBridge:
         return self._container
 
     async def start(self, settings: Settings) -> None:
-        import os
-
-        from services.secrets import maistro_llm_api_key
-
-        from maistro.agents.factory import create_agents
-        from maistro.config.database import resolve_database_url
-        from maistro.container import create_container
-        from maistro.types.config import AgentConfig
-
-        llm_base = (settings.litellm_api_base or "").strip()
-        llm_key = maistro_llm_api_key(settings) or ""
-        model = settings.maistro_model
-
-        config = AgentConfig(
-            router_api_key=settings.maistro_router_api_key or "",
-            litellm_url=llm_base or "http://localhost:4000",
-            litellm_key=llm_key,
-            agents_dir=settings.maistro_agents_dir,
-            # Stated, not inherited (#158). Core defaults this to "default" too,
-            # so the value is the same today — but a Hive that changed its
-            # default Workspace and a core that did not would then disagree
-            # about where unscoped Runs live, silently.
-            workspace_id=settings.hive_default_workspace_id,
-            # Without this the container took the ephemeral branch and built
-            # in-memory stores, however the deployment was configured -- the
-            # bridge constructs `AgentConfig` directly, so it never passed
-            # through `config.loader`, which is the only other caller that
-            # resolves this. Binding the container's outcome store as "durable"
-            # while it was in-memory is what made the omission visible (#696).
-            #
-            # `resolve_database_url` rather than a new Hive setting: it is the
-            # one answer to "which database" for every caller, and it already
-            # reads both `DATABASE_URL` and the `DB_*` set the shipped compose
-            # file passes.
-            database_url=resolve_database_url(),
-        )
-
-        self._container = await create_container(config)
-
-        llm_client = _HttpOpenAILLMClient(
-            base_url=llm_base or "http://localhost:4000/v1",
-            api_key=llm_key or "sk-noop",
-            model=model,
-        )
-        prompt_manager = self._container.prompt_manager
-
-        agents_dir = settings.maistro_agents_dir
-        if not os.path.isabs(agents_dir):
-            # Resolve relative to hive-conductor backend directory
-            agents_dir = os.path.join(os.path.dirname(__file__), "..", agents_dir)
-
-        agents = await create_agents(
-            agents_dir=agents_dir,
-            prompt_manager=prompt_manager,
-            llm=llm_client,
-            context_builder=self._container.context_builder,
-            warden=self._container.warden,
-            sentinel=self._container.sentinel,
-            learning_store=self._container.learning_store,
-            # ADR-091's Layer 0-4 assembly. The container has always built this
-            # and nothing read it back, so the episodic memories the Conductor
-            # stores never reached a prompt (#622).
-            context_assembly_policy=self._container.context_assembly_policy,
-            learning_extractor=self._container.learning_extractor,
-            outcome_store=self._container.outcome_store,
-            session_store=self._container.session_store,
-            quota_tracker=self._container.quota_tracker,
-            tracer=None,
-            require_agents=True,
-        )
+        container, agents = await _construct_runtime(settings)
+        self._container = container
         # Mutate the dict the container wired; never rebind the attribute.
         # `create_container` initializes an empty `agents` dict and hands that
         # same object to `_wire_hierarchy`, whose `_AgentMapSource` resolves
@@ -186,8 +217,8 @@ class MaistroCoreBridge:
         # hierarchy reading the original empty map forever: every hierarchical
         # resolution would raise `HierarchyError("unknown local agent ...")`
         # while `container.agents` itself looked perfectly populated.
-        self._container.agents.clear()
-        self._container.agents.update(agents)
+        container.agents.clear()
+        container.agents.update(agents)
 
     async def route(
         self,

@@ -308,6 +308,133 @@ def delete_workspace_agents(workspace_id: str) -> None:
         stores.agents.pop(agent.id, None)
 
 
+# ─── Canonical roster materialization (#840) ──────────────────────────────
+
+
+def _is_manifest_row(agent: Agent) -> bool:
+    """Whether this row was projected from the canonical roster by us."""
+    provenance = agent.config.get("provenance") if isinstance(agent.config, dict) else None
+    return agent.workspace_id is None and (
+        isinstance(provenance, dict) and provenance.get("source") == MANIFEST_ROSTER_SOURCE
+    )
+
+
+def materialize_manifest_roster(
+    roster: Mapping[str, Any] | None,
+    *,
+    dispatchable: bool = True,
+) -> list[Agent]:
+    """Project the canonical roster -- the agents maistro's factory builds
+    from the shipped manifests -- into `stores.agents` as GLOBAL rows.
+
+    Rows are keyed by the roster's own names (`workspace_id=None`, so they
+    land in `pulse_roster`'s global tail and can never shadow a workspace's
+    own agent, and can never collide with `{workspace}.{spawn}` keys or
+    `forge-*` fingerprints). `capabilities` come from the identity's tools,
+    exactly as persona materialization maps a spawn's tools, so the capability
+    union `resolve_agent_task`/`pulse_roster` read keeps one contract.
+
+    Idempotent, per boot: upserting again refreshes the projection-owned
+    fields of an existing projection in place (keeping `created_at` and the
+    row's counters) rather than duplicating it, and reaps projected rows the
+    current roster no longer declares -- the store is SQLite-durable, so a
+    stale name would otherwise outlive its manifest forever. Rows the roster
+    does not declare but did not project (user-created rows) are never reaped.
+
+    `dispatchable=False` marks the rows honestly as carrying no runtime that
+    could execute them (no embedded maistro-core bridge) -- the same
+    no-fabricated-success rule StubAgentPort encodes.
+    """
+    now = datetime.now(UTC)
+    projected: list[Agent] = []
+    for key, runtime_agent in (roster or {}).items():
+        identity = getattr(runtime_agent, "identity", None)
+        if identity is None:
+            continue
+        aid = str(getattr(identity, "name", "") or key)
+        if not aid:
+            continue
+        existing = stores.agents.get(aid)
+        base = existing if existing is not None and _is_manifest_row(existing) else None
+        config = dict(base.config) if base is not None else {}
+        config["dispatchable"] = bool(dispatchable)
+        config["provenance"] = _provenance(MANIFEST_ROSTER_SOURCE, None, now)
+        row = Agent(
+            id=aid,
+            workspace_id=None,
+            name=aid,
+            description=str(getattr(identity, "description", "") or ""),
+            model=str(getattr(identity, "model", "") or "auto"),
+            status=base.status if base is not None else "idle",
+            capabilities=list(getattr(identity, "tools", ()) or ()),
+            skills=list(getattr(identity, "skills", ()) or ()),
+            current_mission=base.current_mission if base is not None else None,
+            tasks_completed=base.tasks_completed if base is not None else 0,
+            avg_response_time_ms=base.avg_response_time_ms if base is not None else 0.0,
+            last_active=base.last_active if base is not None else now,
+            created_at=base.created_at if base is not None else now,
+            config=config,
+        )
+        stores.agents[aid] = row
+        projected.append(row)
+
+    kept = {row.id for row in projected}
+    reaped = 0
+    for agent in list(stores.agents.values()):
+        if agent.workspace_id is None and _is_manifest_row(agent) and agent.id not in kept:
+            stores.agents.pop(agent.id, None)
+            reaped += 1
+    if projected or reaped:
+        logger.info(
+            "manifest roster materialized rows=%d reaped=%d dispatchable=%s",
+            len(projected),
+            reaped,
+            dispatchable,
+        )
+    return projected
+
+
+async def materialize_boot_roster(settings: Any, agent_port: Any) -> list[Agent] | None:
+    """Boot projection of the canonical roster, or None where it does not run.
+
+    Runs on EVERY boot in non-demo, non-POC modes -- not only when the store
+    happens to be empty: the store is durable, so the when-empty branch alone
+    would silently skip both re-materialization and stale-row reap after the
+    first boot. Demo and PM-POC modes keep exactly the seeding they had.
+
+    The roster comes from the bridge's container when one exists; without a
+    bridge it is built the same way the bridge builds it (fail-closed:
+    `require_agents=True`), and rows are stamped `dispatchable=False` because
+    there is no runtime behind them. A roster that cannot be built at all
+    produces NO rows and a loud boot error -- never the fabricated demo rows
+    as a side effect.
+    """
+    from settings_defaults import is_pm_poc_mode
+
+    if getattr(settings, "hive_mode", "production") == "demo" or is_pm_poc_mode():
+        return None
+
+    container = getattr(agent_port, "container", None)
+    if container is not None and getattr(container, "agents", None):
+        return materialize_manifest_roster(container.agents, dispatchable=True)
+
+    from adapters.maistro_core import build_canonical_roster
+
+    try:
+        roster = await build_canonical_roster(settings)
+    except Exception as exc:
+        logger.error(
+            "AGENT ROSTER NOT MATERIALIZED: the canonical roster could not be built "
+            "from %s (%s: %s). stores.agents carries no manifest roster; the fabricated "
+            "demo roster is demo-mode-only and will not substitute for it.",
+            settings.maistro_agents_dir,
+            type(exc).__name__,
+            exc,
+        )
+        return []
+    return materialize_manifest_roster(roster, dispatchable=False)
+
+
 # Register once when the workspace routes import this module. Keeping the
 # cascade at the store lifecycle boundary means future non-HTTP deletion paths
 # cannot accidentally recreate permanent orphan agents.
