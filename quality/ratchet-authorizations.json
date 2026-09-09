@@ -165,6 +165,16 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#1172",
       "reason": "StrikeRecoveryService.unlock is a public administrative recovery operation shipped by #1172; downstream products invoke it through the Sentinel-authorized service, outside the packages/*/src Vulture scan."
+    },
+    "packages/maistro-core/src/maistro/events/outbox.py::unused variable 'failed_at'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1162",
+      "reason": "OutboxDeadLetter.failed_at is the #1162 dead-letter evidence field: _record_failure stamps it when a row exhausts MAX_PUBLISH_ATTEMPTS, and dead_letters() copies it into every OutboxDeadLetter it returns. It is deliberately write-only in-package - its readers are the test suite (test_outbox.py asserts the dead-letter disposition through the accessor; CI's vulture scan covers packages/*/src only and cannot see test-file reads) plus downstream embedders of the SQLite outbox inspecting when a row was terminally failed. Retained as the declarative evidence record per the dataclass-declarative-field rule: fields are constructed and returned by convention, not always read in package-local code."
+    },
+    "packages/maistro-core/src/maistro/events/outbox.py::unused method 'dead_letters'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1162",
+      "reason": "SqliteEventOutbox.dead_letters is the #1162 public read surface for the terminal dead-letter disposition: it returns the rows whose durable append exhausted the attempt bound, oldest first, with their failure evidence (attempts, last_error, failed_at). No production entry point in this repository drains it yet - pending_count() deliberately excludes dead-lettered rows and points at this accessor, and the readers today are the test suite (test_outbox.py asserts its contents and ordering; invisible to the src-only scan) plus downstream consumers of the SQLite outbox, for which maistro-core is a published library. Expected to gain an in-repo reader when a shipped process surfaces dead-letter evidence, at which point the entry leaves the baseline."
     }
   },
   "model-egress": {
