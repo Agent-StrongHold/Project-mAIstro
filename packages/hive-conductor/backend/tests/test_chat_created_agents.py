@@ -36,6 +36,7 @@ from services.agent_materialization import (  # noqa: E402
     AgentDefinitionRejected,
     AgentScannerUnavailable,
     ScanBudgetExceeded,
+    register_runtime_source,
 )
 from services.chat_completion import (  # noqa: E402
     _chat_workspace_id,
@@ -62,6 +63,36 @@ def workspace() -> Any:
     token = _chat_workspace_id.set("ws-9")
     yield "ws-9"
     _chat_workspace_id.reset(token)
+
+
+def _register_fake_runtime() -> dict[str, Any]:
+    """A container-shaped runtime registered on the materialization seam, the
+    way the bridge registers the one it builds at boot."""
+    from types import SimpleNamespace
+
+    class _Prompts:
+        def __init__(self) -> None:
+            self.upserted: list[tuple[str, str, str]] = []
+
+        async def upsert(self, name: str, body: str, label: str = "") -> None:
+            self.upserted.append((name, body, label))
+
+    wired: dict[str, Any] = {}
+    container = SimpleNamespace(
+        prompt_manager=_Prompts(),
+        context_builder=object(),
+        warden=object(),
+        sentinel=object(),
+        learning_store=object(),
+        context_assembly_policy=object(),
+        learning_extractor=object(),
+        outcome_store=object(),
+        session_store=object(),
+        quota_tracker=object(),
+        agents=wired,
+    )
+    register_runtime_source(container=container, llm=object(), preamble="")
+    return wired
 
 
 async def test_a_chat_created_agent_is_dispatchable_and_provenance_stamped(
@@ -142,6 +173,49 @@ async def test_resaving_the_same_action_upserts_rather_than_duplicates(
     rows = [a for a in stores.agents.values() if a.name == "Blocker Alert"]
     assert len(rows) == 1
     assert rows[0].id == "ws-9.Blocker Alert"
+
+
+async def test_a_chat_created_agent_materializes_into_the_runtime_map(
+    workspace: str,
+) -> None:
+    """#840 Slice 4, chat half: with a bridge present, a chat-created
+    definition becomes a real agent in the wired map -- direct strategy (the
+    row declares none), capabilities as tools -- and the write is audited
+    like every other roster mutation (O2)."""
+    from maistro.agents.base import Agent as RuntimeAgent
+    from maistro.agents.strategies.direct import DirectStrategy
+
+    wired = _register_fake_runtime()
+
+    result = await _tool_create_agent_button(
+        {"name": "Sprint Check", "capability": "poll_jira"}, "user-1", None
+    )
+
+    aid = result["agent"]["id"]
+    agent = wired["Sprint Check"]
+    assert isinstance(agent, RuntimeAgent)
+    assert agent.identity.name == "Sprint Check"
+    assert agent.identity.reasoning_strategy == "direct"
+    assert isinstance(agent._strategy, DirectStrategy)
+    assert agent.identity.tools == ("poll_jira",)
+    assert stores.agents[aid].config["dispatchable"] is True
+
+    audits = [e for e in stores.audit_log.values() if e.get("target") == aid]
+    assert audits and audits[0]["action"] == "agent_chat_created"
+    assert audits[0]["actor"] == "user-1"
+    assert audits[0]["detail"]["capability"] == "poll_jira"
+
+
+async def test_a_chat_saved_action_without_a_runtime_is_stamped_non_dispatchable() -> None:
+    """No bridge, no fabricated agent: the saved definition stays a roster
+    member, stamped honestly non-dispatchable."""
+    result = await _tool_save_as_action(
+        {"name": "Morning Standup Poll", "capability": "poll_jira"}, "user-1", None
+    )
+
+    assert result["saved"] is True
+    record = stores.agents[result["agent_id"]]
+    assert record.config["dispatchable"] is False
 
 
 async def test_a_flagged_description_is_refused_and_nothing_is_stored() -> None:

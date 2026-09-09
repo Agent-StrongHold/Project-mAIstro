@@ -29,6 +29,7 @@ from services.agent_materialization import (
     ScanBudgetExceeded,
     agent_id_for,
     delete_agent_definition,
+    materialize_runtime,
     scan_config,
     slugify_agent_name,
     update_agent_definition,
@@ -318,8 +319,11 @@ async def forge_agent(body: ForgeAgentBody, request: Request, response: Response
     existing = stores.agents.get(aid)
     if existing is not None:
         # Idempotent re-submission: the same spec forges the same artifact.
+        # The runtime half is process-local (it does not survive a restart),
+        # so re-serving the artifact re-materializes it too -- the returned
+        # row wears the dispatchability that is true for THIS process.
         response.status_code = 200
-        return existing
+        return await materialize_runtime(existing)
 
     capabilities = _forge_capabilities(body.description)
     artifact_for_scan = {
@@ -380,8 +384,12 @@ async def forge_agent(body: ForgeAgentBody, request: Request, response: Response
     )
     # Stored only through the materialization service -- the one writer for
     # this store -- with Forge's already-completed clean verdict recorded in
-    # the row's provenance beside the config's own `forge` block.
+    # the row's provenance beside the config's own `forge` block. Then the
+    # runtime half: a forged artifact is a definition the runtime can execute,
+    # so it is materialized into the bridge container's wired map (or, without
+    # a runtime, honestly stamped non-dispatchable instead of faked).
     agent = await _store_or_refuse(upsert_agent_definition(agent, source="forge", scan=scan))
+    agent = await materialize_runtime(agent)
     log_audit(
         "agent_forge",
         "system",

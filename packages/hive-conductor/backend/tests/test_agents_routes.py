@@ -238,6 +238,39 @@ def test_scan_agent_normal_mode_missing_404(admin_client: Any, monkeypatch) -> N
 FORGE_DESCRIPTION = "Research market trends and summarize the findings into short briefs"
 
 
+class _RecordingPrompts:
+    def __init__(self) -> None:
+        self.upserted: list[tuple[str, str, str]] = []
+
+    async def upsert(self, name: str, body: str, label: str = "") -> None:
+        self.upserted.append((name, body, label))
+
+
+def _register_fake_runtime() -> tuple[Any, dict[str, Any]]:
+    """A container-shaped runtime registered on the materialization seam, the
+    way the bridge registers the one it builds at boot."""
+    from types import SimpleNamespace
+
+    import services.agent_materialization as materialization
+
+    wired: dict[str, Any] = {}
+    container = SimpleNamespace(
+        prompt_manager=_RecordingPrompts(),
+        context_builder=object(),
+        warden=object(),
+        sentinel=object(),
+        learning_store=object(),
+        context_assembly_policy=object(),
+        learning_extractor=object(),
+        outcome_store=object(),
+        session_store=object(),
+        quota_tracker=object(),
+        agents=wired,
+    )
+    materialization.register_runtime_source(container=container, llm=object(), preamble="")
+    return container, wired
+
+
 class TestForgeCreatesACanonicalArtifact:
     def test_a_valid_request_forges_a_scanned_durable_agent(self, admin_client: Any) -> None:
         r = admin_client.post("/v1/agents/forge", json={"description": FORGE_DESCRIPTION})
@@ -270,6 +303,70 @@ class TestForgeCreatesACanonicalArtifact:
         assert second.json()["id"] == first.json()["id"]
         forged = [a for a in stores.agents.values() if a.config.get("forge")]
         assert len(forged) == 1
+
+    def test_a_forged_artifact_materializes_into_the_runtime_map(self, admin_client: Any) -> None:
+        """#840 Slice 4's runtime half: a forged definition becomes a REAL
+        agent in the bridge container's wired map, with the forged strategy."""
+        from maistro.agents.base import Agent as RuntimeAgent
+        from maistro.agents.strategies.react import ReactStrategy
+
+        _container, wired = _register_fake_runtime()
+
+        r = admin_client.post("/v1/agents/forge", json={"description": FORGE_DESCRIPTION})
+        assert r.status_code == 201
+        body = r.json()
+
+        agent = wired[body["name"]]
+        assert isinstance(agent, RuntimeAgent)
+        assert agent.identity.name == body["name"]
+        assert agent.identity.reasoning_strategy == "react"
+        assert isinstance(agent._strategy, ReactStrategy)
+        # The row carries the truthful dispatchability stamp for this process.
+        assert body["config"]["dispatchable"] is True
+
+    def test_a_forged_artifact_without_a_runtime_is_stamped_non_dispatchable(
+        self, admin_client: Any
+    ) -> None:
+        """No registered runtime (StubAgentPort deployment): the artifact is
+        still stored and resolvable as a roster member, but honestly stamped --
+        no dispatchable agent is fabricated."""
+        r = admin_client.post("/v1/agents/forge", json={"description": FORGE_DESCRIPTION})
+        assert r.status_code == 201
+        body = r.json()
+        assert body["config"]["dispatchable"] is False
+        assert body["id"] in stores.agents
+
+    def test_a_definition_the_runtime_refuses_is_stamped_not_fabricated(
+        self, admin_client: Any
+    ) -> None:
+        """The narrow stamping path: a delegate forge declares no sub-agents,
+        and delegate construction fail-closes on exactly that -- so nothing
+        enters the runtime map and the row is stamped non-dispatchable."""
+        _container, wired = _register_fake_runtime()
+
+        r = admin_client.post(
+            "/v1/agents/forge",
+            json={"description": FORGE_DESCRIPTION, "strategy": "delegate"},
+        )
+        assert r.status_code == 201  # the definition is legitimate; its runtime half is not
+        assert r.json()["config"]["dispatchable"] is False
+        assert wired == {}
+
+    def test_an_idempotent_re_forge_re_materializes_the_runtime_half(
+        self, admin_client: Any
+    ) -> None:
+        """The runtime half is process-local: after a restart the re-served
+        artifact must re-materialize, not just re-return the stored row."""
+        _container, wired = _register_fake_runtime()
+
+        first = admin_client.post("/v1/agents/forge", json={"description": FORGE_DESCRIPTION})
+        assert first.status_code == 201
+        wired.clear()  # simulate the process restart that loses runtime agents
+
+        second = admin_client.post("/v1/agents/forge", json={"description": FORGE_DESCRIPTION})
+        assert second.status_code == 200
+        assert second.json()["id"] == first.json()["id"]
+        assert wired[first.json()["name"]].identity.name == first.json()["name"]
 
     def test_a_changed_request_forges_a_new_artifact(self, admin_client: Any) -> None:
         first = admin_client.post("/v1/agents/forge", json={"description": FORGE_DESCRIPTION})
