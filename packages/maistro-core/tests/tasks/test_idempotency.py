@@ -247,6 +247,141 @@ async def test_a_stalled_pending_claim_is_taken_over() -> None:
     assert record is not None and record.admitted is False
 
 
+# ── the shared claim flow under interleaving ──────────────────────
+
+
+def _scope(key: str) -> str:
+    return admission_scope_key(principal="u", workspace_id="w", action=TASK_SUBMIT_ACTION, key=key)
+
+
+def _mid_admission_record(created: datetime) -> AdmissionRecord:
+    """A pending claim: no receipt yet, lease still running from ``created``."""
+    return AdmissionRecord(
+        fingerprint="fp",
+        request="{}",
+        task_id=None,
+        run_id=None,
+        created_at_us=int(created.timestamp() * 1_000_000),
+        expires_at_us=int((created + DEFAULT_REPLAY_WINDOW).timestamp() * 1_000_000),
+        lease_expires_at_us=int((created + PENDING_LEASE).timestamp() * 1_000_000),
+    )
+
+
+def _expired_record(created: datetime) -> AdmissionRecord:
+    """A claim whose replay window is long gone — deletable, take-overable."""
+    return AdmissionRecord(
+        fingerprint="fp",
+        request="{}",
+        task_id=None,
+        run_id=None,
+        created_at_us=int(created.timestamp() * 1_000_000),
+        expires_at_us=int((created + timedelta(hours=1)).timestamp() * 1_000_000),
+        lease_expires_at_us=int((created + timedelta(minutes=1)).timestamp() * 1_000_000),
+    )
+
+
+class _ScriptedClaims(InMemoryTaskIdempotencyStore):
+    """The in-memory tier with scripted ``_insert``/``_read`` outcomes, so the
+    shared ``_ClaimFlow`` loop can be walked through interleavings a
+    single-process test cannot otherwise produce. Every scripted value is one
+    a real backend returns under concurrency: a refused INSERT, a row that is
+    no longer there."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.insert_results: list[bool] = []
+        self.read_results: list[AdmissionRecord | None] = []
+
+    async def _insert(self, scope_key: str, record: AdmissionRecord) -> bool:
+        if self.insert_results:
+            return self.insert_results.pop(0)
+        return await super()._insert(scope_key, record)
+
+    async def _read(self, scope_key: str) -> AdmissionRecord | None:
+        if self.read_results:
+            return self.read_results.pop(0)
+        return await super()._read(scope_key)
+
+
+class _AlwaysContested(InMemoryTaskIdempotencyStore):
+    """A takeover that never lands: every guard re-check finds the row moved
+    under us again — the wasted round trip the takeover statements' comment
+    names, where the read-side assessment and the write-side guard disagree
+    by one interleaving."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.takeover_attempts = 0
+
+    async def _take_over(self, scope_key: str, record: AdmissionRecord, now_us: int) -> bool:
+        self.takeover_attempts += 1
+        return False
+
+
+async def test_a_slot_freed_between_read_and_takeover_is_rewon(monkeypatch) -> None:
+    """The read-side classification said takeover, but the stalled claim's
+    owner released before the write landed: the takeover guard refuses (the
+    row is not there any more), the loop re-reads, and the freed slot is
+    re-won — not reported as a phantom conflict or a wait."""
+    store = InMemoryTaskIdempotencyStore()
+    scope = _scope("k")
+    assert isinstance(await store.claim(scope, fingerprint="fp", request="{}", now=_NOW), Claimed)
+    now = _NOW + PENDING_LEASE + timedelta(seconds=1)
+
+    real_read = store._read
+
+    async def read_then_release(scope_key: str) -> AdmissionRecord | None:
+        record = await real_read(scope_key)
+        if record is not None:
+            # The stalled owner lets go after the flow has read the claim but
+            # before its takeover lands.
+            await store.release(scope_key)
+        return record
+
+    monkeypatch.setattr(store, "_read", read_then_release)
+
+    outcome = await store.claim(scope, fingerprint="fp", request="{}", now=now)
+
+    assert isinstance(outcome, Claimed)
+    record = await store.get(scope)
+    assert record is not None and record.admitted is False
+    assert from_epoch_us(record.created_at_us) == now
+
+
+async def test_a_freed_slot_can_be_lost_a_second_time() -> None:
+    """The slot frees between the refused insert and the re-read — and a twin
+    re-claims it before our re-insert lands: the loop keeps classifying and
+    reports the twin's claim, the pending owner that actually holds the key
+    now."""
+    store = _ScriptedClaims()
+    twin = _mid_admission_record(_NOW - timedelta(seconds=5))
+    store.insert_results.extend([False, False])
+    store.read_results.extend([None, twin])
+
+    outcome = await store.claim(_scope("k"), fingerprint="fp", request="{}", now=_NOW)
+
+    assert isinstance(outcome, Pending)
+    assert outcome.record is twin
+
+
+async def test_takeover_rounds_are_bounded_and_report_the_row() -> None:
+    """A takeover that keeps losing the row must end in the bounded wait, not
+    a spin: exactly ``_RACE_ROUNDS`` attempts, then the claim as it stands —
+    a pending answer keeps the caller's own retry loop and its takeover
+    armed."""
+    store = _AlwaysContested()
+    scope = _scope("k")
+    assert isinstance(await store.claim(scope, fingerprint="fp", request="{}", now=_NOW), Claimed)
+
+    outcome = await store.claim(
+        scope, fingerprint="fp", request="{}", now=_NOW + PENDING_LEASE + timedelta(seconds=1)
+    )
+
+    assert isinstance(outcome, Pending)
+    assert outcome.record is not None and outcome.record.admitted is False
+    assert store.takeover_attempts == InMemoryTaskIdempotencyStore._RACE_ROUNDS
+
+
 async def test_release_returns_a_failed_admissions_claim() -> None:
     store = InMemoryTaskIdempotencyStore()
     scope = admission_scope_key(principal="u", workspace_id="w", action=TASK_SUBMIT_ACTION, key="k")
@@ -288,6 +423,54 @@ async def test_purge_expired_removes_only_expired_claims() -> None:
     assert await store.purge_expired(now=_NOW + DEFAULT_REPLAY_WINDOW + timedelta(seconds=1)) == 1
     assert await store.get(old_scope) is None
     assert await store.get(new_scope) is not None
+
+
+async def test_the_bound_evicts_expired_claims_first() -> None:
+    """Past ``_MAX_ENTRIES`` the store sheds load: expired claims go first —
+    evicting one is merely early window expiry — and the claim being admitted
+    now survives with the bound restored."""
+    store = InMemoryTaskIdempotencyStore()
+    wall = datetime.now(UTC)
+    ancient = wall - timedelta(hours=48)
+    for i in range(store._MAX_ENTRIES + 2):
+        store._rows[_scope(f"ancient-{i}")] = _expired_record(ancient + timedelta(seconds=i))
+
+    outcome = await store.claim(_scope("fresh"), fingerprint="fp", request="{}", now=wall)
+
+    assert isinstance(outcome, Claimed)
+    assert len(store._rows) == store._MAX_ENTRIES
+    assert _scope("fresh") in store._rows
+    # The three oldest-created expired claims are the ones that went.
+    assert _scope("ancient-0") not in store._rows
+    assert _scope("ancient-1") not in store._rows
+    assert _scope("ancient-2") not in store._rows
+    assert _scope("ancient-3") in store._rows
+    assert _scope(f"ancient-{store._MAX_ENTRIES + 1}") in store._rows
+
+
+async def test_the_bound_evicts_the_oldest_when_nothing_is_expired() -> None:
+    """Nothing has expired but the store is over its bound: the oldest claims
+    go — the same bound the in-memory Run store applies — and the claim being
+    admitted now survives."""
+    store = InMemoryTaskIdempotencyStore()
+    wall = datetime.now(UTC)
+    for i in range(store._MAX_ENTRIES + 2):
+        # Millisecond-staggered creation inside the last few seconds, so every
+        # row is live and `ancient-0`-style ordering is exact: i=0 is oldest.
+        store._rows[_scope(f"live-{i}")] = _mid_admission_record(
+            wall - timedelta(milliseconds=store._MAX_ENTRIES + 2 - i)
+        )
+
+    outcome = await store.claim(_scope("fresh"), fingerprint="fp", request="{}", now=wall)
+
+    assert isinstance(outcome, Claimed)
+    assert len(store._rows) == store._MAX_ENTRIES
+    assert _scope("fresh") in store._rows
+    assert _scope("live-0") not in store._rows
+    assert _scope("live-1") not in store._rows
+    assert _scope("live-2") not in store._rows
+    assert _scope("live-3") in store._rows
+    assert _scope(f"live-{store._MAX_ENTRIES + 1}") in store._rows
 
 
 async def test_records_round_trip_through_epoch_microseconds() -> None:
