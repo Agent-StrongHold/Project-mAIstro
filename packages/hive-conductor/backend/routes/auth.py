@@ -30,9 +30,23 @@ from services.oauth_login import (
 )
 from starlette.responses import JSONResponse, RedirectResponse
 
-from maistro.security.auth_throttle import AuthLimits, AuthThrottle, StricterLimits
-from maistro.security.passwords import equal_cost_verify, hash_password, needs_rehash
-from maistro.security.transport import is_trusted_proxy, parse_trusted_proxies
+from maistro.security.auth_throttle import (  # pyright: ignore[reportMissingImports]
+    AuthLimits,
+    AuthThrottle,
+    StricterLimits,
+)
+from maistro.security.passwords import (  # pyright: ignore[reportMissingImports]
+    equal_cost_verify,
+    hash_password,
+    needs_rehash,
+)
+from maistro.security.passwords import (  # pyright: ignore[reportMissingImports]
+    validate_password as validate_canonical_password,
+)
+from maistro.security.transport import (  # pyright: ignore[reportMissingImports]
+    is_trusted_proxy,
+    parse_trusted_proxies,
+)
 from routes.audit import log_audit
 
 router = APIRouter(tags=["auth"])
@@ -109,7 +123,6 @@ def _enforce(throttle: AuthThrottle, request: Request, account: str, action: str
 _SESSION_COOKIE = "hive_session"
 _COOKIE_MAX_AGE = 60 * 60 * 24 * 7
 _USERNAME_RE = re.compile(r"^[a-zA-Z0-9_-]{3,32}$")
-_MIN_PASSWORD_LEN = 8
 _OAUTH_CODE_MAX_LENGTH = 4096
 _OAUTH_FAILURE_DETAIL = "OAuth authentication failed"
 _OAUTH_LINK_COOKIE_PREFIX = "__Host-hive_oauth_link_"
@@ -157,9 +170,7 @@ class RegisterBody(BaseModel):
     @field_validator("password")
     @classmethod
     def validate_password(cls, value: str) -> str:
-        if len(value) < _MIN_PASSWORD_LEN:
-            raise ValueError(f"Password must be at least {_MIN_PASSWORD_LEN} characters.")
-        return value
+        return validate_canonical_password(value)
 
     @model_validator(mode="after")
     def passwords_match(self) -> RegisterBody:

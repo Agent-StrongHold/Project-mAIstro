@@ -50,6 +50,81 @@ def test_second_complete_setup_is_rejected_and_creds_unchanged() -> None:
     assert stores.users["admin"].username != "attacker"
 
 
+@pytest.mark.parametrize("password", ["", "short", "1234567"])
+def test_public_setup_api_rejects_weak_admin_password_before_claim(
+    monkeypatch: pytest.MonkeyPatch, password: str
+) -> None:
+    """The HTTP boundary must enforce the canonical policy, not just the UI."""
+    import stores
+    from fastapi.testclient import TestClient
+    from main import app
+    from models.schemas import HiveUser
+    from services.model_store import ModelStore
+
+    fresh_users = ModelStore("users", HiveUser)
+    monkeypatch.setattr(stores, "users", fresh_users)
+    monkeypatch.setattr("routes.setup._get_kv", lambda: None)
+
+    response = TestClient(app).post(
+        "/v1/setup/complete",
+        json={
+            "hardware_preset": "auto",
+            "admin_username": "newadmin",
+            "admin_password": password,
+            "user_username": "newuser",
+            "user_password": "s3cret-user",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "Password must be at least 8 characters." in response.text
+    assert "__hive_setup_claim__" not in stores.sessions
+    assert len(fresh_users) == 0
+
+
+def test_setup_body_validates_boundary_and_unicode_passwords() -> None:
+    """The shared length policy counts supplied Unicode characters as-is."""
+    from routes.setup import SetupCompleteBody
+
+    for password in ("12345678", "密码密码密码密码", "éééé"):
+        body = SetupCompleteBody.model_validate(
+            {
+                "hardware_preset": "auto",
+                "admin_password": password,
+                "user_password": "s3cret-user",
+            }
+        )
+        assert body.admin_password == password
+
+
+def test_public_setup_api_reports_typed_validation_errors_without_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Malformed requests fail Pydantic validation before provisioning starts."""
+    import stores
+    from fastapi.testclient import TestClient
+    from main import app
+    from models.schemas import HiveUser
+    from services.model_store import ModelStore
+
+    fresh_users = ModelStore("users", HiveUser)
+    monkeypatch.setattr(stores, "users", fresh_users)
+    monkeypatch.setattr("routes.setup._get_kv", lambda: None)
+
+    response = TestClient(app).post(
+        "/v1/setup/complete",
+        json={
+            "hardware_preset": "auto",
+            "user_password": "s3cret-user",
+        },
+    )
+
+    assert response.status_code == 422
+    assert any(error["loc"][-1] == "admin_password" for error in response.json()["detail"])
+    assert len(fresh_users) == 0
+    assert "__hive_setup_claim__" not in stores.sessions
+
+
 def test_first_run_setup_still_works(monkeypatch: pytest.MonkeyPatch) -> None:
     """First-run setup (no users yet) must still succeed and create accounts."""
     import stores
