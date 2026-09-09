@@ -15,8 +15,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import re
-from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime
 from typing import Literal
 from uuid import uuid4
@@ -25,15 +23,30 @@ import stores
 from fastapi import APIRouter, HTTPException, Request, Response
 from models.schemas import Agent
 from pydantic import BaseModel, ConfigDict, Field
-from services.agent_materialization import agent_id_for, workspace_agents
+from services.agent_materialization import (
+    AgentDefinitionRejected,
+    AgentScannerUnavailable,
+    ScanBudgetExceeded,
+    agent_id_for,
+    delete_agent_definition,
+    scan_config,
+    slugify_agent_name,
+    update_agent_definition,
+    upsert_agent_definition,
+    workspace_agents,
+)
 from services.workspace_authority import is_member, member_role
 
-from maistro.security.warden.detector import Warden
 from routes.audit import log_audit
 
 logger = logging.getLogger("hive.agents")
 
 router = APIRouter(tags=["agents"])
+
+# `scan_config` / `ScanBudgetExceeded` are re-exported on purpose: the HITL
+# door and the chat gate import the Warden config walk from this module, and
+# the walk now lives with the one writer it gates
+# (`services.agent_materialization`).
 
 
 def _now() -> datetime:
@@ -109,7 +122,10 @@ async def create_agent(body: CreateAgentBody, request: Request) -> Agent:
         created_at=t,
         config=body.config,
     )
-    stores.agents[aid] = agent
+    # Stored only through the materialization service -- the one writer for
+    # this store -- so a created agent is scanned and provenance-stamped like
+    # every other definition.
+    agent = await _store_or_refuse(upsert_agent_definition(agent, source="crud"))
     log_audit("agent_create", "system", target=aid, detail={"name": body.name})
     return agent
 
@@ -137,10 +153,9 @@ async def update_agent(agent_id: str, body: UpdateAgentBody, request: Request) -
         raise HTTPException(status_code=403, detail="only a workspace owner can update this agent")
     if agent_id not in stores.agents:
         raise HTTPException(status_code=404, detail="agent not found")
-    agent = stores.agents[agent_id]
     updates = body.model_dump(exclude_none=True)
-    agent = agent.model_copy(update=updates)
-    stores.agents[agent_id] = agent
+    await _store_or_refuse(update_agent_definition(agent_id, updates, source="crud"))
+    agent = stores.agents[agent_id]
     log_audit("agent_update", "system", target=agent_id, detail=updates)
     return agent
 
@@ -156,65 +171,28 @@ async def delete_agent(agent_id: str, request: Request) -> None:
         raise HTTPException(status_code=403, detail="only a workspace owner can delete this agent")
     if agent_id not in stores.agents:
         raise HTTPException(status_code=404, detail="agent not found")
-    stores.agents.pop(agent_id)
+    delete_agent_definition(agent_id)
     log_audit("agent_delete", "system", target=agent_id)
 
 
-MAX_SCAN_DEPTH = 32
-MAX_SCAN_NODES = 4096
-MAX_SCAN_TEXT = 64 * 1024
-
-
-class ScanBudgetExceeded(Exception):
-    """The config is larger or deeper than the scanner will walk."""
-
-
-def _text_leaves(value: object, *, path: str = "", depth: int = 0) -> Iterator[tuple[str, str]]:
-    """Yield every (dotted path, string) pair in a config, in a bounded walk."""
-    if depth > MAX_SCAN_DEPTH:
-        raise ScanBudgetExceeded(f"config nests deeper than {MAX_SCAN_DEPTH} levels")
-    if isinstance(value, str):
-        yield path or "<root>", value
-        return
-    if isinstance(value, Mapping):
-        for key, item in value.items():
-            child = f"{path}.{key}" if path else str(key)
-            yield from _text_leaves(item, path=child, depth=depth + 1)
-        return
-    if isinstance(value, list | tuple):
-        for index, item in enumerate(value):
-            yield from _text_leaves(item, path=f"{path}[{index}]", depth=depth + 1)
-
-
-def _warden() -> Warden:
-    """One detector for the process."""
-    global _warden_instance
-    if _warden_instance is None:
-        _warden_instance = Warden()
-    return _warden_instance
-
-
-_warden_instance: Warden | None = None
-
-
-async def scan_config(config: object, *, boundary: str = "user_input") -> dict:
-    """Scan every string in a configuration at a Warden boundary.
-
-    The default boundary is the one inbound configurations cross; `tool_result`
-    selects the detector's second boundary (#315) so tool outputs that will be
-    re-fed to a model are judged by the same detector, not a second check.
-    """
-    warden = _warden()
-    findings: list[str] = []
-    for scanned, (path, text) in enumerate(_text_leaves(config), start=1):
-        if scanned > MAX_SCAN_NODES:
-            raise ScanBudgetExceeded(f"config holds more than {MAX_SCAN_NODES} values")
-        if len(text) > MAX_SCAN_TEXT:
-            raise ScanBudgetExceeded(f"{path} is longer than {MAX_SCAN_TEXT} characters")
-        verdict = await warden.scan(text, boundary)
-        if not verdict.clean:
-            findings.extend(f"{path}: {flag}" for flag in verdict.flags)
-    return {"findings": findings, "status": "clean" if not findings else "flagged"}
+async def _store_or_refuse(awaitable):
+    """Await a service definition write and map its fail-closed refusals to
+    the HTTP contract Forge set: flagged is 400, a scanner that cannot run is
+    503, an unscannable config is 413 -- and nothing is stored in any of
+    them."""
+    try:
+        return await awaitable
+    except AgentDefinitionRejected as exc:
+        raise HTTPException(
+            status_code=400, detail=f"agent rejected by security scan: {exc}"
+        ) from exc
+    except AgentScannerUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="agent unavailable: the security scan could not run; nothing was stored",
+        ) from exc
+    except ScanBudgetExceeded as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
 
 
 @router.post("/scan")
@@ -282,12 +260,6 @@ def _forge_capabilities(description: str) -> list[str]:
     return bound or [_FORGE_DEFAULT_CAPABILITY]
 
 
-def _forge_slug(text: str, *, limit: int = 32) -> str:
-    """A readable, stable, id-safe slug for a description."""
-    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
-    return slug[:limit].rstrip("-") or "agent"
-
-
 def _forge_fingerprint(
     *, workspace_id: str | None, description: str, strategy: str, model: str
 ) -> str:
@@ -340,7 +312,7 @@ async def forge_agent(body: ForgeAgentBody, request: Request, response: Response
     # The name carries the fingerprint so the roster's spawn-name resolution
     # (`{workspace}.{spawn}`) finds this artifact by name alone -- the same
     # convention `materialize_workspace_agents` keys persona spawns by.
-    name = f"forge-{_forge_slug(body.description)}-{fingerprint}"
+    name = f"forge-{slugify_agent_name(body.description)}-{fingerprint}"
     aid = agent_id_for(body.workspace_id, name) if body.workspace_id else name
 
     existing = stores.agents.get(aid)
@@ -406,7 +378,10 @@ async def forge_agent(body: ForgeAgentBody, request: Request, response: Response
             },
         },
     )
-    stores.agents[aid] = agent
+    # Stored only through the materialization service -- the one writer for
+    # this store -- with Forge's already-completed clean verdict recorded in
+    # the row's provenance beside the config's own `forge` block.
+    agent = await _store_or_refuse(upsert_agent_definition(agent, source="forge", scan=scan))
     log_audit(
         "agent_forge",
         "system",

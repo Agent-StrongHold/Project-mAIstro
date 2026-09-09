@@ -768,6 +768,15 @@ jobs:
                 || github.event.before }}
         run: uv run python scripts/check-wiring-reads.py
 
+      # #840: stores.agents is a durable product projection with exactly one
+      # writer (services/agent_materialization.py). CRUD, Forge, chat tools
+      # and the workspace cascade all funnel through it, and container.agents
+      # is mutated in place, never rebound (the hierarchy closure captures the
+      # dict object). This gate fails on any mutation/rebinding outside the
+      # service so a second writer family cannot quietly re-emerge.
+      - name: agent store write path (one writer for stores.agents)
+        run: uv run python scripts/check-agent-store-writes.py
+
       # ADR-032 says the registry cross-checks a document's declared contract
       # kinds against `@pytest.mark.contract` on the tests it lists. Nothing
       # consumed the marker, so 228 uses carried an enforcement that did not

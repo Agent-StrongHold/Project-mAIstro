@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import json
 import logging
 import os
@@ -21,6 +22,15 @@ from models.schemas import ChatCompletionRequest
 from protocols.llm import LLMPort
 
 from maistro.http import shared_client
+from services.agent_materialization import (
+    AgentDefinitionRejected,
+    AgentScannerUnavailable,
+    ScanBudgetExceeded,
+    chat_agent_id,
+    delete_agent_definition,
+    update_agent_definition,
+    upsert_agent_definition,
+)
 from services.airtable_cache import get_airtable_base_tables_json, get_airtable_records_json
 from services.chat_gate import (
     gate_tool_dispatch,
@@ -38,6 +48,27 @@ from services.tool_primitives import (
 )
 
 logger = logging.getLogger("hive.chat")
+
+#: The Workspace the current chat turn belongs to, when its caller named one.
+#: `ChatCompletionRequest` deliberately allows extra fields -- the same
+#: mechanism `tools_scope` rides on -- so a trusted internal caller can scope
+#: a turn; the agent-button tools read this when they create/update/remove
+#: roster rows so a chat-created agent lands inside the workspace the chat was
+#: about instead of always leaking into the global roster. Unset, rows stay
+#: global, the scope they had before. Set unconditionally at the top of both
+#: entry points, so every request overwrites whatever the task saw before;
+#: direct `_execute_tool` calls outside a turn read the None default.
+_chat_workspace_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "chat_tool_workspace_id", default=None
+)
+
+
+def _request_workspace_id(req: ChatCompletionRequest) -> str | None:
+    """The workspace this chat turn belongs to, when the caller names one."""
+    workspace = getattr(req, "workspace_id", None)
+    if isinstance(workspace, str) and workspace.strip():
+        return workspace.strip()
+    return None
 
 
 def build_llm_port() -> LLMPort:
@@ -966,19 +997,22 @@ async def _tool_search_confluence(
 async def _tool_save_as_action(
     args: dict[str, Any], user_id: str, jira_pat: str | None
 ) -> dict[str, Any]:
-    # Save as a real agent button on the Program page
+    # Save as a real agent button on the Program page. Stored only through the
+    # materialization service -- the one writer for `stores.agents` -- so the
+    # row is Warden-scanned (fail-closed) and provenance-stamped like every
+    # other definition, and its id is deterministic: re-saving the same action
+    # in the same workspace upserts instead of piling up random-suffixed rows.
     from datetime import UTC, datetime
-    from uuid import uuid4
 
-    import stores
     from models.schemas import Agent as AgentModel
 
-    agent_id = str(uuid4())[:8]
     name = args.get("name", "Saved Action")
     # Infer capability from conversation context
     capability = args.get("capability", "poll_jira")
-    stores.agents[agent_id] = AgentModel(
-        id=agent_id,
+    workspace_id = _chat_workspace_id.get()
+    agent = AgentModel(
+        id=chat_agent_id(workspace_id, str(name)),
+        workspace_id=workspace_id,
         name=name,
         description=args.get("description", "Saved from chat"),
         status="idle",
@@ -989,23 +1023,31 @@ async def _tool_save_as_action(
         created_at=datetime.now(UTC),
         config={},
     )
-    return {"saved": True, "agent_id": agent_id, "name": name}
+    try:
+        stored = await upsert_agent_definition(agent, source="chat-tool")
+    except AgentDefinitionRejected as exc:
+        return {"error": f"agent not saved: rejected by security scan ({exc})"}
+    except AgentScannerUnavailable:
+        return {"error": "agent not saved: the security scan could not run; nothing was stored"}
+    except ScanBudgetExceeded as exc:
+        return {"error": f"agent not saved: {exc}"}
+    return {"saved": True, "agent_id": stored.id, "name": stored.name}
 
 
 async def _tool_create_agent_button(
     args: dict[str, Any], user_id: str, jira_pat: str | None
 ) -> dict[str, Any]:
     from datetime import UTC, datetime
-    from uuid import uuid4
 
-    import stores
     from models.schemas import Agent as AgentModel
 
-    agent_id = str(uuid4())[:8]
+    name = args.get("name", "New Agent")
     capability = args.get("capability", "poll_jira")
+    workspace_id = _chat_workspace_id.get()
     agent = AgentModel(
-        id=agent_id,
-        name=args.get("name", "New Agent"),
+        id=chat_agent_id(workspace_id, str(name)),
+        workspace_id=workspace_id,
+        name=name,
         description=args.get("description", ""),
         status="idle",
         model="gemini-3.5-flash",
@@ -1015,10 +1057,17 @@ async def _tool_create_agent_button(
         created_at=datetime.now(UTC),
         config={"default_payload": args.get("payload", {})},
     )
-    stores.agents[agent_id] = agent
+    try:
+        stored = await upsert_agent_definition(agent, source="chat-tool")
+    except AgentDefinitionRejected as exc:
+        return {"error": f"agent not created: rejected by security scan ({exc})"}
+    except AgentScannerUnavailable:
+        return {"error": "agent not created: the security scan could not run; nothing was stored"}
+    except ScanBudgetExceeded as exc:
+        return {"error": f"agent not created: {exc}"}
     return {
         "created": True,
-        "agent": {"id": agent_id, "name": agent.name, "capability": capability},
+        "agent": {"id": stored.id, "name": stored.name, "capability": capability},
     }
 
 
@@ -1032,8 +1081,7 @@ async def _tool_modify_agent_button(
         return {
             "error": f"Agent '{agent_id}' not found. Use list_agent_buttons to see available IDs."
         }
-    agent = stores.agents[agent_id]
-    updates = {}
+    updates: dict[str, Any] = {}
     if args.get("name"):
         updates["name"] = args["name"]
     if args.get("description"):
@@ -1041,14 +1089,15 @@ async def _tool_modify_agent_button(
     if args.get("capability"):
         updates["capabilities"] = [args["capability"]]
         updates["primary_capability"] = args["capability"]
-    if hasattr(agent, "model_copy"):
-        agent = agent.model_copy(update=updates)
-    else:
-        for k, v in updates.items():
-            if isinstance(agent, dict):
-                agent[k] = v
-    stores.agents[agent_id] = agent
-    return {"modified": True, "agent_id": agent_id, "updates": updates}
+    try:
+        stored = await update_agent_definition(agent_id, updates, source="chat-tool")
+    except AgentDefinitionRejected as exc:
+        return {"error": f"agent not modified: rejected by security scan ({exc})"}
+    except AgentScannerUnavailable:
+        return {"error": "agent not modified: the security scan could not run; nothing was stored"}
+    except ScanBudgetExceeded as exc:
+        return {"error": f"agent not modified: {exc}"}
+    return {"modified": True, "agent_id": stored.id, "updates": updates}
 
 
 async def _tool_remove_agent_button(
@@ -1059,8 +1108,9 @@ async def _tool_remove_agent_button(
     agent_id = args.get("agent_id", "")
     if agent_id not in stores.agents:
         return {"error": f"Agent '{agent_id}' not found."}
-    removed = stores.agents.pop(agent_id)
-    return {"removed": True, "agent_id": agent_id, "name": removed.get("name", "")}
+    removed = stores.agents.get(agent_id)
+    delete_agent_definition(agent_id)
+    return {"removed": True, "agent_id": agent_id, "name": getattr(removed, "name", "")}
 
 
 async def _tool_list_agent_buttons(
@@ -1920,6 +1970,9 @@ async def _run_chat_completion_inner(
     s = get_settings()
     model = req.model or os.environ.get("CHAT_DEFAULT_MODEL") or s.chat_default_model
     llm = _llm or build_llm_port()
+    # Scope this turn: the agent-button tools tag the roster rows they write
+    # with the workspace the caller named (see `_chat_workspace_id`).
+    _chat_workspace_id.set(_request_workspace_id(req))
 
     # Build messages with PM system prompt
     messages: list[dict[str, Any]] = list(req.messages)
@@ -2153,6 +2206,9 @@ async def run_chat_completion_streaming(  # noqa: C901  streaming state machine
     """Streaming version — yields SSE events with real status updates."""
     s = get_settings()
     model = req.model or os.environ.get("CHAT_DEFAULT_MODEL") or s.chat_default_model
+    # Same workspace scoping as the non-streaming loop: the agent-button tools
+    # read this when they write roster rows.
+    _chat_workspace_id.set(_request_workspace_id(req))
     allowed_models = tuple(
         dict.fromkeys(
             candidate

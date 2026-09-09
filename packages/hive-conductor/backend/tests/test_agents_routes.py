@@ -287,13 +287,15 @@ class TestForgeValidatesAndFailsClosed:
         assert len(stores.agents) == 0
 
     def test_a_scanner_that_cannot_run_forges_nothing(self, admin_client: Any, monkeypatch) -> None:
-        import routes.agents as agents_routes
+        import services.agent_materialization as materialization
 
         class _BrokenWarden:
             async def scan(self, text: str, boundary: str) -> None:
                 raise RuntimeError("detector offline")
 
-        monkeypatch.setattr(agents_routes, "_warden_instance", _BrokenWarden())
+        # The detector instance lives with the scan it owns -- the one writer
+        # this store has -- since the write-path scan moved there.
+        monkeypatch.setattr(materialization, "_warden_instance", _BrokenWarden())
         r = admin_client.post("/v1/agents/forge", json={"description": FORGE_DESCRIPTION})
         assert r.status_code == 503
         assert "no artifact was stored" in r.json()["detail"]
