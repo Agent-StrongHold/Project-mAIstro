@@ -11,11 +11,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import operator
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import urlsplit, urlunsplit
 
 from maistro.a2a.delegate import A2ADelegator
@@ -470,8 +469,7 @@ class Container:
             return await dispatch()
         executor = ChatAttemptExecutor(self.run_store)
         try:
-            execute_attempt = cast(Any, operator.attrgetter("execute")(executor))
-            return cast(dict[str, Any], await execute_attempt(run.run_id, messages, dispatch))
+            return await executor.execute(run.run_id, messages, dispatch)
         except RunIntegrityError:
             logger.warning("chat turn could not be recorded as an Attempt", exc_info=True)
             return await dispatch()
@@ -775,8 +773,7 @@ class Container:
                 if not executable_by_consumer(run):
                     continue
                 try:
-                    execute_attempt = cast(Any, operator.attrgetter("execute")(executor))
-                    await execute_attempt(run)
+                    await executor.execute(run)
                 except ConsumerClaimLost:
                     # Another tick won the atomic Run + NodeRun + Attempt claim.
                     continue
