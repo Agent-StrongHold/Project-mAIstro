@@ -362,7 +362,10 @@ async def test_remove_strikes_recalculates_and_preserves_disabled_at_two(
     assert record.strike_count == 2
     assert record.scrutiny_level == "locked"
     assert record.disabled is True
-    assert any("GREATEST(0, strike_count - COALESCE($2, strike_count))" in call.query for call in conn.calls)
+    assert any(
+        "GREATEST(0, strike_count - COALESCE($2, strike_count))" in call.query
+        for call in conn.calls
+    )
 
 
 def test_lockout_duration_is_eight_hours() -> None:

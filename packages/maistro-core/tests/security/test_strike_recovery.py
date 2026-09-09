@@ -18,7 +18,9 @@ def _service(audit: InMemoryAuditLog) -> StrikeRecoveryService:
     permissions = {action: frozenset({"admin"}) for action in actions}
     tiers = {(action, "admin"): Tier.ADMIN for action in actions}
     sentinel = Sentinel(warden=Warden(), permission_table=permissions, tier_policy=tiers)
-    return StrikeRecoveryService(tracker=InMemoryStrikeTracker(), sentinel=sentinel, audit_log=audit)
+    return StrikeRecoveryService(
+        tracker=InMemoryStrikeTracker(), sentinel=sentinel, audit_log=audit
+    )
 
 
 def _principal(user_id: str, *roles: str) -> Principal:
