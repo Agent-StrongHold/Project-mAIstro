@@ -303,9 +303,7 @@ def _instantiate(identity: AgentIdentity, *, agent_resolver: Any = None, **deps:
     )
 
 
-def instantiate_agent(
-    identity: AgentIdentity, *, agent_resolver: Any = None, **deps: Any
-) -> Agent:
+def instantiate_agent(identity: AgentIdentity, *, agent_resolver: Any = None, **deps: Any) -> Agent:
     """Build one runtime Agent from a ready identity -- the factory's single
     construction path, without the filesystem walk.
 

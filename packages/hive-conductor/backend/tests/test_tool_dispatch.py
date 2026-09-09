@@ -20,8 +20,7 @@ import services.tool_executor as tool_executor  # noqa: E402
 
 async def test_an_unknown_tool_refuses_with_the_react_contract() -> None:
     assert (
-        await tool_executor.dispatch_tool("make_coffee", {})
-        == "Tool 'make_coffee' not available"
+        await tool_executor.dispatch_tool("make_coffee", {}) == "Tool 'make_coffee' not available"
     )
 
 
@@ -62,8 +61,6 @@ async def test_known_tools_route_to_the_real_functions(monkeypatch) -> None:
 
 
 async def test_unusable_arguments_return_an_error_result_not_an_exception() -> None:
-    result = await tool_executor.dispatch_tool(
-        "web_search", {"max_results": "not-a-number"}
-    )
+    result = await tool_executor.dispatch_tool("web_search", {"max_results": "not-a-number"})
     assert isinstance(result, str)
     assert result.startswith("Error: bad arguments for tool 'web_search'")

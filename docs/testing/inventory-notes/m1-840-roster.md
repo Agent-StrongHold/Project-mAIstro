@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +2
+  packages/maistro-core/tests: +3
   packages/hive-conductor/backend/tests: +37
   tests/: +16
 ---
@@ -42,9 +42,9 @@ new `agent_chat_created` audit entry, and the non-dispatchable stamp without
 one); +1 adapter test pinning that the bridge registers the runtime it built
 (container, llm client, real shipped PREAMBLE) on the materialization seam.
 
-Slice 5 (+2 `packages/maistro-core/tests`, +3
+Slice 5 (+3 `packages/maistro-core/tests`, +3
 `packages/hive-conductor/backend/tests`): the factory's `tool_executor` seam
-is closed and pinned. +2 factory tests in `test_factory_tool_executor.py` —
+is closed and pinned. +3 factory tests in `test_factory_tool_executor.py` —
 `create_agents(..., tool_executor=...)` reaches agents whose identities
 declare tools and forwards through `_run_strategy` into the strategy loop,
 and a manifest with declared tools but no executor REFUSES tool calls with
@@ -54,3 +54,9 @@ execution); +3 dispatcher tests in `test_tool_dispatch.py` for the
 `(tool_name, tool_args)` adapter the bridge now passes (unknown names refuse
 with the same contract string, known names route to the real tool
 functions, unusable arguments return an error result instead of raising).
+The third factory test calls `instantiate_agent` directly with a ready
+`AgentIdentity` and pins the construction the Slice 4 public API performs
+for callers outside the seeding flow (strategy registry seeded, "react"
+resolved to the real strategy, tool-executor wiring rule honored) — the
+call site lives cross-package in hive-conductor, so maistro-core pins it
+in its own suite.

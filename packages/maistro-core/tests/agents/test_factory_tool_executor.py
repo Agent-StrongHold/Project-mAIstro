@@ -20,8 +20,10 @@ from typing import Any
 
 import yaml
 
-from maistro.agents.factory import create_agents
+from maistro.agents.factory import create_agents, instantiate_agent
+from maistro.agents.strategies.react import ReactStrategy
 from maistro.testing.faux_provider import FauxProvider, FauxResponse
+from maistro.types.agent import AgentIdentity
 
 
 def _write_tools_agent_dir(base: Path, name: str = "tooler") -> Path:
@@ -92,9 +94,7 @@ async def test_create_agents_threads_a_real_executor_into_the_agent(
     provider.seed(FauxResponse(content="answered from the tool"))
 
     agents = await create_agents(
-        **_create_kwargs(
-            _write_tools_agent_dir(tmp_path), llm=provider, tool_executor=executor
-        )
+        **_create_kwargs(_write_tools_agent_dir(tmp_path), llm=provider, tool_executor=executor)
     )
 
     agent = agents["tooler"]
@@ -125,9 +125,7 @@ async def test_declared_tools_without_an_executor_refuse_instead_of_executing(
     provider.seed_tool_call("web_search", {"query": "latest"})
     provider.seed(FauxResponse(content="answered without the tool"))
 
-    agents = await create_agents(
-        **_create_kwargs(_write_tools_agent_dir(tmp_path), llm=provider)
-    )
+    agents = await create_agents(**_create_kwargs(_write_tools_agent_dir(tmp_path), llm=provider))
 
     agent = agents["tooler"]
     assert agent._tool_executor is None
@@ -145,3 +143,39 @@ async def test_declared_tools_without_an_executor_refuse_instead_of_executing(
     assert result.tool_history[0]["result"] == "Tool 'web_search' not available"
     assert result.response == "answered without the tool"
     assert result.done is True
+
+
+def test_instantiate_agent_builds_a_runtime_agent_from_a_ready_identity() -> None:
+    """``instantiate_agent`` (#840 Slice 4) is the factory's single construction
+    path for a caller that already holds a definition -- no manifest walk, but
+    the strategy registry is seeded and the wiring rule fires exactly as a full
+    ``create_agents`` run would. hive-conductor's materialization service calls
+    it cross-package, so the construction is pinned here, in maistro-core."""
+
+    async def executor(tool_name: str, tool_args: dict[str, Any]) -> str:
+        del tool_name, tool_args
+        return "ran"
+
+    identity = AgentIdentity(
+        name="tooler",
+        description="declares a tool",
+        soul_prompt_name="agent.tooler.soul",
+        tools=("web_search",),
+        reasoning_strategy="react",
+    )
+
+    agent = instantiate_agent(
+        identity,
+        prompt_manager=_PromptManager(),
+        llm=None,
+        context_builder=None,
+        warden=None,
+        tool_executor=executor,
+    )
+
+    assert agent.identity is identity
+    # Strategy resolution through the registry the factory ensures is seeded:
+    # "react" resolves to the real strategy, not the direct fallback.
+    assert isinstance(agent._strategy, ReactStrategy)
+    # The wiring rule: declared tools -> the executor lands on the agent.
+    assert agent._tool_executor is executor
