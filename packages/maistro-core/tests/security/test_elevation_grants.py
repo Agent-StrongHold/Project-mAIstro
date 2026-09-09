@@ -85,7 +85,10 @@ async def test_store_grant_with_audit_emits_audit_event() -> None:
 
 async def test_sentinel_authorize_short_circuits_on_valid_grant() -> None:
     store = InMemoryElevationStore()
-    sentinel = Sentinel(warden=Warden(), permission_table={}, elevation_store=store)
+    # COMPATIBILITY (#1165): suite tests elevation-grant plumbing, not misses
+    sentinel = Sentinel(
+        warden=Warden(), permission_table={}, elevation_store=store, allow_on_miss=True
+    )
     principal = Principal(id="u1", kind="human", roles=(), scopes=())
 
     challenge = request_self_elevation("u1", "delete_directory")
@@ -103,7 +106,10 @@ async def test_sentinel_authorize_short_circuits_on_valid_grant() -> None:
 
 async def test_sentinel_authorize_without_grant_still_requires_elevation() -> None:
     store = InMemoryElevationStore()
-    sentinel = Sentinel(warden=Warden(), permission_table={}, elevation_store=store)
+    # COMPATIBILITY (#1165): suite tests elevation-grant plumbing, not misses
+    sentinel = Sentinel(
+        warden=Warden(), permission_table={}, elevation_store=store, allow_on_miss=True
+    )
     principal = Principal(id="u1", kind="human", roles=(), scopes=())
 
     decision = await sentinel.authorize(

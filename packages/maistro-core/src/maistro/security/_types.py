@@ -29,9 +29,18 @@ class AuthContext:
     on_behalf_of: str = ""
 
     def can_use_tool(self, tool_name: str, permission_table: PermissionTable) -> bool:
+        """Fail-closed permission lookup (ADR-072726-0d6b, implemented for #1165).
+
+        An absent entry DENIES: absence of an explicit permission decision must
+        not grant tool authority, so an omitted or empty deployment table can
+        never authorize every tool. The permissive compatibility mode (allow on
+        miss) is not reachable through this primitive -- it exists only as an
+        explicit ``Sentinel(allow_on_miss=True)`` construction, intended for
+        non-production/test/demo wiring, and no configuration surface arms it.
+        """
         allowed_roles = permission_table.get(tool_name)
         if allowed_roles is None:
-            return True
+            return False
         return bool(self.roles & allowed_roles)
 
 

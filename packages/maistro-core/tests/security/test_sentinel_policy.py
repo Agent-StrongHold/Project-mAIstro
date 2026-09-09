@@ -38,8 +38,29 @@ def _auth(roles: frozenset[str] = frozenset({"user"})) -> AuthContext:
 # ─── check_permission ──────────────────────────────────────────────────────────
 
 
-def test_check_permission_allows_when_tool_not_in_table():
-    assert check_permission(_auth(), "any_tool", {}) is True
+def test_check_permission_denies_when_tool_not_in_table():
+    """Fail-closed default (ADR-072726-0d6b, #1165): a table miss is a denial.
+    Mutation-kill: flipping the miss branch back to allow fails here, in the
+    formal I6 amendment, and in the container wiring test."""
+    assert check_permission(_auth(), "any_tool", {}) is False
+
+
+def test_check_permission_allow_on_miss_compat_mode_allows():
+    """The compatibility mode is explicit, never the default (issue #1165)."""
+    assert check_permission(_auth(), "any_tool", {}, allow_on_miss=True) is True
+
+
+def test_check_permission_compat_mode_still_honours_explicit_entries():
+    """allow_on_miss widens only the miss branch; explicit decisions stand."""
+    table = {"admin_tool": frozenset({"admin"})}
+    assert (
+        check_permission(_auth(roles=frozenset({"user"})), "admin_tool", table, allow_on_miss=True)
+        is False
+    )
+    assert (
+        check_permission(_auth(roles=frozenset({"admin"})), "admin_tool", table, allow_on_miss=True)
+        is True
+    )
 
 
 def test_check_permission_denies_when_role_not_in_allowed_set():
@@ -56,10 +77,16 @@ def test_check_permission_allows_when_role_matches():
 
 
 def _sentinel(warden=None, permission_table=None, audit_log=None) -> Sentinel:
+    # COMPATIBILITY construction (issue #1165): the suites below exercise
+    # schema validation/repair, audit plumbing and output processing, not
+    # permission semantics, so they arm the explicit allow-on-miss mode rather
+    # than granting tools they never use. Default-deny behavior is pinned by
+    # the dedicated fail-closed tests above and below.
     return Sentinel(
         warden=warden or _StubWarden(),
         permission_table=permission_table or {},
         audit_log=audit_log,
+        allow_on_miss=True,
     )
 
 
@@ -95,6 +122,87 @@ async def test_pre_call_allowed_with_repairable_schema_issue():
     assert verdict.repaired_data == {"count": 5}
     assert audit.entries[0].detail == "repaired=True"
     assert audit.entries[0].verdict == "allowed"
+
+
+# ─── Fail-closed defaults (ADR-072726-0d6b, issue #1165) ─────────────────────
+
+
+async def test_pre_call_denies_unknown_tool_on_empty_table():
+    """The previously-allow-all case: an empty table denies everything.
+    Mutation-kill: reverting the miss branch to allow flips this verdict."""
+    sentinel = Sentinel(warden=_StubWarden(), permission_table={})
+    verdict = await sentinel.pre_call("never_configured_tool", {}, _auth(), schema={})
+    assert verdict.allowed is False
+    assert verdict.violations[0].rule == "permission_denied"
+
+
+async def test_pre_call_denies_unknown_tool_on_governed_production_table():
+    """Unknown tools are denied even when a real governed table is armed."""
+    from maistro.security.permission_policy import build_permission_table
+
+    table = build_permission_table(preset="dangerous_tools_admin")
+    sentinel = Sentinel(warden=_StubWarden(), permission_table=table)
+    verdict = await sentinel.pre_call("tool_not_in_any_preset", {}, _auth(), schema={})
+    assert verdict.allowed is False
+
+
+async def test_pre_call_allows_explicitly_permitted_tool_on_governed_table():
+    """Explicit allow survives the fail-closed default: a listed tool for a
+    role the table names is allowed; the same tool for an unlisted role is not."""
+    from maistro.security.permission_policy import build_permission_table
+
+    table = build_permission_table(preset="dangerous_tools_admin")
+    sentinel = Sentinel(warden=_StubWarden(), permission_table=table)
+    dangerous = sorted(table)[0]
+    allowed = await sentinel.pre_call(dangerous, {}, _auth(roles=frozenset({"admin"})), schema={})
+    assert allowed.allowed is True
+    denied = await sentinel.pre_call(dangerous, {}, _auth(roles=frozenset({"user"})), schema={})
+    assert denied.allowed is False
+
+
+async def test_authorize_denies_action_on_empty_table():
+    """The authorize (tier-ladder) path fails closed on a missing decision too."""
+    from maistro.security.sentinel.authz_types import Principal
+
+    sentinel = Sentinel(warden=_StubWarden(), permission_table={})
+    decision = await sentinel.authorize("unlisted_action", Principal(id="p1", kind="human"))
+    assert decision.authorized is False
+    assert "lacks capability" in decision.reason
+
+
+async def test_authorize_allows_explicitly_permitted_action():
+    from maistro.security.sentinel.authz_types import Principal
+
+    sentinel = Sentinel(warden=_StubWarden(), permission_table={"deploy": frozenset({"admin"})})
+    decision = await sentinel.authorize(
+        "deploy", Principal(id="p1", kind="human", roles=("admin",))
+    )
+    assert decision.authorized is True
+
+
+async def test_allow_on_miss_mode_allows_unknown_tool_and_warns(caplog):
+    """The compatibility mode is real, but loud: arming it logs a warning so a
+    permissive construction cannot pass unnoticed."""
+    import logging
+
+    sentinel = Sentinel(warden=_StubWarden(), permission_table={}, allow_on_miss=True)
+    verdict = await sentinel.pre_call("tool_absent_from_table", {}, _auth(), schema={})
+    assert verdict.allowed is True
+    assert any(
+        "allow-on-miss" in r.message and r.levelno == logging.WARNING for r in caplog.records
+    )
+
+
+async def test_allow_on_miss_mode_denies_regardless_of_role_when_entry_exists():
+    """Compat mode widens only the miss branch: an explicit entry with an
+    empty role set still denies everyone, including admins."""
+    sentinel = Sentinel(
+        warden=_StubWarden(),
+        permission_table={"hard_denied": frozenset()},
+        allow_on_miss=True,
+    )
+    verdict = await sentinel.pre_call("hard_denied", {}, _auth(), schema={})
+    assert verdict.allowed is False
 
 
 # ─── Sentinel.post_call ─────────────────────────────────────────────────────────

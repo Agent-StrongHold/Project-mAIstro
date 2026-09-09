@@ -1375,8 +1375,9 @@ async def create_container(
         preset=config.security.permission_preset,
         permissions=config.security.permissions,
     )
-    # Recovery is an administrative capability, unlike ordinary tools whose
-    # absent permission-table entries intentionally remain open for compatibility.
+    # Recovery is an administrative capability; its capability check goes
+    # through the same fail-closed table below, so a deployment that arms
+    # nothing denies recovery actions too until it configures permissions.
     tier_policy = _configure_strike_recovery_policy()
     logger.info("Sentinel permission table: %s", describe_permission_table(permission_table))
     # SPEC-247 / ADR-068 §D. Without this, Sentinel._check_elevation_grant is a

@@ -38,7 +38,20 @@ def check_permission(
     auth_context: AuthContext,
     tool_name: str,
     permission_table: PermissionTable,
+    *,
+    allow_on_miss: bool = False,
 ) -> bool:
+    """Resolve one tool authorization against ``permission_table``.
+
+    Default is fail-closed (ADR-072726-0d6b, implemented for #1165): a tool
+    absent from the table is denied, so an omitted or empty deployment table
+    can never authorize every tool. ``allow_on_miss=True`` is the explicit
+    compatibility mode for non-production/test/demo wiring that predates the
+    fail-closed default; production composition roots must not pass it, and
+    no configuration field routes to it.
+    """
+    if allow_on_miss and tool_name not in permission_table:
+        return True
     return auth_context.can_use_tool(tool_name, permission_table)
 
 
@@ -67,6 +80,7 @@ class Sentinel:
         rlphd_model: RlphdModel | None = None,
         rlphd_threshold_store: RlphdThresholdStore | None = None,
         argument_limits: ToolArgumentLimits | None = None,
+        allow_on_miss: bool = False,
     ) -> None:
         self._warden = warden
         self._permission_table = permission_table
@@ -77,6 +91,20 @@ class Sentinel:
         self._rlphd_model = rlphd_model
         self._rlphd_threshold_store = rlphd_threshold_store
         self._argument_limits = argument_limits or ToolArgumentLimits.from_environment()
+        # Fail-closed default (ADR-072726-0d6b, #1165): a tool absent from the
+        # permission table is DENIED. allow_on_miss=True is the explicit
+        # compatibility mode for non-production/test/demo wiring; it is never
+        # set by a production composition root and no configuration field can
+        # arm it, so the warning below is the loud trace of a permissive
+        # construction.
+        self._allow_on_miss = allow_on_miss
+        if allow_on_miss:
+            logger.warning(
+                "Sentinel armed in allow-on-miss COMPATIBILITY mode: tools absent "
+                "from the permission table are ALLOWED. Non-production/test/demo "
+                "use only (ADR-072726-0d6b); production wiring must configure an "
+                "explicit permission source instead."
+            )
 
     def resolve_tier(
         self,
@@ -109,7 +137,10 @@ class Sentinel:
         tier = self.resolve_tier(action, principal, reversibility=reversibility)
 
         authorized = check_permission(
-            _principal_auth_context(principal), action, self._permission_table
+            _principal_auth_context(principal),
+            action,
+            self._permission_table,
+            allow_on_miss=self._allow_on_miss,
         )
         if not authorized:
             return AuthzDecision(
@@ -247,7 +278,9 @@ class Sentinel:
     ) -> SentinelVerdict:
         violations: list[Violation] = []
 
-        if not check_permission(auth, tool_name, self._permission_table):
+        if not check_permission(
+            auth, tool_name, self._permission_table, allow_on_miss=self._allow_on_miss
+        ):
             violations.append(
                 Violation(
                     boundary="pre_call",

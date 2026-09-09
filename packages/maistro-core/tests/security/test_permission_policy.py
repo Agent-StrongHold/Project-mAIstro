@@ -51,9 +51,28 @@ def test_unknown_preset_raises() -> None:
 
 @pytest.mark.contract("behavioral")
 @pytest.mark.scope("unit")
-def test_absent_entry_still_permits() -> None:
-    """A core-package mirror of formal invariant I6: an absent table entry
-    permits by default, so a future fail-closed change breaks a core test
-    too, not only a formal one."""
+def test_absent_entry_denies_by_default() -> None:
+    """Core-package mirror of formal invariant I6 as amended (ADR-072726-0d6b,
+    implemented for #1165): an absent table entry DENIES by default, so a
+    future permissive regression breaks a core test too, not only a formal
+    one. The inverse property pinned here is exactly the allow-all hole #1165
+    closes: a deployment that configures nothing authorizes nothing."""
     table = build_permission_table(preset="dangerous_tools_admin")
-    assert AuthContext(roles=frozenset()).can_use_tool("some_unlisted_tool", table) is True
+    assert AuthContext(roles=frozenset()).can_use_tool("some_unlisted_tool", table) is False
+    assert (
+        AuthContext(roles=frozenset({"admin"})).can_use_tool("some_unlisted_tool", table) is False
+    )
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("unit")
+def test_governed_table_still_grants_explicit_entries() -> None:
+    """Fail-closed is a default, not a blanket deny: entries built by this
+    module grant exactly the roles they name (and the empty-role hard deny
+    still denies admins)."""
+    table = build_permission_table(preset="dangerous_tools_admin")
+    tool = sorted(table)[0]
+    assert AuthContext(roles=frozenset({"admin"})).can_use_tool(tool, table) is True
+    assert AuthContext(roles=frozenset({"user"})).can_use_tool(tool, table) is False
+    hard_denied = build_permission_table(permissions={"nuke": []})
+    assert AuthContext(roles=frozenset({"admin"})).can_use_tool("nuke", hard_denied) is False
