@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 import asyncpg
 from fastapi import APIRouter, Depends, Request, Response, status
@@ -40,6 +40,15 @@ class DetailedHealthResponse(BaseModel):
     version: str
     checks: dict[str, ProbeResult]
     effective_resource_policy: dict[str, int | float | bool]
+    strike_tracker: dict[str, str | bool]
+
+
+def _strike_tracker_diagnostics(container: Any) -> dict[str, str | bool]:
+    """Report the configured strike tracker without touching its state."""
+    tracker = getattr(container, "strike_tracker", None)
+    if tracker is None:
+        return {"enabled": False, "backend": "none"}
+    return {"enabled": True, "backend": type(tracker).__name__}
 
 
 async def _check_postgres(settings: Settings) -> ProbeResult:
@@ -131,6 +140,7 @@ async def readiness(
 ) -> DetailedHealthResponse | JSONResponse:
     """Readiness probe — checks Docker, Postgres, LLM, and HTTP pool state."""
     uptime = time.monotonic() - _start_time
+    container = getattr(request.app.state, "container", None)
     docker_result = (
         await _check_docker()
         if settings.sandbox.readiness_required
@@ -174,6 +184,7 @@ async def readiness(
         version=request.app.version,
         checks=checks,
         effective_resource_policy=settings.effective_resource_policy().as_dict(),
+        strike_tracker=_strike_tracker_diagnostics(container),
     )
 
     if not all_ok:

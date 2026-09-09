@@ -48,6 +48,11 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#492",
       "reason": "Deterministic Entra group entitlement policy module shipped deliberately unwired per PR #918's documented scope (product adoption deferred to a later #62 slice); PR #918 lands the module and this entry leaves the baseline when adoption ships."
+    },
+    "maistro.security.strike_recovery": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1172",
+      "reason": "Authorized administrative strike recovery service shipped as a maistro-core library surface in #1172. It is intentionally unreachable from this repository's process entry points because downstream products supply the tracker, Sentinel and audit-log wiring; the service preserves the canonical Sentinel authorization path and is dispositioned CONNECT under Warden / Sentinel / Gate until product wiring adopts it."
     }
   },
   "vulture": {
@@ -125,6 +130,51 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#306",
       "reason": "InventoryResult.skip_gated is the named half of differential collection: collect_inventory runs a second -m \"not skip and not skipif\" pass, and the set difference (collected minus servable) is how a newly skip-marked test becomes a deletion in the protected inventory. The property's readers are the test suite (test_skip_gated_via_differential_collection asserts the gated IDs) - CI's vulture scan covers packages/*/src only and cannot see test-file reads - plus downstream gate authors who need the gated set itself rather than the derived diff. Retained as the module's public surface for the concept, derived from the collected and servable fields."
+    },
+    "packages/maistro-core/src/maistro/security/pg_strikes.py::unused method 'enable'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1172",
+      "reason": "PgStrikeTracker.enable is a public PostgreSQL strike-recovery operation shipped by #1172 for downstream administrative recovery services; its consumers are outside the packages/*/src Vulture scan and the method remains part of the published tracker API."
+    },
+    "packages/maistro-core/src/maistro/security/pg_strikes.py::unused method 'remove_strikes'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1172",
+      "reason": "PgStrikeTracker.remove_strikes is a public PostgreSQL strike-recovery operation shipped by #1172 for downstream administrative recovery services; its consumers are outside the packages/*/src Vulture scan and the method remains part of the published tracker API."
+    },
+    "packages/maistro-core/src/maistro/security/pg_strikes.py::unused method 'submit_appeal'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1172",
+      "reason": "PgStrikeTracker.submit_appeal is a public PostgreSQL strike-appeal operation shipped by #1172 for downstream administrative recovery services; its consumers are outside the packages/*/src Vulture scan and the method remains part of the published tracker API."
+    },
+    "packages/maistro-core/src/maistro/security/pg_strikes.py::unused method 'unlock'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1172",
+      "reason": "PgStrikeTracker.unlock is a public PostgreSQL strike-recovery operation shipped by #1172 for downstream administrative recovery services; its consumers are outside the packages/*/src Vulture scan and the method remains part of the published tracker API."
+    },
+    "packages/maistro-core/src/maistro/security/strike_recovery.py::unused method 'enable'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1172",
+      "reason": "StrikeRecoveryService.enable is a public administrative recovery operation shipped by #1172; downstream products invoke it through the Sentinel-authorized service, outside the packages/*/src Vulture scan."
+    },
+    "packages/maistro-core/src/maistro/security/strike_recovery.py::unused method 'remove_strikes'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1172",
+      "reason": "StrikeRecoveryService.remove_strikes is a public administrative recovery operation shipped by #1172; downstream products invoke it through the Sentinel-authorized service, outside the packages/*/src Vulture scan."
+    },
+    "packages/maistro-core/src/maistro/security/strike_recovery.py::unused method 'unlock'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1172",
+      "reason": "StrikeRecoveryService.unlock is a public administrative recovery operation shipped by #1172; downstream products invoke it through the Sentinel-authorized service, outside the packages/*/src Vulture scan."
+    },
+    "packages/maistro-core/src/maistro/events/outbox.py::unused variable 'failed_at'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1162",
+      "reason": "OutboxDeadLetter.failed_at is the #1162 dead-letter evidence field: _record_failure stamps it when a row exhausts MAX_PUBLISH_ATTEMPTS, and dead_letters() copies it into every OutboxDeadLetter it returns. It is deliberately write-only in-package - its readers are the test suite (test_outbox.py asserts the dead-letter disposition through the accessor; CI's vulture scan covers packages/*/src only and cannot see test-file reads) plus downstream embedders of the SQLite outbox inspecting when a row was terminally failed. Retained as the declarative evidence record per the dataclass-declarative-field rule: fields are constructed and returned by convention, not always read in package-local code."
+    },
+    "packages/maistro-core/src/maistro/events/outbox.py::unused method 'dead_letters'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1162",
+      "reason": "SqliteEventOutbox.dead_letters is the #1162 public read surface for the terminal dead-letter disposition: it returns the rows whose durable append exhausted the attempt bound, oldest first, with their failure evidence (attempts, last_error, failed_at). No production entry point in this repository drains it yet - pending_count() deliberately excludes dead-lettered rows and points at this accessor, and the readers today are the test suite (test_outbox.py asserts its contents and ordering; invisible to the src-only scan) plus downstream consumers of the SQLite outbox, for which maistro-core is a published library. Expected to gain an in-repo reader when a shipped process surfaces dead-letter evidence, at which point the entry leaves the baseline."
     }
   },
   "model-egress": {

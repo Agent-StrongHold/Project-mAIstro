@@ -7,7 +7,7 @@ import types
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import pytest
+import pytest  # type: ignore[import-not-found]
 
 from maistro.security.pg_strikes import LOCKOUT_DURATION, PgRateLimiter, PgStrikeTracker
 
@@ -171,11 +171,23 @@ def test_init_falls_back_to_database_url_env(monkeypatch: pytest.MonkeyPatch) ->
     assert tracker._db_url == "postgres://env-db"
 
 
-def test_init_falls_back_to_deploy_target_db_url_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_init_ignores_deploy_target_db_url_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setenv("DEPLOY_TARGET_DB_URL", "postgres://deploy-target")
     tracker = PgStrikeTracker()
-    assert tracker._db_url == "postgres://deploy-target"
+    assert tracker._db_url is None
+
+
+def test_rate_limiter_uses_database_url_and_ignores_deploy_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("DEPLOY_TARGET_DB_URL", "postgres://deploy-target")
+    limiter = PgRateLimiter()
+    assert limiter._db_url is None
+
+    monkeypatch.setenv("DATABASE_URL", "postgres://canonical")
+    assert PgRateLimiter()._db_url == "postgres://canonical"
 
 
 async def test_record_violation_first_strike_sets_elevated(
@@ -295,6 +307,90 @@ async def test_is_locked_returns_true_for_disabled_user(
     conn.queue_fetchrow(strike_row(disabled=True, locked_until=None))
     tracker = PgStrikeTracker(db_url="postgres://x")
     assert await tracker.is_locked("u1") is True
+
+
+async def test_unlock_returns_updated_record_and_preserves_elevated_state(
+    patch_asyncpg: FakePool, conn: FakeConnection
+) -> None:
+    conn.queue_fetchrow({"user_id": "u1"})
+    conn.queue_fetchrow(strike_row(strike_count=2, scrutiny_level="elevated", locked_until=None))
+    tracker = PgStrikeTracker(db_url="postgres://x")
+
+    record = await tracker.unlock("u1")
+
+    assert record is not None
+    assert record.locked_until is None
+    assert record.scrutiny_level == "elevated"
+    assert record.disabled is False
+    assert any("locked_until = NULL" in call.query for call in conn.calls)
+
+
+async def test_admin_lifecycle_unknown_user_returns_none(
+    patch_asyncpg: FakePool, conn: FakeConnection
+) -> None:
+    tracker = PgStrikeTracker(db_url="postgres://x")
+    assert await tracker.unlock("ghost") is None
+    assert await tracker.enable("ghost") is None
+    assert await tracker.remove_strikes("ghost") is None
+
+
+async def test_enable_clears_disabled_account(
+    patch_asyncpg: FakePool, conn: FakeConnection
+) -> None:
+    conn.queue_fetchrow({"user_id": "u1"})
+    conn.queue_fetchrow(strike_row(strike_count=3, scrutiny_level="elevated", disabled=False))
+    tracker = PgStrikeTracker(db_url="postgres://x")
+
+    record = await tracker.enable("u1")
+
+    assert record is not None
+    assert record.disabled is False
+    assert record.scrutiny_level == "elevated"
+    assert record.is_locked is False
+
+
+async def test_remove_strikes_recalculates_and_preserves_disabled_at_two(
+    patch_asyncpg: FakePool, conn: FakeConnection
+) -> None:
+    conn.queue_fetchrow({"user_id": "u1"})
+    conn.queue_fetchrow(strike_row(strike_count=2, scrutiny_level="locked", disabled=True))
+    tracker = PgStrikeTracker(db_url="postgres://x")
+
+    record = await tracker.remove_strikes("u1", count=1)
+
+    assert record is not None
+    assert record.strike_count == 2
+    assert record.scrutiny_level == "locked"
+    assert record.disabled is True
+    assert any(
+        "GREATEST(0, strike_count - COALESCE($2, strike_count))" in call.query
+        for call in conn.calls
+    )
+
+
+async def test_submit_appeal_persists_appeal_for_struck_user(
+    patch_asyncpg: FakePool, conn: FakeConnection
+) -> None:
+    conn.queue_fetchrow({"user_id": "u1"})
+    tracker = PgStrikeTracker(db_url="postgres://x")
+
+    result = await tracker.submit_appeal("u1", "please review")
+
+    assert result is True
+    calls = [call for call in conn.calls if call.method == "fetchrow"]
+    assert len(calls) == 1
+    assert "last_appeal = $2" in calls[0].query
+    assert "strike_count > 0" in calls[0].query
+    assert calls[0].args == ("u1", "please review")
+
+
+async def test_submit_appeal_refuses_without_strikes(
+    patch_asyncpg: FakePool, conn: FakeConnection
+) -> None:
+    conn.queue_fetchrow(None)
+    tracker = PgStrikeTracker(db_url="postgres://x")
+
+    assert await tracker.submit_appeal("u1", "please review") is False
 
 
 def test_lockout_duration_is_eight_hours() -> None:

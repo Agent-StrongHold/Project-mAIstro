@@ -75,7 +75,7 @@ from maistro.workspaces.store import WorkspaceStore
 from maistro.workspaces.wiring import WORKSPACE_PG_TABLES, wire_workspace_store
 
 if TYPE_CHECKING:
-    import httpx
+    import httpx  # type: ignore[import-not-found, unused-ignore]
 
     from maistro.agents.base import Agent
     from maistro.auth.oauth import (
@@ -227,6 +227,12 @@ class Container:
     conduit: Any = None
     #: The SQLite connection, when that backend is selected.
     db_pool: Any = None
+    #: The session store's own SQLite connection (#327), when this container
+    #: opened one. It is a second connection because the session store is the
+    #: only one that holds a transaction across several statements, so it
+    #: cannot share `db_pool`; it is this container's to close on the same
+    #: terms (`holds_db_pool`), never the store's.
+    session_conn: Any = None
     #: The asyncpg pool, when PostgreSQL is selected. Separate from `db_pool`
     #: because the two are different objects with different APIs, and code that
     #: branches on "is a database configured" needs to know which.
@@ -241,6 +247,13 @@ class Container:
     #: opened it closes it" would take the pool out from under the other; the
     #: pool closes when the last holder releases it (Codex, #335).
     holds_pg_pool: bool = False
+    #: Whether this container opened the SQLite connections (`db_pool` and
+    #: `session_conn`). Same rule as `holds_pg_pool`: `aclose()` closes what it
+    #: opened and leaves a connection the caller supplied for its owner (#1161).
+    #: One flag for both, because they were opened by the same
+    #: `_wire_sqlite_backend` call and there is no third way one of them came
+    #: to exist.
+    holds_db_pool: bool = False
     #: Set by `aclose()`, so a second call does not close a pool twice.
     closed: bool = False
     # Agent-harness DAG node adapters (dispatch/poll/cancel), keyed by
@@ -302,6 +315,7 @@ class Container:
     # Strike ladder (SPEC-012 / security/gate.py). None unless
     # config.security.strike_tracking_enabled -- see create_container.
     strike_tracker: StrikeTracker | None = None
+    strike_recovery: Any = None
     durable_event_cursor: int = 0
 
     def __post_init__(self) -> None:
@@ -326,6 +340,20 @@ class Container:
         Releasing rather than closing: the pool belongs to the registry and may
         be shared with another container built from the same DSN, so it closes
         when the last holder lets go (Codex, #335).
+
+        SQLite follows the same ownership rule (#1161): the connections this
+        container opened -- `db_pool` and the session store's `session_conn`,
+        both from one `_wire_sqlite_backend` call -- are closed here, each
+        exactly once, and a connection the caller supplied stays the caller's.
+        aiosqlite's `close()` drains the operations still queued on its worker
+        thread before releasing the database, so a durable write a store has
+        already issued completes rather than being dropped by the shutdown;
+        what a store issues *after* this returns fails loudly on the closed
+        connection instead. Unlike the pool there is no registry: the
+        connections were opened for this container alone, so they close here
+        rather than at a last-holder release -- and a connection left unclosed
+        is worse than a leaked pool slot, because aiosqlite's worker thread is
+        a non-daemon thread that blocks interpreter exit.
         """
         if self.closed:
             return
@@ -348,6 +376,29 @@ class Container:
             finally:
                 self.pg_pool = None
                 self.holds_pg_pool = False
+        if self.holds_db_pool:
+            # Two connections, one ownership decision (#327): the session
+            # store's connection was opened by the same `_wire_sqlite_backend`
+            # call, so the same flag governs both. A close that raises must not
+            # strand the other one -- the pg block above exists because a
+            # shutdown that stops at the first failure leaves the rest
+            # unreleased -- and must not leave the container looking open,
+            # though `closed` is already True, so no retry re-enters here.
+            for connection in (self.db_pool, self.session_conn):
+                if connection is None:
+                    continue
+                try:
+                    # Drains queued operations before releasing: writes the
+                    # stores already issued complete (aiosqlite, Connection.close).
+                    await connection.close()
+                except Exception:
+                    logger.exception("container: the SQLite connection did not close cleanly")
+            # Gone either way: aiosqlite's close() spends the connection even
+            # when it raises, so a field still naming it would advertise a
+            # connection the next user would find dead.
+            self.db_pool = None
+            self.session_conn = None
+            self.holds_db_pool = False
 
     async def route_request(
         self,
@@ -1203,6 +1254,7 @@ async def create_container(
     # asyncpg pool. Collapsing them into one `Any` was how the durable-event
     # wiring below came to assume "a database is configured" means "SQLite".
     db_pool: Any = None
+    session_conn: Any = None
     # Held aside before the URL branch runs, because that branch rebinds
     # `pg_pool`. Rebinding it unconditionally — which is what merging #122 into
     # #135 first did — drops the parameter on the floor, and a caller-supplied
@@ -1211,14 +1263,19 @@ async def create_container(
     supplied_pg_pool = pg_pool
     pg_pool = None
     holds_pg_pool = False
+    holds_db_pool = False
     if config.database_url.startswith("sqlite:"):
         (
             db_pool,
+            session_conn,
             quota_tracker,
             learning_store,
             outcome_store,
             session_store,
         ) = await _wire_sqlite_backend(config.database_url)
+        # Both connections were opened for this container (#1161); `aclose`
+        # closes them. The pg branch below sets its flag for the same reason.
+        holds_db_pool = True
     elif config.database_url.startswith(POSTGRES_SCHEMES):
         (
             pg_pool,
@@ -1318,6 +1375,9 @@ async def create_container(
         preset=config.security.permission_preset,
         permissions=config.security.permissions,
     )
+    # Recovery is an administrative capability, unlike ordinary tools whose
+    # absent permission-table entries intentionally remain open for compatibility.
+    tier_policy = _configure_strike_recovery_policy()
     logger.info("Sentinel permission table: %s", describe_permission_table(permission_table))
     # SPEC-247 / ADR-068 §D. Without this, Sentinel._check_elevation_grant is a
     # permanent no-op, so a grant a human/owner already cleared could never be
@@ -1330,7 +1390,13 @@ async def create_container(
         warden=warden,
         permission_table=permission_table,
         audit_log=audit_log,
+        tier_policy=tier_policy,
         elevation_store=elevation_store,
+    )
+    strike_recovery = _wire_strike_recovery(
+        tracker=strike_tracker,
+        sentinel=sentinel,
+        audit_log=audit_log,
     )
 
     from maistro.capabilities.bootstrap import default_capability_registry
@@ -1474,6 +1540,7 @@ async def create_container(
         warden=warden,
         gate=gate,
         strike_tracker=strike_tracker,
+        strike_recovery=strike_recovery,
         sentinel=sentinel,
         elevation_store=elevation_store,
         context_builder=context_builder,
@@ -1495,8 +1562,10 @@ async def create_container(
         agents=agents,
         audit_log=audit_log,
         db_pool=db_pool,
+        session_conn=session_conn,
         pg_pool=pg_pool,
         holds_pg_pool=holds_pg_pool,
+        holds_db_pool=holds_db_pool,
         resilience_policies=resilience_policies,
         event_bus=event_bus,
         durable_event_log=durable_event_log,
@@ -1620,6 +1689,36 @@ async def _wire_audit_log(*, pg_pool: Any, db_pool: Any) -> Any:
     from maistro.security.sentinel.audit import InMemoryAuditLog
 
     return InMemoryAuditLog()
+
+
+def _configure_strike_recovery_policy() -> dict[tuple[str, str], Any]:
+    """Register recovery as an admin-only Sentinel tier policy."""
+    import importlib
+
+    from maistro.security.sentinel.authz_types import Tier
+
+    strike_recovery = importlib.import_module("maistro.security.strike_recovery")
+    StrikeRecoveryService = strike_recovery.StrikeRecoveryService
+
+    actions = tuple(
+        f"{StrikeRecoveryService.ACTION}.{operation}"
+        for operation in ("unlock", "enable", "remove_strikes")
+    )
+    return {(action, "admin"): Tier.ADMIN for action in actions}
+
+
+def _wire_strike_recovery(*, tracker: Any, sentinel: Any, audit_log: Any) -> Any:
+    """Build the authorized recovery layer beside the canonical tracker."""
+    if tracker is None:
+        return None
+    import importlib
+
+    strike_recovery = importlib.import_module("maistro.security.strike_recovery")
+    return strike_recovery.StrikeRecoveryService(
+        tracker=tracker,
+        sentinel=sentinel,
+        audit_log=audit_log,
+    )
 
 
 def _wire_strike_tracker(*, enabled: bool, pg_pool: Any) -> StrikeTracker | None:
@@ -1818,7 +1917,7 @@ async def _wire_postgres_backend(
     a minute and neither is diagnosable from the exception it would otherwise
     raise on some later request.
     """
-    import asyncpg
+    import asyncpg  # type: ignore[import-not-found, unused-ignore]
 
     from maistro.memory.learnings.durable_hybrid import DurableHybridLearningStore
     from maistro.persistence import get_pool
@@ -1961,6 +2060,7 @@ async def _wire_sqlite_backend(
     database_url: str,
 ) -> tuple[
     Any,
+    Any,
     QuotaTracker,
     LearningStore,
     OutcomeStore,
@@ -1971,8 +2071,12 @@ async def _wire_sqlite_backend(
     ``database_url`` of the form ``sqlite:///path/to/file.db`` (or
     ``sqlite://`` for an in-memory DB) selects this backend instead of the
     default in-memory stores — no Postgres server required.
+
+    Returns the shared connection first and the session store's own connection
+    second (#327), so `create_container` can hold both and record ownership of
+    them: `aclose` closes what this function opened (#1161).
     """
-    import aiosqlite
+    import aiosqlite  # type: ignore[import-not-found, unused-ignore]
 
     from maistro.persistence.sqlite_learnings import SqliteLearningStore
     from maistro.persistence.sqlite_outcomes import SqliteOutcomeStore
@@ -2024,7 +2128,7 @@ async def _wire_sqlite_backend(
     outcome_store: OutcomeStore = sqlite_outcome_store
     session_store: SessionStore = sqlite_session_store
 
-    return conn, quota_tracker, learning_store, outcome_store, session_store
+    return conn, session_conn, quota_tracker, learning_store, outcome_store, session_store
 
 
 async def _wire_sqlite_durable_events(
