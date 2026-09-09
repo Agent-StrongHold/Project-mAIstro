@@ -75,7 +75,7 @@ from maistro.workspaces.store import WorkspaceStore
 from maistro.workspaces.wiring import WORKSPACE_PG_TABLES, wire_workspace_store
 
 if TYPE_CHECKING:
-    import httpx
+    import httpx  # type: ignore[import-not-found, unused-ignore]
 
     from maistro.agents.base import Agent
     from maistro.auth.oauth import (
@@ -315,6 +315,7 @@ class Container:
     # Strike ladder (SPEC-012 / security/gate.py). None unless
     # config.security.strike_tracking_enabled -- see create_container.
     strike_tracker: StrikeTracker | None = None
+    strike_recovery: Any = None
     durable_event_cursor: int = 0
 
     def __post_init__(self) -> None:
@@ -1374,6 +1375,9 @@ async def create_container(
         preset=config.security.permission_preset,
         permissions=config.security.permissions,
     )
+    # Recovery is an administrative capability, unlike ordinary tools whose
+    # absent permission-table entries intentionally remain open for compatibility.
+    tier_policy = _configure_strike_recovery_policy()
     logger.info("Sentinel permission table: %s", describe_permission_table(permission_table))
     # SPEC-247 / ADR-068 §D. Without this, Sentinel._check_elevation_grant is a
     # permanent no-op, so a grant a human/owner already cleared could never be
@@ -1386,7 +1390,13 @@ async def create_container(
         warden=warden,
         permission_table=permission_table,
         audit_log=audit_log,
+        tier_policy=tier_policy,
         elevation_store=elevation_store,
+    )
+    strike_recovery = _wire_strike_recovery(
+        tracker=strike_tracker,
+        sentinel=sentinel,
+        audit_log=audit_log,
     )
 
     from maistro.capabilities.bootstrap import default_capability_registry
@@ -1530,6 +1540,7 @@ async def create_container(
         warden=warden,
         gate=gate,
         strike_tracker=strike_tracker,
+        strike_recovery=strike_recovery,
         sentinel=sentinel,
         elevation_store=elevation_store,
         context_builder=context_builder,
@@ -1678,6 +1689,36 @@ async def _wire_audit_log(*, pg_pool: Any, db_pool: Any) -> Any:
     from maistro.security.sentinel.audit import InMemoryAuditLog
 
     return InMemoryAuditLog()
+
+
+def _configure_strike_recovery_policy() -> dict[tuple[str, str], Any]:
+    """Register recovery as an admin-only Sentinel tier policy."""
+    import importlib
+
+    from maistro.security.sentinel.authz_types import Tier
+
+    strike_recovery = importlib.import_module("maistro.security.strike_recovery")
+    StrikeRecoveryService = strike_recovery.StrikeRecoveryService
+
+    actions = tuple(
+        f"{StrikeRecoveryService.ACTION}.{operation}"
+        for operation in ("unlock", "enable", "remove_strikes")
+    )
+    return {(action, "admin"): Tier.ADMIN for action in actions}
+
+
+def _wire_strike_recovery(*, tracker: Any, sentinel: Any, audit_log: Any) -> Any:
+    """Build the authorized recovery layer beside the canonical tracker."""
+    if tracker is None:
+        return None
+    import importlib
+
+    strike_recovery = importlib.import_module("maistro.security.strike_recovery")
+    return strike_recovery.StrikeRecoveryService(
+        tracker=tracker,
+        sentinel=sentinel,
+        audit_log=audit_log,
+    )
 
 
 def _wire_strike_tracker(*, enabled: bool, pg_pool: Any) -> StrikeTracker | None:
@@ -1876,7 +1917,7 @@ async def _wire_postgres_backend(
     a minute and neither is diagnosable from the exception it would otherwise
     raise on some later request.
     """
-    import asyncpg
+    import asyncpg  # type: ignore[import-not-found, unused-ignore]
 
     from maistro.memory.learnings.durable_hybrid import DurableHybridLearningStore
     from maistro.persistence import get_pool
@@ -2035,7 +2076,7 @@ async def _wire_sqlite_backend(
     second (#327), so `create_container` can hold both and record ownership of
     them: `aclose` closes what this function opened (#1161).
     """
-    import aiosqlite
+    import aiosqlite  # type: ignore[import-not-found, unused-ignore]
 
     from maistro.persistence.sqlite_learnings import SqliteLearningStore
     from maistro.persistence.sqlite_outcomes import SqliteOutcomeStore

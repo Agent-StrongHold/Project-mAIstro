@@ -82,9 +82,11 @@ class PgStrikeTracker:
         `db_url` remains for the standalone caller that has no container, and
         keeps creating its own pool and schema exactly as before.
         """
-        self._db_url = (
-            db_url or os.environ.get("DATABASE_URL") or os.environ.get("DEPLOY_TARGET_DB_URL")
-        )
+        # DATABASE_URL is the standalone caller's canonical selection. The
+        # container path passes its already-selected pool, so accepting a
+        # second deployment-specific URL here would split security state from
+        # the application's other durable stores (#1172).
+        self._db_url = db_url or os.environ.get("DATABASE_URL")
         self._pool: Any = pool
 
     async def _get_pool(self) -> Any:
@@ -222,6 +224,129 @@ class PgStrikeTracker:
         # disagreeing about whether an account is locked.
         return record.is_locked if record else False
 
+    async def unlock(self, user_id: str) -> StrikeRecord | None:
+        """Clear a temporary lock without changing disabled state."""
+        pool = await self._get_pool()
+        async with pool.acquire() as conn, conn.transaction():
+            changed = await conn.fetchrow(
+                """
+                    UPDATE security_strikes
+                    SET locked_until = NULL,
+                        scrutiny_level = CASE
+                            WHEN disabled THEN scrutiny_level
+                            WHEN strike_count >= 1 THEN 'elevated'
+                            ELSE 'normal'
+                        END,
+                        updated_at = NOW()
+                    WHERE user_id = $1
+                    RETURNING user_id
+                """,
+                user_id,
+            )
+            if changed is None:
+                return None
+            record = await self._read(conn, user_id)
+            logger.info("Account unlocked: user=%s", user_id)
+            return record
+
+    async def enable(self, user_id: str) -> StrikeRecord | None:
+        """Re-enable an account, preserving its strike history."""
+        pool = await self._get_pool()
+        async with pool.acquire() as conn, conn.transaction():
+            changed = await conn.fetchrow(
+                """
+                    UPDATE security_strikes
+                    SET disabled = FALSE,
+                        locked_until = NULL,
+                        scrutiny_level = CASE
+                            WHEN strike_count >= 1 THEN 'elevated'
+                            ELSE 'normal'
+                        END,
+                        updated_at = NOW()
+                    WHERE user_id = $1
+                    RETURNING user_id
+                """,
+                user_id,
+            )
+            if changed is None:
+                return None
+            record = await self._read(conn, user_id)
+            logger.info("Account re-enabled: user=%s", user_id)
+            return record
+
+    async def remove_strikes(
+        self,
+        user_id: str,
+        count: int | None = None,
+    ) -> StrikeRecord | None:
+        """Remove strikes and apply the in-memory ladder's exact recalculation."""
+        pool = await self._get_pool()
+        async with pool.acquire() as conn, conn.transaction():
+            changed = await conn.fetchrow(
+                """
+                    UPDATE security_strikes
+                    SET strike_count = GREATEST(0, strike_count - COALESCE($2, strike_count)),
+                        scrutiny_level = CASE
+                            WHEN GREATEST(0, strike_count - COALESCE($2, strike_count)) >= 3
+                                THEN 'disabled'
+                            WHEN GREATEST(0, strike_count - COALESCE($2, strike_count)) = 2
+                                THEN 'locked'
+                            WHEN GREATEST(0, strike_count - COALESCE($2, strike_count)) >= 1
+                                THEN 'elevated'
+                            ELSE 'normal'
+                        END,
+                        disabled = CASE
+                            WHEN GREATEST(0, strike_count - COALESCE($2, strike_count)) >= 3
+                                THEN TRUE
+                            WHEN GREATEST(0, strike_count - COALESCE($2, strike_count)) = 2
+                                THEN disabled
+                            ELSE FALSE
+                        END,
+                        locked_until = CASE
+                            WHEN GREATEST(0, strike_count - COALESCE($2, strike_count)) >= 3
+                                THEN locked_until
+                            WHEN GREATEST(0, strike_count - COALESCE($2, strike_count)) = 2
+                                THEN locked_until
+                            ELSE NULL
+                        END,
+                        updated_at = NOW()
+                    WHERE user_id = $1
+                    RETURNING user_id
+                """,
+                user_id,
+                count,
+            )
+            if changed is None:
+                return None
+            record = await self._read(conn, user_id)
+            if record is not None:
+                logger.info(
+                    "Strikes removed: user=%s new_count=%d level=%s",
+                    user_id,
+                    record.strike_count,
+                    record.scrutiny_level,
+                )
+            return record
+
+    async def submit_appeal(self, user_id: str, appeal_text: str) -> bool:
+        """Persist an appeal for a principal with at least one strike."""
+        pool = await self._get_pool()
+        async with pool.acquire() as conn, conn.transaction():
+            changed = await conn.fetchrow(
+                """
+                    UPDATE security_strikes
+                    SET last_appeal = $2, last_appeal_at = NOW(), updated_at = NOW()
+                    WHERE user_id = $1 AND strike_count > 0
+                    RETURNING user_id
+                """,
+                user_id,
+                appeal_text,
+            )
+            if changed is None:
+                return False
+            logger.info("Appeal submitted: user=%s text=%s", user_id, appeal_text[:100])
+            return True
+
 
 class PgRateLimiter:
     """Postgres-backed sliding window rate limiter — atomic check-and-record (fixes TOCTOU)."""
@@ -234,9 +359,10 @@ class PgRateLimiter:
         max_requests: int = 60,
     ):
         """Same two ways in as `PgStrikeTracker`, for the same reasons."""
-        self._db_url = (
-            db_url or os.environ.get("DATABASE_URL") or os.environ.get("DEPLOY_TARGET_DB_URL")
-        )
+        # Keep rate limiting on the same canonical database-selection axis as
+        # the rest of the application; DEPLOY_TARGET_DB_URL was a second,
+        # security-only database choice (#1172).
+        self._db_url = db_url or os.environ.get("DATABASE_URL")
         self._window_seconds = window_seconds
         self._max_requests = max_requests
         self._pool: Any = pool

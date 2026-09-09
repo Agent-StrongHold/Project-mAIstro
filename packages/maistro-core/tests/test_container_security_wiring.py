@@ -14,7 +14,7 @@ from __future__ import annotations
 import contextlib
 import logging
 
-import pytest
+import pytest  # type: ignore[import-not-found]
 
 from maistro.container import Container, create_container
 from maistro.security._types import AuthContext, WardenVerdict
@@ -124,6 +124,15 @@ async def test_container_wires_strike_tracker_when_enabled() -> None:
     assert container.strike_tracker is not None
     assert isinstance(container.strike_tracker, InMemoryStrikeTracker)
     assert container.gate._strike_tracker is container.strike_tracker
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("integration")
+async def test_container_wires_authorized_strike_recovery_with_tracker() -> None:
+    container = await _container(strike_tracking_enabled=True)
+    assert container.strike_recovery is not None
+    assert container.strike_recovery._tracker is container.strike_tracker
+    assert container.strike_recovery._sentinel is container.sentinel
 
 
 @pytest.mark.contract("behavioral")
