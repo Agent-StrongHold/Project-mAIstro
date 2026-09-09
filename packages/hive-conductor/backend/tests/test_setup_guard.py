@@ -247,3 +247,101 @@ def test_first_run_provisions_vault_and_persists_seed(
         "CONDUCTOR_SEED_MNEMONIC", lambda s: s
     )
     assert stored == " ".join(out["mnemonic"])
+
+
+def test_empty_hardware_preset_is_rejected() -> None:
+    from pydantic import ValidationError
+    from routes.setup import SetupCompleteBody
+
+    with pytest.raises(ValidationError) as exc_info:
+        SetupCompleteBody.model_validate(
+            {
+                "hardware_preset": "",
+                "admin_password": "s3cret-admin",
+                "user_password": "s3cret-user",
+            }
+        )
+
+    assert any(
+        error["loc"] == ("hardware_preset",)
+        and error["msg"] == "Value error, hardware_preset required"
+        for error in exc_info.value.errors()
+    )
+
+
+def test_direct_setup_validation_rejects_weak_password_with_422() -> None:
+    from fastapi import HTTPException
+    from routes.setup import SetupCompleteBody, complete_setup
+
+    with pytest.raises(HTTPException) as exc_info:
+        complete_setup(
+            {
+                "hardware_preset": "auto",
+                "admin_password": "1234567",
+                "user_password": "s3cret-user",
+            }
+        )
+
+    assert exc_info.value.status_code == 422
+    assert "Password must be at least 8 characters." in str(exc_info.value.detail)
+
+    # A model instance is the FastAPI path: it skips the dict compatibility
+    # branch and reaches the normal one-shot guard.
+    with pytest.raises(HTTPException) as model_exc_info:
+        complete_setup(
+            SetupCompleteBody(
+                hardware_preset="auto",
+                admin_password="s3cret-admin",
+                user_password="s3cret-user",
+            )
+        )
+    assert model_exc_info.value.status_code == 409
+
+
+def test_get_preset_returns_named_hardware_preset() -> None:
+    from routes.setup import get_preset
+
+    result = get_preset("laptop")
+
+    assert result["kind"] == "hardware_preset"
+    assert result["name"] == "laptop"
+
+
+def test_resolve_preset_auto_returns_resolved_config() -> None:
+    from routes.setup import resolve_preset_auto
+
+    result = resolve_preset_auto({"name": "auto", "total_memory_gb": 4})
+
+    assert result["kind"] == "resolved_preset"
+    assert result["preset"] == "laptop"
+    assert result["config"]["hardware_preset"] == "laptop"
+
+
+def test_persist_identity_root_stores_seed_before_returning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+    import types
+
+    from routes import setup as setup_routes
+
+    calls: dict[str, object] = {}
+
+    def init_vault(vault_path: str, identity_path: str) -> None:
+        calls["init_vault"] = (vault_path, identity_path)
+
+    class FakeVault:
+        def __init__(self, *, vault_path: str, identity_path: str) -> None:
+            calls["paths"] = (vault_path, identity_path)
+
+        def add(self, key: str, value: str) -> None:
+            calls["added"] = (key, value)
+
+    vault_module = types.ModuleType("maistro.vault")
+    vault_module.__dict__.update(Vault=FakeVault, init_vault=init_vault)
+    monkeypatch.setitem(sys.modules, "maistro.vault", vault_module)
+
+    result = setup_routes._persist_identity_root(["alpha", "beta"])
+
+    assert result is True
+    assert calls["added"] == ("CONDUCTOR_SEED_MNEMONIC", "alpha beta")
