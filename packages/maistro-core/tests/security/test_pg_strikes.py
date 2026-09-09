@@ -368,6 +368,31 @@ async def test_remove_strikes_recalculates_and_preserves_disabled_at_two(
     )
 
 
+async def test_submit_appeal_persists_appeal_for_struck_user(
+    patch_asyncpg: FakePool, conn: FakeConnection
+) -> None:
+    conn.queue_fetchrow({"user_id": "u1"})
+    tracker = PgStrikeTracker(db_url="postgres://x")
+
+    result = await tracker.submit_appeal("u1", "please review")
+
+    assert result is True
+    calls = [call for call in conn.calls if call.method == "fetchrow"]
+    assert len(calls) == 1
+    assert "last_appeal = $2" in calls[0].query
+    assert "strike_count > 0" in calls[0].query
+    assert calls[0].args == ("u1", "please review")
+
+
+async def test_submit_appeal_refuses_without_strikes(
+    patch_asyncpg: FakePool, conn: FakeConnection
+) -> None:
+    conn.queue_fetchrow(None)
+    tracker = PgStrikeTracker(db_url="postgres://x")
+
+    assert await tracker.submit_appeal("u1", "please review") is False
+
+
 def test_lockout_duration_is_eight_hours() -> None:
     assert timedelta(hours=8) == LOCKOUT_DURATION
 
