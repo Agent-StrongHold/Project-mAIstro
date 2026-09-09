@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -123,6 +124,11 @@ async def test_start_passes_an_absolute_agents_dir_through_untouched(monkeypatch
     reach `create_agents` byte-for-byte, not joined onto the backend directory
     by the relative-branch fallback (the other half of line 156's branch)."""
     absolute_dir = str(tmp_path / "agents")
+    # The construction now also retains the directory's PREAMBLE template for
+    # the runtime-materialization seam (#840 Slice 4) -- the factory already
+    # required it, so the fixture provides one.
+    Path(absolute_dir).mkdir()
+    (Path(absolute_dir) / "PREAMBLE.md").write_text("preamble for {{agent_name}}")
     container = _fake_container()
     captured = _capture_runtime_seams(monkeypatch, container)
 
@@ -194,3 +200,28 @@ async def test_start_populates_the_dict_the_hierarchy_closed_over(monkeypatch):
     # resolves it -- which the old rebinding silently broke.
     identity, _skills = await orchestrator._agent_source.resolve("delivery")
     assert identity.name == "delivery"
+
+
+@pytest.mark.asyncio
+async def test_start_registers_the_runtime_materialization_source(monkeypatch):
+    """The bridge hands the runtime it built to the materialization service
+    (#840 Slice 4): definitions created after boot (Forge, chat tools)
+    materialize into THIS container's wired map, behind the same PREAMBLE the
+    boot roster was seeded with."""
+    from pathlib import Path
+
+    import services.agent_materialization as materialization
+
+    shipped_agents_dir = Path(__file__).resolve().parents[4] / "agents"
+    container = _fake_container()
+    _capture_runtime_seams(monkeypatch, container)
+
+    bridge = MaistroCoreBridge()
+    await bridge.start(Settings(maistro_agents_dir=str(shipped_agents_dir)))
+
+    source = materialization._runtime_source
+    assert source is not None
+    assert source.container is container
+    assert source.llm is not None
+    # The real shipped PREAMBLE template, not an empty stand-in.
+    assert "governed dispatch and policy controls" in source.preamble

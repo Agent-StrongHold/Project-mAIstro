@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from maistro.http import shared_client
 
@@ -96,9 +97,28 @@ class _HttpOpenAILLMClient:
         yield content
 
 
-async def _construct_runtime(settings: Settings) -> tuple[Any, dict[str, Any]]:
-    """Compose what an embedded runtime needs: the wired Container and the
-    canonical agent roster built over ``settings.maistro_agents_dir``.
+class EmbeddedRuntime(NamedTuple):
+    """What composing an embedded runtime built and must keep holding.
+
+    ``agents`` is the roster the factory returned; ``llm`` is the client that
+    roster runs on; ``preamble`` is the versioned PREAMBLE template the factory
+    renders every soul behind (empty only where the manifest path never ran --
+    see the read in ``_construct_runtime``). Runtime materialization (#840
+    Slice 4) reuses all three so a definition materialized later stands behind
+    exactly the construction and safety context the boot roster was seeded
+    with.
+    """
+
+    container: Any
+    agents: dict[str, Any]
+    llm: Any
+    preamble: str
+
+
+async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
+    """Compose what an embedded runtime needs: the wired Container, the
+    canonical agent roster built over ``settings.maistro_agents_dir``, the LLM
+    client that roster runs on, and the roster's PREAMBLE template.
 
     Shared by ``MaistroCoreBridge.start()`` and ``build_canonical_roster()``
     so a deployment materializing the roster without a bridge projects exactly
@@ -110,10 +130,11 @@ async def _construct_runtime(settings: Settings) -> tuple[Any, dict[str, Any]]:
 
     from services.secrets import maistro_llm_api_key
 
-    from maistro.agents.factory import create_agents
+    from maistro.agents.factory import _load_preamble, create_agents
     from maistro.config.database import resolve_database_url
     from maistro.container import create_container
     from maistro.types.config import AgentConfig
+    from maistro.types.errors import ConfigError
 
     llm_base = (settings.litellm_api_base or "").strip()
     llm_key = maistro_llm_api_key(settings) or ""
@@ -176,7 +197,23 @@ async def _construct_runtime(settings: Settings) -> tuple[Any, dict[str, Any]]:
         tracer=None,
         require_agents=True,
     )
-    return container, agents
+    # The template for runtime materialization. Tolerant on purpose: with
+    # require_agents=True the factory just fail-closed on this exact file,
+    # so a miss here cannot happen on the manifest path -- and on a future
+    # DB-first roster (sa_engine + PgAgentRegistry) create_agents returns
+    # before ever touching the filesystem, where a hard read would spuriously
+    # fail a fully valid runtime. Empty template = souls render without the
+    # safety preamble, which only the fake-seamed tests ever see.
+    try:
+        preamble = _load_preamble(Path(agents_dir))
+    except ConfigError:
+        preamble = ""
+    return EmbeddedRuntime(
+        container=container,
+        agents=agents,
+        llm=llm_client,
+        preamble=preamble,
+    )
 
 
 async def build_canonical_roster(settings: Settings) -> dict[str, Any]:
@@ -191,8 +228,8 @@ async def build_canonical_roster(settings: Settings) -> dict[str, Any]:
     exactly why materialized rows are then stamped ``dispatchable=False``
     rather than wearing the shape of an executable roster.
     """
-    _container, agents = await _construct_runtime(settings)
-    return agents
+    runtime = await _construct_runtime(settings)
+    return runtime.agents
 
 
 class MaistroCoreBridge:
@@ -207,8 +244,8 @@ class MaistroCoreBridge:
         return self._container
 
     async def start(self, settings: Settings) -> None:
-        container, agents = await _construct_runtime(settings)
-        self._container = container
+        runtime = await _construct_runtime(settings)
+        self._container = runtime.container
         # Mutate the dict the container wired; never rebind the attribute.
         # `create_container` initializes an empty `agents` dict and hands that
         # same object to `_wire_hierarchy`, whose `_AgentMapSource` resolves
@@ -217,8 +254,18 @@ class MaistroCoreBridge:
         # hierarchy reading the original empty map forever: every hierarchical
         # resolution would raise `HierarchyError("unknown local agent ...")`
         # while `container.agents` itself looked perfectly populated.
-        container.agents.clear()
-        container.agents.update(agents)
+        runtime.container.agents.clear()
+        runtime.container.agents.update(runtime.agents)
+        # Hand the runtime to the materialization service: definitions created
+        # after boot (Forge, chat tools) materialize into THIS container's map
+        # behind the same construction and PREAMBLE the boot roster got.
+        from services.agent_materialization import register_runtime_source
+
+        register_runtime_source(
+            container=runtime.container,
+            llm=runtime.llm,
+            preamble=runtime.preamble,
+        )
 
     async def route(
         self,

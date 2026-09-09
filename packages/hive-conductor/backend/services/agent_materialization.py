@@ -10,6 +10,9 @@ enforces that in CI. Every producer funnels through here:
   - `materialize_manifest_roster`   -- the canonical factory roster → global rows
   - `upsert_agent_definition` / `update_agent_definition` /
     `delete_agent_definition` -- the CRUD, Forge, and chat-tool fronts
+  - `materialize_runtime`           -- a stored definition → a real Agent in
+    the bridge container's wired `agents` map (registered at boot via
+    `register_runtime_source`)
   - `delete_workspace_agents`       -- the workspace-delete cascade
   - the `_seed*` demo roster        -- demo mode only, at the store's own
     definition site (`stores.py`)
@@ -36,6 +39,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -433,6 +437,170 @@ async def materialize_boot_roster(settings: Any, agent_port: Any) -> list[Agent]
         )
         return []
     return materialize_manifest_roster(roster, dispatchable=False)
+
+
+# ─── Runtime materialization (#840 Slice 4) ───────────────────────────────
+
+
+@dataclass(frozen=True)
+class RuntimeSource:
+    """The embedded runtime definitions materialize into, registered at boot.
+
+    The bridge hands over what agent construction needs and nothing else: the
+    wired Container (wiring deps + the `agents` dict to mutate), the LLM client
+    the roster runs on, and the versioned PREAMBLE template the factory renders
+    every soul behind. No registration at all is the stub deployment's honesty
+    signal (StubAgentPort): definitions are stored and stamped
+    non-dispatchable, never faked into a runtime that does not exist.
+    """
+
+    container: Any
+    llm: Any
+    preamble: str
+
+
+_runtime_source: RuntimeSource | None = None
+
+
+def register_runtime_source(*, container: Any, llm: Any, preamble: str) -> None:
+    """Register the embedded runtime `materialize_runtime` materializes into.
+
+    Called by the bridge once its container is wired (boot); re-registration
+    replaces, so an engine restart re-points the seam at the runtime it now
+    owns. The registration seam (rather than each caller reaching into the
+    engine) keeps this module importable without the adapters and lets tests
+    register a container-shaped fake.
+    """
+    global _runtime_source
+    _runtime_source = RuntimeSource(container=container, llm=llm, preamble=preamble)
+
+
+def reset_runtime_source() -> None:
+    """Forget the registered runtime. Test isolation; boot never calls this."""
+    global _runtime_source
+    _runtime_source = None
+
+
+def _record_dispatchability(defn: Agent, *, dispatchable: bool) -> Agent:
+    """Stamp `config["dispatchable"]` on the stored row and return it.
+
+    The stamp is the row's honest claim about whether a runtime stands behind
+    it in THIS process -- the same stamp the manifest roster's boot
+    materialization writes. Rows resolve as roster members either way;
+    `resolve_agent_task`/`pulse_roster` semantics are unchanged.
+    """
+    config = dict(defn.config)
+    config["dispatchable"] = bool(dispatchable)
+    stored = defn.model_copy(update={"config": config})
+    stores.agents[stored.id] = stored
+    return stored
+
+
+async def _build_runtime_agent(defn: Agent, source: RuntimeSource) -> Any:
+    """Construct the real maistro Agent one stored definition describes.
+
+    The identity carries what the row durably declares: name, description,
+    model, tools from the declared capabilities, and the reasoning strategy
+    from `config["strategy"]` (the forge contract; chat rows carry none and
+    get `direct`). The soul prompt is upserted under the factory's own name
+    (`agent.<name>.soul`) with the PREAMBLE rendered in front of it, so a
+    materialized agent stands behind the same versioned safety context the
+    manifest roster was seeded with. Construction goes through the factory's
+    single path (`instantiate_agent`) -- strategy registry and tool-executor
+    wiring rule included -- not a second one that drifts.
+    """
+    from maistro.agents.factory import _render_preamble, instantiate_agent
+    from maistro.types.agent import AgentIdentity
+
+    config = defn.config if isinstance(defn.config, dict) else {}
+    name = defn.name
+    identity = AgentIdentity(
+        name=name,
+        description=defn.description or "",
+        soul_prompt_name=f"agent.{name}.soul",
+        model=defn.model or "auto",
+        tools=tuple(defn.capabilities or ()),
+        reasoning_strategy=str(config.get("strategy") or "direct"),
+    )
+    full_soul = _render_preamble(
+        source.preamble,
+        {
+            "name": name,
+            "description": identity.description,
+            "capabilities": ", ".join(identity.tools),
+        },
+    ) + str(config.get("soul") or identity.description)
+    container = source.container
+    await container.prompt_manager.upsert(
+        identity.soul_prompt_name,
+        full_soul,
+        label="production",
+    )
+    return instantiate_agent(
+        identity,
+        agent_resolver=container.agents.get,
+        llm=source.llm,
+        context_builder=container.context_builder,
+        prompt_manager=container.prompt_manager,
+        warden=container.warden,
+        sentinel=container.sentinel,
+        learning_store=container.learning_store,
+        context_assembly_policy=container.context_assembly_policy,
+        learning_extractor=container.learning_extractor,
+        outcome_store=container.outcome_store,
+        session_store=container.session_store,
+        quota_tracker=container.quota_tracker,
+        tracer=None,
+    )
+
+
+async def materialize_runtime(defn: Agent) -> Agent:
+    """Give a stored definition its runtime half: a real Agent in the bridge
+    container's wired `agents` map. Returns the (re-stamped) stored row.
+
+    The Forge route and the chat-tool creators call this right after a
+    successful `upsert_agent_definition`, so a definition that enters the
+    product roster also enters the runtime the conduit actually dispatches --
+    "loadable agent artifacts" made literal. The map is MUTATED in place
+    (keyed by the agent's own name, like the manifest roster); it is never
+    rebound -- `create_container` handed `_wire_hierarchy` this same dict
+    object, and the hierarchy closure captures the object, not its contents.
+
+    Two honest failure shapes, both fail-closed:
+
+    - No registered runtime (StubAgentPort deployments): no Agent is
+      fabricated; the row is stamped `config["dispatchable"] = False` and
+      stays a plain roster member.
+    - A runtime exists but THIS definition cannot become one (e.g. a strategy
+      that needs sub-agents none of which it declares): construction raises
+      before anything is wired; the row is stamped non-dispatchable and the
+      reason logged loudly. Narrow by design -- a dispatchable agent is never
+      fabricated out of a definition the runtime refused.
+    """
+    source = _runtime_source
+    if source is None:
+        logger.info(
+            "definition %s stored without a runtime; stamped non-dispatchable",
+            defn.id,
+        )
+        return _record_dispatchability(defn, dispatchable=False)
+    try:
+        agent = await _build_runtime_agent(defn, source)
+    except Exception as exc:
+        logger.error(
+            "RUNTIME MATERIALIZATION FAILED for %s (%s: %s); the definition stays "
+            "stored as a roster member and is stamped non-dispatchable -- no "
+            "dispatchable agent is fabricated",
+            defn.id,
+            type(exc).__name__,
+            exc,
+        )
+        return _record_dispatchability(defn, dispatchable=False)
+    container = source.container
+    # Mutate the dict the container wired; never rebind the attribute (the
+    # Slice 1 contract, pinned by the bridge tests and the write-path gate).
+    container.agents[agent.identity.name] = agent
+    return _record_dispatchability(defn, dispatchable=True)
 
 
 # Register once when the workspace routes import this module. Keeping the
