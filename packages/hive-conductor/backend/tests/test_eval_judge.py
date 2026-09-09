@@ -430,7 +430,12 @@ def test_list_verdicts_limit_clamped_to_100(authed_client: Any) -> None:
 def test_trigger_score_endpoint_runs_against_dag_run_store(
     authed_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Seed a fake run into dag_run_store, stub the LLM, hit POST."""
+    """Seed a scoped fake run into dag_run_store, stub the LLM, hit POST.
+
+    The run is seeded inside a Workspace the caller is a member of (#1174):
+    the trigger reads the projection through the scoped inspection service,
+    so an unscoped row would be refused like a missing one.
+    """
     import services.eval_judge as ej
     from services.dag_run_store import get_dag_run_store
 
@@ -445,13 +450,23 @@ def test_trigger_score_endpoint_runs_against_dag_run_store(
 
     monkeypatch.setattr(routes_ej, "score_run", _patched_score)
 
+    # A Workspace the caller (the session user) owns, so the run seeded into
+    # it is inside the caller's canonical Workspace universe (#1174).
+    workspace_id = authed_client.post(
+        "/v1/workspaces", json={"persona_template_id": "pm_fleet", "name": "Eval Scope"}
+    ).json()["id"]
+
     # Seed a fake run via dag_run_store's public start_run + append_event
     import asyncio
 
     store = get_dag_run_store()
 
     async def _seed() -> str:
-        run = await store.start_run(user_id="testuser", run_id="r-trigger")
+        run = await store.start_run(
+            user_id="testuser",
+            run_id="r-trigger",
+            workspace_id=workspace_id,
+        )
         await store.append_event(
             "r-trigger",
             event_type="pm_node_completed",
@@ -470,6 +485,41 @@ def test_trigger_score_endpoint_runs_against_dag_run_store(
     r = authed_client.post(f"/v1/eval-judge/{rid}")
     assert r.status_code == 200
     assert r.json()["score"] == 91
+
+
+def test_trigger_score_out_of_scope_run_is_not_scored(
+    authed_client: Any, admin_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run outside the caller's Workspace universe scores nothing (#1174).
+
+    The run exists — the admin seeded it into THEIR workspace — but the
+    caller gets the same 404 a missing run gets, so the response confirms no
+    run beyond the boundary. The projection record itself is untouched.
+    """
+    import asyncio
+
+    from services.dag_run_store import get_dag_run_store
+
+    workspace_id = admin_client.post(
+        "/v1/workspaces", json={"persona_template_id": "pm_fleet", "name": "Admin Runs"}
+    ).json()["id"]
+    asyncio.run(get_dag_run_store().start_run(run_id="r-foreign", workspace_id=workspace_id))
+
+    called = False
+
+    async def _must_not_score(run_record: Any, **kw: Any) -> dict[str, Any]:
+        nonlocal called
+        called = True
+        return {"score": 0}
+
+    import routes.eval_judge as routes_ej
+
+    monkeypatch.setattr(routes_ej, "score_run", _must_not_score)
+
+    r = authed_client.post("/v1/eval-judge/r-foreign")
+    assert r.status_code == 404
+    assert r.json() == {"detail": "run not found"}
+    assert called is False
 
 
 def test_trigger_score_missing_run_returns_404(authed_client: Any) -> None:

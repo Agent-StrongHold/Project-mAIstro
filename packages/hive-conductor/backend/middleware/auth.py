@@ -374,6 +374,23 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # feedback route. The route itself still checks workspace membership.
         if path.endswith("/feedback"):
             return None
+        # DAG-Run inspection — GET /v1/dag-runs (list), GET /v1/dag-runs/{id}
+        # (detail), GET /v1/dag-runs/{id}/events (SSE) — is deliberately NOT
+        # elevation-gated, because elevation adds no boundary here: the
+        # responses are scoped to the caller's canonical Workspace universe
+        # inside the routes themselves, through
+        # services/dag_run_inspection (#1174) — the same authority the
+        # workspace/agents routes answer through. Authentication alone is not
+        # authorization: a member of no Workspace sees an empty list, and an
+        # out-of-scope run id gets the same 404 a missing run gets, so the
+        # response never confirms a run exists beyond the caller's boundary.
+        # (Spell the GET match out rather than listing the routes in
+        # _PROTECTED_OPS: these routes stay None on purpose, and the comment
+        # above is the reason.) The /feedback POST sub-routes above keep their
+        # own pre-existing posture; /v1/dag-runs/retention is covered by this
+        # match too and carries deployment constants, not run data.
+        if request.method == "GET" and (path == "/v1/dag-runs" or path.startswith("/v1/dag-runs/")):
+            return None
         for prefix, perm in method_perms.items():
             if path.startswith(prefix):
                 return perm

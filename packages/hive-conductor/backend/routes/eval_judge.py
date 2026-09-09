@@ -15,17 +15,31 @@ The manual trigger is what the optimizer's scheduler will call between
 user runs once Phase 6 lands; for now it lets a user click 'Score this
 run' from DagRuns.tsx and read the eval-judge's rationale + topology
 proposal verbatim.
+
+The trigger reads run data through `services.dag_run_inspection`, the same
+scoped door the dag-runs routes use (#1174): a run outside the caller's
+Workspace universe is refused with the run's usual non-existence response,
+not scored for whoever asks.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
-from services.dag_run_store import get_dag_run_store
+from fastapi import APIRouter, HTTPException, Request
+from services.dag_run_inspection import visible_run_detail
 from services.eval_judge import get_verdict, score_run
 
 router = APIRouter(tags=["eval-judge"])
+
+
+def _user_id(request: Request) -> str:
+    """Principal for this request — set by AuthMiddleware (see routes/feedback.py)."""
+    user = getattr(request.state, "user", None) or {}
+    uid = str(user.get("id") or user.get("username") or "")
+    if not uid:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return uid
 
 
 @router.get("/{run_id}")
@@ -46,14 +60,18 @@ def list_verdicts(limit: int = 25) -> list[dict[str, Any]]:
 
 
 @router.post("/{run_id}")
-async def trigger_score(run_id: str) -> dict[str, Any]:
+async def trigger_score(run_id: str, request: Request) -> dict[str, Any]:
     """Score the run captured in dag_run_store. For Phase 5 we score off
     the dag_run_store's run-record-shaped summary (DurableRunRecord
     integration lands when the executor publishes the durable record
     into dag_run_store; until then, this endpoint accepts whatever
-    dag_run_store returns and gracefully scores it)."""
-    store = get_dag_run_store()
-    run = store.get_run(run_id)
+    dag_run_store returns and gracefully scores it).
+
+    Scoped like every other run reader (#1174): the projection is read
+    through the inspection service, so an out-of-scope run gets the same
+    404 a missing one gets — and is never scored.
+    """
+    run = await visible_run_detail(_user_id(request), run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="run not found")
 
