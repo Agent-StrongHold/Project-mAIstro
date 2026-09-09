@@ -148,6 +148,7 @@
     "maistro.security.auth_static",
     "maistro.security.guardrail",
     "maistro.security.secure_random",
+    "maistro.security.strike_recovery",
     "maistro.security.task_policy",
     "maistro.security.trust_boundary",
     "maistro.security.warden.flag_response",

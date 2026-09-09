@@ -92,7 +92,7 @@ class PgStrikeTracker:
     async def _get_pool(self) -> Any:
         if self._pool is None:
             try:
-                import asyncpg  # type: ignore[import-not-found]
+                import asyncpg
 
                 self._pool = await asyncpg.create_pool(self._db_url, min_size=1, max_size=5)
                 await self._pool.execute(_SCHEMA)
@@ -369,7 +369,7 @@ class PgRateLimiter:
 
     async def _get_pool(self) -> Any:
         if self._pool is None:
-            import asyncpg  # type: ignore[import-not-found]
+            import asyncpg
 
             self._pool = await asyncpg.create_pool(self._db_url, min_size=1, max_size=5)
             await self._pool.execute(_SCHEMA)

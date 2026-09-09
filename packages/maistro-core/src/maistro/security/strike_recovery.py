@@ -15,7 +15,9 @@ logger = logging.getLogger("maistro.strikes.recovery")
 
 
 class StrikeRecoveryService:
-    """Perform strike recovery only for an authorized, different principal.
+    """M1 product-local projection: Recovery
+
+    Perform strike recovery only for an authorized, different principal.
 
     The recovery action is checked through Sentinel's capability path rather
     than a private role check. The service also requires the canonical admin

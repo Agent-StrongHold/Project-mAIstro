@@ -433,11 +433,12 @@
       "id": "security-unenforced-controls",
       "subsystem": "Warden / Sentinel / Gate",
       "disposition": "CONNECT",
-      "rationale": "Guardrails, trust-boundary checks, task policy and Warden flag response: controls that exist but sit off the product path. This is the gap SECURITY.md calls out and #66 closes \u2014 construction is not enforcement.",
+      "rationale": "Guardrails, trust-boundary checks, task policy, Warden flag response and administrative strike recovery: controls that exist but sit off the product path. This is the gap SECURITY.md calls out and #66 closes \u2014 construction is not enforcement.",
       "root": "the real Conductor chat and tool paths (#66)",
       "modules": [
         "maistro.security.guardrail",
         "maistro.security.secure_random",
+        "maistro.security.strike_recovery",
         "maistro.security.task_policy",
         "maistro.security.trust_boundary",
         "maistro.security.warden.flag_response"
