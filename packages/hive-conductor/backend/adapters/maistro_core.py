@@ -129,6 +129,7 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
     import os
 
     from services.secrets import maistro_llm_api_key
+    from services.tool_executor import dispatch_tool
 
     from maistro.agents.factory import _load_preamble, create_agents
     from maistro.config.database import resolve_database_url
@@ -195,6 +196,15 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         session_store=container.session_store,
         quota_tracker=container.quota_tracker,
         tracer=None,
+        # The tool seam, closed (#840 Slice 5): an explicit, REAL executor
+        # instead of the implicit None the bridge used to pass. The factory
+        # still wires it only into agents whose identity declares tools, so
+        # today's all-empty shipped manifests change nothing -- but the first
+        # manifest (or materialized definition) that declares a tool executes
+        # against hive's real tool functions instead of silently refusing via
+        # react's un-guarded branch. ADR-082526-3ca6: the runtime that owns
+        # the agents owns their delegation dependencies.
+        tool_executor=dispatch_tool,
         require_agents=True,
     )
     # The template for runtime materialization. Tolerant on purpose: with
