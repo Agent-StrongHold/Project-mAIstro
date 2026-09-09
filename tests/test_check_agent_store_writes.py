@@ -46,7 +46,7 @@ def _details(gate, tmp_path: Path) -> list[str]:
     return [v.detail for v in gate.find_violations(tmp_path)]
 
 
-ROGUE = 'import stores\n\n\ndef make(key: str) -> None:\n    stores.agents[key] = object()\n'
+ROGUE = "import stores\n\n\ndef make(key: str) -> None:\n    stores.agents[key] = object()\n"
 
 
 def test_flags_an_item_assignment_outside_the_service(gate, tmp_path):
@@ -97,8 +97,7 @@ def test_flags_a_container_agents_rebinding(gate, tmp_path):
     _write(
         tmp_path,
         "packages/demo/src/demo/bridge.py",
-        "class Bridge:\n    def start(self, agents):\n"
-        "        self._container.agents = agents\n",
+        "class Bridge:\n    def start(self, agents):\n        self._container.agents = agents\n",
     )
     details = _details(gate, tmp_path)
     assert any("rebinds" in d for d in details)
@@ -163,8 +162,6 @@ def test_this_tree_is_clean(gate):
 
 def test_the_script_runs_as_a_gate_on_this_tree():
     """And as CI runs it: exit 0 with the OK banner."""
-    done = subprocess.run(
-        [sys.executable, str(SCRIPT)], cwd=ROOT, capture_output=True, text=True
-    )
+    done = subprocess.run([sys.executable, str(SCRIPT)], cwd=ROOT, capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
     assert "Agent store write path OK" in done.stdout

@@ -2,7 +2,7 @@
 inventory-delta:
   packages/maistro-core/tests: +0
   packages/hive-conductor/backend/tests: +21
-  tests: +16
+  tests/: +16
 ---
 
 # #840 slices 1-3 — agent roster authority (hive-conductor + maistro-core)

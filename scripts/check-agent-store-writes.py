@@ -105,10 +105,12 @@ def _defines_agents_store(tree: ast.Module) -> bool:
     """Whether this module defines THE agents store (`agents = ModelStore(...)`)."""
     for node in tree.body:
         value = None
-        if (isinstance(node, ast.Assign) and any(
-            isinstance(target, ast.Name) and target.id == "agents"
-            for target in node.targets
-        )) or (
+        if (
+            isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == "agents" for target in node.targets
+            )
+        ) or (
             isinstance(node, ast.AnnAssign)
             and isinstance(node.target, ast.Name)
             and node.target.id == "agents"
@@ -162,9 +164,7 @@ def _write_through_violation(
         and parent.attr in MUTATING_METHODS
         and isinstance(parents.get(parent), ast.Call)
     ):
-        return Violation(
-            rel, node.lineno, f"calls .{parent.attr}() on {what} outside the service"
-        )
+        return Violation(rel, node.lineno, f"calls .{parent.attr}() on {what} outside the service")
     return None
 
 
@@ -185,9 +185,7 @@ def _store_violation(
         if _inside_seed_function(node, parents):
             return None
         assert isinstance(node, ast.expr)
-        return _write_through_violation(
-            node, parents, "the agents store (non-seed site)", rel
-        )
+        return _write_through_violation(node, parents, "the agents store (non-seed site)", rel)
     return None
 
 
