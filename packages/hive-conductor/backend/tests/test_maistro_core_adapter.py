@@ -3,10 +3,45 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from adapters.maistro_core import MaistroCoreBridge
 from config import Settings
+
+
+def _fake_container() -> SimpleNamespace:
+    """The seams `_construct_runtime` reads off the wired Container."""
+    return SimpleNamespace(
+        prompt_manager=object(),
+        context_assembly_policy=object(),
+        context_builder=object(),
+        warden=object(),
+        sentinel=object(),
+        learning_store=object(),
+        learning_extractor=object(),
+        outcome_store=object(),
+        session_store=object(),
+        quota_tracker=object(),
+        agents={},
+    )
+
+
+def _capture_runtime_seams(monkeypatch, container: SimpleNamespace) -> dict[str, object]:
+    """Stub create_container/create_agents and return what the factory got."""
+    captured: dict[str, object] = {}
+
+    async def fake_create_container(config):
+        return container
+
+    async def fake_create_agents(**kwargs):
+        captured.update(kwargs)
+        return {}
+
+    monkeypatch.setattr("maistro.container.create_container", fake_create_container)
+    monkeypatch.setattr("maistro.agents.factory.create_agents", fake_create_agents)
+    monkeypatch.setattr("services.secrets.maistro_llm_api_key", lambda _settings: "")
+    return captured
 
 
 @pytest.mark.asyncio
@@ -63,6 +98,41 @@ async def test_start_passes_container_prompt_manager_to_agent_factory(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_start_resolves_a_relative_agents_dir_against_the_backend(monkeypatch):
+    """A relative settings.maistro_agents_dir is resolved against the hive-
+    conductor backend directory before it reaches the factory -- the arc the
+    diff-coverage gate flagged half-taken: every other test here boots with
+    one, but nothing pinned what the factory is actually handed."""
+    import os
+
+    container = _fake_container()
+    captured = _capture_runtime_seams(monkeypatch, container)
+
+    bridge = MaistroCoreBridge()
+    await bridge.start(Settings(maistro_agents_dir="agents"))
+
+    resolved = captured["agents_dir"]
+    assert isinstance(resolved, str)
+    assert os.path.isabs(resolved)
+    assert os.path.basename(os.path.normpath(resolved)) == "agents"
+
+
+@pytest.mark.asyncio
+async def test_start_passes_an_absolute_agents_dir_through_untouched(monkeypatch, tmp_path):
+    """An absolute settings.maistro_agents_dir needs no resolution: it must
+    reach `create_agents` byte-for-byte, not joined onto the backend directory
+    by the relative-branch fallback (the other half of line 156's branch)."""
+    absolute_dir = str(tmp_path / "agents")
+    container = _fake_container()
+    captured = _capture_runtime_seams(monkeypatch, container)
+
+    bridge = MaistroCoreBridge()
+    await bridge.start(Settings(maistro_agents_dir=absolute_dir))
+
+    assert captured["agents_dir"] == absolute_dir
+
+
+@pytest.mark.asyncio
 async def test_start_populates_the_dict_the_hierarchy_closed_over(monkeypatch):
     """The bridge must mutate the container's agents dict in place.
 
@@ -84,7 +154,7 @@ async def test_start_populates_the_dict_the_hierarchy_closed_over(monkeypatch):
 
     # The dict the container wired: `_wire_hierarchy` closes over exactly this
     # object, before any agent exists in it.
-    wired_agents: dict[str, object] = {}
+    wired_agents: dict[str, Any] = {}
     _registry, orchestrator = _wire_hierarchy(wired_agents, InMemorySkillRegistry())
 
     roster_agent = SimpleNamespace(identity=SimpleNamespace(name="delivery", skills=()))

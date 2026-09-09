@@ -32,8 +32,14 @@ from services.agent_invocation import (  # noqa: E402
     resolve_agent,
     resolve_agent_task,
 )
+from services.agent_materialization import (  # noqa: E402
+    AgentDefinitionRejected,
+    AgentScannerUnavailable,
+    ScanBudgetExceeded,
+)
 from services.chat_completion import (  # noqa: E402
     _chat_workspace_id,
+    _request_workspace_id,
     _tool_create_agent_button,
     _tool_modify_agent_button,
     _tool_remove_agent_button,
@@ -196,3 +202,155 @@ async def test_modify_and_remove_go_through_the_same_write_path(workspace: str) 
     removed = await _tool_remove_agent_button({"agent_id": aid}, "user-1", None)
     assert removed["removed"] is True
     assert resolve_agent("Sprint Guard", workspace_id=workspace) is None
+
+
+# --------------------------------------------------------------------------- #
+# Fail-closed refusals on every chat producer, and the turn's workspace scope
+#
+# Each tool awaits the one write path and maps its refusals onto an `error`
+# payload the model can read: flagged is a scan refusal, a scanner that cannot
+# run is refused, an unscannable config is refused -- and nothing is stored in
+# any of them. (The flagged-description arm of create_button and the dead-
+# scanner arm of save_as are pinned by the happy-path tests above; the tests
+# here cover the remaining arms by refusing at the service seam.)
+# --------------------------------------------------------------------------- #
+
+
+def _refuse_upsert(monkeypatch, exc: Exception) -> None:
+    import services.chat_completion as chat_service
+
+    async def _raise(*args: Any, **kwargs: Any) -> Any:
+        raise exc
+
+    monkeypatch.setattr(chat_service, "upsert_agent_definition", _raise)
+
+
+def _refuse_update(monkeypatch, exc: Exception) -> None:
+    import services.chat_completion as chat_service
+
+    async def _raise(*args: Any, **kwargs: Any) -> Any:
+        raise exc
+
+    monkeypatch.setattr(chat_service, "update_agent_definition", _raise)
+
+
+def test_request_workspace_id_uses_a_named_scope_and_none_otherwise() -> None:
+    """The workspace a chat turn belongs to comes off the request when the
+    caller names one (stripped); absent or whitespace-only means no scope --
+    None, never an empty string that would select nothing. `workspace_id` is
+    an extra field on the request model (extra="allow"), which is why the
+    helper reads it defensively -- so this exercises the real schema."""
+    from models.schemas import ChatCompletionRequest
+
+    def _request(**extra: Any) -> ChatCompletionRequest:
+        return ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}], **extra)
+
+    assert _request_workspace_id(_request(workspace_id="  ws-5 ")) == "ws-5"
+    assert _request_workspace_id(_request()) is None
+    assert _request_workspace_id(_request(workspace_id="   ")) is None
+
+
+async def test_save_as_refuses_a_rejected_definition_and_stores_nothing(
+    monkeypatch,
+) -> None:
+    _refuse_upsert(monkeypatch, AgentDefinitionRejected("injected config"))
+
+    result = await _tool_save_as_action({"name": "Whatever"}, "user-1", None)
+
+    assert result == {"error": "agent not saved: rejected by security scan (injected config)"}
+    assert len(stores.agents) == 0
+
+
+async def test_save_as_refuses_when_the_scan_budget_is_exceeded_and_stores_nothing(
+    monkeypatch,
+) -> None:
+    _refuse_upsert(monkeypatch, ScanBudgetExceeded("config past the scan budget"))
+
+    result = await _tool_save_as_action({"name": "Whatever"}, "user-1", None)
+
+    assert result == {"error": "agent not saved: config past the scan budget"}
+    assert len(stores.agents) == 0
+
+
+async def test_create_button_refuses_when_the_scanner_cannot_run_and_stores_nothing(
+    monkeypatch,
+) -> None:
+    _refuse_upsert(monkeypatch, AgentScannerUnavailable("detector offline"))
+
+    result = await _tool_create_agent_button(
+        {"name": "Sprint Check", "capability": "poll_jira"}, "user-1", None
+    )
+
+    assert result == {
+        "error": "agent not created: the security scan could not run; nothing was stored"
+    }
+    assert len(stores.agents) == 0
+
+
+async def test_create_button_refuses_when_the_scan_budget_is_exceeded_and_stores_nothing(
+    monkeypatch,
+) -> None:
+    _refuse_upsert(monkeypatch, ScanBudgetExceeded("config past the scan budget"))
+
+    result = await _tool_create_agent_button(
+        {"name": "Sprint Check", "capability": "poll_jira"}, "user-1", None
+    )
+
+    assert result == {"error": "agent not created: config past the scan budget"}
+    assert len(stores.agents) == 0
+
+
+async def test_modify_refuses_a_rejected_definition_and_leaves_the_row_untouched(
+    workspace: str,
+    monkeypatch,
+) -> None:
+    created = await _tool_create_agent_button(
+        {"name": "Sprint Check", "capability": "poll_jira"}, "user-1", None
+    )
+    aid = created["agent"]["id"]
+    _refuse_update(monkeypatch, AgentDefinitionRejected("injected config"))
+
+    result = await _tool_modify_agent_button(
+        {"agent_id": aid, "name": "Sprint Guard"}, "user-1", None
+    )
+
+    assert result == {"error": "agent not modified: rejected by security scan (injected config)"}
+    assert stores.agents[aid].name == "Sprint Check"
+
+
+async def test_modify_refuses_when_the_scanner_cannot_run_and_leaves_the_row_untouched(
+    workspace: str,
+    monkeypatch,
+) -> None:
+    created = await _tool_create_agent_button(
+        {"name": "Sprint Check", "capability": "poll_jira"}, "user-1", None
+    )
+    aid = created["agent"]["id"]
+    _refuse_update(monkeypatch, AgentScannerUnavailable("detector offline"))
+
+    result = await _tool_modify_agent_button(
+        {"agent_id": aid, "name": "Sprint Guard"}, "user-1", None
+    )
+
+    assert result == {
+        "error": "agent not modified: the security scan could not run; nothing was stored"
+    }
+    assert stores.agents[aid].name == "Sprint Check"
+
+
+async def test_modify_refuses_when_the_scan_budget_is_exceeded_and_leaves_the_row_untouched(
+    workspace: str,
+    monkeypatch,
+) -> None:
+    created = await _tool_create_agent_button(
+        {"name": "Sprint Check", "capability": "poll_jira"}, "user-1", None
+    )
+    aid = created["agent"]["id"]
+    _refuse_update(monkeypatch, ScanBudgetExceeded("config past the scan budget"))
+
+    result = await _tool_modify_agent_button(
+        {"agent_id": aid, "name": "Sprint Guard"}, "user-1", None
+    )
+
+    assert result == {"error": "agent not modified: config past the scan budget"}
+    assert stores.agents[aid].name == "Sprint Check"
