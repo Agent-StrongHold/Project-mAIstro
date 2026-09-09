@@ -37,6 +37,7 @@ from maistro.runs.admission import admit_direct_work
 from maistro.runs.lifecycle import RUN_TRANSITIONS, InvalidLifecycleTransition
 from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
 from maistro.runs.task_kinds import resolve_direct_work
+from maistro.tasks.idempotency import IDEMPOTENCY_KEY_PROVENANCE
 from maistro.tasks.models import TaskStatus
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -168,6 +169,14 @@ class TaskRunAdmitter:
             provenance[SESSION_ID_KEY] = task.session_id
         if task.user_id:
             provenance["user_id"] = task.user_id
+        if task.idempotency_key:
+            # The caller's explicit key, on the Run (#1176): the claim store is
+            # the reconciliation mechanism, but an auditor correlating a retry
+            # storm reads the Run, so the key the caller chose is recorded
+            # where the admission it produced lives. Derived keys are absent —
+            # the derivation is admission machinery, not something the caller
+            # said.
+            provenance[IDEMPOTENCY_KEY_PROVENANCE] = task.idempotency_key
         run = await admit_direct_work(
             self._runs,
             workspace_id=self._workspace_id,
