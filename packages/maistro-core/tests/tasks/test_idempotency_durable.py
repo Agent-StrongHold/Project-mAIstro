@@ -565,12 +565,15 @@ async def test_the_postgres_tier_reconciles_on_a_real_server(pg_pool) -> None:
     """The fake-pool tests pin the statements; this proves the durability box
     on a real PostgreSQL: the claim, its announcement, the ambiguous window
     and the claimant fence all survive across pools — what a restart or a
-    replica handoff actually does."""
+    replica handoff actually does. Rows are deleted, never the table: this
+    database is shared with the alembic chain, and dropping a migrated table
+    under alembic's feet leaves the version stamp pointing at a schema that
+    is no longer there."""
     assert pg_pool is not None
-    async with pg_pool.acquire() as conn:
-        await conn.execute("DROP TABLE IF EXISTS task_idempotency")
     first = PgTaskIdempotencyStore(pg_pool)
     await first.ensure_schema()
+    async with pg_pool.acquire() as conn:
+        await conn.execute("DELETE FROM task_idempotency")
 
     claimed = await first.claim(_scope("k"), fingerprint="fp", request="{}", now=_NOW)
     assert isinstance(claimed, Claimed)
@@ -606,4 +609,4 @@ async def test_the_postgres_tier_reconciles_on_a_real_server(pg_pool) -> None:
     assert await second.complete(bare_scope, token=taken.token, task_id="t2", run_id="r2") is True
 
     async with pg_pool.acquire() as conn:
-        await conn.execute("DROP TABLE IF EXISTS task_idempotency")
+        await conn.execute("DELETE FROM task_idempotency")
