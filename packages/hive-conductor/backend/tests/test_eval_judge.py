@@ -385,8 +385,17 @@ def test_get_verdict_returns_persisted_or_none() -> None:
 
 
 def test_get_verdict_endpoint_returns_persisted(authed_client: Any) -> None:
+    import asyncio
+
+    from services.dag_run_store import get_dag_run_store
     from services.eval_judge import _persist
 
+    # The verdict read is scoped to the run (#1174): the run is seeded inside
+    # a Workspace the caller owns, so the persisted verdict is readable.
+    workspace_id = authed_client.post(
+        "/v1/workspaces", json={"persona_template_id": "pm_fleet", "name": "Verdict Read"}
+    ).json()["id"]
+    asyncio.run(get_dag_run_store().start_run(run_id="r-V", workspace_id=workspace_id))
     _persist(
         _Run(run_id="r-V"),
         {"score": 70, "rationale": "ok", "topology_proposal": None, "status": "ok"},
@@ -402,8 +411,19 @@ def test_get_verdict_endpoint_404(authed_client: Any) -> None:
 
 
 def test_list_verdicts_endpoint_returns_newest_first(authed_client: Any) -> None:
+    import asyncio
+
+    from services.dag_run_store import get_dag_run_store
     from services.eval_judge import _persist
 
+    # Both runs live in a Workspace the caller owns, so both verdicts are
+    # inside the caller's scoped list (#1174).
+    workspace_id = authed_client.post(
+        "/v1/workspaces", json={"persona_template_id": "pm_fleet", "name": "Verdict List"}
+    ).json()["id"]
+    store = get_dag_run_store()
+    asyncio.run(store.start_run(run_id="r-old", workspace_id=workspace_id))
+    asyncio.run(store.start_run(run_id="r-new", workspace_id=workspace_id))
     _persist(
         _Run(run_id="r-old"), {"score": 50, "status": "ok"}, now=datetime(2026, 1, 1, tzinfo=UTC)
     )
@@ -418,9 +438,26 @@ def test_list_verdicts_endpoint_returns_newest_first(authed_client: Any) -> None
 
 
 def test_list_verdicts_limit_clamped_to_100(authed_client: Any) -> None:
+    import asyncio
+
+    from services.dag_run_store import get_dag_run_store
     from services.eval_judge import _persist
 
+    # Every verdict needs a run inside the caller's Workspace universe to be
+    # listable (#1174). The projection keeps MAX_RUNS rows, so seeding 110
+    # runs leaves exactly the newest 100 rows — still enough for the cap to
+    # bind, and the verdicts whose rows were evicted are invisible, not
+    # counted.
+    workspace_id = authed_client.post(
+        "/v1/workspaces", json={"persona_template_id": "pm_fleet", "name": "Verdict Cap"}
+    ).json()["id"]
+    store = get_dag_run_store()
+
+    def _seed(rid: str) -> None:
+        asyncio.run(store.start_run(run_id=rid, workspace_id=workspace_id))
+
     for i in range(110):
+        _seed(f"r-{i}")
         _persist(_Run(run_id=f"r-{i}"), {"score": i % 100, "status": "ok"})
     r = authed_client.get("/v1/eval-judge?limit=999")
     assert r.status_code == 200

@@ -3,11 +3,11 @@
 `DagRunStore` is projection storage (#697): it answers what a run recorded to
 whoever holds the id. That is an implementation detail, not an authorization
 decision. Every reader of run data — the list/detail/SSE API routes and the
-in-repo consumers that inspect runs (eval-judge scoring today; #804/#1046
-extend the same door to Workspace/Home/Attention surfaces) — goes through
-this module, which enforces the same canonical boundary every other scoped
-Hive surface uses: the caller's Workspace universe from
-`services.workspace_authority` (#37). Hive's legacy Workspace records are
+in-repo consumers that inspect runs (eval-judge scoring and its verdict
+read side today; #804/#1046 extend the same door to Workspace/Home/Attention
+surfaces) — goes through this module, which enforces the same canonical
+boundary every other scoped Hive surface uses: the caller's Workspace
+universe from `services.workspace_authority` (#37). Hive's legacy Workspace records are
 never consulted here; the authority is the canonical store and nothing else.
 
 A run is visible only inside the Workspace the canonical Run was admitted
@@ -24,6 +24,7 @@ stop condition).
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 from services.dag_run_store import get_dag_run_store
@@ -86,3 +87,25 @@ async def visible_run_detail(user_id: str, run_id: str) -> dict[str, Any] | None
     if not _in_scope(record, allowed):
         return None
     return record
+
+
+async def visible_run_ids(user_id: str, run_ids: Iterable[str]) -> set[str]:
+    """Which of these candidate run ids may `user_id` inspect?
+
+    The list-shaped companion to `visible_run_detail` (the eval-judge verdict
+    list reads through it, #1174): the caller's Workspace universe is resolved
+    once for the whole batch, and every candidate is answered by the same
+    projection-scope rule `visible_run_detail` applies, so a page-level answer
+    and a by-id answer can never disagree about what is visible. A candidate
+    whose run is missing — or whose projection row carries no Workspace scope
+    — is simply absent from the result, exactly as it is invisible to the
+    by-id readers.
+    """
+    allowed = await authorized_workspace_ids(user_id)
+    store = get_dag_run_store()
+    visible: set[str] = set()
+    for run_id in run_ids:
+        record = store.get_run(str(run_id))
+        if record is not None and _in_scope(record, allowed):
+            visible.add(str(run_id))
+    return visible
