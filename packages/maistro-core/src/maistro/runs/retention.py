@@ -28,7 +28,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from maistro.observability.metrics import retention_purged_total
+from maistro.observability.metrics import retention_backlog_remaining, retention_purged_total
+from maistro.runs.retention_scope import GlobalRetentionScope
 from maistro.runs.store import DEFAULT_PURGE_BATCH, PurgeOutcome, RetentionScope
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -186,9 +187,15 @@ class RunRetentionSweeper:
                 # failure mode the pre-#1175 signature could not have.
                 self.last_error = exc
                 self._last_outcome = None
+                # The standing backlog observation is withdrawn with the
+                # outcome it came from: a failed sweep commits nothing, so it
+                # neither drained a backlog nor may keep claiming one from a
+                # purge that no longer stands as completed.
+                retention_backlog_remaining.set(0.0, mode=self._failure_mode())
                 return 0
             self.last_error = None
             self._last_outcome = outcome
+            self._report_backlog(outcome)
             if outcome.runs:
                 retention_purged_total.inc(outcome.runs, mode=outcome.mode)
             return outcome.runs
@@ -209,9 +216,35 @@ class RunRetentionSweeper:
             )
             self.last_error = None
             self._last_outcome = outcome
+            self._report_backlog(outcome)
             if outcome.runs:
                 retention_purged_total.inc(outcome.runs, mode=outcome.mode)
             return outcome.runs
+
+    def _report_backlog(self, outcome: PurgeOutcome) -> None:
+        """Publish the sweep's backlog verdict under its bounded mode label.
+
+        The purge count alone cannot alert: a scope whose backlog never
+        drains looks identical to a quiet one unless "the batch ran out"
+        is itself a series a dashboard can graph. The label is the mode,
+        never a Workspace id, for the same #818 bound the purge counter
+        carries.
+        """
+        retention_backlog_remaining.set(
+            1.0 if outcome.backlog_remaining else 0.0, mode=outcome.mode
+        )
+
+    def _failure_mode(self) -> str:
+        """The mode label for a sweep that never completed.
+
+        The scope the sweeper was constructed with, reduced to its mode:
+        the label space must stay bounded, and an unresolved scope's
+        refusal is a construction-time condition, not a per-Workspace fact
+        worth a label of its own.
+        """
+        if isinstance(self._scope, GlobalRetentionScope):
+            return "global"
+        return "workspace"
 
 
 __all__ = [
