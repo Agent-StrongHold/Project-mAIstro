@@ -14,9 +14,13 @@ def _naive_as_utc(value: datetime) -> datetime:
     was written in, so the same stored row would decode to a different instant
     depending on which host reads it (#1149). Matches the normalization
     `maistro.scheduling.model.Schedule` already applies to its own timestamps.
+
+    Awareness is determined by `utcoffset()`, not merely by `tzinfo is not
+    None`: a `tzinfo` object that itself returns `None` from `utcoffset()` is
+    naive per Python's own definition and must still be normalized to UTC.
     """
 
-    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    return value if value.utcoffset() is not None else value.replace(tzinfo=UTC)
 
 
 class WorkspaceRole(StrEnum):

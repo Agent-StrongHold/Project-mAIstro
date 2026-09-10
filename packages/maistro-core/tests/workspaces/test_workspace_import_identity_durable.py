@@ -12,11 +12,22 @@ from maistro.testing.postgres import postgres_dsn
 
 @pytest.fixture(params=["America/New_York", "Pacific/Kiritimati"])
 def non_utc_local_timezone(request, monkeypatch: pytest.MonkeyPatch) -> str:
+    if not hasattr(time, "tzset"):
+        pytest.skip("time.tzset() is POSIX-only and unavailable on this platform")
+    original_tz = os.environ.get("TZ")
     monkeypatch.setenv("TZ", request.param)
     time.tzset()
     try:
         yield request.param
     finally:
+        # Restore the real TZ *before* calling tzset() -- otherwise the C
+        # library's timezone state stays pinned to this test's zone until
+        # monkeypatch's own env-var teardown runs (after this fixture's),
+        # leaking into whichever test runs next in this process.
+        if original_tz is None:
+            monkeypatch.delenv("TZ", raising=False)
+        else:
+            monkeypatch.setenv("TZ", original_tz)
         time.tzset()
 
 
