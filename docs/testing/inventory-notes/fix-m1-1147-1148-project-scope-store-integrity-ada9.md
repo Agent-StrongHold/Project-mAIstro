@@ -1,6 +1,7 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +12
+  packages/maistro-core/tests: +14
+  packages/maistro-server/tests: +1
 ---
 # fix-m1-1147-1148-project-scope-store-integrity-ada9
 
@@ -26,3 +27,25 @@ see that file's own docstring):
 
 No tests removed or renamed; the delta is additive, matching the new
 `remove_membership` API and the SQLite write-serialization fix in this PR.
+
+Three more, added closing gaps a PR review surfaced:
+
+- `test_scope_store_conformance.py`: a pre-#1148 SQLite database (the old
+  `membership_id`-only primary key, with a real duplicate row for one
+  `(project, principal)`) upgrades its `canonical_project_memberships` table
+  in place via `ensure_schema()`'s new migration step, keeping the
+  most-recently-created row and accepting writes afterward.
+- `test_scope_store_conformance.py`: an unlocked SQLite writer (`create`)
+  cannot collide with a locked one (`move_project`) opening `BEGIN
+  IMMEDIATE` while the unlocked writer's implicit transaction is still
+  open — forces the exact interleaving deterministically (a monkeypatched
+  `commit()` pauses `create()` mid-transaction) rather than hoping the
+  event loop reproduces it; fails with `OperationalError: cannot start a
+  transaction within a transaction` against the pre-fix code, confirmed by
+  running it against `git show HEAD:...sqlite_scope_store.py` directly.
+- `packages/maistro-server/tests/api/test_projects_api.py`: a non-owner's
+  delegated re-grant (via `add_project_membership`) cannot silently clear
+  an existing owner-issued deny just because its request omits `denies` —
+  `set_membership`'s upsert-in-place semantics (#1148) would otherwise let
+  a grant-only request launder away a deny nothing else in the request
+  touched.

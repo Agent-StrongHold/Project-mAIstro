@@ -326,21 +326,31 @@ class PgProjectScopeStore:
                     "updated_at": datetime.now(UTC),
                 }
             )
-            await conn.execute(
+            # `FOR UPDATE` cannot lock a row that does not exist yet, so two
+            # first-time grants for the same (project, principal) can both
+            # read `existing=None` and each choose their own membership_id.
+            # Reading the row back from the same statement that wrote it,
+            # rather than trusting the pre-computed `updated` value, means
+            # the returned membership always matches what this call actually
+            # persisted -- whichever of the two committed last -- instead of
+            # a value the other writer's conflict resolution has already
+            # superseded.
+            row = await conn.fetchrow(
                 """INSERT INTO canonical_project_memberships
                    (project_id, principal_id, workspace_id, membership_id, payload)
                    VALUES ($1, $2, $3, $4, $5::text::jsonb)
                    ON CONFLICT (project_id, principal_id) DO UPDATE SET
                      workspace_id = EXCLUDED.workspace_id,
                      membership_id = EXCLUDED.membership_id,
-                     payload = EXCLUDED.payload""",
+                     payload = EXCLUDED.payload
+                   RETURNING payload""",
                 updated.project_id,
                 updated.principal_id,
                 updated.workspace_id,
                 updated.membership_id,
                 json_of(updated),
             )
-        return updated
+        return model_of(ProjectMembership, row["payload"])
 
     async def remove_membership(self, project_id: str, *, principal_id: str) -> None:
         """Revoke a principal's membership at one Project, if any exists."""

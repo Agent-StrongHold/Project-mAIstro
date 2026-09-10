@@ -695,3 +695,192 @@ async def test_concurrent_opposite_moves_cannot_both_commit_a_cycle(backend) -> 
     for project_id in (left.project_id, right.project_id):
         lineage = await fresh.lineage(project_id)
         assert len({project.project_id for project in lineage}) == len(lineage)
+
+
+async def test_an_unlocked_writer_cannot_collide_with_a_locked_one(tmp_path) -> None:
+    """`move_project`/`set_membership`/`remove_membership` open the SQLite
+    write-critical section with `BEGIN IMMEDIATE`. SQLite starts a
+    transaction implicitly on a connection's first DML statement even
+    without an explicit `BEGIN`, so if a writer that never opted into the
+    same lock (`create`, `update_defaults`, `delete`, `put_resource`) left
+    one open across an `await`, a locked writer's own `BEGIN IMMEDIATE`
+    would raise "cannot start a transaction within a transaction" outright
+    rather than merely race (#1221 review).
+
+    Forces the exact interleaving deterministically rather than hoping the
+    event loop happens to produce it: `create()`'s own `commit()` is paused
+    mid-flight, after its INSERT has opened an implicit transaction, and
+    `move_project` is started while that transaction is still open.
+    """
+    import aiosqlite
+
+    from maistro.projects.sqlite_scope_store import SqliteProjectScopeStore
+
+    conn = await aiosqlite.connect(tmp_path / "unlocked-vs-locked.db")
+    try:
+        store = SqliteProjectScopeStore(conn)
+        await store.ensure_schema()
+        workspace_id = _workspace()
+        root = await store.create_root(workspace_id)
+        left = await store.create(
+            workspace_id=workspace_id, parent_project_id=root.project_id, name="Left"
+        )
+        right = await store.create(
+            workspace_id=workspace_id, parent_project_id=root.project_id, name="Right"
+        )
+
+        paused_before_commit = asyncio.Event()
+        release_commit = asyncio.Event()
+        real_commit = conn.commit
+
+        async def commit_after_release() -> None:
+            paused_before_commit.set()
+            await release_commit.wait()
+            await real_commit()
+
+        conn.commit = commit_after_release  # type: ignore[method-assign]
+        create_task = asyncio.ensure_future(
+            store.create(workspace_id=workspace_id, parent_project_id=root.project_id, name="New")
+        )
+        try:
+            await paused_before_commit.wait()
+            # `create()`'s INSERT has executed and its implicit transaction is
+            # still open here -- exactly the window the bug needed.
+            move_task = asyncio.ensure_future(
+                store.move_project(left.project_id, parent_project_id=right.project_id)
+            )
+            await asyncio.sleep(0)
+            release_commit.set()
+            new_project, moved = await asyncio.gather(create_task, move_task)
+        finally:
+            conn.commit = real_commit  # type: ignore[method-assign]
+
+        assert new_project.project_id != moved.project_id
+        lineage = await store.lineage(left.project_id)
+        assert [project.project_id for project in lineage] == [
+            root.project_id,
+            right.project_id,
+            left.project_id,
+        ]
+    finally:
+        await conn.close()
+
+
+async def test_a_pre_1148_sqlite_database_upgrades_its_membership_table_in_place(
+    tmp_path,
+) -> None:
+    """A homelab SQLite file created before #1148 had `membership_id` as the
+    primary key, so a re-grant minted a second, independent row for the same
+    (project, principal). `ensure_schema()`'s `CREATE TABLE IF NOT EXISTS`
+    leaves an existing table alone, so opening such a file with the new code
+    must detect and migrate it in place rather than leave the old key behind
+    -- where the new `ON CONFLICT(project_id, principal_id)` upsert would
+    fail outright on its first write.
+    """
+    import json
+    import uuid
+    from datetime import UTC, datetime
+
+    import aiosqlite
+
+    from maistro.projects.sqlite_scope_store import SqliteProjectScopeStore
+
+    db_path = tmp_path / "legacy.db"
+    conn = await aiosqlite.connect(db_path)
+    try:
+        await conn.executescript(
+            """
+            CREATE TABLE canonical_projects (
+                project_id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                parent_project_id TEXT,
+                is_root INTEGER NOT NULL CHECK (is_root IN (0, 1)),
+                payload TEXT NOT NULL
+            );
+            CREATE TABLE canonical_project_memberships (
+                membership_id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                principal_id TEXT NOT NULL,
+                payload TEXT NOT NULL
+            );
+            """
+        )
+        workspace_id = _workspace()
+        project_id = f"proj-{uuid.uuid4().hex[:8]}"
+        await conn.execute(
+            "INSERT INTO canonical_projects "
+            "(project_id, workspace_id, parent_project_id, is_root, payload) "
+            "VALUES (?, ?, NULL, 1, ?)",
+            (
+                project_id,
+                workspace_id,
+                json.dumps(
+                    {
+                        "project_id": project_id,
+                        "workspace_id": workspace_id,
+                        "parent_project_id": None,
+                        "is_root": True,
+                        "name": "Root",
+                        "defaults": {},
+                        "created_at": datetime.now(UTC).isoformat(),
+                        "updated_at": datetime.now(UTC).isoformat(),
+                    }
+                ),
+            ),
+        )
+        # Two legacy rows for the same (project, principal) -- exactly the
+        # duplication #1148 fixes. The older one must not survive migration.
+        older_id, newer_id = f"mem-{uuid.uuid4().hex[:8]}", f"mem-{uuid.uuid4().hex[:8]}"
+        for membership_id, created_at, grants in (
+            (older_id, "2020-01-01T00:00:00+00:00", ["stale"]),
+            (newer_id, "2024-06-01T00:00:00+00:00", ["current"]),
+        ):
+            await conn.execute(
+                "INSERT INTO canonical_project_memberships "
+                "(membership_id, workspace_id, project_id, principal_id, payload) "
+                "VALUES (?, ?, ?, 'alice', ?)",
+                (
+                    membership_id,
+                    workspace_id,
+                    project_id,
+                    json.dumps(
+                        {
+                            "membership_id": membership_id,
+                            "workspace_id": workspace_id,
+                            "project_id": project_id,
+                            "principal_id": "alice",
+                            "role": None,
+                            "grants": grants,
+                            "denies": [],
+                            "delegable_grants": [],
+                            "created_at": created_at,
+                            "updated_at": created_at,
+                        }
+                    ),
+                ),
+            )
+        await conn.commit()
+
+        store = SqliteProjectScopeStore(conn)
+        await store.ensure_schema()
+
+        memberships = await store.memberships_for(project_id)
+        assert [membership.membership_id for membership in memberships] == [newer_id]
+        assert memberships[0].grants == {"current"}
+
+        # The new upsert path must now work against the migrated table.
+        updated = await store.set_membership(
+            ProjectMembership(
+                workspace_id=workspace_id,
+                project_id=project_id,
+                principal_id="alice",
+                grants={"publish"},
+            )
+        )
+        assert updated.membership_id == newer_id
+        again = await store.memberships_for(project_id)
+        assert len(again) == 1
+        assert again[0].grants == {"publish"}
+    finally:
+        await conn.close()

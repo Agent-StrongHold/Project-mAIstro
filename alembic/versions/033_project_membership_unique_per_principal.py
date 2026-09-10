@@ -76,6 +76,27 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Post-upgrade code preserves membership_id per (project_id, principal_id)
+    # but no longer requires it to be globally unique, so two different pairs
+    # could in principle end up sharing one (a caller-supplied identity from
+    # e.g. a future import path). Restoring membership_id as the sole primary
+    # key would then fail outright. Rather than delete either row, mint a
+    # fresh, deterministic id for every row after the first in each duplicate
+    # group -- every membership survives the downgrade; only the shared
+    # identity is resolved.
+    op.execute(
+        sa.text(
+            """
+            UPDATE canonical_project_memberships AS m
+            SET membership_id = m.membership_id || ':' || m.project_id || ':' || m.principal_id
+            WHERE m.ctid NOT IN (
+                SELECT DISTINCT ON (membership_id) ctid
+                FROM canonical_project_memberships
+                ORDER BY membership_id, project_id, principal_id
+            )
+            """
+        )
+    )
     op.drop_index(
         "ix_canonical_memberships_principal",
         table_name="canonical_project_memberships",
