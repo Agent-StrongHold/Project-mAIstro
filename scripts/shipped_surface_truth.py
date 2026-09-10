@@ -11,6 +11,10 @@ from pathlib import Path
 from typing import Any
 
 MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+#: Not an HTTP verb, so never a member of MUTATING_METHODS -- a WebSocket route
+#: is a distinct kind of shipped execution/control surface (#1122) and must be
+#: discovered on its own terms, not folded into the mutating-method vocabulary.
+WEBSOCKET_METHOD = "WEBSOCKET"
 VALID_DISPOSITIONS = {
     "canonical",
     "domain-state",
@@ -131,6 +135,12 @@ def _decorated_routes(node: ast.AsyncFunctionDef | ast.FunctionDef) -> list[tupl
         methods = [name.upper()] if name.upper() in MUTATING_METHODS else []
         if name == "api_route":
             methods = _literal_methods(decorator)
+        elif name == "websocket":
+            # Every WebSocket route is a shipped execution/control surface
+            # regardless of "mutating": it bypasses HTTP-method semantics
+            # entirely and, per this repo's own `AuthMiddleware`, bypasses
+            # ordinary HTTP middleware too (#1122).
+            methods = [WEBSOCKET_METHOD]
         routes.extend((method, path.value) for method in methods)
     return routes
 

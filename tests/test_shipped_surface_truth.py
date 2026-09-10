@@ -57,6 +57,44 @@ def status(): return {}
     ]
 
 
+def test_discovers_websocket_routes_regardless_of_mutating_verb_status(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "backend/ws.py",
+        """
+from fastapi import APIRouter, WebSocket
+router = APIRouter()
+@router.websocket("/tasks/{task_id}")
+async def stream_task(websocket: WebSocket, task_id: str) -> None:
+    await websocket.accept()
+@router.get("/status")
+def status(): return {}
+""",
+    )
+    surfaces = discover_backend_surfaces(tmp_path, ["backend"])
+    assert [(item.method, item.route) for item in surfaces] == [
+        ("WEBSOCKET", "/tasks/{task_id}"),
+    ]
+
+
+def test_missing_websocket_route_disposition_fails_closed(tmp_path: Path) -> None:
+    """A discriminatory fixture: an undisposed `@router.websocket(...)` route
+    must be just as unable to escape the inventory as an undisposed mutating
+    HTTP route (#1122)."""
+    _write(
+        tmp_path / "backend/ws.py",
+        """
+from fastapi import APIRouter, WebSocket
+router = APIRouter()
+@router.websocket("/events/{run_id}")
+async def stream_events(websocket: WebSocket, run_id: str) -> None:
+    await websocket.accept()
+""",
+    )
+    (tmp_path / "frontend").mkdir()
+    errors = validate_matrix(tmp_path, _matrix())
+    assert any("unclassified backend surface" in error and "WEBSOCKET" in error for error in errors)
+
+
 def test_repo_wide_backend_discovery_excludes_tests_and_examples(tmp_path: Path) -> None:
     route = 'from fastapi import APIRouter\nrouter=APIRouter()\n@router.post("/run")\ndef run(): return execute()\n'
     _write(tmp_path / "backend/live.py", route)
