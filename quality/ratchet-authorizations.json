@@ -56,6 +56,16 @@
     }
   },
   "vulture": {
+    "packages/maistro-core/src/maistro/agents/factory.py::unused function 'instantiate_agent'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#840",
+      "reason": "instantiate_agent is the #840 Slice 4 single construction path for a ready AgentIdentity, added so materialization paths that already hold a definition (hive-conductor's agent materialization service turning a stored definition into a dispatchable runtime agent) share strategy resolution and tool-executor wiring with create_agents' manifest-seeding flow rather than drifting from it. Its live consumer, packages/hive-conductor/backend/services/agent_materialization.py, is outside the packages/*/src Vulture scan set; packages/maistro-core/tests/agents/test_factory_tool_executor.py exercises it directly. Deleting it would remove the shared construction path #840 introduced to stop the two flows from diverging."
+    },
+    "packages/maistro-core/src/maistro/security/passwords.py::unused function 'validate_password'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1185",
+      "reason": "validate_password is the canonical password-policy check #1185/#1215 enforce on first-run admin setup: hive-conductor imports it (aliased validate_canonical_password) in packages/hive-conductor/backend/routes/auth.py and routes/setup.py, both outside the packages/*/src Vulture scan set. packages/maistro-core/tests/security/test_passwords.py exercises it directly. Deleting it would remove the shared policy account creation and first-run setup both call to agree on the same minimum-length rule."
+    },
     "packages/maistro-core/src/maistro/agents/pm_capabilities.py::unused function 'is_gated'": {
       "owner": "@BlakeMatthews-dev",
       "issue": "#129",
