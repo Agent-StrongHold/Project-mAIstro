@@ -30,10 +30,12 @@ what let the original bug survive, so the CI wiring is the part that matters.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -249,6 +251,94 @@ class TestIndexIntent:
         assert set(definitions) == set(descending), f"missing: {set(descending) - set(definitions)}"
         for name, definition in definitions.items():
             assert "created_at DESC" in definition, f"{name} is not descending: {definition}"
+
+
+class TestTheChainSurvivesRuntimeSelfProvisioning:
+    """The claims table has two owners (#1176): this chain, and the runtime —
+    `PgTaskIdempotencyStore.ensure_schema` provisions it at wire time, before
+    the chain has necessarily reached 033. The first cut of the migration met
+    that table and died on `DuplicateTable`, so `alembic upgrade head` — the
+    command every documented Postgres setup path runs — exited 1 on exactly
+    the deployments that provisioned early. The upgrade now adopts a table
+    carrying the columns it owns, and refuses a foreign shape loudly."""
+
+    CLAIM_COLUMNS: ClassVar[set[str]] = {
+        "scope_key",
+        "claim_token",
+        "fingerprint",
+        "request",
+        "task_id",
+        "run_id",
+        "completed_at",
+        "created_at",
+        "expires_at",
+        "lease_expires_at",
+    }
+
+    def _provision_at_runtime(self) -> None:
+        """What wiring does on a spine-ready pool below head: the real
+        `ensure_schema`, not a re-spelling of its DDL."""
+
+        async def provision() -> None:
+            import asyncpg
+
+            from maistro.tasks.idempotency import PgTaskIdempotencyStore
+
+            pool = await asyncpg.create_pool(dsn=DATABASE_URL, min_size=1, max_size=1)
+            try:
+                await PgTaskIdempotencyStore(pool).ensure_schema()
+            finally:
+                await pool.close()
+
+        asyncio.run(provision())
+
+    def _claim_columns(self) -> set[str]:
+        return {
+            str(row[0])
+            for row in _query(
+                "select column_name from information_schema.columns "
+                "where table_name = 'task_idempotency'"
+            )
+        }
+
+    def test_upgrade_head_adopts_the_runtime_provisioned_table(self, empty_database) -> None:
+        _alembic("upgrade", "032")
+        self._provision_at_runtime()
+        assert "claim_token" in self._claim_columns(), "provisioning did not run"
+
+        result = _alembic("upgrade", "head")
+        assert result.returncode == 0, result.stderr
+        assert self._claim_columns() == self.CLAIM_COLUMNS
+        assert "ix_task_idempotency_expires" in {
+            str(row[0])
+            for row in _query(
+                "select indexname from pg_indexes where tablename = 'task_idempotency'"
+            )
+        }
+        assert _query("select version_num from alembic_version") == [("033",)]
+
+    def test_upgrade_refuses_to_stamp_over_a_foreign_table_shape(self, empty_database) -> None:
+        """A table under the claims name WITHOUT the columns migration 033
+        owns is not the runtime's provisioning, and stamping head over a shape
+        the store cannot read would hide the damage behind a green upgrade."""
+        _alembic("upgrade", "032")
+        _execute("create table task_idempotency (scope_key text primary key)")
+        try:
+            result = _alembic("upgrade", "head")
+
+            assert result.returncode != 0
+            assert "missing" in result.stderr
+            assert _query("select version_num from alembic_version") == [("032",)]
+            # And the foreign table was left exactly as found — visible, not
+            # silently adopted or dropped.
+            assert self._claim_columns() == {"scope_key"}
+        finally:
+            # The refusal leaves the foreign table standing by design; the
+            # `empty_database` fixture can only downgrade what the chain owns,
+            # so the foreign table is removed here — leaving it would poison
+            # every later test's `upgrade head` exactly the way the refusal
+            # just proved it poisons the chain.
+            _execute("drop table task_idempotency")
 
 
 class TestADesignProjectIsWritableOnACleanDatabase:

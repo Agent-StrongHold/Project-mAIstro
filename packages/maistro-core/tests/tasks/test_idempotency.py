@@ -16,16 +16,24 @@ twice.
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
 import maistro.tasks.idempotency as idempotency_module
 from maistro.projects.scope_store import InMemoryProjectScopeStore
+from maistro.runs.admission import admit_direct_work
 from maistro.runs.model import RunStatus
 from maistro.runs.store import InMemoryRunStore
+from maistro.runs.task_kinds import resolve_direct_work
 from maistro.tasks import queue as queue_module
-from maistro.tasks.admission import TaskRunAdmitter, WorkspaceRoutingAdmitter
+from maistro.tasks.admission import (
+    TASK_ID_KEY,
+    TASK_QUEUE_SOURCE,
+    TaskRunAdmitter,
+    WorkspaceRoutingAdmitter,
+)
 from maistro.tasks.idempotency import (
     DEFAULT_REPLAY_WINDOW,
     IDEMPOTENCY_KEY_PROVENANCE,
@@ -47,7 +55,7 @@ from maistro.tasks.idempotency import (
     normalize_idempotency_key,
     request_fingerprint,
 )
-from maistro.tasks.models import TaskCreate, TaskStatus
+from maistro.tasks.models import TaskCreate, TaskResponse, TaskStatus
 from maistro.tasks.queue import TaskQueue
 
 _NOW = datetime(2026, 9, 9, 12, 0, 0, tzinfo=UTC)
@@ -848,7 +856,10 @@ async def test_a_failed_admission_releases_its_claim(scoped) -> None:
 async def test_a_replay_survives_the_receipt_leaving_memory(scoped) -> None:
     """The ambiguous-failure box: process death after `complete` but before the
     caller read the response. A restart empties the queue's tasks; the claim's
-    stored request is what reconstructs the receipt, and nothing mints."""
+    stored request is what reconstructs the receipt, nothing mints — and the
+    receipt is re-materialized into the queue the retry landed on, because a
+    replay whose Run was stranded outside every queue would reconcile the
+    answer while silently losing the work."""
     _projects, runs, _root, project = scoped
     queue, store = _wired_queue(runs, project.project_id)
     request = TaskCreate(description="lost response", tier=3, session_id="s9", idempotency_key="k")
@@ -869,9 +880,11 @@ async def test_a_replay_survives_the_receipt_leaving_memory(scoped) -> None:
     assert replay.session_id == "s9"
     assert replay.user_id == "alice"
     assert replay.status is TaskStatus.QUEUED
-    # And the Run count did not move: reconciliation, not a second admission.
+    # The Run count did not move: reconciliation, not a second admission — and
+    # the reconciled work is executable here, not stranded outside the queue.
     receipts, _cursor = restarted.list_tasks(user_id="alice")
-    assert receipts == []
+    assert [r.task_id for r in receipts] == [replay.task_id]
+    assert await asyncio.wait_for(restarted.next_task(), timeout=1) == replay.task_id
 
 
 async def test_a_header_only_key_survives_the_restart_replay(scoped) -> None:
@@ -1112,6 +1125,98 @@ async def test_a_death_after_the_mint_resolves_to_the_existing_run(scoped, monke
         run for run in runs._runs.values() if run.provenance.get("task_id") == corpse.task_id
     ]
     assert [run.run_id for run in runs_named] == [corpse.run_id]
+
+
+async def test_a_crash_between_mint_and_queue_is_resumed_not_stranded(scoped) -> None:
+    """The crash-after-create probe: a claimant that died in the instant after
+    minting the Run but before it was queued left canonical state no retry
+    could execute — the claim reconciled to a Run still sitting at CREATED,
+    the replayed receipt said ``queued``, and the queue the retry landed on
+    held nothing, so the reconciled work was stranded past every queue. The
+    reconciliation now finishes the crash victim's own last step: a Run still
+    CREATED is moved to QUEUED and the receipt lands in the reconciling
+    process's queue, so the retry hands the work to a runner instead of
+    narrating a corpse."""
+    _projects, runs, _root, project = scoped
+    store = InMemoryTaskIdempotencyStore()
+    admitter = TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+    request = TaskCreate(description="crashed between mint and queue", idempotency_key="k")
+    task_id = TaskResponse.new_id()
+    scope = admission_scope_key(
+        principal="alice", workspace_id="w1", action=TASK_SUBMIT_ACTION, key="k"
+    )
+    # The corpse's durable state, exactly as the crash left it: a begun claim
+    # (receipt announced, outcome never recorded) an hour dead — past its
+    # pending lease, inside the replay window — and the Run the mint produced,
+    # still CREATED because the QUEUED transition never ran.
+    claimed = await store.claim(
+        scope,
+        fingerprint=request_fingerprint(request),
+        request=json.dumps(
+            request.model_copy(update={"user_id": "alice", "idempotency_key": "k"}).model_dump(
+                mode="json"
+            )
+        ),
+        now=datetime.now(UTC) - timedelta(hours=1),
+    )
+    assert isinstance(claimed, Claimed)
+    assert await store.begin(
+        scope, token=claimed.token, task_id=task_id, now=datetime.now(UTC) - timedelta(hours=1)
+    )
+    work = resolve_direct_work(description=request.description)
+    run = await admit_direct_work(
+        runs,
+        workspace_id="w1",
+        project_id=project.project_id,
+        node_type=work.node_type,
+        name=work.name,
+        source=TASK_QUEUE_SOURCE,
+        description=request.description,
+        provenance={TASK_ID_KEY: task_id},
+    )
+    assert run.status is RunStatus.CREATED
+
+    # A fresh process (fresh queue, same durable claim store and Run store)
+    # answers the retry.
+    restarted = TaskQueue(admitter=admitter, idempotency_store=store)
+    replay = await restarted.submit(request, user_id="alice")
+
+    # The same admission, reconciled — not a second one.
+    assert replay.task_id == task_id
+    assert replay.run_id == run.run_id
+    resumed = await runs.get_run(run.run_id)
+    assert resumed is not None
+    assert resumed.status is RunStatus.QUEUED
+    # The receipt is not stranded: this queue hands the work to a runner.
+    assert await asyncio.wait_for(restarted.next_task(), timeout=1) == task_id
+    # Exactly one Run names the receipt.
+    runs_named = [r for r in runs._runs.values() if r.provenance.get("task_id") == task_id]
+    assert [r.run_id for r in runs_named] == [run.run_id]
+
+
+async def test_a_run_already_past_queuing_is_not_reenqueued_by_a_replay(scoped) -> None:
+    """The resume gate's refusal edge: a replay of an admission whose Run has
+    already been picked up (RUNNING) must return the receipt without
+    re-enqueueing it — the work is somebody's live execution, and a second
+    queue entry would be exactly the duplicate the issue forbids."""
+    _projects, runs, _root, project = scoped
+    store = InMemoryTaskIdempotencyStore()
+    admitter = TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+    queue = TaskQueue(admitter=admitter, idempotency_store=store)
+    request = TaskCreate(description="already running elsewhere", idempotency_key="k")
+
+    corpse = await queue.submit(request, user_id="alice")
+    assert corpse.run_id is not None
+    # The receipt left this process (a replica took the execution over).
+    queue._tasks.pop(corpse.task_id)
+    assert await runs.transition_run(corpse.run_id, RunStatus.RUNNING)
+
+    restarted = TaskQueue(admitter=admitter, idempotency_store=store)
+    replay = await restarted.submit(request, user_id="alice")
+    assert replay.task_id == corpse.task_id
+    assert replay.run_id == corpse.run_id
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(restarted.next_task(), timeout=0.1)
 
 
 async def test_a_death_before_the_mint_takes_over_without_a_duplicate(scoped, monkeypatch) -> None:

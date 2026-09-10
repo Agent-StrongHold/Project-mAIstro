@@ -48,12 +48,26 @@ otherwise. One row per admission claim:
 The upgrade needs no backfill: claims begin with this convergence, and every
 submission before it is defined to have no admission identity to migrate.
 
+One reconciliation: the runtime does not wait for this chain. A deployment
+whose pool is spine-ready but not yet migrated provisions this very table at
+wire time (``PgTaskIdempotencyStore.ensure_schema``), so claims are durable
+from the first submission — and ``alembic upgrade head`` then meets a table
+that already exists. Rather than die there with ``DuplicateTable`` (a chain
+that could never reach head on exactly the deployments that provisioned
+early), the upgrade inspects what is standing: every expected column present
+means the runtime provisioned this file's own shape, so the missing purge
+index is created and the revision is stamped. Columns missing means the table
+is not the claim table, and failing loudly beats stamping head over a schema
+the store cannot read or write.
+
 Revision ID: 033
 Revises: 032
 Create Date: 2026-09-09
 """
 
 from __future__ import annotations
+
+from typing import Final
 
 import sqlalchemy as sa
 from alembic import op
@@ -63,25 +77,60 @@ down_revision = "032"
 branch_labels = None
 depends_on = None
 
+#: The columns this migration and ``ensure_schema`` both own, spelled once so
+#: the create and the reconciliation check cannot drift apart.
+CLAIM_COLUMNS: Final = (
+    sa.Column("scope_key", sa.Text, nullable=False),
+    sa.Column("claim_token", sa.Text, nullable=False),
+    sa.Column("fingerprint", sa.Text, nullable=False),
+    sa.Column("request", sa.Text, nullable=False),
+    sa.Column("task_id", sa.Text, nullable=True),
+    sa.Column("run_id", sa.Text, nullable=True),
+    sa.Column("completed_at", sa.BigInteger, nullable=False, server_default="0"),
+    sa.Column("created_at", sa.BigInteger, nullable=False),
+    sa.Column("expires_at", sa.BigInteger, nullable=False),
+    sa.Column("lease_expires_at", sa.BigInteger, nullable=False),
+)
+
 
 def upgrade() -> None:
+    inspector = sa.inspect(op.get_bind())
+    if inspector.has_table("task_idempotency"):
+        _reconcile_runtime_provisioned(inspector)
+        return
     op.create_table(
         "task_idempotency",
-        sa.Column("scope_key", sa.Text, nullable=False),
-        sa.Column("claim_token", sa.Text, nullable=False),
-        sa.Column("fingerprint", sa.Text, nullable=False),
-        sa.Column("request", sa.Text, nullable=False),
-        sa.Column("task_id", sa.Text, nullable=True),
-        sa.Column("run_id", sa.Text, nullable=True),
-        sa.Column("completed_at", sa.BigInteger, nullable=False, server_default="0"),
-        sa.Column("created_at", sa.BigInteger, nullable=False),
-        sa.Column("expires_at", sa.BigInteger, nullable=False),
-        sa.Column("lease_expires_at", sa.BigInteger, nullable=False),
+        *CLAIM_COLUMNS,
         sa.PrimaryKeyConstraint("scope_key", name="pk_task_idempotency"),
     )
     # The purge query's scan bound: expired claims are the only deletable
     # population, and without an index every sweep walks the whole table.
     op.create_index("ix_task_idempotency_expires", "task_idempotency", ["expires_at"])
+
+
+def _reconcile_runtime_provisioned(inspector: sa.Inspector) -> None:
+    """Adopt a table the runtime provisioned at wire time, or refuse loudly.
+
+    ``ensure_schema`` runs when wiring selects the PostgreSQL tier — before
+    this migration has necessarily run. Its DDL mirrors this file's column
+    set, so an existing table carrying every expected column IS the provisioned
+    claim table: index it (a half-failed provisioning may not have reached the
+    index) and stamp the revision. Anything else standing under this name is a
+    shape the store cannot use, and upgrading over it would leave
+    ``alembic_version`` claiming a schema nobody checked.
+    """
+    columns = {col["name"] for col in inspector.get_columns("task_idempotency")}
+    missing = {col.name for col in CLAIM_COLUMNS} - columns
+    if missing:
+        raise RuntimeError(
+            "task_idempotency already exists without the columns migration 033 "
+            f"owns (missing: {sorted(missing)}); it is not the runtime-"
+            "provisioned claim table, and the migration will not stamp over it"
+        )
+    index_names = {ix["name"] for ix in inspector.get_indexes("task_idempotency")}
+    if "ix_task_idempotency_expires" not in index_names:
+        # The purge query's scan bound — same reason as on the create path.
+        op.create_index("ix_task_idempotency_expires", "task_idempotency", ["expires_at"])
 
 
 def downgrade() -> None:

@@ -28,9 +28,15 @@ from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
 
 from maistro.config.settings import Settings, get_settings
+from maistro.runs.model import RunStatus
 from maistro.runs.wiring import wire_execution_spine
 from maistro.tasks import queue as queue_module
-from maistro.tasks.idempotency import InMemoryTaskIdempotencyStore, SqliteTaskIdempotencyStore
+from maistro.tasks.idempotency import (
+    TASK_SUBMIT_ACTION,
+    InMemoryTaskIdempotencyStore,
+    SqliteTaskIdempotencyStore,
+    admission_scope_key,
+)
 from maistro.tasks.queue import TaskQueue, configure_task_queue, reset_task_queue
 from maistro_server.api.tasks import router as tasks_router
 
@@ -263,10 +269,15 @@ async def durable(tmp_path) -> AsyncIterator[tuple[AsyncClient, object, object, 
         queue_module._queue = previous
 
 
-async def test_a_timeout_retry_reconciles_across_a_restart(durable) -> None:
-    """Timeout/retry E2E, durable tier: the first call is answered 202 but
-    the client never hears it; the deployment restarts; the retry reconciles
-    to the original receipt and Run because the claim outlived the process."""
+async def test_a_restart_replay_reconciles_a_completed_admission(durable) -> None:
+    """Restart replay of a *completed* admission: the first call was answered
+    202 (the client simply never re-polled before the deployment restarted);
+    the restarted queue reconstructs the original receipt and Run because the
+    claim outlived the process — and re-enqueues the reconciled work, so a
+    Run queued before the restart is executable after it, not stranded. The
+    full timeout/mid-admission-crash shape is
+    ``test_a_mid_admission_timeout_across_a_durable_restart_resumes_the_work``
+    below, on the fully durable tier."""
     client, run_store, admitter, tmp_path = durable
     body = {"description": "restart me", "workspace": WORKSPACE}
 
@@ -361,3 +372,133 @@ async def test_a_replica_handoff_reconciles_the_first_replicas_claim(durable) ->
     assert retry.json()["run_id"] == first.json()["run_id"]
     assert retry.json()["task"]["idempotency_key"] == "k-9"
     assert len(run_store._runs) == 1
+
+
+# ── the fully durable wire: Runs that survive the restart too ──────
+
+
+async def _sqlite_spine(
+    tmp_path: Path,
+) -> tuple[aiosqlite.Connection, object, object]:
+    """A Run spine on a real SQLite file — the durability a Run restart is
+    measured against. Returns (connection, run_store, routing admitter)."""
+    conn = await aiosqlite.connect(tmp_path / "runs.db")
+    _scope, run_store, admitter, _t, _s, _c = await wire_execution_spine(
+        conn, workspace_id="test-workspace"
+    )
+    return conn, run_store, admitter
+
+
+@pytest.fixture
+async def durable_spine(tmp_path) -> AsyncIterator[tuple[AsyncClient, Path]]:
+    """The HTTP app on the fully durable tier: SQLite claim file AND SQLite
+    Run spine, each 'process' opening its own connections to the same files.
+    A restart here loses only what a real restart loses."""
+    previous = queue_module._queue
+    queue_module._queue = None
+    claims = await _sqlite_claims(tmp_path)
+    _runs_conn, _run_store, admitter = await _sqlite_spine(tmp_path)
+    configure_task_queue(admitter=admitter, idempotency_store=claims)
+    app = FastAPI()
+    app.include_router(tasks_router)
+    client = AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver")
+    try:
+        yield client, tmp_path
+    finally:
+        await client.aclose()
+        queue_module._queue = previous
+
+
+async def test_a_mid_admission_timeout_across_a_durable_restart_resumes_the_work(
+    durable_spine,
+) -> None:
+    """The timeout/restart E2E the contract exists for, on the fully durable
+    tier: the first submission dies mid-admission *after* minting and queuing
+    its Run but before recording the outcome — the client's timeout cancels a
+    request that never answered, which is the ambiguous crash-after-create
+    window. The deployment restarts over the same durable files; the retry
+    must reconcile to the SAME Run (discovery, by the announced receipt), and
+    the restarted queue must actually hold the work: a receipt that says
+    ``queued`` while no queue holds the Run is a reconciliation that silently
+    loses the task."""
+    client, tmp_path = durable_spine
+    body = {"description": "timeout then crash then retry", "workspace": WORKSPACE}
+
+    queue = queue_module._queue
+    assert queue is not None
+    store = queue._idempotency
+    assert store is not None
+    hang = asyncio.Event()
+
+    async def complete_then_hang(scope_key: str, **kwargs: object) -> bool:
+        # Death in the instant after the Run was minted and queued, before
+        # the outcome was recorded — the write never lands and the receipt is
+        # never enqueued.
+        await hang.wait()
+        return True
+
+    real_complete = store.complete
+    store.complete = complete_then_hang  # type: ignore[method-assign]
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(
+            client.post("/tasks", json=body, headers={"Idempotency-Key": "k-1"}),
+            timeout=0.3,
+        )
+    store.complete = real_complete  # type: ignore[method-assign]
+
+    # The crash state, read from the durable files (the 'process' is gone):
+    # the claim was begun but its outcome never landed, and the Run it minted
+    # is queued and discoverable by the announced receipt.
+    scope = admission_scope_key(
+        principal="dev",
+        workspace_id="test-workspace",
+        action=TASK_SUBMIT_ACTION,
+        key="k-1",
+    )
+    corpse_store = await _sqlite_claims(tmp_path)
+    record = await corpse_store.get(scope)
+    assert record is not None
+    assert record.begun and not record.admitted
+    assert record.task_id is not None
+    # The claim cannot name the Run yet — only `complete`/`resolve_run` write
+    # that column — so discovery goes by the announced receipt.
+    _runs_conn, run_store, _admitter = await _sqlite_spine(tmp_path)
+    crashed_run = await run_store.find_run_by_task_receipt(record.task_id)
+    assert crashed_run is not None and crashed_run.status is RunStatus.QUEUED
+    run_id = crashed_run.run_id
+
+    # The restart: fresh queue, fresh spine and claim connections over the
+    # same files. The outage spanned the pending lease, so the begun claim is
+    # the ambiguous case on the retry, resolved by discovery.
+    reset_task_queue()
+    restarted_claims = await _sqlite_claims(tmp_path)
+    _conn2, restarted_runs, restarted_admitter = await _sqlite_spine(tmp_path)
+    configure_task_queue(admitter=restarted_admitter, idempotency_store=restarted_claims)
+    raw = await aiosqlite.connect(tmp_path / "claims.db")
+    await raw.execute("UPDATE task_idempotency SET lease_expires_at = 1")
+    await raw.commit()
+    await raw.close()
+
+    retry = await client.post("/tasks", json=body, headers={"Idempotency-Key": "k-1"})
+
+    assert retry.status_code == 202
+    # The same admission, reconciled by discovery — the client that timed out
+    # never saw these ids; the claim's own announcement and the Run its
+    # provenance named are what the retry resolved to, so equality here is
+    # the no-duplicate guarantee on the wire.
+    assert retry.json()["task_id"] == record.task_id
+    assert retry.json()["run_id"] == run_id
+    assert retry.json()["task"]["idempotency_key"] == "k-1"
+    assert retry.json()["task"]["status"] == "queued"
+    # Discovery recorded the Run on the claim, so later replays skip it.
+    resolved = await restarted_claims.get(scope)
+    assert resolved is not None and resolved.admitted and resolved.run_id == run_id
+    # And the work is genuinely queued on the restarted deployment: the Run is
+    # QUEUED and the queue hands the receipt to a runner.
+    restarted_queue = queue_module._queue
+    assert restarted_queue is not None
+    resumed = await restarted_runs.get_run(run_id)
+    assert resumed is not None and resumed.status is RunStatus.QUEUED
+    assert await asyncio.wait_for(restarted_queue.next_task(), timeout=1) == record.task_id
+    discovered = await restarted_runs.find_run_by_task_receipt(record.task_id)
+    assert discovered is not None and discovered.run_id == run_id

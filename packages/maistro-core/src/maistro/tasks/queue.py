@@ -321,7 +321,7 @@ class TaskQueue:
                     run_id=outcome.record.run_id,
                     explicit_key=key is not None,
                 )
-                return self._replay_receipt(outcome.record)
+                return await self._replay_receipt(outcome.record)
             if isinstance(outcome, Ambiguous):
                 resolved = await self._resolve_ambiguous(store, scope_key, outcome.record)
                 if isinstance(resolved, Claimed):
@@ -344,7 +344,7 @@ class TaskQueue:
                         explicit_key=key is not None,
                         via="discovery",
                     )
-                    return self._replay_receipt(resolved)
+                    return await self._replay_receipt(resolved)
                 # Unresolvable here (an admitter without discovery): treat as
                 # pending — minting over it would be the duplicate the issue
                 # forbids, and the bounded wait fails visibly instead.
@@ -396,7 +396,7 @@ class TaskQueue:
             # minted; wait out the winner like any other pending twin.
             record = await self._await_outcome(store, scope_key)
             if record is not None:
-                return self._replay_receipt(record)
+                return await self._replay_receipt(record)
             raise IdempotencyPendingTimeout(
                 "this idempotency claim was superseded before admission began, "
                 "and the winning submission did not resolve within the bounded wait"
@@ -537,18 +537,34 @@ class TaskQueue:
                 "winning submission did not resolve within the bounded wait; "
                 "retry to reconcile against the winner"
             )
-        return self._replay_receipt(record)
+        return await self._replay_receipt(record)
 
-    def _replay_receipt(self, record: AdmissionRecord) -> TaskResponse:
+    async def _replay_receipt(self, record: AdmissionRecord) -> TaskResponse:
         """The original submission's answer, without minting anything.
 
         The live receipt when this process still holds it; otherwise one
         reconstructed from the claim's stored request — which carries the
         explicit key the caller supplied, so a replay after a restart answers
-        with the receipt the first call got, header key included. A
-        reconstructed receipt says ``queued`` because that is what admission
-        said — the Run behind it has moved on without the queue, and current
-        state is read from the task/Run endpoints, not from a replay.
+        with the receipt the first call got, header key included.
+
+        Reconstructing is not quite enough: a claimant can die anywhere in the
+        window after the Run exists but before ``_enqueue`` lands the receipt
+        in a live queue — between the mint and the QUEUED transition, or
+        between ``complete`` and the enqueue. Every retry then reconciles, by
+        the contract's own terms, to a Run that no queue holds: answering
+        "queued" while the work sits stranded past every queue would be a
+        reconciliation that loses the work silently. This process is where the
+        reconciling retry landed and where a runner drains, so it is where the
+        stranded admission resumes: the Run is moved to QUEUED (a Run still
+        CREATED — death between mint and queue — becomes genuinely queued;
+        one already QUEUED confirms), and the receipt re-materializes into
+        this queue for execution. ``record_transition`` is the gate: it
+        succeeds exactly when the Run is CREATED or QUEUED, and refuses a Run
+        already RUNNING or terminal — somebody's live or finished work, which
+        re-enqueuing would duplicate. With no spine there is no Run state to
+        consult, so the receipt replays unqueued — the no-database tier's
+        documented ephemerality, and the one way this path could re-run work
+        that had already finished.
         """
         if record.task_id is not None:
             live = self._tasks.get(record.task_id)
@@ -557,7 +573,7 @@ class TaskQueue:
         stored = TaskCreate.model_validate_json(record.request)
         if record.task_id is None:  # pragma: no cover - replayed claims are admitted
             raise RuntimeError("replayed admission claim carries no receipt id")
-        return TaskResponse(
+        task = TaskResponse(
             task_id=record.task_id,
             status=TaskStatus.QUEUED,
             description=stored.description,
@@ -577,6 +593,24 @@ class TaskQueue:
             progress=TaskProgress(),
             created_at=from_epoch_us(record.created_at_us),
         )
+        admitter = self._admitter
+        if admitter is None or task.run_id is None:
+            return task
+        # CREATED -> QUEUED here; refusal (already RUNNING, terminal, or the
+        # Run gone) means the work is not this queue's to re-materialize. A
+        # second replica racing the same replay enqueues too, and the Run
+        # spine — which refuses the second QUEUED -> RUNNING — keeps one
+        # executor: the loser's task fails visibly instead of duplicating.
+        if not await admitter.record_transition(task.run_id, TaskStatus.QUEUED):
+            return task
+        await logger.ainfo(
+            "task_admission_resumed",
+            task_id=task.task_id,
+            run_id=task.run_id,
+            detail="reconciled admission was stranded outside the queue; re-enqueued",
+        )
+        await self._enqueue(task)
+        return task
 
     async def _mint(
         self,
