@@ -15,6 +15,31 @@ import pytest
 _TRUSTED_SIGNING_KEY = "host-owned-users-integrity-key"
 
 
+def _legacy_last_admin_wins_key(content: str) -> str:
+    """Replicate the pre-fix (6c4aa4bb) ``_parse_users`` anchor selection.
+
+    The vulnerable verifier signed/verified with the ``public_key`` of the
+    LAST admin entry in the file. This helper exists only to prove that the
+    forged constructions below carry a signature that is VALID under that
+    file-chosen anchor — i.e. they would authenticate on the vulnerable code
+    — so rejection by the external trust root is meaningful, not accidental.
+    """
+    admin_key = ""
+    current: dict[str, str] = {}
+    for line in content.splitlines():
+        line = line.strip()
+        if line == "[[users]]":
+            if current and current.get("role") == "admin":
+                admin_key = current["public_key"]
+            current = {}
+        elif "=" in line and current is not None:
+            k, v = line.split("=", 1)
+            current[k.strip()] = v.strip().strip('"')
+    if current and current.get("role") == "admin":
+        admin_key = current["public_key"]
+    return admin_key
+
+
 class TestUsersToml:
     """AC: users.toml authenticity depends on an external trust root."""
 
@@ -35,8 +60,15 @@ class TestUsersToml:
         assert loaded.user_by_public_key("pk_user_001").name == "bob"
 
     def test_refuses_exact_forged_self_key_construction(self, tmp_path: Path) -> None:
-        """An attacker cannot put their key in the file and sign with that key."""
-        from maistro.privilege import UsersStore, UsersTamperError
+        """The audit repro: a single-admin file naming the attacker's key.
+
+        The attacker writes arbitrary users/roles/permissions, makes their own
+        key the (only, therefore last-selected) admin key, and signs with that
+        same key. On the pre-fix verifier this construction LOADED with
+        ``admin=eve/attacker-controlled-key``; the external trust root must
+        reject it.
+        """
+        from maistro.privilege import UsersStore, UsersTamperError, _verify
 
         attacker_key = "attacker-controlled-key"
         forged_content = """[[users]]
@@ -44,10 +76,42 @@ name = "eve"
 public_key = "attacker-controlled-key"
 role = "admin"
 permissions = "*"
+"""
+        forged_signature = hmac.new(
+            attacker_key.encode(), forged_content.encode(), hashlib.sha256
+        ).hexdigest()
+        (tmp_path / "users.toml").write_text(f"# sig: {forged_signature}\n{forged_content}")
+
+        # The forgery is well-formed: it authenticates under the legacy
+        # file-parsed anchor (last-admin-wins), so rejection below is due to
+        # the external trust root, not a malformed signature.
+        assert _legacy_last_admin_wins_key(forged_content) == attacker_key
+        assert _verify(forged_content, attacker_key, forged_signature)
+
+        with pytest.raises(UsersTamperError, match="Signature verification failed"):
+            UsersStore(data_dir=str(tmp_path), trusted_signing_key=_TRUSTED_SIGNING_KEY)
+
+    def test_refuses_forged_last_admin_anchor_construction(self, tmp_path: Path) -> None:
+        """The audit repro against last-admin-wins: attacker controls the LAST admin.
+
+        The pre-fix parser verified with the LAST admin entry's key. An
+        attacker keeps a plausible first admin and appends their own admin
+        entry, then signs the whole file with the attacker key — the exact
+        construction the audit reproduced and the pre-fix verifier accepted
+        (loading an entirely attacker-authored file, first admin included).
+        """
+        from maistro.privilege import UsersStore, UsersTamperError, _verify
+
+        attacker_key = "attacker-controlled-key"
+        forged_content = """[[users]]
+name = "alice"
+public_key = "pk_admin_001"
+role = "admin"
+permissions = "*"
 
 [[users]]
-name = "mallory"
-public_key = "attacker-user-key"
+name = "eve"
+public_key = "attacker-controlled-key"
 role = "admin"
 permissions = "*"
 """
@@ -55,6 +119,11 @@ permissions = "*"
             attacker_key.encode(), forged_content.encode(), hashlib.sha256
         ).hexdigest()
         (tmp_path / "users.toml").write_text(f"# sig: {forged_signature}\n{forged_content}")
+
+        # Valid under the legacy last-admin-wins anchor; a verifier anchored
+        # to any file-parsed value would accept this file wholesale.
+        assert _legacy_last_admin_wins_key(forged_content) == attacker_key
+        assert _verify(forged_content, attacker_key, forged_signature)
 
         with pytest.raises(UsersTamperError, match="Signature verification failed"):
             UsersStore(data_dir=str(tmp_path), trusted_signing_key=_TRUSTED_SIGNING_KEY)
