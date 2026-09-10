@@ -9,8 +9,10 @@ the repo's fake-asyncpg pattern (`test_pg_strikes.py`). The shared claim flow
 what these tests own is each backend's SQL actually carrying that flow: the
 primary key refusing the second claimant, the claimant-token fences keeping
 complete/release/begin honest, the takeover guard meaning what `_assess`
-decided, and wiring provisioning the PG table instead of degrading a
-configured database to process-local state.
+decided, and wiring putting claims on the tier the Run spine actually chose —
+provisioning the table on a spine-ready PostgreSQL, refusing to start when
+that provision fails, and following the spine down (never outliving it) when
+the pool is not spine-ready.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from typing import Any
 import aiosqlite
 import pytest
 
+from maistro.runs.wiring import spine_is_migrated
 from maistro.tasks.idempotency import (
     DEFAULT_REPLAY_WINDOW,
     PENDING_LEASE,
@@ -37,6 +40,7 @@ from maistro.tasks.idempotency import (
     wire_task_idempotency,
 )
 from maistro.testing.postgres import postgres_dsn
+from maistro.types.errors import ConfigError
 
 _NOW = datetime(2026, 9, 9, 12, 0, 0, tzinfo=UTC)
 _LATER = _NOW + timedelta(minutes=1)
@@ -280,16 +284,29 @@ class FakeConnection:
 
 class FakePool:
     """`asyncpg.Pool` at the boundary this store actually uses: acquire,
-    execute, fetchrow. Command tags are queued, not invented."""
+    execute, fetchrow. Command tags are queued, not invented. ``fetchval``
+    answers the spine-tables probe (`spine_is_migrated`): a pool hosts the
+    spine unless a test says otherwise, and a *dead* pool raises out of the
+    probe the way a real unreachable pool would."""
 
-    def __init__(self, *, fail_ddl: bool = False) -> None:
+    def __init__(
+        self, *, fail_ddl: bool = False, spine_ready: bool = True, dead: bool = False
+    ) -> None:
         self.calls: list[Call] = []
         self.execute_results: list[str] = []
         self.fetchrow_results: list[FakeRecord | None] = []
         self.fail_ddl = fail_ddl
+        self.spine_ready = spine_ready
+        self.dead = dead
 
     def acquire(self) -> _Acquire:
         return _Acquire(FakeConnection(self))
+
+    async def fetchval(self, sql: str, *args: Any) -> Any:
+        if self.dead:
+            raise RuntimeError("connection refused")
+        self.calls.append(Call("fetchval", sql, args))
+        return self.spine_ready
 
     async def _ddl(self, sql: str) -> str:
         self.calls.append(Call("execute", sql, ()))
@@ -534,27 +551,74 @@ async def test_a_connection_wires_the_sqlite_tier(tmp_path: Path) -> None:
 
 
 async def test_a_configured_pg_pool_gets_durable_claims_not_a_cache(monkeypatch) -> None:
-    """The restart-unsafe fallback regression: a pool without the migrated
-    table is PROVISIONED at wiring, never silently dropped to in-memory
-    state — the issue's stop condition in its exact shape."""
+    """The restart-unsafe fallback regression: a spine-ready pool without the
+    migrated table is PROVISIONED at wiring, never silently dropped to
+    in-memory state — the issue's stop condition in its exact shape."""
     pool = FakePool()
     store = await wire_task_idempotency(None, pg_pool=pool)
     assert isinstance(store, PgTaskIdempotencyStore)
     ddl = [c for c in pool.calls if "CREATE TABLE IF NOT EXISTS task_idempotency" in c.sql]
     assert ddl, "wiring must provision the claim table on the configured pool"
+    # The claims tier asked the spine's exact question before landing here.
+    assert any(
+        "to_regclass" in c.sql and any("canonical_runs" in str(a) for a in c.args)
+        for c in pool.calls
+    )
 
 
-async def test_an_unprovisionable_pg_pool_degrades_loudly(monkeypatch, caplog) -> None:
-    """Only a backend that cannot be provisioned at all (read-only role) falls
-    back — and it says so, because a claim store that forgets on restart
-    mints a second Run for the first retried submission."""
+async def test_an_unprovisionable_spine_ready_pool_fails_the_wiring() -> None:
+    """A pool that hosts the spine but cannot hold the claims table is a
+    misconfiguration, not a tier to degrade onto: process-local claims beside
+    a durable spine mint a second Run for the first retried submission after
+    a restart, so the wiring refuses instead — no silent process-local
+    fallback on a configured PostgreSQL (the stop condition's edge)."""
+    pool = FakePool(fail_ddl=True)  # hosts the spine; refuses the claims DDL
+    with pytest.raises(ConfigError) as excinfo:
+        await wire_task_idempotency(None, pg_pool=pool)
+    assert "alembic upgrade head" in str(excinfo.value)
+
+
+async def test_claims_follow_the_spine_tier_when_the_pool_is_not_spine_ready(
+    monkeypatch, caplog
+) -> None:
+    """An unmigrated pool is refused by the spine itself, and the claims tier
+    follows it down instead of outliving it: durable claims beside Runs that
+    die on restart would make a restart-retry replay a receipt whose Run no
+    longer exists — a false reconciliation, work silently lost."""
     import logging
 
-    pool = FakePool(fail_ddl=True)
+    pool = FakePool(spine_ready=False)
     with caplog.at_level(logging.WARNING, logger="maistro.tasks.idempotency"):
         store = await wire_task_idempotency(None, pg_pool=pool)
     assert isinstance(store, InMemoryTaskIdempotencyStore)
-    assert "task_idempotency_provision_failed" in caplog.text
+    assert "task_idempotency_follows_spine_tier" in caplog.text
+    # No claim table was created on the pool the spine refused.
+    assert not [c for c in pool.calls if c.method == "execute"]
+
+
+async def test_claims_follow_a_sqlite_spine_when_the_pool_is_unmigrated(
+    tmp_path: Path,
+) -> None:
+    """The homelab-with-a-caller-pool shape: the pool lacks the spine's
+    tables, the spine lands on the SQLite file, and the claims land beside it
+    — same database tier as the Runs they name."""
+    pool = FakePool(spine_ready=False)
+    conn = await aiosqlite.connect(tmp_path / "idempotency.db")
+    try:
+        store = await wire_task_idempotency(conn, pg_pool=pool)
+        assert isinstance(store, SqliteTaskIdempotencyStore)
+        assert not [c for c in pool.calls if c.method == "execute"]
+    finally:
+        await conn.close()
+
+
+async def test_a_dead_pool_fails_the_wiring_rather_than_degrading() -> None:
+    """An unreachable configured pool cannot be asked anything, so the wiring
+    fails honestly instead of guessing a tier: the spine's wiring would have
+    raised at the same probe moments earlier."""
+    pool = FakePool(dead=True)
+    with pytest.raises(RuntimeError, match="connection refused"):
+        await wire_task_idempotency(None, pg_pool=pool)
 
 
 # ── PostgreSQL for real: the durability box against a live server ──
@@ -595,6 +659,18 @@ async def test_the_postgres_tier_reconciles_on_a_real_server(pg_pool) -> None:
 
     # The corpse's fenced write lands nowhere, even from the first pool.
     assert await first.complete(_scope("k"), token=claimed.token, task_id="x", run_id="y") is False
+
+    # The wiring decision agrees with the spine's probe on a real server —
+    # whichever way this database's migration state answers, the claims tier
+    # and the spine tier cannot disagree here.
+    if await spine_is_migrated(pg_pool):
+        wired = await wire_task_idempotency(None, pg_pool=pg_pool)
+        assert isinstance(wired, PgTaskIdempotencyStore)
+    else:
+        wired = await wire_task_idempotency(None, pg_pool=pg_pool)
+        assert isinstance(wired, InMemoryTaskIdempotencyStore), (
+            "claims must not outlive a spine the pool does not host"
+        )
 
     # And the no-Run resolution: a fresh begun claim is takeable, once, by
     # exactly the discovery that resolved it.

@@ -72,10 +72,17 @@ remains #1114's recovery to execute; what this contract guarantees is that the
 backends — :class:`PgTaskIdempotencyStore` for a replica-shareable deployment,
 :class:`SqliteTaskIdempotencyStore` for the single-conductor homelab — put the
 claim in the same database tier the Run spine itself selected, so a restart or
-a replica handoff resolves retries identically. Wiring provisions the table on
-whichever durable backend is configured (``ensure_schema``), so an
-unmigrated-but-configured PostgreSQL gets durable claims, not a silent drop to
-process-local state. The in-memory store exists for the no-database deployment,
+a replica handoff resolves retries identically. Wiring asks the spine's own
+question (:func:`maistro.runs.wiring.spine_is_migrated`) before landing claims
+on a configured PostgreSQL pool, because a claim tier *more* durable than the
+Runs it names is its own duplication hazard: a claim that survives a restart
+beside an ephemeral spine replays a receipt whose Run died, and the retry
+believes work was admitted that no longer exists. On a spine-ready pool the
+claims table is provisioned at wire time (``ensure_schema``) — migration 033
+need not have run yet — and a provisioning failure there fails the wiring
+rather than degrading: beside a durable spine, process-local claims would be
+the one tier that forgets, minting a second Run for the first retried
+submission. The in-memory store exists for the no-database deployment,
 exactly as the in-memory Run store does; there it is the deployment's
 durability tier, not a cache in front of a durable one.
 """
@@ -93,6 +100,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from maistro.tasks.models import TaskCreate
+from maistro.types.errors import ConfigError
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import asyncpg
@@ -1001,12 +1009,16 @@ class PgTaskIdempotencyStore(_ClaimFlow):
     async def ensure_schema(self) -> None:
         """Provision the claim table on the pool, idempotently.
 
-        Migration 033 creates this table through Alembic; a deployment whose
-        pool has not been migrated yet still gets *durable* claims this way —
-        the point of the issue's durability box is that a configured database
-        must never degrade admission identity to process-local state. The DDL
-        mirrors the migration's column set exactly, so the later
-        ``alembic upgrade head`` finds the shape it expects.
+        Migration 033 creates this table through Alembic, but wiring does not
+        wait for it: a spine-ready pool whose 033 has not run yet gets the
+        table right here (the same self-provisioning the SQLite tier has
+        always done), so a restart reconciles retries instead of minting a
+        second Run. The DDL mirrors the migration's column set exactly, so
+        the later ``alembic upgrade head`` finds the shape it expects. A pool
+        that refuses this DDL fails the wiring (``ConfigError`` from
+        :func:`wire_task_idempotency`): beside a durable spine, a claims tier
+        that forgets on restart mints a second Run for the first retried
+        submission, and starting without it is not on offer.
         """
         conn: asyncpg.Connection
         async with self._pool.acquire() as conn:
@@ -1223,30 +1235,54 @@ class PgTaskIdempotencyStore(_ClaimFlow):
 async def wire_task_idempotency(conn: Any, *, pg_pool: Any = None) -> TaskIdempotencyStore:
     """The claim store on the backend the Run spine chose.
 
-    A configured durable backend always gets durable claims: the PostgreSQL
-    store provisions its table at wiring time (``ensure_schema``, the same
-    self-provisioning the SQLite tier has always done), so a pool that has not
-    been migrated to 033 yet still reconciles retries across a restart instead
-    of silently dropping to process-local state. Only a backend that cannot be
-    provisioned at all — a read-only application role, say — falls back to the
-    in-memory tier, loudly, because a claim store that forgets on restart
-    mints a second Run for the first retried submission and an operator has to
-    know that is the tier they are on.
+    "Chose" is decided, not assumed: a configured PostgreSQL pool is asked the
+    spine's own question (:func:`maistro.runs.wiring.spine_is_migrated`), and
+    the claim tier follows the answer — the container's promise that claims
+    sit "beside the Runs they reconcile" is true by construction, not by
+    coincidence of two wirings that could drift.
+
+    - **Spine-ready pool → durable claims.** ``ensure_schema`` provisions the
+      table at wiring time, so migration 033 need not have run yet. A
+      provisioning failure on this pool — a role without CREATE on a
+      hand-provisioned database, say — raises :class:`ConfigError` and the
+      process does not start: the spine is durable right there, so falling
+      back to process-local claims would mint a second Run for the first
+      retried submission after a restart, and a warning would not stop it.
+    - **A pool the spine refused → claims follow the spine down.** An
+      unmigrated pool gets no claim table: durable claims beside Runs that
+      die on restart would make a restart-retry replay a receipt whose Run no
+      longer exists — a false reconciliation, work silently lost. The SQLite
+      file or the in-memory tier takes the claims, loudly, beside the probe's
+      own warning about the spine's tier.
+    - **No pool → the SQLite file when there is one**, else the in-memory
+      tier for the no-database deployment, where claims and Runs lose
+      durability together, as they always have.
     """
+    # Deferred import: runs.wiring imports tasks.admission, which imports this
+    # module — a module-level import would close a cycle.
+    from maistro.runs.wiring import spine_is_migrated
+
     if pg_pool is not None:
-        store = PgTaskIdempotencyStore(pg_pool)
-        try:
-            await store.ensure_schema()
-        except Exception as exc:
+        if not await spine_is_migrated(pg_pool):
             logger.warning(
-                "task_idempotency_provision_failed: task admission idempotency "
-                "is in-process and lost on restart (%s): a retry after a restart "
-                "mints a second Run. Grant CREATE on the schema or run "
-                "`alembic upgrade head` (#1176).",
-                exc,
+                "task_idempotency_follows_spine_tier: the configured PostgreSQL "
+                "pool does not host the canonical spine, so task admission "
+                "claims take the spine's own tier instead of the pool — durable "
+                "claims beside Runs that die on restart would replay receipts "
+                "whose Runs no longer exist (#1176)."
             )
-            return InMemoryTaskIdempotencyStore()
-        return store
+        else:
+            store = PgTaskIdempotencyStore(pg_pool)
+            try:
+                await store.ensure_schema()
+            except Exception as exc:
+                raise ConfigError(
+                    "the PostgreSQL pool hosts the canonical spine but could not "
+                    f"provision the task-idempotency claims table ({exc}); grant "
+                    "CREATE on the schema or run `alembic upgrade head` — task "
+                    "admission will not start on process-local claims (#1176)"
+                ) from exc
+            return store
     if conn is not None:
         sqlite_store = SqliteTaskIdempotencyStore(conn)
         await sqlite_store.ensure_schema()
