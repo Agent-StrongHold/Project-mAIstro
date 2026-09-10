@@ -4,7 +4,19 @@ import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+def _naive_as_utc(value: datetime) -> datetime:
+    """A bare wall-clock value here means UTC, not the reading process's zone.
+
+    `astimezone()` on a naive datetime asks the platform to guess the zone it
+    was written in, so the same stored row would decode to a different instant
+    depending on which host reads it (#1149). Matches the normalization
+    `maistro.scheduling.model.Schedule` already applies to its own timestamps.
+    """
+
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 class WorkspaceRole(StrEnum):
@@ -37,6 +49,12 @@ class Workspace(BaseModel):
             raise ValueError("must be a non-empty string")
         return value
 
+    @model_validator(mode="after")
+    def _normalize_timestamps(self) -> Workspace:
+        object.__setattr__(self, "created_at", _naive_as_utc(self.created_at))
+        object.__setattr__(self, "updated_at", _naive_as_utc(self.updated_at))
+        return self
+
 
 class WorkspaceMembership(BaseModel):
     """One user's access relationship to one Workspace."""
@@ -54,6 +72,11 @@ class WorkspaceMembership(BaseModel):
         if not value.strip():
             raise ValueError("must be a non-empty string")
         return value
+
+    @model_validator(mode="after")
+    def _normalize_added_at(self) -> WorkspaceMembership:
+        object.__setattr__(self, "added_at", _naive_as_utc(self.added_at))
+        return self
 
     @property
     def can_use(self) -> bool:
