@@ -28,6 +28,7 @@ canonical_event_log.run_id (+ node/attempt ids)   none — logical (030)        
 schedule occurrence claim                         unique expression index on the Run's own provenance (015)   Dies with the Run row — deleting the Run *is* releasing the claim, the same policy `InMemoryRunStore._forget_run` has always applied. Counted per purge.
 canonical_runs.archive_key                        column (017)                  Not reachable — purgable Runs carry a deadline, archived Runs carry none; the populations are disjoint by predicate (ADR-082226-f436 decision 10).
 tasks.run_id, session_turns.run_id                none — logical (004/028)      Preserve. Historical attribution owned by other modules: a task receipt or a session turn says "this happened", and it stays true after the execution identity is reclaimed. Same class as Events.
+learnings/outcomes/design_outputs/episodic_memories .run_id, .node_run_id, .attempt_id   none — logical (026/028/031)   Preserve. Producer provenance (#709, #64): "this execution produced this learning/outcome/design output/memory" is attribution history exactly like a task receipt — it names an execution that did happen. The purge never touches these tables; the reference resolving to a purged Run is the same residue an Event reference is, and the same policy — observable, not destroyed — applies.
 ================================================  ============================  ====================================================
 
 The line the table draws: **execution state** (spine children, continuations,

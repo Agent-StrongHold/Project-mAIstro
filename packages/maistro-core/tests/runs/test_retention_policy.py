@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from maistro.observability.metrics import retention_purged_total
+from maistro.observability.metrics import retention_backlog_remaining, retention_purged_total
 from maistro.runs.retention import (
     DEFAULT_CHAT_RETENTION_SECONDS,
     UNBOUNDED_RETENTION,
@@ -37,10 +37,17 @@ GLOBAL = GlobalRetentionScope(authorized_by="operator")
 class SpyStore:
     """Just enough RunStore to watch the sweeper."""
 
-    def __init__(self, *, purged: int = 0, fail_with: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        purged: int = 0,
+        fail_with: Exception | None = None,
+        backlog: bool = False,
+    ) -> None:
         self.calls: list[tuple[object, datetime | None, int]] = []
         self._purged = purged
         self._fail_with = fail_with
+        self._backlog = backlog
 
     async def purge_expired_runs(
         self,
@@ -52,7 +59,11 @@ class SpyStore:
         self.calls.append((scope, now, limit))
         if self._fail_with is not None:
             raise self._fail_with
-        return PurgeOutcome(scope=SCOPE if scope is None else scope, runs=self._purged)  # type: ignore[arg-type]
+        return PurgeOutcome(  # type: ignore[arg-type]
+            scope=SCOPE if scope is None else scope,
+            runs=self._purged,
+            backlog_remaining=self._backlog,
+        )
 
 
 class SlowStore(SpyStore):
@@ -320,3 +331,67 @@ async def test_a_failed_sweep_counts_nothing() -> None:
 
     assert _mode_total("workspace") == before
     assert sweeper.last_outcome is None
+
+
+def _backlog(mode: str) -> float:
+    """The backlog gauge's current value for one mode label."""
+    return sum(
+        float(sample["value"])
+        for sample in retention_backlog_remaining.collect()
+        if sample.get("labels", {}).get("mode") == mode
+    )
+
+
+async def test_a_drained_scope_reports_no_backlog() -> None:
+    """The backlog gauge is the difference between 'the batch ran out' and
+    'the scope is empty' — the state a retention alert is actually about."""
+    sweeper = RunRetentionSweeper(
+        SpyStore(purged=2),
+        RetentionPolicy(sweep_interval_seconds=0),
+        scope=SCOPE,
+    )  # type: ignore[arg-type]
+
+    await sweeper.sweep_now(now=NOW)
+
+    assert sweeper.last_outcome is not None
+    assert sweeper.last_outcome.backlog_remaining is False
+    assert _backlog("workspace") == 0.0
+
+
+async def test_a_batch_limited_scope_reports_its_backlog() -> None:
+    sweeper = RunRetentionSweeper(
+        SpyStore(purged=1, backlog=True),
+        RetentionPolicy(sweep_interval_seconds=0),
+        scope=OTHER,
+    )  # type: ignore[arg-type]
+
+    await sweeper.sweep_now(now=NOW)
+
+    assert sweeper.last_outcome is not None
+    assert sweeper.last_outcome.backlog_remaining is True
+    assert _backlog("workspace") == 1.0
+    # The label is the mode, never the Workspace id (#818).
+    assert _backlog("global") == 0.0
+
+
+async def test_a_failed_sweep_withdraws_the_standing_backlog_report() -> None:
+    """`last_outcome` goes to None when a sweep fails; the gauge that was set
+    from it must not keep describing a purge that no longer stands."""
+    good = RunRetentionSweeper(
+        SpyStore(purged=1, backlog=True),
+        RetentionPolicy(sweep_interval_seconds=0),
+        scope=SCOPE,
+    )  # type: ignore[arg-type]
+    await good.sweep_now(now=NOW)
+    assert _backlog("workspace") == 1.0
+
+    failing = RunRetentionSweeper(
+        SpyStore(purged=4, fail_with=RuntimeError("down")),
+        RetentionPolicy(sweep_interval_seconds=0),
+        scope=SCOPE,
+    )  # type: ignore[arg-type]
+
+    assert await failing.maybe_sweep(now=NOW) == 0
+
+    assert _backlog("workspace") == 0.0
+    assert failing.last_outcome is None

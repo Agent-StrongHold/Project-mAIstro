@@ -513,3 +513,8 @@ retention_purged_total = registry.counter(
     "maistro_retention_purged_total",
     "Runs deleted by retention sweeps, by authorization mode (workspace|global) (#1175)",
 )
+retention_backlog_remaining = registry.gauge(
+    "maistro_retention_backlog_remaining",
+    "1 if the last completed retention sweep hit its batch limit before the scope "
+    "drained, else 0; by authorization mode (#1175)",
+)
