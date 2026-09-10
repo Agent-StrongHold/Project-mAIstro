@@ -259,10 +259,18 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    Slack `xox*` family, validated AWS secret access keys, and generic secret-named assignments —
    share their compiled shapes with `redact.py` through `security/secret_policy.py` (#1159), which
    is also the one field-name classifier for approval-evidence redaction
-   (`capabilities/approval_store.py`); identifier-valued names (`aws_access_key_id`, `key_arn`)
-   stay readable by policy, and `Violation.detail` is redacted at construction in both
-   `security/_types.py` and `types/security.py`. The shared assignment shape does not claim an
-   unquoted value containing a mid-value `=` (`key=abc=def12345`) — quote such values.
+   (`capabilities/approval_store.py`); the classifier splits separator AND camel-case boundaries
+   on the original spelling (`private_key`, `privateKey`, `SigningKey` all classify; a lowering
+   regression that let camelCase synonyms bypass approval evidence is covered by test), and
+   identifier-valued names (`aws_access_key_id`, `awsAccessKeyId`, `key_arn`) stay readable by
+   policy. Both filters consume full PEM blocks — the base64 body between the BEGIN/END markers
+   is the reusable credential, so redacting the header alone is not enough — and
+   `Violation.detail` is redacted at construction in both `security/_types.py` and
+   `types/security.py`. The shared assignment shape does not claim an unquoted value containing a
+   mid-value `=` (`key=abc=def12345`) — quote such values — and never re-claims a value from the
+   reserved `[REDACTED…` label namespace, which is what makes redaction idempotent across the
+   multiple boundaries that apply it. The PII filter — not the log redactor — owns decoding views
+   (percent/Base64) and the homoglyph fold; the entropy fallback remains log-path only.
    **Redaction covers the log pipelines only** — a secret placed
    in an HTTP response body or written directly to a file is not scrubbed.
 6. **Warden's configured LLM-judge tier fails closed on uncertainty.** When L3 is invoked, only an

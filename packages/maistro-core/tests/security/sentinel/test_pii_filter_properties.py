@@ -193,6 +193,28 @@ class TestCredentialShapes:
     def test_url_is_not_a_secret_assignment(self) -> None:
         assert scan_for_pii("https://example.com/path?q=1") == []
 
+    def test_full_pem_block_body_is_redacted(self) -> None:
+        """#1159 repair: the base64 body between the markers IS the reusable
+        credential. The base64-decode candidate path cannot catch it (a key
+        body decodes to non-UTF-8 bytes), so the full-block detector must."""
+        body = (
+            "MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn/yGaTkxHhZPwkY9tX3kF3wXHrWKBhJ5bHUmIg\n"
+            "ZPwkY9tX3kF3wXHrWKBhJ5bHUmIgMIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn/yGaTkxHh"
+        )
+        pem = f"-----BEGIN RSA PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----"
+        redacted, matches = scan_and_redact(pem)
+        assert [m.pii_type for m in matches] == ["private_key"]
+        # One span covering the whole block — not just the BEGIN header.
+        assert matches[0].start == 0 and matches[0].end == len(pem)
+        assert "MIIEpAIB" not in redacted
+        assert redacted.startswith("[REDACTED:private_key]")
+
+    def test_truncated_pem_header_still_detected(self) -> None:
+        # An unterminated block has no END marker for the full-block shape;
+        # the header-only fallback still flags the leak that is starting.
+        matches = scan_for_pii("-----BEGIN OPENSSH PRIVATE KEY----- and then output cuts out")
+        assert [m.pii_type for m in matches] == ["private_key"]
+
     def test_email_and_card_detection_unchanged(self) -> None:
         # The new detectors sit last and claim nothing the older detectors
         # already cover — personal-data detection is untouched (#1159).

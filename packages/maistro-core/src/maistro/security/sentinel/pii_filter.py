@@ -161,6 +161,24 @@ _PII_PATTERNS: list[tuple[str, re.Pattern[str], Callable[[str], bool] | None]] =
     # character class, it is a literal `|`, so the old class matched TLDs
     # containing a pipe character.
     ("email", re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"), None),
+    # Full PEM block first (#1159 repair): the base64 body between the
+    # markers IS the reusable credential, and the base64-decode candidate
+    # path cannot catch it (a key body decodes to non-UTF-8 bytes), so the
+    # header-only detector below left entire key bodies readable in post-call
+    # output. Same shape the log redactor uses: the body class excludes `-`,
+    # which is what keeps an unterminated BEGIN marker from scanning to
+    # end-of-input (linear, bounded at 16 KiB). The earlier, longer span is
+    # kept and the header-only hit inside it is dropped by the overlap rule;
+    # the header-only detector remains as the fallback for truncated output
+    # whose END marker never arrives.
+    (
+        "private_key",
+        re.compile(
+            r"-----BEGIN [A-Z ]{0,32}PRIVATE KEY-----[A-Za-z0-9+/=\s]{0,16384}?"
+            r"-----END [A-Z ]{0,32}PRIVATE KEY-----"
+        ),
+        None,
+    ),
     ("private_key", re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----"), None),
     (
         "password",

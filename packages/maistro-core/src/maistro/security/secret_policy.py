@@ -104,11 +104,18 @@ def is_secret_key_name(name: str) -> bool:
     qualifier (``id``/``identifier``/``arn``) preserves identifier-valued
     fields such as ``aws_access_key_id`` unless a strong family segment
     (``secret``, ``password``, ``credential``, ...) is present.
+
+    The camel-case split runs on the ORIGINAL spelling: lowering first
+    (``privateKey`` becomes ``privatekey``) destroyed the boundary the
+    splitter looks for, so camelCase synonyms of every documented family
+    (``privateKey``, ``SigningKey``, ``clientToken``, ...) silently bypassed
+    classification, and durable approval evidence with it. ``_segments``
+    lower-cases each part itself.
     """
     lowered = str(name).strip().lower()
     if lowered == "pat":  # GitHub personal access token spelled bare
         return True
-    segments = _segments(lowered)
+    segments = _segments(str(name).strip())
     if not segments:
         return False
     strong = [s for s in segments if s in SECRET_FIELD_SEGMENTS and s not in _SOFT_SEGMENTS]
@@ -143,6 +150,14 @@ AWS_SECRET_ACCESS_KEY_PATTERN = re.compile(
 #: name. The value floor is 8 characters — the same false-positive bar the
 #: password detectors already use; shorter values are left alone.
 #
+#: Every value alternative refuses the reserved label namespace: a value
+#: beginning with ``[REDACTED`` is a placeholder an earlier redaction pass
+#: wrote, never a credential. Without the lookahead, a second pass over
+#: already-redacted text (multi-boundary pipelines redact at more than one
+#: seam) re-claimed labels as assignment values and silently relabeled them
+#: (``[REDACTED_AWS_SECRET_KEY]`` becomes ``[REDACTED_SECRET_ASSIGNMENT]``),
+#: so redaction was not idempotent. The namespace makes redact(redact(x)) a
+#: fixed point.
 #: The name's left boundary is load-bearing twice: inside a long unbroken
 #: token run every offset would otherwise start a fresh (failing) name
 #: attempt — a linear-time pass with a 65x constant that the AC-36 scaling
@@ -160,8 +175,8 @@ AWS_SECRET_ACCESS_KEY_PATTERN = re.compile(
 #: for the credential inside.
 SECRET_ASSIGNMENT_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_.-])(?P<name>[A-Za-z_][A-Za-z0-9_.-]{0,64})\s*[=:]\s*"
-    r"(?:'(?P<sq>[^'\n]{8,4096})'|\"(?P<dq>[^\"\n]{8,4096})\""
-    r"|(?P<bare>(?![A-Za-z0-9_.-]+\s*[=:]\s*[^\s])[^\s'\"]{8,4096}))"
+    r"(?:'(?P<sq>(?!\[REDACTED)[^'\n]{8,4096})'|\"(?P<dq>(?!\[REDACTED)[^\"\n]{8,4096})\""
+    r"|(?P<bare>(?!\[REDACTED)(?![A-Za-z0-9_.-]+\s*[=:]\s*[^\s])[^\s'\"]{8,4096}))"
 )
 
 

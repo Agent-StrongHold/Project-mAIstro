@@ -49,6 +49,15 @@ class TestIsSecretKeyName:
             "db_password",
             "secret_id",  # strong family beats the id suffix: a live credential
             "password_id",  # same
+            # camelCase synonyms (#1159 repair): the split must run on the
+            # original spelling — lowering first erased the boundary, so these
+            # bypassed classification and durable approval evidence with it.
+            "privateKey",
+            "SigningKey",
+            "MySecret",
+            "clientToken",
+            "userPassword",
+            "sshKey",
         ],
     )
     def test_sensitive_names(self, name: str) -> None:
@@ -62,6 +71,12 @@ class TestIsSecretKeyName:
             "token_id",
             "key_identifier",
             "access_key_arn",
+            # camelCase identifiers keep the same escape as their snake_case
+            # forms — the fix must not have made camelCase fail toward
+            # redaction for identifier-valued names.
+            "awsAccessKeyId",
+            "keyArn",
+            "tokenId",
             "tokenizer",
             "secretary",
             "monkey",

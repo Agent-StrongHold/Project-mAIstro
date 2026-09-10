@@ -252,6 +252,14 @@ def redact(text: str) -> str:  # noqa: C901  pre-existing: sequence of independe
     # never the credential itself: assignment values contain no whitespace,
     # so a whitespace-crossing pattern span can only contain an assignment
     # value, and a same-run pattern span only sits inside it.
+    #
+    # The overlap test is the standard interval predicate — spans [a1,a2) and
+    # [b1,b2) intersect iff a1 < b2 and b1 < a2. A previous revision tested
+    # only `assignment_start < claimed_end`, which is also true when the
+    # claimed span lies entirely AFTER the value (a Slack token later in the
+    # same line), and silently dropped the assignment: the raw credential
+    # survived any line that contained one other redactable span (#1159
+    # repair regression).
     assignment_spans = [
         (start, end, "[REDACTED_SECRET_ASSIGNMENT]")
         for start, end in iter_secret_assignment_value_spans(text)
@@ -261,7 +269,7 @@ def redact(text: str) -> str:  # noqa: C901  pre-existing: sequence of independe
         spans.extend(
             span
             for span in assignment_spans
-            if not any(start < end and span[0] < end for start, end in claimed)
+            if not any(span[0] < end and start < span[1] for start, end in claimed)
         )
 
     if not spans:

@@ -244,6 +244,7 @@ class TestRedactSecretAssignments:
             ("apiKey = value1234567", "apiKey"),
             ('token="abcdef12345"', "token"),
             ("DB_PASSWORD: hunter2pass2", "DB_PASSWORD"),
+            ("MySecret = hunter2pass1", "MySecret"),
         ],
         ids=[
             "sq-spaced",
@@ -254,6 +255,7 @@ class TestRedactSecretAssignments:
             "camel",
             "dq-token",
             "upper-colon",
+            "camel-no-separator",
         ],
     )
     def test_value_redacted_name_preserved(self, assignment, name):
@@ -335,6 +337,51 @@ class TestRedactSecretAssignments:
         result = redact("client_key=" + value)
         assert value not in result
         assert "[REDACTED_" in result
+
+    def test_assignment_redacted_even_with_an_unrelated_later_span(self):
+        """#1159 repair regression: the assignment-skip test used a broken
+        interval predicate, so any other redactable span AFTER the value (a
+        Slack token, a JWT) suppressed the assignment redaction and the raw
+        credential survived the line."""
+        slack = "xoxb-123456789012-abcdefabcdef"
+        result = redact(f"my_secret = 'hunter2pass' token {slack} end")
+        assert "hunter2pass" not in result
+        assert "[REDACTED_SECRET_ASSIGNMENT]" in result
+        assert slack not in result
+        # Same leak, bare-value form, span BEFORE and AFTER the assignment.
+        result = redact(f"tok {slack} then client_key=barevalue9 end")
+        assert "barevalue" not in result
+
+    def test_redaction_is_idempotent_across_passes(self):
+        """Multi-boundary pipelines redact at more than one seam, so a second
+        pass must be a fixed point — not relabel earlier placeholders."""
+        aws = "wJalr" + "XUtnFEMI/K7MDENG/bPxRfiCY" + "EXAMPLEKEY"
+        text = f"config my_secret = 'hunter2pass' key={aws} tok xoxb-123456789012-abcdefabcdef"
+        once = redact(text)
+        assert redact(once) == once
+        # And the first pass actually removed everything (the idempotence
+        # regression used to hold only because pass one had already leaked).
+        assert "hunter2pass" not in once and aws not in once
+
+    def test_second_pass_keeps_the_specific_label(self):
+        """The reserved [REDACTED... label namespace is never re-claimed as an
+        assignment value, so labels are stable across passes — including the
+        assignment's own label and the AWS one (whose relabeling was the
+        visible symptom of the non-idempotence regression)."""
+        for labeled in (
+            "key=[REDACTED_AWS_SECRET_KEY]",
+            "my_secret = '[REDACTED_SECRET_ASSIGNMENT]'",
+            'db_password: "[REDACTED_JSON_SECRET]"',
+        ):
+            assert redact(labeled) == labeled, labeled
+        # End to end: an AWS value the AWS detector can claim (space-separated)
+        # keeps its specific label on the first pass and everything holds on
+        # the second. (`key=<40-char run>` deliberately lands on the
+        # assignment label — see test_value_adjacent_to_equals_gets_assignment_label.)
+        aws = "wJalr" + "XUtnFEMI/K7MDENG/bPxRfiCY" + "EXAMPLEKEY"
+        once = redact(f"leaked secret {aws} in args")
+        assert "[REDACTED_AWS_SECRET_KEY]" in once
+        assert redact(once) == once
 
 
 class TestRedactJSONBareKeyName:

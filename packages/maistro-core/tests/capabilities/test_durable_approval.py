@@ -522,6 +522,29 @@ def test_redact_approval_value_handles_attacker_controlled_names() -> None:
     assert redacted[""] == "nameless survives: it names no family"
 
 
+def test_redact_approval_value_covers_camelcase_synonyms() -> None:
+    """#1159 repair: the canonical classifier split camel case on the lowered
+    name, so these synonyms of covered families bypassed approval redaction."""
+    redacted = redact_approval_value(
+        {
+            "privateKey": "PRIV",
+            "SigningKey": "GK",
+            "clientToken": "TOK",
+            "userPassword": "PW",
+            # camelCase identifiers keep the identifier escape.
+            "awsAccessKeyId": "AKIAIOSFODNN7EXAMPLE",
+        }
+    )
+
+    assert redacted == {
+        "privateKey": "[REDACTED]",
+        "SigningKey": "[REDACTED]",
+        "clientToken": "[REDACTED]",
+        "userPassword": "[REDACTED]",
+        "awsAccessKeyId": "AKIAIOSFODNN7EXAMPLE",
+    }
+
+
 @pytest.mark.asyncio
 async def test_sqlite_concurrent_resolution_commits_only_one_decision(tmp_path) -> None:
     path = tmp_path / "approvals-race.db"
