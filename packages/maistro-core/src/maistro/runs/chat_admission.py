@@ -41,6 +41,7 @@ from maistro.runs.admission import admit_direct_work
 from maistro.runs.archival import ArchivePolicy, RunArchiveSweeper
 from maistro.runs.model import TERMINAL_RUN_STATUSES
 from maistro.runs.retention import RetentionPolicy, RunRetentionSweeper
+from maistro.runs.retention_scope import WorkspaceRetentionScope
 from maistro.runs.sources import CHAT_SOURCE
 from maistro.runs.task_kinds import resolve_direct_work
 
@@ -182,7 +183,14 @@ class ChatRunAdmitter:
         # would ever sweep. Giving the Run a deadline at admission puts the
         # answer on the row, where a later process can act on it.
         self._retention = retention if retention is not None else RetentionPolicy()
-        self._sweeper = RunRetentionSweeper(run_store, self._retention)
+        # The admitter's own Workspace is the sweep's whole deletion authority
+        # (#1175): this sweeper can never purge another Workspace's expired
+        # Runs, however shared the store underneath is.
+        self._sweeper = RunRetentionSweeper(
+            run_store,
+            self._retention,
+            scope=WorkspaceRetentionScope(workspace_id=self._workspace_id),
+        )
         # The cold half of the same clock (#273). Deliberately a second
         # sweeper rather than a branch inside the first: archiving and
         # purging select disjoint populations (ADR-082226-f436 decision
