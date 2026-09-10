@@ -46,6 +46,7 @@ own history disagree with itself.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from datetime import timedelta
 from typing import Any
 
 from maistro.runs.chat_admission import chat_turn_outcome
@@ -74,6 +75,18 @@ _CONDUIT_AGENT_KEY = "agent"
 #: never learns the pipeline's argument list — the caller has already bound it.
 ChatDispatch = Callable[[], Awaitable[dict[str, Any]]]
 
+#: The canonical execution lease TTL every chat Attempt carries (#1170). One
+#: number on purpose: the schedule consumer already runs on `timedelta(seconds=30)`
+#: (`consumption.DEFAULT_SCHEDULE_LEASE_TTL`), and two entry points recovering at
+#: different speeds would mean a crash is an outage on one and a blip on the
+#: other. A chat turn is never the work the TTL cuts off — while this process
+#: lives, the heartbeat renews at TTL/3 and a slow answer finishes (AC-8); the
+#: TTL only starts counting when the process can no longer say it is alive,
+#: which is the one situation ADR-082526-b36a exists for. A deployment that
+#: runs `Container.recover_abandoned_attempts` on its tick — the collector the
+#: same ADR names — gets reclaiming chat Attempts with no further wiring.
+DEFAULT_CHAT_LEASE_TTL = timedelta(seconds=30)
+
 
 def attempt_result(response: dict[str, Any]) -> dict[str, Any]:
     """The JSON-safe evidence one chat turn leaves on its Attempt.
@@ -96,6 +109,17 @@ class ChatAttemptExecutor:
     each time, so two workers and a restarted process reach the same answer.
     Shaped after `TaskAttemptExecutor` deliberately — the two entry points have
     the same spine and should not grow two different ideas of how to use it.
+
+    Every Attempt is created leased (`DEFAULT_CHAT_LEASE_TTL`) and its lease is
+    renewed from this process while the turn runs, so a worker that dies
+    mid-turn leaves a RUNNING Attempt the canonical sweep can reclaim instead
+    of one nothing will ever inspect again (#1170). `lease_ttl=None` opts out
+    and is exactly the pre-#1170 behaviour ADR-082526-b36a shipped as the
+    default for every caller; chat opts in at the constructor rather than at
+    each wiring site so a future caller cannot quietly reintroduce the
+    un-leaseable Attempt by forgetting the argument. A non-positive TTL is
+    refused by `AttemptExecutionService` at construction, before any NodeRun
+    exists to orphan.
     """
 
     def __init__(
@@ -104,6 +128,7 @@ class ChatAttemptExecutor:
         *,
         runtime: ExecutionRuntime | None = None,
         timeout_s: float | None = None,
+        lease_ttl: timedelta | None = DEFAULT_CHAT_LEASE_TTL,
     ) -> None:
         if timeout_s is not None and timeout_s <= 0:
             # Rejected here rather than by `AttemptExecutionService`, which
@@ -115,12 +140,18 @@ class ChatAttemptExecutor:
         self._service = RunExecutionService(
             store=run_store,
             runtime=runtime or PythonExecutionRuntime(),
+            lease_ttl=lease_ttl,
         )
         # Explicitly None. A chat turn carries no deadline of its own, and
         # inventing a global one here would start cutting off long answers that
         # have always been allowed to finish — a behaviour change dressed as
         # plumbing. Giving chat a real deadline is #43's.
         self._timeout_s = timeout_s
+        # Unlike `timeout_s`, the lease defaults to something real. An expiring
+        # lease never cuts work off — it only makes the Attempt *reclaimable*
+        # once nothing renews it — so the old None default would have kept chat
+        # outside the recovery contract this executor exists to join.
+        self._lease_ttl = lease_ttl
 
     async def execute(
         self,
@@ -194,6 +225,7 @@ class ChatAttemptExecutor:
 __all__ = [
     "ATTEMPT_AGENT_KEY",
     "CHAT_EXECUTOR_ID",
+    "DEFAULT_CHAT_LEASE_TTL",
     "ChatAttemptExecutor",
     "ChatDispatch",
     "attempt_result",
