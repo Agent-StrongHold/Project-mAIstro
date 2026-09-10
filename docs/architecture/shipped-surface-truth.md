@@ -2,7 +2,7 @@
 
 M1 Gate D requires every shipped control that can imply work or a security-relevant effect to have a truthful execution contract. `quality/shipped-surface-truth.json` is the machine-reviewable inventory for that claim.
 
-The checker discovers every POST, PUT, PATCH, and DELETE route in the shipped Conductor and maistro-server API roots. Every discovered route must have an exact source/method/path/handler disposition. A new mutating route therefore fails closed until review classifies it as canonical execution, truthful product/domain state, a local-only effect, intentionally disabled, or an owned unresolved convergence gap.
+The checker discovers every POST, PUT, PATCH, and DELETE route in the shipped Conductor and maistro-server API roots, plus every `@router.websocket(...)` route regardless of HTTP-verb semantics: a WebSocket handshake bypasses ordinary HTTP middleware entirely (#1122), so a socket is a shipped execution/control surface on its own terms, mutating or not. Every discovered route must have an exact source/method/path/handler disposition (a WebSocket route's synthetic "method" is `WEBSOCKET`). A new mutating route or WebSocket route therefore fails closed until review classifies it as canonical execution, truthful product/domain state, a local-only effect, intentionally disabled, or an owned unresolved convergence gap.
 
 The checker also detects an intentionally narrow class of client-only simulation: production TypeScript/TSX files that combine timer-driven state with execution-looking status/progress language. Those files require an explicit frontend disposition. Known client-only facades that do not match that automatic signal can be recorded manually in the same matrix.
 
