@@ -66,6 +66,16 @@
       "issue": "#1185",
       "reason": "validate_password is the canonical password-policy check #1185/#1215 enforce on first-run admin setup: hive-conductor imports it (aliased validate_canonical_password) in packages/hive-conductor/backend/routes/auth.py and routes/setup.py, both outside the packages/*/src Vulture scan set. packages/maistro-core/tests/security/test_passwords.py exercises it directly. Deleting it would remove the shared policy account creation and first-run setup both call to agree on the same minimum-length rule."
     },
+    "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_normalize_timestamps'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1149",
+      "reason": "Workspace._normalize_timestamps is a pydantic @model_validator(mode=\"after\") hook that normalizes a naive created_at/updated_at to UTC (#1149) so canonical Workspace history cannot depend on the reading host's local timezone. Pydantic invokes it during validation, not a traceable call vulture's static analysis can see -- the same shape already banked for maistro.scheduling.model.Schedule._normalise_timestamps. Exercised by packages/maistro-core/tests/workspaces/test_timestamps.py and the naive-import cases in test_workspace_import_identity_durable.py."
+    },
+    "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_normalize_added_at'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1149",
+      "reason": "WorkspaceMembership._normalize_added_at is the same pydantic @model_validator(mode=\"after\") normalization as Workspace._normalize_timestamps above, applied to added_at. Exercised by packages/maistro-core/tests/workspaces/test_timestamps.py."
+    },
     "packages/maistro-core/src/maistro/agents/pm_capabilities.py::unused function 'is_gated'": {
       "owner": "@BlakeMatthews-dev",
       "issue": "#129",
