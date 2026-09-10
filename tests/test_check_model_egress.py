@@ -31,6 +31,15 @@ async def ask(client: httpx.AsyncClient) -> None:
 
 @pytest.fixture(scope="module")
 def gate():
+    # The gate script imports its `check_direct_effects` sibling with a bare
+    # `import`, which resolves only when `scripts/` is importable. Running the
+    # gate from the CLI puts its own directory on `sys.path`; this loader does
+    # not, and full-suite runs only worked because an alphabetically earlier
+    # test module happened to insert the path first. Make the fixture
+    # order-independent instead of inheriting that accident.
+    scripts = str(ROOT / "scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
     spec = importlib.util.spec_from_file_location("check_model_egress", SCRIPT)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
@@ -158,7 +167,9 @@ def test_the_shipped_migration_map_is_the_one_reviewed_move(gate) -> None:
     }
 
 
-def test_the_shipped_inventory_matches_the_shipped_code(gate) -> None:
+def test_the_shipped_inventory_matches_the_shipped_code(
+    gate, real_repository_ratchet_base: None
+) -> None:
     assert gate.main() == 0
 
 
