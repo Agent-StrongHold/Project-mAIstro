@@ -129,6 +129,27 @@ class Sentinel:
             return self._permission_table
         return await resolve_live_table(self._permission_source)
 
+    async def _permission_denial_reason(self, action: str, principal: Principal) -> str | None:
+        """Why this (action, principal) is denied right now, or None when permitted.
+
+        The one fail-closed permission gate every authorize flows through: the
+        live permission source (#1165) is resolved here so the decision reads
+        canonical state at the moment it is made, an unavailable source denies,
+        and a capability miss denies.
+        """
+        table = await self._effective_table()
+        if table is None:
+            return f"permission source unavailable for '{action}'; denied fail-closed"
+        authorized = check_permission(
+            _principal_auth_context(principal),
+            action,
+            table,
+            allow_on_miss=self._allow_on_miss,
+        )
+        if not authorized:
+            return f"principal '{principal.id}' lacks capability for '{action}'"
+        return None
+
     def resolve_tier(
         self,
         action: str,
@@ -159,8 +180,8 @@ class Sentinel:
         """ADR-068 §F steps 1-4, short-circuiting on first deny."""
         tier = self.resolve_tier(action, principal, reversibility=reversibility)
 
-        table = await self._effective_table()
-        if table is None:
+        denial_reason = await self._permission_denial_reason(action, principal)
+        if denial_reason is not None:
             return AuthzDecision(
                 tier=tier,
                 authorized=False,
@@ -168,24 +189,7 @@ class Sentinel:
                 approver_scope=None,
                 within_budget=within_budget,
                 rlphd=None,
-                reason=f"permission source unavailable for '{action}'; denied fail-closed",
-            )
-
-        authorized = check_permission(
-            _principal_auth_context(principal),
-            action,
-            table,
-            allow_on_miss=self._allow_on_miss,
-        )
-        if not authorized:
-            return AuthzDecision(
-                tier=tier,
-                authorized=False,
-                needs="none",
-                approver_scope=None,
-                within_budget=within_budget,
-                rlphd=None,
-                reason=f"principal '{principal.id}' lacks capability for '{action}'",
+                reason=denial_reason,
             )
 
         if not within_budget:
