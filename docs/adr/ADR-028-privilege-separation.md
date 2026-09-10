@@ -79,6 +79,7 @@ When a user needs an admin-only operation:
 > *approve* step; both are enforced by Sentinel (Warden supplies the trust-boundary risk).
 
 Three elevation modes:
+
 - **Inline ask** (default) — admin signs each operation individually
 - **Time-boxed delegation** — admin grants scope for duration (15 min, 1 hour), auto-revokes
 - **Pre-approved by policy** — admin signs standing policy VC ("user1 may delete files <1GB in own home")
@@ -86,6 +87,7 @@ Three elevation modes:
 ### Identity attestation
 
 Users identified via substrate (ADR-029):
+
 - Tailscale/Headscale: ACL group membership → admin/user
 - NetBird/Cloudflare: OIDC email → user identity
 - ZeroTier/LAN/localhost: S-149 keypair challenge (`m/44'/9000'/<user-index>'`)

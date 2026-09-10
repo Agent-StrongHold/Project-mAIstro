@@ -38,14 +38,18 @@ a substitute for revoking leaked upstream tokens.
 1. **Stop the Conductor.** Both procedures operate on files the running process
    holds open and caches in memory. A running Conductor will write stale state
    back over your work.
+
    ```bash
    docker compose stop hive-conductor      # or: systemctl stop hive-conductor
    ```
+
 2. **Back up the data directory** (encrypted, off-box). Rotation is atomic and
    verified, but a backup costs nothing:
+
    ```bash
    tar czf ~/conductor-backup-$(date -u +%Y%m%dT%H%M%SZ).tgz -C "$CONDUCTOR_DATA_DIR" .
    ```
+
    Treat that tarball as compromised material: it contains the *old* key. Delete
    it once rotation is confirmed.
 3. Know your data directory. It is `CONDUCTOR_DATA_DIR` from `backend/.env`
@@ -90,7 +94,7 @@ The previous master key is now useless. Restart the Conductor.
 Options:
 
 | Flag | Use |
-|------|-----|
+| ------ | ----- |
 | `--yes` | Actually perform the rotation. Without it, dry run. |
 | `--new-key <fernet-key>` | Rotate to a key you supply (e.g. one from your secret manager) instead of a generated one. |
 | `--show-key` | Print the new key to stdout. Needed when the key lives in an env var — see below. |
@@ -259,7 +263,7 @@ compromised.
 ## Where the code lives
 
 | Piece | Path |
-|-------|------|
+| ------- | ------ |
 | `rotate_master_key`, `repair_interrupted_rotation` | `packages/maistro-core/src/maistro/credentials/store.py` |
 | `maistro security` CLI | `packages/maistro-core/src/maistro/cli/_security.py` |
 | `purge_all_sessions` | `packages/hive-conductor/backend/stores.py` |
