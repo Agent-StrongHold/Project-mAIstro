@@ -86,6 +86,44 @@ paths = [
 ]
 
 [[allowlists]]
+# The secret-assignment SHAPE docstring/comment that ships in
+# `maistro.security.secret_policy` and the sentinel PII filter (and is
+# restated in SECURITY.md) quotes one sample assignment to name the exact
+# value shape the shared pattern deliberately does NOT claim: an unquoted
+# value containing a mid-value `=` (padding-like). The sample value is an
+# invented string (`abc`, `def`, `12345`) that authenticates to nothing; the
+# generic-api-key rule matches the `key=` prefix without regard to whether
+# what follows is a value or a documentation specimen. Rewording the
+# specimen would change the documented boundary the sentence exists to
+# state — the same reason ADR-064/SPEC-070626-5341 keep their specimens —
+# so the reviewed identity is the value itself: content-scoped,
+# line-number- and commit-independent, and scoped to the one rule family.
+# A credential of any OTHER class, or any other value, still fails closed.
+# (#1159 introduced the prose; #1235 recorded the reviewed identities.)
+description = "Sample assignment quoted by the shared secret-shape docs; an invented padding-like value that authenticates to nothing."
+targetRules = ["generic-api-key"]
+regexes = [
+  '''abc=def12345''',
+]
+
+[[allowlists]]
+# The sentinel PII-filter fixture suite builds a PEM specimen in code:
+# an f-string whose body is the placeholder `{body}`, spliced between the
+# BEGIN/END markers at runtime. There is no key material on that line — the
+# placeholder braces are what prove it — but the private-key rule matches
+# the marker pair through the surrounding source and flags the line. The
+# reviewed identity is the template itself: only a source line where the
+# BEGIN marker is followed by the literal `{body}` placeholder matches, so
+# no real key (whose body is base64, never a placeholder) can be silenced
+# by this entry. Scoped to the private-key rule for the same reason.
+# (#1159 introduced the fixture; #1235 recorded the reviewed identity.)
+description = "PEM-template f-string in the PII-filter fixture suite; the `{body}` placeholder is the fixture, not key material."
+targetRules = ["private-key"]
+regexes = [
+  '''BEGIN RSA PRIVATE KEY-----\\n\{body\}''',
+]
+
+[[allowlists]]
 # PR #444's container smoke test deliberately injects a deterministic throwaway
 # router key into an isolated CI-only network. The literal is not deployable
 # configuration and cannot authenticate to any external service; gitleaks sees
