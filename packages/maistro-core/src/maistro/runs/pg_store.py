@@ -285,7 +285,10 @@ class PgRunStore:
         a continuation that outlived its Run would be picked up by the
         recovery scan as a due run_id that no longer resolves. The canonical
         Event log (migration 030) is the opposite disposition: append-only
-        provenance, kept and counted, never emptied by retention.
+        provenance, kept and counted, never emptied by retention. The Schedule
+        fire cursor (migration 016) is a pointer, not history: a `last_run_id`
+        naming a purged Run is repointed back to absent in the same
+        transaction, and the release is counted.
 
         `FOR UPDATE SKIP LOCKED` on the candidate select rather than plain
         `FOR UPDATE`: two processes sweeping concurrently should divide the
@@ -320,7 +323,11 @@ class PgRunStore:
                 "DELETE FROM canonical_runs WHERE run_id = ANY($1::text[]) RETURNING run_id",
                 run_ids,
             )
-            continuations, events_retained = await self._reclaim_and_count_dependents(conn, run_ids)
+            (
+                continuations,
+                events_retained,
+                pointers_released,
+            ) = await self._reclaim_and_count_dependents(conn, run_ids)
         return PurgeOutcome(
             scope=scope,
             runs=len(deleted_runs),
@@ -329,6 +336,7 @@ class PgRunStore:
             continuations=continuations,
             event_references_retained=events_retained,
             schedule_claims_released=sum(1 for row in selected if row["schedule_id"] is not None),
+            schedule_pointers_released=pointers_released,
             backlog_remaining=backlog_remaining,
         )
 
@@ -366,16 +374,22 @@ class PgRunStore:
             )
         )
 
-    async def _reclaim_and_count_dependents(self, conn: Any, run_ids: list[str]) -> tuple[int, int]:
-        """Reclaim owned resumable state; count retained Event references.
+    async def _reclaim_and_count_dependents(
+        self, conn: Any, run_ids: list[str]
+    ) -> tuple[int, int, int]:
+        """Reclaim owned resumable state; count and repoint logical references.
 
         Same transaction as the spine deletes above: the Graph continuation
         table (migration 021) has no FK into the spine, so nothing else would
         notice it dangling — the purge reclaims it here. The canonical Event
         log (migration 030) is the opposite disposition: append-only
-        provenance, kept and counted, never emptied by retention. Each table
-        is probed before use because a database migrated before that table's
-        migration is a supported state, not an error.
+        provenance, kept and counted, never emptied by retention. The Schedule
+        fire cursor (migration 016) is the third disposition — a pointer, not
+        history — so a `last_run_id` naming a purged Run is repointed back to
+        absent here and the release counted, leaving no Schedule naming an id
+        nothing resolves. Each table is probed before use because a database
+        migrated before that table's migration is a supported state, not an
+        error.
         """
         continuations = 0
         if await conn.fetchval("SELECT to_regclass('public.graph_continuations') IS NOT NULL"):
@@ -392,7 +406,18 @@ class PgRunStore:
                     run_ids,
                 )
             )
-        return continuations, events_retained
+        pointers_released = 0
+        if await conn.fetchval("SELECT to_regclass('public.schedules') IS NOT NULL"):
+            released = await conn.fetch(
+                # `payload - 'last_run_id'` removes the key outright, which is
+                # the model's absent default — the pointer is released, not
+                # rewritten to a value that still has to mean "nothing".
+                "UPDATE schedules SET payload = payload - 'last_run_id' "
+                "WHERE payload->>'last_run_id' = ANY($1::text[]) RETURNING schedule_id",
+                run_ids,
+            )
+            pointers_released = len(released)
+        return continuations, events_retained, pointers_released
 
     async def archive_cold_runs(
         self,

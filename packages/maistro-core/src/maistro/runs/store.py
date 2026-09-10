@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from itertools import islice
@@ -235,6 +235,21 @@ def validate_child_scope(
 
 
 @runtime_checkable
+class SchedulePointerRelease(Protocol):
+    """The slice of a Schedule store that a purge needs (#1175).
+
+    Structural, so `InMemoryRunStore` can take any backend's schedule store
+    without `runs` importing `scheduling`: the durable backends repoint
+    `Schedule.last_run_id` inside their own purge transaction, and this is the
+    in-memory store's equivalent seam. Optional — a store wired without one
+    leaves schedule cursors to their own lifecycle, which is correct for a
+    deployment that holds no Schedules beside its Runs.
+    """
+
+    async def release_run_pointers(self, run_ids: Collection[str]) -> int: ...
+
+
+@runtime_checkable
 class ContinuationPurge(Protocol):
     """The slice of a Graph continuation store that a purge needs (#1175).
 
@@ -289,6 +304,11 @@ class PurgeOutcome:
       duplicated by re-admitting a firing whose only record was deliberately
       destroyed, which is the same coupling the in-memory store's eviction
       already has.
+    - ``schedule_pointers_released`` — `Schedule.last_run_id` cursors that
+      named a purged Run, repointed back to absent in the purge transaction.
+      The cursor is a pointer to the newest Run, not a history of them, so a
+      purged Run must not leave a Schedule naming an id nothing resolves; the
+      fire history itself (`last_fired_at`, `runs_so_far`) is untouched.
 
     ``backlog_remaining`` is the difference between "the scope is drained"
     and "the batch ran out" — the one bit a bare count could never carry, and
@@ -302,6 +322,7 @@ class PurgeOutcome:
     continuations: int = 0
     event_references_retained: int = 0
     schedule_claims_released: int = 0
+    schedule_pointers_released: int = 0
     backlog_remaining: bool = False
 
     @property
@@ -552,6 +573,7 @@ class InMemoryRunStore:
         prune_target: int = RUN_PRUNE_TARGET,
         archive_store: ArchiveStore | None = None,
         continuation_store: ContinuationPurge | None = None,
+        schedule_store: SchedulePointerRelease | None = None,
     ) -> None:
         if prune_target > max_runs:
             raise ValueError("prune_target cannot exceed max_runs")
@@ -563,6 +585,10 @@ class InMemoryRunStore:
         # later; wiring it here is what makes the sweep referentially complete
         # in one call.
         self._continuation_store = continuation_store
+        # The same seam again, for the Schedule fire cursor (#1175): a purge
+        # that deletes the Run a Schedule's `last_run_id` names repoints that
+        # cursor here, so no Schedule is left naming an id nothing resolves.
+        self._schedule_store = schedule_store
         # None is the default and means the tier is off (f436 decision 9): no
         # archive store configured is today's behaviour unchanged, with no
         # warning, because warning on a deliberate choice is how operators
@@ -775,6 +801,7 @@ class InMemoryRunStore:
         for run in selected:
             self._forget_run(run.run_id)
         continuations = await self._reclaim_continuations(selected_ids)
+        pointers = await self._release_schedule_pointers(selected_ids)
         return PurgeOutcome(
             scope=scope,
             runs=len(selected),
@@ -788,6 +815,7 @@ class InMemoryRunStore:
             schedule_claims_released=sum(
                 1 for run in selected if occurrence_key(run.provenance) is not None
             ),
+            schedule_pointers_released=pointers,
             backlog_remaining=len(doomed) > limit,
         )
 
@@ -825,6 +853,18 @@ class InMemoryRunStore:
             1 for attempt in self._attempts.values() if attempt.node_run_id in node_run_ids
         )
         return len(node_run_ids), attempts
+
+    async def _release_schedule_pointers(self, run_ids: set[str]) -> int:
+        """Repoint the Schedule cursors that named the given Runs, if wired.
+
+        None schedule store — the default — leaves the cursors to their own
+        lifecycle; a wired one has every `last_run_id` naming a purged Run
+        released here, the in-memory counterpart of what the durable backends
+        do inside their purge transaction (#1175).
+        """
+        if self._schedule_store is None:
+            return 0
+        return await self._schedule_store.release_run_pointers(run_ids)
 
     async def _reclaim_continuations(self, run_ids: set[str]) -> int:
         """Delete the Graph continuation state of the given Runs, if wired.
@@ -1333,6 +1373,7 @@ __all__ = [
     "RunIntegrityError",
     "RunNotFound",
     "RunStore",
+    "SchedulePointerRelease",
     "StaleExecutionFence",
     "WorkspaceRetentionScope",
     "run_in_purge_scope",

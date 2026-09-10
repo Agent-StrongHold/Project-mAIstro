@@ -14,7 +14,12 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from maistro.observability.metrics import retention_backlog_remaining, retention_purged_total
+from maistro.observability.metrics import (
+    retention_backlog_remaining,
+    retention_dependent_evidence_retained,
+    retention_dependents_purged_total,
+    retention_purged_total,
+)
 from maistro.runs.retention import (
     DEFAULT_CHAT_RETENTION_SECONDS,
     UNBOUNDED_RETENTION,
@@ -43,11 +48,19 @@ class SpyStore:
         purged: int = 0,
         fail_with: Exception | None = None,
         backlog: bool = False,
+        continuations: int = 0,
+        schedule_claims: int = 0,
+        schedule_pointers: int = 0,
+        events_retained: int = 0,
     ) -> None:
         self.calls: list[tuple[object, datetime | None, int]] = []
         self._purged = purged
         self._fail_with = fail_with
         self._backlog = backlog
+        self._continuations = continuations
+        self._schedule_claims = schedule_claims
+        self._schedule_pointers = schedule_pointers
+        self._events_retained = events_retained
 
     async def purge_expired_runs(
         self,
@@ -62,6 +75,10 @@ class SpyStore:
         return PurgeOutcome(  # type: ignore[arg-type]
             scope=SCOPE if scope is None else scope,
             runs=self._purged,
+            continuations=self._continuations,
+            event_references_retained=self._events_retained,
+            schedule_claims_released=self._schedule_claims,
+            schedule_pointers_released=self._schedule_pointers,
             backlog_remaining=self._backlog,
         )
 
@@ -395,3 +412,71 @@ async def test_a_failed_sweep_withdraws_the_standing_backlog_report() -> None:
 
     assert _backlog("workspace") == 0.0
     assert failing.last_outcome is None
+
+
+async def test_one_workspaces_drained_batch_does_not_clear_another_workspaces_backlog() -> None:
+    """The backlog gauge is per scope under the hood and per mode on the wire:
+    Workspace B completing a clean batch must not publish 0 over Workspace
+    A's standing backlog — the alert would read "backlog cleared" while A's
+    expired Runs are still sitting there (#1175)."""
+    spy = SpyStore(purged=1, backlog=True)
+    sweeper = RunRetentionSweeper(
+        spy,
+        RetentionPolicy(sweep_interval_seconds=0),
+    )  # type: ignore[arg-type]
+
+    await sweeper.sweep_now(scope=SCOPE, now=NOW)
+    assert _backlog("workspace") == 1.0
+
+    # B's sweep drains cleanly; A's backlog observation still stands.
+    spy._backlog = False
+    await sweeper.sweep_now(scope=OTHER, now=NOW)
+    assert _backlog("workspace") == 1.0
+
+    # A drains too; only now does the mode-wide gauge read clear.
+    await sweeper.sweep_now(scope=SCOPE, now=NOW)
+    assert _backlog("workspace") == 0.0
+
+
+def _dependent_total(mode: str, kind: str) -> float:
+    """The dependent-evidence counter's current value for one label pair."""
+    return sum(
+        float(sample["value"])
+        for sample in retention_dependents_purged_total.collect()
+        if sample.get("labels", {}).get("mode") == mode
+        and sample.get("labels", {}).get("kind") == kind
+    )
+
+
+async def test_dependent_evidence_is_published_by_class() -> None:
+    """Health reports the dependent accounting, not just the Run count: what
+    the sweep reclaimed (continuations, occurrence claims, schedule cursors)
+    by bounded class, and what it kept by policy (Event references) as a
+    gauge (#1175)."""
+    before_continuations = _dependent_total("workspace", "continuation")
+    before_claims = _dependent_total("workspace", "schedule_claim")
+    before_pointers = _dependent_total("workspace", "schedule_pointer")
+    sweeper = RunRetentionSweeper(
+        SpyStore(
+            purged=2,
+            continuations=2,
+            schedule_claims=1,
+            schedule_pointers=3,
+            events_retained=4,
+        ),
+        RetentionPolicy(sweep_interval_seconds=0),
+        scope=SCOPE,
+    )  # type: ignore[arg-type]
+
+    await sweeper.sweep_now(now=NOW)
+
+    assert _dependent_total("workspace", "continuation") - before_continuations == 2
+    assert _dependent_total("workspace", "schedule_claim") - before_claims == 1
+    assert _dependent_total("workspace", "schedule_pointer") - before_pointers == 3
+    assert _backlog("workspace") == 0.0
+    retained = [
+        float(sample["value"])
+        for sample in retention_dependent_evidence_retained.collect()
+        if sample.get("labels", {}).get("mode") == "workspace"
+    ]
+    assert retained == [4.0]

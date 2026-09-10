@@ -191,6 +191,20 @@ _PURGE_DEPENDENT_SQL = {
     ),
 }
 
+#: The Schedule fire cursor (migration 016) is repointed, not deleted (#1175):
+#: a `last_run_id` naming a purged Run is a broken id, so the purge sets it
+#: back to absent — the same release the in-memory seam applies — while the
+#: schedule's fire history (`last_fired_at`, `runs_so_far`) is untouched. The
+#: definition is a JSON column, so the statement reads the pointer out of the
+#: document and rewrites only that one key. The table may not exist (this
+#: store can be wired without the scheduling module), and a table that does
+#: not exist cannot hold a broken pointer.
+_RELEASE_SCHEDULE_POINTER_SQL = """
+    UPDATE schedules
+       SET definition = json_set(definition, '$.last_run_id', json('null'))
+     WHERE json_extract(definition, '$.last_run_id') IN (SELECT value FROM json_each(?))
+"""
+
 _RETAINED_REFERENCE_SQL = {
     "canonical_event_log": (
         "SELECT COUNT(*) FROM canonical_event_log WHERE run_id IN (SELECT value FROM json_each(?))"
@@ -577,9 +591,12 @@ class SqliteRunStore:
         concurrent transition cannot land on a Run this sweep is removing,
         and two sweeps divide the candidates instead of double-counting.
         The dependent table with no foreign key — the Graph continuation —
-        is deleted in the same transaction, and the retained Event
-        references are counted into the outcome rather than silently left
-        behind (#1175).
+        is deleted in the same transaction, the Schedule fire cursors naming
+        a purged Run are repointed in it, and the retained Event references
+        are counted into the outcome rather than silently left behind (#1175).
+        One transaction throughout: a failure rolls back before raising, so a
+        later write on this shared connection cannot commit a half-purge the
+        sweep never reported.
         """
         if limit <= 0:
             raise ValueError("limit must be positive")
@@ -592,14 +609,27 @@ class SqliteRunStore:
             # travel as interpolated SQL (see the statement constants above).
             run_id_param = json.dumps([run_id for run_id, _run in purged])
             node_run_ids, attempt_count = await self._count_spine_rows(run_id_param)
-            # Dependent evidence beyond the spine, in the same transaction:
-            # owned resumable state deleted, retained provenance counted.
-            continuations = await self._reclaim_continuation_state(run_id_param)
-            retained = await self._count_retained_references(run_id_param)
-            await self._conn.execute(_DELETE_ATTEMPTS_SQL, (run_id_param,))
-            await self._conn.execute(_DELETE_NODE_RUNS_SQL, (run_id_param,))
-            await self._conn.execute(_DELETE_RUNS_SQL, (run_id_param,))
-            await self._conn.commit()
+            try:
+                # Dependent evidence beyond the spine, in the same
+                # transaction: owned resumable state deleted, retained
+                # provenance counted, schedule cursors repointed.
+                continuations = await self._reclaim_continuation_state(run_id_param)
+                retained = await self._count_retained_references(run_id_param)
+                pointers = await self._release_schedule_pointers(run_id_param)
+                await self._conn.execute(_DELETE_ATTEMPTS_SQL, (run_id_param,))
+                await self._conn.execute(_DELETE_NODE_RUNS_SQL, (run_id_param,))
+                await self._conn.execute(_DELETE_RUNS_SQL, (run_id_param,))
+                await self._conn.commit()
+            except Exception:
+                # The purge is one transaction or it did not happen (#1175).
+                # These statements run on a connection shared with every other
+                # write this store makes, so leaving a half-purge uncommitted
+                # would let the next unrelated write commit it — an apparently
+                # successful mutation carrying a deletion nobody reported.
+                # Rolled back before raising: nothing the sweep touched
+                # survives, and nothing it did not touch inherits it.
+                await self._conn.rollback()
+                raise
             return PurgeOutcome(
                 scope=scope,
                 runs=len(purged),
@@ -610,6 +640,7 @@ class SqliteRunStore:
                 schedule_claims_released=sum(
                     1 for _run_id, run in purged if occurrence_key(run.provenance) is not None
                 ),
+                schedule_pointers_released=pointers,
                 backlog_remaining=backlog_remaining,
             )
 
@@ -686,6 +717,21 @@ class SqliteRunStore:
             row = await (await self._conn.execute(sql, (run_id_param,))).fetchone()
             retained += int(row[0]) if row is not None else 0
         return retained
+
+    async def _release_schedule_pointers(self, run_id_param: str) -> int:
+        """Repoint the Schedule cursors naming purged Runs, inside the purge.
+
+        `_RELEASE_SCHEDULE_POINTER_SQL` releases the `last_run_id` fire cursor
+        back to absent for every Schedule naming a Run in this batch (#1175) —
+        a pointer, not history, so it is repointed rather than left broken —
+        and returns how many schedules named one of the purged Runs. Probed
+        like every dependent table: this store can be wired without the
+        scheduling module, and a missing table holds no broken pointer.
+        """
+        if not await self._dependent_table_exists("schedules"):
+            return 0
+        cursor = await self._conn.execute(_RELEASE_SCHEDULE_POINTER_SQL, (run_id_param,))
+        return max(cursor.rowcount, 0)
 
     async def transition_run(
         self,

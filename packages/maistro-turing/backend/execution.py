@@ -86,8 +86,9 @@ class TuringExecutionPlane:
 
     Chat admission still follows the canonical chat retention contract: the Run
     is marked with ``CHAT_SOURCE``, gets a durable retention deadline, and is
-    tracked in a small per-process window so high-volume turns do not evict
-    longer-lived task Runs from a shared store.
+    tracked in a small per-Workspace window so high-volume turns do not evict
+    longer-lived task Runs — and never grant one user's admission deletion
+    authority over another user's Runs (#1175).
     """
 
     def __init__(
@@ -115,7 +116,13 @@ class TuringExecutionPlane:
         )
         self._workspace_by_user: dict[str, str] = {}
         self._scope_lock = asyncio.Lock()
-        self._retained_runs: OrderedDict[str, None] = OrderedDict()
+        # run_id -> the Workspace the Run was admitted into. The window is
+        # per-Workspace (#1175): this process's store spans every per-user
+        # Workspace it creates, so a process-global window would make one
+        # user's turn the deletion authority over another user's Runs — the
+        # same defect the unscoped purge had, one API up. Eviction counts and
+        # deletes only within the Workspace the triggering admission ran in.
+        self._retained_runs: OrderedDict[str, str] = OrderedDict()
         self._retention_lock = asyncio.Lock()
         self._max_retained = max_retained
         self._retention = retention if retention is not None else RetentionPolicy()
@@ -148,19 +155,32 @@ class TuringExecutionPlane:
             return workspace_id, root.project_id
 
     async def _track_admission(self, run_id: str, *, workspace_id: str) -> None:
-        self._retained_runs[run_id] = None
+        self._retained_runs[run_id] = workspace_id
         async with self._retention_lock:
-            for retained_id in list(self._retained_runs):
-                if len(self._retained_runs) <= self._max_retained:
-                    break
-                retained = await self.run_store.get_run(retained_id)
-                if retained is None:
+            # The bounded window is Workspace-scoped (#1175): when this
+            # Workspace's window overflows, only this Workspace's terminal
+            # Runs are evicted, oldest first. Another Workspace's Runs are
+            # not candidates — they are outside this admission's deletion
+            # authority, whatever the process-wide total looks like.
+            scoped = [
+                retained_id
+                for retained_id, retained_ws in self._retained_runs.items()
+                if retained_ws == workspace_id
+            ]
+            excess = len(scoped) - self._max_retained
+            if excess > 0:
+                for retained_id in scoped:
+                    if excess <= 0:
+                        break
+                    retained = await self.run_store.get_run(retained_id)
+                    if retained is None:
+                        self._retained_runs.pop(retained_id, None)
+                        continue
+                    if retained.status not in TERMINAL_RUN_STATUSES:
+                        continue
+                    await self.run_store.delete_run(retained_id)
                     self._retained_runs.pop(retained_id, None)
-                    continue
-                if retained.status not in TERMINAL_RUN_STATUSES:
-                    continue
-                await self.run_store.delete_run(retained_id)
-                self._retained_runs.pop(retained_id, None)
+                    excess -= 1
         # Scoped to the Workspace this admission ran in: one user's turn
         # is never the deletion authority over another user's expired
         # Runs (#1175). A sweep with no scope refuses and deletes nothing;

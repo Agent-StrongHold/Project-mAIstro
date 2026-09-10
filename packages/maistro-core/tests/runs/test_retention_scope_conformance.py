@@ -11,7 +11,10 @@ policy and are counted, schedule claims die with their Run rows.
 Two Workspaces everywhere. The references cross the scope boundary on
 purpose: Workspace A's sweep runs while Workspace B holds expired Runs,
 continuations, events and a schedule claim that would all be destroyed by the
-pre-#1175 unscoped purge.
+pre-#1175 unscoped purge. The dependent inventory is exercised, not
+enumerated: a Schedule fire cursor is created per Workspace and the purge
+must release exactly the cursor that named a purged Run — repointed, never
+left dangling, and never taken from the other Workspace.
 """
 
 from __future__ import annotations
@@ -39,6 +42,8 @@ from maistro.runs.retention_scope import (
     WorkspaceRetentionScope,
 )
 from maistro.runs.store import DuplicateOccurrence, InMemoryRunStore
+from maistro.scheduling.model import Schedule
+from maistro.scheduling.store import InMemoryScheduleStore
 
 NOW = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
 EXPIRED = NOW - timedelta(seconds=1)
@@ -143,16 +148,19 @@ async def scope_world(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
         # that yields anywhere is an async generator, and a valued return
         # from one is a SyntaxError. Each branch yields exactly once and
         # returns, so no leg falls through into another's setup.
+        from maistro.scheduling.pg_store import PgScheduleStore
+
+        schedules = PgScheduleStore(pg_pool)
         yield SimpleNamespace(
             backend="postgres",
             runs=PgRunStore(pg_pool, project_store=projects),
             continuations=PgGraphContinuationStore(pg_pool),
             events=events,
+            schedules=schedules,
             a=scoped["a"],
             b=scoped["b"],
         )
         return
-        return  # async-generator teardown must not fall into the sqlite leg
 
     projects = InMemoryProjectScopeStore()
     scoped: dict[str, tuple[str, str]] = {}
@@ -167,21 +175,26 @@ async def scope_world(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
 
     if request.param == "memory":
         continuations = InMemoryGraphContinuationStore()
+        schedules = InMemoryScheduleStore()
         yield SimpleNamespace(
             backend="memory",
             runs=InMemoryRunStore(
                 project_store=projects,
                 continuation_store=continuations,
+                # The same object the purge releases schedule cursors
+                # through: held here so the cursor tests can read back what
+                # the sweep repointed.
+                schedule_store=schedules,
             ),
             # The same object the purge reclaims through: held here so the
             # continuation tests can read back what the sweep deleted.
             continuations=continuations,
+            schedules=schedules,
             events=InMemoryEventStore(),
             a=scoped["a"],
             b=scoped["b"],
         )
         return
-        return  # async-generator teardown must not fall into the sqlite leg
 
     conn = await aiosqlite.connect(":memory:")
     from maistro.runs.sqlite_store import SqliteRunStore
@@ -191,9 +204,12 @@ async def scope_world(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
     continuations = SqliteGraphContinuationStore(conn)
     await continuations.ensure_schema()
     from maistro.events.envelope import SqliteEventStore
+    from maistro.scheduling.store import SqliteScheduleStore
 
     events = SqliteEventStore(conn)
     await events.ensure_schema()
+    schedules = SqliteScheduleStore(conn)
+    await schedules.ensure_schema()
     # The connection must be closed on teardown: aiosqlite runs its driver on
     # a non-daemon thread, and an open connection would keep the test process
     # alive after the suite finished.
@@ -203,6 +219,7 @@ async def scope_world(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
             runs=run_store,
             continuations=continuations,
             events=events,
+            schedules=schedules,
             a=scoped["a"],
             b=scoped["b"],
         )
@@ -359,6 +376,92 @@ async def test_a_purged_run_releases_only_its_own_occurrence(scope_world: Any) -
         )
 
 
+# ── schedule cursors: a pointer to the newest Run, released, not dangling ──
+
+
+async def test_a_purged_run_releases_the_schedule_cursor_that_named_it(
+    scope_world: Any,
+) -> None:
+    """`Schedule.last_run_id` points at the newest Run; when retention deletes
+    that Run the pointer must be repointed — released, never left as a broken
+    id — and only in the purged Workspace. The fire history (`last_fired_at`,
+    `runs_so_far`) is attribution, not a pointer, and survives intact."""
+    world = scope_world
+    run_a = await _expired_terminal_run(world, *world.a)
+    run_b = await _expired_terminal_run(world, *world.b)
+    schedules: dict[str, Schedule] = {}
+    for name, (workspace, project_id), run in (
+        ("a", world.a, run_a),
+        ("b", world.b, run_b),
+    ):
+        schedule = await world.schedules.put(
+            Schedule(
+                workspace_id=workspace,
+                project_id=project_id,
+                name=f"cursor-{name}",
+                cron="* * * * *",
+                graph_template_id="template-1",
+            )
+        )
+        # Advance the cursor exactly the way a real firing does, so the test
+        # exercises the same pointer the engine stamps.
+        await world.schedules.record_fire(
+            schedule.schedule_id,
+            fired_at=NOW - timedelta(minutes=1),
+            run_id=run.run_id,
+            next_due_at=NOW,
+        )
+        schedules[name] = schedule
+
+    outcome = await world.runs.purge_expired_runs(_scope_a(world), now=NOW)
+
+    assert outcome.schedule_pointers_released == 1
+    cursor_a = await world.schedules.get(schedules["a"].schedule_id)
+    assert cursor_a is not None
+    # Released, not dangling: the cursor no longer names the purged Run.
+    assert cursor_a.last_run_id is None
+    # The fire history is not the pointer, and is not touched.
+    assert cursor_a.last_fired_at is not None
+    assert cursor_a.runs_so_far == 1
+    # B's cursor is untouched: its Run still exists to be named.
+    cursor_b = await world.schedules.get(schedules["b"].schedule_id)
+    assert cursor_b is not None
+    assert cursor_b.last_run_id == run_b.run_id
+
+
+async def test_a_schedule_cursor_is_only_released_by_its_own_scope(
+    scope_world: Any,
+) -> None:
+    """The release is scope-discovered, not store-wide: A's purge repoints
+    only cursors naming A's purged Runs, even though B's expired Run names a
+    cursor too. (The B Run survives the sweep; its cursor must survive with
+    it, or the release would be a second, unscoped purge in miniature.)"""
+    world = scope_world
+    run_b = await _expired_terminal_run(world, *world.b)
+    schedule_b = await world.schedules.put(
+        Schedule(
+            workspace_id=world.b[0],
+            project_id=world.b[1],
+            name="cursor-b",
+            cron="* * * * *",
+            graph_template_id="template-1",
+        )
+    )
+    await world.schedules.record_fire(
+        schedule_b.schedule_id,
+        fired_at=NOW - timedelta(minutes=1),
+        run_id=run_b.run_id,
+        next_due_at=NOW,
+    )
+
+    outcome = await world.runs.purge_expired_runs(_scope_a(world), now=NOW)
+
+    assert outcome.schedule_pointers_released == 0
+    cursor_b = await world.schedules.get(schedule_b.schedule_id)
+    assert cursor_b is not None
+    assert cursor_b.last_run_id == run_b.run_id
+
+
 # ── the global mode is explicit and attributed ────────────────────
 
 
@@ -428,3 +531,61 @@ async def test_concurrent_sweeps_of_different_scopes_never_cross(
 
     assert outcome_a.runs + outcome_b.runs == 4
     assert (await world.runs.purge_expired_runs(_scope_a(world), now=NOW)).runs == 0
+
+
+# ── a failed purge commits no partial deletion ─────────────────
+
+
+async def test_an_aborted_purge_commits_no_partial_deletion(monkeypatch: Any) -> None:
+    """The SQLite purge is one transaction or it did not happen (#1175).
+
+    The purge runs on a connection shared with every other write the store
+    makes, so a failure midway must roll back before raising — otherwise the
+    next unrelated write commits the sweep's half-done deletes as a passenger:
+    an apparently successful mutation carrying a deletion nobody reported.
+    The failure is injected after the continuation delete, the exact point
+    where an earlier revision of this purge left a Run whose continuation was
+    gone once any later write landed.
+    """
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        from maistro.runs.sqlite_store import SqliteRunStore
+
+        projects = InMemoryProjectScopeStore()
+        root = await projects.create_root(WORKSPACE_A)
+        project = await projects.create(
+            workspace_id=WORKSPACE_A,
+            parent_project_id=root.project_id,
+            name="Scoped",
+        )
+        store = SqliteRunStore(conn, project_store=projects)
+        await store.ensure_schema()
+        continuations = SqliteGraphContinuationStore(conn)
+        await continuations.ensure_schema()
+
+        run = await store.create_run(
+            _graph(WORKSPACE_A, project.project_id), retention_expires_at=EXPIRED
+        )
+        await store.transition_run(run.run_id, RunStatus.QUEUED)
+        await store.transition_run(run.run_id, RunStatus.RUNNING)
+        await store.transition_run(run.run_id, RunStatus.COMPLETED)
+        await _continuation_for(continuations, run)
+
+        async def explode(_run_id_param: str) -> int:
+            raise RuntimeError("injected failure after the continuation delete")
+
+        monkeypatch.setattr(store, "_count_retained_references", explode)
+        with pytest.raises(RuntimeError, match="injected failure"):
+            await store.purge_expired_runs(
+                WorkspaceRetentionScope(workspace_id=WORKSPACE_A), now=NOW
+            )
+
+        # A later, successful write on the same connection must not commit
+        # the aborted sweep's deletes: the Run and its continuation both
+        # still resolve, and the new Run is durable.
+        survivor = await store.create_run(_graph(WORKSPACE_A, project.project_id))
+        assert await store.get_run(run.run_id) is not None
+        assert await continuations.get(run.run_id) is not None
+        assert await store.get_run(survivor.run_id) is not None
+    finally:
+        await conn.close()

@@ -196,12 +196,49 @@ def test_retention_window_preserves_active_runs_and_drops_missing_entries():
             actor_principal_id="user",
             initial_status=RunStatus.QUEUED,
         )
-        plane._retained_runs[active.run_id] = None
+        plane._retained_runs[active.run_id] = workspace_id
 
         await plane._track_admission("missing-run", workspace_id=workspace_id)
 
         assert list(plane._retained_runs) == [active.run_id]
         assert await plane.run_store.get_run(active.run_id) is not None
+
+    _await(scenario())
+
+
+def test_retention_window_is_scoped_to_the_admitting_workspace():
+    """The bounded window is per-Workspace (#1175): a user's turn evicts only
+    that user's terminal Runs. Before the scoping, one user's admission could
+    `delete_run` another user's Runs the moment the process-wide window
+    overflowed — the max-window was an unscoped purge one API up."""
+    from ..execution import TuringExecutionPlane
+
+    class ReplySession:
+        async def handle_message(self, message: str) -> str:
+            return f"reply:{message}"
+
+    async def scenario() -> None:
+        plane = TuringExecutionPlane(max_retained=1)
+        session = ReplySession()
+
+        def turn(user: str, message: str):
+            return plane.run_chat(session=session, user_id=user, session_id="s", message=message)
+
+        first_a = await turn("user-a", "a1")
+        second_a = await turn("user-a", "a2")
+        # A's window (1) evicted A's first terminal Run.
+        assert await plane.run_store.get_run(first_a.run_id) is None
+        assert await plane.run_store.get_run(second_a.run_id) is not None
+
+        first_b = await turn("user-b", "b1")
+        second_b = await turn("user-b", "b2")
+        # B's window evicted B's first Run — and must not have touched A's:
+        # the pre-#1175 global window deleted A's newest Run here instead.
+        assert await plane.run_store.get_run(first_b.run_id) is None
+        assert await plane.run_store.get_run(second_b.run_id) is not None
+        assert await plane.run_store.get_run(second_a.run_id) is not None
+        # Both Workspaces are still tracked; the window is per-Workspace.
+        assert plane.retained == 2
 
     _await(scenario())
 

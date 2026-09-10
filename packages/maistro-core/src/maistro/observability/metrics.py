@@ -519,6 +519,21 @@ retention_purged_total = registry.counter(
 )
 retention_backlog_remaining = registry.gauge(
     "maistro_retention_backlog_remaining",
-    "1 if the last completed retention sweep hit its batch limit before the scope "
-    "drained, else 0; by authorization mode (#1175)",
+    "1 if any scope the sweeper last completed a sweep for hit its batch limit before "
+    "draining, else 0; by authorization mode (#1175)",
+)
+# Dependent evidence, by class (#1175): a purge is more rows than the Runs at
+# the top of the spine, and "purged 500" says nothing about what hung off them.
+# Labels are bounded — mode is the authorization mode, and `kind` is one of
+# `continuation` | `schedule_claim` | `schedule_pointer`; never a Workspace id
+# (#818).
+retention_dependents_purged_total = registry.counter(
+    "maistro_retention_dependents_purged_total",
+    "Dependent rows reclaimed by retention sweeps, by authorization mode and "
+    "evidence class (continuation|schedule_claim|schedule_pointer) (#1175)",
+)
+retention_dependent_evidence_retained = registry.gauge(
+    "maistro_retention_dependent_evidence_retained",
+    "Dependent provenance references the last completed retention sweep kept by "
+    "policy (canonical Event log), by authorization mode (#1175)",
 )

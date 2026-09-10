@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Collection
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -90,6 +91,11 @@ class FireReservation:
     next_due_at_before: datetime | None
     updated_at_before: datetime
     stamped_at: datetime
+
+
+def _release_pointer(schedule: Schedule, *, now: datetime) -> Schedule:
+    """Release a schedule cursor whose Run was purged while preserving history."""
+    return schedule.model_copy(update={"last_run_id": None, "updated_at": now})
 
 
 @runtime_checkable
@@ -342,6 +348,17 @@ class InMemoryScheduleStore:
         settled = _settle(schedule, reservation, run_id=run_id)
         self._schedules[schedule_id] = settled
         return settled
+
+    async def release_run_pointers(self, run_ids: Collection[str]) -> int:
+        """Release schedule cursors whose Runs were purged, preserving history."""
+        doomed = set(run_ids)
+        released = 0
+        now = datetime.now(UTC)
+        for schedule_id, schedule in self._schedules.items():
+            if schedule.last_run_id in doomed:
+                self._schedules[schedule_id] = _release_pointer(schedule, now=now)
+                released += 1
+        return released
 
 
 _SCHEMA = """

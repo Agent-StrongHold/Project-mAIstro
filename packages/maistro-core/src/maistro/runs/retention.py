@@ -30,7 +30,12 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from maistro.observability.metrics import retention_backlog_remaining, retention_purged_total
+from maistro.observability.metrics import (
+    retention_backlog_remaining,
+    retention_dependent_evidence_retained,
+    retention_dependents_purged_total,
+    retention_purged_total,
+)
 from maistro.runs.retention_scope import GlobalRetentionScope
 from maistro.runs.store import DEFAULT_PURGE_BATCH, PurgeOutcome, RetentionScope
 
@@ -48,6 +53,19 @@ DEFAULT_CHAT_RETENTION_SECONDS = 7 * 24 * 60 * 60
 #: measured in days; sweeping more often than this spends database round-trips
 #: to shave minutes off a deadline nobody is watching that closely.
 DEFAULT_SWEEP_INTERVAL_SECONDS = 300.0
+
+#: The per-scope backlog map's key for the explicitly authorized store-wide
+#: scope. Keys are `(mode, scope-id)` pairs, so a Workspace id can never
+#: collide into the global bucket and a global observation can never be
+#: attributed to a Workspace.
+_GLOBAL_SCOPE_KEY = ("global", None)
+
+
+def _scope_key(scope: RetentionScope) -> tuple[str, str | None]:
+    """The backlog-observation key for one scope: exact per scope, bounded per sweeper."""
+    if isinstance(scope, GlobalRetentionScope):
+        return _GLOBAL_SCOPE_KEY
+    return ("workspace", scope.workspace_id)
 
 
 @dataclass(frozen=True)
@@ -129,6 +147,15 @@ class RunRetentionSweeper:
         self._last_sweep: float | None = None
         self.last_error: BaseException | None = None
         self._last_outcome: PurgeOutcome | None = None
+        # The standing backlog observation, per scope this sweeper has
+        # completed a sweep for (#1175). Keyed by scope — not collapsed to the
+        # mode label — because the metric label space is bounded (#818) but
+        # the observation is not: Workspace B's drained batch must not
+        # overwrite Workspace A's standing backlog with B's clean one. The
+        # gauge publishes the per-mode OR of this map, so it reads "some
+        # authorized scope still has a backlog", which is the state a
+        # retention alert is about.
+        self._backlog_by_scope: dict[tuple[str, str | None], bool] = {}
 
     @property
     def policy(self) -> RetentionPolicy:
@@ -181,9 +208,11 @@ class RunRetentionSweeper:
             if not self._due():
                 return 0
             self._last_sweep = time.monotonic()
+            resolved: RetentionScope | None = None
             try:
+                resolved = self._resolve_scope(scope)
                 outcome = await self._store.purge_expired_runs(
-                    self._resolve_scope(scope), now=now, limit=self._policy.batch_limit
+                    resolved, now=now, limit=self._policy.batch_limit
                 )
             except Exception as exc:
                 # A missing scope is a misconfiguration, and this is where it
@@ -191,11 +220,13 @@ class RunRetentionSweeper:
                 # failure mode the pre-#1175 signature could not have.
                 self.last_error = exc
                 self._last_outcome = None
-                # The standing backlog observation is withdrawn with the
-                # outcome it came from: a failed sweep commits nothing, so it
-                # neither drained a backlog nor may keep claiming one from a
-                # purge that no longer stands as completed.
-                retention_backlog_remaining.set(0.0, mode=self._failure_mode())
+                # The failed sweep's own standing observation is withdrawn —
+                # it can no longer vouch for that scope — and the gauge is
+                # republished from what remains. Other scopes' observations
+                # survive: their last completed sweep still stands.
+                if resolved is not None:
+                    self._backlog_by_scope.pop(_scope_key(resolved), None)
+                self._republish_backlog()
                 return 0
             self.last_error = None
             self._last_outcome = outcome
@@ -230,20 +261,43 @@ class RunRetentionSweeper:
         evidence is an auditable act (#1175): the structured record names the
         scope mode, the principal that authorized a global sweep, and the
         per-class disposition — spine rows reclaimed, traversal state
-        reclaimed, Event references retained, occurrence claims released — so
-        a purge that kept provenance is as visible as one that deleted it.
+        reclaimed, Event references retained, occurrence claims and schedule
+        cursors released — so a purge that kept provenance is as visible as
+        one that deleted it.
         """
         outcome = self.last_outcome
         if outcome is None:
             return
-        retention_backlog_remaining.set(
-            1.0 if outcome.backlog_remaining else 0.0, mode=outcome.mode
-        )
+        mode = outcome.mode
+        # The backlog observation is recorded per scope and published as the
+        # per-mode OR: another Workspace's clean batch must not clear this
+        # scope's standing backlog, and vice versa (#1175).
+        self._backlog_by_scope[_scope_key(outcome.scope)] = outcome.backlog_remaining
+        self._republish_backlog()
         if outcome.runs:
-            retention_purged_total.inc(outcome.runs, mode=outcome.mode)
+            retention_purged_total.inc(outcome.runs, mode=mode)
+        # Dependent evidence, by class: what the sweep reclaimed beyond the
+        # spine, and what it kept by policy. A sweep that deleted Runs but
+        # reclaimed or released no dependents still publishes the retained
+        # gauge, because "kept, and this is how much" is a disposition too.
+        if outcome.continuations:
+            retention_dependents_purged_total.inc(
+                outcome.continuations, mode=mode, kind="continuation"
+            )
+        if outcome.schedule_claims_released:
+            retention_dependents_purged_total.inc(
+                outcome.schedule_claims_released, mode=mode, kind="schedule_claim"
+            )
+        if outcome.schedule_pointers_released:
+            retention_dependents_purged_total.inc(
+                outcome.schedule_pointers_released, mode=mode, kind="schedule_pointer"
+            )
+        retention_dependent_evidence_retained.set(
+            float(outcome.event_references_retained), mode=mode
+        )
         _logger.info(
             "retention.sweep.completed",
-            mode=outcome.mode,
+            mode=mode,
             workspace_id=outcome.workspace_id,
             runs=outcome.runs,
             node_runs=outcome.node_runs,
@@ -251,20 +305,24 @@ class RunRetentionSweeper:
             continuations=outcome.continuations,
             event_references_retained=outcome.event_references_retained,
             schedule_claims_released=outcome.schedule_claims_released,
+            schedule_pointers_released=outcome.schedule_pointers_released,
             backlog_remaining=outcome.backlog_remaining,
         )
 
-    def _failure_mode(self) -> str:
-        """The mode label for a sweep that never completed.
+    def _republish_backlog(self) -> None:
+        """Recompute the backlog gauge from the per-scope observations.
 
-        The scope the sweeper was constructed with, reduced to its mode:
-        the label space must stay bounded, and an unresolved scope's
-        refusal is a construction-time condition, not a per-Workspace fact
-        worth a label of its own.
+        The gauge is per authorization mode — a bounded label (#818) — while
+        the observations are per scope: the published value is "does ANY scope
+        authorized under this mode still have a backlog". One Workspace's
+        drained batch publishes 0 for its own observation only, never over a
+        standing backlog another scope still holds (#1175).
         """
-        if isinstance(self._scope, GlobalRetentionScope):
-            return "global"
-        return "workspace"
+        for mode in ("workspace", "global"):
+            matching = (
+                backlog for key, backlog in self._backlog_by_scope.items() if key[0] == mode
+            )
+            retention_backlog_remaining.set(1.0 if any(matching) else 0.0, mode=mode)
 
 
 __all__ = [
