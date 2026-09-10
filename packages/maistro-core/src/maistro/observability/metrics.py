@@ -501,3 +501,15 @@ oldest_non_terminal_run_age_seconds = registry.gauge(
     "maistro_oldest_non_terminal_run_age_seconds",
     "Age of the oldest non-terminal Run, as of the last recovery tick",
 )
+
+# --- Retention (#1175) --------------------------------------------------------
+# Emitted by `RunRetentionSweeper` after each completed sweep. The label is
+# the sweep's authorization mode, never a Workspace id: Workspaces are
+# caller-created, and metric label values are bounded (#818). What was
+# deleted per class of dependent evidence rides on the sweep's `PurgeOutcome`
+# (`last_outcome`), whose per-sweep shape carries the scope id and the
+# dependent counts a counter label could not hold bounded.
+retention_purged_total = registry.counter(
+    "maistro_retention_purged_total",
+    "Runs deleted by retention sweeps, by authorization mode (workspace|global) (#1175)",
+)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -32,6 +33,10 @@ from maistro.runs.model import (
     Run,
     RunStatus,
 )
+from maistro.runs.retention_scope import (
+    RetentionScope,
+    WorkspaceRetentionScope,
+)
 from maistro.runs.sources import occurrence_key
 from maistro.runs.store import (
     DEFAULT_PURGE_BATCH,
@@ -40,6 +45,7 @@ from maistro.runs.store import (
     AttemptNotFound,
     DuplicateOccurrence,
     NodeRunNotFound,
+    PurgeOutcome,
     RunIntegrityError,
     RunNotFound,
     StaleExecutionFence,
@@ -75,8 +81,26 @@ def _placeholders(count: int) -> str:
 
 #: Held as templates rather than built inline so the interpolation sits on one
 #: line that can carry its `# nosec`, and so the SQL itself is readable next to
-#: the schema above rather than buried in a call.
-_PURGE_CANDIDATES_SQL = """SELECT run_id, payload FROM canonical_runs r
+#: the schema above rather than buried in a call. The Workspace predicate is
+#: two whole statements rather than a spliced fragment (#1175): which scope a
+#: sweep may see is the load-bearing difference between them, and a reader
+#: should see two queries, not one query with a maybe-clause.
+_PURGE_CANDIDATES_WORKSPACE_SQL = """SELECT run_id, payload FROM canonical_runs r
+    WHERE r.status IN ({statuses})
+      AND json_extract(r.payload, '$.retention_expires_at') IS NOT NULL
+      AND r.workspace_id = ?
+      AND NOT EXISTS (
+          SELECT 1 FROM canonical_runs c WHERE c.parent_run_id = r.run_id
+      )
+      AND NOT EXISTS (
+          SELECT 1 FROM canonical_node_runs n
+          JOIN canonical_runs c2 ON c2.parent_node_run_id = n.node_run_id
+          WHERE n.run_id = r.run_id
+      )
+    ORDER BY json_extract(r.payload, '$.retention_expires_at')
+    LIMIT ?"""
+
+_PURGE_CANDIDATES_GLOBAL_SQL = """SELECT run_id, payload FROM canonical_runs r
     WHERE r.status IN ({statuses})
       AND json_extract(r.payload, '$.retention_expires_at') IS NOT NULL
       AND NOT EXISTS (
@@ -90,13 +114,96 @@ _PURGE_CANDIDATES_SQL = """SELECT run_id, payload FROM canonical_runs r
     ORDER BY json_extract(r.payload, '$.retention_expires_at')
     LIMIT ?"""
 
-_DELETE_ATTEMPTS_SQL = """DELETE FROM canonical_attempts WHERE node_run_id IN (
-        SELECT node_run_id FROM canonical_node_runs WHERE run_id IN ({runs})
-    )"""
+#: Dependent tables a purge must account for, beyond the spine (#1175).
+#:
+#: Split by disposition, not by accident:
+#:
+#: - *_PURGE_TABLES hold a Run's owned resumable state — the Graph
+#:   continuation (migration 021). The reference is logical — no foreign key —
+#:   so deleting the Run row alone would leave it dangling silently, and a
+#:   recovery scan would pick the orphan up and try to resume a Run whose
+#:   identity no longer exists. Deleted with the Run.
+#:
+#: - *_RETAINED_TABLES is append-only provenance — the canonical Event log
+#:   (migration 030). Its `run_id` names what an event was about; deleting or
+#:   rewriting it would destroy the audit record of work whose deletion is
+#:   itself an auditable act. Kept, and counted into the outcome so retention
+#:   reports what it left behind. (Task receipts and session turns are
+#:   attribution history of the same class, owned by other modules' stores;
+#:   they are out of this transaction's boundary and the inventory in
+#:   `retention_scope` records their disposition.)
+#:
+#: Both lists are tolerated absent: a store wired without the Event log or
+#: the continuation table cannot have orphaned rows in a table that does not
+#: exist.
+_PURGE_DEPENDENT_TABLES = ("graph_continuations",)
+_RETAINED_REFERENCE_TABLES = ("canonical_event_log",)
 
-_DELETE_NODE_RUNS_SQL = "DELETE FROM canonical_node_runs WHERE run_id IN ({runs})"
 
-_DELETE_RUNS_SQL = "DELETE FROM canonical_runs WHERE run_id IN ({runs})"
+_DELETE_ATTEMPTS_SQL = (
+    "DELETE FROM canonical_attempts WHERE node_run_id IN ("
+    "SELECT node_run_id FROM canonical_node_runs "
+    "WHERE run_id IN (SELECT value FROM json_each(?)))"
+)
+
+_DELETE_NODE_RUNS_SQL = (
+    "DELETE FROM canonical_node_runs WHERE run_id IN (SELECT value FROM json_each(?))"
+)
+
+_DELETE_RUNS_SQL = "DELETE FROM canonical_runs WHERE run_id IN (SELECT value FROM json_each(?))"
+
+#: The purge's dependent-evidence statements, and the spine deletes reworked
+#: the same way (#1175). A variable-length `IN` list is the one thing `?`
+#: parameters cannot express; the purge ships each id list as ONE json array
+#: parameter and lets `json_each` — the same JSON1 machinery the occurrence
+#: index already relies on — open it. Every statement below is literal SQL
+#: with a single bound parameter: nothing interpolates, so there is nothing
+#: to nosec and no marks to keep in step with the batch size.
+_PURGE_NODE_RUN_IDS_SQL = (
+    "SELECT node_run_id FROM canonical_node_runs WHERE run_id IN (SELECT value FROM json_each(?))"
+)
+
+_PURGE_COUNT_ATTEMPTS_SQL = (
+    "SELECT COUNT(*) FROM canonical_attempts WHERE node_run_id IN (SELECT value FROM json_each(?))"
+)
+
+#: Dependent evidence beyond the spine, keyed by table:
+#:
+#: - graph_continuations holds a Run's owned resumable state (migration 021).
+#:   The reference is logical — no foreign key — so deleting the Run row alone
+#:   would leave it dangling silently, and a recovery scan would pick the
+#:   orphan up and try to resume a Run whose identity no longer exists.
+#:   Deleted with the Run.
+#:
+#: - canonical_event_log is append-only provenance (migration 030). Its
+#:   `run_id` names what an event was about; deleting or rewriting it would
+#:   destroy the audit record of work whose deletion is itself an auditable
+#:   act. Kept, and counted into the outcome so retention reports what it
+#:   left behind. (Task receipts and session turns are attribution history of
+#:   the same class, owned by other modules' stores; they are outside this
+#:   transaction's boundary.)
+#:
+#: A table that was never wired cannot hold an orphaned row, so each statement
+#: runs only when `_dependent_table_exists` says its table is there.
+_PURGE_DEPENDENT_SQL = {
+    "graph_continuations": (
+        "DELETE FROM graph_continuations WHERE run_id IN (SELECT value FROM json_each(?))"
+    ),
+}
+
+_RETAINED_REFERENCE_SQL = {
+    "canonical_event_log": (
+        "SELECT COUNT(*) FROM canonical_event_log WHERE run_id IN (SELECT value FROM json_each(?))"
+    ),
+}
+
+_LIST_BY_STATUS_SQL = """SELECT payload FROM canonical_runs
+    WHERE status = :status
+      AND (:project IS NULL OR project_id = :project)
+      AND (:after_created IS NULL
+           OR (json_extract(payload, '$.created_at'), run_id) > (:after_created, :after_id))
+    ORDER BY json_extract(payload, '$.created_at'), run_id
+    LIMIT :limit OFFSET :offset"""
 
 _SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -330,18 +437,20 @@ class SqliteRunStore:
             raise ValueError("limit must be positive")
         if offset < 0:
             raise ValueError("offset must not be negative")
-        sql = "SELECT payload FROM canonical_runs WHERE status = ?"
-        params: list[object] = [status.value]
-        if project_id is not None:
-            sql += " AND project_id = ?"
-            params.append(project_id)
-        if after is not None:
-            sql += " AND (json_extract(payload, '$.created_at'), run_id) > (?, ?)"
-            params.extend(after)
-        sql += " ORDER BY json_extract(payload, '$.created_at'), run_id LIMIT ? OFFSET ?"
-        params.append(limit)
-        params.append(offset)
-        cursor = await self._conn.execute(sql, tuple(params))  # nosec B608
+        # Fully literal statement, parameter-driven optional predicates: a
+        # named parameter the caller leaves NULL degrades to no predicate, so
+        # the query text never varies with the arguments.
+        cursor = await self._conn.execute(
+            _LIST_BY_STATUS_SQL,
+            {
+                "status": status.value,
+                "project": project_id,
+                "after_created": after[0] if after is not None else None,
+                "after_id": after[1] if after is not None else None,
+                "limit": limit,
+                "offset": offset,
+            },
+        )
         rows = await cursor.fetchall()
         return [model_of_json(Run, row[0]) for row in rows]
 
@@ -416,8 +525,8 @@ class SqliteRunStore:
         oldest = datetime.fromisoformat(row[1]) if row[1] else None
         return count, oldest
 
-    async def _purge_candidates(self, limit: int) -> list[tuple[str, Run]]:
-        """Terminal Runs carrying a deadline and descended from by nobody.
+    async def _purge_candidates(self, scope: RetentionScope, limit: int) -> list[tuple[str, Run]]:
+        """Terminal Runs carrying a deadline, inside ``scope``, descended from by nobody.
 
         Ordered by deadline, so the caller can stop at the first unexpired one
         rather than parsing the whole batch. `json_extract` is only used to
@@ -426,53 +535,110 @@ class SqliteRunStore:
         lexically is only correct while every one of them carries the same UTC
         offset — true today, and not something to make load-bearing.
         """
-        sql = _PURGE_CANDIDATES_SQL.format(  # nosec B608 — `{}` takes only `?`s, never data
-            statuses=_placeholders(len(_TERMINAL_STATUS_VALUES))
+        if isinstance(scope, WorkspaceRetentionScope):
+            template = _PURGE_CANDIDATES_WORKSPACE_SQL
+            params: tuple[object, ...] = (*_TERMINAL_STATUS_VALUES, scope.workspace_id)
+        else:
+            template = _PURGE_CANDIDATES_GLOBAL_SQL
+            params = tuple(_TERMINAL_STATUS_VALUES)
+        cursor = await self._conn.execute(
+            template.format(  # nosec B608 — `{}` takes only `?`s, never data
+                statuses=_placeholders(len(_TERMINAL_STATUS_VALUES))
+            ),
+            (*params, limit),
         )
-        cursor = await self._conn.execute(sql, (*_TERMINAL_STATUS_VALUES, limit))
         return [(row[0], Run.model_validate_json(row[1])) for row in await cursor.fetchall()]
+
+    async def _dependent_table_exists(self, table: str) -> bool:
+        """Whether a dependent-evidence table exists on this connection.
+
+        The spine's own tables are guaranteed — this store created them. The
+        dependent tables belong to other stores that may never have been wired
+        beside this one, and a table that does not exist cannot hold an
+        orphaned row, so absence is a zero rather than an error.
+        """
+        cursor = await self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+        )
+        return await cursor.fetchone() is not None
 
     async def purge_expired_runs(
         self,
+        scope: RetentionScope,
         *,
         now: datetime | None = None,
         limit: int = DEFAULT_PURGE_BATCH,
-    ) -> int:
-        """Delete up to ``limit`` expired terminal Runs. Returns how many went.
+    ) -> PurgeOutcome:
+        """Delete up to ``limit`` expired terminal Runs inside ``scope``.
 
         Deletes in the order the foreign keys require — Attempts, NodeRuns,
         Runs — under the same write lock every other mutation takes, so a
-        concurrent transition cannot land on a Run this sweep is removing.
+        concurrent transition cannot land on a Run this sweep is removing,
+        and two sweeps divide the candidates instead of double-counting.
+        The dependent table with no foreign key — the Graph continuation —
+        is deleted in the same transaction, and the retained Event
+        references are counted into the outcome rather than silently left
+        behind (#1175).
         """
         if limit <= 0:
             raise ValueError("limit must be positive")
         cutoff = now if now is not None else datetime.now(UTC)
         async with self._write_lock:
-            doomed = []
-            for run_id, run in await self._purge_candidates(limit):
+            doomed: list[tuple[str, Run]] = []
+            # One more candidate than the batch, so the outcome can say
+            # whether the scope drained or the batch ran out.
+            for run_id, run in await self._purge_candidates(scope, limit + 1):
                 if not is_purgeable(run, cutoff):
                     break
-                doomed.append(run_id)
+                doomed.append((run_id, run))
             if not doomed:
-                return 0
-            marks = _placeholders(len(doomed))
-            ids = tuple(doomed)
-            # Same reasoning as `_purge_candidates`: the only interpolated text
-            # is `marks`, and every run_id travels in the parameter tuple.
-            await self._conn.execute(
-                _DELETE_ATTEMPTS_SQL.format(runs=marks),
-                ids,  # nosec B608
+                return PurgeOutcome(scope=scope)
+            purged = doomed[:limit]
+            if not purged:
+                return PurgeOutcome(scope=scope)
+            # One json array parameter per statement: the id lists never
+            # travel as interpolated SQL (see the statement constants above).
+            run_id_param = json.dumps([run_id for run_id, _run in purged])
+            node_run_rows = await self._conn.execute(
+                _PURGE_NODE_RUN_IDS_SQL,
+                (run_id_param,),
             )
-            await self._conn.execute(
-                _DELETE_NODE_RUNS_SQL.format(runs=marks),
-                ids,  # nosec B608
+            node_run_ids = [row[0] for row in await node_run_rows.fetchall()]
+            attempt_row = await self._conn.execute(
+                _PURGE_COUNT_ATTEMPTS_SQL,
+                (json.dumps(node_run_ids),),
             )
-            await self._conn.execute(
-                _DELETE_RUNS_SQL.format(runs=marks),
-                ids,  # nosec B608
-            )
+            attempt_count = (await attempt_row.fetchone() or [0])[0]
+            # Dependent evidence beyond the spine, in the same transaction:
+            # owned resumable state deleted, retained provenance counted.
+            continuations = 0
+            for table, sql in _PURGE_DEPENDENT_SQL.items():
+                if not await self._dependent_table_exists(table):
+                    continue
+                cursor = await self._conn.execute(sql, (run_id_param,))
+                continuations += max(cursor.rowcount, 0)
+            retained = 0
+            for table, sql in _RETAINED_REFERENCE_SQL.items():
+                if not await self._dependent_table_exists(table):
+                    continue
+                row = await (await self._conn.execute(sql, (run_id_param,))).fetchone()
+                retained += int(row[0]) if row is not None else 0
+            await self._conn.execute(_DELETE_ATTEMPTS_SQL, (run_id_param,))
+            await self._conn.execute(_DELETE_NODE_RUNS_SQL, (run_id_param,))
+            await self._conn.execute(_DELETE_RUNS_SQL, (run_id_param,))
             await self._conn.commit()
-        return len(doomed)
+            return PurgeOutcome(
+                scope=scope,
+                runs=len(purged),
+                node_runs=len(node_run_ids),
+                attempts=int(attempt_count),
+                continuations=continuations,
+                event_references_retained=retained,
+                schedule_claims_released=sum(
+                    1 for _run_id, run in purged if occurrence_key(run.provenance) is not None
+                ),
+                backlog_remaining=len(doomed) > limit,
+            )
 
     async def transition_run(
         self,
