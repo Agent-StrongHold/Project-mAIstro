@@ -378,8 +378,6 @@ class SqliteProjectScopeStore:
                 existing = await self._membership_or_none(
                     membership.project_id, membership.principal_id
                 )
-                if existing is not None and existing.workspace_id != membership.workspace_id:
-                    raise ProjectIntegrityError("membership identity cannot cross Workspaces")
                 updated = membership.model_copy(
                     update={
                         "membership_id": (

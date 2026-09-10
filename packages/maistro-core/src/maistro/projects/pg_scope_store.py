@@ -315,10 +315,8 @@ class PgProjectScopeStore:
             raise ProjectIntegrityError("ProjectMembership Workspace does not match Project")
         async with self._pool.acquire() as conn, conn.transaction():
             existing = await self._membership_or_none(
-                membership.project_id, membership.principal_id, conn=conn, lock=True
+                membership.project_id, membership.principal_id, conn=conn
             )
-            if existing is not None and existing.workspace_id != membership.workspace_id:
-                raise ProjectIntegrityError("membership identity cannot cross Workspaces")
             updated = membership.model_copy(
                 update={
                     "membership_id": (
@@ -469,11 +467,11 @@ class PgProjectScopeStore:
         principal_id: str,
         *,
         conn: Any = None,
-        lock: bool = False,
     ) -> ProjectMembership | None:
-        sql = "SELECT payload FROM canonical_project_memberships WHERE project_id = $1 AND principal_id = $2"
-        if lock:
-            sql += " FOR UPDATE"
+        sql = (
+            "SELECT payload FROM canonical_project_memberships "
+            "WHERE project_id = $1 AND principal_id = $2 FOR UPDATE"
+        )
         payload = await self._payload(sql, project_id, principal_id, conn=conn)
         return model_of(ProjectMembership, payload) if payload is not None else None
 
