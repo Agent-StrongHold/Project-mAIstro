@@ -50,8 +50,10 @@ def build_permission_table(
 ) -> PermissionTable:
     """Build a ``PermissionTable`` from an optional preset plus explicit overrides.
 
-    - ``preset="none"`` (the default) yields an empty table: every tool is
-      permitted for every role, identical to today's behavior.
+    - ``preset="none"`` (the default) yields an empty table. Under the
+      fail-closed default (ADR-072726-0d6b, #1165) an empty table denies
+      every permission-table lookup, so tool authority must be configured
+      explicitly here -- see the module docstring.
     - A known preset seeds every tool name in that preset's set to
       ``frozenset({"admin"})``.
     - An unknown preset (not ``"none"`` and not a ``PERMISSION_PRESETS`` key)
