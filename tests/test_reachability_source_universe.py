@@ -104,6 +104,92 @@ def test_an_immutable_vendored_tree_is_classified_not_omitted(
     assert not [key for key, path in mods.items() if "vendored" in path.parts]
 
 
+def _write_src_root_with_loose_file(root: Path) -> Path:
+    src = root / "packages" / "demo" / "src"
+    pkg = src / "demo"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    (pkg / "main.py").write_text("VALUE = 1\n")
+    (src / "_vulture_whitelist.py").write_text("VALUE = 2\n")
+    return src
+
+
+def test_a_loose_file_directly_under_a_src_root_is_discovered_as_its_own_module(
+    tmp_path: Path,
+) -> None:
+    """`packages/<pkg>/src/foo.py`, a sibling of the package directories
+    rather than inside one, is declared source (`_declared_source_files`
+    globs the whole src tree) but was invisible to `_collect_modules`, which
+    only ever descended into directories carrying `__init__.py` (#1142). It
+    counted toward the source-universe guard's total while never entering the
+    module graph, never becoming unreachable, and never needing a baseline
+    disposition -- the concrete instance is
+    `packages/maistro-core/src/_vulture_whitelist.py`.
+    """
+    src = _write_src_root_with_loose_file(tmp_path)
+
+    mods = reachability._collect_modules(tmp_path, ())
+
+    assert "_vulture_whitelist" in mods
+    assert mods["_vulture_whitelist"] == src / "_vulture_whitelist.py"
+
+
+def test_an_unbaselined_loose_src_root_file_fails_as_newly_unreachable(
+    tmp_path: Path,
+) -> None:
+    """The regression fixture #1142's acceptance asks for directly: nothing
+    imports the loose file, so it must surface as unreachable -- requiring an
+    explicit baseline disposition -- rather than silently disappearing."""
+    _write_src_root_with_loose_file(tmp_path)
+
+    unreachable, total = reachability.unreachable_modules(
+        root=tmp_path, flat_apps=(), static_roots=("demo.main",), dynamic_roots=()
+    )
+
+    assert total == 3
+    assert unreachable == ["_vulture_whitelist"]
+
+
+def test_two_src_roots_claiming_the_same_loose_module_stem_fail_closed(
+    tmp_path: Path,
+) -> None:
+    """A loose module's key is its bare stem, unscoped by src root (#1142's own
+    choice, so `_vulture_whitelist` keeps the identity already authorized in
+    the baseline rather than an invented prefix). Two roots with a same-named
+    loose file would otherwise let the second silently overwrite the first in
+    `_collect_modules`' dict -- the overwritten file stays counted in the
+    source-universe total while vanishing from the graph and the baseline,
+    reopening the exact blind spot #1142 exists to close.
+    """
+    first = tmp_path / "packages" / "alpha" / "src"
+    first.mkdir(parents=True)
+    (first / "_shared_name.py").write_text("VALUE = 1\n")
+    second = tmp_path / "packages" / "beta" / "src"
+    second.mkdir(parents=True)
+    (second / "_shared_name.py").write_text("VALUE = 2\n")
+
+    with pytest.raises(RuntimeError, match="claimed by more than one"):
+        reachability._collect_modules(tmp_path, ())
+
+
+def test_a_loose_module_colliding_with_another_roots_package_name_fails_closed(
+    tmp_path: Path,
+) -> None:
+    """The same collision, but against a package directory's own bare name
+    (`add_tree` gives a package's `__init__.py` the key `pkg.name` with no
+    empty trailing parts) rather than another loose file."""
+    first = tmp_path / "packages" / "alpha" / "src"
+    pkg = first / "shared"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    second = tmp_path / "packages" / "beta" / "src"
+    second.mkdir(parents=True)
+    (second / "shared.py").write_text("VALUE = 1\n")
+
+    with pytest.raises(RuntimeError, match="claimed by more than one"):
+        reachability._collect_modules(tmp_path, ())
+
+
 def test_an_installed_dependency_tree_is_outside_the_source_universe(tmp_path: Path) -> None:
     # npm packages sometimes ship Python — `flatted` carries python/flatted.py
     # — and CI's test job runs `npm ci` in both frontends before the

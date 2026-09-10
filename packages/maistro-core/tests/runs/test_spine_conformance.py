@@ -25,7 +25,13 @@ import pytest
 from maistro.graph import Graph, Node
 from maistro.projects.scope import ProjectNotEmpty
 from maistro.runs.lifecycle import StaleLeaseRenewal, UnearnedRunCompletion
-from maistro.runs.model import AcceptedNodeOutcome, AttemptResult, AttemptStatus, RunStatus
+from maistro.runs.model import (
+    AcceptedNodeOutcome,
+    AttemptResult,
+    AttemptStatus,
+    RunStatus,
+    evidence_values_equal,
+)
 from maistro.runs.reconciliation import (
     AttemptLifecycleReconciler,
     CancellationCause,
@@ -506,6 +512,38 @@ async def test_a_non_finite_result_reloads_unchanged(spine: Any, value: Any, che
 
     assert reloaded is not None
     assert check(reloaded.result)
+
+
+async def test_status_listing_decodes_the_same_evidence_as_get_run(spine: Any) -> None:
+    """Status enumeration must return the canonical value, not its JSON tag.
+
+    The PostgreSQL status query used to decode the JSON payload without the
+    evidence pass that ``get_run`` uses, so this comparison caught a persisted
+    Run changing meaning solely because a recovery caller listed it by status.
+    """
+    store, workspace, project_id = spine
+    run = await store.create_run(_graph(workspace, project_id))
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+    evidence = {"nan": float("nan"), "positive": float("inf"), "nested": [-float("inf")]}
+
+    persisted = await store.transition_run(
+        run.run_id,
+        RunStatus.FAILED,
+        result=evidence,
+        error="canonical evidence failure",
+    )
+    loaded = await store.get_run(run.run_id)
+    listed = await store.list_by_status(RunStatus.FAILED)
+
+    assert loaded is not None
+    assert [item.run_id for item in listed] == [run.run_id]
+    assert listed[0].error == loaded.error == persisted.error
+    assert evidence_values_equal(listed[0].result, loaded.result)
+    assert evidence_values_equal(listed[0].result, persisted.result)
+    assert math.isnan(listed[0].result["nan"])
+    assert listed[0].result["positive"] == float("inf")
+    assert listed[0].result["nested"][0] == float("-inf")
 
 
 async def test_non_finite_evidence_survives_inside_a_container(spine: Any) -> None:

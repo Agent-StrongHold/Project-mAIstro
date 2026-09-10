@@ -78,6 +78,19 @@ or placeholder-only section.
   (no production embedding client is constructed, so the column stays NULL);
   the matrix no longer claims scoped pgvector recall is live.
 
+### Fixed
+
+- **Naive Workspace timestamps no longer decode to a different instant
+  depending on the reading host (#1149).** `Workspace.created_at`/`updated_at`
+  and `WorkspaceMembership.added_at` now normalize a naive datetime to UTC
+  deterministically, the same convention `maistro.scheduling.model.Schedule`
+  already applies to its own timestamps. Previously, SQLite's `_iso()` helper
+  called `astimezone(UTC)` on whatever it was given, which for a naive value
+  (e.g. a legacy `created_at` supplied to `create(..., created_at=...)` during
+  a convergence import) asked the process's local timezone to interpret it —
+  the same stored row would decode to a different instant depending on which
+  host read it.
+
 ## [1.0.0] - TBD
 
 First tagged release. Prior to this, the repository had no tags, no release

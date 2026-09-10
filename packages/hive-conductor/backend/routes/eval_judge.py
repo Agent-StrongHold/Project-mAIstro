@@ -15,21 +15,46 @@ The manual trigger is what the optimizer's scheduler will call between
 user runs once Phase 6 lands; for now it lets a user click 'Score this
 run' from DagRuns.tsx and read the eval-judge's rationale + topology
 proposal verbatim.
+
+The trigger and both read routes — GET /v1/eval-judge/{run_id} (one
+verdict) and GET /v1/eval-judge (recent verdicts) — read through
+`services.dag_run_inspection`, the same scoped door the dag-runs routes use
+(#1174): a run outside the caller's Workspace universe is refused with the
+run's usual non-existence response, not scored for whoever asks, and its
+verdict — if one was ever recorded — is neither served nor listed
+cross-Workspace.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
-from services.dag_run_store import get_dag_run_store
+from fastapi import APIRouter, HTTPException, Request
+from services.dag_run_inspection import visible_run_detail, visible_run_ids
 from services.eval_judge import get_verdict, score_run
 
 router = APIRouter(tags=["eval-judge"])
 
 
+def _user_id(request: Request) -> str:
+    """Principal for this request — set by AuthMiddleware (see routes/feedback.py)."""
+    user = getattr(request.state, "user", None) or {}
+    uid = str(user.get("id") or user.get("username") or "")
+    if not uid:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return uid
+
+
 @router.get("/{run_id}")
-def read_verdict(run_id: str) -> dict[str, Any]:
+async def read_verdict(run_id: str, request: Request) -> dict[str, Any]:
+    # Scope authorization on the RUN happens before the verdict store is
+    # touched (#1174): an out-of-scope run gets the run's usual
+    # non-existence answer — identical to a missing run's — so the response
+    # never confirms a run (or a verdict for it) exists beyond the caller's
+    # boundary. "No verdict" is only answerable for a run the caller may
+    # already inspect.
+    if await visible_run_detail(_user_id(request), run_id) is None:
+        raise HTTPException(status_code=404, detail="run not found")
     v = get_verdict(run_id)
     if v is None:
         raise HTTPException(status_code=404, detail="no verdict for run_id")
@@ -37,23 +62,38 @@ def read_verdict(run_id: str) -> dict[str, Any]:
 
 
 @router.get("")
-def list_verdicts(limit: int = 25) -> list[dict[str, Any]]:
+async def list_verdicts(request: Request, limit: int = 25) -> list[dict[str, Any]]:
     import stores
 
-    items = list(stores.eval_verdicts.values())
-    items.sort(key=lambda v: v.get("scored_at", ""), reverse=True)
-    return items[: max(1, min(limit, 100))]
+    verdicts = sorted(
+        stores.eval_verdicts.values(),
+        key=lambda v: v.get("scored_at", ""),
+        reverse=True,
+    )
+    # The list answers only with verdicts whose run sits inside the caller's
+    # Workspace universe — resolved once for the whole page by the same
+    # inspection service the by-id read uses (#1174), never by trusting the
+    # verdict row's own fields. Filter first, cap second: a page can never
+    # smuggle a cross-Workspace row in, whatever the limit asks for.
+    visible = await visible_run_ids(
+        _user_id(request), (str(v.get("run_id") or "") for v in verdicts)
+    )
+    return [v for v in verdicts if str(v.get("run_id") or "") in visible][: max(1, min(limit, 100))]
 
 
 @router.post("/{run_id}")
-async def trigger_score(run_id: str) -> dict[str, Any]:
+async def trigger_score(run_id: str, request: Request) -> dict[str, Any]:
     """Score the run captured in dag_run_store. For Phase 5 we score off
     the dag_run_store's run-record-shaped summary (DurableRunRecord
     integration lands when the executor publishes the durable record
     into dag_run_store; until then, this endpoint accepts whatever
-    dag_run_store returns and gracefully scores it)."""
-    store = get_dag_run_store()
-    run = store.get_run(run_id)
+    dag_run_store returns and gracefully scores it).
+
+    Scoped like every other run reader (#1174): the projection is read
+    through the inspection service, so an out-of-scope run gets the same
+    404 a missing one gets — and is never scored.
+    """
+    run = await visible_run_detail(_user_id(request), run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="run not found")
 
