@@ -37,8 +37,12 @@ on:
   schedule:
     - cron: "30 7 * * *"
 
+# Keyed on the head commit SHA, not `github.ref`: see quality.yml's
+# concurrency comment for why. `security.yml` has the identical
+# unfiltered-`pull_request` + topic-branch-`push` shape, so it raced its
+# own `Quality gate`-style duplicate runs the same way.
 concurrency:
-  group: security-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.ref }}
+  group: security-${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
 
 jobs:

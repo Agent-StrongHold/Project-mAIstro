@@ -232,7 +232,11 @@ class TestAgainstTheRealWorkflows:
                 continue
             concurrency = doc.get("concurrency") or {}
             group = str(concurrency.get("group", ""))
-            per_pr = "pull_request.number" in group or "github.ref" in group
+            per_pr = (
+                "pull_request.number" in group
+                or "pull_request.head.sha" in group
+                or "github.ref" in group
+            )
             cancels = str(concurrency.get("cancel-in-progress", "")).lower() not in (
                 "",
                 "false",

@@ -57,8 +57,18 @@ on:
 
 # See the rationale in ci.yml: supersede candidate runs, let protected-branch
 # pushes finish so their pass/fail record survives.
+#
+# Keyed on the head commit SHA, not `github.ref`: the `push:` block above
+# matches every topic-branch prefix a PR is opened from, so a push to an
+# open PR's branch fires both `pull_request` (group keyed on PR number) and
+# `push` (previously keyed on `github.ref`, e.g. `refs/heads/fix/...`) for
+# the identical commit. Those two groups never matched, so both runs
+# executed at once and raced for the same service-container ports —
+# `Quality gate` failing on one of the pair, passing on the other, no code
+# involved. SHA-keying both trigger types puts them in one group so the
+# second in queues behind (or cancels) the first instead of racing it.
 concurrency:
-  group: quality-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.ref }}
+  group: quality-${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
 
 jobs:
