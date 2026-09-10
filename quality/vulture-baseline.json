@@ -729,6 +729,7 @@
         "packages/maistro-core/src/maistro/agents/catalog.py::unused method 'list_by_trust_tier'",
         "packages/maistro-core/src/maistro/agents/circuit_breaker.py::unused method 'release_probe'",
         "packages/maistro-core/src/maistro/agents/factory.py::unused function 'create_agents'",
+        "packages/maistro-core/src/maistro/agents/factory.py::unused function 'instantiate_agent'",
         "packages/maistro-core/src/maistro/agents/feedback/extractor.py::unused class 'ReviewFeedbackExtractor'",
         "packages/maistro-core/src/maistro/agents/feedback/loop.py::unused class 'FeedbackLoop'",
         "packages/maistro-core/src/maistro/agents/feedback/loop.py::unused method 'process_review'",
@@ -1215,6 +1216,7 @@
         "packages/maistro-core/src/maistro/security/guardrail.py::unused class 'ToolGuardrail'",
         "packages/maistro-core/src/maistro/security/passwords.py::unused function 'equal_cost_verify'",
         "packages/maistro-core/src/maistro/security/passwords.py::unused function 'needs_rehash'",
+        "packages/maistro-core/src/maistro/security/passwords.py::unused function 'validate_password'",
         "packages/maistro-core/src/maistro/security/pg_strikes.py::unused class 'PgRateLimiter'",
         "packages/maistro-core/src/maistro/security/pg_strikes.py::unused method 'check_and_record'",
         "packages/maistro-core/src/maistro/security/pg_strikes.py::unused method 'enable'",
@@ -1343,6 +1345,8 @@
         "packages/maistro-core/src/maistro/vault.py::unused method 'credential_prefixes'",
         "packages/maistro-core/src/maistro/vault.py::unused method 'has'",
         "packages/maistro-core/src/maistro/vault.py::unused method 'use'",
+        "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_normalize_added_at'",
+        "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_normalize_timestamps'",
         "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_require_non_blank'",
         "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_require_non_blank_identity'"
       ]
