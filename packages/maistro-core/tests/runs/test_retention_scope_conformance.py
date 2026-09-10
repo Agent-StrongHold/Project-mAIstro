@@ -133,6 +133,12 @@ async def scope_world(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
             scoped[name] = (workspace, project.project_id)
         events = PgEventStore(pg_pool)
         await events.ensure_schema()
+        # The migrated database owns `graph_continuations` (migration 021); the
+        # purge reaches it through its own SQL, and this handle is how the test
+        # proves the row actually went — the same read-back the sqlite leg does
+        # against its own continuation store.
+        from maistro.graph.durable_runs.pg_continuation import PgGraphContinuationStore
+
         # Bare `return` after the yield, never `return <value>`: a fixture
         # that yields anywhere is an async generator, and a valued return
         # from one is a SyntaxError. Each branch yields exactly once and
@@ -140,7 +146,7 @@ async def scope_world(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
         yield SimpleNamespace(
             backend="postgres",
             runs=PgRunStore(pg_pool, project_store=projects),
-            continuations=None,  # the migrated database owns the table
+            continuations=PgGraphContinuationStore(pg_pool),
             events=events,
             a=scoped["a"],
             b=scoped["b"],
@@ -160,13 +166,16 @@ async def scope_world(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
         scoped[name] = (f"workspace-{name}", project.project_id)
 
     if request.param == "memory":
+        continuations = InMemoryGraphContinuationStore()
         yield SimpleNamespace(
             backend="memory",
             runs=InMemoryRunStore(
                 project_store=projects,
-                continuation_store=InMemoryGraphContinuationStore(),
+                continuation_store=continuations,
             ),
-            continuations=None,  # reachable through the run store's seam only
+            # The same object the purge reclaims through: held here so the
+            # continuation tests can read back what the sweep deleted.
+            continuations=continuations,
             events=InMemoryEventStore(),
             a=scoped["a"],
             b=scoped["b"],
@@ -202,11 +211,14 @@ async def scope_world(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
 
 
 def _continuation_store_or_skip(world: Any) -> Any:
-    """The continuation store a test can read, on the backends that expose one.
+    """The continuation store a test can read, on every leg.
 
-    The memory leg wires its continuation store into the run store's purge
-    seam but keeps no separately-readable handle, so the continuation tests
-    are sqlite/postgres legs; the memory scoping tests above need no handle.
+    Every leg wires one: memory and sqlite hold the same object the run
+    store's purge seam reclaims, and the postgres leg reads the migrated
+    `graph_continuations` table the purge deletes from directly. A leg
+    without a readable handle would make the continuation-purge assertion
+    a skip — and a skip proves nothing about whether the dependent row
+    actually went (#1175).
     """
     store = world.continuations
     if store is None:

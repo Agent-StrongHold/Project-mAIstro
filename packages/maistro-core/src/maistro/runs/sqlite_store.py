@@ -585,45 +585,17 @@ class SqliteRunStore:
             raise ValueError("limit must be positive")
         cutoff = now if now is not None else datetime.now(UTC)
         async with self._write_lock:
-            doomed: list[tuple[str, Run]] = []
-            # One more candidate than the batch, so the outcome can say
-            # whether the scope drained or the batch ran out.
-            for run_id, run in await self._purge_candidates(scope, limit + 1):
-                if not is_purgeable(run, cutoff):
-                    break
-                doomed.append((run_id, run))
-            if not doomed:
-                return PurgeOutcome(scope=scope)
-            purged = doomed[:limit]
+            purged, backlog_remaining = await self._select_expired(scope, cutoff, limit)
             if not purged:
                 return PurgeOutcome(scope=scope)
             # One json array parameter per statement: the id lists never
             # travel as interpolated SQL (see the statement constants above).
             run_id_param = json.dumps([run_id for run_id, _run in purged])
-            node_run_rows = await self._conn.execute(
-                _PURGE_NODE_RUN_IDS_SQL,
-                (run_id_param,),
-            )
-            node_run_ids = [row[0] for row in await node_run_rows.fetchall()]
-            attempt_row = await self._conn.execute(
-                _PURGE_COUNT_ATTEMPTS_SQL,
-                (json.dumps(node_run_ids),),
-            )
-            attempt_count = (await attempt_row.fetchone() or [0])[0]
+            node_run_ids, attempt_count = await self._count_spine_rows(run_id_param)
             # Dependent evidence beyond the spine, in the same transaction:
             # owned resumable state deleted, retained provenance counted.
-            continuations = 0
-            for table, sql in _PURGE_DEPENDENT_SQL.items():
-                if not await self._dependent_table_exists(table):
-                    continue
-                cursor = await self._conn.execute(sql, (run_id_param,))
-                continuations += max(cursor.rowcount, 0)
-            retained = 0
-            for table, sql in _RETAINED_REFERENCE_SQL.items():
-                if not await self._dependent_table_exists(table):
-                    continue
-                row = await (await self._conn.execute(sql, (run_id_param,))).fetchone()
-                retained += int(row[0]) if row is not None else 0
+            continuations = await self._reclaim_continuation_state(run_id_param)
+            retained = await self._count_retained_references(run_id_param)
             await self._conn.execute(_DELETE_ATTEMPTS_SQL, (run_id_param,))
             await self._conn.execute(_DELETE_NODE_RUNS_SQL, (run_id_param,))
             await self._conn.execute(_DELETE_RUNS_SQL, (run_id_param,))
@@ -632,14 +604,88 @@ class SqliteRunStore:
                 scope=scope,
                 runs=len(purged),
                 node_runs=len(node_run_ids),
-                attempts=int(attempt_count),
+                attempts=attempt_count,
                 continuations=continuations,
                 event_references_retained=retained,
                 schedule_claims_released=sum(
                     1 for _run_id, run in purged if occurrence_key(run.provenance) is not None
                 ),
-                backlog_remaining=len(doomed) > limit,
+                backlog_remaining=backlog_remaining,
             )
+
+    async def _select_expired(
+        self,
+        scope: RetentionScope,
+        cutoff: datetime,
+        limit: int,
+    ) -> tuple[list[tuple[str, Run]], bool]:
+        """The expired candidates the batch will take, and whether any remain.
+
+        Candidates arrive ordered by deadline, so the first unexpired one ends
+        the scan. One more candidate than the batch is requested, so the
+        caller can say whether the scope drained or the batch ran out. Runs
+        under the caller's write lock: selection and deletion are one
+        decision, and a concurrent transition must not land between them.
+        """
+        doomed: list[tuple[str, Run]] = []
+        for run_id, run in await self._purge_candidates(scope, limit + 1):
+            if not is_purgeable(run, cutoff):
+                break
+            doomed.append((run_id, run))
+        return doomed[:limit], len(doomed) > limit
+
+    async def _count_spine_rows(self, run_id_param: str) -> tuple[list[str], int]:
+        """The NodeRuns and Attempts the purge is about to reclaim.
+
+        Counted before the deletes so the outcome can report what one sweep
+        actually removed — the spine is more rows than the Run at the top of
+        it, and a health metric of "1" would hide that.
+        """
+        node_run_rows = await self._conn.execute(
+            _PURGE_NODE_RUN_IDS_SQL,
+            (run_id_param,),
+        )
+        node_run_ids = [row[0] for row in await node_run_rows.fetchall()]
+        attempt_row = await self._conn.execute(
+            _PURGE_COUNT_ATTEMPTS_SQL,
+            (json.dumps(node_run_ids),),
+        )
+        attempt_count = int((await attempt_row.fetchone() or [0])[0])
+        return node_run_ids, attempt_count
+
+    async def _reclaim_continuation_state(self, run_id_param: str) -> int:
+        """Delete the dependent rows that are execution state, not history.
+
+        `_PURGE_DEPENDENT_SQL` names the tables whose rows are traversal/
+        recovery state owned by the Run; a row that outlived its Run would be
+        picked up by the recovery scan as a due run_id that no longer
+        resolves. Each table is probed before use because this store may be
+        wired without the module that owns the table — a table that does not
+        exist cannot hold an orphaned row.
+        """
+        continuations = 0
+        for table, sql in _PURGE_DEPENDENT_SQL.items():
+            if not await self._dependent_table_exists(table):
+                continue
+            cursor = await self._conn.execute(sql, (run_id_param,))
+            continuations += max(cursor.rowcount, 0)
+        return continuations
+
+    async def _count_retained_references(self, run_id_param: str) -> int:
+        """Count the retained provenance references the purge leaves behind.
+
+        `_RETAINED_REFERENCE_SQL` names the append-only evidence — the
+        canonical Event log — that retention keeps by policy and reports
+        rather than destroys (#1175). The residue is a reported fact, not a
+        silent one.
+        """
+        retained = 0
+        for table, sql in _RETAINED_REFERENCE_SQL.items():
+            if not await self._dependent_table_exists(table):
+                continue
+            row = await (await self._conn.execute(sql, (run_id_param,))).fetchone()
+            retained += int(row[0]) if row is not None else 0
+        return retained
 
     async def transition_run(
         self,

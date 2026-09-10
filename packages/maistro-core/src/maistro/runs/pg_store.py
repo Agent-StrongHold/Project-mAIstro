@@ -298,27 +298,8 @@ class PgRunStore:
         if limit <= 0:
             raise ValueError("limit must be positive")
         cutoff = now if now is not None else datetime.now(UTC)
-        workspace_scoped = isinstance(scope, WorkspaceRetentionScope)
         async with self._pool.acquire() as conn, conn.transaction():
-            # Two literal statements, selected by branch: the scope variants'
-            # whole difference is the one Workspace predicate line, and each
-            # call site keeps its own parameter list.
-            if workspace_scoped:
-                assert isinstance(scope, WorkspaceRetentionScope)  # narrowed above
-                rows = await conn.fetch(
-                    _PURGE_CANDIDATES_SQL_SCOPED,
-                    cutoff,
-                    _TERMINAL_RUN_STATUS_VALUES,
-                    scope.workspace_id,
-                    limit + 1,
-                )
-            else:
-                rows = await conn.fetch(
-                    _PURGE_CANDIDATES_SQL_GLOBAL,
-                    cutoff,
-                    _TERMINAL_RUN_STATUS_VALUES,
-                    limit + 1,
-                )
+            rows = await self._lock_purge_candidates(conn, scope, cutoff, limit)
             backlog_remaining = len(rows) > limit
             selected = rows[:limit]
             run_ids = [row["run_id"] for row in selected]
@@ -339,21 +320,7 @@ class PgRunStore:
                 "DELETE FROM canonical_runs WHERE run_id = ANY($1::text[]) RETURNING run_id",
                 run_ids,
             )
-            continuations = 0
-            if await conn.fetchval("SELECT to_regclass('public.graph_continuations') IS NOT NULL"):
-                deleted_continuations = await conn.fetch(
-                    "DELETE FROM graph_continuations WHERE run_id = ANY($1::text[]) RETURNING run_id",
-                    run_ids,
-                )
-                continuations = len(deleted_continuations)
-            events_retained = 0
-            if await conn.fetchval("SELECT to_regclass('public.canonical_event_log') IS NOT NULL"):
-                events_retained = int(
-                    await conn.fetchval(
-                        "SELECT COUNT(*) FROM canonical_event_log WHERE run_id = ANY($1::text[])",
-                        run_ids,
-                    )
-                )
+            continuations, events_retained = await self._reclaim_and_count_dependents(conn, run_ids)
         return PurgeOutcome(
             scope=scope,
             runs=len(deleted_runs),
@@ -364,6 +331,68 @@ class PgRunStore:
             schedule_claims_released=sum(1 for row in selected if row["schedule_id"] is not None),
             backlog_remaining=backlog_remaining,
         )
+
+    async def _lock_purge_candidates(
+        self,
+        conn: Any,
+        scope: RetentionScope,
+        cutoff: datetime,
+        limit: int,
+    ) -> list[Any]:
+        """Lock the purge candidates inside the caller's transaction.
+
+        Two literal statements, selected by branch: the scope variants' whole
+        difference is the one Workspace predicate line, and each call site
+        keeps its own parameter list. Extracted so the purge itself reads as
+        the transaction it is — candidates, spine deletes, dependents, one
+        commit — rather than as statement plumbing.
+        """
+        if isinstance(scope, WorkspaceRetentionScope):
+            return list(
+                await conn.fetch(
+                    _PURGE_CANDIDATES_SQL_SCOPED,
+                    cutoff,
+                    _TERMINAL_RUN_STATUS_VALUES,
+                    scope.workspace_id,
+                    limit + 1,
+                )
+            )
+        return list(
+            await conn.fetch(
+                _PURGE_CANDIDATES_SQL_GLOBAL,
+                cutoff,
+                _TERMINAL_RUN_STATUS_VALUES,
+                limit + 1,
+            )
+        )
+
+    async def _reclaim_and_count_dependents(self, conn: Any, run_ids: list[str]) -> tuple[int, int]:
+        """Reclaim owned resumable state; count retained Event references.
+
+        Same transaction as the spine deletes above: the Graph continuation
+        table (migration 021) has no FK into the spine, so nothing else would
+        notice it dangling — the purge reclaims it here. The canonical Event
+        log (migration 030) is the opposite disposition: append-only
+        provenance, kept and counted, never emptied by retention. Each table
+        is probed before use because a database migrated before that table's
+        migration is a supported state, not an error.
+        """
+        continuations = 0
+        if await conn.fetchval("SELECT to_regclass('public.graph_continuations') IS NOT NULL"):
+            deleted_continuations = await conn.fetch(
+                "DELETE FROM graph_continuations WHERE run_id = ANY($1::text[]) RETURNING run_id",
+                run_ids,
+            )
+            continuations = len(deleted_continuations)
+        events_retained = 0
+        if await conn.fetchval("SELECT to_regclass('public.canonical_event_log') IS NOT NULL"):
+            events_retained = int(
+                await conn.fetchval(
+                    "SELECT COUNT(*) FROM canonical_event_log WHERE run_id = ANY($1::text[])",
+                    run_ids,
+                )
+            )
+        return continuations, events_retained
 
     async def archive_cold_runs(
         self,

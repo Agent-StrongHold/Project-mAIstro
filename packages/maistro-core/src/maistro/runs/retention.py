@@ -28,12 +28,16 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
+import structlog
+
 from maistro.observability.metrics import retention_backlog_remaining, retention_purged_total
 from maistro.runs.retention_scope import GlobalRetentionScope
 from maistro.runs.store import DEFAULT_PURGE_BATCH, PurgeOutcome, RetentionScope
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from maistro.runs.store import RunStore
+
+_logger = structlog.get_logger(__name__)
 
 #: Default lifetime of a chat-originated Run. Long enough that "what happened in
 #: my conversation yesterday?" is answerable, short enough that a busy
@@ -195,9 +199,7 @@ class RunRetentionSweeper:
                 return 0
             self.last_error = None
             self._last_outcome = outcome
-            self._report_backlog(outcome)
-            if outcome.runs:
-                retention_purged_total.inc(outcome.runs, mode=outcome.mode)
+            self._publish_outcome()
             return outcome.runs
 
     async def sweep_now(
@@ -216,22 +218,40 @@ class RunRetentionSweeper:
             )
             self.last_error = None
             self._last_outcome = outcome
-            self._report_backlog(outcome)
-            if outcome.runs:
-                retention_purged_total.inc(outcome.runs, mode=outcome.mode)
+            self._publish_outcome()
             return outcome.runs
 
-    def _report_backlog(self, outcome: PurgeOutcome) -> None:
-        """Publish the sweep's backlog verdict under its bounded mode label.
+    def _publish_outcome(self) -> None:
+        """Publish the completed sweep's disposition to every health surface.
 
-        The purge count alone cannot alert: a scope whose backlog never
-        drains looks identical to a quiet one unless "the batch ran out"
-        is itself a series a dashboard can graph. The label is the mode,
-        never a Workspace id, for the same #818 bound the purge counter
-        carries.
+        One seam, read through the same :attr:`last_outcome` accessor an
+        external health surface would poll, so what the metrics and the audit
+        log report can never drift from what a caller sees. Deleting canonical
+        evidence is an auditable act (#1175): the structured record names the
+        scope mode, the principal that authorized a global sweep, and the
+        per-class disposition — spine rows reclaimed, traversal state
+        reclaimed, Event references retained, occurrence claims released — so
+        a purge that kept provenance is as visible as one that deleted it.
         """
+        outcome = self.last_outcome
+        if outcome is None:
+            return
         retention_backlog_remaining.set(
             1.0 if outcome.backlog_remaining else 0.0, mode=outcome.mode
+        )
+        if outcome.runs:
+            retention_purged_total.inc(outcome.runs, mode=outcome.mode)
+        _logger.info(
+            "retention.sweep.completed",
+            mode=outcome.mode,
+            workspace_id=outcome.workspace_id,
+            runs=outcome.runs,
+            node_runs=outcome.node_runs,
+            attempts=outcome.attempts,
+            continuations=outcome.continuations,
+            event_references_retained=outcome.event_references_retained,
+            schedule_claims_released=outcome.schedule_claims_released,
+            backlog_remaining=outcome.backlog_remaining,
         )
 
     def _failure_mode(self) -> str:

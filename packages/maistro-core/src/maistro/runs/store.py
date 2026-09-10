@@ -742,11 +742,6 @@ class InMemoryRunStore:
     ) -> PurgeOutcome:
         """Delete up to ``limit`` expired terminal Runs inside ``scope``.
 
-        Orphan-safe: a Run some other Run descends from is skipped, however
-        expired. The durable backend enforces that with `ON DELETE RESTRICT`
-        and this one must agree, or the same retention policy would produce a
-        dangling parent pointer here and an integrity error there.
-
         The scope is the whole of the deletion authority (#1175): a Workspace
         sweep cannot see another Workspace's Runs, and a store-wide sweep is
         only ever an explicit `GlobalRetentionScope` — never the absence of a
@@ -770,35 +765,20 @@ class InMemoryRunStore:
         if limit <= 0:
             raise ValueError("limit must be positive")
         cutoff = now if now is not None else datetime.now(UTC)
-        parent_runs, parent_node_runs = self._referenced_by_children()
-        doomed = [
-            run
-            for run in self._runs.values()
-            if run_in_purge_scope(run, scope)
-            and is_purgeable(run, cutoff)
-            and not self._has_child(run.run_id, parent_runs, parent_node_runs)
-        ]
+        doomed = self._doomed_runs(scope, cutoff)
         selected = doomed[:limit]
         selected_ids = {run.run_id for run in selected}
-        node_runs_of_selected = {
-            node_run_id
-            for node_run_id, node_run in self._node_runs.items()
-            if node_run.run_id in selected_ids
-        }
-        attempts = sum(
-            1 for attempt in self._attempts.values() if attempt.node_run_id in node_runs_of_selected
-        )
+        # Counted before `_forget_run`: the spine forget drops the NodeRuns
+        # and Attempts with the Run, and the outcome must describe the rows
+        # the sweep removed, not what it left.
+        node_runs, attempts = self._count_spine_dependents(selected_ids)
         for run in selected:
             self._forget_run(run.run_id)
-        continuations = 0
-        if self._continuation_store is not None:
-            for run_id in selected_ids:
-                if await self._continuation_store.delete(run_id):
-                    continuations += 1
+        continuations = await self._reclaim_continuations(selected_ids)
         return PurgeOutcome(
             scope=scope,
             runs=len(selected),
-            node_runs=len(node_runs_of_selected),
+            node_runs=node_runs,
             attempts=attempts,
             continuations=continuations,
             # This store owns no Event log — canonical Events live in their own
@@ -810,6 +790,56 @@ class InMemoryRunStore:
             ),
             backlog_remaining=len(doomed) > limit,
         )
+
+    def _doomed_runs(self, scope: RetentionScope, cutoff: datetime) -> list[Run]:
+        """Every expired terminal Run inside ``scope`` that no Run descends from.
+
+        The three-way filter is the whole deletion policy in one place: the
+        scope predicate, the terminal-and-expired predicate, and orphan
+        safety — in that order of authority, and orderable nowhere else,
+        because a candidate that fails any one of the three must not be
+        deleted and must not even be counted against the batch.
+        """
+        parent_runs, parent_node_runs = self._referenced_by_children()
+        return [
+            run
+            for run in self._runs.values()
+            if run_in_purge_scope(run, scope)
+            and is_purgeable(run, cutoff)
+            and not self._has_child(run.run_id, parent_runs, parent_node_runs)
+        ]
+
+    def _count_spine_dependents(self, run_ids: set[str]) -> tuple[int, int]:
+        """How many NodeRuns and Attempts the given Runs own.
+
+        Counted rather than discovered lazily so the outcome reports every
+        row the sweep actually deleted — a health metric of "1" would
+        describe a sweep that removed four.
+        """
+        node_run_ids = {
+            node_run_id
+            for node_run_id, node_run in self._node_runs.items()
+            if node_run.run_id in run_ids
+        }
+        attempts = sum(
+            1 for attempt in self._attempts.values() if attempt.node_run_id in node_run_ids
+        )
+        return len(node_run_ids), attempts
+
+    async def _reclaim_continuations(self, run_ids: set[str]) -> int:
+        """Delete the Graph continuation state of the given Runs, if wired.
+
+        None continuation store — the default — leaves the cleanup to
+        `reconcile_persistence`, which is correct but later; a wired store is
+        reclaimed here so the sweep is referentially complete in one call.
+        """
+        if self._continuation_store is None:
+            return 0
+        continuations = 0
+        for run_id in run_ids:
+            if await self._continuation_store.delete(run_id):
+                continuations += 1
+        return continuations
 
     async def non_terminal_run_stats(self) -> tuple[int, datetime | None]:
         """How many Runs are non-terminal, and when the oldest one was created.
