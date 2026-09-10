@@ -39,6 +39,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 
 _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
@@ -228,6 +229,42 @@ def test_unauthenticated_reads_are_refused_before_any_existence_signal(
     r = anonymous.get(path)
     assert r.status_code == 401
     assert r.json() == {"detail": "Authentication required"}
+
+
+def test_dag_run_handlers_fail_closed_without_a_principal() -> None:
+    """The 401s pinned above are served by AuthMiddleware; this pins the
+    handlers' OWN refusal of a principal-less request (#1174). Through the
+    app that arc is unreachable — middleware always sets `state.user` on
+    /v1/ — so it is driven at handler level (the fabricated-Request style
+    this suite already uses for the SSE half): if a request without a
+    principal ever reaches a route — middleware misconfigured, the router
+    mounted outside /v1/ — it must raise 401 rather than fall through
+    `getattr(...) or {}` into a scope resolution for the empty principal.
+    The run below EXISTS, so the 401 also proves the refusal happens before
+    any store read, not merely alongside one."""
+    from routes import dag_runs
+
+    _seed_run("r-anon", workspace_id="ws-exists")
+
+    request = SimpleNamespace(state=SimpleNamespace())  # no `user` attribute
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(dag_runs.list_runs(request))
+    assert excinfo.value.status_code == 401
+    assert excinfo.value.detail == "Authentication required"
+
+
+def test_eval_judge_handlers_fail_closed_without_a_principal() -> None:
+    """Same fail-closed refusal, eval-judge door: the by-id verdict read
+    names its principal before it authorizes the run, so a request without
+    one is a 401 — never a verdict, and never a scoped existence answer
+    computed for a principal nobody authenticated (#1174)."""
+    from routes import eval_judge as eval_judge_routes
+
+    request = SimpleNamespace(state=SimpleNamespace())
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(eval_judge_routes.read_verdict("r-anon", request))
+    assert excinfo.value.status_code == 401
+    assert excinfo.value.detail == "Authentication required"
 
 
 # ─── fail-closed on scopeless rows ───────────────────────────────────────────
