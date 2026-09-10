@@ -128,31 +128,97 @@ permissions = "*"
         with pytest.raises(UsersTamperError, match="Signature verification failed"):
             UsersStore(data_dir=str(tmp_path), trusted_signing_key=_TRUSTED_SIGNING_KEY)
 
-    def test_trust_root_rotation_requires_current_trusted_key(self, tmp_path: Path) -> None:
-        from maistro.privilege import UsersStore, UsersTamperError, UsersTrustRootError
+    def test_authenticated_trust_root_migration_via_public_api(self, tmp_path: Path) -> None:
+        """The documented rotation path: authenticate under the CURRENT external
+        secret, then re-sign the verified roster under the NEW one.
+
+        Every step uses the shipped public API. An attacker-nominated "current
+        key" does not authenticate the artifact (it was signed with the real
+        current root), aborting the migration before anything is written, and
+        after a completed migration only the new external root is authoritative.
+        """
+        from maistro.privilege import UsersStore, UsersTamperError
 
         store = UsersStore(data_dir=str(tmp_path), trusted_signing_key=_TRUSTED_SIGNING_KEY)
         store.initialize("alice", "pk_admin", "bob", "pk_user")
-        original = (tmp_path / "users.toml").read_text()
 
-        with pytest.raises(UsersTrustRootError, match="authentication failed"):
-            store.rotate_trusted_signing_key(
-                current_trusted_signing_key="attacker-controlled-key",
-                new_trusted_signing_key="attacker-new-key",
+        # Migration step 1: authenticate the artifact under the current root.
+        with pytest.raises(UsersTamperError):
+            UsersStore(
+                data_dir=str(tmp_path),
+                trusted_signing_key="attacker-nominated-current-key",
             )
-        assert (tmp_path / "users.toml").read_text() == original
+        assert "attacker-nominated-current-key" not in (tmp_path / "users.toml").read_text()
 
-        store.rotate_trusted_signing_key(
-            current_trusted_signing_key=_TRUSTED_SIGNING_KEY,
-            new_trusted_signing_key="host-owned-users-integrity-key-v2",
+        verified = UsersStore(data_dir=str(tmp_path), trusted_signing_key=_TRUSTED_SIGNING_KEY)
+        roster = (verified.admin(), verified.user_by_public_key("pk_user"))
+        # Move the authenticated artifact aside (rollback backup); the new
+        # store re-signs from scratch under the new external root.
+        (tmp_path / "users.toml").rename(tmp_path / "users.toml.pre-rotation")
+        replacement = UsersStore(
+            data_dir=str(tmp_path),
+            trusted_signing_key="host-owned-users-integrity-key-v2",
         )
+        # Migration step 2: re-sign the roster the verified store just
+        # authenticated, under the new external root.
+        replacement.initialize(
+            roster[0].name,
+            roster[0].public_key,
+            roster[1].name,
+            roster[1].public_key,
+        )
+
+        # Only the new external root is authoritative afterwards.
         with pytest.raises(UsersTamperError):
             UsersStore(data_dir=str(tmp_path), trusted_signing_key=_TRUSTED_SIGNING_KEY)
         reloaded = UsersStore(
             data_dir=str(tmp_path),
             trusted_signing_key="host-owned-users-integrity-key-v2",
         )
-        assert reloaded.admin().public_key == "pk_admin"
+        assert reloaded.admin().name == "alice"
+        assert reloaded.user_by_public_key("pk_user").name == "bob"
+        on_disk = (tmp_path / "users.toml").read_text()
+        assert _TRUSTED_SIGNING_KEY not in on_disk
+        assert "host-owned-users-integrity-key-v2" not in on_disk
+
+    def test_file_cannot_initiate_or_authorize_rotation(self, tmp_path: Path) -> None:
+        """The file cannot choose, replace, or trigger its own authority.
+
+        An attacker-authored users.toml that names a new signing key (or any
+        other directive) and carries a matching attacker HMAC is rejected
+        outright, and the deprecated store exposes no file-triggerable
+        migration entry point at all.
+        """
+        from maistro.privilege import UsersStore, UsersTamperError, _verify
+
+        store = UsersStore(data_dir=str(tmp_path), trusted_signing_key=_TRUSTED_SIGNING_KEY)
+        store.initialize("alice", "pk_admin", "bob", "pk_user")
+
+        attacker_key = "attacker-controlled-key"
+        forged_content = """trusted_signing_key = "attacker-controlled-key"
+
+[[users]]
+name = "eve"
+public_key = "attacker-controlled-key"
+role = "admin"
+permissions = "*"
+"""
+        forged_signature = hmac.new(
+            attacker_key.encode(), forged_content.encode(), hashlib.sha256
+        ).hexdigest()
+        (tmp_path / "users.toml").write_text(f"# sig: {forged_signature}\n{forged_content}")
+        # The forgery is internally consistent; it is the trust root that
+        # rejects it, not a malformed signature.
+        assert _verify(forged_content, attacker_key, forged_signature)
+
+        with pytest.raises(UsersTamperError, match="Signature verification failed"):
+            UsersStore(data_dir=str(tmp_path), trusted_signing_key=_TRUSTED_SIGNING_KEY)
+
+        # No migration/rotation entry point exists on the public surface: the
+        # only mutating API is initialize(), which takes its trust root from
+        # the host-supplied constructor argument, never from the file.
+        public_api = {name for name in vars(UsersStore) if not name.startswith("_")}
+        assert public_api == {"initialize", "admin", "user_by_public_key"}
 
     def test_empty_external_trust_root_is_rejected(self, tmp_path: Path) -> None:
         from maistro.privilege import UsersStore, UsersTrustRootError

@@ -220,28 +220,49 @@ host-owned secret source outside the data directory being verified.
 
 Rotate that trust root while the consumer is stopped. Fetch both secrets from
 the deployment's authenticated secret-management channel, then authenticate
-with the current key and re-sign before changing deployment configuration:
+with the current key and re-sign before changing deployment configuration. The
+migration is built from the public API only — `users.toml` has no way to name,
+replace, or trigger a change of verification authority:
 
 ```python
-from maistro.privilege import UsersStore
+import os
+import shutil
 
-store = UsersStore(data_dir=data_dir, trusted_signing_key=current_key)
-store.rotate_trusted_signing_key(
-    current_trusted_signing_key=current_key,
-    new_trusted_signing_key=new_key,
+from maistro.privilege import UsersStore, UsersTamperError
+
+# 1. Authenticate the current artifact under the CURRENT external secret.
+#    This constructor verifies the HMAC first; a tampered file or a wrong
+#    current secret raises UsersTamperError and the rotation must not proceed.
+verified = UsersStore(data_dir=data_dir, trusted_signing_key=current_key)
+
+# 2. Move the authenticated artifact aside as a rollback backup, then
+#    re-sign the verified roster under the NEW external secret (use the
+#    same allow_single_user setting, if any). Constructing the new store
+#    while the old file is still in place would verify the stale artifact
+#    against the new key and fail closed with UsersTamperError.
+shutil.move(
+    os.path.join(data_dir, "users.toml"),
+    os.path.join(data_dir, "users.toml.pre-rotation"),
+)
+UsersStore(data_dir=data_dir, trusted_signing_key=new_key).initialize(
+    admin_name=verified.admin().name,
+    admin_public_key=verified.admin().public_key,
+    user_name="bob",           # the roster confirmed by `verified` in step 1
+    user_public_key="pk_user_001",
 )
 ```
 
-After the method succeeds, update the host secret file, keychain, or vault
-binding to inject `new_key`, restart, and confirm that constructing `UsersStore`
-with the new key succeeds. A wrong current key raises `UsersTrustRootError` and
-leaves the file unchanged. The old key no longer verifies the re-signed file.
+After the re-signed file is in place, update the host secret file, keychain, or
+vault binding to inject `new_key`, restart, and confirm that constructing
+`UsersStore` with the new key succeeds. A wrong current secret raises
+`UsersTamperError` and leaves the file unchanged. The old key no longer
+verifies the re-signed file.
 
 If the current key is lost, stop and restore it from a trusted secret-manager
-version or offline backup, verify the existing file, and then perform the same
-authenticated rotation. There is no file-only recovery: changing the admin key,
-users, roles, permissions, or signature in `users.toml` cannot replace the
-external trust root.
+version or offline backup, verify the existing file by constructing `UsersStore`
+with the restored key, and then perform the same authenticated rotation. There
+is no file-only recovery: changing the admin key, users, roles, permissions, or
+signature in `users.toml` cannot replace the external trust root.
 
 The HMAC trust root is distinct from the admin/user identity keys managed by
 `PrivilegeGuard.rotate_admin_key`; rotate both independently if both were

@@ -136,6 +136,16 @@ class UsersStore:
 
     This compatibility store is not wired into Conductor's production
     privilege initialization, which uses :class:`PrivilegeGuard` directly.
+
+    Trust-root rotation and recovery are operator migrations built from this
+    public API only: authenticate the existing artifact by constructing a
+    store bound to the *current* external secret (a tampered artifact or a
+    wrong secret raises :class:`UsersTamperError`), move the authenticated
+    artifact aside, then re-initialize a store bound to the *new* external
+    secret with the verified roster — a constructor bound to the new secret
+    fails closed on the stale artifact. There is no file-triggerable
+    migration: ``users.toml`` cannot name, replace, or initiate a change of
+    verification authority.
     """
 
     def __init__(
@@ -187,31 +197,6 @@ class UsersStore:
         content = "\n".join(lines)
         signature = _sign(content, self._trusted_signing_key)
         toml_path.write_text(f"# sig: {signature}\n{content}")
-
-    def rotate_trusted_signing_key(
-        self,
-        *,
-        current_trusted_signing_key: str,
-        new_trusted_signing_key: str,
-    ) -> None:
-        """Re-sign ``users.toml`` after authenticating the current trust root.
-
-        Deployment configuration must be updated separately to inject the new
-        key on the next process start. Editing ``users.toml`` cannot invoke this
-        migration or replace the in-memory trust root.
-        """
-        if not new_trusted_signing_key:
-            raise UsersTrustRootError("The new users.toml trust root must be non-empty")
-        if not secret_equal(current_trusted_signing_key, self._trusted_signing_key):
-            raise UsersTrustRootError("Current users.toml trust root authentication failed")
-        self._load()
-        previous_key = self._trusted_signing_key
-        self._trusted_signing_key = new_trusted_signing_key
-        try:
-            self._write()
-        except Exception:
-            self._trusted_signing_key = previous_key
-            raise
 
     def _load(self) -> None:
         if self._loaded:
