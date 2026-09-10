@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+from maistro.capabilities.bootstrap import default_capability_registry
+from maistro.capabilities.types import FallbackPolicy, SlotSpec
 from maistro.security._types import (
     AuditEntry,
     AuthContext,
     WardenVerdict,
+)
+from maistro.security.sentinel.permission_source import (
+    CapabilityPermissionSource,
+    StaticPermissionSource,
 )
 from maistro.security.sentinel.policy import Sentinel, _detection_layer, check_permission
 
@@ -203,6 +209,113 @@ async def test_allow_on_miss_mode_denies_regardless_of_role_when_entry_exists():
     )
     verdict = await sentinel.pre_call("hard_denied", {}, _auth(), schema={})
     assert verdict.allowed is False
+
+
+# ─── Live permission source (#1165): canonical reconciliation + runtime revoke ─
+
+
+def _registry_with(slot: str):
+
+    registry = default_capability_registry()
+    if slot not in registry.slots():
+        registry.define(SlotSpec(name=slot, fallback_policy=FallbackPolicy.SAFE_NOOP))
+    return registry
+
+
+class _UnavailableSource:
+    """A policy store that is down: no decision is available."""
+
+    async def current_table(self):
+        raise RuntimeError("policy store down")
+
+
+async def test_sentinel_with_source_allows_explicit_entry_and_denies_miss():
+    """A wired source is the authority: its explicit entries allow, its
+    misses deny -- exactly the static table's fail-closed semantics."""
+    sentinel = Sentinel(
+        warden=_StubWarden(),
+        permission_table={},
+        permission_source=StaticPermissionSource({"deploy": frozenset({"admin"})}),
+    )
+    allowed = await sentinel.pre_call("deploy", {}, _auth(roles=frozenset({"admin"})), schema={})
+    assert allowed.allowed is True
+    denied = await sentinel.pre_call("unlisted", {}, _auth(roles=frozenset({"admin"})), schema={})
+    assert denied.allowed is False
+    assert denied.violations[0].rule == "permission_denied"
+
+
+async def test_pre_call_reflects_post_initialization_capability_revoke():
+    """Criterion 5 (#1165): disabling a canonical capability slot revokes the
+    matching tool at the very next decision, with no process restart."""
+    registry = _registry_with("deploy")
+    sentinel = Sentinel(
+        warden=_StubWarden(),
+        permission_table={},
+        permission_source=CapabilityPermissionSource(
+            base={"deploy": frozenset({"admin"})}, capabilities=registry
+        ),
+    )
+    auth = _auth(roles=frozenset({"admin"}))
+    assert (await sentinel.pre_call("deploy", {}, auth, schema={})).allowed is True
+
+    registry.set_enabled("deploy", False)  # the runtime revoke gesture
+
+    revoked = await sentinel.pre_call("deploy", {}, auth, schema={})
+    assert revoked.allowed is False
+    assert revoked.violations[0].rule == "permission_denied"
+
+    registry.set_enabled("deploy", True)
+    assert (await sentinel.pre_call("deploy", {}, auth, schema={})).allowed is True
+
+
+async def test_authorize_reflects_post_initialization_capability_revoke():
+    from maistro.security.sentinel.authz_types import Principal
+
+    registry = _registry_with("deploy")
+    sentinel = Sentinel(
+        warden=_StubWarden(),
+        permission_table={},
+        permission_source=CapabilityPermissionSource(
+            base={"deploy": frozenset({"admin"})}, capabilities=registry
+        ),
+    )
+    principal = Principal(id="p1", kind="human", roles=("admin",))
+    assert (await sentinel.authorize("deploy", principal)).authorized is True
+
+    registry.set_enabled("deploy", False)
+
+    decision = await sentinel.authorize("deploy", principal)
+    assert decision.authorized is False
+    assert "lacks capability" in decision.reason
+
+
+async def test_pre_call_denies_when_permission_source_is_unavailable():
+    """A source that cannot decide is not rescued by the static table: a
+    stale snapshot must not outvote a revoke, so the decision fails closed."""
+    sentinel = Sentinel(
+        warden=_StubWarden(),
+        permission_table={"deploy": frozenset({"admin"})},
+        permission_source=_UnavailableSource(),
+    )
+    verdict = await sentinel.pre_call("deploy", {}, _auth(roles=frozenset({"admin"})), schema={})
+    assert verdict.allowed is False
+    assert verdict.violations[0].rule == "permission_denied"
+    assert verdict.violations[0].detail == "Permission source unavailable; denied fail-closed"
+
+
+async def test_authorize_denies_when_permission_source_is_unavailable():
+    from maistro.security.sentinel.authz_types import Principal
+
+    sentinel = Sentinel(
+        warden=_StubWarden(),
+        permission_table={"deploy": frozenset({"admin"})},
+        permission_source=_UnavailableSource(),
+    )
+    decision = await sentinel.authorize(
+        "deploy", Principal(id="p1", kind="human", roles=("admin",))
+    )
+    assert decision.authorized is False
+    assert "unavailable" in decision.reason
 
 
 # ─── Sentinel.post_call ─────────────────────────────────────────────────────────

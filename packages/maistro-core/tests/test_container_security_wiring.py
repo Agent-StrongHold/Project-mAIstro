@@ -135,6 +135,61 @@ def test_security_config_cannot_arm_allow_on_miss() -> None:
     assert "permission_allow_on_miss" not in SecurityConfig.model_fields
 
 
+# --- Live capability reconciliation (criteria 4-5, #1165) -------------------
+# The container's Sentinel must reconcile with canonical capability state via a
+# decision-time source, not a static snapshot: a runtime capability disable is
+# reflected in the very next decision, without a process restart.
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("integration")
+async def test_container_wires_live_capability_permission_source() -> None:
+    container = await _container()
+
+    source = container.sentinel._permission_source
+    assert source is not None
+    # The same registry the container exposes: a disable through one is a deny
+    # through the other. A second registry would look wired and decide stale.
+    assert source._capabilities is container.capabilities
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("integration")
+async def test_container_capability_disable_revokes_tool_without_restart() -> None:
+    """Criterion 5 on the real production composition: ``set_enabled`` is the
+    canonical runtime revoke gesture, and Sentinel's next decision honors it."""
+    container = await _container(permissions={"approval": ["admin"]})
+    auth = AuthContext(user_id="u1", roles=frozenset({"admin"}))
+    assert (await container.sentinel.pre_call("approval", {}, auth, {})).allowed is True
+
+    container.capabilities.set_enabled("approval", False)
+
+    revoked = await container.sentinel.pre_call("approval", {}, auth, {})
+    assert revoked.allowed is False
+    assert revoked.violations[0].rule == "permission_denied"
+
+    # Re-enabling restores exactly the governed table's decision.
+    container.capabilities.set_enabled("approval", True)
+    assert (await container.sentinel.pre_call("approval", {}, auth, {})).allowed is True
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("integration")
+async def test_container_capability_disable_never_grants_unnamed_tools() -> None:
+    """The live source only removes authority: disabling a slot cannot make a
+    tool the deployment table never named become allowed (and at shipped
+    defaults canonical slot names are still not tools)."""
+    container = await _container()
+    auth = AuthContext(user_id="u1", roles=frozenset({"admin"}))
+    for tool in ("read_file", "exec", "approval", "infra_action"):
+        verdict = await container.sentinel.pre_call(tool, {}, auth, {})
+        assert verdict.allowed is False, tool
+
+    container.capabilities.set_enabled("infra_action", False)
+
+    assert (await container.sentinel.pre_call("infra_action", {}, auth, {})).allowed is False
+
+
 # --- Strike tracker wiring (H3) ----------------------------------------------
 
 
@@ -386,8 +441,34 @@ def test_test_harness_defaults_match_create_container() -> None:
     container = create_test_environment().container
 
     assert container.sentinel._permission_table == {}
+    assert container.sentinel._permission_source is not None
     assert container.strike_tracker is None
     assert container.gate._strike_tracker is None
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("integration")
+async def test_test_harness_wires_the_same_live_capability_source() -> None:
+    """The harness is a second composition path; it drifted from the real
+    Sentinel wiring once already. Pin that it mirrors the container's live
+    capability reconciliation, on the same registry instance."""
+    from maistro.testing import create_test_environment
+
+    container = create_test_environment(
+        config=AgentConfig(
+            router_api_key="test-key",
+            security=SecurityConfig(permissions={"approval": ["admin"]}),
+        )
+    ).container
+
+    source = container.sentinel._permission_source
+    assert source is not None
+    assert source._capabilities is container.capabilities
+
+    auth = AuthContext(user_id="u1", roles=frozenset({"admin"}))
+    assert (await container.sentinel.pre_call("approval", {}, auth, {})).allowed is True
+    container.capabilities.set_enabled("approval", False)
+    assert (await container.sentinel.pre_call("approval", {}, auth, {})).allowed is False
 
 
 # ---------------------------------------------------------------------------

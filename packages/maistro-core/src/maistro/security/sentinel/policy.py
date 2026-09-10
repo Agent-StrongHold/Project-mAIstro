@@ -21,6 +21,7 @@ from maistro.security.sentinel.approver_graph import ApproverGraph
 from maistro.security.sentinel.argument_limits import ToolArgumentLimits, check_argument_limits
 from maistro.security.sentinel.authz_types import AuthzDecision, Principal, Tier
 from maistro.security.sentinel.elevation import ElevationStore, hash_args
+from maistro.security.sentinel.permission_source import PermissionSource, resolve_live_table
 from maistro.security.sentinel.pii_filter import scan_and_redact
 from maistro.security.sentinel.rlphd import RlphdModel, RlphdThresholdStore, RlphdVerdict
 from maistro.security.sentinel.token_optimizer import optimize_result
@@ -73,6 +74,7 @@ class Sentinel:
         *,
         warden: Warden,
         permission_table: PermissionTable,
+        permission_source: PermissionSource | None = None,
         audit_log: AuditLog | None = None,
         tier_policy: dict[tuple[str, str], Tier] | None = None,
         approver_graph: ApproverGraph | None = None,
@@ -84,6 +86,15 @@ class Sentinel:
     ) -> None:
         self._warden = warden
         self._permission_table = permission_table
+        # Live permission authority (#1165, ADR-072726-0d6b): wired by
+        # production composition roots so a decision consults canonical
+        # capability state at the moment it is made, and a runtime capability
+        # disable/revoke lands on the very next decision without a restart.
+        # When set, it supersedes the static table; when it cannot decide,
+        # the decision denies (fail-closed) -- the static table is never used
+        # to rescue an unavailable source, because a stale snapshot must not
+        # outvote a revoke.
+        self._permission_source = permission_source
         self._audit_log = audit_log
         self._tier_policy = tier_policy or {}
         self._approver_graph = approver_graph
@@ -105,6 +116,18 @@ class Sentinel:
                 "use only (ADR-072726-0d6b); production wiring must configure an "
                 "explicit permission source instead."
             )
+
+    async def _effective_table(self) -> PermissionTable | None:
+        """The permission table for THIS decision, or None when undecidable.
+
+        A wired source is consulted live on every call -- that is the #1165
+        runtime-revoke path: canonical capability/binding state changes reach
+        the next decision without a process restart. With no source wired,
+        the static construction table applies (unchanged legacy shape).
+        """
+        if self._permission_source is None:
+            return self._permission_table
+        return await resolve_live_table(self._permission_source)
 
     def resolve_tier(
         self,
@@ -136,10 +159,22 @@ class Sentinel:
         """ADR-068 §F steps 1-4, short-circuiting on first deny."""
         tier = self.resolve_tier(action, principal, reversibility=reversibility)
 
+        table = await self._effective_table()
+        if table is None:
+            return AuthzDecision(
+                tier=tier,
+                authorized=False,
+                needs="none",
+                approver_scope=None,
+                within_budget=within_budget,
+                rlphd=None,
+                reason=f"permission source unavailable for '{action}'; denied fail-closed",
+            )
+
         authorized = check_permission(
             _principal_auth_context(principal),
             action,
-            self._permission_table,
+            table,
             allow_on_miss=self._allow_on_miss,
         )
         if not authorized:
@@ -278,15 +313,20 @@ class Sentinel:
     ) -> SentinelVerdict:
         violations: list[Violation] = []
 
-        if not check_permission(
-            auth, tool_name, self._permission_table, allow_on_miss=self._allow_on_miss
+        table = await self._effective_table()
+        if table is None or not check_permission(
+            auth, tool_name, table, allow_on_miss=self._allow_on_miss
         ):
             violations.append(
                 Violation(
                     boundary="pre_call",
                     rule="permission_denied",
                     severity="error",
-                    detail=f"User '{auth.user_id}' lacks permission for tool '{tool_name}'",
+                    detail=(
+                        "Permission source unavailable; denied fail-closed"
+                        if table is None
+                        else f"User '{auth.user_id}' lacks permission for tool '{tool_name}'"
+                    ),
                 )
             )
             verdict = SentinelVerdict(

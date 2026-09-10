@@ -154,6 +154,26 @@ Implemented on branch `m2-1165-a1`, following this ADR's own sequencing rule:
    core `can_use_tool`/`check_permission` units, Sentinel `pre_call` /
    `authorize` on empty and governed tables, and the container wiring test
    asserting the default production Sentinel denies unlisted tools.
+5. **Reconciliation with canonical capability state, and runtime revoke
+   without restart (2026-09-10 repair, criteria 4-5 of #1165).** Sentinel now
+   accepts a decision-time `PermissionSource`
+   (`security/sentinel/permission_source.py`): a source is resolved on every
+   `pre_call` / `authorize`, so authority is read at the moment it is
+   exercised, not from a construction-time snapshot. The shipped production
+   adapter, `CapabilityPermissionSource`, projects the canonical
+   `CapabilityRegistry`'s live enable state over the deployment table: for a
+   tool whose name is a defined capability slot, a disabled slot removes the
+   authorization at the very next decision (`CapabilityRegistry.set_enabled`
+   is the runtime revoke gesture), and re-enabling restores exactly the
+   base table's decision, never more — the adapter can only remove authority.
+   The gating is derived from the registry itself (a tool name that is a
+   defined slot), not from a hand-maintained tool-to-slot mapping, so this is
+   not a second universal tool authority. `create_container` and the test
+   harness (the second composition path) both wire the source against the
+   same registry instance each exposes. Fail-closed carries over: a source
+   that raises or returns nothing yields a denial — the static table is
+   never used to rescue an unavailable source, because a stale snapshot must
+   not outvote a revoke.
 
 **Consciously deferred (not done here — do not assume otherwise):**
 
@@ -166,10 +186,17 @@ Implemented on branch `m2-1165-a1`, following this ADR's own sequencing rule:
 - Precondition 4 (shadow mode) was not built: there is no audit-only mode that
   logs what a richer table *would* have denied before enforcement. The
   compatibility mode's warning log is the only soft signal.
-- Reconciliation with canonical Capability/Binding/policy state (the
-  #55/#57/#846 family) is NOT implemented: the table remains a governed
-  deployment configuration, not a projection of capability bindings, and
-  runtime revoke-without-restart is out of scope here.
+- Binding-scoped tool authorization is still open: the `PermissionSource`
+  seam above reconciles Sentinel with the canonical *capability* state, but
+  resolving Workspace/Project/Node-scoped Bindings at Sentinel's boundary
+  needs execution identity the lookup does not carry — that is #804's
+  governed tool-use work, and it plugs in as another `PermissionSource`
+  without touching Sentinel. The canonical machinery likewise has no binding
+  *revoke* gesture yet (`InMemoryBindingStore` has no delete; bindings are
+  immutable), so runtime revocation ships for capability enable-state only.
+- Provider health/activation deliberately does NOT feed Sentinel decisions:
+  the source gates on the registry's enable state (authority), while
+  availability remains the registry's own `resolve()` concern.
 - Message precision follow-up: a denied `agent.synth_dag` authorization
   surfaces as a generic needs-revision verdict whose revision text mentions
   budget. The refusal is correct and fail-closed; the wording is not.
