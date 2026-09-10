@@ -205,9 +205,10 @@ class UsersStore:
         if not toml_path.exists():
             return
         raw = toml_path.read_text()
-        newline_pos = raw.index("\n")
-        sig_line = raw[:newline_pos]
-        content = raw[newline_pos + 1 :]
+        parts = raw.split("\n", 1)
+        if len(parts) < 2:
+            raise UsersTamperError("Missing content in users.toml")
+        sig_line, content = parts
         if not sig_line.startswith("# sig: "):
             raise UsersTamperError("Missing signature in users.toml")
         stored_sig = sig_line[len("# sig: ") :]
