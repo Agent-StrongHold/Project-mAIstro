@@ -53,6 +53,11 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#1172",
       "reason": "Authorized administrative strike recovery service shipped as a maistro-core library surface in #1172. It is intentionally unreachable from this repository's process entry points because downstream products supply the tracker, Sentinel and audit-log wiring; the service preserves the canonical Sentinel authorization path and is dispositioned CONNECT under Warden / Sentinel / Gate until product wiring adopts it."
+    },
+    "_vulture_whitelist": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1142",
+      "reason": "packages/maistro-core/src/_vulture_whitelist.py is scan input for the vulture CLI (the quality.yml vulture step globs packages/*/src, and vulture itself walks the whole tree it is given), not application code -- it has no reason to ever be imported by production code. It was previously invisible to the reachability graph entirely: a loose .py file directly under a src root, sibling to the package directories rather than inside one, was declared source but never became a module node, so it was counted in the source-universe total and never surfaced as unreachable at the same time (#1142). Fixing that discovery gap makes this file newly visible to the ratchet for the first time; it is dispositioned LIBRARY in quality/reachability-dispositions.json (group vulture-whitelist) because being unreachable from a process entry point is its permanent, correct state, not deferred wiring. This grant authorizes exactly that one newly-discovered, pre-existing file; it does not authorize any other new reachability debt."
     }
   },
   "vulture": {
