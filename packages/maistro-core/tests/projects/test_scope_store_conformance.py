@@ -22,6 +22,7 @@ jobs that own a server.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 from uuid import uuid4
@@ -528,3 +529,169 @@ async def test_required_resources_a_project_cannot_see_are_denied(backend) -> No
 
     with pytest.raises(ProjectScopeDenied, match=hidden):
         await store.validate_required_resources(right.project_id, {hidden})
+
+
+# ── membership uniqueness and revocation (#1148) ────────────────────
+
+
+async def test_repeated_grants_update_the_one_canonical_membership(backend) -> None:
+    """A second `set_membership` for the same principal replaces the first
+    rather than adding an independent grant nothing can retract."""
+    store = await backend.store()
+    workspace_id = _workspace()
+    root = await store.create_root(workspace_id)
+
+    first = await store.set_membership(
+        ProjectMembership(
+            workspace_id=workspace_id,
+            project_id=root.project_id,
+            principal_id="principal-1",
+            grants={"publish"},
+        )
+    )
+    second = await store.set_membership(
+        ProjectMembership(
+            workspace_id=workspace_id,
+            project_id=root.project_id,
+            principal_id="principal-1",
+            role="editor",
+            grants={"publish", "review"},
+            denies={"delete"},
+        )
+    )
+
+    memberships = await store.memberships_for(root.project_id, principal_id="principal-1")
+    assert len(memberships) == 1
+    assert memberships[0].membership_id == first.membership_id
+    assert memberships[0].created_at == first.created_at
+    assert memberships[0].role == "editor"
+    assert memberships[0].grants == {"publish", "review"}
+    assert memberships[0].denies == {"delete"}
+    assert second.membership_id == first.membership_id
+
+
+async def test_revoked_membership_is_gone_and_can_be_re_granted(backend) -> None:
+    """An explicit revoke removes the membership fact, not only its grants,
+    and revoking twice is a no-op rather than an error."""
+    store = await backend.store()
+    workspace_id = _workspace()
+    root = await store.create_root(workspace_id)
+    await store.set_membership(
+        ProjectMembership(
+            workspace_id=workspace_id,
+            project_id=root.project_id,
+            principal_id="principal-1",
+            grants={"publish"},
+        )
+    )
+
+    await store.remove_membership(root.project_id, principal_id="principal-1")
+    assert await store.memberships_for(root.project_id, principal_id="principal-1") == []
+    await store.remove_membership(root.project_id, principal_id="principal-1")
+
+    regranted = await store.set_membership(
+        ProjectMembership(
+            workspace_id=workspace_id,
+            project_id=root.project_id,
+            principal_id="principal-1",
+            grants={"review"},
+        )
+    )
+
+    fresh = await backend.store()
+    reloaded = await fresh.memberships_for(root.project_id, principal_id="principal-1")
+    assert [m.grants for m in reloaded] == [{"review"}]
+    assert reloaded[0].membership_id == regranted.membership_id
+
+
+async def test_concurrent_membership_writes_leave_exactly_one_row(backend) -> None:
+    """Two callers granting the same principal at once resolve to one
+    canonical row, never two independent grants."""
+    store_a = await backend.store()
+    store_b = await backend.store()
+    workspace_id = _workspace()
+    root = await store_a.create_root(workspace_id)
+
+    async def grant(store, action: str) -> None:
+        await store.set_membership(
+            ProjectMembership(
+                workspace_id=workspace_id,
+                project_id=root.project_id,
+                principal_id="principal-1",
+                grants={action},
+            )
+        )
+
+    await asyncio.gather(grant(store_a, "publish"), grant(store_b, "review"))
+
+    fresh = await backend.store()
+    memberships = await fresh.memberships_for(root.project_id, principal_id="principal-1")
+    assert len(memberships) == 1
+    assert memberships[0].grants in ({"publish"}, {"review"})
+
+
+async def test_a_membership_survives_a_fresh_store_and_a_removal(backend) -> None:
+    """`remove_membership` is on the shared protocol, so every backend answers
+    the same question a caller who only has the abstract store can ask."""
+    store = await backend.store()
+    workspace_id = _workspace()
+    root = await store.create_root(workspace_id)
+    await store.set_membership(
+        ProjectMembership(
+            workspace_id=workspace_id,
+            project_id=root.project_id,
+            principal_id="principal-1",
+            grants={"publish"},
+        )
+    )
+
+    fresh = await backend.store()
+    assert len(await fresh.memberships_for(root.project_id)) == 1
+
+    await fresh.remove_membership(root.project_id, principal_id="principal-1")
+
+    reloaded = await backend.store()
+    assert await reloaded.memberships_for(root.project_id) == []
+
+
+# ── move_project serialization under concurrency (#1147) ────────────
+
+
+async def test_concurrent_opposite_moves_cannot_both_commit_a_cycle(backend) -> None:
+    """A under B and B under A racing: at most one may win, and the tree
+    stays lineage-valid either way -- never both committing a cycle.
+
+    Each `backend.store()` call is a fresh connection (SQLite) or a fresh
+    object on the shared pool (PostgreSQL), which is what makes this actually
+    exercise the database's own write serialization rather than a
+    single-process, single-connection lock that a second worker process would
+    never see.
+    """
+    store_a = await backend.store()
+    store_b = await backend.store()
+    workspace_id = _workspace()
+    root = await store_a.create_root(workspace_id)
+    left = await store_a.create(
+        workspace_id=workspace_id, parent_project_id=root.project_id, name="Left"
+    )
+    right = await store_a.create(
+        workspace_id=workspace_id, parent_project_id=root.project_id, name="Right"
+    )
+
+    results = await asyncio.gather(
+        store_a.move_project(left.project_id, parent_project_id=right.project_id),
+        store_b.move_project(right.project_id, parent_project_id=left.project_id),
+        return_exceptions=True,
+    )
+
+    refused = [isinstance(result, ProjectIntegrityError) for result in results]
+    # Exactly one of the two opposite moves may commit; the other is refused
+    # as a cycle rather than both succeeding and leaving lineage() unresolvable
+    # for good.
+    assert refused.count(True) == 1, results
+    assert refused.count(False) == 1, results
+
+    fresh = await backend.store()
+    for project_id in (left.project_id, right.project_id):
+        lineage = await fresh.lineage(project_id)
+        assert len({project.project_id for project in lineage}) == len(lineage)

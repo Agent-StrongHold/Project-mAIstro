@@ -78,6 +78,30 @@ or placeholder-only section.
   (no production embedding client is constructed, so the column stays NULL);
   the matrix no longer claims scoped pgvector recall is live.
 
+### Fixed
+
+- **Project membership is one canonical row per `(project, principal)`, and
+  is now explicitly revocable (#1148).** `ProjectScopeStore.set_membership`
+  used to mint a fresh `membership_id` on every call, so a re-grant, role
+  change, or explicit deny accumulated a second, independent row instead of
+  replacing the first — `resolve_project_authorization` unions every row it
+  finds, so a stale grant a later deny was meant to narrow stayed live
+  forever, and there was no way to retract a grant outright. `set_membership`
+  now upserts keyed on `(project_id, principal_id)` across all three
+  backends, and a new `remove_membership` revokes a membership durably. A
+  migration (`032`) deduplicates existing PostgreSQL rows (keeping the most
+  recent per pair) before adding the new primary key.
+- **SQLite `move_project` now serializes the cycle check with the reparent
+  write (#1147).** PostgreSQL already locked a Workspace's Projects with
+  `FOR UPDATE` before checking ancestry; the SQLite twin did a plain
+  read-then-write, so two concurrent opposite moves (A under B, B under A)
+  could both pass their independent checks and both commit, leaving a cycle
+  `lineage()` can never resolve again. `move_project` now takes SQLite's
+  write lock (`BEGIN IMMEDIATE`) before reading the tree, matching
+  `workspaces.sqlite_store`'s existing pattern; a forced-interleaving
+  conformance test (two connections to the same file) proves one of the two
+  concurrent moves is refused as a cycle rather than both landing.
+
 ## [1.0.0] - TBD
 
 First tagged release. Prior to this, the repository had no tags, no release

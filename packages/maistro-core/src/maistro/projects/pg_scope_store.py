@@ -302,30 +302,58 @@ class PgProjectScopeStore:
         return resolved
 
     async def set_membership(self, membership: ProjectMembership) -> ProjectMembership:
+        """Create or update the one canonical membership per (project, principal).
+
+        Keyed on `(project_id, principal_id)`, carrying the prior row's
+        `membership_id` and `created_at` forward on an update rather than
+        minting a second, independent grant (#1148) -- the existing row is
+        read under `FOR UPDATE` so the decision of what to preserve is
+        atomic with the write.
+        """
         project = await self._require(membership.project_id)
         if project.workspace_id != membership.workspace_id:
             raise ProjectIntegrityError("ProjectMembership Workspace does not match Project")
-        existing = await self._membership_or_none(membership.membership_id)
-        if existing is not None and existing.workspace_id != membership.workspace_id:
-            raise ProjectIntegrityError("membership identity cannot cross Workspaces")
-        updated = membership.model_copy(update={"updated_at": datetime.now(UTC)})
-        async with self._pool.acquire() as conn:
+        async with self._pool.acquire() as conn, conn.transaction():
+            existing = await self._membership_or_none(
+                membership.project_id, membership.principal_id, conn=conn, lock=True
+            )
+            if existing is not None and existing.workspace_id != membership.workspace_id:
+                raise ProjectIntegrityError("membership identity cannot cross Workspaces")
+            updated = membership.model_copy(
+                update={
+                    "membership_id": (
+                        existing.membership_id if existing else membership.membership_id
+                    ),
+                    "created_at": existing.created_at if existing else membership.created_at,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
             await conn.execute(
                 """INSERT INTO canonical_project_memberships
-                   (membership_id, workspace_id, project_id, principal_id, payload)
+                   (project_id, principal_id, workspace_id, membership_id, payload)
                    VALUES ($1, $2, $3, $4, $5::text::jsonb)
-                   ON CONFLICT (membership_id) DO UPDATE SET
+                   ON CONFLICT (project_id, principal_id) DO UPDATE SET
                      workspace_id = EXCLUDED.workspace_id,
-                     project_id = EXCLUDED.project_id,
-                     principal_id = EXCLUDED.principal_id,
+                     membership_id = EXCLUDED.membership_id,
                      payload = EXCLUDED.payload""",
-                updated.membership_id,
-                updated.workspace_id,
                 updated.project_id,
                 updated.principal_id,
+                updated.workspace_id,
+                updated.membership_id,
                 json_of(updated),
             )
         return updated
+
+    async def remove_membership(self, project_id: str, *, principal_id: str) -> None:
+        """Revoke a principal's membership at one Project, if any exists."""
+
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """DELETE FROM canonical_project_memberships
+                   WHERE project_id = $1 AND principal_id = $2""",
+                project_id,
+                principal_id,
+            )
 
     async def memberships_for(
         self,
@@ -435,11 +463,18 @@ class PgProjectScopeStore:
         )
         return model_of(Project, payload) if payload is not None else None
 
-    async def _membership_or_none(self, membership_id: str) -> ProjectMembership | None:
-        payload = await self._payload(
-            "SELECT payload FROM canonical_project_memberships WHERE membership_id = $1",
-            membership_id,
-        )
+    async def _membership_or_none(
+        self,
+        project_id: str,
+        principal_id: str,
+        *,
+        conn: Any = None,
+        lock: bool = False,
+    ) -> ProjectMembership | None:
+        sql = "SELECT payload FROM canonical_project_memberships WHERE project_id = $1 AND principal_id = $2"
+        if lock:
+            sql += " FOR UPDATE"
+        payload = await self._payload(sql, project_id, principal_id, conn=conn)
         return model_of(ProjectMembership, payload) if payload is not None else None
 
     async def _resource_or_none(self, resource_id: str) -> ProjectScopedResource | None:
