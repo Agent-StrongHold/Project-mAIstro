@@ -1345,6 +1345,8 @@
         "packages/maistro-core/src/maistro/vault.py::unused method 'credential_prefixes'",
         "packages/maistro-core/src/maistro/vault.py::unused method 'has'",
         "packages/maistro-core/src/maistro/vault.py::unused method 'use'",
+        "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_normalize_added_at'",
+        "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_normalize_timestamps'",
         "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_require_non_blank'",
         "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_require_non_blank_identity'"
       ]
