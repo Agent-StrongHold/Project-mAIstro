@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import json
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -389,6 +390,40 @@ def _flat_identity(key: str) -> tuple[str, str] | None:
     return app_name, module
 
 
+#: `add_tree`'s shape inside `_collect_modules`: register everything under
+#: `base` as `prefix`-dotted module names, optionally scoped to a flat app.
+_AddTree = Callable[[Path, str], None]
+
+
+def _is_loose_src_module(pkg: Path, src: Path, root: Path) -> bool:
+    """Whether ``pkg`` is a standalone `.py` file directly under a src root.
+
+    A sibling of the package directories rather than a member of one -- it is
+    declared source (`_declared_source_files` globs the whole tree) but
+    nothing that descends only into package directories ever reaches it. Left
+    unhandled it is present in the source-universe count and structurally
+    invisible to the graph at the same time (#1142; concretely
+    `packages/maistro-core/src/_vulture_whitelist.py`).
+    """
+    return (
+        pkg.is_file()
+        and pkg.suffix == ".py"
+        and _is_production_python(pkg, src)
+        and not _is_classified_outside_graph(pkg.relative_to(root).as_posix())
+    )
+
+
+def _add_src_root(mods: dict[str, Path], src: Path, root: Path, add_tree: _AddTree) -> None:
+    """Register every package, and every loose module (#1142), under one src root."""
+    for pkg in sorted(src.iterdir()):
+        if pkg.is_dir() and (pkg / "__init__.py").exists():
+            add_tree(pkg, pkg.name)
+        elif _is_loose_src_module(pkg, src, root):
+            # Its own single-file module, the identity a bare `foo.py`
+            # submodule would get inside a package.
+            mods[pkg.stem] = pkg
+
+
 def _collect_modules(
     root: Path = ROOT, flat_apps: tuple[FlatApp, ...] = FLAT_APPS
 ) -> dict[str, Path]:
@@ -412,9 +447,7 @@ def _collect_modules(
                 mods[key] = path
 
     for src in sorted(root.glob("packages/*/src")):
-        for pkg in sorted(src.iterdir()):
-            if pkg.is_dir() and (pkg / "__init__.py").exists():
-                add_tree(pkg, pkg.name)
+        _add_src_root(mods, src, root, add_tree)
 
     for app in flat_apps:
         add_tree(root / app.path, "", app.name)

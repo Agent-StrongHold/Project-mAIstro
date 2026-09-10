@@ -104,6 +104,52 @@ def test_an_immutable_vendored_tree_is_classified_not_omitted(
     assert not [key for key, path in mods.items() if "vendored" in path.parts]
 
 
+def _write_src_root_with_loose_file(root: Path) -> Path:
+    src = root / "packages" / "demo" / "src"
+    pkg = src / "demo"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    (pkg / "main.py").write_text("VALUE = 1\n")
+    (src / "_vulture_whitelist.py").write_text("VALUE = 2\n")
+    return src
+
+
+def test_a_loose_file_directly_under_a_src_root_is_discovered_as_its_own_module(
+    tmp_path: Path,
+) -> None:
+    """`packages/<pkg>/src/foo.py`, a sibling of the package directories
+    rather than inside one, is declared source (`_declared_source_files`
+    globs the whole src tree) but was invisible to `_collect_modules`, which
+    only ever descended into directories carrying `__init__.py` (#1142). It
+    counted toward the source-universe guard's total while never entering the
+    module graph, never becoming unreachable, and never needing a baseline
+    disposition -- the concrete instance is
+    `packages/maistro-core/src/_vulture_whitelist.py`.
+    """
+    src = _write_src_root_with_loose_file(tmp_path)
+
+    mods = reachability._collect_modules(tmp_path, ())
+
+    assert "_vulture_whitelist" in mods
+    assert mods["_vulture_whitelist"] == src / "_vulture_whitelist.py"
+
+
+def test_an_unbaselined_loose_src_root_file_fails_as_newly_unreachable(
+    tmp_path: Path,
+) -> None:
+    """The regression fixture #1142's acceptance asks for directly: nothing
+    imports the loose file, so it must surface as unreachable -- requiring an
+    explicit baseline disposition -- rather than silently disappearing."""
+    _write_src_root_with_loose_file(tmp_path)
+
+    unreachable, total = reachability.unreachable_modules(
+        root=tmp_path, flat_apps=(), static_roots=("demo.main",), dynamic_roots=()
+    )
+
+    assert total == 3
+    assert unreachable == ["_vulture_whitelist"]
+
+
 def test_an_installed_dependency_tree_is_outside_the_source_universe(tmp_path: Path) -> None:
     # npm packages sometimes ship Python — `flatted` carries python/flatted.py
     # — and CI's test job runs `npm ci` in both frontends before the
