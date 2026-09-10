@@ -1349,6 +1349,26 @@
       "effect_owner": "stores.workspaces"
     },
     {
+      "source": "packages/hive-conductor/backend/routes/ws.py",
+      "method": "WEBSOCKET",
+      "route": "/tasks/{task_id}",
+      "handler": "stream_task",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "streams a task's own event log to its owner over a socket that authenticates itself (AuthMiddleware never sees a WebSocket handshake); EngineService.iter_task_events enforces per-user task ownership before yielding anything, so it is a read/stream surface, not a second execution or authorization authority",
+      "effect_owner": "services.engine.EngineService.iter_task_events"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/ws.py",
+      "method": "WEBSOCKET",
+      "route": "/dags/{dag_id}/run",
+      "handler": "stream_dag_run",
+      "disposition": "unresolved",
+      "production_enabled": true,
+      "owner_issue": 766,
+      "reason": "executes the DAG through services.graph_runner.execute_dag_streaming, the pre-durable legacy executor distinct from the canonical execute_dag the HTTP twin POST /{dag_id}/run already uses; gated on dags.write and workspace-selection authorization, but the execution path itself is the #44/#766 convergence gap this entry discloses rather than hides"
+    },
+    {
       "source": "packages/maistro-canvas/frontend/server/lulu/service.py",
       "method": "POST",
       "route": "/calculate-cost",
@@ -1807,6 +1827,16 @@
       "production_enabled": true,
       "reason": "sets the member role (owner-only)",
       "effect_owner": "workspace store"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/ws.py",
+      "method": "WEBSOCKET",
+      "route": "/stream/{task_id}",
+      "handler": "stream_task",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "streams a task's own progress/result to its owner over a socket that authenticates and authorizes itself (origin check + bearer/subprotocol token, since ordinary HTTP middleware never sees a WebSocket handshake); TaskQueue.get enforces per-owner task scoping before yielding anything, so it is a read/stream surface over the canonical task queue, not a second execution authority",
+      "effect_owner": "maistro.tasks.queue.TaskQueue"
     },
     {
       "source": "packages/maistro-turing/backend/routes/admin.py",

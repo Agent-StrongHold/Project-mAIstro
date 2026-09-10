@@ -613,6 +613,15 @@
       ]
     },
     {
+      "id": "vulture-whitelist",
+      "subsystem": "Repo tooling",
+      "disposition": "LIBRARY",
+      "rationale": "packages/maistro-core/src/_vulture_whitelist.py is scan input for the vulture CLI, not application code: the `.github/workflows/quality.yml` vulture step globs packages/*/src, vulture itself walks that whole directory tree, and this file's fake references to otherwise-unused-looking names are what suppress vulture's false positives elsewhere in the tree. It has no reason to ever be imported by production code -- being unreachable from a process entry point is its permanent, correct state, not deferred wiring (#1142; a loose file directly under a src root, sibling to the package directories, was previously invisible to the reachability graph entirely rather than landing here honestly).",
+      "modules": [
+        "_vulture_whitelist"
+      ]
+    },
+    {
       "id": "shell-invoked-build-evidence",
       "subsystem": "Repo tooling",
       "disposition": "CONNECT",
