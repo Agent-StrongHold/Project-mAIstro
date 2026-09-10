@@ -7,7 +7,10 @@ of minting a second Run; a payload mismatch that fails visibly; and
 concurrency where identical submissions deterministically produce one Run.
 These tests hold the in-memory claim store and the queue integration to all
 four, plus the failure-ordering rule: a failed admission must release its
-claim, or the retry would reconcile against an outcome that never happened.
+claim, a superseded claimant must not stamp (or release) the winner's row, and
+a claimant that died around minting must resolve by discovery — the ambiguous
+window ends in the existing Run or a takeover that provably mints nothing
+twice.
 """
 
 from __future__ import annotations
@@ -17,7 +20,9 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+import maistro.tasks.idempotency as idempotency_module
 from maistro.projects.scope_store import InMemoryProjectScopeStore
+from maistro.runs.model import RunStatus
 from maistro.runs.store import InMemoryRunStore
 from maistro.tasks import queue as queue_module
 from maistro.tasks.admission import TaskRunAdmitter, WorkspaceRoutingAdmitter
@@ -29,6 +34,7 @@ from maistro.tasks.idempotency import (
     PENDING_POLL,
     TASK_SUBMIT_ACTION,
     AdmissionRecord,
+    Ambiguous,
     Claimed,
     IdempotencyKeyMismatch,
     IdempotencyPendingTimeout,
@@ -150,19 +156,13 @@ def test_an_oversized_key_is_refused_rather_than_truncated() -> None:
 # ── the claim store: window, mismatch, takeover, purge ────────────
 
 
-def _record_fingerprint(store: InMemoryTaskIdempotencyStore, scope: str) -> str:
-    record = store._rows.get(scope)
-    assert record is not None
-    return record.fingerprint
-
-
 async def test_claim_complete_then_replay() -> None:
     store = InMemoryTaskIdempotencyStore()
     scope = admission_scope_key(principal="u", workspace_id="w", action=TASK_SUBMIT_ACTION, key="k")
 
     first = await store.claim(scope, fingerprint="fp", request="{}", now=_NOW)
     assert isinstance(first, Claimed)
-    assert await store.complete(scope, task_id="t1", run_id="r1") is True
+    assert await store.complete(scope, token=first.token, task_id="t1", run_id="r1") is True
 
     replay = await store.claim(
         scope, fingerprint="fp", request="{}", now=_NOW + timedelta(minutes=1)
@@ -170,6 +170,7 @@ async def test_claim_complete_then_replay() -> None:
     assert isinstance(replay, Replayed)
     assert replay.record.task_id == "t1"
     assert replay.record.run_id == "r1"
+    assert replay.record.admitted is True
 
 
 async def test_a_second_claimant_on_a_pending_claim_waits() -> None:
@@ -187,8 +188,9 @@ async def test_a_fingerprint_mismatch_inside_the_window_fails_visibly() -> None:
     store = InMemoryTaskIdempotencyStore()
     scope = admission_scope_key(principal="u", workspace_id="w", action=TASK_SUBMIT_ACTION, key="k")
 
-    await store.claim(scope, fingerprint="fp-one", request="{}", now=_NOW)
-    await store.complete(scope, task_id="t1", run_id="r1")
+    first = await store.claim(scope, fingerprint="fp-one", request="{}", now=_NOW)
+    assert isinstance(first, Claimed)
+    await store.complete(scope, token=first.token, task_id="t1", run_id="r1")
 
     with pytest.raises(IdempotencyKeyMismatch, match="different request payload"):
         await store.claim(
@@ -203,8 +205,9 @@ async def test_the_replay_window_expires_and_frees_the_key() -> None:
     store = InMemoryTaskIdempotencyStore()
     scope = admission_scope_key(principal="u", workspace_id="w", action=TASK_SUBMIT_ACTION, key="k")
 
-    await store.claim(scope, fingerprint="fp", request="{}", now=_NOW)
-    await store.complete(scope, task_id="t1", run_id="r1")
+    first = await store.claim(scope, fingerprint="fp", request="{}", now=_NOW)
+    assert isinstance(first, Claimed)
+    await store.complete(scope, token=first.token, task_id="t1", run_id="r1")
 
     # A different payload after expiry is NOT the visible 409: the mismatch
     # contract lived inside the window. The key is simply free again.
@@ -221,8 +224,9 @@ async def test_the_replay_window_expires_and_frees_the_key() -> None:
     other_scope = admission_scope_key(
         principal="u", workspace_id="w", action=TASK_SUBMIT_ACTION, key="k2"
     )
-    await store.claim(other_scope, fingerprint="fp", request="{}", now=_NOW)
-    await store.complete(other_scope, task_id="t3", run_id="r3")
+    second = await store.claim(other_scope, fingerprint="fp", request="{}", now=_NOW)
+    assert isinstance(second, Claimed)
+    await store.complete(other_scope, token=second.token, task_id="t3", run_id="r3")
     fresh = await store.claim(
         other_scope,
         fingerprint="fp",
@@ -245,6 +249,267 @@ async def test_a_stalled_pending_claim_is_taken_over() -> None:
     assert isinstance(takeover, Claimed)
     record = await store.get(scope)
     assert record is not None and record.admitted is False
+    # The takeover is a new claimant: the old token answers nothing now.
+    assert await store.complete(scope, token="stale-token", task_id="t1", run_id="r1") is False
+
+
+# ── claimant fencing: a superseded claimant writes nothing ────────
+
+
+async def test_a_superseded_claimant_cannot_stamp_the_winners_row() -> None:
+    """The false-completion regression: a claimant stalled past the lease,
+    whose claim a twin took over, must not land its outcome on the thief's
+    row — the winner's outcome is the one this key reconciles to."""
+    store = InMemoryTaskIdempotencyStore()
+    scope = admission_scope_key(principal="u", workspace_id="w", action=TASK_SUBMIT_ACTION, key="k")
+
+    stalled = await store.claim(scope, fingerprint="fp", request="{}", now=_NOW)
+    assert isinstance(stalled, Claimed)
+    winner = await store.claim(
+        scope, fingerprint="fp", request="{}", now=_NOW + PENDING_LEASE + timedelta(seconds=1)
+    )
+    assert isinstance(winner, Claimed)
+    assert winner.token != stalled.token
+
+    assert (
+        await store.complete(scope, token=stalled.token, task_id="t-stalled", run_id="r-stalled")
+        is False
+    )
+    record = await store.get(scope)
+    assert record is not None and record.admitted is False
+
+    assert (
+        await store.complete(scope, token=winner.token, task_id="t-winner", run_id="r-winner")
+        is True
+    )
+    record = await store.get(scope)
+    assert record is not None
+    assert (record.task_id, record.run_id) == ("t-winner", "r-winner")
+    # And the fence holds after the outcome too.
+    assert (
+        await store.complete(scope, token=stalled.token, task_id="t-stalled", run_id="r-stalled")
+        is False
+    )
+
+
+async def test_a_superseded_claimant_cannot_release_the_winners_claim() -> None:
+    store = InMemoryTaskIdempotencyStore()
+    scope = admission_scope_key(principal="u", workspace_id="w", action=TASK_SUBMIT_ACTION, key="k")
+
+    stalled = await store.claim(scope, fingerprint="fp", request="{}", now=_NOW)
+    assert isinstance(stalled, Claimed)
+    await store.claim(
+        scope, fingerprint="fp", request="{}", now=_NOW + PENDING_LEASE + timedelta(seconds=1)
+    )
+
+    assert await store.release(scope, token=stalled.token) is False
+    record = await store.get(scope)
+    assert record is not None, "the winner's claim must survive the loser's release"
+
+
+# ── begin: the announcement that makes the ambiguous window decidable ──
+
+
+async def test_begin_announces_the_receipt_and_refreshes_the_lease() -> None:
+    store = InMemoryTaskIdempotencyStore()
+    scope = admission_scope_key(principal="u", workspace_id="w", action=TASK_SUBMIT_ACTION, key="k")
+
+    claimed = await store.claim(scope, fingerprint="fp", request="{}", now=_NOW)
+    assert isinstance(claimed, Claimed)
+    begun_at = _NOW + timedelta(seconds=20)
+    assert await store.begin(scope, token=claimed.token, task_id="t1", now=begun_at) is True
+
+    record = await store.get(scope)
+    assert record is not None
+    assert record.task_id == "t1"
+    assert record.begun is True
+    assert record.admitted is False
+    # The lease now runs from the announcement: the mint is the dangerous
+    # stretch, and its fence is measured from when it starts.
+    assert from_epoch_us(record.lease_expires_at_us) == begun_at + PENDING_LEASE
+
+    # A begun claim inside its lease still reads as Pending, not replayable —
+    # the outcome has not landed, and replaying it would hand out a receipt
+    # whose Run may not exist yet.
+    twin = await store.claim(
+        scope, fingerprint="fp", request="{}", now=begun_at + timedelta(seconds=1)
+    )
+    assert isinstance(twin, Pending)
+
+
+async def test_begin_refuses_a_superseded_or_repeated_announcement() -> None:
+    store = InMemoryTaskIdempotencyStore()
+    scope = admission_scope_key(principal="u", workspace_id="w", action=TASK_SUBMIT_ACTION, key="k")
+
+    stalled = await store.claim(scope, fingerprint="fp", request="{}", now=_NOW)
+    assert isinstance(stalled, Claimed)
+    winner_at = _NOW + PENDING_LEASE + timedelta(seconds=1)
+    await store.claim(scope, fingerprint="fp", request="{}", now=winner_at)
+    assert await store.begin(scope, token=stalled.token, task_id="t1", now=_NOW) is False
+
+    # And a claimant cannot announce twice: the second begin is a different
+    # receipt for the same claim, which is exactly the duplication fence.
+    again = await store.claim(
+        scope,
+        fingerprint="fp",
+        request="{}",
+        now=winner_at + PENDING_LEASE + timedelta(seconds=1),
+    )
+    assert isinstance(again, Claimed)
+    assert await store.begin(scope, token=again.token, task_id="t2", now=_NOW) is True
+    assert await store.begin(scope, token=again.token, task_id="t3", now=_NOW) is False
+
+
+async def test_a_begun_claim_past_its_lease_is_ambiguous_not_takeover() -> None:
+    """The heart of the repair: a claimant that announced a receipt and died
+    somewhere around minting cannot be answered by takeover alone — the next
+    submitter gets the ambiguity and must resolve it by discovery, because a
+    blind takeover is the duplicate-Run bug this issue exists to close."""
+    store = InMemoryTaskIdempotencyStore()
+    scope = admission_scope_key(principal="u", workspace_id="w", action=TASK_SUBMIT_ACTION, key="k")
+
+    claimed = await store.claim(scope, fingerprint="fp", request="{}", now=_NOW)
+    assert isinstance(claimed, Claimed)
+    assert await store.begin(scope, token=claimed.token, task_id="t1", now=_NOW) is True
+
+    outcome = await store.claim(
+        scope, fingerprint="fp", request="{}", now=_NOW + PENDING_LEASE + timedelta(seconds=1)
+    )
+    assert isinstance(outcome, Ambiguous)
+    assert outcome.record.task_id == "t1"
+
+
+async def test_discovery_resolves_the_ambiguous_window_to_the_existing_run() -> None:
+    """The ambiguous-failure acceptance: the owner died after minting but
+    before recording. Discovery finds the Run by the announced receipt,
+    resolution records it, and the retry replays the existing Run instead of
+    minting a second one."""
+    store = InMemoryTaskIdempotencyStore()
+    scope = admission_scope_key(principal="u", workspace_id="w", action=TASK_SUBMIT_ACTION, key="k")
+
+    claimed = await store.claim(scope, fingerprint="fp", request="{}", now=_NOW)
+    assert isinstance(claimed, Claimed)
+    assert await store.begin(scope, token=claimed.token, task_id="t1", now=_NOW) is True
+
+    later = _NOW + PENDING_LEASE + timedelta(seconds=1)
+    ambiguous = await store.claim(scope, fingerprint="fp", request="{}", now=later)
+    assert isinstance(ambiguous, Ambiguous)
+
+    # Discovery: a Run naming the announced receipt exists (minted by the
+    # corpse). resolve_run records the fact on the claim — deliberately not
+    # claimant-fenced, it writes down what discovery proved.
+    assert await store.resolve_run(scope, task_id="t1", run_id="r1") is True
+
+    replay = await store.claim(scope, fingerprint="fp", request="{}", now=later)
+    assert isinstance(replay, Replayed)
+    assert (replay.record.task_id, replay.record.run_id) == ("t1", "r1")
+    assert replay.record.admitted is True
+
+
+async def test_discovery_finding_no_run_frees_the_claim_for_a_resolved_takeover() -> None:
+    """The other half of the ambiguity: the owner died BEFORE minting. The
+    announced receipt was never minted durably, so the takeover duplicates
+    nothing — but it is fenced on the announced task id, so it can only land
+    on the exact claim the discovery resolved."""
+    store = InMemoryTaskIdempotencyStore()
+    scope = admission_scope_key(principal="u", workspace_id="w", action=TASK_SUBMIT_ACTION, key="k")
+
+    claimed = await store.claim(scope, fingerprint="fp", request="{}", now=_NOW)
+    assert isinstance(claimed, Claimed)
+    assert await store.begin(scope, token=claimed.token, task_id="t1", now=_NOW) is True
+
+    later = _NOW + PENDING_LEASE + timedelta(seconds=1)
+    assert isinstance(
+        await store.claim(scope, fingerprint="fp", request="{}", now=later), Ambiguous
+    )
+
+    taken = await store.take_over_resolved(
+        scope, task_id="t1", fingerprint="fp", request="{}", now=later
+    )
+    assert isinstance(taken, Claimed)
+    record = await store.get(scope)
+    assert record is not None
+    assert record.admitted is False and record.begun is False
+
+    # The winner completes; the corpse's late write is refused by the fence.
+    assert await store.complete(scope, token=taken.token, task_id="t2", run_id="r2") is True
+    assert await store.complete(scope, token=claimed.token, task_id="t1", run_id="r1") is False
+
+
+async def test_a_resolved_takeover_only_lands_on_its_own_announcement() -> None:
+    """The takeover fence: a discovery resolution that raced a winner's
+    completion (or another takeover) must refuse, not stamp a moved row."""
+    store = InMemoryTaskIdempotencyStore()
+    scope = admission_scope_key(principal="u", workspace_id="w", action=TASK_SUBMIT_ACTION, key="k")
+
+    claimed = await store.claim(scope, fingerprint="fp", request="{}", now=_NOW)
+    assert isinstance(claimed, Claimed)
+    assert await store.begin(scope, token=claimed.token, task_id="t1", now=_NOW) is True
+    later = _NOW + PENDING_LEASE + timedelta(seconds=1)
+
+    # A different announcement entirely, or an admitted row, is not ours.
+    assert (
+        await store.take_over_resolved(
+            scope, task_id="other", fingerprint="fp", request="{}", now=later
+        )
+        is None
+    )
+    assert await store.resolve_run(scope, task_id="t1", run_id="r1") is True
+    assert (
+        await store.take_over_resolved(
+            scope, task_id="t1", fingerprint="fp", request="{}", now=later
+        )
+        is None
+    )
+
+
+async def test_release_after_a_begun_failure_still_frees_the_key() -> None:
+    """Failure before Run creation stays retryable, announcement included:
+    the mint failed before any outcome, so the claim releases and the retry
+    starts fresh."""
+    store = InMemoryTaskIdempotencyStore()
+    scope = admission_scope_key(principal="u", workspace_id="w", action=TASK_SUBMIT_ACTION, key="k")
+
+    claimed = await store.claim(scope, fingerprint="fp", request="{}", now=_NOW)
+    assert isinstance(claimed, Claimed)
+    assert await store.begin(scope, token=claimed.token, task_id="t1", now=_NOW) is True
+    assert await store.release(scope, token=claimed.token) is True
+    assert await store.get(scope) is None
+    retry = await store.claim(scope, fingerprint="fp", request="{}", now=_NOW)
+    assert isinstance(retry, Claimed)
+
+
+async def test_release_and_complete_refuse_to_touch_a_completed_claim() -> None:
+    """The guards keep an owner from rewriting an outcome that already landed,
+    and from releasing a claim another submission has taken over."""
+    store = InMemoryTaskIdempotencyStore()
+    scope = admission_scope_key(principal="u", workspace_id="w", action=TASK_SUBMIT_ACTION, key="k")
+
+    claimed = await store.claim(scope, fingerprint="fp", request="{}", now=_NOW)
+    assert isinstance(claimed, Claimed)
+    assert await store.complete(scope, token=claimed.token, task_id="t1", run_id="r1") is True
+    assert await store.complete(scope, token=claimed.token, task_id="t9", run_id="r9") is False
+    assert await store.release(scope, token=claimed.token) is False
+
+
+async def test_purge_expired_removes_only_expired_claims() -> None:
+    store = InMemoryTaskIdempotencyStore()
+    old_scope = admission_scope_key(
+        principal="u", workspace_id="w", action=TASK_SUBMIT_ACTION, key="old"
+    )
+    new_scope = admission_scope_key(
+        principal="u", workspace_id="w", action=TASK_SUBMIT_ACTION, key="new"
+    )
+
+    await store.claim(old_scope, fingerprint="fp", request="{}", now=_NOW)
+    # Created a day later, so its own window outlives the old claim's by a day
+    # and a purge at the old claim's expiry must leave it alone.
+    await store.claim(new_scope, fingerprint="fp", request="{}", now=_NOW + timedelta(hours=24))
+
+    assert await store.purge_expired(now=_NOW + timedelta(hours=1)) == 0
+    assert await store.purge_expired(now=_NOW + DEFAULT_REPLAY_WINDOW + timedelta(seconds=1)) == 1
+    assert await store.get(old_scope) is None
+    assert await store.get(new_scope) is not None
 
 
 # ── the shared claim flow under interleaving ──────────────────────
@@ -257,10 +522,12 @@ def _scope(key: str) -> str:
 def _mid_admission_record(created: datetime) -> AdmissionRecord:
     """A pending claim: no receipt yet, lease still running from ``created``."""
     return AdmissionRecord(
+        claim_token="token-" + created.isoformat(),
         fingerprint="fp",
         request="{}",
         task_id=None,
         run_id=None,
+        completed_at_us=0,
         created_at_us=int(created.timestamp() * 1_000_000),
         expires_at_us=int((created + DEFAULT_REPLAY_WINDOW).timestamp() * 1_000_000),
         lease_expires_at_us=int((created + PENDING_LEASE).timestamp() * 1_000_000),
@@ -270,10 +537,12 @@ def _mid_admission_record(created: datetime) -> AdmissionRecord:
 def _expired_record(created: datetime) -> AdmissionRecord:
     """A claim whose replay window is long gone — deletable, take-overable."""
     return AdmissionRecord(
+        claim_token="token-expired-" + created.isoformat(),
         fingerprint="fp",
         request="{}",
         task_id=None,
         run_id=None,
+        completed_at_us=0,
         created_at_us=int(created.timestamp() * 1_000_000),
         expires_at_us=int((created + timedelta(hours=1)).timestamp() * 1_000_000),
         lease_expires_at_us=int((created + timedelta(minutes=1)).timestamp() * 1_000_000),
@@ -334,8 +603,8 @@ async def test_a_slot_freed_between_read_and_takeover_is_rewon(monkeypatch) -> N
         record = await real_read(scope_key)
         if record is not None:
             # The stalled owner lets go after the flow has read the claim but
-            # before its takeover lands.
-            await store.release(scope_key)
+            # before its takeover lands — with the token it still holds.
+            await store.release(scope_key, token=record.claim_token)
         return record
 
     monkeypatch.setattr(store, "_read", read_then_release)
@@ -380,97 +649,6 @@ async def test_takeover_rounds_are_bounded_and_report_the_row() -> None:
     assert isinstance(outcome, Pending)
     assert outcome.record is not None and outcome.record.admitted is False
     assert store.takeover_attempts == InMemoryTaskIdempotencyStore._RACE_ROUNDS
-
-
-async def test_release_returns_a_failed_admissions_claim() -> None:
-    store = InMemoryTaskIdempotencyStore()
-    scope = admission_scope_key(principal="u", workspace_id="w", action=TASK_SUBMIT_ACTION, key="k")
-
-    await store.claim(scope, fingerprint="fp", request="{}", now=_NOW)
-    assert await store.release(scope) is True
-    assert await store.get(scope) is None
-    # A retry claims fresh, with no memory of the failure.
-    assert isinstance(await store.claim(scope, fingerprint="fp", request="{}", now=_NOW), Claimed)
-
-
-async def test_release_and_complete_refuse_to_touch_a_completed_claim() -> None:
-    """The guards keep an owner from rewriting an outcome that already landed,
-    and from releasing a claim another submission has taken over."""
-    store = InMemoryTaskIdempotencyStore()
-    scope = admission_scope_key(principal="u", workspace_id="w", action=TASK_SUBMIT_ACTION, key="k")
-
-    await store.claim(scope, fingerprint="fp", request="{}", now=_NOW)
-    assert await store.complete(scope, task_id="t1", run_id="r1") is True
-    assert await store.complete(scope, task_id="t9", run_id="r9") is False
-    assert await store.release(scope) is False
-
-
-async def test_purge_expired_removes_only_expired_claims() -> None:
-    store = InMemoryTaskIdempotencyStore()
-    old_scope = admission_scope_key(
-        principal="u", workspace_id="w", action=TASK_SUBMIT_ACTION, key="old"
-    )
-    new_scope = admission_scope_key(
-        principal="u", workspace_id="w", action=TASK_SUBMIT_ACTION, key="new"
-    )
-
-    await store.claim(old_scope, fingerprint="fp", request="{}", now=_NOW)
-    # Created a day later, so its own window outlives the old claim's by a day
-    # and a purge at the old claim's expiry must leave it alone.
-    await store.claim(new_scope, fingerprint="fp", request="{}", now=_NOW + timedelta(hours=24))
-
-    assert await store.purge_expired(now=_NOW + timedelta(hours=1)) == 0
-    assert await store.purge_expired(now=_NOW + DEFAULT_REPLAY_WINDOW + timedelta(seconds=1)) == 1
-    assert await store.get(old_scope) is None
-    assert await store.get(new_scope) is not None
-
-
-async def test_the_bound_evicts_expired_claims_first() -> None:
-    """Past ``_MAX_ENTRIES`` the store sheds load: expired claims go first —
-    evicting one is merely early window expiry — and the claim being admitted
-    now survives with the bound restored."""
-    store = InMemoryTaskIdempotencyStore()
-    wall = datetime.now(UTC)
-    ancient = wall - timedelta(hours=48)
-    for i in range(store._MAX_ENTRIES + 2):
-        store._rows[_scope(f"ancient-{i}")] = _expired_record(ancient + timedelta(seconds=i))
-
-    outcome = await store.claim(_scope("fresh"), fingerprint="fp", request="{}", now=wall)
-
-    assert isinstance(outcome, Claimed)
-    assert len(store._rows) == store._MAX_ENTRIES
-    assert _scope("fresh") in store._rows
-    # The three oldest-created expired claims are the ones that went.
-    assert _scope("ancient-0") not in store._rows
-    assert _scope("ancient-1") not in store._rows
-    assert _scope("ancient-2") not in store._rows
-    assert _scope("ancient-3") in store._rows
-    assert _scope(f"ancient-{store._MAX_ENTRIES + 1}") in store._rows
-
-
-async def test_the_bound_evicts_the_oldest_when_nothing_is_expired() -> None:
-    """Nothing has expired but the store is over its bound: the oldest claims
-    go — the same bound the in-memory Run store applies — and the claim being
-    admitted now survives."""
-    store = InMemoryTaskIdempotencyStore()
-    wall = datetime.now(UTC)
-    for i in range(store._MAX_ENTRIES + 2):
-        # Millisecond-staggered creation inside the last few seconds, so every
-        # row is live and `ancient-0`-style ordering is exact: i=0 is oldest.
-        store._rows[_scope(f"live-{i}")] = _mid_admission_record(
-            wall - timedelta(milliseconds=store._MAX_ENTRIES + 2 - i)
-        )
-
-    outcome = await store.claim(_scope("fresh"), fingerprint="fp", request="{}", now=wall)
-
-    assert isinstance(outcome, Claimed)
-    assert len(store._rows) == store._MAX_ENTRIES
-    assert _scope("fresh") in store._rows
-    assert _scope("live-0") not in store._rows
-    assert _scope("live-1") not in store._rows
-    assert _scope("live-2") not in store._rows
-    assert _scope("live-3") in store._rows
-    assert _scope(f"live-{store._MAX_ENTRIES + 1}") in store._rows
 
 
 async def test_records_round_trip_through_epoch_microseconds() -> None:
@@ -696,6 +874,29 @@ async def test_a_replay_survives_the_receipt_leaving_memory(scoped) -> None:
     assert receipts == []
 
 
+async def test_a_header_only_key_survives_the_restart_replay(scoped) -> None:
+    """The receipt-drift regression: the key arrived as an HTTP header, so it
+    is in no request body — the stored request must carry it anyway, or a
+    restarted deployment answers the same retry with a receipt that has
+    forgotten its own key."""
+    _projects, runs, _root, project = scoped
+    queue, store = _wired_queue(runs, project.project_id)
+    request = TaskCreate(description="headered")
+
+    first = await queue.submit(request, user_id="alice", idempotency_key="header-key")
+    assert first.idempotency_key == "header-key"
+
+    restarted = TaskQueue(
+        admitter=TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id),
+        idempotency_store=store,
+    )
+    replay = await restarted.submit(request, user_id="alice", idempotency_key="header-key")
+
+    assert replay.task_id == first.task_id
+    assert replay.run_id == first.run_id
+    assert replay.idempotency_key == "header-key"
+
+
 async def test_the_admitted_run_carries_the_callers_key_in_provenance(scoped) -> None:
     """An auditor correlating a retry storm reads the Run, so the key the
     caller chose is recorded where the admission it produced lives."""
@@ -747,10 +948,12 @@ async def test_a_pathologically_slow_twin_times_out_visibly(scoped, monkeypatch)
             record: AdmissionRecord = outcome.record
             return Pending(
                 AdmissionRecord(
+                    claim_token=record.claim_token,
                     fingerprint=record.fingerprint,
                     request=record.request,
                     task_id=None,
                     run_id=None,
+                    completed_at_us=0,
                     created_at_us=record.created_at_us,
                     expires_at_us=record.expires_at_us,
                     lease_expires_at_us=record.lease_expires_at_us,
@@ -772,3 +975,174 @@ def test_pending_poll_bound_covers_the_lease() -> None:
     """The wait bound is sized so a dead twin's claim is *taken over* — not
     merely waited on — before the submitter gives up."""
     assert PENDING_LEASE.total_seconds() <= MAX_PENDING_POLLS * PENDING_POLL
+
+
+# ── the ambiguous window, end to end through the queue ────────────
+
+
+class _GatedAdmitter:
+    """A TaskRunAdmitter whose FIRST admit can be stalled mid-flight — the
+    stand-in for a replica that dies (or pauses past the lease) between
+    announcing its receipt and finishing the mint. Later admits pass through;
+    the gate models one stalled process, not a broken deployment."""
+
+    def __init__(self, inner: TaskRunAdmitter) -> None:
+        self._inner = inner
+        self._first = True
+        self.mint_entered = asyncio.Event()
+        self.release_mint = asyncio.Event()
+
+    async def admit(self, task, *, workspace_id=None):  # type: ignore[no-untyped-def]
+        first, self._first = self._first, False
+        if first:
+            self.mint_entered.set()
+            await self.release_mint.wait()
+        return await self._inner.admit(task, workspace_id=workspace_id)
+
+    async def record_transition(self, run_id, status, **kwargs):  # type: ignore[no-untyped-def]
+        return await self._inner.record_transition(run_id, status, **kwargs)
+
+    async def run_for_task_receipt(self, task_id: str) -> str | None:
+        return await self._inner.run_for_task_receipt(task_id)
+
+    @property
+    def workspace_id(self) -> str:
+        return self._inner.workspace_id
+
+
+class _Death(BaseException):
+    """The stand-in for process death: nothing after it runs."""
+
+
+async def test_a_takeover_mid_mint_leaves_exactly_one_standing_run(scoped, monkeypatch) -> None:
+    """The executed-probe regression, at the lease's own word: a submitter
+    stalled inside the mint past the pending lease is superseded, and the
+    deterministic outcome is ONE standing Run — the winner's — with the
+    superseded mint cancelled, not two live Runs for one key."""
+    _projects, runs, _root, project = scoped
+    store = InMemoryTaskIdempotencyStore()
+    gated = _GatedAdmitter(TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id))
+    queue = TaskQueue(admitter=gated, idempotency_store=store)
+    request = TaskCreate(description="stalled mid-mint", idempotency_key="k")
+
+    # The lease runs from the announcement; shrink it so the takeover is
+    # reachable inside the test, and poll fast enough to reach it.
+    monkeypatch.setattr(idempotency_module, "PENDING_LEASE", timedelta(seconds=0.05))
+    monkeypatch.setattr(queue_module, "PENDING_POLL", 0.005)
+
+    async def stalled():
+        return await queue.submit(request, user_id="alice")
+
+    first_task = asyncio.create_task(stalled())
+    await gated.mint_entered.wait()
+    # The stall has spanned the (shrunken) lease by the time the twin lands;
+    # the twin resolves the ambiguity by discovery and takes the claim over.
+    await asyncio.sleep(0.1)
+    winner = await queue.submit(request, user_id="alice")
+    assert winner.run_id is not None
+
+    gated.release_mint.set()
+    superseded = await first_task
+
+    # Both callers hold the SAME receipt: the winner's.
+    assert superseded.task_id == winner.task_id
+    assert superseded.run_id == winner.run_id
+    # The superseded mint was cancelled, the winner's Run stands alone.
+    assert superseded.run_id is not None
+    standing = {run.run_id: run for run in runs._runs.values()}
+    assert standing[winner.run_id].status is RunStatus.QUEUED
+    superseded_runs = [
+        run
+        for run in standing.values()
+        if run.run_id != winner.run_id and run.provenance.get("task_id") is not None
+    ]
+    assert superseded_runs, "the stalled mint must have left its Run behind to cancel"
+    assert all(run.status is RunStatus.CANCELLED for run in superseded_runs)
+    # And the queue holds one receipt, reconciled to the winner.
+    receipts, _cursor = queue.list_tasks(user_id="alice")
+    assert [r.task_id for r in receipts] == [winner.task_id]
+
+
+async def test_a_death_after_the_mint_resolves_to_the_existing_run(scoped, monkeypatch) -> None:
+    """The ambiguous-failure acceptance, executed: a claimant that minted the
+    Run and died before recording it leaves a begun claim whose lease lapses.
+    The retry discovers the minted Run through the announced receipt and
+    reconciles to it — no second Run, not even a cancelled one."""
+    _projects, runs, _root, project = scoped
+    store = InMemoryTaskIdempotencyStore()
+    admitter = TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+    queue = TaskQueue(admitter=admitter, idempotency_store=store)
+    request = TaskCreate(description="died after the mint", idempotency_key="k")
+
+    monkeypatch.setattr(idempotency_module, "PENDING_LEASE", timedelta(seconds=0.05))
+    monkeypatch.setattr(queue_module, "PENDING_POLL", 0.005)
+
+    async def complete_then_die(scope_key: str, **kwargs: object):
+        # Simulate the process dying in the instant after the Run was minted
+        # but before the outcome was recorded: the write never lands, and the
+        # receipt is never enqueued (the enqueue below never runs either).
+        return True
+
+    async def _silent_noop(_task: object) -> None:
+        return None
+
+    real_complete = store.complete
+    monkeypatch.setattr(store, "complete", complete_then_die)
+    monkeypatch.setattr(queue, "_enqueue", _silent_noop)
+    corpse = await queue.submit(request, user_id="alice")
+    assert corpse.run_id is not None
+    assert await runs.get_run(corpse.run_id) is not None
+    monkeypatch.setattr(store, "complete", real_complete)
+
+    # A fresh process (fresh queue, same claim store) answers the retry.
+    restarted = TaskQueue(admitter=admitter, idempotency_store=store)
+    replay = await restarted.submit(request, user_id="alice")
+
+    assert replay.task_id == corpse.task_id
+    assert replay.run_id == corpse.run_id
+    # The claim now carries the discovered outcome, so later replays skip
+    # discovery entirely.
+    record = await store.get(
+        admission_scope_key(
+            principal="alice", workspace_id="w1", action=TASK_SUBMIT_ACTION, key="k"
+        )
+    )
+    assert record is not None and record.admitted is True
+    runs_named = [
+        run for run in runs._runs.values() if run.provenance.get("task_id") == corpse.task_id
+    ]
+    assert [run.run_id for run in runs_named] == [corpse.run_id]
+
+
+async def test_a_death_before_the_mint_takes_over_without_a_duplicate(scoped, monkeypatch) -> None:
+    """A claimant that announced its receipt and died before minting leaves
+    nothing to discover: the resolved takeover mints fresh, once."""
+    _projects, runs, _root, project = scoped
+    store = InMemoryTaskIdempotencyStore()
+    admitter = TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+    queue = TaskQueue(admitter=admitter, idempotency_store=store)
+    request = TaskCreate(description="died before the mint", idempotency_key="k")
+
+    monkeypatch.setattr(idempotency_module, "PENDING_LEASE", timedelta(seconds=0.05))
+    monkeypatch.setattr(queue_module, "PENDING_POLL", 0.005)
+
+    real_begin = store.begin
+
+    async def begin_then_die(scope_key: str, **kwargs: object):
+        # The announcement lands; the process dies before minting anything.
+        await real_begin(scope_key, **kwargs)  # type: ignore[arg-type]
+        raise _Death()
+
+    monkeypatch.setattr(store, "begin", begin_then_die)
+    with pytest.raises(_Death):
+        await queue.submit(request, user_id="alice")
+    monkeypatch.setattr(store, "begin", real_begin)
+
+    # The corpse's claim: begun, no Run, lease lapsed. A fresh process's
+    # retry resolves the ambiguity by discovery (no Run names the receipt)
+    # and takes the claim over — minting exactly one Run.
+    restarted = TaskQueue(admitter=admitter, idempotency_store=store)
+    retry = await restarted.submit(request, user_id="alice")
+    assert retry.run_id is not None
+    runs_named = [run for run in runs._runs.values() if run.provenance.get("task_id") is not None]
+    assert [run.run_id for run in runs_named] == [retry.run_id]

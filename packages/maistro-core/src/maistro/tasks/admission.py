@@ -262,6 +262,20 @@ class TaskRunAdmitter:
             return False
         return True
 
+    async def run_for_task_receipt(self, task_id: str) -> str | None:
+        """The Run this admitter minted for one task receipt, or None.
+
+        The discovery seam behind admission idempotency (#1176): ``admit``
+        stamps the receipt id into the Run's provenance, so a claimant that
+        died between minting and recording leaves a Run that is *findable* by
+        the receipt its claim announced — which is what lets a retry resolve
+        the existing Run instead of minting a second one. None means no Run
+        names the receipt: it was never minted, and the claim may be taken
+        over safely.
+        """
+        run = await self._runs.find_run_by_task_receipt(task_id)
+        return run.run_id if run is not None else None
+
 
 class WorkspaceRoutingAdmitter:
     """Route each submission to the :class:`TaskRunAdmitter` for its Workspace.
@@ -360,6 +374,18 @@ class WorkspaceRoutingAdmitter:
         """
         admitter = await self.admitter_for(None)
         return await admitter.record_transition(run_id, status, result=result, error=error)
+
+    async def run_for_task_receipt(self, task_id: str) -> str | None:
+        """Resolve one task receipt to its Run, Workspace-independently.
+
+        Same reasoning as ``record_transition``: by admission time the Run
+        exists and knows which Project it is filed in, and task ids are minted
+        globally, so routing the lookup through the default admitter reaches
+        the one implementation of the provenance search rather than a second
+        copy per Workspace.
+        """
+        admitter = await self.admitter_for(None)
+        return await admitter.run_for_task_receipt(task_id)
 
 
 __all__ = [

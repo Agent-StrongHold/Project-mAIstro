@@ -332,6 +332,19 @@ class RunStore(Protocol):
 
     async def get_run(self, run_id: str) -> Run | None: ...
 
+    async def find_run_by_task_receipt(self, task_id: str) -> Run | None:
+        """The Run whose provenance names one task receipt, or None.
+
+        The task admitter stamps the receipt id into ``provenance`` at admit;
+        this is the lookup that makes a minted Run discoverable from the
+        receipt its admission announced (#1176). None means no Run names the
+        receipt. A Run whose payload has been archived cold is outside this
+        search — hours past any retry window — and there is at most one: task
+        ids are minted unique, and a second Run naming the same receipt is
+        exactly the duplicate admission this lookup exists to prevent.
+        """
+        ...
+
     async def transition_run(
         self,
         run_id: str,
@@ -768,6 +781,16 @@ class InMemoryRunStore:
     async def get_run(self, run_id: str) -> Run | None:
         run = self._runs.get(run_id)
         return run.model_copy(deep=True) if run is not None else None
+
+    async def find_run_by_task_receipt(self, task_id: str) -> Run | None:
+        # Insertion-order scan; a match is unique by construction (see the
+        # protocol docstring). The provenance key is spelled by the task
+        # admitter's TASK_ID_KEY; a literal here avoids the runs->tasks import
+        # edge the constant would drag in.
+        for run in self._runs.values():
+            if run.provenance.get("task_id") == task_id:
+                return run.model_copy(deep=True)
+        return None
 
     async def transition_run(
         self,

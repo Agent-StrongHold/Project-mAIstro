@@ -464,6 +464,20 @@ class PgRunStore:
         )
         return Run.model_validate(payload) if payload is not None else None
 
+    async def find_run_by_task_receipt(self, task_id: str) -> Run | None:
+        # payload is JSONB (005), so the task admitter's provenance is a path
+        # expression. Cold-archived Runs (payload moved to the archive) are
+        # outside this search: they are hours past any retry window.
+        payload = await self._payload(
+            """
+            SELECT run_id, payload, archive_key FROM canonical_runs
+            WHERE payload->'provenance'->>'task_id' = $1
+            LIMIT 1
+            """,
+            task_id,
+        )
+        return Run.model_validate(payload) if payload is not None else None
+
     async def list_by_status(
         self,
         status: RunStatus,

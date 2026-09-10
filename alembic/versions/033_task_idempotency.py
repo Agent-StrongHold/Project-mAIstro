@@ -19,15 +19,24 @@ otherwise. One row per admission claim:
 - `fingerprint` — SHA-256 of the client-meaningful payload. A replay inside
   the window with a different fingerprint is a visible 409, never somebody
   else's (or a stale) Run.
-- `request` — the canonical TaskCreate JSON as admitted, so a replay after a
-  restart reconstructs the original receipt. A plain text column rather than
-  `jsonb`: it is written and read back verbatim, never queried by content,
-  and text has no codec to disagree about (see `evidence_json` on the two
-  pool-building styles).
-- `task_id`, `run_id` — the admitted outcome, written by `complete`. NULL
-  while the claim is pending; their presence is what makes the claim
-  replayable, and the `task_id IS NULL` guard on complete/release keeps a
-  claim's owner from rewriting an outcome that already landed.
+- `request` — the canonical TaskCreate JSON as admitted (owner and explicit
+  key filled in), so a replay after a restart reconstructs the original
+  receipt — including one submitted with a header-only key. A plain text
+  column rather than `jsonb`: it is written and read back verbatim, never
+  queried by content, and text has no codec to disagree about (see
+  `evidence_json` on the two pool-building styles).
+- `claim_token` — a random per-claimant fence. Every claimant-owned write
+  (`begin`, `complete`, `release`) is guarded on it, so a claimant superseded
+  past the pending lease cannot stamp its outcome onto (or release) the
+  winner's row.
+- `task_id`, `run_id` — the announced receipt and, once minted, the Run
+  behind it. `task_id` is written by `begin` BEFORE the Run is minted, so a
+  claimant that dies mid-admission leaves the handle the retry's discovery
+  resolves the minted Run by (the Run's provenance names the receipt);
+  `run_id` is written by `complete`/`resolve_run`. `completed_at` — stamped
+  once by `complete`, its presence (nonzero) is what makes the outcome final
+  and replayable, and the `completed_at = 0` guard keeps any claimant from
+  rewriting an outcome that already landed.
 - `created_at`, `expires_at`, `lease_expires_at` — integer microseconds since
   the epoch, deliberately not timestamptz: the takeover guard and the purge
   query compare and bound these values on both backends, and one integer
@@ -59,10 +68,12 @@ def upgrade() -> None:
     op.create_table(
         "task_idempotency",
         sa.Column("scope_key", sa.Text, nullable=False),
+        sa.Column("claim_token", sa.Text, nullable=False),
         sa.Column("fingerprint", sa.Text, nullable=False),
         sa.Column("request", sa.Text, nullable=False),
         sa.Column("task_id", sa.Text, nullable=True),
         sa.Column("run_id", sa.Text, nullable=True),
+        sa.Column("completed_at", sa.BigInteger, nullable=False, server_default="0"),
         sa.Column("created_at", sa.BigInteger, nullable=False),
         sa.Column("expires_at", sa.BigInteger, nullable=False),
         sa.Column("lease_expires_at", sa.BigInteger, nullable=False),

@@ -1,29 +1,37 @@
 """POST /tasks reconciles retries at the HTTP boundary (#1176).
 
 The core tests prove the contract's mechanics; this proves the wire format —
-the standard ``Idempotency-Key`` header reaches admission, a replay answers
+the standard ``Idempotency-Key`` header reaches admission, a retry answers
 with the original task_id and run_id, a reused key with a different payload is
 a 409 rather than somebody's stale Run, and the same textual key across two
 authenticated callers admits twice without either caller being able to read
 the other's work.
 
 The parity assertion matters as much as the new cases: no key at all must
-behave exactly as before.
+behave exactly as before. The durable half of the file puts the same wire on
+the SQLite claim tier, because the issue's stop condition forbids a
+process-local cache: the timeout/retry, concurrent-retry, restart and
+replica-handoff shapes are only real when the claims outlive the process that
+made them.
 """
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
+from pathlib import Path
 
+import aiosqlite
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 
 from maistro.config.settings import Settings, get_settings
 from maistro.runs.wiring import wire_execution_spine
 from maistro.tasks import queue as queue_module
-from maistro.tasks.idempotency import InMemoryTaskIdempotencyStore
-from maistro.tasks.queue import TaskQueue, configure_task_queue
+from maistro.tasks.idempotency import InMemoryTaskIdempotencyStore, SqliteTaskIdempotencyStore
+from maistro.tasks.queue import TaskQueue, configure_task_queue, reset_task_queue
 from maistro_server.api.tasks import router as tasks_router
 
 WORKSPACE = "/tmp/maistro-workspace/test"  # nosec B108 — API contract, gated by the route
@@ -212,3 +220,144 @@ async def test_no_key_at_all_behaves_exactly_as_before(wired) -> None:
     assert second.json()["task_id"] != first.json()["task_id"]
     assert second.json()["run_id"] != first.json()["run_id"]
     assert "Location" in first.headers
+
+
+# ── the durable wire: claims that outlive the process ─────────────
+
+
+async def _sqlite_claims(tmp_path: Path, name: str = "claims.db") -> SqliteTaskIdempotencyStore:
+    """A claim tier on a real file — the durability a restart is measured
+    against. Each call opens its own connection, which is what distinct
+    processes (or replicas) actually are."""
+    conn = await aiosqlite.connect(tmp_path / name)
+    store = SqliteTaskIdempotencyStore(conn)
+    await store.ensure_schema()
+    return store
+
+
+@pytest.fixture
+async def durable(tmp_path) -> AsyncIterator[tuple[AsyncClient, object, object, Path]]:
+    """The HTTP app on the SQLite claim tier, on one loop so the ASGI
+    transport and the file's connection share it — the shape a durable
+    single-conductor deployment actually wires."""
+    previous = queue_module._queue
+    queue_module._queue = None
+    store = await _sqlite_claims(tmp_path)
+    (
+        _scope_store,
+        run_store,
+        admitter,
+        _templates,
+        _schedules,
+        _continuations,
+    ) = await wire_execution_spine(None, workspace_id="test-workspace")
+    configure_task_queue(admitter=admitter, idempotency_store=store)
+    app = FastAPI()
+    app.include_router(tasks_router)
+    transport = ASGITransport(app=app)
+    client = AsyncClient(transport=transport, base_url="http://testserver")
+    try:
+        yield client, run_store, admitter, tmp_path
+    finally:
+        await client.aclose()
+        queue_module._queue = previous
+
+
+async def test_a_timeout_retry_reconciles_across_a_restart(durable) -> None:
+    """Timeout/retry E2E, durable tier: the first call is answered 202 but
+    the client never hears it; the deployment restarts; the retry reconciles
+    to the original receipt and Run because the claim outlived the process."""
+    client, run_store, admitter, tmp_path = durable
+    body = {"description": "restart me", "workspace": WORKSPACE}
+
+    first = await client.post("/tasks", json=body, headers={"Idempotency-Key": "k-1"})
+    assert first.status_code == 202
+    original_run = first.json()["run_id"]
+
+    # The restart: the in-memory receipts and the runner queue are gone; the
+    # claim file is not. A fresh queue wires up over the same store.
+    reset_task_queue()
+    restarted_store = await _sqlite_claims(tmp_path)
+    configure_task_queue(admitter=admitter, idempotency_store=restarted_store)
+
+    retry = await client.post("/tasks", json=body, headers={"Idempotency-Key": "k-1"})
+
+    assert retry.status_code == 202
+    assert retry.json()["task_id"] == first.json()["task_id"]
+    assert retry.json()["run_id"] == original_run
+    # The reconstructed receipt is the receipt the first call got — header
+    # key included, not forgotten because it never lived in a request body.
+    assert retry.json()["task"]["idempotency_key"] == "k-1"
+    assert retry.json()["task"]["status"] == "queued"
+    # And nothing minted: the spine holds exactly the one Run.
+    assert len(run_store._runs) == 1
+
+
+async def test_a_derived_key_reconciles_across_a_restart(durable) -> None:
+    """The client that never heard of keys still gets its timeout-retry
+    reconciled after a restart: the payload fingerprint is recomputable from
+    the body, so the derived claim is found again."""
+    client, run_store, admitter, tmp_path = durable
+    body = {"description": "no keys here", "workspace": WORKSPACE}
+
+    first = await client.post("/tasks", json=body)
+    assert first.status_code == 202
+    reset_task_queue()
+    configure_task_queue(admitter=admitter, idempotency_store=await _sqlite_claims(tmp_path))
+
+    retry = await client.post("/tasks", json=body)
+
+    assert retry.status_code == 202
+    assert retry.json()["task_id"] == first.json()["task_id"]
+    assert retry.json()["run_id"] == first.json()["run_id"]
+    assert len(run_store._runs) == 1
+
+
+async def test_concurrent_http_retries_mint_one_run(durable) -> None:
+    """Concurrent-retry E2E: five identical in-flight POSTs meet at one
+    durable claim row; exactly one Run exists and every caller holds its
+    receipt."""
+    client, run_store, _admitter, _tmp_path = durable
+    body = {"description": "five racing retries", "workspace": WORKSPACE}
+    headers = {"Idempotency-Key": "k-race"}
+
+    responses = list(
+        await asyncio.gather(*[client.post("/tasks", json=body, headers=headers) for _ in range(5)])
+    )
+
+    assert all(r.status_code == 202 for r in responses)
+    task_ids = {r.json()["task_id"] for r in responses}
+    run_ids = {r.json()["run_id"] for r in responses}
+    assert len(task_ids) == 1
+    assert len(run_ids) == 1
+    runs_from_tasks = [
+        run
+        for run in run_store._runs.values()
+        if run.provenance.get("admission_source") == "task_queue"
+    ]
+    assert [run.run_id for run in runs_from_tasks] == list(run_ids)
+
+
+async def test_a_replica_handoff_reconciles_the_first_replicas_claim(durable) -> None:
+    """Replica-handoff E2E: the retry lands on a second replica — its own
+    connection to the same claim file — and reconciles to the first replica's
+    admission instead of minting a second Run."""
+    client, run_store, admitter, tmp_path = durable
+    body = {"description": "handed off", "workspace": WORKSPACE}
+
+    first = await client.post("/tasks", json=body, headers={"Idempotency-Key": "k-9"})
+    assert first.status_code == 202
+
+    # Replica B: its own claim-store connection to the same file, its own
+    # process-worth of lost receipts, the same claim durability.
+    reset_task_queue()
+    replica_b_store = await _sqlite_claims(tmp_path)
+    configure_task_queue(admitter=admitter, idempotency_store=replica_b_store)
+
+    retry = await client.post("/tasks", json=body, headers={"Idempotency-Key": "k-9"})
+
+    assert retry.status_code == 202
+    assert retry.json()["task_id"] == first.json()["task_id"]
+    assert retry.json()["run_id"] == first.json()["run_id"]
+    assert retry.json()["task"]["idempotency_key"] == "k-9"
+    assert len(run_store._runs) == 1

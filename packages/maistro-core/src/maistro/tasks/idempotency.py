@@ -43,30 +43,41 @@ minutes, not a lifetime deduplication ledger.
 **Concurrency.** The claim is an INSERT against a primary key, not a
 check-then-set: two identical submissions racing — two tabs, two replicas —
 meet at one durable row, and the loser replays the winner's outcome or waits
-for it (:class:`Pending`) rather than minting a second Run. A claim that is
-still pending holds a short lease (:data:`PENDING_LEASE`); a claim whose owner
-died before admitting is taken over once the lease lapses, so a crash mid-
-admission stays retryable. That lease is a bounded-stall assumption: admission
-is a couple of store round trips, so a claim pending longer than the lease
-means its owner is gone.
+for it (:class:`Pending`) rather than minting a second Run.
 
-**Failure ordering.** ``claim -> admit -> complete``, and ``release`` on any
-admission failure, keep the two honest cases honest: failing before the Run
-exists releases the claim, so the retry mints fresh; failing ambiguously
-*after* the Run exists (process death between ``admit`` and ``complete``)
-leaves a replayable claim only if ``complete`` landed — the milliseconds
-between the two commits are the same two-commit window
-``TaskRunAdmitter.admit`` already documents for the Run/receipt pair, and
-orphaned Runs from that window are #1114's recovery to find, not this
-contract's to hide.
+**Claimant fencing.** Every claim carries a random ``claim_token`` minted when
+the claim is won, and every claimant-owned write — ``begin``, ``complete``,
+``release`` — is guarded on it. A claimant that was stalled past the pending
+lease and superseded cannot stamp its outcome onto the thief's row, and cannot
+release the thief's claim either: the write simply does not land, and the
+superseded submitter compensates (the queue cancels the Run it minted into a
+lost claim) instead of silently renaming the winner's admission.
+
+**Failure ordering.** ``claim -> begin -> admit -> complete``, and ``release``
+on any admission failure. ``begin`` announces the receipt id *before* the Run
+is minted, and that announcement is what makes the ambiguous window decidable:
+a claimant that dies between minting the Run and recording it leaves a begun
+claim whose lease lapses, and the next submitter resolves it by *discovery* —
+the Run's provenance names the announced receipt (``#41`` stamps it at admit),
+so ``find_run_by_task_receipt`` finds a minted Run and ``resolve_run`` records
+it on the claim (:class:`Replayed`, no duplicate), while a receipt no Run names
+was never minted durably and the claim is safely taken over. A failure before
+the Run exists releases the claim, so the retry mints fresh. The one window
+discovery cannot see is a Run minted and then *archived* cold — hours old,
+long past any retry — and a Run orphaned before its receipt was ever enqueued
+remains #1114's recovery to execute; what this contract guarantees is that the
+*admission* resolves to at most one standing Run.
 
 **Not a process-local cache** (the issue's stop condition). The durable
 backends — :class:`PgTaskIdempotencyStore` for a replica-shareable deployment,
 :class:`SqliteTaskIdempotencyStore` for the single-conductor homelab — put the
 claim in the same database tier the Run spine itself selected, so a restart or
-a replica handoff resolves retries identically. The in-memory store exists for
-the no-database deployment, exactly as the in-memory Run store does; there it
-is the deployment's durability tier, not a cache in front of a durable one.
+a replica handoff resolves retries identically. Wiring provisions the table on
+whichever durable backend is configured (``ensure_schema``), so an
+unmigrated-but-configured PostgreSQL gets durable claims, not a silent drop to
+process-local state. The in-memory store exists for the no-database deployment,
+exactly as the in-memory Run store does; there it is the deployment's
+durability tier, not a cache in front of a durable one.
 """
 
 from __future__ import annotations
@@ -76,6 +87,7 @@ import hashlib
 import json
 import logging
 import sqlite3
+import uuid
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal, Protocol
@@ -108,7 +120,7 @@ DEFAULT_REPLAY_WINDOW = timedelta(hours=24)
 
 #: How long a *pending* (not yet admitted) claim blocks a second submitter
 #: before that submitter may take the claim over. Bounds the wait a loser
-#: spends on a winner that died mid-admission; admission itself is two store
+#: spends on a winner that died mid-admission; admission itself is a few store
 #: round trips, so anything this side of half a minute is a corpse.
 PENDING_LEASE = timedelta(seconds=30)
 
@@ -158,8 +170,9 @@ class IdempotencyPendingTimeout(RuntimeError):
     """A concurrent twin held the pending claim past every bounded wait.
 
     Not the takeover path — that fires at ``PENDING_LEASE`` — but a twin that
-    kept re-claiming through it. Raising is the honest answer; the caller's
-    retry reconciles against whatever the twin actually admitted.
+    kept re-claiming through it, or a superseded submitter whose winner never
+    recorded an outcome. Raising is the honest answer; the caller's retry
+    reconciles against whatever the twin actually admitted.
     """
 
 
@@ -178,10 +191,6 @@ def _to_us(moment: datetime) -> int:
     if moment.tzinfo is None:
         raise ValueError("idempotency timestamps must be timezone-aware")
     return (moment - _EPOCH) // _MICROSECOND
-
-
-def _from_us(micros: int) -> datetime:
-    return _EPOCH + timedelta(microseconds=micros)
 
 
 def from_epoch_us(micros: int) -> datetime:
@@ -257,32 +266,56 @@ def normalize_idempotency_key(*candidates: str | None) -> str | None:
 class AdmissionRecord:
     """One durable claim: who admitted what, under which outcome, until when.
 
-    ``request`` is the canonical TaskCreate JSON as admitted (owner filled
-    in), which is what lets a replay reconstruct the original receipt after a
-    restart has emptied the queue's in-memory tasks.
+    ``request`` is the canonical TaskCreate JSON as admitted (owner and, when
+    the caller supplied one, the explicit key filled in), which is what lets a
+    replay reconstruct the original receipt after a restart has emptied the
+    queue's in-memory tasks. ``claim_token`` fences the claimant-owned writes;
+    ``task_id`` is announced by ``begin`` *before* the Run is minted, and
+    ``completed_at_us`` is stamped once by ``complete`` — its presence, not
+    ``task_id``'s, is what makes an outcome final and replayable.
     """
 
+    claim_token: str
     fingerprint: str
     request: str
     task_id: str | None
     run_id: str | None
+    completed_at_us: int
     created_at_us: int
     expires_at_us: int
     lease_expires_at_us: int
 
     @property
-    def admitted(self) -> bool:
-        """Whether the admission this claim reserves has produced its receipt.
+    def begun(self) -> bool:
+        """Whether the receipt id was announced (``begin`` landed).
 
-        ``task_id`` is written only by ``complete``, so its presence is the
-        claim's own record that the Run exists and the outcome is replayable.
+        A begun claim names the receipt its owner is minting — the handle the
+        ambiguous-window discovery resolves a Run by — but the outcome is not
+        final until ``complete`` lands.
         """
         return self.task_id is not None
+
+    @property
+    def admitted(self) -> bool:
+        """Whether the admission this claim reserves has produced its outcome.
+
+        ``completed_at_us`` is written only by ``complete``, so its presence is
+        the claim's own record that the outcome is final and replayable — a
+        receipt (``task_id``) and, when the spine is wired, the Run behind it.
+        """
+        return self.completed_at_us != 0
 
 
 @dataclass(frozen=True)
 class Claimed:
-    """This caller owns the admission: proceed, then ``complete`` or ``release``."""
+    """This caller owns the admission: proceed, then ``complete`` or ``release``.
+
+    ``token`` is the claimant fence every subsequent write must present; a
+    claimant superseded past the pending lease holds a token the row no longer
+    answers to.
+    """
+
+    token: str
 
 
 @dataclass(frozen=True)
@@ -299,7 +332,22 @@ class Pending:
     record: AdmissionRecord
 
 
-_AssessmentKind = Literal["mismatch", "replayed", "pending", "takeover"]
+@dataclass(frozen=True)
+class Ambiguous:
+    """A begun claim whose lease lapsed: its owner may have died anywhere.
+
+    This is the one outcome the store cannot classify alone. The receipt was
+    announced (``begin``) but the outcome never landed, so the owner died
+    either before minting the Run — safe to take the claim over — or after,
+    in which case minting again would duplicate logical work. The caller
+    resolves the ambiguity by discovery (does any Run name the announced
+    receipt?) and then either ``resolve_run`` or ``take_over_resolved``.
+    """
+
+    record: AdmissionRecord
+
+
+_AssessmentKind = Literal["mismatch", "replayed", "pending", "ambiguous", "takeover"]
 
 
 def _assess(record: AdmissionRecord, *, fingerprint: str, now_us: int) -> _AssessmentKind:
@@ -322,7 +370,11 @@ def _assess(record: AdmissionRecord, *, fingerprint: str, now_us: int) -> _Asses
     if record.admitted:
         return "replayed"
     if record.lease_expires_at_us <= now_us:
-        return "takeover"
+        # A pending claim with no announced receipt whose lease lapsed means a
+        # dead owner that never got as far as minting: take it over. A *begun*
+        # claim is ambiguous — the owner may have died after minting — and the
+        # caller must resolve that by discovery, not by takeover.
+        return "ambiguous" if record.begun else "takeover"
     return "pending"
 
 
@@ -330,9 +382,13 @@ def _takeover_guard_holds(record: AdmissionRecord, now_us: int) -> bool:
     """The in-memory twin of the takeover statements' WHERE clause — one
     predicate, spelled twice because one runs in SQL and one in Python. The
     behavioral tests exercise both; a divergence shows up as a backend that
-    replays where the other takes over."""
+    replays where the other takes over. The guard permits a lapsed claim whose
+    outcome never landed, *begun or not*; safety for the begun case comes from
+    the caller having resolved the ambiguity by discovery first — the guard
+    cannot run discovery, so it refuses nothing the caller has decided.
+    """
     return record.expires_at_us <= now_us or (
-        record.task_id is None and record.lease_expires_at_us <= now_us
+        record.completed_at_us == 0 and record.lease_expires_at_us <= now_us
     )
 
 
@@ -348,7 +404,7 @@ class TaskIdempotencyStore(Protocol):
         request: str,
         now: datetime,
         replay_window: timedelta = DEFAULT_REPLAY_WINDOW,
-    ) -> Claimed | Replayed | Pending:
+    ) -> Claimed | Replayed | Pending | Ambiguous:
         """Reserve the admission named by ``scope_key``.
 
         Raises :class:`IdempotencyKeyMismatch` when an unexpired claim under
@@ -356,12 +412,60 @@ class TaskIdempotencyStore(Protocol):
         """
         ...
 
-    async def complete(self, scope_key: str, *, task_id: str, run_id: str | None) -> bool:
-        """Record the admitted outcome on this caller's own pending claim."""
+    async def begin(self, scope_key: str, *, token: str, task_id: str, now: datetime) -> bool:
+        """Announce the receipt id this claimant is about to admit.
+
+        Written *before* the Run is minted so a claimant that dies mid-admission
+        leaves behind the handle discovery resolves a minted Run by. False when
+        the fence refuses: the claim was superseded or already begun.
+        """
         ...
 
-    async def release(self, scope_key: str) -> bool:
-        """Give a failed admission's claim back: the submission stays retryable."""
+    async def complete(
+        self, scope_key: str, *, token: str, task_id: str, run_id: str | None
+    ) -> bool:
+        """Record the admitted outcome on this caller's own claim.
+
+        False when the fence refuses — a superseded claimant's outcome must
+        never stamp another claimant's row — or when an outcome already landed.
+        """
+        ...
+
+    async def resolve_run(self, scope_key: str, *, task_id: str, run_id: str) -> bool:
+        """Record a Run found by ambiguous-window discovery onto its claim.
+
+        Not claimant-fenced deliberately: discovery proved the Run names this
+        claim's announced receipt, so recording it is writing down a fact, not
+        a claimant acting. False when the claim moved on meanwhile.
+        """
+        ...
+
+    async def release(self, scope_key: str, *, token: str) -> bool:
+        """Give a failed admission's claim back: the submission stays retryable.
+
+        Allowed until the outcome lands — a begun admission that failed before
+        the Run exists releases too — and refused for a superseded claimant.
+        """
+        ...
+
+    async def take_over_resolved(
+        self,
+        scope_key: str,
+        *,
+        task_id: str,
+        fingerprint: str,
+        request: str,
+        now: datetime,
+        replay_window: timedelta = DEFAULT_REPLAY_WINDOW,
+    ) -> Claimed | None:
+        """Take over an ambiguous claim whose discovery resolved to no Run.
+
+        The caller has proven — discovery found no Run naming the announced
+        receipt, or there is no spine to discover under — that the receipt was
+        never minted durably, so minting fresh duplicates nothing. Fenced on
+        the announced ``task_id``: a row that moved on is not ours to take, and
+        None is the answer.
+        """
         ...
 
     async def get(self, scope_key: str) -> AdmissionRecord | None: ...
@@ -372,14 +476,14 @@ class TaskIdempotencyStore(Protocol):
 
 
 class _ClaimFlow:
-    """The claim protocol every backend shares, over four storage primitives.
+    """The claim protocol every backend shares, over storage primitives.
 
-    Subclasses provide insert/read/take-over/complete/release/purge for their
-    dialect; this class owns the check-conflict-classify-take-over loop so the
-    three backends cannot drift on what a racing retry does. The loop is
-    bounded because a guard the ``_assess`` twin disagrees with would
-    otherwise spin forever: every refusal to take over is followed by a fresh
-    read, and a bounded number of those is enough for any correct guard.
+    Subclasses provide insert/read/take-over/resolve/begin/complete/release/
+    purge for their dialect; this class owns the check-conflict-classify-take-
+    over loop so the three backends cannot drift on what a racing retry does.
+    The loop is bounded because a guard the ``_assess`` twin disagrees with
+    would otherwise spin forever: every refusal to take over is followed by a
+    fresh read, and a bounded number of those is enough for any correct guard.
     """
 
     #: Read-modify-write rounds before giving up and reporting Pending.
@@ -393,26 +497,28 @@ class _ClaimFlow:
         request: str,
         now: datetime,
         replay_window: timedelta = DEFAULT_REPLAY_WINDOW,
-    ) -> Claimed | Replayed | Pending:
+    ) -> Claimed | Replayed | Pending | Ambiguous:
         now_us = _to_us(now)
         fresh = AdmissionRecord(
+            claim_token=uuid.uuid4().hex,
             fingerprint=fingerprint,
             request=request,
             task_id=None,
             run_id=None,
+            completed_at_us=0,
             created_at_us=now_us,
             expires_at_us=_to_us(now + replay_window),
             lease_expires_at_us=_to_us(now + PENDING_LEASE),
         )
         if await self._insert(scope_key, fresh):
-            return Claimed()
+            return Claimed(fresh.claim_token)
         for _ in range(self._RACE_ROUNDS):
             record = await self._read(scope_key)
             if record is None:
                 # Released (or taken over) between our refused insert and this
                 # read. The slot is free again; try to win it.
                 if await self._insert(scope_key, fresh):
-                    return Claimed()
+                    return Claimed(fresh.claim_token)
                 continue
             kind = _assess(record, fingerprint=fingerprint, now_us=now_us)
             if kind == "mismatch":
@@ -424,8 +530,12 @@ class _ClaimFlow:
                 return Replayed(record)
             if kind == "pending":
                 return Pending(record)
+            if kind == "ambiguous":
+                # The caller resolves this by discovery; handing back the claim
+                # is the store saying "beyond my sight", not an answer.
+                return Ambiguous(record)
             if await self._take_over(scope_key, fresh, now_us):
-                return Claimed()
+                return Claimed(fresh.claim_token)
         # The guard kept refusing, which for a correct backend means the row
         # moved under us every round. Report what is there now; a pending
         # answer keeps the caller's own retry loop (and its takeover) armed.
@@ -441,10 +551,30 @@ class _ClaimFlow:
     async def _take_over(self, scope_key: str, record: AdmissionRecord, now_us: int) -> bool:
         raise NotImplementedError
 
-    async def complete(self, scope_key: str, *, task_id: str, run_id: str | None) -> bool:
+    async def begin(self, scope_key: str, *, token: str, task_id: str, now: datetime) -> bool:
         raise NotImplementedError
 
-    async def release(self, scope_key: str) -> bool:
+    async def complete(
+        self, scope_key: str, *, token: str, task_id: str, run_id: str | None
+    ) -> bool:
+        raise NotImplementedError
+
+    async def resolve_run(self, scope_key: str, *, task_id: str, run_id: str) -> bool:
+        raise NotImplementedError
+
+    async def release(self, scope_key: str, *, token: str) -> bool:
+        raise NotImplementedError
+
+    async def take_over_resolved(
+        self,
+        scope_key: str,
+        *,
+        task_id: str,
+        fingerprint: str,
+        request: str,
+        now: datetime,
+        replay_window: timedelta = DEFAULT_REPLAY_WINDOW,
+    ) -> Claimed | None:
         raise NotImplementedError
 
     async def get(self, scope_key: str) -> AdmissionRecord | None:
@@ -512,21 +642,87 @@ class InMemoryTaskIdempotencyStore(_ClaimFlow):
             self._rows[scope_key] = record
             return True
 
-    async def complete(self, scope_key: str, *, task_id: str, run_id: str | None) -> bool:
+    async def begin(self, scope_key: str, *, token: str, task_id: str, now: datetime) -> bool:
         async with self._lock:
             record = self._rows.get(scope_key)
-            if record is None or record.task_id is not None:
+            if record is None or record.claim_token != token or record.begun or record.admitted:
                 return False
-            self._rows[scope_key] = replace(record, task_id=task_id, run_id=run_id)
+            self._rows[scope_key] = replace(
+                record,
+                task_id=task_id,
+                # The mint gets its own lease window: the announcement marks the
+                # start of the dangerous stretch, so the fence is measured from
+                # it, not from the claim.
+                lease_expires_at_us=_to_us(now + PENDING_LEASE),
+            )
             return True
 
-    async def release(self, scope_key: str) -> bool:
+    async def complete(
+        self, scope_key: str, *, token: str, task_id: str, run_id: str | None
+    ) -> bool:
         async with self._lock:
             record = self._rows.get(scope_key)
-            if record is None or record.task_id is not None:
+            if record is None or record.claim_token != token or record.admitted:
+                return False
+            self._rows[scope_key] = replace(
+                record,
+                task_id=task_id,
+                run_id=run_id,
+                completed_at_us=_to_us(datetime.now(UTC)),
+            )
+            return True
+
+    async def resolve_run(self, scope_key: str, *, task_id: str, run_id: str) -> bool:
+        async with self._lock:
+            record = self._rows.get(scope_key)
+            if record is None or record.admitted or record.task_id != task_id:
+                return False
+            self._rows[scope_key] = replace(
+                record, run_id=run_id, completed_at_us=_to_us(datetime.now(UTC))
+            )
+            return True
+
+    async def release(self, scope_key: str, *, token: str) -> bool:
+        async with self._lock:
+            record = self._rows.get(scope_key)
+            if record is None or record.claim_token != token or record.admitted:
                 return False
             del self._rows[scope_key]
             return True
+
+    async def take_over_resolved(
+        self,
+        scope_key: str,
+        *,
+        task_id: str,
+        fingerprint: str,
+        request: str,
+        now: datetime,
+        replay_window: timedelta = DEFAULT_REPLAY_WINDOW,
+    ) -> Claimed | None:
+        now_us = _to_us(now)
+        async with self._lock:
+            existing = self._rows.get(scope_key)
+            if (
+                existing is None
+                or existing.task_id != task_id
+                or existing.admitted
+                or existing.lease_expires_at_us > now_us
+            ):
+                return None
+            fresh = AdmissionRecord(
+                claim_token=uuid.uuid4().hex,
+                fingerprint=fingerprint,
+                request=request,
+                task_id=None,
+                run_id=None,
+                completed_at_us=0,
+                created_at_us=now_us,
+                expires_at_us=_to_us(now + replay_window),
+                lease_expires_at_us=_to_us(now + PENDING_LEASE),
+            )
+            self._rows[scope_key] = fresh
+            return Claimed(fresh.claim_token)
 
     async def get(self, scope_key: str) -> AdmissionRecord | None:
         async with self._lock:
@@ -567,10 +763,12 @@ class SqliteTaskIdempotencyStore(_ClaimFlow):
             """
             CREATE TABLE IF NOT EXISTS task_idempotency (
                 scope_key TEXT PRIMARY KEY,
+                claim_token TEXT NOT NULL,
                 fingerprint TEXT NOT NULL,
                 request TEXT NOT NULL,
                 task_id TEXT,
                 run_id TEXT,
+                completed_at INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL,
                 expires_at INTEGER NOT NULL,
                 lease_expires_at INTEGER NOT NULL
@@ -588,12 +786,13 @@ class SqliteTaskIdempotencyStore(_ClaimFlow):
                 await self._conn.execute(
                     """
                     INSERT INTO task_idempotency
-                        (scope_key, fingerprint, request, task_id, run_id,
-                         created_at, expires_at, lease_expires_at)
-                    VALUES (?, ?, ?, NULL, NULL, ?, ?, ?)
+                        (scope_key, claim_token, fingerprint, request, task_id, run_id,
+                         completed_at, created_at, expires_at, lease_expires_at)
+                    VALUES (?, ?, ?, ?, NULL, NULL, 0, ?, ?, ?)
                     """,
                     (
                         scope_key,
+                        record.claim_token,
                         record.fingerprint,
                         record.request,
                         record.created_at_us,
@@ -614,8 +813,8 @@ class SqliteTaskIdempotencyStore(_ClaimFlow):
     async def _read(self, scope_key: str) -> AdmissionRecord | None:
         async with self._conn.execute(
             """
-            SELECT scope_key, fingerprint, request, task_id, run_id,
-                   created_at, expires_at, lease_expires_at
+            SELECT scope_key, claim_token, fingerprint, request, task_id, run_id,
+                   completed_at, created_at, expires_at, lease_expires_at
             FROM task_idempotency WHERE scope_key = ?
             """,
             (scope_key,),
@@ -624,17 +823,21 @@ class SqliteTaskIdempotencyStore(_ClaimFlow):
         return _row_of(row) if row is not None else None
 
     async def _take_over(self, scope_key: str, record: AdmissionRecord, now_us: int) -> bool:
-        # Guard = expired window, or a pending claim whose lease lapsed.
+        # Guard = expired window, or a claim whose lease lapsed with no outcome
+        # recorded. A begun row passes this guard too; safety for that case is
+        # the caller's discovery resolution, which this statement cannot run.
         async with self._write_lock:
             cursor = await self._conn.execute(
                 """
                 UPDATE task_idempotency
-                SET fingerprint = ?, request = ?, task_id = NULL, run_id = NULL,
+                SET claim_token = ?, fingerprint = ?, request = ?,
+                    task_id = NULL, run_id = NULL, completed_at = 0,
                     created_at = ?, expires_at = ?, lease_expires_at = ?
                 WHERE scope_key = ?
-                  AND (expires_at <= ? OR (task_id IS NULL AND lease_expires_at <= ?))
+                  AND (expires_at <= ? OR (completed_at = 0 AND lease_expires_at <= ?))
                 """,
                 (
+                    record.claim_token,
                     record.fingerprint,
                     record.request,
                     record.created_at_us,
@@ -649,31 +852,105 @@ class SqliteTaskIdempotencyStore(_ClaimFlow):
             await self._conn.commit()
             return changed
 
-    async def complete(self, scope_key: str, *, task_id: str, run_id: str | None) -> bool:
+    async def begin(self, scope_key: str, *, token: str, task_id: str, now: datetime) -> bool:
         async with self._write_lock:
             cursor = await self._conn.execute(
                 """
-                UPDATE task_idempotency SET task_id = ?, run_id = ?
-                WHERE scope_key = ? AND task_id IS NULL
+                UPDATE task_idempotency
+                SET task_id = ?, lease_expires_at = ?
+                WHERE scope_key = ? AND claim_token = ?
+                  AND task_id IS NULL AND completed_at = 0
                 """,
-                (task_id, run_id, scope_key),
+                (task_id, _to_us(now + PENDING_LEASE), scope_key, token),
             )
             changed = bool(cursor.rowcount == 1)
             await self._conn.commit()
             return changed
 
-    async def release(self, scope_key: str) -> bool:
+    async def complete(
+        self, scope_key: str, *, token: str, task_id: str, run_id: str | None
+    ) -> bool:
         async with self._write_lock:
             cursor = await self._conn.execute(
                 """
-                DELETE FROM task_idempotency
-                WHERE scope_key = ? AND task_id IS NULL
+                UPDATE task_idempotency SET task_id = ?, run_id = ?, completed_at = ?
+                WHERE scope_key = ? AND claim_token = ? AND completed_at = 0
                 """,
-                (scope_key,),
+                (task_id, run_id, _to_us(datetime.now(UTC)), scope_key, token),
             )
             changed = bool(cursor.rowcount == 1)
             await self._conn.commit()
             return changed
+
+    async def resolve_run(self, scope_key: str, *, task_id: str, run_id: str) -> bool:
+        async with self._write_lock:
+            cursor = await self._conn.execute(
+                """
+                UPDATE task_idempotency SET run_id = ?, completed_at = ?
+                WHERE scope_key = ? AND task_id = ? AND completed_at = 0
+                """,
+                (run_id, _to_us(datetime.now(UTC)), scope_key, task_id),
+            )
+            changed = bool(cursor.rowcount == 1)
+            await self._conn.commit()
+            return changed
+
+    async def release(self, scope_key: str, *, token: str) -> bool:
+        async with self._write_lock:
+            cursor = await self._conn.execute(
+                """
+                DELETE FROM task_idempotency
+                WHERE scope_key = ? AND claim_token = ? AND completed_at = 0
+                """,
+                (scope_key, token),
+            )
+            changed = bool(cursor.rowcount == 1)
+            await self._conn.commit()
+            return changed
+
+    async def take_over_resolved(
+        self,
+        scope_key: str,
+        *,
+        task_id: str,
+        fingerprint: str,
+        request: str,
+        now: datetime,
+        replay_window: timedelta = DEFAULT_REPLAY_WINDOW,
+    ) -> Claimed | None:
+        # Fenced on the announced receipt: the caller resolved this exact begun
+        # claim by discovery (no Run names it), so the takeover must not land
+        # on a row that has meanwhile moved to a different announcement.
+        now_us = _to_us(now)
+        async with self._write_lock:
+            cursor = await self._conn.execute(
+                """
+                UPDATE task_idempotency
+                SET claim_token = ?, fingerprint = ?, request = ?,
+                    task_id = NULL, run_id = NULL, completed_at = 0,
+                    created_at = ?, expires_at = ?, lease_expires_at = ?
+                WHERE scope_key = ? AND task_id = ?
+                  AND completed_at = 0 AND lease_expires_at <= ?
+                """,
+                (
+                    uuid.uuid4().hex,
+                    fingerprint,
+                    request,
+                    now_us,
+                    _to_us(now + replay_window),
+                    _to_us(now + PENDING_LEASE),
+                    scope_key,
+                    task_id,
+                    now_us,
+                ),
+            )
+            changed = bool(cursor.rowcount == 1)
+            await self._conn.commit()
+            if not changed:
+                return None
+            record = await self._read(scope_key)
+            assert record is not None  # the UPDATE just rewrote this row
+            return Claimed(record.claim_token)
 
     async def get(self, scope_key: str) -> AdmissionRecord | None:
         return await self._read(scope_key)
@@ -700,13 +977,15 @@ def _row_of(row: Any) -> AdmissionRecord:
     first — as its record. Indexed, not mapped: both drivers hand positionals
     here, and the select spells its column order directly above the call."""
     return AdmissionRecord(
-        fingerprint=row[1],
-        request=row[2],
-        task_id=row[3],
-        run_id=row[4],
-        created_at_us=row[5],
-        expires_at_us=row[6],
-        lease_expires_at_us=row[7],
+        claim_token=row[1],
+        fingerprint=row[2],
+        request=row[3],
+        task_id=row[4],
+        run_id=row[5],
+        completed_at_us=row[6],
+        created_at_us=row[7],
+        expires_at_us=row[8],
+        lease_expires_at_us=row[9],
     )
 
 
@@ -719,18 +998,54 @@ class PgTaskIdempotencyStore(_ClaimFlow):
     def __init__(self, pool: Any) -> None:
         self._pool = pool
 
+    async def ensure_schema(self) -> None:
+        """Provision the claim table on the pool, idempotently.
+
+        Migration 033 creates this table through Alembic; a deployment whose
+        pool has not been migrated yet still gets *durable* claims this way —
+        the point of the issue's durability box is that a configured database
+        must never degrade admission identity to process-local state. The DDL
+        mirrors the migration's column set exactly, so the later
+        ``alembic upgrade head`` finds the shape it expects.
+        """
+        conn: asyncpg.Connection
+        async with self._pool.acquire() as conn:
+            await conn.execute(  # nosec B608 — literal DDL, no interpolation
+                """
+                CREATE TABLE IF NOT EXISTS task_idempotency (
+                    scope_key TEXT PRIMARY KEY,
+                    claim_token TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    request TEXT NOT NULL,
+                    task_id TEXT,
+                    run_id TEXT,
+                    completed_at BIGINT NOT NULL DEFAULT 0,
+                    created_at BIGINT NOT NULL,
+                    expires_at BIGINT NOT NULL,
+                    lease_expires_at BIGINT NOT NULL
+                )
+                """
+            )
+            await conn.execute(  # nosec B608 — literal DDL, no interpolation
+                """
+                CREATE INDEX IF NOT EXISTS ix_task_idempotency_expires
+                    ON task_idempotency(expires_at)
+                """
+            )
+
     async def _insert(self, scope_key: str, record: AdmissionRecord) -> bool:
         conn: asyncpg.Connection
         async with self._pool.acquire() as conn:
             tag: str = await conn.execute(  # nosec B608 — literal SQL, bound params
                 """
                 INSERT INTO task_idempotency
-                    (scope_key, fingerprint, request, task_id, run_id,
-                     created_at, expires_at, lease_expires_at)
-                VALUES ($1, $2, $3, NULL, NULL, $4, $5, $6)
+                    (scope_key, claim_token, fingerprint, request, task_id, run_id,
+                     completed_at, created_at, expires_at, lease_expires_at)
+                VALUES ($1, $2, $3, $4, NULL, NULL, 0, $5, $6, $7)
                 ON CONFLICT (scope_key) DO NOTHING
                 """,
                 scope_key,
+                record.claim_token,
                 record.fingerprint,
                 record.request,
                 record.created_at_us,
@@ -746,8 +1061,8 @@ class PgTaskIdempotencyStore(_ClaimFlow):
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT scope_key, fingerprint, request, task_id, run_id,
-                       created_at, expires_at, lease_expires_at
+                SELECT scope_key, claim_token, fingerprint, request, task_id, run_id,
+                       completed_at, created_at, expires_at, lease_expires_at
                 FROM task_idempotency WHERE scope_key = $1
                 """,
                 scope_key,
@@ -758,15 +1073,19 @@ class PgTaskIdempotencyStore(_ClaimFlow):
         conn: asyncpg.Connection
         async with self._pool.acquire() as conn:
             tag: str = await conn.execute(  # nosec B608 — literal SQL, bound params
-                # Guard = expired window, or a pending claim whose lease lapsed.
+                # Guard = expired window, or a lease-lapsed claim with no
+                # outcome. A begun row passes; the caller's discovery resolved
+                # that case before reaching here.
                 """
                 UPDATE task_idempotency
-                SET fingerprint = $2, request = $3, task_id = NULL, run_id = NULL,
-                    created_at = $4, expires_at = $5, lease_expires_at = $6
+                SET claim_token = $2, fingerprint = $3, request = $4,
+                    task_id = NULL, run_id = NULL, completed_at = 0,
+                    created_at = $5, expires_at = $6, lease_expires_at = $7
                 WHERE scope_key = $1
-                  AND (expires_at <= $7 OR (task_id IS NULL AND lease_expires_at <= $7))
+                  AND (expires_at <= $8 OR (completed_at = 0 AND lease_expires_at <= $8))
                 """,
                 scope_key,
+                record.claim_token,
                 record.fingerprint,
                 record.request,
                 record.created_at_us,
@@ -776,31 +1095,110 @@ class PgTaskIdempotencyStore(_ClaimFlow):
             )
         return tag.rsplit(" ", 1)[-1] == "1"
 
-    async def complete(self, scope_key: str, *, task_id: str, run_id: str | None) -> bool:
+    async def begin(self, scope_key: str, *, token: str, task_id: str, now: datetime) -> bool:
         conn: asyncpg.Connection
         async with self._pool.acquire() as conn:
             tag: str = await conn.execute(  # nosec B608 — literal SQL, bound params
                 """
-                UPDATE task_idempotency SET task_id = $2, run_id = $3
-                WHERE scope_key = $1 AND task_id IS NULL
+                UPDATE task_idempotency
+                SET task_id = $2, lease_expires_at = $3
+                WHERE scope_key = $1 AND claim_token = $4
+                  AND task_id IS NULL AND completed_at = 0
+                """,
+                scope_key,
+                task_id,
+                _to_us(now + PENDING_LEASE),
+                token,
+            )
+        return tag.rsplit(" ", 1)[-1] == "1"
+
+    async def complete(
+        self, scope_key: str, *, token: str, task_id: str, run_id: str | None
+    ) -> bool:
+        conn: asyncpg.Connection
+        async with self._pool.acquire() as conn:
+            tag: str = await conn.execute(  # nosec B608 — literal SQL, bound params
+                """
+                UPDATE task_idempotency SET task_id = $2, run_id = $3, completed_at = $4
+                WHERE scope_key = $1 AND claim_token = $5 AND completed_at = 0
                 """,
                 scope_key,
                 task_id,
                 run_id,
+                _to_us(datetime.now(UTC)),
+                token,
             )
         return tag.rsplit(" ", 1)[-1] == "1"
 
-    async def release(self, scope_key: str) -> bool:
+    async def resolve_run(self, scope_key: str, *, task_id: str, run_id: str) -> bool:
+        conn: asyncpg.Connection
+        async with self._pool.acquire() as conn:
+            tag: str = await conn.execute(  # nosec B608 — literal SQL, bound params
+                """
+                UPDATE task_idempotency SET run_id = $2, completed_at = $3
+                WHERE scope_key = $1 AND task_id = $4 AND completed_at = 0
+                """,
+                scope_key,
+                run_id,
+                _to_us(datetime.now(UTC)),
+                task_id,
+            )
+        return tag.rsplit(" ", 1)[-1] == "1"
+
+    async def release(self, scope_key: str, *, token: str) -> bool:
         conn: asyncpg.Connection
         async with self._pool.acquire() as conn:
             tag: str = await conn.execute(  # nosec B608 — literal SQL, bound params
                 """
                 DELETE FROM task_idempotency
-                WHERE scope_key = $1 AND task_id IS NULL
+                WHERE scope_key = $1 AND claim_token = $2 AND completed_at = 0
                 """,
                 scope_key,
+                token,
             )
         return tag.rsplit(" ", 1)[-1] == "1"
+
+    async def take_over_resolved(
+        self,
+        scope_key: str,
+        *,
+        task_id: str,
+        fingerprint: str,
+        request: str,
+        now: datetime,
+        replay_window: timedelta = DEFAULT_REPLAY_WINDOW,
+    ) -> Claimed | None:
+        # Fenced on the announced receipt: the caller resolved this exact begun
+        # claim by discovery (no Run names it), so the takeover must not land
+        # on a row that has meanwhile moved to a different announcement.
+        now_us = _to_us(now)
+        conn: asyncpg.Connection
+        async with self._pool.acquire() as conn:
+            tag: str = await conn.execute(  # nosec B608 — literal SQL, bound params
+                """
+                UPDATE task_idempotency
+                SET claim_token = $2, fingerprint = $3, request = $4,
+                    task_id = NULL, run_id = NULL, completed_at = 0,
+                    created_at = $5, expires_at = $6, lease_expires_at = $7
+                WHERE scope_key = $1 AND task_id = $8
+                  AND completed_at = 0 AND lease_expires_at <= $9
+                """,
+                scope_key,
+                uuid.uuid4().hex,
+                fingerprint,
+                request,
+                now_us,
+                _to_us(now + replay_window),
+                _to_us(now + PENDING_LEASE),
+                task_id,
+                now_us,
+            )
+        if tag.rsplit(" ", 1)[-1] != "1":
+            return None
+        record = await self._read(scope_key)
+        if record is None:  # pragma: no cover - the UPDATE just rewrote this row
+            return None
+        return Claimed(record.claim_token)
 
     async def get(self, scope_key: str) -> AdmissionRecord | None:
         return await self._read(scope_key)
@@ -825,26 +1223,34 @@ class PgTaskIdempotencyStore(_ClaimFlow):
 async def wire_task_idempotency(conn: Any, *, pg_pool: Any = None) -> TaskIdempotencyStore:
     """The claim store on the backend the Run spine chose.
 
-    Probed separately from the spine's own table set, for the reason
-    ``_pg_schedule_store`` records: a pool migrated to ``032`` but not ``033``
-    has a perfectly good durable spine, and dropping its idempotency to
-    in-memory over a table it has not grown yet — warned, not silent — beats
-    an ``UndefinedTableError`` on somebody's first retry.
+    A configured durable backend always gets durable claims: the PostgreSQL
+    store provisions its table at wiring time (``ensure_schema``, the same
+    self-provisioning the SQLite tier has always done), so a pool that has not
+    been migrated to 033 yet still reconciles retries across a restart instead
+    of silently dropping to process-local state. Only a backend that cannot be
+    provisioned at all — a read-only application role, say — falls back to the
+    in-memory tier, loudly, because a claim store that forgets on restart
+    mints a second Run for the first retried submission and an operator has to
+    know that is the tier they are on.
     """
     if pg_pool is not None:
-        if await pg_pool.fetchval("SELECT to_regclass($1) IS NOT NULL", "public.task_idempotency"):
-            return PgTaskIdempotencyStore(pg_pool)
-        logger.warning(
-            "PostgreSQL pool has no task_idempotency table, so task admission "
-            "idempotency is in-process and lost on restart: a retry after a "
-            "restart mints a second Run. Run `alembic upgrade head` to make it "
-            "durable (#1176)."
-        )
-        return InMemoryTaskIdempotencyStore()
-    if conn is not None:
-        store = SqliteTaskIdempotencyStore(conn)
-        await store.ensure_schema()
+        store = PgTaskIdempotencyStore(pg_pool)
+        try:
+            await store.ensure_schema()
+        except Exception as exc:
+            logger.warning(
+                "task_idempotency_provision_failed: task admission idempotency "
+                "is in-process and lost on restart (%s): a retry after a restart "
+                "mints a second Run. Grant CREATE on the schema or run "
+                "`alembic upgrade head` (#1176).",
+                exc,
+            )
+            return InMemoryTaskIdempotencyStore()
         return store
+    if conn is not None:
+        sqlite_store = SqliteTaskIdempotencyStore(conn)
+        await sqlite_store.ensure_schema()
+        return sqlite_store
     return InMemoryTaskIdempotencyStore()
 
 
@@ -859,6 +1265,7 @@ __all__ = [
     "PENDING_POLL",
     "TASK_SUBMIT_ACTION",
     "AdmissionRecord",
+    "Ambiguous",
     "Claimed",
     "IdempotencyKeyMismatch",
     "IdempotencyPendingTimeout",
