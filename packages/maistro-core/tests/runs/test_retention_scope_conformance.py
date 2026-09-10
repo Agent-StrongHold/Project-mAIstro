@@ -41,6 +41,7 @@ from maistro.runs.retention_scope import (
     GlobalRetentionScope,
     WorkspaceRetentionScope,
 )
+from maistro.runs.sources import SCHEDULE_ID_KEY, SCHEDULED_FOR_KEY
 from maistro.runs.store import DuplicateOccurrence, InMemoryRunStore
 from maistro.scheduling.model import Schedule
 from maistro.scheduling.store import InMemoryScheduleStore
@@ -96,14 +97,20 @@ async def _continuation_for(store: GraphContinuationStore, run: Any) -> GraphCon
     )
 
 
-async def _event_for(store: Any, workspace: str, run: Any) -> EventEnvelope:
+async def _event_for(
+    store: Any,
+    workspace: str,
+    run: Any,
+    *,
+    reference: dict[str, str] | None = None,
+) -> EventEnvelope:
     return await store.append(
         EventEnvelope(
             type="run.completed",
             workspace_id=workspace,
             project_id=run.project_id,
-            run_id=run.run_id,
             payload={"run_id": run.run_id},
+            **(reference or {"run_id": run.run_id}),
         )
     )
 
@@ -309,12 +316,28 @@ async def test_a_continuation_does_not_outlive_its_run(scope_world: Any) -> None
 
 async def test_events_survive_a_purge_and_are_counted(scope_world: Any) -> None:
     """The Event log is append-only provenance. A purge neither deletes nor
-    rewrites it; the outcome counts the references left behind so the residue
-    is a reported fact, not a silent one."""
+    rewrites it; the outcome counts references through any execution id so the
+    residue is a reported fact, not a silent one."""
     world = scope_world
     run_a = await _expired_terminal_run(world, *world.a)
     run_b = await _expired_terminal_run(world, *world.b)
-    event_a = await _event_for(world.events, world.a[0], run_a)
+    node_run = (await world.runs.list_node_runs(run_a.run_id))[0]
+    attempt = (await world.runs.list_attempts(node_run.node_run_id))[0]
+    events = [
+        await _event_for(world.events, world.a[0], run_a, reference={"run_id": run_a.run_id}),
+        await _event_for(
+            world.events,
+            world.a[0],
+            run_a,
+            reference={"node_run_id": node_run.node_run_id},
+        ),
+        await _event_for(
+            world.events,
+            world.a[0],
+            run_a,
+            reference={"attempt_id": attempt.attempt_id},
+        ),
+    ]
     await _event_for(world.events, world.b[0], run_b)
 
     outcome = await world.runs.purge_expired_runs(_scope_a(world), now=NOW)
@@ -324,18 +347,68 @@ async def test_events_survive_a_purge_and_are_counted(scope_world: Any) -> None:
         # of a boundary, not a stub.
         assert outcome.event_references_retained == 0
     else:
-        assert outcome.event_references_retained == 1
-    # Both events still resolve, whichever backend holds them.
-    assert await world.events.get(event_a.event_id) is not None
+        assert outcome.event_references_retained == 3
+    # All events still resolve, whichever backend holds them.
+    for event in events:
+        assert await world.events.get(event.event_id) is not None
     assert await world.runs.get_run(run_a.run_id) is None
 
 
 # ── schedule claims: released with the Run, and only that one ─────
 
 
-async def test_a_purged_run_releases_only_its_own_occurrence(scope_world: Any) -> None:
-    from maistro.runs.sources import SCHEDULE_ID_KEY, SCHEDULED_FOR_KEY
+@pytest.mark.parametrize(
+    "provenance",
+    [
+        {SCHEDULE_ID_KEY: "partial"},
+        {SCHEDULED_FOR_KEY: "2026-08-01T00:00:00+00:00"},
+    ],
+)
+async def test_a_partial_schedule_provenance_does_not_count_as_an_occurrence(
+    scope_world: Any,
+    provenance: dict[str, str],
+) -> None:
+    """Only a complete `(schedule_id, scheduled_for)` pair is an occurrence
+    claim. A purge must not report a partial provenance row as a released
+    claim, including on the PostgreSQL backend that projects provenance."""
+    world = scope_world
+    valid = await world.runs.create_run(
+        _graph(*world.a),
+        provenance={
+            SCHEDULE_ID_KEY: "schedule-a",
+            SCHEDULED_FOR_KEY: "2026-08-01T00:00:00+00:00",
+        },
+        retention_expires_at=EXPIRED,
+    )
+    await world.runs.transition_run(valid.run_id, RunStatus.QUEUED)
+    await world.runs.transition_run(valid.run_id, RunStatus.RUNNING)
+    await world.runs.transition_run(valid.run_id, RunStatus.COMPLETED)
+    partial = await world.runs.create_run(
+        _graph(*world.a),
+        provenance=provenance,
+        retention_expires_at=EXPIRED,
+    )
+    await world.runs.transition_run(partial.run_id, RunStatus.QUEUED)
+    await world.runs.transition_run(partial.run_id, RunStatus.RUNNING)
+    await world.runs.transition_run(partial.run_id, RunStatus.COMPLETED)
+    partial_twin = await world.runs.create_run(
+        _graph(*world.a),
+        provenance=provenance,
+        retention_expires_at=EXPIRED,
+    )
+    await world.runs.transition_run(partial_twin.run_id, RunStatus.QUEUED)
+    await world.runs.transition_run(partial_twin.run_id, RunStatus.RUNNING)
+    await world.runs.transition_run(partial_twin.run_id, RunStatus.COMPLETED)
 
+    outcome = await world.runs.purge_expired_runs(_scope_a(world), now=NOW)
+
+    assert outcome.runs == 3
+    assert outcome.schedule_claims_released == 1
+    # The two partial rows coexist because neither half-key is a claim; only
+    # the complete row contributes to the released-claim count.
+
+
+async def test_a_purged_run_releases_only_its_own_occurrence(scope_world: Any) -> None:
     world = scope_world
     occurrences = {
         world.a[0]: ("schedule-a", "2026-08-01T00:00:00+00:00"),

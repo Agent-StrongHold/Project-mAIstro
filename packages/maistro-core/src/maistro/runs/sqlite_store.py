@@ -207,7 +207,19 @@ _RELEASE_SCHEDULE_POINTER_SQL = """
 
 _RETAINED_REFERENCE_SQL = {
     "canonical_event_log": (
-        "SELECT COUNT(*) FROM canonical_event_log WHERE run_id IN (SELECT value FROM json_each(?))"
+        """SELECT COUNT(*) FROM canonical_event_log
+           WHERE run_id IN (SELECT value FROM json_each(?))
+              OR node_run_id IN (
+                  SELECT n.node_run_id
+                    FROM canonical_node_runs AS n
+                   WHERE n.run_id IN (SELECT value FROM json_each(?))
+              )
+              OR attempt_id IN (
+                  SELECT a.attempt_id
+                    FROM canonical_attempts AS a
+                    JOIN canonical_node_runs AS n ON n.node_run_id = a.node_run_id
+                   WHERE n.run_id IN (SELECT value FROM json_each(?))
+              )"""
     ),
 }
 
@@ -714,7 +726,9 @@ class SqliteRunStore:
         for table, sql in _RETAINED_REFERENCE_SQL.items():
             if not await self._dependent_table_exists(table):
                 continue
-            row = await (await self._conn.execute(sql, (run_id_param,))).fetchone()
+            row = await (
+                await self._conn.execute(sql, (run_id_param, run_id_param, run_id_param))
+            ).fetchone()
             retained += int(row[0]) if row is not None else 0
         return retained
 

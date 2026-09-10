@@ -121,14 +121,14 @@ _TERMINAL_STATUS_VALUES = tuple(sorted(status.value for status in TERMINAL_RUN_S
 
 
 #: Retention candidate selection — the two scope variants' whole difference is
-#: one Workspace predicate line (#1175). The schedule id is projected so the
-#: outcome can count the occurrence claims that die with the selected rows.
-#: One more row than the batch is requested (the LIMIT parameter is sent as
-#: ``limit + 1``) so the outcome can say whether the scope drained or the
-#: batch ran out; the surplus row's lock lives only as long as the
-#: transaction.
+#: one Workspace predicate line (#1175). The provenance document is projected
+#: so the outcome can apply the same complete-occurrence rule as the other
+#: backends when counting claims that die with the selected rows. One more row
+#: than the batch is requested (the LIMIT parameter is sent as ``limit + 1``)
+#: so the outcome can say whether the scope drained or the batch ran out; the
+#: surplus row's lock lives only as long as the transaction.
 _PURGE_CANDIDATES_SQL_GLOBAL = """SELECT run_id,
-       (payload -> 'provenance' ->> 'schedule_id') AS schedule_id
+       payload -> 'provenance' AS provenance
     FROM canonical_runs r
     WHERE r.retention_expires_at IS NOT NULL
       AND r.retention_expires_at <= $1
@@ -146,7 +146,7 @@ _PURGE_CANDIDATES_SQL_GLOBAL = """SELECT run_id,
     FOR UPDATE SKIP LOCKED"""
 
 _PURGE_CANDIDATES_SQL_SCOPED = """SELECT run_id,
-       (payload -> 'provenance' ->> 'schedule_id') AS schedule_id
+       payload -> 'provenance' AS provenance
     FROM canonical_runs r
     WHERE r.retention_expires_at IS NOT NULL
       AND r.retention_expires_at <= $1
@@ -319,15 +319,17 @@ class PgRunStore:
                 "DELETE FROM canonical_node_runs WHERE run_id = ANY($1::text[]) RETURNING node_run_id",
                 run_ids,
             )
-            deleted_runs = await conn.fetch(
-                "DELETE FROM canonical_runs WHERE run_id = ANY($1::text[]) RETURNING run_id",
-                run_ids,
-            )
+            node_run_ids = [row["node_run_id"] for row in deleted_node_runs]
+            attempt_ids = [row["attempt_id"] for row in deleted_attempts]
             (
                 continuations,
                 events_retained,
                 pointers_released,
-            ) = await self._reclaim_and_count_dependents(conn, run_ids)
+            ) = await self._reclaim_and_count_dependents(conn, run_ids, node_run_ids, attempt_ids)
+            deleted_runs = await conn.fetch(
+                "DELETE FROM canonical_runs WHERE run_id = ANY($1::text[]) RETURNING run_id",
+                run_ids,
+            )
         return PurgeOutcome(
             scope=scope,
             runs=len(deleted_runs),
@@ -335,7 +337,11 @@ class PgRunStore:
             attempts=len(deleted_attempts),
             continuations=continuations,
             event_references_retained=events_retained,
-            schedule_claims_released=sum(1 for row in selected if row["schedule_id"] is not None),
+            schedule_claims_released=sum(
+                1
+                for row in selected
+                if occurrence_key(decode_payload(row["provenance"])) is not None
+            ),
             schedule_pointers_released=pointers_released,
             backlog_remaining=backlog_remaining,
         )
@@ -375,21 +381,27 @@ class PgRunStore:
         )
 
     async def _reclaim_and_count_dependents(
-        self, conn: Any, run_ids: list[str]
+        self,
+        conn: Any,
+        run_ids: list[str],
+        node_run_ids: list[str],
+        attempt_ids: list[str],
     ) -> tuple[int, int, int]:
         """Reclaim owned resumable state; count and repoint logical references.
 
-        Same transaction as the spine deletes above: the Graph continuation
-        table (migration 021) has no FK into the spine, so nothing else would
-        notice it dangling — the purge reclaims it here. The canonical Event
-        log (migration 030) is the opposite disposition: append-only
-        provenance, kept and counted, never emptied by retention. The Schedule
-        fire cursor (migration 016) is the third disposition — a pointer, not
-        history — so a `last_run_id` naming a purged Run is repointed back to
-        absent here and the release counted, leaving no Schedule naming an id
-        nothing resolves. Each table is probed before use because a database
-        migrated before that table's migration is a supported state, not an
-        error.
+        The child IDs are captured before the spine deletes so the retained
+        Event count can address all three correlation columns even though the
+        append-only log outlives the Run, NodeRun, and Attempt rows. The Graph
+        continuation table (migration 021) has no FK into the spine, so nothing
+        else would notice it dangling — the purge reclaims it here. The
+        canonical Event log (migration 030) is the opposite disposition:
+        append-only provenance, kept and counted, never emptied by retention.
+        The Schedule fire cursor (migration 016) is the third disposition — a
+        pointer, not history — so a `last_run_id` naming a purged Run is
+        repointed back to absent here and the release counted, leaving no
+        Schedule naming an id nothing resolves. Each table is probed before use
+        because a database migrated before that table's migration is a supported
+        state, not an error.
         """
         continuations = 0
         if await conn.fetchval("SELECT to_regclass('public.graph_continuations') IS NOT NULL"):
@@ -402,8 +414,13 @@ class PgRunStore:
         if await conn.fetchval("SELECT to_regclass('public.canonical_event_log') IS NOT NULL"):
             events_retained = int(
                 await conn.fetchval(
-                    "SELECT COUNT(*) FROM canonical_event_log WHERE run_id = ANY($1::text[])",
+                    """SELECT COUNT(*) FROM canonical_event_log
+                       WHERE run_id = ANY($1::text[])
+                          OR node_run_id = ANY($2::text[])
+                          OR attempt_id = ANY($3::text[])""",
                     run_ids,
+                    node_run_ids,
+                    attempt_ids,
                 )
             )
         pointers_released = 0

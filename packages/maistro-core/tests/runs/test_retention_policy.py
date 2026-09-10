@@ -376,8 +376,9 @@ async def test_a_drained_scope_reports_no_backlog() -> None:
 
 
 async def test_a_batch_limited_scope_reports_its_backlog() -> None:
+    store = SpyStore(purged=1, backlog=True)
     sweeper = RunRetentionSweeper(
-        SpyStore(purged=1, backlog=True),
+        store,
         RetentionPolicy(sweep_interval_seconds=0),
         scope=OTHER,
     )  # type: ignore[arg-type]
@@ -390,28 +391,58 @@ async def test_a_batch_limited_scope_reports_its_backlog() -> None:
     # The label is the mode, never the Workspace id (#818).
     assert _backlog("global") == 0.0
 
+    # Keep the function-scoped test from leaving a live standing observation
+    # for the next async test frame in the same process.
+    store._backlog = False
+    await sweeper.sweep_now(now=NOW)
+    assert _backlog("workspace") == 0.0
 
-async def test_a_failed_sweep_withdraws_the_standing_backlog_report() -> None:
+
+async def test_a_failed_sweep_withdraws_the_sweepers_standing_backlog_report() -> None:
     """`last_outcome` goes to None when a sweep fails; the gauge that was set
-    from it must not keep describing a purge that no longer stands."""
-    good = RunRetentionSweeper(
-        SpyStore(purged=1, backlog=True),
+    from that sweeper must not keep describing a purge that no longer stands."""
+    store = SpyStore(purged=1, backlog=True)
+    sweeper = RunRetentionSweeper(
+        store,
         RetentionPolicy(sweep_interval_seconds=0),
         scope=SCOPE,
     )  # type: ignore[arg-type]
-    await good.sweep_now(now=NOW)
+    await sweeper.sweep_now(now=NOW)
     assert _backlog("workspace") == 1.0
 
+    store._fail_with = RuntimeError("down")
+    assert await sweeper.maybe_sweep(now=NOW) == 0
+
+    assert _backlog("workspace") == 0.0
+    assert sweeper.last_outcome is None
+
+
+async def test_a_failed_sweeper_does_not_withdraw_another_sweepers_report() -> None:
+    """A failed admission-scoped sweeper cannot erase another live scope's
+    completed observation, even when both sweepers target the same Workspace."""
+    backlogged_store = SpyStore(purged=1, backlog=True)
+    backlogged = RunRetentionSweeper(
+        backlogged_store,
+        RetentionPolicy(sweep_interval_seconds=0),
+        scope=SCOPE,
+    )  # type: ignore[arg-type]
     failing = RunRetentionSweeper(
         SpyStore(purged=4, fail_with=RuntimeError("down")),
         RetentionPolicy(sweep_interval_seconds=0),
         scope=SCOPE,
     )  # type: ignore[arg-type]
 
+    await backlogged.sweep_now(now=NOW)
     assert await failing.maybe_sweep(now=NOW) == 0
 
-    assert _backlog("workspace") == 0.0
+    assert _backlog("workspace") == 1.0
     assert failing.last_outcome is None
+
+    # The backlogged sweeper is still live when this assertion is made; drain
+    # it before pytest releases this async frame so the next test starts clear.
+    backlogged_store._backlog = False
+    await backlogged.sweep_now(now=NOW)
+    assert _backlog("workspace") == 0.0
 
 
 async def test_one_workspaces_drained_batch_does_not_clear_another_workspaces_backlog() -> None:

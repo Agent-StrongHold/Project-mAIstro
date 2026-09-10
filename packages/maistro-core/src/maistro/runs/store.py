@@ -337,6 +337,13 @@ class PurgeOutcome:
         return isinstance(self.scope, GlobalRetentionScope)
 
     @property
+    def authorized_by(self) -> str | None:
+        """The principal that presented global deletion authority, if any."""
+        if isinstance(self.scope, GlobalRetentionScope):
+            return self.scope.authorized_by
+        return None
+
+    @property
     def mode(self) -> str:
         """Bounded label for metric series: ``workspace`` or ``global``.
 
