@@ -19,6 +19,9 @@ import pytest
 
 from maistro.graph import Graph, Node
 from maistro.projects.scope_store import InMemoryProjectScopeStore
+from maistro.runs.evidence_json import json_of
+from maistro.runs.lifecycle import transition_run
+from maistro.runs.model import GraphSnapshot, Run, RunStatus
 from maistro.runs.pg_store import OCCURRENCE_INDEX, PgRunStore, _integrity_failure
 from maistro.runs.sources import (
     ADMISSION_SOURCE,
@@ -74,6 +77,41 @@ class TestIntegrityFailureMapping:
 
         assert isinstance(mapped, RunIntegrityError)
         assert not isinstance(mapped, ActiveAttemptExists)
+
+
+class TestStatusListingEvidence:
+    async def test_status_listing_uses_the_canonical_row_hydrator(self) -> None:
+        projects = InMemoryProjectScopeStore()
+        root = await projects.create_root("w1")
+        graph = Graph(
+            workspace_id="w1",
+            project_id=root.project_id,
+            name="g",
+            nodes=[Node(node_id="n1", node_type="agent", name="a")],
+        )
+        run = Run(
+            workspace_id="w1",
+            project_id=root.project_id,
+            graph=GraphSnapshot.from_graph(graph),
+        )
+        run = transition_run(run, RunStatus.QUEUED)
+        run = transition_run(run, RunStatus.RUNNING)
+        run = transition_run(
+            run,
+            RunStatus.FAILED,
+            result={"nan": float("nan"), "infinity": float("inf")},
+            error="failed",
+        )
+        store = PgRunStore(
+            _PoolReturning([{"payload": json_of(run), "archive_key": None}]),
+            project_store=projects,
+        )
+
+        listed = await store.list_by_status(RunStatus.FAILED)
+
+        assert len(listed) == 1
+        assert listed[0].result["nan"] != listed[0].result["nan"]
+        assert listed[0].result["infinity"] == float("inf")
 
 
 class TestThePayloadTableGuard:
@@ -177,6 +215,23 @@ async def _store_raising(exc: Exception) -> tuple[PgRunStore, Graph]:
         nodes=[Node(node_id="n1", node_type="agent", name="a")],
     )
     return store, graph
+
+
+class _PoolReturning:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self._rows = rows
+
+    def acquire(self) -> _PoolReturning:
+        return self
+
+    async def __aenter__(self) -> _PoolReturning:
+        return self
+
+    async def __aexit__(self, *_exc_info: object) -> bool:
+        return False
+
+    async def fetch(self, *_args: object) -> list[dict[str, object]]:
+        return self._rows
 
 
 class _PoolRaising:

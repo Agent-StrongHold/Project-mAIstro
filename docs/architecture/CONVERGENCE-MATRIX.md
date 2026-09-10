@@ -54,7 +54,7 @@ Three further rules follow from the columns' meanings. A `KEEP` column whose eve
 | Task queue and runner | `maistro.tasks` | Admission receipt | `tasks.queue` + `tasks.status` (second universal lifecycle) | `TaskRecord` upsert, best-effort (ADR-018) | `security.task_policy` (unreachable) |
 | A2A delegation | `maistro.a2a` | Child Run | `a2a.lifecycle` worker pool (third universal lifecycle) | — | `a2a.guest_peers` trust tiers |
 | Recurrence / schedules | `maistro.scheduling` | Trigger definition → Run | canonical: `evaluate()` decides, the Run owns execution | `scheduling.store` + `scheduling.pg_store` (PostgreSQL, SQLite, in-memory) | schedule's `actor_principal_id` |
-| Repo tooling | `scripts` | CI gate / ratchet ledger | the workflow step that runs it | `quality/*.json` ledgers | — |
+| Repo tooling | `scripts`, `_vulture_whitelist` | CI gate / ratchet ledger | the workflow step that runs it | `quality/*.json` ledgers | — |
 | Planning and wave orchestration | `maistro.orchestrator` | Graph synthesis | wave state in `orchestrator.waves` | — | — |
 | Builders pipeline | `maistro.builders` | Graph of spec→tests→code→review Nodes | `builders.runtime` (unreachable) + `builders.graph_executor` (unreachable; fourth universal lifecycle) | `builders.logger` (unreachable) | — |
 | Workspace / Project scope | `maistro.workspaces`, `maistro.projects` | Workspace, Project — the scope roots | n/a (scope, not execution) | `projects.store`, `projects.scope_store`, `workspaces.store` | `projects.authorization` |
