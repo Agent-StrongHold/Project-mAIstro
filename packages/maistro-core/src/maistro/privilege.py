@@ -23,6 +23,10 @@ class UsersTamperError(Exception):
     """Raised when users.toml signature verification fails."""
 
 
+class UsersTrustRootError(Exception):
+    """Raised when the external users.toml trust root is missing or unauthenticated."""
+
+
 class InsufficientUsersError(Exception):
     """Raised when fewer than 2 users are provided during initialization."""
 
@@ -124,12 +128,28 @@ def _verify(data: str, key: str, signature: str) -> bool:
 
 
 class UsersStore:
-    """Manages users.toml with admin signature verification."""
+    """Deprecated standalone store authenticated by deployment trust material.
 
-    def __init__(self, data_dir: str | Path, allow_single_user: bool = False) -> None:
+    ``trusted_signing_key`` must come from outside ``users.toml`` (for example,
+    a host-owned secret file, keychain, or vault). The file contains user data
+    only and is never allowed to select its verification authority.
+
+    This compatibility store is not wired into Conductor's production
+    privilege initialization, which uses :class:`PrivilegeGuard` directly.
+    """
+
+    def __init__(
+        self,
+        data_dir: str | Path,
+        *,
+        trusted_signing_key: str,
+        allow_single_user: bool = False,
+    ) -> None:
+        if not trusted_signing_key:
+            raise UsersTrustRootError("A non-empty external users.toml trust root is required")
         self._data_dir = Path(data_dir)
         self._users: list[UserInfo] = []
-        self._admin_key = ""
+        self._trusted_signing_key = trusted_signing_key
         self._allow_single_user = allow_single_user
         self._loaded = False
         if self._data_dir.exists():
@@ -151,7 +171,6 @@ class UsersStore:
                 UserInfo(admin_name, admin_public_key, "admin"),
                 UserInfo(user_name, user_public_key, "user"),
             ]
-        self._admin_key = admin_public_key
         self._loaded = True
         self._write()
 
@@ -166,8 +185,33 @@ class UsersStore:
             lines.append(f'role = "{u.role}"')
             lines.append("")
         content = "\n".join(lines)
-        signature = _sign(content, self._admin_key)
+        signature = _sign(content, self._trusted_signing_key)
         toml_path.write_text(f"# sig: {signature}\n{content}")
+
+    def rotate_trusted_signing_key(
+        self,
+        *,
+        current_trusted_signing_key: str,
+        new_trusted_signing_key: str,
+    ) -> None:
+        """Re-sign ``users.toml`` after authenticating the current trust root.
+
+        Deployment configuration must be updated separately to inject the new
+        key on the next process start. Editing ``users.toml`` cannot invoke this
+        migration or replace the in-memory trust root.
+        """
+        if not new_trusted_signing_key:
+            raise UsersTrustRootError("The new users.toml trust root must be non-empty")
+        if not secret_equal(current_trusted_signing_key, self._trusted_signing_key):
+            raise UsersTrustRootError("Current users.toml trust root authentication failed")
+        self._load()
+        previous_key = self._trusted_signing_key
+        self._trusted_signing_key = new_trusted_signing_key
+        try:
+            self._write()
+        except Exception:
+            self._trusted_signing_key = previous_key
+            raise
 
     def _load(self) -> None:
         if self._loaded:
@@ -183,18 +227,14 @@ class UsersStore:
             raise UsersTamperError("Missing signature in users.toml")
         stored_sig = sig_line[len("# sig: ") :]
 
-        admin_key, users = self._parse_users(content)
-
-        if not _verify(content, admin_key, stored_sig):
+        if not _verify(content, self._trusted_signing_key, stored_sig):
             raise UsersTamperError("Signature verification failed — users.toml tampered")
 
-        self._users = users
-        self._admin_key = admin_key
+        self._users = self._parse_users(content)
         self._loaded = True
 
     @staticmethod
-    def _parse_users(content: str) -> tuple[str, list[UserInfo]]:
-        admin_key = ""
+    def _parse_users(content: str) -> list[UserInfo]:
         users: list[UserInfo] = []
         current: dict[str, str] = {}
         for line in content.splitlines():
@@ -203,8 +243,6 @@ class UsersStore:
                 if current:
                     u = UserInfo(current["name"], current["public_key"], current["role"])
                     users.append(u)
-                    if u.role == "admin":
-                        admin_key = u.public_key
                 current = {}
             elif "=" in line and current is not None:
                 k, v = line.split("=", 1)
@@ -212,9 +250,7 @@ class UsersStore:
         if current:
             u = UserInfo(current["name"], current["public_key"], current["role"])
             users.append(u)
-            if u.role == "admin":
-                admin_key = u.public_key
-        return admin_key, users
+        return users
 
     def admin(self) -> UserInfo:
         self._load()

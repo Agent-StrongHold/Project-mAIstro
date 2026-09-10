@@ -207,12 +207,48 @@ Check:
 
 ---
 
+## Standalone `users.toml` trust-root rotation and recovery
+
+Conductor production initialization does not use `UsersStore`; it initializes
+`PrivilegeGuard` directly. If another deployment still uses the deprecated standalone
+`maistro.privilege.UsersStore`, its `trusted_signing_key` must come from a
+host-owned secret source outside the data directory being verified.
+
+Rotate that trust root while the consumer is stopped. Fetch both secrets from
+the deployment's authenticated secret-management channel, then authenticate
+with the current key and re-sign before changing deployment configuration:
+
+```python
+from maistro.privilege import UsersStore
+
+store = UsersStore(data_dir=data_dir, trusted_signing_key=current_key)
+store.rotate_trusted_signing_key(
+    current_trusted_signing_key=current_key,
+    new_trusted_signing_key=new_key,
+)
+```
+
+After the method succeeds, update the host secret file, keychain, or vault
+binding to inject `new_key`, restart, and confirm that constructing `UsersStore`
+with the new key succeeds. A wrong current key raises `UsersTrustRootError` and
+leaves the file unchanged. The old key no longer verifies the re-signed file.
+
+If the current key is lost, stop and restore it from a trusted secret-manager
+version or offline backup, verify the existing file, and then perform the same
+authenticated rotation. There is no file-only recovery: changing the admin key,
+users, roles, permissions, or signature in `users.toml` cannot replace the
+external trust root.
+
+The HMAC trust root is distinct from the admin/user identity keys managed by
+`PrivilegeGuard.rotate_admin_key`; rotate both independently if both were
+compromised.
+
 ## What this does not cover
 
 - **Third-party tokens.** Revoke and reissue at the provider (see above).
-- **The admin/user privilege keys** (`maistro.privilege`, SPEC-012). Those are
+- **The admin/user identity keys** (`maistro.privilege`, SPEC-012). Those are
   separate; `rotate_admin_key` in `packages/maistro-core/src/maistro/privilege.py`
-  handles them.
+  handles them. The standalone `users.toml` HMAC trust root is covered above.
 - **The age-encrypted vault** (`maistro.vault`, SPEC-011). Separate key
   material; rotate per its own procedure.
 - **B2B service keys** (`maistro.auth`). Reissue from the auth store if the

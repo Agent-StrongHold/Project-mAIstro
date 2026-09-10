@@ -6,18 +6,24 @@ FAIL until the privilege module is implemented.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 from pathlib import Path
 
 import pytest
 
+_TRUSTED_SIGNING_KEY = "host-owned-users-integrity-key"
+
 
 class TestUsersToml:
-    """AC: users.toml is admin-signed; conductor refuses to start with invalid sig."""
+    """AC: users.toml authenticity depends on an external trust root."""
 
     def test_load_valid_users_toml(self, tmp_path: Path) -> None:
         from maistro.privilege import UsersStore
 
-        store = UsersStore(data_dir=str(tmp_path))
+        store = UsersStore(
+            data_dir=str(tmp_path), trusted_signing_key=_TRUSTED_SIGNING_KEY
+        )
         store.initialize(
             admin_name="alice",
             admin_public_key="pk_admin_001",
@@ -25,28 +31,77 @@ class TestUsersToml:
             user_public_key="pk_user_001",
         )
 
-        loaded = UsersStore(data_dir=str(tmp_path))
+        assert _TRUSTED_SIGNING_KEY not in (tmp_path / "users.toml").read_text()
+        loaded = UsersStore(
+            data_dir=str(tmp_path), trusted_signing_key=_TRUSTED_SIGNING_KEY
+        )
         assert loaded.admin().name == "alice"
         assert loaded.user_by_public_key("pk_user_001").name == "bob"
 
-    def test_refuses_invalid_signature(self, tmp_path: Path) -> None:
+    def test_refuses_exact_forged_self_key_construction(self, tmp_path: Path) -> None:
+        """An attacker cannot put their key in the file and sign with that key."""
         from maistro.privilege import UsersStore, UsersTamperError
 
-        store = UsersStore(data_dir=str(tmp_path))
-        store.initialize(
-            admin_name="alice",
-            admin_public_key="pk_admin",
-            user_name="bob",
-            user_public_key="pk_user",
+        attacker_key = "attacker-controlled-key"
+        forged_content = """[[users]]
+name = "eve"
+public_key = "attacker-controlled-key"
+role = "admin"
+permissions = "*"
+
+[[users]]
+name = "mallory"
+public_key = "attacker-user-key"
+role = "admin"
+permissions = "*"
+"""
+        forged_signature = hmac.new(
+            attacker_key.encode(), forged_content.encode(), hashlib.sha256
+        ).hexdigest()
+        (tmp_path / "users.toml").write_text(
+            f"# sig: {forged_signature}\n{forged_content}"
         )
 
-        toml_path = tmp_path / "users.toml"
-        raw = toml_path.read_text()
-        tampered = raw.replace("alice", "eve")
-        toml_path.write_text(tampered)
+        with pytest.raises(UsersTamperError, match="Signature verification failed"):
+            UsersStore(
+                data_dir=str(tmp_path), trusted_signing_key=_TRUSTED_SIGNING_KEY
+            )
 
+    def test_trust_root_rotation_requires_current_trusted_key(self, tmp_path: Path) -> None:
+        from maistro.privilege import UsersStore, UsersTamperError, UsersTrustRootError
+
+        store = UsersStore(
+            data_dir=str(tmp_path), trusted_signing_key=_TRUSTED_SIGNING_KEY
+        )
+        store.initialize("alice", "pk_admin", "bob", "pk_user")
+        original = (tmp_path / "users.toml").read_text()
+
+        with pytest.raises(UsersTrustRootError, match="authentication failed"):
+            store.rotate_trusted_signing_key(
+                current_trusted_signing_key="attacker-controlled-key",
+                new_trusted_signing_key="attacker-new-key",
+            )
+        assert (tmp_path / "users.toml").read_text() == original
+
+        store.rotate_trusted_signing_key(
+            current_trusted_signing_key=_TRUSTED_SIGNING_KEY,
+            new_trusted_signing_key="host-owned-users-integrity-key-v2",
+        )
         with pytest.raises(UsersTamperError):
-            UsersStore(data_dir=str(tmp_path))
+            UsersStore(
+                data_dir=str(tmp_path), trusted_signing_key=_TRUSTED_SIGNING_KEY
+            )
+        reloaded = UsersStore(
+            data_dir=str(tmp_path),
+            trusted_signing_key="host-owned-users-integrity-key-v2",
+        )
+        assert reloaded.admin().public_key == "pk_admin"
+
+    def test_empty_external_trust_root_is_rejected(self, tmp_path: Path) -> None:
+        from maistro.privilege import UsersStore, UsersTrustRootError
+
+        with pytest.raises(UsersTrustRootError, match="external"):
+            UsersStore(data_dir=str(tmp_path), trusted_signing_key="")
 
 
 class TestMandatoryTwoUsers:
@@ -55,7 +110,9 @@ class TestMandatoryTwoUsers:
     def test_refuses_single_user_init(self, tmp_path: Path) -> None:
         from maistro.privilege import InsufficientUsersError, UsersStore
 
-        store = UsersStore(data_dir=str(tmp_path))
+        store = UsersStore(
+            data_dir=str(tmp_path), trusted_signing_key=_TRUSTED_SIGNING_KEY
+        )
         with pytest.raises(InsufficientUsersError):
             store.initialize(
                 admin_name="alice",
@@ -65,7 +122,11 @@ class TestMandatoryTwoUsers:
     def test_no_single_user_env_override(self, tmp_path: Path) -> None:
         from maistro.privilege import InsufficientUsersError, UsersStore
 
-        store = UsersStore(data_dir=str(tmp_path), allow_single_user=False)
+        store = UsersStore(
+            data_dir=str(tmp_path),
+            trusted_signing_key=_TRUSTED_SIGNING_KEY,
+            allow_single_user=False,
+        )
         with pytest.raises(InsufficientUsersError):
             store.initialize(
                 admin_name="alice",

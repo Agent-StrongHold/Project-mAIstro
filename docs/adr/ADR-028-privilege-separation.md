@@ -103,7 +103,13 @@ pubkey = "<m/44'/9000'/1' hex>"
 role = "user"
 ```
 
-Admin-signed; conductor refuses to load unsigned or invalid-signature versions.
+Authenticated with an HMAC secret supplied by deployment trust material outside
+`users.toml` (for example, a host-owned `0600` file, keychain, or vault).
+Values inside the file, including the admin public key, never select the
+verification authority. Consumers refuse unsigned or invalid-signature
+versions. The deprecated standalone `UsersStore` is not part of Conductor's production
+initialization path; production currently initializes `PrivilegeGuard`
+directly.
 
 ## Interface (spec)
 
@@ -133,7 +139,7 @@ class PrivilegeService:
 
 - [ ] Setup wizard structurally incapable of completing with <2 users
 - [ ] No CLI flag/env var produces single-user install
-- [ ] `users.toml` admin-signed; conductor refuses invalid signature
+- [ ] `users.toml` authenticated by an external deployment trust root; consumers refuse invalid signatures
 - [ ] AgentSpec construction validates user identity; admin-only tools reject user-keyed envelopes
 - [ ] Elevation round-trip under 30s on typical mobile push
 - [ ] Time-boxed delegation: 15-min scope, auto-revoke at expiry
