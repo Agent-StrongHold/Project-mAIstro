@@ -150,6 +150,46 @@ def test_an_unbaselined_loose_src_root_file_fails_as_newly_unreachable(
     assert unreachable == ["_vulture_whitelist"]
 
 
+def test_two_src_roots_claiming_the_same_loose_module_stem_fail_closed(
+    tmp_path: Path,
+) -> None:
+    """A loose module's key is its bare stem, unscoped by src root (#1142's own
+    choice, so `_vulture_whitelist` keeps the identity already authorized in
+    the baseline rather than an invented prefix). Two roots with a same-named
+    loose file would otherwise let the second silently overwrite the first in
+    `_collect_modules`' dict -- the overwritten file stays counted in the
+    source-universe total while vanishing from the graph and the baseline,
+    reopening the exact blind spot #1142 exists to close.
+    """
+    first = tmp_path / "packages" / "alpha" / "src"
+    first.mkdir(parents=True)
+    (first / "_shared_name.py").write_text("VALUE = 1\n")
+    second = tmp_path / "packages" / "beta" / "src"
+    second.mkdir(parents=True)
+    (second / "_shared_name.py").write_text("VALUE = 2\n")
+
+    with pytest.raises(RuntimeError, match="claimed by more than one"):
+        reachability._collect_modules(tmp_path, ())
+
+
+def test_a_loose_module_colliding_with_another_roots_package_name_fails_closed(
+    tmp_path: Path,
+) -> None:
+    """The same collision, but against a package directory's own bare name
+    (`add_tree` gives a package's `__init__.py` the key `pkg.name` with no
+    empty trailing parts) rather than another loose file."""
+    first = tmp_path / "packages" / "alpha" / "src"
+    pkg = first / "shared"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    second = tmp_path / "packages" / "beta" / "src"
+    second.mkdir(parents=True)
+    (second / "shared.py").write_text("VALUE = 1\n")
+
+    with pytest.raises(RuntimeError, match="claimed by more than one"):
+        reachability._collect_modules(tmp_path, ())
+
+
 def test_an_installed_dependency_tree_is_outside_the_source_universe(tmp_path: Path) -> None:
     # npm packages sometimes ship Python — `flatted` carries python/flatted.py
     # — and CI's test job runs `npm ci` in both frontends before the

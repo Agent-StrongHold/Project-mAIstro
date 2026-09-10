@@ -413,6 +413,47 @@ def _is_loose_src_module(pkg: Path, src: Path, root: Path) -> bool:
     )
 
 
+def _validate_no_duplicate_loose_modules(root: Path) -> None:
+    """Refuse two `packages/*/src` roots claiming the same top-level identity.
+
+    `_add_src_root` keys a loose module on its bare stem (#1142) so that
+    `packages/maistro-core/src/_vulture_whitelist.py` gets the identity
+    `_vulture_whitelist` rather than an invented, unauthorized-looking prefix.
+    That key carries no src-root scope, so a second root with a loose file of
+    the same name -- or a package directory whose own bare name matches a
+    loose file's stem in another root -- would silently overwrite the first
+    module's entry in `_collect_modules`' dict. The overwritten file stays
+    counted in the source-universe total (`_declared_source_files` globs
+    unconditionally) while vanishing from the graph and the baseline: the
+    exact invisible-module blind spot #1142 exists to close, reopened for
+    same-named loose modules specifically.
+    """
+    claimed: dict[str, Path] = {}
+    collisions: list[str] = []
+    for src in sorted(root.glob("packages/*/src")):
+        identities: list[tuple[str, Path]] = []
+        for pkg in sorted(src.iterdir()):
+            if pkg.is_dir() and (pkg / "__init__.py").exists():
+                identities.append((pkg.name, pkg))
+            elif _is_loose_src_module(pkg, src, root):
+                identities.append((pkg.stem, pkg))
+        for identity, path in identities:
+            existing = claimed.get(identity)
+            if existing is not None and existing != path:
+                collisions.append(
+                    f"{identity!r}: {existing.relative_to(root).as_posix()} vs "
+                    f"{path.relative_to(root).as_posix()}"
+                )
+            else:
+                claimed[identity] = path
+    if collisions:
+        raise RuntimeError(
+            "top-level module identity claimed by more than one packages/*/src root "
+            "-- rename one of them so neither silently overwrites the other in the "
+            "reachability graph: " + "; ".join(sorted(collisions))
+        )
+
+
 def _add_src_root(mods: dict[str, Path], src: Path, root: Path, add_tree: _AddTree) -> None:
     """Register every package, and every loose module (#1142), under one src root."""
     for pkg in sorted(src.iterdir()):
@@ -430,6 +471,7 @@ def _collect_modules(
     """Return scoped module identity → file for every production module."""
     _validate_flat_apps(root, flat_apps)
     _validate_no_shadowed_modules(root, flat_apps)
+    _validate_no_duplicate_loose_modules(root)
     mods: dict[str, Path] = {}
 
     def add_tree(base: Path, prefix: str, app_name: str | None = None) -> None:
