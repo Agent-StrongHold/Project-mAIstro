@@ -41,6 +41,7 @@
     "@tool/rlphd_cold_start_sim",
     "@tool/rlphd_two_tier_sim",
     "@tool/secret_env",
+    "_vulture_whitelist",
     "maistro.agents.auditor",
     "maistro.agents.auditor.checks",
     "maistro.agents.feedback",
