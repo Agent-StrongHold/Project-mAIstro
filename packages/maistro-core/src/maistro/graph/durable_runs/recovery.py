@@ -8,9 +8,11 @@ boundary in :mod:`attempt_executor`.
 
 from __future__ import annotations
 
+import logging
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.runs.model import Run, RunStatus
@@ -21,11 +23,67 @@ from maistro.runtime import ExecutionRuntime
 from . import executor as traversal
 from .attempt_executor import LiveAttemptOwned, NodeResolver, resume_durable_graph
 from .launch import launch_state_from_run
-from .protocol import DurableRunStore
+from .protocol import DurableRunStore, RecoveryInfrastructureError
 from .types import DurableRunRecord
 
 QueuedRunPredicate = Callable[[Run], bool]
 QueuedNodeResolverFactory = Callable[[Run], NodeResolver]
+
+logger = logging.getLogger(__name__)
+
+
+class _CandidateStore:
+    """Turn unclassified store failures into an explicit tick-wide failure.
+
+    Optimistic races are already represented by ``KeyError``/``ValueError``
+    and remain candidate-local. Other store exceptions mean the recovery
+    boundary cannot know whether the next candidate can be read or claimed.
+    """
+
+    def __init__(self, store: DurableRunStore) -> None:
+        self._store = store
+
+    def __getattr__(self, name: str) -> Any:
+        operation = getattr(self._store, name)
+
+        async def call(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return await operation(*args, **kwargs)
+            except (KeyError, ValueError, RecoveryInfrastructureError):
+                raise
+            except Exception as exc:
+                raise RecoveryInfrastructureError(
+                    f"durable recovery store operation {name!r} failed"
+                ) from exc
+
+        return call
+
+
+_SAFE_DETAIL = re.compile(r"(?i)\b(password|token|secret|api[_-]?key)\b\s*[=:]\s*[^\s,;]+")
+
+
+def _sanitized_cause(exc: BaseException) -> str:
+    """Return bounded log evidence without copying provider/credential text."""
+    detail = str(exc).splitlines()[0].strip() if str(exc) else ""
+    detail = _SAFE_DETAIL.sub(r"\1=<redacted>", detail)
+    detail = detail[:240]
+    return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+
+
+def _lazy_resolver(
+    run: Run,
+    resolver_for: Callable[[Run], NodeResolver],
+) -> NodeResolver:
+    """Resolve a candidate only inside the executor's failure boundary."""
+    resolved: NodeResolver | None = None
+
+    def resolve(node_id: str, graph: Any) -> Any:
+        nonlocal resolved
+        if resolved is None:
+            resolved = resolver_for(run)
+        return resolved(node_id, graph)
+
+    return resolve
 
 
 @runtime_checkable
@@ -58,6 +116,63 @@ async def _is_still_resume_due(
     return current is not None and _is_resume_due(current, moment)
 
 
+def _log_candidate_failure(run_id: str, cause: str) -> None:
+    """Make one bounded candidate failure observable without a traceback."""
+    logger.warning(
+        "due_graph_recovery_candidate_failed run_id=%s continuation_id=%s cause=%s",
+        run_id,
+        run_id,
+        cause,
+    )
+
+
+async def _resume_due_candidate(
+    candidate: DurableRunRecord,
+    *,
+    store: DurableRunStore,
+    run_store: RunStore,
+    resolver_for: Callable[[Run], NodeResolver],
+    runtime: ExecutionRuntime | None,
+    moment: datetime,
+    events: RecoveryEventSink | None,
+) -> bool:
+    """Attempt one candidate and isolate only failures that belong to it."""
+    try:
+        result = await resume_durable_graph(
+            candidate.run_id,
+            store=_CandidateStore(store),
+            node_resolver=_lazy_resolver(candidate.run, resolver_for),
+            runtime=runtime,
+            run_store=run_store,
+            events=events,
+        )
+    except RecoveryInfrastructureError:
+        # A store/session failure invalidates the scan; claiming success for
+        # later candidates would make recovery evidence untruthful.
+        raise
+    except LiveAttemptOwned:
+        return False
+    except (KeyError, ValueError):
+        # Only a record still due after the failure is a real error; a record
+        # another actor already moved on is settled, not resumed.
+        if not await _is_still_resume_due(store, candidate.run_id, moment):
+            return False
+        raise
+    except Exception as exc:
+        # Resolver/event failures that escape the executor are local to this
+        # Run. Keep the candidate eligible for a later tick, but do not let it
+        # starve the rest of this bounded batch.
+        _log_candidate_failure(candidate.run_id, _sanitized_cause(exc))
+        return False
+
+    if result is not None and result.run.status is RunStatus.FAILED:
+        _log_candidate_failure(
+            candidate.run_id,
+            _sanitized_cause(ValueError(result.run.error or "failed")),
+        )
+    return True
+
+
 async def resume_due_graph_runs(
     *,
     store: DurableRunStore,
@@ -87,6 +202,12 @@ async def resume_due_graph_runs(
 
     ``events`` carries the resume's crash dispositions onto the canonical
     Event stream when the caller provides a sink.
+
+    Failure classification is explicit: ``LiveAttemptOwned`` and optimistic
+    ``KeyError``/``ValueError`` races are candidate-local; resolver and node
+    failures are terminalized by the executor (or logged and retried if they
+    escape it); ``RecoveryInfrastructureError`` aborts the tick because the
+    store/session may invalidate every candidate.
     """
     if limit <= 0:
         return 0
@@ -103,24 +224,16 @@ async def resume_due_graph_runs(
             continue
         if eligible is not None and not eligible(candidate.run):
             continue
-        try:
-            await resume_durable_graph(
-                candidate.run_id,
-                store=store,
-                node_resolver=resolver_for(candidate.run),
-                runtime=runtime,
-                run_store=run_store,
-                events=events,
-            )
-        except LiveAttemptOwned:
-            continue
-        except (KeyError, ValueError):
-            # Only a record still due after the failure is a real error; a
-            # record another actor already moved on is settled, not resumed.
-            if not await _is_still_resume_due(store, candidate.run_id, moment):
-                continue
-            raise
-        resumed += 1
+        if await _resume_due_candidate(
+            candidate,
+            store=store,
+            run_store=run_store,
+            resolver_for=resolver_for,
+            runtime=runtime,
+            moment=moment,
+            events=events,
+        ):
+            resumed += 1
 
     return resumed
 

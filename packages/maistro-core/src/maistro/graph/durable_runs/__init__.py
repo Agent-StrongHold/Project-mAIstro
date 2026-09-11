@@ -39,7 +39,7 @@ from .legacy_archive import (
     LegacyGraphRunArchive,
     LegacyRunNotResumable,
 )
-from .protocol import DurableRunStore
+from .protocol import DurableRunStore, RecoveryInfrastructureError
 from .recovery import recover_queued_graph_runs, resume_due_graph_runs
 from .stores import InMemoryDurableRunStore, SqliteDurableRunStore
 from .types import DurableRunRecord
@@ -60,6 +60,7 @@ __all__ = [
     "LegacyGraphRunArchive",
     "LegacyRunNotResumable",
     "NodeResolver",
+    "RecoveryInfrastructureError",
     "RunStatus",
     "SqliteDurableRunStore",
     "SqliteGraphContinuationStore",
