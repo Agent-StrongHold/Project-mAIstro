@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +22
+  packages/maistro-core/tests: +27
 ---
 # Issue 1133 Durable Effect Stores
 
-Net **+22** for `packages/maistro-core/tests`, from three compensating movements:
+Net **+27** for `packages/maistro-core/tests`, from five compensating movements:
 
 - **+2** — two new integration tests in `test_container_capability_effects.py`
   covering the shipped Container effect path: SQLite selects durable
@@ -27,3 +27,7 @@ Net **+22** for `packages/maistro-core/tests`, from three compensating movements
   `memory://` at run time by design (its stores have no cross-process meaning),
   but all 21 node IDs collect; the PostgreSQL leg honestly skips without
   `MAISTRO_TEST_PG_DSN` and fails the job under `MAISTRO_REQUIRE_PG_LEGS`.
+- **+3** — regression coverage for one cached pre-Container default effect context
+  and blank approval actors rejected by both in-memory and SQLite stores.
+- **+2** — SQLite replica races prove only one provider dispatch occurs for a logical
+  Invocation and duplicate logical approvals reconcile to one persisted request.

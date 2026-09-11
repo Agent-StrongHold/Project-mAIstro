@@ -108,6 +108,8 @@ class DurableApproval(BaseModel):
             legacy_payload = self.request.params.get("request", self.request.params)
             self.request_digest = approval_request_digest(legacy_payload)
         terminal = self.status in {ApprovalStatus.APPROVED, ApprovalStatus.DENIED}
+        if terminal and not self.actor.strip():
+            raise ValueError("resolved approval requires a non-empty actor")
         if terminal and self.resolved_at is None:
             raise ValueError("resolved approval requires resolved_at")
         if not terminal and self.resolved_at is not None:
@@ -145,6 +147,12 @@ class ApprovalStore(Protocol):
         # threads the actor explicitly.
         actor: str,
     ) -> DurableApproval: ...
+
+
+def _require_actor(actor: str) -> None:
+    """Reject decisions that cannot be attributed to a verified principal."""
+    if not isinstance(actor, str) or not actor.strip():
+        raise ValueError("actor must be a non-empty verified principal")
 
 
 class InMemoryApprovalStore:
@@ -191,6 +199,7 @@ class InMemoryApprovalStore:
         # ApprovalStore protocol.
         actor: str,
     ) -> DurableApproval:
+        _require_actor(actor)
         async with self._lock:
             existing = self._items.get(request_id)
             if existing is None:
@@ -307,6 +316,7 @@ class SqliteApprovalStore:
         # ApprovalStore protocol.
         actor: str,
     ) -> DurableApproval:
+        _require_actor(actor)
         async with self._lock:
             await self._conn.execute("BEGIN IMMEDIATE")
             try:
@@ -407,6 +417,7 @@ class PgApprovalStore:
         approved: bool,
         actor: str,
     ) -> DurableApproval:
+        _require_actor(actor)
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
                 "SELECT payload FROM capability_approvals WHERE request_id=$1 FOR UPDATE",

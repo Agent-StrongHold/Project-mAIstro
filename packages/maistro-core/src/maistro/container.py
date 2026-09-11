@@ -26,7 +26,6 @@ from maistro.capabilities.effect_context import (
     CapabilityEffectContext,
     build_effect_context,
     configure_default_effect_context,
-    new_in_memory_effect_context,
 )
 from maistro.classifier.engine import ClassifierEngine
 from maistro.graph.durable_runs.canonical_store import CanonicalDurableRunStore
@@ -2172,39 +2171,41 @@ async def _wire_capability_effects(
     """Compose the sole governed effect context from the selected backend."""
     from maistro.capabilities.approval_store import (
         ApprovalStore,
+        InMemoryApprovalStore,
         PgApprovalStore,
         SqliteApprovalStore,
     )
     from maistro.capabilities.binding_store import (
         BindingStore,
+        InMemoryBindingStore,
         PgBindingStore,
         SqliteBindingStore,
     )
-    from maistro.capabilities.invocation import InvocationStore as CapabilityInvocationStore
+    from maistro.capabilities.invocation import InMemoryInvocationStore
     from maistro.capabilities.invocation_store import PgInvocationStore, SqliteInvocationStore
-    from maistro.events.envelope import EventStore, SqliteEventStore
+    from maistro.events.envelope import EventStore
+    from maistro.events.wiring import wire_canonical_events
+
+    # Event sequencing has one selector. The governed effect context consumes
+    # its store directly rather than constructing a parallel event authority.
+    canonical_events = await wire_canonical_events(pg_pool=pg_pool, db_pool=db_pool)
+    events: EventStore = canonical_events.store
 
     if pg_pool is not None:
-        # Managed PostgreSQL startup already verifies these tables. Do not create
-        # them here: a missing migration must fail loudly, not downgrade or
-        # silently bootstrap a schema the operator did not apply.
-        from maistro.events.pg_envelope import PgEventStore
-
         bindings: BindingStore = PgBindingStore(pg_pool)
-        invocations: CapabilityInvocationStore = PgInvocationStore(pg_pool)
+        invocations = PgInvocationStore(pg_pool)
         approvals: ApprovalStore = PgApprovalStore(pg_pool)
-        events: EventStore = PgEventStore(pg_pool)
     elif db_pool is not None:
         bindings = SqliteBindingStore(db_pool)
         invocations = SqliteInvocationStore(db_pool)
         approvals = SqliteApprovalStore(db_pool)
-        events = SqliteEventStore(db_pool)
         await bindings.ensure_schema()
         await invocations.ensure_schema()
         await approvals.ensure_schema()
-        await events.ensure_schema()
     else:
-        return new_in_memory_effect_context()
+        bindings = InMemoryBindingStore()
+        invocations = InMemoryInvocationStore()
+        approvals = InMemoryApprovalStore()
 
     return build_effect_context(
         bindings=bindings,

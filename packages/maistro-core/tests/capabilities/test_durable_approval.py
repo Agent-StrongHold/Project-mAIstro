@@ -441,6 +441,36 @@ def test_redact_approval_value_preserves_path_but_redacts_pat() -> None:
 
 
 @pytest.mark.asyncio
+async def test_sqlite_concurrent_creation_reconciles_one_logical_approval(tmp_path) -> None:
+    path = tmp_path / "approvals-create-race.db"
+    async with (
+        aiosqlite.connect(path) as first_conn,
+        aiosqlite.connect(path) as second_conn,
+    ):
+        first = SqliteApprovalStore(first_conn)
+        second = SqliteApprovalStore(second_conn)
+        await first.ensure_schema()
+        await second.ensure_schema()
+        first_approval = _durable_approval(request_id="approval-create-a")
+        second_approval = _durable_approval(request_id="approval-create-b")
+
+        first_result, second_result = await asyncio.gather(
+            first.create(first_approval),
+            second.create(second_approval),
+        )
+
+        assert first_result.request.request_id == second_result.request.request_id
+        persisted = await first.find_effect(
+            run_id="run-1",
+            node_run_id="node-run-1",
+            binding_id="binding-1",
+            effect_key="write:1",
+        )
+        assert persisted is not None
+        assert persisted.request.request_id == first_result.request.request_id
+
+
+@pytest.mark.asyncio
 async def test_sqlite_concurrent_resolution_commits_only_one_decision(tmp_path) -> None:
     path = tmp_path / "approvals-race.db"
     approval = _durable_approval(request_id="approval-race")
@@ -503,6 +533,34 @@ async def test_sqlite_resolve_without_an_actor_is_refused(tmp_path) -> None:
 
         with pytest.raises(TypeError):
             await store.resolve(approval.request.request_id, approved=True)  # type: ignore[call-arg]
+
+        untouched = await store.get(approval.request.request_id)
+        assert untouched is not None
+        assert untouched.status is ApprovalStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_in_memory_resolve_with_blank_actor_is_refused() -> None:
+    store = InMemoryApprovalStore()
+    approval = await store.create(_durable_approval())
+
+    with pytest.raises(ValueError, match="verified principal"):
+        await store.resolve(approval.request.request_id, approved=True, actor=" ")
+
+    untouched = await store.get(approval.request.request_id)
+    assert untouched is not None
+    assert untouched.status is ApprovalStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_sqlite_resolve_with_blank_actor_is_refused(tmp_path) -> None:
+    async with aiosqlite.connect(tmp_path / "approvals-blank-actor.db") as conn:
+        store = SqliteApprovalStore(conn)
+        await store.ensure_schema()
+        approval = await store.create(_durable_approval())
+
+        with pytest.raises(ValueError, match="verified principal"):
+            await store.resolve(approval.request.request_id, approved=True, actor="\t")
 
         untouched = await store.get(approval.request.request_id)
         assert untouched is not None
