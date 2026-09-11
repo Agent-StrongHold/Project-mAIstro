@@ -81,7 +81,8 @@ def canvas_egress(
                 project_id=project.project_id,
                 name="Canvas quality",
                 nodes=[Node(node_id="canvas-quality", node_type="canvas.visual_quality")],
-            )
+            ),
+            actor_principal_id="user",
         )
         node_run = await run_store.create_node_run(run.run_id, node_id="canvas-quality")
         attempt = await run_store.create_attempt(node_run.node_run_id)
@@ -121,6 +122,19 @@ def canvas_egress(
         llm_router=router,
         run_store=run_store,
     )
+    import config
+
+    monkeypatch.setattr(
+        config,
+        "get_settings",
+        lambda: SimpleNamespace(
+            litellm_api_base="http://gateway.test/v1",
+            litellm_api_key=None,
+            canvas_model_binding_id="canvas-quality-binding",
+            model_bindings=[],
+            hive_default_workspace_id="ws-canvas",
+        ),
+    )
     return egress, effects, context, components
 
 
@@ -129,6 +143,7 @@ def test_shipped_canvas_route_records_correlated_invocation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _egress, effects, context, components = canvas_egress
+    app.state._state.pop("canvas_model_egress", None)
     monkeypatch.setattr(
         engine_service.get_engine(),
         "_agent_port",
@@ -142,7 +157,7 @@ def test_shipped_canvas_route_records_correlated_invocation(
         "/v1/canvas/eval",
         json={
             "description": "A blue city at dusk",
-            "context": context,
+            "run_id": context["run_id"],
         },
     )
     assert response.status_code == 200, response.text
@@ -195,7 +210,7 @@ def test_canvas_route_refuses_fabricated_execution_identity(
     context["run_id"] = "fabricated-run"
     response = client.post(
         "/v1/canvas/eval",
-        json={"description": "A blue city at dusk", "context": context},
+        json={"description": "A blue city at dusk", "run_id": context["run_id"]},
     )
 
     assert response.status_code == 503
@@ -215,11 +230,16 @@ def test_canvas_route_refuses_unavailable_provider(
 
     response = client.post(
         "/v1/canvas/eval",
-        json={"description": "A blue city at dusk", "context": context},
+        json={"description": "A blue city at dusk", "run_id": context["run_id"]},
     )
 
     assert response.status_code == 503
     assert "score" not in response.json()
+    import asyncio
+
+    attempt = asyncio.run(canvas_egress[3].run_store.get_attempt(context["attempt_id"]))
+    assert attempt is not None
+    assert attempt.status.value == "failed"
 
 
 def test_canvas_route_refuses_missing_binding(
@@ -232,10 +252,22 @@ def test_canvas_route_refuses_missing_binding(
     assert login.status_code == 200
 
     context = dict(canvas_egress[2])
-    context["binding_id"] = "not-authorized"
+    import config
+
+    monkeypatch.setattr(
+        config,
+        "get_settings",
+        lambda: SimpleNamespace(
+            litellm_api_base="http://gateway.test/v1",
+            litellm_api_key=None,
+            canvas_model_binding_id="not-authorized",
+            model_bindings=[],
+            hive_default_workspace_id="ws-canvas",
+        ),
+    )
     response = client.post(
         "/v1/canvas/eval",
-        json={"description": "A blue city at dusk", "context": context},
+        json={"description": "A blue city at dusk", "run_id": context["run_id"]},
     )
 
     assert response.status_code == 503

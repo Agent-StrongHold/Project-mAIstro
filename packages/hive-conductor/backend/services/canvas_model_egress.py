@@ -20,6 +20,7 @@ from maistro.capabilities.providers.llm_gateway import (
     GatewayEndpoint,
     ModelChatRequest,
 )
+from maistro.runs.model import TERMINAL_ATTEMPT_STATUSES, AttemptStatus
 
 
 class CanvasModelEgress:
@@ -43,29 +44,14 @@ class CanvasModelEgress:
             endpoint=endpoint,
         )
 
-    async def complete(
-        self,
-        *,
-        context: dict[str, str],
-        request: ModelChatRequest,
-    ) -> ModelCallResult:
-        """Cross the governed seam using IDs held by the Canvas execution."""
-        required = (
-            "binding_id",
-            "run_id",
-            "node_run_id",
-            "attempt_id",
-        )
-        missing = [name for name in required if not str(context.get(name) or "").strip()]
-        if missing:
-            raise BindingResolutionError(
-                "Canvas visual evaluation requires canonical execution context: "
-                + ", ".join(missing)
-            )
+    @property
+    def run_store(self) -> Any:
+        """The canonical RunStore supplied by application composition."""
+        return self._run_store
 
+    async def _load_execution(self, context: dict[str, str]) -> tuple[Any, Any, Any]:
         if self._run_store is None:
             raise BindingResolutionError("Canvas visual evaluation has no canonical Run store")
-
         run = await self._run_store.get_run(str(context["run_id"]))
         node_run = await self._run_store.get_node_run(str(context["node_run_id"]))
         attempt = await self._run_store.get_attempt(str(context["attempt_id"]))
@@ -73,38 +59,82 @@ class CanvasModelEgress:
             raise BindingResolutionError(
                 "Canvas visual evaluation requires existing canonical Run, NodeRun, and Attempt"
             )
+        return run, node_run, attempt
+
+    @staticmethod
+    def _validate_execution(context: dict[str, str], run: Any, node_run: Any, attempt: Any) -> str:
         if node_run.run_id != run.run_id or attempt.node_run_id != node_run.node_run_id:
             raise BindingResolutionError(
                 "Canvas execution context does not form one canonical chain"
             )
-
         supplied_workspace = str(context.get("workspace_id") or "").strip()
         supplied_project = str(context.get("project_id") or "").strip()
         if supplied_workspace and supplied_workspace != run.workspace_id:
             raise BindingResolutionError("Canvas Workspace does not match the canonical Run")
         if supplied_project and supplied_project != run.project_id:
             raise BindingResolutionError("Canvas Project does not match the canonical Run")
-
         node_id = str(context.get("node_id") or node_run.node_id)
         if node_id != node_run.node_id:
             raise BindingResolutionError("Canvas node does not match the canonical NodeRun")
-        binding = await self.effects.bindings.resolve(
-            str(context["binding_id"]),
-            workspace_id=run.workspace_id,
-            project_id=run.project_id,
-            node_id=node_id,
-            capability=MODEL_CHAT_CAPABILITY,
-        )
-        return await self._egress.complete(
-            binding=binding,
-            run_id=run.run_id,
-            node_run_id=node_run.node_run_id,
-            attempt_id=attempt.attempt_id,
-            # One logical Canvas quality effect; the canonical IDs provide the
-            # execution identity and Invocation deduplication boundary.
-            effect_key="canvas.visual_quality.evaluate",
-            request=request,
-        )
+        return node_id
+
+    async def _fail_attempt(self, attempt_id: str, exc: Exception) -> None:
+        current = await self._run_store.get_attempt(attempt_id)
+        if current is not None and current.status not in TERMINAL_ATTEMPT_STATUSES:
+            await self._run_store.transition_attempt(
+                current.attempt_id,
+                AttemptStatus.FAILED,
+                error=f"{type(exc).__name__}: {str(exc)[:500]}",
+            )
+
+    async def complete(
+        self,
+        *,
+        context: dict[str, str],
+        request: ModelChatRequest,
+    ) -> ModelCallResult:
+        """Cross the governed seam using IDs held by the Canvas execution."""
+        required = ("binding_id", "run_id", "node_run_id", "attempt_id")
+        missing = [name for name in required if not str(context.get(name) or "").strip()]
+        if missing:
+            raise BindingResolutionError(
+                "Canvas visual evaluation requires canonical execution context: "
+                + ", ".join(missing)
+            )
+
+        run, node_run, attempt = await self._load_execution(context)
+        node_id = self._validate_execution(context, run, node_run, attempt)
+        if attempt.status in TERMINAL_ATTEMPT_STATUSES:
+            raise BindingResolutionError(
+                f"Canvas visual evaluation Attempt {attempt.attempt_id!r} is already terminal"
+            )
+        if attempt.status is AttemptStatus.CREATED:
+            attempt = await self._run_store.transition_attempt(
+                attempt.attempt_id,
+                AttemptStatus.RUNNING,
+            )
+
+        try:
+            binding = await self.effects.bindings.resolve(
+                str(context["binding_id"]),
+                workspace_id=run.workspace_id,
+                project_id=run.project_id,
+                node_id=node_id,
+                capability=MODEL_CHAT_CAPABILITY,
+            )
+            return await self._egress.complete(
+                binding=binding,
+                run_id=run.run_id,
+                node_run_id=node_run.node_run_id,
+                attempt_id=attempt.attempt_id,
+                effect_key="canvas.visual_quality.evaluate",
+                request=request,
+            )
+        except Exception as exc:
+            # The canonical Canvas executor owns success projection, but a
+            # refused Binding/provider must still settle the Attempt it owns.
+            await self._fail_attempt(attempt.attempt_id, exc)
+            raise
 
 
 def build_canvas_model_egress(
