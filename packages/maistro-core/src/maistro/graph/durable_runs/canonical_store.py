@@ -13,15 +13,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Any
 
-from maistro.runs.model import Attempt, NodeRun, RunStatus
+from maistro.runs.lifecycle import settle_open_node_run, transition_node_run, transition_run
+from maistro.runs.model import TERMINAL_RUN_STATUSES, Attempt, NodeRun, Run, RunStatus
 from maistro.runs.store import RunIntegrityError, RunStore
 
 from .continuation import GraphContinuation, GraphContinuationStore
-from .hitl import earliest_hitl_deadline
+from .hitl import earliest_hitl_deadline, settlement_time
 from .spine import mirror_lifecycle
 from .stores import answer_record, settle_hitl_record
 from .types import DurableRunRecord
@@ -29,6 +30,72 @@ from .types import DurableRunRecord
 _RECOVERY_VISIBLE_STATUSES = frozenset({RunStatus.WAITING, RunStatus.PAUSED, RunStatus.RUNNING})
 
 logger = logging.getLogger(__name__)
+
+
+def _terminal_hitl_evidence(
+    continuation: GraphContinuation,
+    target: RunStatus,
+) -> tuple[str, str, datetime, str] | None:
+    metadata = continuation.graph_state.metadata
+    settlements_raw = metadata.get("hitl_settlements", {})
+    settlements = settlements_raw if isinstance(settlements_raw, Mapping) else {}
+    matching = [
+        (str(node_id), settlement)
+        for node_id, settlement in settlements.items()
+        if isinstance(settlement, Mapping) and settlement.get("outcome") == target.value
+    ]
+    if len(matching) != 1:
+        return None
+    node_id, settlement = matching[0]
+    node_run_id = settlement.get("node_run_id")
+    decided_at = settlement.get("decided_at")
+    if not isinstance(node_run_id, str) or not isinstance(decided_at, str):
+        return None
+    try:
+        moment = settlement_time(datetime.fromisoformat(decided_at))
+    except (TypeError, ValueError):
+        logger.warning(
+            "cannot reconcile terminal HITL continuation %s: invalid decided_at",
+            continuation.run_id,
+        )
+        return None
+
+    pause = settlement.get("pause")
+    if target is RunStatus.TIMED_OUT and isinstance(pause, Mapping):
+        deadline = pause.get("resume_at")
+        detail = f" at {deadline}" if isinstance(deadline, str) else ""
+        reason = f"human input for node {node_id!r} timed out{detail}"
+    elif target is RunStatus.TIMED_OUT:
+        reason = f"human input for node {node_id!r} timed out"
+    else:
+        reason = f"human input for node {node_id!r} was cancelled"
+    return node_id, node_run_id, moment, reason
+
+
+def _terminal_hitl_node_runs(
+    node_runs: tuple[NodeRun, ...],
+    *,
+    node_run_id: str,
+    target: RunStatus,
+    moment: datetime,
+    reason: str,
+) -> tuple[NodeRun, ...] | None:
+    repaired = list(node_runs)
+    for index, node_run in enumerate(repaired):
+        if node_run.status in TERMINAL_RUN_STATUSES:
+            if node_run.node_run_id == node_run_id and node_run.status is not target:
+                return None
+            continue
+        if node_run.node_run_id == node_run_id:
+            repaired[index] = transition_node_run(
+                node_run,
+                target,
+                at=moment,
+                error=reason,
+            )
+        else:
+            repaired[index] = settle_open_node_run(node_run, target, at=moment)
+    return tuple(repaired)
 
 
 class CanonicalDurableRunStore:
@@ -124,6 +191,8 @@ class CanonicalDurableRunStore:
                 continuation.version,
             )
             return await self._continuations.delete(run_id)
+        if await self._reconcile_terminal_hitl(continuation, canonical):
+            return True
         if canonical.status is RunStatus.RUNNING and continuation.status in {
             RunStatus.WAITING,
             RunStatus.PAUSED,
@@ -131,6 +200,60 @@ class CanonicalDurableRunStore:
             await self._run_store.transition_run(run_id, continuation.status)
             return True
         return False
+
+    async def _reconcile_terminal_hitl(
+        self,
+        continuation: GraphContinuation,
+        canonical: Run,
+    ) -> bool:
+        """Finish a HITL lifecycle mirror interrupted after graph persistence.
+
+        The continuation is written before the canonical spine so a crash
+        leaves durable settlement evidence rather than an answerable pause.
+        Rebuild the intended NodeRun projection from that evidence and let the
+        normal lifecycle mirror walk the remaining canonical transitions.
+        """
+        target = continuation.status
+        if target not in {RunStatus.CANCELLED, RunStatus.TIMED_OUT}:
+            return False
+        if canonical.status in TERMINAL_RUN_STATUSES:
+            return False
+        evidence = _terminal_hitl_evidence(continuation, target)
+        if evidence is None:
+            return False
+        node_id, node_run_id, moment, reason = evidence
+
+        record = await self.get(continuation.run_id)
+        if record is None:
+            return False
+        if not any(
+            node.node_run_id == node_run_id and node.node_id == node_id for node in record.node_runs
+        ):
+            logger.warning(
+                "cannot reconcile terminal HITL continuation %s: node run %s is missing",
+                continuation.run_id,
+                node_run_id,
+            )
+            return False
+        node_runs = _terminal_hitl_node_runs(
+            record.node_runs,
+            node_run_id=node_run_id,
+            target=target,
+            moment=moment,
+            reason=reason,
+        )
+        if node_runs is None:
+            logger.warning(
+                "cannot reconcile terminal HITL continuation %s: node run %s disagrees",
+                continuation.run_id,
+                node_run_id,
+            )
+            return False
+
+        desired_run = transition_run(record.run, target, at=moment, error=reason)
+        desired = record.model_copy(update={"run": desired_run, "node_runs": node_runs})
+        await mirror_lifecycle(desired, run_store=self._run_store)
+        return True
 
     async def list_by_status(
         self,
