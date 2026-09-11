@@ -9,7 +9,6 @@ boundary in :mod:`attempt_executor`.
 from __future__ import annotations
 
 import logging
-import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
@@ -19,10 +18,10 @@ from maistro.runs.model import Run, RunStatus
 from maistro.runs.recovery_events import RecoveryEventSink
 from maistro.runs.store import RunStore
 from maistro.runtime import ExecutionRuntime
-from maistro.security.redact import redact
 
 from . import executor as traversal
 from .attempt_executor import LiveAttemptOwned, NodeResolver, resume_durable_graph
+from .failure import sanitized_exception
 from .launch import launch_state_from_run
 from .protocol import DurableRunStore, RecoveryInfrastructureError
 from .types import DurableRunRecord
@@ -87,20 +86,6 @@ class _CandidateRunStore:
                 ) from exc
 
         return call
-
-
-_SAFE_DETAIL = re.compile(r"(?i)\b(password|token|secret|api[_-]?key)\b\s*[=:]\s*[^\s,;]+")
-
-
-def _sanitized_cause(exc: BaseException) -> str:
-    """Return bounded log evidence without copying provider/credential text."""
-    detail = str(exc).splitlines()[0].strip() if str(exc) else ""
-    # Apply the local key/value rule first so short diagnostic forms such as
-    # ``password=...`` are covered too; the shared redactor then handles URLs,
-    # provider key prefixes, JWTs, and other credential-shaped values.
-    detail = redact(_SAFE_DETAIL.sub(r"\1=<redacted>", detail))
-    detail = detail[:240]
-    return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
 
 
 def _lazy_resolver(
@@ -197,13 +182,13 @@ async def _resume_due_candidate(
         # Resolver/event failures that escape the executor are local to this
         # Run. Keep the candidate eligible for a later tick, but do not let it
         # starve the rest of this bounded batch.
-        _log_candidate_failure(candidate.run_id, _sanitized_cause(exc))
+        _log_candidate_failure(candidate.run_id, sanitized_exception(exc))
         return False
 
     if result is not None and result.run.status is RunStatus.FAILED:
         _log_candidate_failure(
             candidate.run_id,
-            _sanitized_cause(ValueError(result.run.error or "failed")),
+            sanitized_exception(ValueError(result.run.error or "failed")),
         )
     return True
 

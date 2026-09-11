@@ -236,7 +236,10 @@ async def test_factory_failure_terminalizes_each_candidate_for_later_recovery() 
 
     def _broken_factory(run: Run):
         factory_calls.append(run.run_id)
-        raise RuntimeError(f"resolver unavailable for {run.run_id}")
+        raise RuntimeError(
+            f"resolver unavailable for {run.run_id} password=not-a-secret "
+            "https://user:pass@example.com sk-ant-abcdefghijklmnop"
+        )
 
     assert (
         await recovery.resume_due_graph_runs(
@@ -253,8 +256,12 @@ async def test_factory_failure_terminalizes_each_candidate_for_later_recovery() 
         assert failed is not None
         assert failed.run.status is RunStatus.FAILED
         assert failed.run.error == (
-            f"PhysicalExecutionError: resolver unavailable for {run.run_id}"
+            f"PhysicalExecutionError: resolver unavailable for {run.run_id} "
+            "password=<redacted> [REDACTED_URL_CREDENTIALS] [REDACTED_API_KEY]"
         )
+        assert "not-a-secret" not in failed.run.error
+        assert "https://user:pass@example.com" not in failed.run.error
+        assert "sk-ant-abcdefghijklmnop" not in failed.run.error
 
 
 @pytest.mark.asyncio

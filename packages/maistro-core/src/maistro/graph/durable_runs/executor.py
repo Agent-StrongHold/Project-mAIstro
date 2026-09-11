@@ -47,6 +47,7 @@ from maistro.runs.model import (
 )
 from maistro.runs.store import RunIntegrityError, RunStore
 
+from .failure import sanitize_failure_message
 from .protocol import DurableRunStore
 from .spine import mirror_lifecycle
 from .types import DurableRunRecord
@@ -1479,7 +1480,7 @@ async def _mark_failed(
     """
     record = _settle_open_node_runs(record, RunStatus.FAILED)
     run = _running_run(record.run)
-    error = f"{error_code}: {error_message}"[:512]
+    error = f"{error_code}: {sanitize_failure_message(error_message)}"[:512]
     if run.status is not RunStatus.RUNNING:
         raise ValueError(f"cannot fail run in status {run.status!r}")
     run = transition_run(run, RunStatus.FAILED, error=error)
