@@ -196,6 +196,8 @@ async def run_registered_dag(
         configure(graph)
     container = _container()
     run_store = container.run_store if container is not None else None
+    if run_store is None and any(node.node_type.startswith("human.") for node in graph.nodes):
+        raise RuntimeError("canonical graph execution spine is required for human work")
     # Admission first, then execution. Traversal consumes an admitted Run
     # rather than creating one (#44): the create and the first traversal
     # checkpoint are writes to two stores, so a crash between them would leave

@@ -48,6 +48,24 @@ def test_run_registered_dag_unknown_id_raises_key_error() -> None:
         asyncio.run(run_registered_dag("no-such-dag", workspace_id="w1", project_id="p1"))
 
 
+def test_standalone_registered_human_work_is_refused() -> None:
+    registry = get_registry()
+    registry.register(
+        {
+            "id": "synth-human",
+            "name": "Synth Human",
+            "entry_node": "ask",
+            "nodes": [{"id": "ask", "kind": "human.ask_question", "config": {}}],
+            "edges": [],
+        }
+    )
+    try:
+        with pytest.raises(RuntimeError, match="canonical graph execution spine"):
+            asyncio.run(run_registered_dag("synth-human", workspace_id="w1", project_id="p1"))
+    finally:
+        registry.deregister("synth-human")
+
+
 def test_run_registered_dag_produces_provenanced_completed_run(synth_dag_id: str) -> None:
     graph, record = asyncio.run(
         run_registered_dag(synth_dag_id, workspace_id="w1", project_id="p1", user_id="u1")
