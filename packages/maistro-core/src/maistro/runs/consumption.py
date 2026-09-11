@@ -58,6 +58,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only; runtime import would cycle
 #: `TASK_EXECUTOR_ID` names the task runner and `CHAT_EXECUTOR_ID` the
 #: Conduit. It answers "what kind of work was this" on the physical record.
 SCHEDULE_EXECUTOR_ID = "schedule-consumer"
+#: Finite recovery window shared by first reaches and resumed Attempts. The
+#: executor passes this policy through both canonical execution services.
 DEFAULT_SCHEDULE_LEASE_TTL = timedelta(seconds=30)
 
 #: Admission sources the consumer may execute. An allowlist rather than
@@ -104,7 +106,9 @@ class ScheduleAttemptExecutor:
         self._attempts = AttemptExecutionService(
             store=run_store, runtime=resolved_runtime, lease_ttl=lease_ttl
         )
-        self._service = RunExecutionService(store=run_store, runtime=resolved_runtime)
+        self._service = RunExecutionService(
+            store=run_store, runtime=resolved_runtime, lease_ttl=lease_ttl
+        )
         self._runtime_id = type(resolved_runtime).__name__
         self._lease_ttl = lease_ttl
         self._timeout_s = timeout_s

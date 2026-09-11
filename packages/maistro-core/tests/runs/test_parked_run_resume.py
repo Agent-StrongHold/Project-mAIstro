@@ -138,7 +138,35 @@ class _UnclassifiedPauseNode(BaseNode[_PauseIn, _PauseOut]):
         return _PauseOut(text="unreachable")
 
 
-for _cls in (_PollingPauseNode, _DispatchingPauseNode, _UnclassifiedPauseNode, _FailingNode):
+class _CrashAfterResumeNode(BaseNode[_PauseIn, _PauseOut]):
+    """Pauses once, then stays live until the resumed worker is killed."""
+
+    kind: ClassVar[str] = "test.resume.crash-after-resume"
+    kind_category: ClassVar = "wait"
+    input_schema: ClassVar[type[BaseModel]] = _PauseIn
+    output_schema: ClassVar[type[BaseModel]] = _PauseOut
+    resumed_started: ClassVar[asyncio.Event | None] = None
+
+    async def _execute(self, inputs: _PauseIn, ctx: NodeContext) -> _PauseOut:
+        if resumed_pause(ctx):
+            event = type(self).resumed_started
+            assert event is not None
+            event.set()
+            await asyncio.sleep(3600)
+        pause_until(
+            PAUSE_WAITING_ON_JIRA_SUBTASKS,
+            resume_at=datetime.now(UTC) - timedelta(seconds=1),
+        )
+        return _PauseOut(text="unreachable")
+
+
+for _cls in (
+    _PollingPauseNode,
+    _DispatchingPauseNode,
+    _UnclassifiedPauseNode,
+    _CrashAfterResumeNode,
+    _FailingNode,
+):
     with contextlib.suppress(ValueError):
         register_node(_cls)
 
@@ -247,6 +275,87 @@ class TestAnElapsedPollResumes:
 
         assert _PollingPauseNode.carried.get("first_seen")
         assert _PollingPauseNode.carried["paused_reason"] == PAUSE_WAITING_ON_JIRA_SUBTASKS
+
+
+@pytest.mark.ac("ADR-082526-b36a/AC-7")
+async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_death(
+    spine: Any,
+) -> None:
+    """A resumed physical try has the same crash boundary as first reach.
+
+    The store fixture covers memory, SQLite, and PostgreSQL when configured. A
+    separate container invokes the ordinary recovery tick against that store,
+    which models a restarted worker without introducing schedule-owned repair.
+    """
+    from maistro.runs.consumption import ScheduleAttemptExecutor, resumable_pause
+
+    store, workspace, project_id = spine
+    recovery_container = await _container()
+    if not callable(getattr(store, "claim_consumer_run", None)):
+        # The bare conformance memory fixture intentionally tests RunStore only;
+        # production wiring uses the claiming memory store.
+        store = recovery_container.run_store
+        workspace = "schedule-resume-memory"
+        root = await recovery_container.project_scope_store.create_root(workspace)
+        project_id = root.project_id
+    graph = Graph(
+        workspace_id=workspace,
+        project_id=project_id,
+        name="resumable schedule lease",
+        nodes=[Node(node_id="n1", node_type=_CrashAfterResumeNode.kind)],
+    )
+    run = await store.create_run(
+        graph,
+        provenance={ADMISSION_SOURCE: SCHEDULE_SOURCE, SCHEDULE_INPUTS_KEY: {"marker": "m"}},
+        initial_status=RunStatus.QUEUED,
+    )
+    ttl = timedelta(seconds=0.06)
+    executor = ScheduleAttemptExecutor(store, lease_ttl=ttl)
+
+    parked = await executor.execute(run)
+    assert parked.status in {RunStatus.WAITING, RunStatus.PAUSED}
+    (node_run,) = await store.list_node_runs(run.run_id)
+    attempts = await store.list_attempts(node_run.node_run_id)
+    pause = resumable_pause(node_run, attempts, now=datetime.now(UTC))
+    assert pause is not None
+
+    _CrashAfterResumeNode.resumed_started = asyncio.Event()
+    worker = asyncio.create_task(executor.resume(parked, pause))
+    try:
+        await _CrashAfterResumeNode.resumed_started.wait()
+        attempts = await store.list_attempts(node_run.node_run_id)
+        resumed = attempts[-1]
+        assert resumed.status is AttemptStatus.RUNNING
+        lease = resumed.execution_lease
+        assert lease is not None and lease.expires_at is not None, (
+            "a schedule resume must opt into the same finite lease as first reach"
+        )
+
+        async def _dead(*_args: Any, **_kwargs: Any) -> Any:
+            raise ConnectionError("resumed worker is gone")
+
+        # Stop the heartbeat without orderly cancellation: this is the process
+        # death boundary, leaving the Attempt durably RUNNING for recovery.
+        store.renew_lease = _dead  # type: ignore[method-assign]
+        await asyncio.sleep(ttl.total_seconds() * 2)
+
+        recovery_container.run_store = store
+        assert (
+            await recovery_container.recover_abandoned_attempts(
+                now=lease.expires_at + timedelta(microseconds=1)
+            )
+            == 1
+        )
+
+        recovered = await store.get_attempt(resumed.attempt_id)
+        recovered_node = await store.get_node_run(node_run.node_run_id)
+        recovered_run = await store.get_run(run.run_id)
+        assert recovered is not None and recovered.status is AttemptStatus.CANCELLED
+        assert recovered_node is not None and recovered_node.status is RunStatus.WAITING
+        assert recovered_run is not None and recovered_run.status is RunStatus.WAITING
+    finally:
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
 
 
 class TestAnAnswerGatedPauseIsLeftAlone:
