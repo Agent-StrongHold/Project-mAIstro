@@ -453,6 +453,9 @@ async def test_the_traversal_executor_takes_the_same_path() -> None:
     assert run is not None and run.status is RunStatus.COMPLETED
     node_runs = await run_store.list_node_runs(record.run_id)
     assert [item.status for item in node_runs] == [RunStatus.COMPLETED]
-    # Traversal accepts no physical evidence, so its NodeRuns carry no accepted
-    # outcome — the write-back has to cope with that rather than assume one.
-    assert node_runs[0].accepted_outcome is None
+    # The historical import is a compatibility facade over canonical execution,
+    # not a second walker allowed to complete with no physical evidence.
+    assert node_runs[0].accepted_outcome is not None
+    attempts = await run_store.list_attempts(node_runs[0].node_run_id)
+    assert len(attempts) == 1
+    assert node_runs[0].accepted_outcome.attempt_result.attempt_id == attempts[0].attempt_id

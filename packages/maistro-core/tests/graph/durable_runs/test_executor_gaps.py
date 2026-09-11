@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from maistro.graph.definitions import Graph
 from maistro.graph.durable_runs import InMemoryDurableRunStore, RunStatus
+from maistro.graph.durable_runs.attempt_executor import _walk
 from maistro.graph.durable_runs.executor import (
     _build_ctx,
     _ensure_frontier_node_runs,
@@ -17,15 +18,15 @@ from maistro.graph.durable_runs.executor import (
     _mark_failed,
     _next_node,
     _node_spec,
-    _walk,
     resume_durable_graph,
 )
 from maistro.graph.nodes import BaseNode, NodeContext
 from maistro.graph.nodes.base import NodeResult
 from maistro.runs.lifecycle import transition_node_run
-from maistro.runs.model import NodeRun
+from maistro.runs.model import Attempt, NodeRun
+from maistro.runtime import PythonExecutionRuntime
 
-from .._canonical_helpers import durable_record, graph_from_dag
+from .._canonical_helpers import completed_node_run, durable_record, graph_from_dag
 
 
 class _EchoIn(BaseModel):
@@ -58,6 +59,7 @@ def _record_for(
     status: RunStatus = RunStatus.RUNNING,
     active_node_id: str | None = None,
     node_runs: tuple[NodeRun, ...] = (),
+    attempts: tuple[Attempt, ...] = (),
     blackboard_snapshot: dict[str, Any] | None = None,
     version: int = 1,
 ):  # type: ignore[no-untyped-def]
@@ -72,6 +74,7 @@ def _record_for(
         status=status,
         active_node_id=active_node_id,
         node_runs=node_runs,
+        attempts=attempts,
         blackboard_snapshot=blackboard_snapshot,
         version=version,
     )
@@ -229,7 +232,13 @@ class TestStepBudgetExhaustion:
             active_node_id="n1",
         )
         await store.create(record)
-        result = await _walk(record, store=store, node_resolver=_resolver, max_steps=8)
+        result = await _walk(
+            record,
+            store=store,
+            node_resolver=_resolver,
+            runtime=PythonExecutionRuntime(),
+            max_steps=8,
+        )
         assert result.status is RunStatus.FAILED
         assert result.run.error is not None
         assert result.run.error.startswith("StepBudgetExhausted:")
@@ -245,7 +254,13 @@ class TestStepBudgetExhaustion:
         }
         record = _record_for("r-done", dag=dag, active_node_id="n1")
         await store.create(record)
-        result = await _walk(record, store=store, node_resolver=_resolver, max_steps=8)
+        result = await _walk(
+            record,
+            store=store,
+            node_resolver=_resolver,
+            runtime=PythonExecutionRuntime(),
+            max_steps=8,
+        )
         assert result.status is RunStatus.COMPLETED
 
 
@@ -274,11 +289,12 @@ class TestCanonicalNodeRunPersistence:
         existing = NodeRun(run_id="r1", node_id="n1", ordinal=1)
         existing = transition_node_run(existing, RunStatus.QUEUED)
         existing = transition_node_run(existing, RunStatus.RUNNING)
-        existing = transition_node_run(existing, RunStatus.COMPLETED, result={"text": "old"})
+        existing, attempt = completed_node_run(existing, result={"text": "old"})
         record = _record_for(
             "r1",
             active_node_id="n1",
             node_runs=(existing,),
+            attempts=(attempt,),
         )
         store = InMemoryDurableRunStore()
         await store.create(record)

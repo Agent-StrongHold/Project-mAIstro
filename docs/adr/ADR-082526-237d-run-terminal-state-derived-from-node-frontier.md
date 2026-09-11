@@ -98,6 +98,24 @@ the physical Attempt unchanged, and explicitly accepts an `AcceptedNodeOutcome` 
 product result. The parent Run still derives from the canonical NodeRun; the product does not
 perform a second Run lifecycle transition.
 
+### Accepted evidence at the write boundary (#1153)
+
+Every new successful `transition_node_run` requires an explicit
+`AcceptedNodeOutcome` backed by a completed physical Attempt. A successful
+operation with no output records that accepted outcome with `result=None`;
+absence of the outcome object never establishes success. Memory, SQLite, and
+PostgreSQL share this lifecycle guard. Store acceptance also validates the
+referenced physical evidence against the persisted Attempt.
+
+Historical completed rows may predate accepted-outcome evidence. Reading them
+remains supported; the existing repair transition installs only matching
+accepted evidence and preserves the terminal result, error, and timestamps.
+It cannot create a new unsupported success or rewrite terminal history.
+
+The historical `graph.durable_runs.executor` execution entry points delegate to
+`attempt_executor`. Graph-domain traversal helpers remain reusable, but a second
+physical walker cannot bypass the evidence requirement.
+
 ## Acceptance Criteria
 
 - [x] **AC-1**: A one-node Run reaches its terminal Run state when reconciliation accepts its
