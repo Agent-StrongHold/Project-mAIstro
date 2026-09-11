@@ -3,8 +3,9 @@
 Faithful recreation of the Stronghold Epic-15 builder pipeline on maistro:
 stage ordering, skipping, and post-completion hooks are declared on
 :class:`~maistro.builders.graph.PipelineNode`;
-:class:`~maistro.builders.graph_executor.GraphPipelineExecutor` drives
-execution. New since Epic-15: the review stage is a verifiable gate that
+:class:`~maistro.builders.graph_executor.CanonicalGraphPipelineExecutor` drives
+execution on the canonical durable spine. New since Epic-15: the review stage
+is a verifiable gate that
 routes back to implement (bounded verify-and-revise) instead of relying
 solely on a downstream cleanup stage.
 
@@ -31,11 +32,15 @@ from typing import Any, ClassVar
 from maistro.builders.contracts import RunRequest, RunStatus, WorkerName
 from maistro.builders.graph import PipelineGraph, PipelineNode, RunContext
 from maistro.builders.graph_executor import (
+    CanonicalGraphPipelineExecutor,
     DispatchResult,
-    GraphPipelineExecutor,
     PipelineDispatcher,
 )
 from maistro.builders.runtime import BuildersRuntime
+from maistro.graph.durable_runs import CanonicalDurableRunStore, InMemoryGraphContinuationStore
+from maistro.graph.node import IterationBudget
+from maistro.projects.scope_store import InMemoryProjectScopeStore
+from maistro.runs.store import InMemoryRunStore, RunStore
 
 logger = logging.getLogger("maistro.builders.pipeline")
 
@@ -160,6 +165,10 @@ class PipelineRun:
     revisions: dict[str, int] = field(default_factory=dict)
     gate_exhausted: list[str] = field(default_factory=list)
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    # Canonical identity is retained as a receipt; lifecycle truth lives in
+    # Run/NodeRun/Attempt and is never inferred from this object.
+    canonical_graph_id: str | None = None
+    canonical_run_id: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -172,6 +181,8 @@ class PipelineRun:
             "skipped_stages": list(self.skipped_stages),
             "revisions": dict(self.revisions),
             "gate_exhausted": list(self.gate_exhausted),
+            "canonical_graph_id": self.canonical_graph_id,
+            "canonical_run_id": self.canonical_run_id,
             "created_at": self.created_at.isoformat(),
         }
 
@@ -452,16 +463,11 @@ class RuntimeDispatcher:
 
 
 class BuilderPipeline:
-    """Executes the full issue-to-merge pipeline via GraphPipelineExecutor.
+    """Execute Builders through the canonical Graph/Run execution spine.
 
-    Usage:
-        pipeline = BuilderPipeline(dispatcher)
-        run = await pipeline.execute(
-            issue_number=42, title="Add caching", repo="acme/widget",
-        )
-
-    With spec-driven verification:
-        pipeline = BuilderPipeline(dispatcher, spec_store=store, spec_verifier=verifier)
+    ``PipelineRun`` remains a Builders receipt for spec and review state. The
+    canonical Run store owns universal lifecycle and the adapter appends a new
+    NodeRun/Attempt for each physical stage execution.
     """
 
     def __init__(
@@ -472,6 +478,12 @@ class BuilderPipeline:
         spec_verifier: Any | None = None,
         code_index: Any | None = None,
         nodes: list[PipelineNode] | None = None,
+        run_store: RunStore | None = None,
+        durable_store: CanonicalDurableRunStore | None = None,
+        workspace_id: str = "builders-local",
+        project_id: str | None = None,
+        actor_principal_id: str | None = None,
+        budget: IterationBudget | None = None,
     ) -> None:
         self._dispatcher = dispatcher
         self._spec_store = spec_store
@@ -479,6 +491,20 @@ class BuilderPipeline:
         self._code_index = code_index
         self._nodes = list(nodes) if nodes is not None else list(BUILDER_PIPELINE)
         self._runs: dict[str, PipelineRun] = {}
+        self._workspace_id = workspace_id
+        self._project_id = project_id
+        self._actor_principal_id = actor_principal_id
+        self._budget = budget
+        if run_store is None:
+            self._project_store: InMemoryProjectScopeStore | None = InMemoryProjectScopeStore()
+            self._run_store: RunStore = InMemoryRunStore(project_store=self._project_store)
+        else:
+            self._project_store = None
+            self._run_store = run_store
+        self._durable_store = durable_store or CanonicalDurableRunStore(
+            self._run_store,
+            InMemoryGraphContinuationStore(),
+        )
 
     async def execute(
         self,
@@ -541,10 +567,27 @@ class BuilderPipeline:
 
         run.context["spec_summary"] = build_spec_summary(spec) if spec is not None else ""
 
-        # Wrap each node's on_complete with spec verification if configured
+        # Wrap each node's on_complete with spec verification if configured.
+        # The canonical adapter is the only production execution authority;
+        # Builders state is projected back after the durable walk settles.
         nodes = self._wrap_nodes_with_verification(self._nodes)
         graph = PipelineGraph(nodes)
-        executor = GraphPipelineExecutor(self._dispatcher)
+        project_id = self._project_id
+        if project_id is None:
+            if self._project_store is None:
+                raise ValueError("project_id is required when run_store is injected")
+            project = await self._project_store.create_root(self._workspace_id)
+            project_id = project.project_id
+            self._project_id = project_id
+        executor = CanonicalGraphPipelineExecutor(
+            self._dispatcher,
+            run_store=self._run_store,
+            durable_store=self._durable_store,
+            workspace_id=self._workspace_id,
+            project_id=project_id,
+            actor_principal_id=self._actor_principal_id,
+            budget=self._budget,
+        )
 
         await executor.execute(graph, run)
 

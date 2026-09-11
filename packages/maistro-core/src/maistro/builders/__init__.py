@@ -1,5 +1,6 @@
 """Builders 2.0 workflow runtime package."""
 
+from maistro.builders.cli_execution import CanonicalBuilderTurnExecutor
 from maistro.builders.contracts import (
     ArtifactRef,
     RunRequest,
@@ -59,6 +60,7 @@ __all__ = [
     "BuildersDagResult",
     "BuildersOrchestrator",
     "BuildersRuntime",
+    "CanonicalBuilderTurnExecutor",
     "CanonicalGraphPipelineExecutor",
     "DagRun",
     "DispatchResult",

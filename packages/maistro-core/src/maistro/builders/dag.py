@@ -4,12 +4,11 @@ Implements SPEC-070226-82ea (which implements ADR-099) on top of the two
 layers that already exist:
 
 - :mod:`maistro.builders.graph` / :mod:`maistro.builders.graph_executor` —
-  the Epic-15 pipeline graph and its wave executor with executor-level
-  revision (SPEC-201). This module does **not** re-implement stage
-  execution; it *describes* a builders pipeline (stages, edges, gates,
-  loop-back targets) and lowers that description onto the existing
-  :class:`~maistro.builders.graph.PipelineGraph` +
-  :class:`~maistro.builders.graph_executor.GraphPipelineExecutor`.
+  the Epic-15 pipeline graph and its canonical durable adapter. This module
+  does **not** re-implement stage execution; it *describes* a builders
+  pipeline (stages, edges, gates, loop-back targets) and lowers that
+  description onto the existing :class:`~maistro.builders.graph.PipelineGraph`
+  + :class:`~maistro.builders.graph_executor.CanonicalGraphPipelineExecutor`.
 - :mod:`maistro.graph` — the ADR-062 graph execution protocol.
   :func:`builders_dag_to_graph` converts a :class:`BuildersDAG` into the
   ADR-062 graph description (``GraphConfig``, exposed here under the SPEC's
@@ -45,9 +44,15 @@ from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 from maistro.builders.graph import PipelineGraph, PipelineNode, RunContext
-from maistro.builders.graph_executor import GraphPipelineExecutor, PipelineDispatcher
+from maistro.builders.graph_executor import (
+    CanonicalGraphPipelineExecutor,
+    PipelineDispatcher,
+)
+from maistro.graph.durable_runs import CanonicalDurableRunStore, InMemoryGraphContinuationStore
 from maistro.graph.node import IterationBudget
 from maistro.graph.types import AgentRole, GraphConfig, GraphEdge, NodeConfig
+from maistro.projects.scope_store import InMemoryProjectScopeStore
+from maistro.runs.store import InMemoryRunStore, RunStore
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
@@ -274,8 +279,8 @@ def to_pipeline_graph(dag: BuildersDAG) -> PipelineGraph:
 
     Forward edges become ``depends_on``; gates become the graph's
     ``gate``/``revise_target``/``max_revisions``/``gate_exhausted`` fields,
-    so the existing :class:`GraphPipelineExecutor` provides the bounded
-    verify-and-revise loop unchanged.
+    so the canonical Builders adapter provides the bounded verify-and-revise
+    loop while recording each physical stage execution as an Attempt.
     """
     incoming: dict[str, list[str]] = {s.name: [] for s in dag.stages}
     for a, b in dag.edges:
@@ -451,16 +456,31 @@ def default_builders_dag(
 
 
 @dataclass
+class DagStageReceipt:
+    """Builders-only stage receipt projected from canonical NodeRuns."""
+
+    name: str
+    status: Any = None
+    error: str = ""
+
+
+@dataclass
 class DagRun:
-    """Mutable run record driven by the pipeline executor."""
+    """Builders domain receipt; canonical Run state is authoritative."""
 
     id: str
+    issue_number: int = 0
+    title: str = ""
+    repo: str = ""
     status: str = "pending"
     context: RunContext = field(default_factory=dict)
     skipped_stages: list[str] = field(default_factory=list)
     failed_stage_error: str = ""
     revisions: dict[str, int] = field(default_factory=dict)
     gate_exhausted: list[str] = field(default_factory=list)
+    stages: list[DagStageReceipt] = field(default_factory=list)
+    canonical_graph_id: str | None = None
+    canonical_run_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -491,7 +511,11 @@ def _classify_failure(run: DagRun) -> BuildersDagFailure:
         return BuildersDagFailure(kind="budget_exhausted", stage=stage, detail=status)
     stage = status[len("failed at ") :] if status.startswith("failed at ") else ""
     kind: FailureKind = (
-        "gate_exhausted" if run.failed_stage_error.startswith("Gate failed") else "stage_failed"
+        "budget_exhausted"
+        if "iteration budget exhausted" in run.failed_stage_error
+        else "gate_exhausted"
+        if run.failed_stage_error.startswith("Gate failed")
+        else "stage_failed"
     )
     return BuildersDagFailure(kind=kind, stage=stage, detail=run.failed_stage_error or status)
 
@@ -510,23 +534,52 @@ async def run_builders_dag(
     params: Mapping[str, Any] | None = None,
     run_id: str | None = None,
     budget: IterationBudget | None = None,
+    run_store: RunStore | None = None,
+    durable_store: CanonicalDurableRunStore | None = None,
+    workspace_id: str = "builders-local",
+    project_id: str | None = None,
 ) -> BuildersDagResult:
-    """Run a :class:`BuildersDAG` to completion via the existing pipeline
-    executor and return the terminal stage's output or a typed failure.
+    """Run a :class:`BuildersDAG` through canonical Run lifecycle.
 
-    Never raises for run failures; total stage executions never exceed the
-    iteration budget (default: ``(1 + sum of gate.max_iterations) * len(stages)``).
+    ``DagRun`` is a domain receipt only. Every dispatched stage is recorded by
+    the canonical adapter as Graph -> Run -> NodeRun -> Attempt evidence.
     """
-    run = DagRun(id=run_id or f"builders-dag-{uuid4().hex[:8]}")
-    run.context.update(dict(params or {}))
+    values = dict(params or {})
+    run = DagRun(
+        id=run_id or f"builders-dag-{uuid4().hex[:8]}",
+        issue_number=int(values.get("issue_number", 0)),
+        title=str(values.get("title", "Builders DAG")),
+        repo=str(values.get("repo", "")),
+        stages=[DagStageReceipt(name=stage.name) for stage in dag.stages],
+    )
+    run.context.update(values)
 
     errors = dag.validate()
     if errors:
         run.status = f"invalid graph: {'; '.join(errors)}"
         return BuildersDagResult(ok=False, run=run, failure=_classify_failure(run))
 
+    project_store = None
+    if run_store is None:
+        project_store = InMemoryProjectScopeStore()
+        run_store = InMemoryRunStore(project_store=project_store)
+    if project_id is None:
+        if project_store is None:
+            raise ValueError("project_id is required when run_store is injected")
+        project_id = (await project_store.create_root(workspace_id)).project_id
+    durable_store = durable_store or CanonicalDurableRunStore(
+        run_store,
+        InMemoryGraphContinuationStore(),
+    )
     graph = to_pipeline_graph(dag)
-    executor = GraphPipelineExecutor(dispatcher, budget=budget or _default_budget(dag))
+    executor = CanonicalGraphPipelineExecutor(
+        dispatcher,
+        run_store=run_store,
+        durable_store=durable_store,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        budget=budget or _default_budget(dag),
+    )
     await executor.execute(graph, run)
 
     if run.status != "completed":

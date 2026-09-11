@@ -13,6 +13,7 @@ Flow:
 from __future__ import annotations
 
 # mypy: disable-error-code="misc,untyped-decorator,unused-ignore"
+import hashlib
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -32,6 +33,7 @@ from textual.widgets import (  # type: ignore[import-not-found]
     Static,
 )
 
+from maistro.builders.cli_execution import CanonicalBuilderTurnExecutor
 from maistro.cli._builders_sessions import (
     BuilderSessionEntry,
     get_session,
@@ -117,6 +119,10 @@ class CodingScreen(Vertical):
         self.session_id = session_id
         self.repo_url = repo_url
         self.work_dir = work_dir
+        workspace_key = hashlib.sha256(repo_url.encode()).hexdigest()[:16]
+        self._canonical_executor = CanonicalBuilderTurnExecutor(
+            workspace_id=f"builders-cli-{workspace_key}"
+        )
 
     def compose(self) -> ComposeResult:
         yield Horizontal(
@@ -157,20 +163,30 @@ class CodingScreen(Vertical):
     async def _run_agent_turn(self, text: str) -> None:
         chat = self.query_one("#chat-log", RichLog)
         try:
-            from maistro_bootstrap.builders.agent_loop import AgentLoopConfig, TurnRunner
-            from maistro_bootstrap.builders.responses_callable import ResponsesAPICallable
-            from maistro_bootstrap.builders.sandbox import LocalWorktreeSandbox
-            from maistro_bootstrap.builders.session import BuilderSession
+            from maistro_bootstrap.builders.agent_loop import (  # type: ignore[import-not-found]
+                AgentLoopConfig,
+            )
+            from maistro_bootstrap.builders.responses_callable import (  # type: ignore[import-not-found]
+                ResponsesAPICallable,
+            )
+            from maistro_bootstrap.builders.sandbox import (  # type: ignore[import-not-found]
+                LocalWorktreeSandbox,
+            )
+            from maistro_bootstrap.builders.session import (  # type: ignore[import-not-found]
+                BuilderSession,
+            )
 
             session = BuilderSession(sandbox=LocalWorktreeSandbox(self.work_dir))
-            runner = TurnRunner(session=session, config=AgentLoopConfig())
-            runner.set_llm(ResponsesAPICallable())  # type: ignore[arg-type]
-
             messages = [
                 {"role": "system", "content": "You are a coding assistant."},
                 {"role": "user", "content": text},
             ]
-            result = await runner.execute_turn(messages=messages)
+            result = await self._canonical_executor.execute_turn(
+                session=session,
+                config=AgentLoopConfig(),
+                messages=messages,
+                llm=ResponsesAPICallable(),
+            )
 
             chat.write(f"\n[bold green]agent:[/bold green] {result.get('content', 'done')}")
         except ImportError:

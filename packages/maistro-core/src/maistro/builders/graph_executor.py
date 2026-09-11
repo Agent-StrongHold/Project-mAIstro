@@ -26,8 +26,8 @@ This module also hosts the canonical execution adapter (#734):
 a canonical ``Graph`` and drives it through the public durable
 Run/NodeRun/Attempt spine, keeping Builders prompts, context, skip
 predicates, gates, revision feedback, hooks and result projection as domain
-state. The legacy :class:`GraphPipelineExecutor` above remains the parity
-oracle while the parent convergence issue (#49) chooses product composition.
+state. The legacy :class:`GraphPipelineExecutor` remains only as a parity
+oracle; shipped Builders compositions do not call it.
 The adapter lives in this module rather than one of its own because a new
 module identity would register as new unreachable-module debt against the
 trusted-base reachability ratchet, and #734 defers reachability bookkeeping
@@ -104,7 +104,12 @@ class _GateRoute(enum.Enum):
 
 
 class GraphPipelineExecutor:
-    """Drive a PipelineGraph to completion."""
+    """Compatibility-only legacy executor retained as a parity oracle.
+
+    New product code must use :class:`CanonicalGraphPipelineExecutor`. This
+    class has no canonical Run identity and cannot be a production scheduler;
+    it remains importable only for migration comparisons and old integrations.
+    """
 
     def __init__(
         self,
@@ -694,7 +699,7 @@ def _project_canonical_record(run: Any, record: DurableRunRecord) -> None:
 
 
 def _stage_status(value: str) -> Any:
-    # Local import avoids a module cycle: pipeline imports GraphPipelineExecutor.
+    # Local import avoids a module cycle: pipeline imports the canonical adapter.
     from maistro.builders.pipeline import StageStatus
 
     return StageStatus(value)
@@ -749,6 +754,8 @@ class CanonicalGraphPipelineExecutor:
             provenance=provenance,
             initial_status=RunStatus.QUEUED,
         )
+        # These are receipt links only; canonical records remain authoritative.
+        run.canonical_graph_id = canonical.graph_id
         run.canonical_run_id = admitted.run_id
         # Compatibility projection only. Canonical Run/NodeRun/Attempt remain
         # authoritative for lifecycle; legacy hooks may still inspect this receipt.
