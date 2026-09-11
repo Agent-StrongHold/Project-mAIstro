@@ -1,8 +1,8 @@
 """Bootstrap operator-declared model Bindings into one canonical effect context.
 
-Provider discovery and authorization are deliberately separate. A configured
-model becomes selectable only after an explicit Workspace/Project Binding is
-loaded here; no Provider registry entry auto-authorizes itself.
+Provider discovery and authorization are separate concerns. A configured model
+becomes selectable only after an explicit Workspace/Project Binding is loaded;
+a graph node cannot authorize itself by naming a model or a generated id.
 """
 
 from __future__ import annotations

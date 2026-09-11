@@ -177,9 +177,9 @@ class AgentConfig(BaseModel):
     rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
     model_groups: dict[str, dict[str, object]] = Field(default_factory=dict)
-    # Explicit canonical model authorizations loaded by create_container (#1079).
-    # Empty by default: configuring a Provider/model does not itself grant any
-    # Workspace/Project the right to invoke it.
+    # Provider discovery never grants model.chat authorization by itself.
+    # Explicit canonical authorizations are loaded by create_container (#1079);
+    # the empty default grants no Workspace/Project invocation rights.
     model_bindings: list[ModelBindingConfig] = Field(default_factory=list)
     database_url: str = ""
     # The Workspace this instance admits work into (#41). Core keeps the soft

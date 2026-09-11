@@ -330,9 +330,17 @@ TOOLS = {
 }
 
 
-async def dispatch_tool(tool_name: str, tool_args: dict[str, Any]) -> Any:
-    """The ``(tool_name, tool_args)`` dispatcher maistro's strategies call.
+async def dispatch_tool(
+    tool_name: str,
+    tool_args: dict[str, Any],
+    *,
+    model_call: ModelCall | None = None,
+) -> Any:
+    """Dispatch a tool, forwarding model work to the caller's governed seam.
 
+    The ordinary two-argument factory contract remains intact. Canonical DAG
+    adapters may supply ``model_call`` so clarify and grounded search share the
+    node's Invocation correlation; without it, model-backed fallbacks refuse.
     This is the executor half of the factory's tool seam (#840 Slice 5,
     ADR-082526-3ca6: the runtime that owns the agents owns their tools): the
     bridge passes this function to ``create_agents``, so an agent whose
@@ -346,9 +354,11 @@ async def dispatch_tool(tool_name: str, tool_args: dict[str, Any]) -> Any:
     """
     try:
         if tool_name == "web_search":
+            search_kwargs = {"model_call": model_call} if model_call is not None else {}
             return await web_search(
                 str(tool_args.get("query", "")),
                 int(tool_args.get("max_results", 5) or 5),
+                **search_kwargs,
             )
         if tool_name == "browse_url":
             return await browse_url(
@@ -356,9 +366,11 @@ async def dispatch_tool(tool_name: str, tool_args: dict[str, Any]) -> Any:
                 str(tool_args.get("task", "Extract key facts and quotes")),
             )
         if tool_name == "clarify":
+            clarify_kwargs = {"model_call": model_call} if model_call is not None else {}
             return await clarify(
                 list(tool_args.get("questions", []) or []),
                 dict(tool_args.get("context", {}) or {}),
+                **clarify_kwargs,
             )
     except (TypeError, ValueError) as exc:
         return f"Error: bad arguments for tool '{tool_name}': {exc}"
