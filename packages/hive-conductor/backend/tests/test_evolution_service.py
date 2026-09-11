@@ -260,6 +260,59 @@ def test_run_one_cycle_dispatches_canonical_graph(
     assert captured["cycle_number"] == 1
 
 
+@pytest.mark.asyncio
+async def test_racing_manual_and_background_cycles_are_serialized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.evolution_graph as evolution_graph
+    from services.evolution import _EvolutionService
+
+    from maistro.runs.model import RunStatus
+
+    class _StubPop:
+        def list_all(self) -> list[Any]:
+            return []
+
+    class _StubTour:
+        pass
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    active = 0
+    peak_active = 0
+    calls = 0
+
+    async def _canonical(**_: Any) -> Any:
+        nonlocal active, peak_active, calls
+        calls += 1
+        active += 1
+        peak_active = max(peak_active, active)
+        entered.set()
+        await release.wait()
+        active -= 1
+        return SimpleNamespace(
+            run_id=f"canonical-evolve-run-{calls}",
+            run=SimpleNamespace(status=RunStatus.COMPLETED, error=None),
+        )
+
+    monkeypatch.setattr(evolution_graph, "run_canonical_evolution_cycle", _canonical)
+    service = _EvolutionService()
+    service._population = _StubPop()
+    service._tournament = _StubTour()
+
+    first = asyncio.create_task(service._run_one_cycle())
+    await entered.wait()
+    second = asyncio.create_task(service._run_one_cycle())
+    await asyncio.sleep(0)
+    assert calls == 1
+    assert peak_active == 1
+
+    release.set()
+    assert await first == "canonical-evolve-run-1"
+    assert await second == "canonical-evolve-run-2"
+    assert service.cycle_count == 2
+
+
 def test_run_one_cycle_does_not_count_failed_canonical_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

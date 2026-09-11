@@ -226,6 +226,54 @@ async def test_cycle_is_one_run_with_evaluation_battle_finalization_attempts(
 
 
 @pytest.mark.asyncio
+async def test_seeding_during_evaluation_cannot_expand_frozen_pair_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _SeedingHarness(_Harness):
+        def __init__(self) -> None:
+            self._seeded = False
+
+        async def evaluate_genome(
+            self,
+            genome: _Genome,
+            benchmarks: list[str],
+            llm_call: Any,
+        ):
+            if not self._seeded:
+                population.add(_Genome("seeded"))
+                seeded = population.get("seeded")
+                assert seeded is not None
+                seeded.eval_scores["proxy"] = 0.99
+                self._seeded = True
+            return await super().evaluate_genome(genome, benchmarks, llm_call)
+
+    monkeypatch.setattr(cycle_module, "EvolutionCycle", _Cycle)
+    population = _Population([_Genome("g1"), _Genome("g2")])
+    owner = await _container()
+
+    record = await run_canonical_evolution_cycle(
+        population=population,
+        tournament=_Tournament(),
+        config=_config(population_size=3, eval_batch_size=2),
+        harness=_SeedingHarness(),
+        container=owner,
+    )
+
+    stored = await owner.run_store.get_run(record.run_id)
+    assert stored is not None
+    assert stored.provenance["evolve_membership_ids"] == ["g1", "g2"]
+    assert stored.provenance["evolve_battle_capacity"] == 1
+    plan = next(
+        item
+        for item in await owner.run_store.list_node_runs(record.run_id)
+        if item.node_id == "evolve-plan-pairs"
+    )
+    assert plan.result["pairs"] == [["g1", "g2"]]
+    assert all("seeded" not in pair for pair in plan.result["pairs"])
+    assert record.run.status is RunStatus.COMPLETED
+
+
+@pytest.mark.asyncio
 async def test_multiple_battle_nodes_finish_before_finalization(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from routes.evolution import _actor_principal_id, trigger_cycle
+from routes.evolution import SeedPopulationBody, _actor_principal_id, seed_population, trigger_cycle
 from services.evolution import _EvolutionService
 from services.evolution_graph import (
     _append_execution_ref,
@@ -54,6 +54,27 @@ def test_actor_provenance_and_cycle_run_id_projection(monkeypatch: pytest.Monkey
     assert captured["actor_principal_id"] == "user-1"
 
 
+def test_seed_route_uses_the_serialized_service_admission() -> None:
+    captured: dict[str, int] = {}
+
+    class _Service:
+        async def seed_population(self, count: int) -> tuple[int, int]:
+            captured["count"] = count
+            return 2, 5
+
+    import services.evolution as evolution_service
+
+    previous = evolution_service._service
+    evolution_service._service = _Service()
+    try:
+        response = asyncio.run(seed_population(SeedPopulationBody(count=4)))
+    finally:
+        evolution_service._service = previous
+
+    assert response == {"seeded": 2, "population_size": 5}
+    assert captured == {"count": 4}
+
+
 def test_run_one_cycle_rejects_half_initialized_domain_state() -> None:
     service = _EvolutionService()
     service._population = SimpleNamespace()
@@ -96,6 +117,22 @@ def test_execution_refs_ignore_malformed_history_and_do_not_duplicate_attempts()
         if isinstance(item, dict) and item.get("attempt_id") == "attempt-1"
     ]
     assert len(matching) == 1
+
+
+def test_tournament_work_rejects_pair_plan_beyond_graph_capacity() -> None:
+    population = SimpleNamespace(
+        get=lambda genome_id: SimpleNamespace(id=genome_id, eval_scores={"proxy": 1.0}),
+        list_all=lambda: [],
+    )
+    work = _TournamentWork(
+        cycle=SimpleNamespace(tournament=SimpleNamespace()),
+        population=population,
+        membership_ids=["g1", "g2", "g3", "g4"],
+        battle_slots=1,
+    )
+
+    with pytest.raises(RuntimeError, match="no successor"):
+        work.run_pair(_BattleInput(pairs=[("g1", "g2"), ("g3", "g4")]))
 
 
 def test_tournament_work_rejects_corrupt_persisted_pair_work() -> None:
