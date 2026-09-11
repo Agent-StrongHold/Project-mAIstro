@@ -78,6 +78,14 @@ or placeholder-only section.
   (no production embedding client is constructed, so the column stays NULL);
   the matrix no longer claims scoped pgvector recall is live.
 
+- **`derive_run_terminal_status`'s `work_owed` is now a required keyword
+  argument (#1188).** The previous `work_owed: bool = False` default let a
+  caller that forgot to pass it derive `COMPLETED` from an empty NodeRun
+  collection, silently treating "no observations yet" as "there was never any
+  work to observe." Both current production callers already passed it
+  explicitly and are unaffected; a caller that omits it now gets a
+  `TypeError` at the call site instead of a wrong terminal status at runtime.
+
 ### Fixed
 
 - **Successful NodeRuns require accepted physical evidence (#1153).** New
