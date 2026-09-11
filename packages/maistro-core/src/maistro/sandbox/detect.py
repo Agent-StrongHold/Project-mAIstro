@@ -104,6 +104,14 @@ def _bubblewrap_isolates(bwrap: str) -> tuple[bool, str]:
     So the probe runs the same unshares the backend runs. What it proves is
     narrow and deliberate -- that the namespace can be created, not that it
     contains anything -- because that is the part hosts actually differ on.
+
+    It runs under the same rlimits `exec` pins onto `bwrap` (#1235):
+    `resource_limits` lands on the bwrap process itself between fork and
+    exec, and on a host whose UID task count already exceeds the
+    `RLIMIT_NPROC` budget the namespace clone fails there with EAGAIN. A
+    probe that ran un-budgeted would evidence a tier the spawn cannot
+    reproduce -- the exact claim-a-boundary-you-cannot-build failure this
+    probe exists to prevent.
     """
     truth = shutil.which("true")
     if truth is None:  # pragma: no cover - a host without coreutils
@@ -126,12 +134,23 @@ def _bubblewrap_isolates(bwrap: str) -> tuple[bool, str]:
             argv += ["--ro-bind", path, path]
     argv += ["--", truth]
 
+    # Imported here rather than at module level: the backend imports this
+    # module's `BUBBLEWRAP_BINARY`, so a module-level edge would be a cycle.
+    from maistro.sandbox.backends.bubblewrap import preexec_for, resource_limits
+    from maistro.sandbox.protocol import SandboxConfig
+
+    # Same budgets spawn enforces, so the probe's "yes" is one the sandbox
+    # can reproduce. Nothing else about the probe changes: still fixed argv,
+    # no shell, no user input, still bounded by the wall-clock timeout.
+    preexec = preexec_for(resource_limits(SandboxConfig()))
+
     try:
         completed = subprocess.run(  # nosec B603 — fixed argv, no shell, no user input
             argv,
             capture_output=True,
             timeout=PROBE_TIMEOUT_S,
             check=False,
+            preexec_fn=preexec,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return False, f"bubblewrap probe could not run: {exc}"

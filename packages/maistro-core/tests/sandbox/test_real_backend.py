@@ -36,19 +36,23 @@ from maistro.sandbox.backends.bubblewrap import (
 )
 from maistro.sandbox.backends.fake import FakeSandboxBackend
 from maistro.sandbox.network import EgressGrant, EgressMode
-from maistro.sandbox.policy import WorkloadPolicy
+from maistro.sandbox.policy import IsolationTier, WorkloadPolicy
 
 #: Capability, not binary presence. A host can have `bwrap` on PATH and be
 #: unable to build the namespace with it -- Ubuntu 24.04 restricting
 #: unprivileged user namespaces is the case that taught us -- and a suite
-#: keyed on `which` would run the kernel assertions there and fail.
-HAS_BWRAP = detect_host_capabilities().supports("bubblewrap")
-requires_bwrap = pytest.mark.skipif(
-    HAS_BWRAP is False, reason="this host cannot build a bubblewrap sandbox"
-)
+#: keyed on `which` would run the kernel assertions there and fail. The skip
+#: reason carries the probe's own note, so a host that fails under the
+#: enforced rlimits (#1235) reports *why* instead of a bare "skipped".
+_capabilities = detect_host_capabilities()
+HAS_BWRAP = _capabilities.supports("bubblewrap")
+_BWRAP_SKIP_REASON = "this host cannot build a bubblewrap sandbox"
+if not HAS_BWRAP and _capabilities.notes.get("bubblewrap"):
+    _BWRAP_SKIP_REASON += f": {_capabilities.notes['bubblewrap']}"
+requires_bwrap = pytest.mark.skipif(HAS_BWRAP is False, reason=_BWRAP_SKIP_REASON)
 
 
-def _caps(*tiers: str) -> HostCapabilities:
+def _caps(*tiers: IsolationTier) -> HostCapabilities:
     return HostCapabilities(tiers=tuple(tiers), notes={})
 
 
@@ -419,6 +423,98 @@ def test_a_probe_that_cannot_run_at_all_is_not_a_tier(
 
     assert not caps.supports("bubblewrap")
     assert "could not run" in caps.notes["bubblewrap"]
+
+
+# --- the probe evidences Tier 3 under the budgets spawn enforces (#1235) ------
+
+
+def test_the_probe_runs_bwrap_under_the_spawn_budgets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The defect this closes: the probe ran un-budgeted while `exec` pinned
+    `resource_limits` onto `bwrap` itself between fork and exec. On a host
+    whose UID task count already exceeded the `RLIMIT_NPROC` budget the probe
+    said Tier 3 and every spawn failed with EAGAIN at namespace clone. The
+    probe must not pass a test the sandbox will fail."""
+    import subprocess
+
+    from maistro.sandbox import detect
+    from maistro.sandbox.backends import bubblewrap as bwrap_module
+    from maistro.sandbox.backends.bubblewrap import resource_limits
+
+    applied: dict[int, tuple[int, int]] = {}
+    calls: list[dict[str, object]] = []
+
+    def _record_setrlimit(which: int, limits: tuple[int, int]) -> None:
+        applied[which] = limits
+
+    def _fake_run(*_args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        calls.append(kwargs)
+        preexec = kwargs.get("preexec_fn")
+        assert callable(preexec)
+        # Resolves through the monkeypatched setrlimit, so nothing real is
+        # applied to the test process -- only recorded.
+        preexec()
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(detect, "_which", lambda binary: "/usr/bin/bwrap")
+    monkeypatch.setattr(detect.subprocess, "run", _fake_run)
+    monkeypatch.setattr(bwrap_module.resource, "setrlimit", _record_setrlimit)
+
+    caps = detect.detect_host_capabilities()
+
+    assert caps.supports("bubblewrap")
+    assert len(calls) == 1
+    assert applied == resource_limits(SandboxConfig())
+
+
+def test_the_shared_preexec_hook_applies_exactly_the_limits_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One hook for `exec` and the probe, so the two cannot drift apart."""
+    import resource
+
+    from maistro.sandbox.backends.bubblewrap import preexec_for
+
+    applied: dict[int, tuple[int, int]] = {}
+
+    def _record_setrlimit(which: int, limits: tuple[int, int]) -> None:
+        applied[which] = limits
+
+    monkeypatch.setattr(resource, "setrlimit", _record_setrlimit)
+
+    preexec_for({resource.RLIMIT_NOFILE: (64, 128)})()
+
+    assert applied == {resource.RLIMIT_NOFILE: (64, 128)}
+
+
+def test_an_eagain_namespace_failure_is_reported_as_an_absent_tier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The deterministic form of the #1235 reproduction, unitized: under the
+    enforced budgets `bwrap` fails at clone with EAGAIN, and that must read
+    as "Tier 3 absent, here is the stderr" -- not as a spawn-time surprise
+    after the policy check believed it had a boundary."""
+    import subprocess
+
+    from maistro.sandbox import detect
+
+    monkeypatch.setattr(detect, "_which", lambda binary: "/usr/bin/bwrap")
+    monkeypatch.setattr(
+        detect.subprocess,
+        "run",
+        lambda *_a, **_k: subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout=b"",
+            stderr=b"bwrap: Creating new namespace failed: Resource temporarily unavailable\n",
+        ),
+    )
+
+    caps = detect.detect_host_capabilities()
+
+    assert not caps.supports("bubblewrap")
+    assert "Resource temporarily unavailable" in caps.notes["bubblewrap"]
 
 
 # --- the operator entry point -------------------------------------------------
