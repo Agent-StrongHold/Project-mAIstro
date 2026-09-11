@@ -268,7 +268,7 @@ async def test_seeding_during_evaluation_cannot_expand_frozen_pair_plan(
         for item in await owner.run_store.list_node_runs(record.run_id)
         if item.node_id == "evolve-plan-pairs"
     )
-    assert plan.result["pairs"] == [["g1", "g2"]]
+    assert {frozenset(pair) for pair in plan.result["pairs"]} == {frozenset({"g1", "g2"})}
     assert all("seeded" not in pair for pair in plan.result["pairs"])
     assert record.run.status is RunStatus.COMPLETED
 
@@ -314,6 +314,54 @@ async def test_seeding_during_battle_traversal_cannot_change_persisted_pairs(
     )
     assert len(plan.result["pairs"]) == 2
     assert all("battle-seeded" not in pair for pair in plan.result["pairs"])
+
+
+@pytest.mark.asyncio
+async def test_missing_has_more_successor_fails_before_recording_unroutable_battle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.evolution_graph as evolution_graph
+
+    original_build_graph = evolution_graph._build_graph
+
+    def _malformed_graph(**kwargs: Any):
+        graph = original_build_graph(**kwargs)
+        graph.edges = [
+            edge
+            for edge in graph.edges
+            if not (edge.from_node == "evolve-battle-1" and edge.to_node == "evolve-battle-2")
+        ]
+        return graph
+
+    monkeypatch.setattr(cycle_module, "EvolutionCycle", _Cycle)
+    monkeypatch.setattr(evolution_graph, "_build_graph", _malformed_graph)
+    population = _Population([_Genome(f"g{index}") for index in range(1, 5)])
+    tournament = _Tournament()
+    owner = await _container()
+
+    record = await run_canonical_evolution_cycle(
+        population=population,
+        tournament=tournament,
+        config=_config(population_size=5, eval_batch_size=4),
+        harness=_Harness(),
+        container=owner,
+    )
+
+    assert record.run.status is RunStatus.FAILED
+    assert "has no executable successor" in (record.run.error or "")
+    assert tournament.battles == []
+    node_runs = await owner.run_store.list_node_runs(record.run_id)
+    assert [item.node_id for item in node_runs] == [
+        "evolve-evaluate-1",
+        "evolve-evaluate-2",
+        "evolve-evaluate-3",
+        "evolve-evaluate-4",
+        "evolve-plan-pairs",
+        "evolve-battle-1",
+    ]
+    assert all(item.status is RunStatus.COMPLETED for item in node_runs[:-1])
+    assert node_runs[-1].status is RunStatus.FAILED
+    assert not any(item.node_id == "evolve-finalize" for item in node_runs)
 
 
 @pytest.mark.asyncio

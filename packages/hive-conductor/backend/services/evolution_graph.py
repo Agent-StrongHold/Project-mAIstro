@@ -324,10 +324,29 @@ class _BattleNode(BaseNode[_BattleInput, _BattleOutput]):
     display_name: ClassVar[str] = "Run Evolve tournament pair"
     description: ClassVar[str] = "Record one persisted tournament pair as canonical work."
 
-    def __init__(self, tournament_work: _TournamentWork) -> None:
+    def __init__(
+        self,
+        tournament_work: _TournamentWork,
+        *,
+        has_more_successor: bool,
+        completion_successor: bool,
+    ) -> None:
         self._tournament_work = tournament_work
+        self._has_more_successor = has_more_successor
+        self._completion_successor = completion_successor
 
     async def _execute(self, inputs: _BattleInput, ctx: NodeContext) -> _BattleOutput:
+        has_more = inputs.pair_index + 1 < len(inputs.pairs)
+        if has_more and not self._has_more_successor:
+            raise RuntimeError(
+                "tournament battle returned has_more=True but has no executable successor"
+            )
+        if not has_more and not self._completion_successor:
+            raise RuntimeError(
+                "tournament battle completed without an executable finalization successor"
+            )
+        # Validate graph capacity before recording tournament evidence so a
+        # malformed immutable graph cannot leave a domain battle half-applied.
         return self._tournament_work.run_pair(inputs)
 
 
@@ -621,7 +640,6 @@ def _resolver(
         llm_call=llm_call,
     )
     pair_plan = _PairPlanNode(tournament_work)
-    battle = _BattleNode(tournament_work)
     finalize = _FinalizeNode(
         cycle=cycle,
         population=population,
@@ -638,7 +656,17 @@ def _resolver(
         if spec.node_type == _PAIR_KIND:
             return pair_plan
         if spec.node_type == _BATTLE_KIND:
-            return battle
+            return _BattleNode(
+                tournament_work,
+                has_more_successor=any(
+                    edge.from_node == node_id and edge.condition == "has_more == True"
+                    for edge in graph.edges
+                ),
+                completion_successor=any(
+                    edge.from_node == node_id and edge.condition == "has_more == False"
+                    for edge in graph.edges
+                ),
+            )
         if spec.node_type == _FINALIZE_KIND:
             return finalize
         raise KeyError(f"unsupported evolution node type {spec.node_type!r}")
