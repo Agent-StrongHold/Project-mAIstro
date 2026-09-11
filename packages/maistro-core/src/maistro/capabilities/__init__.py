@@ -32,9 +32,11 @@ from maistro.capabilities.invocation import (
     InvocationStatus,
     ProviderReconciliationAdapter,
     ReconciliationDisposition,
+    StaleInvocationUpdate,
     UnsafeEffectRetry,
 )
 from maistro.capabilities.invocation_store import SqliteInvocationStore
+from maistro.capabilities.pg_invocation_store import PgInvocationStore
 from maistro.capabilities.protocols import CapabilityProvider
 from maistro.capabilities.providers.harness_safety import (
     ActionGate,
@@ -98,6 +100,7 @@ __all__ = [
     "InvocationReconciliationEvidence",
     "InvocationStatus",
     "OpencodeHarnessRunner",
+    "PgInvocationStore",
     "ProviderHealth",
     "ProviderReconciliationAdapter",
     "ReconciliationDisposition",
@@ -107,6 +110,7 @@ __all__ = [
     "SlotSpec",
     "SqliteApprovalStore",
     "SqliteInvocationStore",
+    "StaleInvocationUpdate",
     "SubprocessHarnessRunner",
     "Unavailable",
     "UnsafeEffectRetry",

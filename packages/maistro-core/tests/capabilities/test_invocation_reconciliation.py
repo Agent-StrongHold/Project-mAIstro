@@ -111,6 +111,7 @@ async def test_crash_after_provider_success_is_discoverable_and_settles_applied(
         result={"remote_id": "remote-1"},
         workspace_id="workspace-1",
         project_id="project-1",
+        stale_before=datetime.now(UTC),
     )
     assert settled.status is InvocationStatus.COMPLETED
     audit = settled.reconciliation_history[-1]
@@ -134,6 +135,60 @@ async def test_crash_after_provider_success_is_discoverable_and_settles_applied(
         executor=execute,
     )
     assert replay.result == {"remote_id": "remote-1"}
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_cannot_release_a_live_dispatch() -> None:
+    store = InMemoryInvocationStore()
+    service = InvocationExecutionService(store=store)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def still_running(_provider: Any, _request: Any) -> str:
+        nonlocal calls
+        calls += 1
+        started.set()
+        await release.wait()
+        return "committed"
+
+    task = asyncio.create_task(
+        service.invoke(
+            binding=_binding(),
+            run_id="run-live",
+            node_run_id="node-live",
+            attempt_id="attempt-1",
+            effect_key="write:live",
+            request={"id": "remote-live"},
+            resolver=_resolver,
+            executor=still_running,
+        )
+    )
+    await started.wait()
+    running = (
+        await store.list_effect(
+            run_id="run-live",
+            node_run_id="node-live",
+            binding_id="binding-1",
+            effect_key="write:live",
+        )
+    )[0]
+    with pytest.raises(UnsafeEffectRetry, match="still being dispatched"):
+        await InvocationExecutionService(store=store).reconcile(
+            running.invocation_id,
+            disposition=ReconciliationDisposition.NOT_APPLIED,
+            source="operator",
+            actor="operator-1",
+            reason="premature absence check",
+            evidence={"receipt": "absent"},
+            workspace_id="workspace-1",
+            project_id="project-1",
+            stale_before=datetime.now(UTC) + timedelta(seconds=1),
+        )
+    release.set()
+    completed = await task
+    assert completed.status is InvocationStatus.COMPLETED
     assert calls == 1
 
 
@@ -188,6 +243,7 @@ async def test_sqlite_reopen_keeps_ambiguous_evidence_reconciliation(tmp_path: P
             result={"remote_id": "remote-sqlite"},
             workspace_id="workspace-1",
             project_id="project-1",
+            stale_before=datetime.now(UTC),
         )
         assert settled.status is InvocationStatus.COMPLETED
 

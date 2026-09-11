@@ -76,9 +76,9 @@ class GovernedInvocationExecutionService:
     REQUIRE_APPROVAL is keyed to the logical effect so a later Attempt reuses
     the same durable human decision rather than manufacturing another request.
 
-    Unreached in production, like the service it wraps: no policy verdict
-    recorded here has ever gated a live provider call, and no approval this
-    would key has ever been requested of a human (#55).
+    The container composes this wrapper for canonical effect consumers. Policy
+    events and approvals remain governed side effects; neither path may bypass
+    the Invocation service or its effect identity.
     """
 
     def __init__(
@@ -128,6 +128,7 @@ class GovernedInvocationExecutionService:
         workspace_id: str,
         project_id: str,
         result: Any | None = None,
+        stale_before: datetime | None = None,
     ) -> Invocation:
         """Resolve evidence without creating a provider-dispatch bypass."""
 
@@ -141,16 +142,21 @@ class GovernedInvocationExecutionService:
             workspace_id=workspace_id,
             project_id=project_id,
             result=result,
+            stale_before=stale_before,
         )
 
     async def reconcile_with_provider(
         self,
         invocation_id: str,
         adapter: ProviderReconciliationAdapter,
+        *,
+        stale_before: datetime | None = None,
     ) -> Invocation:
         """Delegate provider evidence while retaining Invocation authority."""
 
-        return await self._invocations.reconcile_with_provider(invocation_id, adapter)
+        return await self._invocations.reconcile_with_provider(
+            invocation_id, adapter, stale_before=stale_before
+        )
 
     async def invoke(
         self,

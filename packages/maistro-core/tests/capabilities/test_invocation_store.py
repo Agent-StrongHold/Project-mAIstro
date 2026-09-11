@@ -12,6 +12,7 @@ from maistro.capabilities.invocation import (
     UnsafeEffectRetry,
 )
 from maistro.capabilities.invocation_store import SqliteInvocationStore
+from maistro.container import _wire_capability_invocations
 
 
 class _Provider:
@@ -103,6 +104,13 @@ async def test_sqlite_store_serializes_active_effect_creation_across_connections
     )
     assert len(history) == 1
     assert calls == 3
+
+
+async def test_container_wires_capability_store_to_sqlite_connection() -> None:
+    async with aiosqlite.connect(":memory:") as conn:
+        store = await _wire_capability_invocations(pg_pool=None, db_pool=conn)
+        assert isinstance(store, SqliteInvocationStore)
+        await store.ensure_schema()
 
 
 async def test_sqlite_store_preserves_effect_and_resolved_provider_across_reopen(tmp_path) -> None:

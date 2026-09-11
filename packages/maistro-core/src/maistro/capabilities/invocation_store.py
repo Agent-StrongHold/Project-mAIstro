@@ -1,17 +1,14 @@
 """Durable persistence adapters for canonical capability Invocations.
 
-**Unreached, and durable only in the SQLite sense.** Nothing constructs
-:class:`SqliteInvocationStore` outside tests. The container does wire a class of
-the same name -- :class:`maistro.events.invocations.SqliteInvocationStore`, a
-different store over a different table -- and both are re-exported from
-:mod:`maistro.capabilities`, so the collision is easy to read the wrong way
-round. The wired one is the events store; this one is not wired.
+This is the SQLite durable adapter for the canonical capability Invocation
+lifecycle. It is distinct from ``maistro.events.invocations.SqliteInvocationStore``,
+which stores handler invocations for the event subsystem. The container selects
+this store for SQLite-backed capability effects; PostgreSQL uses
+``maistro.capabilities.pg_invocation_store.PgInvocationStore``.
 
-Its table has no migration. ``capability_invocations`` is created by
-``ensure_schema`` and appears in no revision under ``alembic/versions``, so it
-does not exist in any PostgreSQL deployment and there is no PostgreSQL twin of
-this store. That is a consequence of being unreached, not an omission to fix
-separately: the migration lands with the wiring, in #55.
+The schema is also represented by Alembic revision 034. ``ensure_schema`` keeps
+fresh SQLite databases and existing local databases compatible while the
+migration remains the deployment source of truth for PostgreSQL.
 """
 
 from __future__ import annotations
@@ -21,7 +18,12 @@ import sqlite3
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from maistro.capabilities.invocation import Invocation, InvocationStatus, UnsafeEffectRetry
+from maistro.capabilities.invocation import (
+    Invocation,
+    InvocationStatus,
+    StaleInvocationUpdate,
+    UnsafeEffectRetry,
+)
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -36,6 +38,7 @@ CREATE TABLE IF NOT EXISTS capability_invocations (
     binding_id TEXT NOT NULL,
     effect_key TEXT NOT NULL,
     status TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 0,
     created_at REAL NOT NULL,
     payload_json TEXT NOT NULL
 );
@@ -60,6 +63,11 @@ class SqliteInvocationStore:
 
     async def ensure_schema(self) -> None:
         await self._conn.executescript(_SCHEMA)
+        columns = await self._conn.execute("PRAGMA table_info(capability_invocations)")
+        if "revision" not in {str(row[1]) for row in await columns.fetchall()}:
+            await self._conn.execute(
+                "ALTER TABLE capability_invocations ADD COLUMN revision INTEGER NOT NULL DEFAULT 0"
+            )
         await self._conn.commit()
 
     async def create(self, invocation: Invocation) -> Invocation:
@@ -94,8 +102,8 @@ class SqliteInvocationStore:
                 await self._conn.execute(
                     """INSERT INTO capability_invocations (
                         invocation_id, run_id, node_run_id, attempt_id, binding_id,
-                        effect_key, status, created_at, payload_json
-                    ) VALUES (?,?,?,?,?,?,?,?,?)""",
+                        effect_key, status, revision, created_at, payload_json
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?)""",
                     self._row_values(invocation),
                 )
                 await self._conn.commit()
@@ -124,8 +132,8 @@ class SqliteInvocationStore:
             cursor = await self._conn.execute(
                 """UPDATE capability_invocations SET
                     run_id = ?, node_run_id = ?, attempt_id = ?, binding_id = ?,
-                    effect_key = ?, status = ?, created_at = ?, payload_json = ?
-                   WHERE invocation_id = ?""",
+                    effect_key = ?, status = ?, revision = ?, created_at = ?, payload_json = ?
+                   WHERE invocation_id = ? AND revision = ?""",
                 (
                     invocation.run_id,
                     invocation.node_run_id,
@@ -133,16 +141,25 @@ class SqliteInvocationStore:
                     invocation.binding.binding_id,
                     invocation.effect_key,
                     invocation.status.value,
+                    invocation.revision + 1,
                     invocation.created_at.timestamp(),
-                    invocation.model_dump_json(),
+                    invocation.model_copy(
+                        update={"revision": invocation.revision + 1}
+                    ).model_dump_json(),
                     invocation.invocation_id,
+                    invocation.revision,
                 ),
             )
             if cursor.rowcount != 1:
+                current = await self.get(invocation.invocation_id)
                 await self._conn.rollback()
-                raise KeyError(f"Invocation {invocation.invocation_id!r} does not exist")
+                if current is None:
+                    raise KeyError(f"Invocation {invocation.invocation_id!r} does not exist")
+                raise StaleInvocationUpdate(
+                    f"Invocation {invocation.invocation_id!r} was updated concurrently"
+                )
             await self._conn.commit()
-        return invocation.model_copy(deep=True)
+        return invocation.model_copy(update={"revision": invocation.revision + 1}, deep=True)
 
     async def list_effect(
         self,
@@ -194,6 +211,7 @@ class SqliteInvocationStore:
             invocation.binding.binding_id,
             invocation.effect_key,
             invocation.status.value,
+            invocation.revision,
             invocation.created_at.timestamp(),
             invocation.model_dump_json(),
         )
