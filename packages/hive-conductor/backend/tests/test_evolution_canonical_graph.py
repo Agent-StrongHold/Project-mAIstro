@@ -6,7 +6,13 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from services.evolution_graph import _evaluate_one, run_canonical_evolution_cycle
+from services.evolution_graph import (
+    _BattleInput,
+    _evaluate_one,
+    _finalize_cycle,
+    _TournamentWork,
+    run_canonical_evolution_cycle,
+)
 
 import maistro_evolve.cycle as cycle_module
 from maistro.graph.durable_runs import (
@@ -310,6 +316,37 @@ async def test_failed_model_effect_does_not_publish_evaluation_mutation() -> Non
 
     assert genome.eval_scores == {}
     assert genome.harness_params == {}
+
+
+@pytest.mark.asyncio
+async def test_replayed_battle_and_finalize_nodes_do_not_repeat_domain_mutations() -> None:
+    """Recovery of one logical NodeRun is at-most-once for domain mutations."""
+    population = _Population([_Genome("g1"), _Genome("g2")])
+    for genome in population.list_all():
+        genome.eval_scores["proxy"] = 0.5
+    tournament = _Tournament()
+    cycle = _Cycle(harness=_Harness(), tournament=tournament)
+    work = _TournamentWork(cycle=cycle, population=population)
+    battle_inputs = _BattleInput(pairs=[("g1", "g2")], pair_index=0)
+    context = NodeContext(
+        run_id="run-recovery",
+        dag_id="graph-recovery",
+        node_id="evolve-battle-1",
+        node_run_id="battle-node-run",
+        attempt_id="attempt-1",
+    )
+
+    first = work.run_pair(battle_inputs, context)
+    second = work.run_pair(battle_inputs, context)
+    assert first == second
+    assert len(tournament.battles) == 1
+
+    config = _config(population_size=2, eval_batch_size=0)
+    finalized = await _finalize_cycle(cycle, population, config, None, "finalize-node-run")
+    cycle_count = cycle._cycle_count
+    replayed = await _finalize_cycle(cycle, population, config, None, "finalize-node-run")
+    assert finalized == replayed
+    assert cycle._cycle_count == cycle_count
 
 
 @pytest.mark.asyncio

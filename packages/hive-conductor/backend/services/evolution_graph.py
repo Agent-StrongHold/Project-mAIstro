@@ -234,6 +234,13 @@ class _TournamentWork:
     def __init__(self, *, cycle: Any, population: Any) -> None:
         self._cycle = cycle
         self._population = population
+        # The tournament object outlives a recovered Graph resolver in the
+        # shipped service, so completed logical pair NodeRuns can be replayed
+        # without applying Elo mutations twice.
+        self._completed_pairs: set[str] = getattr(
+            cycle.tournament, "_evolve_completed_pairs", set()
+        )
+        cycle.tournament._evolve_completed_pairs = self._completed_pairs
 
     def prepare(self) -> _PairPlanOutput:
         scored = [genome for genome in self._population.list_all() if genome.eval_scores]
@@ -249,7 +256,7 @@ class _TournamentWork:
             has_battles=bool(pairs),
         )
 
-    def run_pair(self, inputs: _BattleInput) -> _BattleOutput:
+    def run_pair(self, inputs: _BattleInput, ctx: NodeContext | None = None) -> _BattleOutput:
         if inputs.pair_index < 0 or inputs.pair_index >= len(inputs.pairs):
             raise RuntimeError(
                 "tournament graph requested a battle outside its persisted pair plan"
@@ -262,14 +269,17 @@ class _TournamentWork:
             raise ValueError("a tournament genome disappeared after pair selection")
 
         common = sorted(set(genome_a.eval_scores) & set(genome_b.eval_scores))
-        for benchmark in common:
-            self._cycle.tournament.record_battle(
-                benchmark=benchmark,
-                genome_a_id=genome_a.id,
-                genome_b_id=genome_b.id,
-                score_a=genome_a.eval_scores[benchmark],
-                score_b=genome_b.eval_scores[benchmark],
-            )
+        completion_key = f"{ctx.node_run_id if ctx is not None else 'legacy'}:{inputs.pair_index}"
+        if completion_key not in self._completed_pairs:
+            for benchmark in common:
+                self._cycle.tournament.record_battle(
+                    benchmark=benchmark,
+                    genome_a_id=genome_a.id,
+                    genome_b_id=genome_b.id,
+                    score_a=genome_a.eval_scores[benchmark],
+                    score_b=genome_b.eval_scores[benchmark],
+                )
+            self._completed_pairs.add(completion_key)
 
         next_index = inputs.pair_index + 1
         return _BattleOutput(
@@ -307,7 +317,7 @@ class _BattleNode(BaseNode[_BattleInput, _BattleOutput]):
         self._tournament_work = tournament_work
 
     async def _execute(self, inputs: _BattleInput, ctx: NodeContext) -> _BattleOutput:
-        return self._tournament_work.run_pair(inputs)
+        return self._tournament_work.run_pair(inputs, ctx)
 
 
 def _source_evaluation_refs(population: Any, genome: Any) -> list[dict[str, str]]:
@@ -355,9 +365,15 @@ async def _finalize_cycle(
     population: Any,
     config: Any,
     llm_call: Any,
+    node_run_id: str,
 ) -> _FinalizeOutput:
     """Run post-tournament domain semantics without creating another lifecycle."""
     from maistro_evolve.population import IslandPopulation, migrate_islands
+
+    completed = getattr(population, "_evolve_completed_finalizations", {})
+    population._evolve_completed_finalizations = completed
+    if node_run_id in completed:
+        return _FinalizeOutput.model_validate(completed[node_run_id])
 
     before = {genome.id for genome in population.list_all()}
     _publish_tournament_elos(cycle, population)
@@ -394,10 +410,12 @@ async def _finalize_cycle(
             genome.harness_params["source_evaluation_runs"] = refs
             population.add(genome)
 
-    return _FinalizeOutput(
+    output = _FinalizeOutput(
         population_size=len(population.list_all()),
         new_genome_ids=new_ids,
     )
+    completed[node_run_id] = output.model_dump(mode="json")
+    return output
 
 
 class _FinalizeNode(BaseNode[_IgnoreInput, _FinalizeOutput]):
@@ -428,6 +446,7 @@ class _FinalizeNode(BaseNode[_IgnoreInput, _FinalizeOutput]):
             self._population,
             self._config,
             contextual_llm_call,
+            ctx.node_run_id,
         )
         _raise_model_failure(contextual_llm_call)
         return output
