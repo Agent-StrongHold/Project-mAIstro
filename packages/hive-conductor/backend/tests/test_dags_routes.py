@@ -193,6 +193,34 @@ def _install_route_workspace(workspace_id: str, user_id: str) -> None:
     )
 
 
+def test_created_dag_run_uses_one_canonical_run_for_history_projection(
+    admin_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The shipped role-shaped editor DAG is a valid registered descriptor."""
+    import stores
+    from services.dag_run_store import get_dag_run_store
+
+    workspace_id = "route-workspace"
+    container = _canonical_container(monkeypatch, workspace_id)
+    _install_route_workspace(workspace_id, "admin")
+    dag_id = _seed(admin_client)
+    saved = stores.dags[dag_id]
+    assert all(node["kind"] == "transform.alias_keys" for node in saved["nodes"])
+
+    response = admin_client.post(f"/v1/dags/{dag_id}/run?workspace_id={workspace_id}")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "completed"
+
+    run_id = body["run_id"]
+    canonical = asyncio.run(container.run_store.get_run(run_id))
+    projection = get_dag_run_store().get_run(run_id)
+    assert canonical is not None
+    assert projection is not None
+    assert projection["canonical_run_id"] == canonical.run_id == run_id
+    assert projection["status"] == canonical.status.value
+
+
 def test_run_dag_uses_one_canonical_run_for_history_projection(
     admin_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
