@@ -58,7 +58,36 @@ Ten tests in `packages/maistro-core/tests/tasks/test_requested_cancellation.py`:
 - `test_the_execution_registry_does_not_retain_finished_work` — unregistration
   runs from the done callback; no stale handle survives a completed task.
 
-Verified to bite: with the source fix reverse-applied (tests kept), four of
-these fail — the regression, the result-attachment defect, the spine
-disagreement, and the registry mechanism — and the four guard tests pass,
-matching the paths the transition refusal already protected.
+Verified to bite: with the source fix reverse-applied (tests kept), six of
+these fail — the regression, the settle-timeout honesty, the late-failure
+defect, the spine disagreement, the registry mechanism, and the
+result-attachment defect — and the four guard tests pass, matching the paths
+the transition refusal already protected.
+
+## Independent verification (head 10a49a14, 2026-09-10)
+
+Re-executed at the exact head, not taken from the implementing run:
+
+- `uv run pytest packages/maistro-core/tests/tasks/test_requested_cancellation.py -q`
+  → 10 passed.
+- `uv run pytest packages/maistro-core/tests/tasks -q` → 256 passed;
+  `packages/maistro-server/tests/api/test_tasks.py test_tasks_run_identity.py`
+  → 28 passed (DELETE /tasks/{id} → 400 on refused cancellation).
+- Bite check in a throwaway copy of the head with the `queue.py`/`runner.py`
+  hunks reverse-applied (tests kept): 6 failed / 4 passed, the six listed
+  above; the primary regression fails with the executor completing after
+  `cancel()` returned True.
+- `uv run ruff check .` clean; canonical six-package `uv run mypy` clean;
+  `scripts/check-suite-inventory.py --suite packages/maistro-core/tests` ok.
+- Full `packages/maistro-core/tests` on this host: 9475 passed; the 46
+  failures are environmental, both pre-existing and untouched by this diff —
+  21 bwrap sandbox probes (`Resource temporarily unavailable`: the backend
+  applies `RLIMIT_NPROC` to bwrap itself pre-exec, which fails under this
+  host's process load; CI documents the same class of bwrap namespace
+  failure) and 25 postgres-leg tests against the shared host container,
+  which runs PostgreSQL 16 below the `MIN_POSTGRES_VERSION = 17` floor that
+  the develop base already sets at `container.py:1798`. The postgres-leg
+  failures were additionally flaky run-to-run (shared container under
+  concurrent load) and pass when the container is quiet.
+- No premature GitHub closure keywords (`fixes/closes/resolves`) in any
+  commit message on 551c38b5..10a49a14.
