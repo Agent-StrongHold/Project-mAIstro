@@ -157,6 +157,16 @@ def default_effect_context() -> CapabilityEffectContext:
     return _process_effect_context
 
 
+def _clear_default_effect_context_cache() -> None:
+    """Compatibility hook for fixtures that previously used ``lru_cache``."""
+    global _process_effect_context
+    _process_effect_context = None
+
+
+# Keep the old fixture-facing cache API while retaining explicit process wiring.
+default_effect_context.cache_clear = _clear_default_effect_context_cache  # type: ignore[attr-defined]
+
+
 __all__ = [
     "CapabilityEffectContext",
     "build_effect_context",
