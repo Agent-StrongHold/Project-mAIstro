@@ -301,6 +301,115 @@ async def test_a_live_worker_keeps_its_attempt() -> None:
 
 
 @pytest.mark.asyncio
+async def test_one_transient_renewal_failure_does_not_mark_a_live_executor_dead() -> None:
+    """#1244's failure mode, and the regression for it.
+
+    One failed renewal used to end the heartbeat permanently while the
+    executor kept running in this process. The lease then lapsed through
+    nobody's death, and a reclaim sweep would settle a live Attempt -- the
+    double-execution window: recovery redispatches work whose physical try
+    never stopped. A transient store blip must cost one tick, not the lease;
+    only renewals failing for a full TTL is the genuine-death outcome
+    (ADR-082526-b36a) that reclamation exists for.
+    """
+    import asyncio
+    from datetime import timedelta
+
+    from maistro.runs.execution import AttemptExecutionService
+    from maistro.runs.model import AttemptStatus
+
+    projects, graph = await _scope()
+    store = InMemoryRunStore(project_store=projects)
+    node_run = await _running_node_run(store, graph)
+    ttl = timedelta(seconds=0.12)
+    service = AttemptExecutionService(store=store, runtime=PythonExecutionRuntime(), lease_ttl=ttl)
+
+    real_renew = store.renew_lease
+    renewal_attempts = 0
+
+    async def _blips_once(attempt_id: str, **kwargs: Any) -> Any:
+        nonlocal renewal_attempts
+        renewal_attempts += 1
+        if renewal_attempts == 1:
+            raise ConnectionError("store briefly unreachable")
+        return await real_renew(attempt_id, **kwargs)
+
+    store.renew_lease = _blips_once  # type: ignore[method-assign]
+
+    started = asyncio.Event()
+
+    async def _outlives_its_first_failed_tick(*_args: Any, **_kwargs: Any) -> str:
+        started.set()
+        await asyncio.sleep(0.2)  # several heartbeat ticks while this runs
+        return "done"
+
+    worker = asyncio.create_task(
+        service.execute(node_run.node_run_id, {}, {}, executor=_outlives_its_first_failed_tick)
+    )
+    await started.wait()
+    await asyncio.sleep(0.17)  # past the original TTL; only resumed renewals keep it live
+
+    assert await store.reclaim_expired_attempts() == [], (
+        "one transient renewal failure must not leave a live executor's Attempt "
+        "reclaimable-as-dead while its work is still running"
+    )
+
+    terminal = await worker
+    assert terminal.status is AttemptStatus.COMPLETED
+    assert renewal_attempts > 1, "the heartbeat must have resumed renewing after the blip"
+    assert terminal.execution_lease is not None
+    assert terminal.execution_lease.expires_at is not None
+    assert terminal.execution_lease.expires_at > terminal.created_at + ttl, (
+        "a successful renewal after the blip must have pushed the expiry past where "
+        "the initial TTL put it"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_permanent_renewal_refusal_still_stops_the_heartbeat() -> None:
+    """The complement of the transient tolerance (#1244).
+
+    A refusal that can never turn into a renewal -- terminalized Attempt,
+    expired lease, superseded token -- must still end the heartbeat rather
+    than be retried for the life of the executor: recovery has already
+    answered the liveness question, so proving it again is impossible, not
+    transient. The executor's own terminalization meets the same refusal
+    through its fencing token, which is what surfaces the truth.
+    """
+    import asyncio
+    from datetime import timedelta
+
+    from maistro.runs.execution import AttemptExecutionService
+    from maistro.runs.lifecycle import InvalidLifecycleTransition
+
+    projects, graph = await _scope()
+    store = InMemoryRunStore(project_store=projects)
+    node_run = await _running_node_run(store, graph)
+    ttl = timedelta(seconds=0.06)
+    service = AttemptExecutionService(store=store, runtime=PythonExecutionRuntime(), lease_ttl=ttl)
+
+    refusal_attempts = 0
+
+    async def _refuses_permanently(*_args: Any, **_kwargs: Any) -> Any:
+        nonlocal refusal_attempts
+        refusal_attempts += 1
+        raise InvalidLifecycleTransition("cannot renew the lease of a cancelled Attempt")
+
+    store.renew_lease = _refuses_permanently  # type: ignore[method-assign]
+
+    async def _work(*_args: Any, **_kwargs: Any) -> str:
+        await asyncio.sleep(0.16)  # several ticks' worth; a retry loop would keep calling
+        return "done"
+
+    terminal = await service.execute(node_run.node_run_id, {}, {}, executor=_work)
+
+    assert terminal.status is AttemptStatus.COMPLETED
+    assert refusal_attempts == 1, (
+        "a permanent refusal must stop the heartbeat; no retry can succeed"
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.ac("ADR-082526-b36a/AC-5")
 async def test_an_executor_without_a_ttl_creates_no_expiry() -> None:
     """The default, and what keeps this additive: no TTL, no heartbeat, no
