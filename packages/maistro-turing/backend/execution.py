@@ -178,6 +178,15 @@ class TuringExecutionPlane:
                         continue
                     if retained.status not in TERMINAL_RUN_STATUSES:
                         continue
+                    # Instead of delete_run, we will delete the Run and clean up its continuation.
+                    # We'll try to delete the continuation first, then delete the Run.
+                    try:
+                        if await self._continuations.delete(retained_id):
+                            pass  # continuation deleted
+                    except Exception:
+                        # If continuation cleanup fails, skip deleting this Run.
+                        continue
+                    # Now delete the Run and its spine dependents.
                     await self.run_store.delete_run(retained_id)
                     self._retained_runs.pop(retained_id, None)
                     excess -= 1

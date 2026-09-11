@@ -801,29 +801,21 @@ class InMemoryRunStore:
         doomed = self._doomed_runs(scope, cutoff)
         selected = doomed[:limit]
         selected_ids = {run.run_id for run in selected}
-        # Counted before `_forget_run`: the spine forget drops the NodeRuns
-        # and Attempts with the Run, and the outcome must describe the rows
-        # the sweep removed, not what it left.
-        node_runs, attempts = self._count_spine_dependents(selected_ids)
-        for run in selected:
-            self._forget_run(run.run_id)
-        continuations = await self._reclaim_continuations(selected_ids)
-        pointers = await self._release_schedule_pointers(selected_ids)
+        # Delete the selected runs with their dependents.
+        result = await self._delete_runs_with_dependents(selected_ids)
+        # The backlog_remaining flag: true if there are more doomed runs beyond the limit.
+        backlog_remaining = len(doomed) > limit
+
         return PurgeOutcome(
             scope=scope,
-            runs=len(selected),
-            node_runs=node_runs,
-            attempts=attempts,
-            continuations=continuations,
-            # This store owns no Event log — canonical Events live in their own
-            # store — so there is nothing here to count, and zero is the
-            # truthful report rather than a stub.
-            event_references_retained=0,
-            schedule_claims_released=sum(
-                1 for run in selected if occurrence_key(run.provenance) is not None
-            ),
-            schedule_pointers_released=pointers,
-            backlog_remaining=len(doomed) > limit,
+            runs=result['runs'],
+            node_runs=result['node_runs'],
+            attempts=result['attempts'],
+            continuations=result['continuations'],
+            event_references_retained=0,  # This store owns no Event log — canonical Events live in their own store.
+            schedule_claims_released=result['schedule_claims_released'],
+            schedule_pointers_released=result['schedule_pointers_released'],
+            backlog_remaining=backlog_remaining,
         )
 
     def _doomed_runs(self, scope: RetentionScope, cutoff: datetime) -> list[Run]:
@@ -860,6 +852,68 @@ class InMemoryRunStore:
             1 for attempt in self._attempts.values() if attempt.node_run_id in node_run_ids
         )
         return len(node_run_ids), attempts
+
+    async def _delete_runs_with_dependents(self, run_ids: Collection[str]) -> dict[str, int]:
+        """Delete the given run_ids and their dependents, returning counts.
+
+        Returns a dictionary with keys:
+            'runs': number of runs deleted
+            'node_runs': number of node_runs deleted
+            'attempts': number of attempts deleted
+            'continuations': number of continuations deleted
+            'schedule_pointers_released': number of schedule pointers released
+            'schedule_claims_released': number of schedule claims released
+        """
+        # We'll process each run_id independently.
+        runs_to_delete = set()
+        node_runs_to_delete = set()
+        attempts_to_delete = set()
+        continuations_deleted = 0
+        schedule_pointers_released = 0
+        schedule_claims_released = 0
+
+        for run_id in run_ids:
+            # Get the Run to check if it exists and to get its NodeRuns and Attempts.
+            run = self._runs.get(run_id)
+            if run is None:
+                continue
+            # Collect NodeRuns and Attempts for this Run.
+            node_run_ids = {nr.node_run_id for nr in self._node_runs.values() if nr.run_id == run_id}
+            attempt_ids = {a.attempt_id for a in self._attempts.values() if a.node_run_id in node_run_ids}
+
+            # Try to clean up dependents.
+            try:
+                if self._continuation_store is not None:
+                    if await self._continuation_store.delete(run_id):
+                        continuations_deleted += 1
+                if self._schedule_store is not None:
+                    released = await self._schedule_store.release_run_pointers({run_id})
+                    schedule_pointers_released += released
+                    # Check for schedule claim.
+                    from maistro.runs.sources import occurrence_key
+                    if occurrence_key(run.provenance) is not None:
+                        schedule_claims_released += 1
+            except Exception:
+                # If dependent cleanup fails, skip this Run.
+                continue
+
+            # If we reach here, we can delete this Run and its spine dependents.
+            runs_to_delete.add(run_id)
+            node_runs_to_delete.update(node_run_ids)
+            attempts_to_delete.update(attempt_ids)
+
+        # Now, delete the Runs and their spine dependents.
+        for run_id in runs_to_delete:
+            self._forget_run(run_id)
+
+        return {
+            'runs': len(runs_to_delete),
+            'node_runs': len(node_runs_to_delete),
+            'attempts': len(attempts_to_delete),
+            'continuations': continuations_deleted,
+            'schedule_pointers_released': schedule_pointers_released,
+            'schedule_claims_released': schedule_claims_released,
+        }
 
     async def _release_schedule_pointers(self, run_ids: set[str]) -> int:
         """Repoint the Schedule cursors that named the given Runs, if wired.
