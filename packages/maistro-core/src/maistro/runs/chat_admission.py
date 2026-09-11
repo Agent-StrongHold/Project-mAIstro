@@ -57,6 +57,8 @@ REQUEST_ID_KEY = "request_id"
 #: Provenance key recording that the turn's agent was not resolved at
 #: admission, and its one value.
 AGENT_SELECTION_KEY = "agent_selection"
+#: Provenance key for a Workspace Agent resolved before the turn executes.
+WORKSPACE_AGENT_KEY = "workspace_agent_id"
 DEFERRED_AGENT_SELECTION = "deferred"
 
 #: How many chat-originated Runs one process keeps before sweeping. Small on
@@ -216,6 +218,7 @@ class ChatRunAdmitter:
         intent_hint: str = "",
         known_task_types: Container[str] | None = None,
         actor_principal_id: str | None = None,
+        agent_id: str | None = None,
     ) -> Run:
         """Admit one chat turn as a Run over the trivial one-node Graph.
 
@@ -233,16 +236,24 @@ class ChatRunAdmitter:
         to report its selection, which is #142's convergence.
         """
         description = last_user_message(messages) or DEFAULT_TURN_NAME
+        resolved_agent = (agent_id or "").strip()
         hint = intent_hint.strip()
         hint_is_known = bool(hint) and (known_task_types is None or hint in known_task_types)
         work = resolve_direct_work(
             description=description,
-            task_type=hint if hint_is_known else None,
+            agent_id=resolved_agent or None,
+            task_type=hint if hint_is_known and not resolved_agent else None,
             registry=self._intents,
         )
         parameters = dict(work.parameters)
         provenance: dict[str, Any] = {}
-        if not hint_is_known:
+        if resolved_agent:
+            # The Workspace Agent is a domain identity selected before model
+            # execution. Keep it on the Run as provenance; the Attempt still
+            # records the runtime agent when a tool-capable path is enabled.
+            provenance[AGENT_SELECTION_KEY] = resolved_agent
+            provenance[WORKSPACE_AGENT_KEY] = resolved_agent
+        elif not hint_is_known:
             parameters["to_agent"] = ""
             # Named, so a blank `to_agent` reads as "not chosen yet" rather
             # than as a resolution that happened to come out empty.
@@ -331,6 +342,7 @@ __all__ = [
     "MAX_RETAINED_CHAT_RUNS",
     "REQUEST_ID_KEY",
     "SESSION_ID_KEY",
+    "WORKSPACE_AGENT_KEY",
     "ChatRunAdmitter",
     "chat_turn_outcome",
     "last_user_message",
