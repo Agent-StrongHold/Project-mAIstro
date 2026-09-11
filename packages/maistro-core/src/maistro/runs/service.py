@@ -242,14 +242,6 @@ class RunExecutionService:
             for attempt in await self._store.list_attempts(node_run.node_run_id)
             if attempt.status not in TERMINAL_ATTEMPT_STATUSES
         ]
-        if (
-            not active_attempts
-            and node_runs
-            and all(node_run.status in TERMINAL_RUN_STATUSES for node_run in node_runs)
-        ):
-            # Normal completion won the race before the cancellation fence.
-            return run
-
         # Another canceller or normal completion may win this durable fence
         # after the initial read. Only cancellation is idempotent; a completed
         # or failed outcome remains authoritative.
