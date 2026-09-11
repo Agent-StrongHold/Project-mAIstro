@@ -114,6 +114,20 @@ def _published_evaluation_ref(genome: Any, node_run_id: str) -> dict[str, str] |
     return None
 
 
+def _llm_for_context(llm_call: Any, ctx: NodeContext) -> Any:
+    """Bind model calls to this physical NodeRun when the service supplies one."""
+    builder = getattr(llm_call, "for_context", None)
+    return builder(ctx) if builder is not None else llm_call
+
+
+def _raise_model_failure(llm_call: Any) -> None:
+    """Do not fold domain state after a benchmark swallowed a provider error."""
+    adapter = getattr(llm_call, "governed_model_call", None)
+    failure = getattr(adapter, "first_failure", None)
+    if failure is not None:
+        raise RuntimeError("Evolve model effect failed") from failure
+
+
 async def _evaluate_one(
     cycle: Any,
     population: Any,
@@ -150,11 +164,13 @@ async def _evaluate_one(
     # NodeRun/Attempt and re-evaluates the last committed genome rather than
     # folding over a partial failed score.
     working = deepcopy(genome)
+    contextual_llm_call = _llm_for_context(llm_call, ctx)
     results = await cycle.harness.evaluate_genome(
         working,
         config.target_benchmarks,
-        llm_call,
+        contextual_llm_call,
     )
+    _raise_model_failure(contextual_llm_call)
     for result in results:
         cycle._fold_score(
             working,
@@ -405,12 +421,16 @@ class _FinalizeNode(BaseNode[_IgnoreInput, _FinalizeOutput]):
         self._llm_call = llm_call
 
     async def _execute(self, inputs: _IgnoreInput, ctx: NodeContext) -> _FinalizeOutput:
-        return await _finalize_cycle(
+        contextual_llm_call = _llm_for_context(self._llm_call, ctx)
+        _raise_model_failure(contextual_llm_call)
+        output = await _finalize_cycle(
             self._cycle,
             self._population,
             self._config,
-            self._llm_call,
+            contextual_llm_call,
         )
+        _raise_model_failure(contextual_llm_call)
+        return output
 
 
 def _evaluation_ids(population: Any, config: Any) -> list[str]:

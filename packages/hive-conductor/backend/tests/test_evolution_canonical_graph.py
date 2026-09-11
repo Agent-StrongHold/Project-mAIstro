@@ -64,6 +64,8 @@ class _Harness:
         benchmarks: list[str],
         llm_call: Any,
     ):
+        if llm_call is not None:
+            await llm_call([{"role": "user", "content": genome.id}])
         return [
             SimpleNamespace(
                 benchmark=benchmarks[0],
@@ -73,6 +75,19 @@ class _Harness:
                 metadata={},
             )
         ]
+
+
+class _ContextualCall:
+    def __init__(self) -> None:
+        self.contexts: list[NodeContext] = []
+
+    def for_context(self, ctx: NodeContext) -> Any:
+        self.contexts.append(ctx)
+
+        async def call(_messages: Any, **_kwargs: Any) -> str:
+            return "model response"
+
+        return call
 
 
 class _Tournament:
@@ -177,17 +192,28 @@ async def test_cycle_is_one_run_with_evaluation_battle_finalization_attempts(
     population = _Population([_Genome("g1"), _Genome("g2")])
     tournament = _Tournament()
     owner = await _container()
+    contextual_call = _ContextualCall()
 
     record = await run_canonical_evolution_cycle(
         population=population,
         tournament=tournament,
         config=_config(population_size=3, eval_batch_size=2),
         harness=_Harness(),
+        llm_call=contextual_call,
         cycle_number=1,
         container=owner,
     )
 
     assert record.run.status is RunStatus.COMPLETED
+    assert [ctx.node_id for ctx in contextual_call.contexts] == [
+        "evolve-evaluate-1",
+        "evolve-evaluate-2",
+        "evolve-finalize",
+    ]
+    assert all(ctx.run_id == record.run_id for ctx in contextual_call.contexts)
+    assert all(ctx.node_run_id and ctx.attempt_id for ctx in contextual_call.contexts)
+    assert all(ctx.project_id for ctx in contextual_call.contexts)
+    assert len({ctx.project_id for ctx in contextual_call.contexts}) == 1
     stored = await owner.run_store.get_run(record.run_id)
     assert stored is not None
     assert stored.status is RunStatus.COMPLETED
@@ -223,6 +249,67 @@ async def test_cycle_is_one_run_with_evaluation_battle_finalization_attempts(
     assert {ref["run_id"] for ref in child.harness_params["source_evaluation_runs"]} == {
         record.run_id
     }
+
+
+@pytest.mark.asyncio
+async def test_failed_model_effect_does_not_publish_evaluation_mutation() -> None:
+    """A benchmark that swallows a provider error cannot make a score stick."""
+
+    class _FailureCall:
+        first_failure: BaseException | None = None
+
+        def for_context(self, _ctx: NodeContext) -> Any:
+            bound = self
+            bound.governed_model_call = self
+            return bound
+
+        async def __call__(self, _messages: Any, **_kwargs: Any) -> str:
+            self.first_failure = TimeoutError("provider timed out")
+            raise self.first_failure
+
+    class _FailureHarness:
+        async def evaluate_genome(
+            self, _genome: Any, _benchmarks: list[str], llm_call: Any
+        ) -> list[Any]:
+            with pytest.raises(TimeoutError):
+                await llm_call([{"role": "user", "content": "evaluate"}])
+            return [
+                SimpleNamespace(
+                    benchmark="proxy", score=0.0, cost_usd=0.0, duration_seconds=0.0, metadata={}
+                )
+            ]
+
+    class _FailureCycle:
+        harness = _FailureHarness()
+
+        @staticmethod
+        def _fold_score(*_args: Any) -> None:
+            raise AssertionError("failed model work must not reach score folding")
+
+    genome = _Genome("failed")
+    population = _Population([genome])
+    config = _config(population_size=1, eval_batch_size=1)
+
+    with pytest.raises(RuntimeError, match="model effect failed"):
+        await _evaluate_one(
+            _FailureCycle(),
+            population,
+            config,
+            _FailureCall(),
+            "failed",
+            NodeContext(
+                run_id="run-failed",
+                dag_id="graph-failed",
+                node_id="evolve-evaluate-1",
+                node_run_id="node-failed",
+                attempt_id="attempt-failed",
+                workspace_id="workspace-evolve",
+                project_id="project-evolve",
+            ),
+        )
+
+    assert genome.eval_scores == {}
+    assert genome.harness_params == {}
 
 
 @pytest.mark.asyncio

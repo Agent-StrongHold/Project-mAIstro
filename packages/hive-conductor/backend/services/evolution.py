@@ -8,15 +8,130 @@ product path records one canonical Run with NodeRuns and physical Attempts.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from typing import Any
 
-from maistro.http import shared_client
+from maistro.capabilities.binding_store import BindingNotFound
+from maistro.capabilities.effect_context import CapabilityEffectContext
+from maistro.capabilities.model_chat import MODEL_CHAT_CAPABILITY, ModelChatEgress
+from maistro.capabilities.providers.llm_gateway import GatewayEndpoint, ModelChatRequest
+from maistro.graph.nodes.base import NodeContext
 from maistro.runs.model import RunStatus
 
 logger = logging.getLogger(__name__)
 
 _service: _EvolutionService | None = None
+
+
+class _GovernedModelCall:
+    """Adapt Evolve's prompt callable onto the canonical model egress.
+
+    Evolve still owns prompt shaping and response parsing. This adapter only
+    supplies execution identity and a stable per-NodeRun effect key so the
+    canonical Invocation service owns provider dispatch and retry safety.
+    """
+
+    def __init__(
+        self,
+        *,
+        effects: CapabilityEffectContext,
+        egress: ModelChatEgress,
+        declarations: tuple[Any, ...],
+        workspace_id: str,
+        default_model: str,
+    ) -> None:
+        self._effects = effects
+        self._egress = egress
+        self._declarations = declarations
+        self._workspace_id = workspace_id
+        self._default_model = default_model
+        self._first_failure: BaseException | None = None
+
+    @property
+    def first_failure(self) -> BaseException | None:
+        return self._first_failure
+
+    def for_context(self, ctx: NodeContext) -> Any:
+        call_number = 0
+
+        async def call(messages: Any, **kwargs: Any) -> str:
+            nonlocal call_number
+            if self._first_failure is not None:
+                raise RuntimeError("a prior Evolve model effect failed") from self._first_failure
+            try:
+                binding_id = self._binding_id(ctx)
+                binding = await self._effects.bindings.resolve(
+                    binding_id,
+                    workspace_id=str(ctx.workspace_id or self._workspace_id),
+                    project_id=str(ctx.project_id or ""),
+                    node_id=ctx.node_id,
+                    capability=MODEL_CHAT_CAPABILITY,
+                )
+                if isinstance(messages, str):
+                    shaped_messages = [{"role": "user", "content": messages}]
+                else:
+                    shaped_messages = [dict(message) for message in messages]
+                model = str(kwargs.get("model") or self._default_model)
+                request = ModelChatRequest(
+                    model=model,
+                    messages=shaped_messages,
+                    temperature=float(kwargs.get("temperature", 0.3)),
+                    max_tokens=kwargs.get("max_tokens", 4096),
+                )
+                request_digest = hashlib.sha256(request.model_dump_json().encode()).hexdigest()[:16]
+                effect_key = f"evolve.model:{ctx.node_id}:{call_number}:{request_digest}"
+                call_number += 1
+                result = await self._egress.complete(
+                    binding=binding,
+                    run_id=ctx.run_id,
+                    node_run_id=ctx.node_run_id,
+                    attempt_id=ctx.attempt_id,
+                    effect_key=effect_key,
+                    request=request,
+                )
+                choices = result.body.get("choices")
+                if not isinstance(choices, list) or not choices:
+                    raise RuntimeError("model gateway response contained no choices")
+                message = choices[0].get("message") if isinstance(choices[0], dict) else None
+                content = message.get("content") if isinstance(message, dict) else None
+                if not isinstance(content, str):
+                    raise RuntimeError("model gateway response contained no text content")
+                return content
+            except BaseException as exc:
+                if not isinstance(exc, asyncio.CancelledError) and self._first_failure is None:
+                    self._first_failure = exc
+                raise
+
+        call.governed_model_call = self  # type: ignore[attr-defined]
+        return call
+
+    def _binding_id(self, ctx: NodeContext) -> str:
+        workspace_id = str(ctx.workspace_id or self._workspace_id)
+        project_id = str(ctx.project_id or "")
+        exact: list[str] = []
+        generic: list[str] = []
+        for declaration in self._declarations:
+            declared_workspace = str(getattr(declaration, "workspace_id", "") or self._workspace_id)
+            if (
+                declared_workspace != workspace_id
+                or str(getattr(declaration, "project_id", "")) != project_id
+            ):
+                continue
+            binding_id = str(getattr(declaration, "binding_id", ""))
+            if not binding_id:
+                continue
+            if str(getattr(declaration, "node_id", "")) == ctx.node_id:
+                exact.append(binding_id)
+            elif not str(getattr(declaration, "node_id", "")):
+                generic.append(binding_id)
+        selected = exact[0] if exact else (generic[0] if generic else "")
+        if not selected:
+            raise BindingNotFound(
+                "Evolve model work requires an operator-declared model.chat Binding "
+                f"for Workspace {workspace_id!r} and Project {project_id!r}"
+            )
+        return selected
 
 
 def get_evolution_service() -> _EvolutionService:
@@ -130,36 +245,41 @@ class _EvolutionService:
         return record.run_id
 
     def _build_llm_call(self):
+        """Build the Evolve adapter over the container's governed model egress."""
         try:
             from config import get_settings
 
+            from services.evolution_graph import _engine_container
             from services.secrets import litellm_api_key, maistro_llm_api_key
 
             settings = get_settings()
             base = settings.litellm_api_base
             if not base:
                 return None
-            raw_key = maistro_llm_api_key(settings) or litellm_api_key(settings) or ""
-
-            async def _llm_call(messages: list[dict], **kwargs: Any) -> str:
-                headers = {"Content-Type": "application/json"}
-                if raw_key:
-                    headers["Authorization"] = f"Bearer {raw_key}"
-                payload = {
-                    "model": kwargs.get("model", settings.chat_default_model),
-                    "messages": messages,
-                    "temperature": kwargs.get("temperature", 0.3),
-                    "max_tokens": kwargs.get("max_tokens", 4096),
-                }
-                async with shared_client(timeout=120.0) as client:
-                    resp = await client.post(
-                        f"{base}/v1/chat/completions", json=payload, headers=headers
-                    )
-                    resp.raise_for_status()
-                    return resp.json()["choices"][0]["message"]["content"]
-
-            return _llm_call
+            owner = _engine_container()
+            effects = owner.capability_effects
+            endpoint = GatewayEndpoint(
+                base_url=base,
+                api_key=maistro_llm_api_key(settings) or litellm_api_key(settings) or "",
+                timeout_s=120.0,
+            )
+            return _GovernedModelCall(
+                effects=effects,
+                egress=ModelChatEgress(
+                    effects,
+                    registry=owner.provider_registry,
+                    router=owner.llm_router,
+                    endpoint=endpoint,
+                ),
+                declarations=tuple(getattr(owner.config, "model_bindings", ())),
+                workspace_id=str(owner.config.workspace_id),
+                default_model=settings.chat_default_model,
+            )
         except Exception:
+            # A service can start before the embedded canonical container. The
+            # cycle remains governed: once a container exists this builder is
+            # retried at cycle admission, while an unavailable model path is
+            # never replaced by a private HTTP fallback.
             return None
 
     def status(self) -> dict:

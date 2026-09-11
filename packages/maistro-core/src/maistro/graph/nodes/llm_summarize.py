@@ -108,8 +108,10 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
         # pattern). Bare registry construction keeps the process default, which
         # registers no Bindings and therefore authorizes nothing.
         self._effects = effect_context or default_effect_context()
-        self._registry = registry if registry is not None else InMemoryProviderRegistry()
-        self._router = router if router is not None else CostAwareRouter(self._registry)
+        self._registry: LLMProviderRegistry = (
+            registry if registry is not None else InMemoryProviderRegistry()
+        )
+        self._router: LLMRouter = router if router is not None else CostAwareRouter(self._registry)
 
     async def _execute(self, inputs: LlmSummarizeIn, ctx: NodeContext) -> LlmSummarizeOut:
         # LLM gateway endpoint + key — pulled from env (maistro config layer
