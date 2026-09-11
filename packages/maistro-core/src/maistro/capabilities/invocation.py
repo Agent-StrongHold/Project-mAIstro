@@ -239,14 +239,15 @@ class InvocationExecutionService:
         run_id: str,
         node_run_id: str,
         effect_key: str,
+        logical_effect: bool = False,
     ) -> Invocation | None:
         """Return the latest canonical Invocation for one logical effect identity."""
 
-        # NodeRun is a physical logical visit and may change on graph retry;
-        # the replay key is the stable logical effect identity.
+        # Only an executable EFFECT_KEY contract may widen history across
+        # NodeRuns; ordinary capability keys remain physical-visit scoped.
         history = await self._store.list_effect(
             run_id=run_id,
-            node_run_id=None,
+            node_run_id=None if logical_effect else node_run_id,
             binding_id=binding.binding_id,
             effect_key=effect_key,
         )
@@ -264,6 +265,7 @@ class InvocationExecutionService:
         resolver: ProviderResolver,
         executor: ProviderExecutor,
         usage_from: UsageExtractor | None = None,
+        logical_effect: bool = False,
     ) -> Invocation:
         """Execute one effect, deduplicating or blocking unsafe recovery.
 
@@ -276,11 +278,11 @@ class InvocationExecutionService:
 
         _require(effect_key, "effect_key")
         async with self._effect_lock:
-            # NodeRun changes across graph visits; do not scope replay history
-            # to the physical visit when the effect key is stable by Run/node.
+            # An EFFECT_KEY node opts into a stable Run/node identity; all
+            # other capability effects stay scoped to their physical NodeRun.
             history = await self._store.list_effect(
                 run_id=run_id,
-                node_run_id=None,
+                node_run_id=None if logical_effect else node_run_id,
                 binding_id=binding.binding_id,
                 effect_key=effect_key,
             )

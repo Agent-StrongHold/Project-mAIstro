@@ -193,6 +193,7 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
                 request=request_payload,
                 resolver=resolve_provider,
                 executor=execute_provider,
+                logical_effect=True,
             ),
             effect_key=effect_key,
         )
