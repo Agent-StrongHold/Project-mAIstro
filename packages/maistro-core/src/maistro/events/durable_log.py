@@ -54,7 +54,7 @@ class LoggedEvent:
 
 @runtime_checkable
 class EventLogStore(Protocol):
-    """Append-only durable event log."""
+    """Append-only durable event log and its replay acknowledgements."""
 
     async def append(
         self,
@@ -89,6 +89,14 @@ class EventLogStore(Protocol):
         """
         ...
 
+    async def get_replay_cursor(self, consumer_id: str) -> int:
+        """Return the last event acknowledged by a durable consumer."""
+        ...
+
+    async def acknowledge_replay(self, consumer_id: str, event_id: int) -> int:
+        """Durably acknowledge an event, never moving a cursor backwards."""
+        ...
+
 
 def append_from_bus_event(event: Event) -> dict[str, Any]:
     """Map an in-memory bus :class:`~maistro.events.bus.Event` to append() kwargs."""
@@ -107,6 +115,7 @@ class InMemoryEventLog:
     def __init__(self) -> None:
         self._events: list[LoggedEvent] = []
         self._next_id = 1
+        self._replay_cursors: dict[str, int] = {}
         self._lock = asyncio.Lock()
 
     async def append(
@@ -161,6 +170,18 @@ class InMemoryEventLog:
                 break
         return result
 
+    async def get_replay_cursor(self, consumer_id: str) -> int:
+        return self._replay_cursors.get(consumer_id, 0)
+
+    async def acknowledge_replay(self, consumer_id: str, event_id: int) -> int:
+        if event_id < 0:
+            raise ValueError("event_id must be non-negative")
+        async with self._lock:
+            current = self._replay_cursors.get(consumer_id, 0)
+            acknowledged = max(current, event_id)
+            self._replay_cursors[consumer_id] = acknowledged
+            return acknowledged
+
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS event_log (
@@ -174,6 +195,11 @@ CREATE TABLE IF NOT EXISTS event_log (
 );
 CREATE INDEX IF NOT EXISTS idx_event_log_type_time
     ON event_log (event_type, created_at);
+CREATE TABLE IF NOT EXISTS event_replay_cursors (
+    consumer_id TEXT PRIMARY KEY,
+    event_id INTEGER NOT NULL DEFAULT 0,
+    updated_at REAL NOT NULL
+);
 """
 
 
@@ -260,6 +286,29 @@ class SqliteEventLog:
         cursor = await self._conn.execute(query, params)
         rows = await cursor.fetchall()
         return [self._row_to_event(tuple(r)) for r in rows]
+
+    async def get_replay_cursor(self, consumer_id: str) -> int:
+        cursor = await self._conn.execute(
+            "SELECT event_id FROM event_replay_cursors WHERE consumer_id = ?",
+            (consumer_id,),
+        )
+        row = await cursor.fetchone()
+        return int(row[0]) if row is not None else 0
+
+    async def acknowledge_replay(self, consumer_id: str, event_id: int) -> int:
+        if event_id < 0:
+            raise ValueError("event_id must be non-negative")
+        now = time.time()
+        await self._conn.execute(
+            """INSERT INTO event_replay_cursors (consumer_id, event_id, updated_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(consumer_id) DO UPDATE SET
+                 event_id = MAX(event_replay_cursors.event_id, excluded.event_id),
+                 updated_at = excluded.updated_at""",
+            (consumer_id, event_id, now),
+        )
+        await self._conn.commit()
+        return await self.get_replay_cursor(consumer_id)
 
     @staticmethod
     def _row_to_event(row: tuple[Any, ...]) -> LoggedEvent:

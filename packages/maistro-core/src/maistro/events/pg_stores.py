@@ -59,6 +59,12 @@ CREATE TABLE IF NOT EXISTS event_log (
 CREATE INDEX IF NOT EXISTS idx_event_log_type_id ON event_log(event_type, id);
 CREATE INDEX IF NOT EXISTS idx_event_log_created_at ON event_log(created_at);
 
+CREATE TABLE IF NOT EXISTS event_replay_cursors (
+    consumer_id TEXT PRIMARY KEY,
+    event_id BIGINT NOT NULL DEFAULT 0,
+    updated_at DOUBLE PRECISION NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS trigger_definitions (
     trigger_id TEXT PRIMARY KEY,
     name TEXT NOT NULL DEFAULT '',
@@ -202,6 +208,29 @@ class PgEventLog:
         )
         rows = await self._pool.fetch(query, *params)
         return [_row_to_event(r) for r in rows]
+
+    async def get_replay_cursor(self, consumer_id: str) -> int:
+        value = await self._pool.fetchval(
+            "SELECT event_id FROM event_replay_cursors WHERE consumer_id = $1",
+            consumer_id,
+        )
+        return int(value) if value is not None else 0
+
+    async def acknowledge_replay(self, consumer_id: str, event_id: int) -> int:
+        if event_id < 0:
+            raise ValueError("event_id must be non-negative")
+        value = await self._pool.fetchval(
+            """INSERT INTO event_replay_cursors (consumer_id, event_id, updated_at)
+               VALUES ($1, $2, $3)
+               ON CONFLICT (consumer_id) DO UPDATE SET
+                 event_id = GREATEST(event_replay_cursors.event_id, EXCLUDED.event_id),
+                 updated_at = EXCLUDED.updated_at
+               RETURNING event_id""",
+            consumer_id,
+            event_id,
+            time.time(),
+        )
+        return int(value)
 
 
 class PgTriggerStore:

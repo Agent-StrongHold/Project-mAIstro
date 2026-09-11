@@ -10,6 +10,7 @@ from maistro.events.bus import (
     Event,
     EventBus,
     EventCategory,
+    EventSubscriberFailure,
     Trigger,
     TriggerActionFailure,
     TriggerCondition,
@@ -192,6 +193,27 @@ class TestEventBus:
         bus.subscribe(subscribe_handler)
         await bus.emit(Event(event_type="hello"))
         assert received == ["hello"]
+
+    async def test_authoritative_subscriber_failure_is_not_swallowed(self):
+        bus = EventBus()
+        trigger = Trigger(name="must-not-run", event_types=["hello"], action_type="log")
+        bus.add_trigger(trigger)
+
+        async def persist(_event):
+            raise OSError("durable store unavailable")
+
+        async def log(_trigger, _event):
+            raise AssertionError("handler ran before durable persistence")
+
+        bus.subscribe(persist, before_handlers=True)
+        bus.register_handler("log", log)
+
+        with pytest.raises(EventSubscriberFailure) as excinfo:
+            await bus.emit(Event(event_type="hello"))
+
+        assert isinstance(excinfo.value.__cause__, OSError)
+        assert trigger.fire_count == 0
+        assert bus.get_history() == []
 
 
 class TestEmitFiringAuthority:

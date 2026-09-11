@@ -11,8 +11,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from functools import lru_cache
+from importlib import import_module
 from typing import Any
 
+from maistro.capabilities.approval_store import ApprovalStore, InMemoryApprovalStore
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.binding_store import BindingStore, InMemoryBindingStore
 from maistro.capabilities.credential_routing import CredentialRouting
@@ -60,6 +62,7 @@ class CapabilityEffectContext:
     invocations: GovernedInvocationExecutionService
     invocation_store: InvocationStore
     event_store: EventStore
+    approval_store: ApprovalStore | None = None
     credentials: CredentialRouter = field(default_factory=CredentialRouter)
 
     def credential_routing(self) -> CredentialRouting:
@@ -75,33 +78,102 @@ class CapabilityEffectContext:
         return CredentialRouting(self.credentials)
 
 
-def new_in_memory_effect_context(
+def build_effect_context(
     *,
+    bindings: BindingStore,
+    invocation_store: InvocationStore,
+    event_store: EventStore,
+    approval_store: ApprovalStore | None = None,
     policy_evaluator: PolicyEvaluator | None = None,
     credentials: CredentialRouter | None = None,
 ) -> CapabilityEffectContext:
-    """Build an isolated canonical effect context for local/runtime composition.
+    """Compose governed effects from the stores selected by the application.
 
-    ``credentials`` supplies the scoped credential pool for Provider selection
-    (#58); omitted, the router exists but holds no credentials, so routed
-    acquisitions fail closed until one is registered in the requesting scope.
+    The composition root passes one canonical EventStore into the governed
+    service. This function deliberately does not create an event authority.
     """
-
-    binding_store = InMemoryBindingStore()
-    invocation_store = InMemoryInvocationStore()
-    event_store = InMemoryEventStore()
     invocation_service = InvocationExecutionService(store=invocation_store)
     governed = GovernedInvocationExecutionService(
         invocation_service=invocation_service,
         event_store=event_store,
         policy_evaluator=policy_evaluator or _m1_binding_authorized_policy,
+        approval_store=approval_store,
     )
     return CapabilityEffectContext(
-        bindings=binding_store,
+        bindings=bindings,
         invocations=governed,
         invocation_store=invocation_store,
         event_store=event_store,
+        approval_store=approval_store,
         credentials=credentials or CredentialRouter(),
+    )
+
+
+async def new_backend_effect_context(
+    *,
+    pg_pool: Any = None,
+    db_pool: Any = None,
+    policy_evaluator: PolicyEvaluator | None = None,
+    credentials: CredentialRouter | None = None,
+) -> CapabilityEffectContext:
+    """Select one canonical effect context for the configured persistence backend."""
+    if pg_pool is not None:
+        # Load the optional PostgreSQL adapter only when that backend is
+        # selected. The store remains the single sequencing authority.
+        pg_events = import_module("maistro.events.pg_envelope")
+        event_store = pg_events.PgEventStore(pg_pool)
+        await event_store.ensure_schema()
+        # Binding, Invocation, and approval PostgreSQL stores are not part of
+        # this release. Do not invent a parallel authority: preserve their
+        # explicit in-memory implementations while selecting the durable
+        # canonical EventStore from the supplied pool.
+        return build_effect_context(
+            bindings=InMemoryBindingStore(),
+            invocation_store=InMemoryInvocationStore(),
+            approval_store=InMemoryApprovalStore(),
+            event_store=event_store,
+            policy_evaluator=policy_evaluator,
+            credentials=credentials,
+        )
+    if db_pool is not None:
+        from maistro.capabilities.approval_store import SqliteApprovalStore
+        from maistro.capabilities.invocation_store import SqliteInvocationStore
+        from maistro.events.envelope import SqliteEventStore
+
+        bindings = InMemoryBindingStore()
+        invocation_store = SqliteInvocationStore(db_pool)
+        approval_store = SqliteApprovalStore(db_pool)
+        await invocation_store.ensure_schema()
+        await approval_store.ensure_schema()
+        event_store = SqliteEventStore(db_pool)
+        await event_store.ensure_schema()
+        return build_effect_context(
+            bindings=bindings,
+            invocation_store=invocation_store,
+            approval_store=approval_store,
+            event_store=event_store,
+            policy_evaluator=policy_evaluator,
+            credentials=credentials,
+        )
+    return new_in_memory_effect_context(
+        policy_evaluator=policy_evaluator,
+        credentials=credentials,
+    )
+
+
+def new_in_memory_effect_context(
+    *,
+    policy_evaluator: PolicyEvaluator | None = None,
+    credentials: CredentialRouter | None = None,
+) -> CapabilityEffectContext:
+    """Build an isolated canonical effect context for explicit ephemeral use."""
+    return build_effect_context(
+        bindings=InMemoryBindingStore(),
+        invocation_store=InMemoryInvocationStore(),
+        event_store=InMemoryEventStore(),
+        approval_store=InMemoryApprovalStore(),
+        policy_evaluator=policy_evaluator,
+        credentials=credentials,
     )
 
 
@@ -119,6 +191,8 @@ def default_effect_context() -> CapabilityEffectContext:
 
 __all__ = [
     "CapabilityEffectContext",
+    "build_effect_context",
     "default_effect_context",
+    "new_backend_effect_context",
     "new_in_memory_effect_context",
 ]

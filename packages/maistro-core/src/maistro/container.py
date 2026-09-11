@@ -24,7 +24,7 @@ from maistro.agents.intents import IntentRegistry, build_intent_registry
 from maistro.archive.wiring import build_archive_store
 from maistro.capabilities.effect_context import (
     CapabilityEffectContext,
-    new_in_memory_effect_context,
+    new_backend_effect_context,
 )
 from maistro.classifier.engine import ClassifierEngine
 from maistro.graph.durable_runs.canonical_store import CanonicalDurableRunStore
@@ -55,6 +55,7 @@ from maistro.runs.model import (
     Run,
     RunStatus,
 )
+from maistro.runs.recovery_events import CanonicalEventStoreSink
 from maistro.runs.store import RunIntegrityError, RunStore
 from maistro.runs.wiring import (
     SPINE_PG_TABLES,
@@ -283,6 +284,9 @@ class Container:
     resilience_policies: ResiliencePolicyStore = None  # type: ignore[assignment]
     # Durable events (ADR-086): bus bridge + log/trigger/invocation stores.
     event_bus: EventBus = None  # type: ignore[assignment]
+    # Canonical Event authority shared by governed effects and recovery. The
+    # publisher wraps the exact EventStore selected by the effect context.
+    canonical_event_publisher: CanonicalEventStoreSink = None  # type: ignore[assignment]
     durable_event_log: EventLogStore = None  # type: ignore[assignment]
     trigger_store: TriggerStore = None  # type: ignore[assignment]
     invocation_store: InvocationStore = None  # type: ignore[assignment]
@@ -316,6 +320,10 @@ class Container:
     # config.security.strike_tracking_enabled -- see create_container.
     strike_tracker: StrikeTracker | None = None
     strike_recovery: Any = None
+    # One durable cursor identifies this reactor consumer across restarts. The
+    # cursor is acknowledged only after process_events settles the batch; the
+    # local mirror is merely observability, never the replay authority.
+    durable_event_consumer_id: str = "maistro.container.reactor"
     durable_event_cursor: int = 0
 
     def __post_init__(self) -> None:
@@ -690,20 +698,39 @@ class Container:
     async def process_durable_events(self, *, limit: int = 100) -> int:
         """Tick the durable-event loop (ADR-086): log -> triggers -> handlers.
 
-        Advances and persists the container's replay cursor; safe to call
-        repeatedly (idempotent invocations dedupe redelivery).
+        Reads and acknowledges the durable replay cursor; safe to call
+        repeatedly (idempotent invocations dedupe redelivery). A crash between
+        handler completion and acknowledgement replays the event, while a
+        cursor cannot advance past an unsettled handler.
         """
         from maistro.events.processing import process_events
 
-        self.durable_event_cursor = await process_events(
+        local_cursor = self.durable_event_cursor
+        acknowledged = await self.durable_event_log.get_replay_cursor(
+            self.durable_event_consumer_id
+        )
+        if local_cursor != acknowledged:
+            logger.debug(
+                "Durable event cursor refreshed from store: local=%d durable=%d",
+                local_cursor,
+                acknowledged,
+            )
+        # The durable value above is authoritative; the local field is only a
+        # diagnostic mirror and may be stale after restart or another worker.
+        cursor = await process_events(
             self.durable_event_log,
             self.trigger_store,
             self.invocation_store,
             self.handler_caller,
-            after_id=self.durable_event_cursor,
+            after_id=acknowledged,
             limit=limit,
         )
-        return self.durable_event_cursor
+        if cursor > acknowledged:
+            acknowledged = await self.durable_event_log.acknowledge_replay(
+                self.durable_event_consumer_id, cursor
+            )
+        self.durable_event_cursor = acknowledged
+        return acknowledged
 
     async def recover_abandoned_attempts(
         self, *, now: datetime | None = None, limit: int = 100
@@ -1472,7 +1499,9 @@ async def create_container(
         # Bridge: every in-memory bus event is appended to the durable log.
         await durable_event_log.append(**append_from_bus_event(event))
 
-    event_bus.subscribe(_persist_bus_event)
+    # Durable persistence is an authoritative pre-handler adapter: a failed
+    # append aborts emission instead of manufacturing trigger success.
+    event_bus.subscribe(_persist_bus_event, before_handlers=True)
 
     # --- LLM provider registry + cost-aware router (SPEC-070226-cb8d) ----
     from maistro.providers.config import load_provider_registry
@@ -1520,7 +1549,16 @@ async def create_container(
 
     # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) -----------
     wired_harness_adapters = _wire_harness_adapters(harness_adapters)
-    capability_effects = new_in_memory_effect_context()
+    # Governed effects consume the same backend-selected canonical EventStore
+    # used for durable execution facts; they must not mint a private in-memory
+    # event authority when the container has a durable database.
+    capability_effects = await new_backend_effect_context(
+        pg_pool=pg_pool,
+        db_pool=db_pool,
+    )
+    # This is only a delivery wrapper: its store is the exact object already
+    # injected into governed effects, never a second sequencing authority.
+    canonical_event_publisher = CanonicalEventStoreSink(capability_effects.event_store)
     spawn_harness_node = AgentSpawnHarnessNode(
         adapters=wired_harness_adapters, effect_context=capability_effects
     )
@@ -1582,6 +1620,7 @@ async def create_container(
         holds_db_pool=holds_db_pool,
         resilience_policies=resilience_policies,
         event_bus=event_bus,
+        canonical_event_publisher=canonical_event_publisher,
         durable_event_log=durable_event_log,
         trigger_store=trigger_store,
         invocation_store=invocation_store,

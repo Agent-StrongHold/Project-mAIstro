@@ -24,6 +24,7 @@ from maistro.graph.durable_runs import (
 )
 from maistro.graph.types import DEFAULT_SYSTEM_PROMPTS, JSON_OUTPUT_SCHEMAS, AgentRole
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run
+from maistro.runs.recovery_events import CanonicalEventStoreSink, CanonicalRecoveryEventSink
 from services.dag_agents import _container, get_run_store
 from services.legacy_dag_node import LegacyConductorNode, OnResponseHook
 from services.node_metrics_store import record_run_completion
@@ -427,7 +428,7 @@ async def recover_stranded_dag_runs(*, limit: int = 100) -> int:
         run_store=container.run_store,
         node_resolver_factory=_recovery_resolver,
         eligible=lambda run: run.provenance.get("admission_source") == "hive_legacy_dag",
-        events=container.event_bus,
+        events=_canonical_recovery_events(container),
         limit=limit,
     )
 
@@ -440,8 +441,8 @@ async def wake_due_dag_runs(*, limit: int = 100) -> int:
     its own persisted Run facts, by the same ownership rule the bootstrap
     half uses. The resolver is rebuilt per Run because which legacy node
     implementation may execute is durable Run metadata, not state this
-    process holds. Crash dispositions reach the Container's canonical Event
-    bus exactly as ``recover_abandoned_attempts`` reports them (#62).
+    process holds. Crash dispositions reach the Container's canonical
+    EventStore exactly as ``recover_abandoned_attempts`` reports them (#62).
     """
     container = _container()
     if container is None or container.graph_run_store is None:
@@ -451,9 +452,17 @@ async def wake_due_dag_runs(*, limit: int = 100) -> int:
         run_store=container.run_store,
         node_resolver_factory=_recovery_resolver,
         eligible=lambda run: run.provenance.get("admission_source") == "hive_legacy_dag",
-        events=container.event_bus,
+        events=_canonical_recovery_events(container),
         limit=limit,
     )
+
+
+def _canonical_recovery_events(container: Any) -> CanonicalRecoveryEventSink:
+    """Route recovery facts through the Container's canonical EventStore."""
+    publisher = container.canonical_event_publisher
+    if not isinstance(publisher, CanonicalEventStoreSink):
+        raise RuntimeError("canonical recovery Event publisher is not configured")
+    return CanonicalRecoveryEventSink(container.run_store, publisher)
 
 
 def _node_results(

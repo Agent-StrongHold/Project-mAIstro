@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any, Protocol, runtime_checkable
 
-from maistro.events.envelope import EventEnvelope
+from maistro.events.envelope import EventEnvelope, EventStore
 from maistro.runs.model import Attempt, AttemptStatus, CancellationCause, NodeRun, Run
 
 RECOVERY_EVENT_TYPE = "run.recovery_disposition"
@@ -83,6 +83,16 @@ class CanonicalEventSink(Protocol):
     """Publisher/store seam for the one canonical Event envelope."""
 
     async def emit(self, event: EventEnvelope) -> Any: ...
+
+
+class CanonicalEventStoreSink:
+    """Adapt the selected canonical EventStore to the recovery sink protocol."""
+
+    def __init__(self, store: EventStore) -> None:
+        self.store = store
+
+    async def emit(self, event: EventEnvelope) -> EventEnvelope:
+        return await self.store.append(event)
 
 
 def _recovery_event_id(event: RecoveryDispositionEvent) -> str:
@@ -170,6 +180,7 @@ def recovery_event(
 
 __all__ = [
     "RECOVERY_EVENT_TYPE",
+    "CanonicalEventStoreSink",
     "CanonicalRecoveryEventSink",
     "RecoveryDispositionEvent",
     "RecoveryEventSink",

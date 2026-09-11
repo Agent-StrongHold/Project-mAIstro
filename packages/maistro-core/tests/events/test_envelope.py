@@ -3,17 +3,49 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import time
 from collections.abc import AsyncIterator
 
 import aiosqlite
 import pytest
 
 from maistro.events.envelope import (
+    MAX_EVENT_FIELD_BYTES,
+    MAX_EVENT_FIELD_DEPTH,
     EventEnvelope,
+    EventPayloadTooLarge,
     EventStore,
     InMemoryEventStore,
     SqliteEventStore,
 )
+
+
+def _encoded_size(value: object) -> int:
+    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+
+def _payload_of_exact_size(n_bytes: int) -> dict:
+    """Build a JSON-compact payload whose encoded size is exactly `n_bytes`.
+
+    Computed directly from the empty-filler overhead rather than growing the
+    filler one character at a time, which would re-serialize the whole string
+    on every step -- quadratic, and unusably slow at a 256 KiB target.
+    """
+    overhead = _encoded_size({"d": ""})
+    filler_len = n_bytes - overhead
+    assert filler_len >= 0, f"{n_bytes} bytes is smaller than the empty-filler overhead {overhead}"
+    payload = {"d": "x" * filler_len}
+    assert _encoded_size(payload) == n_bytes, "target size unreachable with this filler"
+    return payload
+
+
+def _nested_dict(depth: int) -> dict:
+    """Build a dict nesting exactly `depth` levels deep (a bare `{}` is depth 1)."""
+    value: dict = {}
+    for _ in range(depth - 1):
+        value = {"inner": value}
+    return value
 
 
 @pytest.fixture(params=["memory", "sqlite"])
@@ -81,6 +113,142 @@ def test_non_workspace_event_requires_explicit_scope() -> None:
 def test_workspace_event_rejects_competing_scope() -> None:
     with pytest.raises(ValueError, match="competing"):
         EventEnvelope(type="x", workspace_id="w1", stream_scope="system")
+
+
+class TestPayloadStructuralBounds:
+    """#1164: payload/provenance are bounded before any backend sees them."""
+
+    def test_a_payload_at_exactly_the_byte_ceiling_is_accepted(self) -> None:
+        payload = _payload_of_exact_size(MAX_EVENT_FIELD_BYTES)
+        event = EventEnvelope(type="x", workspace_id="w1", payload=payload)
+        assert event.payload == payload
+
+    def test_a_payload_one_byte_over_the_ceiling_is_rejected(self) -> None:
+        payload = _payload_of_exact_size(MAX_EVENT_FIELD_BYTES + 1)
+        with pytest.raises(EventPayloadTooLarge, match="payload") as excinfo:
+            EventEnvelope(type="x", workspace_id="w1", payload=payload)
+        assert excinfo.value.field == "payload"
+
+    def test_a_large_string_value_counts_toward_the_byte_ceiling(self) -> None:
+        payload = {"blob": "x" * (MAX_EVENT_FIELD_BYTES + 1)}
+        with pytest.raises(EventPayloadTooLarge):
+            EventEnvelope(type="x", workspace_id="w1", payload=payload)
+
+    def test_a_large_array_counts_toward_the_byte_ceiling(self) -> None:
+        payload = {"items": list(range(MAX_EVENT_FIELD_BYTES))}
+        with pytest.raises(EventPayloadTooLarge):
+            EventEnvelope(type="x", workspace_id="w1", payload=payload)
+
+    def test_provenance_is_bounded_the_same_way_as_payload(self) -> None:
+        provenance = _payload_of_exact_size(MAX_EVENT_FIELD_BYTES + 1)
+        with pytest.raises(EventPayloadTooLarge, match="provenance") as excinfo:
+            EventEnvelope(type="x", workspace_id="w1", provenance=provenance)
+        assert excinfo.value.field == "provenance"
+
+    def test_nesting_at_exactly_the_depth_ceiling_is_accepted(self) -> None:
+        payload = _nested_dict(MAX_EVENT_FIELD_DEPTH)
+        event = EventEnvelope(type="x", workspace_id="w1", payload=payload)
+        assert event.payload == payload
+
+    def test_nesting_one_level_past_the_depth_ceiling_is_rejected(self) -> None:
+        payload = _nested_dict(MAX_EVENT_FIELD_DEPTH + 1)
+        with pytest.raises(EventPayloadTooLarge, match="nests"):
+            EventEnvelope(type="x", workspace_id="w1", payload=payload)
+
+    def test_a_deeply_nested_payload_is_rejected_without_a_stack_overflow(self) -> None:
+        """The depth check must be iterative: a pathological payload must fail
+        cleanly rather than exhaust the interpreter's recursion limit first."""
+        payload = _nested_dict(5000)
+        with pytest.raises(EventPayloadTooLarge, match="nests"):
+            EventEnvelope(type="x", workspace_id="w1", payload=payload)
+
+    def test_a_non_json_encodable_payload_is_rejected_before_any_backend_sees_it(self) -> None:
+        with pytest.raises(EventPayloadTooLarge, match="not JSON-encodable"):
+            EventEnvelope(type="x", workspace_id="w1", payload={"bad": object()})
+
+    def test_a_lone_surrogate_is_rejected_cleanly_rather_than_crashing_raw(self) -> None:
+        """`json.dumps` can succeed on an unpaired surrogate; only the later
+        UTF-8 `.encode()` fails. That encode must happen inside the same
+        guarded step so the caller sees `EventPayloadTooLarge`, not a raw
+        `UnicodeEncodeError` escaping the constructor."""
+        with pytest.raises(EventPayloadTooLarge, match="not JSON-encodable"):
+            EventEnvelope(type="x", workspace_id="w1", payload={"bad": "\ud800"})
+
+    def test_nesting_through_tuples_counts_toward_the_depth_ceiling(self) -> None:
+        """`json` serializes tuples as arrays, so tuple nesting must count the
+        same as list nesting -- otherwise a tuple-nested payload sails past
+        the depth ceiling the dict/list check enforces."""
+        value: object = "leaf"
+        for _ in range(MAX_EVENT_FIELD_DEPTH + 5):
+            value = (value,)
+        payload = {"t": value}
+        with pytest.raises(EventPayloadTooLarge, match="nests"):
+            EventEnvelope(type="x", workspace_id="w1", payload=payload)
+
+    def test_the_byte_bound_is_checked_incrementally(self) -> None:
+        """The check must reject a payload many times over the ceiling
+        quickly, without first materializing the whole encoded string
+        (#1164 finding: unbounded `json.dumps` before the length check)."""
+        huge = _payload_of_exact_size(MAX_EVENT_FIELD_BYTES * 20)
+        start = time.monotonic()
+        with pytest.raises(EventPayloadTooLarge):
+            EventEnvelope(type="x", workspace_id="w1", payload=huge)
+        assert time.monotonic() - start < 2.0
+
+    async def test_the_bound_is_enforced_before_a_store_ever_receives_the_event(
+        self, store: EventStore
+    ) -> None:
+        oversized = _payload_of_exact_size(MAX_EVENT_FIELD_BYTES + 1)
+        with pytest.raises(EventPayloadTooLarge):
+            await store.append(EventEnvelope(type="x", workspace_id="w1", payload=oversized))
+
+    async def test_a_legacy_oversized_row_can_still_be_read_back(self) -> None:
+        """A row written before #1164 tightened the bound must stay readable:
+        `SqliteEventStore` reconstructs rows via `reconstruct_persisted_event`,
+        which skips the (retroactively tunable) size ceiling rather than
+        raising on every read of pre-existing data."""
+        conn = await aiosqlite.connect(":memory:")
+        try:
+            legacy_store = SqliteEventStore(conn)
+            await legacy_store.ensure_schema()
+            oversized_payload = _payload_of_exact_size(MAX_EVENT_FIELD_BYTES + 1)
+            await conn.execute(
+                """INSERT INTO canonical_event_log (
+                    event_id, stream_id, sequence, type, timestamp,
+                    workspace_id, stream_scope, project_id, run_id, node_run_id,
+                    attempt_id, invocation_id, session_id, correlation_id, causation_id,
+                    source, actor_id, payload, provenance
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    "legacy-1",
+                    "workspace:w1",
+                    1,
+                    "x",
+                    0.0,
+                    "w1",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    json.dumps(oversized_payload),
+                    "{}",
+                ),
+            )
+            await conn.commit()
+
+            loaded = await legacy_store.get("legacy-1")
+
+            assert loaded is not None
+            assert loaded.payload == oversized_payload
+        finally:
+            await conn.close()
 
 
 class TestEventStoreContract:

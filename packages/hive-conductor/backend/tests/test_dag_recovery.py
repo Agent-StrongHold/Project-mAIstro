@@ -5,8 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from maistro.events.envelope import InMemoryEventStore
 from maistro.graph.definitions import Graph
 from maistro.runs.model import GraphSnapshot, Run, RunStatus
+from maistro.runs.recovery_events import CanonicalEventStoreSink, CanonicalRecoveryEventSink
 
 
 def _legacy_dag() -> dict:
@@ -79,9 +81,11 @@ async def test_recovery_owns_only_hive_legacy_admissions(monkeypatch: pytest.Mon
 
     graph_store = object()
     run_store = object()
-    event_bus = object()
+    canonical_events = CanonicalEventStoreSink(InMemoryEventStore())
     container = SimpleNamespace(
-        graph_run_store=graph_store, run_store=run_store, event_bus=event_bus
+        graph_run_store=graph_store,
+        run_store=run_store,
+        canonical_event_publisher=canonical_events,
     )
     captured: dict = {}
 
@@ -96,7 +100,7 @@ async def test_recovery_owns_only_hive_legacy_admissions(monkeypatch: pytest.Mon
     assert captured["store"] is graph_store
     assert captured["run_store"] is run_store
     assert captured["limit"] == 7
-    assert captured["events"] is event_bus
+    assert isinstance(captured["events"], CanonicalRecoveryEventSink)
 
     owned, _ = _queued_run(source="hive_legacy_dag")
     foreign, _ = _queued_run(source="some_other_consumer")
@@ -275,14 +279,14 @@ async def test_starting_the_recovery_cadence_twice_keeps_one_task(
 async def test_wakeup_owns_only_hive_legacy_admissions(monkeypatch: pytest.MonkeyPatch) -> None:
     """The timed half of the recovery cadence wakes due continuations through
     the canonical seam with the same ownership rule as the bootstrap half, and
-    reports its crash dispositions on the Container's canonical Event bus."""
+    reports its crash dispositions on the Container's canonical EventStore."""
     import services.canonical_dag_runner as runner
 
-    event_bus = object()
+    canonical_events = CanonicalEventStoreSink(InMemoryEventStore())
     container = SimpleNamespace(
         graph_run_store=object(),
         run_store=object(),
-        event_bus=event_bus,
+        canonical_event_publisher=canonical_events,
     )
     captured: dict = {}
 
@@ -296,7 +300,7 @@ async def test_wakeup_owns_only_hive_legacy_admissions(monkeypatch: pytest.Monke
     assert await runner.wake_due_dag_runs(limit=5) == 2
     assert captured["store"] is container.graph_run_store
     assert captured["run_store"] is container.run_store
-    assert captured["events"] is event_bus
+    assert isinstance(captured["events"], CanonicalRecoveryEventSink)
     assert captured["limit"] == 5
 
     owned, _ = _queued_run(source="hive_legacy_dag")

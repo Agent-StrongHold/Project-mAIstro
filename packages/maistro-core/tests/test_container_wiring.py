@@ -113,6 +113,59 @@ async def test_process_durable_events_delivers_to_matching_trigger() -> None:
     assert not (await container.trigger_store.get("t1")).enabled  # type: ignore[union-attr]
 
 
+async def test_durable_bridge_failure_is_explicit() -> None:
+    from maistro.events.bus import Event, EventSubscriberFailure
+
+    container = await _container()
+
+    async def fail_append(**_kwargs: object) -> None:
+        raise OSError("event store unavailable")
+
+    container.durable_event_log.append = fail_append  # type: ignore[method-assign]
+    with pytest.raises(EventSubscriberFailure, match="event store unavailable"):
+        await container.event_bus.emit(Event(event_type="agent.created"))
+    assert container.event_bus.get_history() == []
+
+
+async def test_durable_replay_cursor_survives_container_restart(tmp_path: Path) -> None:
+    from maistro.events.bus import Event
+    from maistro.events.trigger_store import TriggerDefinition
+
+    database_url = f"sqlite:///{tmp_path / 'container-events.db'}"
+    first = await _container(database_url=database_url)
+    first_delivered = []
+
+    async def first_caller(_trigger: object, event: object) -> None:
+        first_delivered.append(event)
+
+    first.handler_caller = first_caller
+    await first.trigger_store.add(
+        TriggerDefinition(trigger_id="restart-trigger", event_pattern="agent.*")
+    )
+    await first.event_bus.emit(Event(event_type="agent.created"))
+    assert await first.process_durable_events() == 1
+    assert len(first_delivered) == 1
+    await first.aclose()
+
+    second = await _container(database_url=database_url)
+    second_delivered = []
+
+    async def second_caller(_trigger: object, event: object) -> None:
+        second_delivered.append(event)
+
+    second.handler_caller = second_caller
+    try:
+        # The acknowledged first event is not replayed after restart.
+        assert await second.process_durable_events() == 1
+        assert second_delivered == []
+
+        await second.event_bus.emit(Event(event_type="agent.created"))
+        assert await second.process_durable_events() == 2
+        assert len(second_delivered) == 1
+    finally:
+        await second.aclose()
+
+
 # --- LLM providers (SPEC-070226-cb8d) -----------------------------------------
 
 
