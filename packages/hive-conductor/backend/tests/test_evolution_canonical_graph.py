@@ -274,6 +274,49 @@ async def test_seeding_during_evaluation_cannot_expand_frozen_pair_plan(
 
 
 @pytest.mark.asyncio
+async def test_seeding_during_battle_traversal_cannot_change_persisted_pairs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _MutatingTournament(_Tournament):
+        def __init__(self) -> None:
+            super().__init__()
+            self._seeded = False
+
+        def record_battle(self, **kwargs: Any) -> None:
+            super().record_battle(**kwargs)
+            if not self._seeded:
+                population.add(_Genome("battle-seeded"))
+                seeded = population.get("battle-seeded")
+                assert seeded is not None
+                seeded.eval_scores["proxy"] = 0.88
+                self._seeded = True
+
+    monkeypatch.setattr(cycle_module, "EvolutionCycle", _Cycle)
+    population = _Population([_Genome(f"g{index}") for index in range(1, 5)])
+    tournament = _MutatingTournament()
+    owner = await _container()
+
+    record = await run_canonical_evolution_cycle(
+        population=population,
+        tournament=tournament,
+        config=_config(population_size=5, eval_batch_size=4),
+        harness=_Harness(),
+        container=owner,
+    )
+
+    assert record.run.status is RunStatus.COMPLETED
+    assert len(tournament.battles) == 2
+    assert all("battle-seeded" not in battle for battle in tournament.battles)
+    plan = next(
+        item
+        for item in await owner.run_store.list_node_runs(record.run_id)
+        if item.node_id == "evolve-plan-pairs"
+    )
+    assert len(plan.result["pairs"]) == 2
+    assert all("battle-seeded" not in pair for pair in plan.result["pairs"])
+
+
+@pytest.mark.asyncio
 async def test_multiple_battle_nodes_finish_before_finalization(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

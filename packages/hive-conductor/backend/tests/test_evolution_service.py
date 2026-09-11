@@ -313,6 +313,54 @@ async def test_racing_manual_and_background_cycles_are_serialized(
     assert service.cycle_count == 2
 
 
+@pytest.mark.asyncio
+async def test_seed_waits_for_active_cycle_and_joins_the_next_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.evolution_graph as evolution_graph
+    from services.evolution import _EvolutionService
+
+    import maistro_evolve.diversity as diversity
+    from maistro.runs.model import RunStatus
+
+    class _StubPop:
+        def list_all(self) -> list[Any]:
+            return []
+
+        def add(self, genome: Any) -> None:
+            return None
+
+    class _StubTour:
+        pass
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _canonical(**_: Any) -> Any:
+        entered.set()
+        await release.wait()
+        return SimpleNamespace(
+            run_id="canonical-evolve-run",
+            run=SimpleNamespace(status=RunStatus.COMPLETED, error=None),
+        )
+
+    monkeypatch.setattr(evolution_graph, "run_canonical_evolution_cycle", _canonical)
+    monkeypatch.setattr(diversity, "emergency_spawn", lambda existing, count: [])
+    service = _EvolutionService()
+    service._population = _StubPop()
+    service._tournament = _StubTour()
+
+    cycle = asyncio.create_task(service._run_one_cycle())
+    await entered.wait()
+    seed = asyncio.create_task(service.seed_population(3))
+    await asyncio.sleep(0)
+    assert seed.done() is False
+
+    release.set()
+    assert await cycle == "canonical-evolve-run"
+    assert await seed == (0, 0)
+
+
 def test_run_one_cycle_does_not_count_failed_canonical_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
