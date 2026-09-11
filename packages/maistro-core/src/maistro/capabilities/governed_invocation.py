@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from maistro.capabilities.approval_store import (
@@ -20,7 +21,9 @@ from maistro.capabilities.invocation import (
     InvocationExecutionService,
     InvocationStatus,
     ProviderExecutor,
+    ProviderReconciliationAdapter,
     ProviderResolver,
+    ReconciliationDisposition,
     UsageExtractor,
 )
 from maistro.capabilities.slots.approval import ApprovalRequest
@@ -107,6 +110,47 @@ class GovernedInvocationExecutionService:
             node_run_id=node_run_id,
             effect_key=effect_key,
         )
+
+    async def discover_ambiguous(self, *, stale_before: datetime) -> list[Invocation]:
+        """Expose stale-effect discovery through the governed composition root."""
+
+        return await self._invocations.discover_ambiguous(stale_before=stale_before)
+
+    async def reconcile(
+        self,
+        invocation_id: str,
+        *,
+        disposition: ReconciliationDisposition,
+        source: str,
+        actor: str,
+        reason: str,
+        evidence: Any | None,
+        workspace_id: str,
+        project_id: str,
+        result: Any | None = None,
+    ) -> Invocation:
+        """Resolve evidence without creating a provider-dispatch bypass."""
+
+        return await self._invocations.reconcile(
+            invocation_id,
+            disposition=disposition,
+            source=source,
+            actor=actor,
+            reason=reason,
+            evidence=evidence,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            result=result,
+        )
+
+    async def reconcile_with_provider(
+        self,
+        invocation_id: str,
+        adapter: ProviderReconciliationAdapter,
+    ) -> Invocation:
+        """Delegate provider evidence while retaining Invocation authority."""
+
+        return await self._invocations.reconcile_with_provider(invocation_id, adapter)
 
     async def invoke(
         self,

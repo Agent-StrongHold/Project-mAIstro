@@ -10,6 +10,7 @@ import aiosqlite
 import pytest
 
 from maistro.capabilities.binding import Binding
+from maistro.capabilities.effect_context import new_in_memory_effect_context
 from maistro.capabilities.invocation import (
     EffectNotApplied,
     InMemoryInvocationStore,
@@ -245,6 +246,46 @@ async def test_provider_reconciliation_settles_applied_without_dispatch() -> Non
     )
     assert settled.status is InvocationStatus.COMPLETED
     assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_is_exposed_by_the_governed_context() -> None:
+    effects = new_in_memory_effect_context()
+    binding = _binding()
+
+    async def ambiguous(_provider: Any, _request: Any) -> None:
+        raise ConnectionError("transport lost")
+
+    with pytest.raises(ConnectionError):
+        await effects.invocations.invoke(
+            binding=binding,
+            run_id="run-governed",
+            node_run_id="node-governed",
+            attempt_id="attempt-1",
+            effect_key="write:governed",
+            request={"id": "remote-governed"},
+            resolver=_resolver,
+            executor=ambiguous,
+        )
+    unknown = await effects.invocations.latest_effect(
+        binding=binding,
+        run_id="run-governed",
+        node_run_id="node-governed",
+        effect_key="write:governed",
+    )
+    assert unknown is not None
+    settled = await effects.invocations.reconcile(
+        unknown.invocation_id,
+        disposition=ReconciliationDisposition.APPLIED,
+        source="provider-status",
+        actor="provider-a",
+        reason="idempotency lookup found remote-governed",
+        evidence={"remote_id": "remote-governed"},
+        result={"remote_id": "remote-governed"},
+        workspace_id="workspace-1",
+        project_id="project-1",
+    )
+    assert settled.status is InvocationStatus.COMPLETED
 
 
 @pytest.mark.asyncio
