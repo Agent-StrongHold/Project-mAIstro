@@ -8,23 +8,28 @@ permissions:
 jobs:
   source:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Archive exact tracked source for local verification
+      - name: Prepare locked test dependencies for isolated local verification
         run: |
-          git archive --format=tar --output=pr1276-source.tar 2b4e6892956642d284a1da41a05ca0de43f3e5c2
-          git ls-tree -r 2b4e6892956642d284a1da41a05ca0de43f3e5c2 > pr1276-source-manifest.txt
-          git rev-parse '2b4e6892956642d284a1da41a05ca0de43f3e5c2^{tree}' > pr1276-source-tree.txt
+          python3 - <<'PY'
+          import pathlib, tomllib
+          lock = tomllib.loads(pathlib.Path('uv.lock').read_text())
+          needed = {'structlog', 'aiosqlite', 'hypothesis', 'ruff', 'asyncpg', 'pgvector', 'croniter', 'fastmcp', 'tenacity', 'bip-utils', 'pynacl', 'pytest-timeout', 'mypy', 'vulture', 'types-pyyaml', 'types-regex'}
+          selected = {p['name']: p['version'] for p in lock['package'] if p['name'].lower() in needed}
+          pathlib.Path('verification-requirements.txt').write_text(''.join(f'{name}=={version}\n' for name,version in sorted(selected.items())))
+          print(pathlib.Path('verification-requirements.txt').read_text())
+          PY
+          python3 -m pip download -r verification-requirements.txt --dest verification-wheels --only-binary=:all: --python-version 3.13 --implementation cp --abi cp313 --platform manylinux_2_28_x86_64 --platform manylinux2014_x86_64 --platform linux_x86_64
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: pr1276-exact-source
+          name: pr1276-test-dependencies
           path: |
-            pr1276-source.tar
-            pr1276-source-manifest.txt
-            pr1276-source-tree.txt
+            verification-wheels
+            verification-requirements.txt
           retention-days: 1
           if-no-files-found: error
