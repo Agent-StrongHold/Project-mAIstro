@@ -121,6 +121,31 @@ async def test_malformed_verdict_reuses_durable_pause_deadline(
     assert result.resume_at == deadline
 
 
+@pytest.mark.ac("ADR-090726-9a4e/AC-2")
+@pytest.mark.ac("ADR-090726-9a4e/AC-3")
+@pytest.mark.ac("ADR-090726-9a4e/AC-4")
+@pytest.mark.parametrize(
+    ("kind", "inputs"),
+    [
+        ("human.approve_draft", {"draft": {"ticket": "PROJ-1"}}),
+        ("human.delegate_to_role", {"role": "on_call_pm"}),
+        ("human.review_and_edit", {"document": {"terms": {"price": 10}}}),
+    ],
+)
+@pytest.mark.parametrize("carried", [{}, {"resume_at": "2026-09-07T12:00:00"}])
+async def test_invalid_carried_pause_never_recomputes_deadline(
+    kind: str, inputs: dict[str, Any], carried: dict[str, Any]
+) -> None:
+    """A present but invalid pause marker cannot fall back to wall-clock time."""
+    ctx = _ctx("n", {"verdict": ""})
+    ctx.metadata["resumed_pause"] = carried
+
+    result = await get_node(kind)().run(inputs, ctx)
+
+    assert result.status == "paused"
+    assert result.resume_at is None
+
+
 # --- human.delegate_to_role ---------------------------------------------------
 
 
