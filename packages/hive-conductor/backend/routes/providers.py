@@ -15,7 +15,6 @@ trigger billed calls.
 from __future__ import annotations
 
 import logging
-import os
 from datetime import UTC, datetime
 from typing import Any
 
@@ -102,30 +101,6 @@ def _vault() -> Any:
             detail=f"Secrets vault unavailable — install the age toolchain. ({exc})",
         ) from exc
     return Vault(vault_path=vault_path, identity_path=identity_path)
-
-
-def _litellm_admin_base() -> str:
-    base = os.environ.get("LITELLM_PROXY_URL")
-    if not base:
-        from config import get_settings
-
-        api_base = os.environ.get("LITELLM_API_BASE") or (get_settings().litellm_api_base or "")
-        base = api_base.removesuffix("/v1")
-    if not base:
-        raise HTTPException(status_code=503, detail="LiteLLM gateway is not configured")
-    return base.rstrip("/")
-
-
-def _litellm_master_key() -> str:
-    key = os.environ.get("LITELLM_PROXY_KEY") or os.environ.get("LITELLM_API_KEY")
-    if not key:
-        from config import get_settings
-
-        secret = get_settings().litellm_api_key
-        key = secret.get_secret_value() if secret is not None else ""
-    if not key:
-        raise HTTPException(status_code=503, detail="LiteLLM master key is not configured")
-    return key
 
 
 def _kv() -> Any | None:
