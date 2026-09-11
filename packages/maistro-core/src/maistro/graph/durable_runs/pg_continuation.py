@@ -36,9 +36,9 @@ class PgGraphContinuationStore:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """INSERT INTO graph_continuations
-                       (run_id, status, project_id, created_at, resume_at, version,
-                        continuation)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7::text::jsonb)
+                       (run_id, status, project_id, admission_source, created_at, resume_at,
+                        version, continuation)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text::jsonb)
                    ON CONFLICT (run_id) DO NOTHING
                    RETURNING run_id""",
                 *_values(continuation),
@@ -62,9 +62,10 @@ class PgGraphContinuationStore:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """UPDATE graph_continuations
-                      SET status = $2, project_id = $3, created_at = $4, resume_at = $5,
-                          version = $6, continuation = $7::text::jsonb
-                    WHERE run_id = $1 AND version < $6
+                      SET status = $2, project_id = $3, admission_source = $4,
+                          created_at = $5, resume_at = $6, version = $7,
+                          continuation = $8::text::jsonb
+                    WHERE run_id = $1 AND version < $7
                 RETURNING run_id""",
                 *_values(continuation),
             )
@@ -92,34 +93,55 @@ class PgGraphContinuationStore:
         *,
         limit: int = 100,
         project_id: str | None = None,
+        admission_source: str | None = None,
     ) -> list[str]:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT run_id FROM graph_continuations
-                    WHERE status = $1 AND ($2::text IS NULL OR project_id = $2)
+                    WHERE status = $1
+                      AND ($2::text IS NULL OR project_id = $2)
+                      AND ($3::text IS NULL OR admission_source = $3)
                  ORDER BY created_at ASC, run_id ASC
-                    LIMIT $3""",
+                    LIMIT $4""",
                 status.value,
                 project_id,
+                admission_source,
                 limit,
             )
         return [str(row["run_id"]) for row in rows]
 
-    async def list_due_run_ids(self, *, now: datetime, limit: int = 100) -> list[str]:
-        """Use persisted wait/claim deadlines to find bounded recovery candidates."""
+    async def list_due_run_ids(
+        self,
+        *,
+        now: datetime,
+        limit: int = 100,
+        admission_source: str | None = None,
+        after: tuple[datetime, str] | None = None,
+    ) -> list[str]:
+        """Use indexed ownership and deadline columns for bounded recovery scans."""
         async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                """SELECT run_id FROM graph_continuations
-                    WHERE status IN ($1, $2, $3)
-                      AND resume_at IS NOT NULL
-                      AND resume_at <= $4
-                 ORDER BY resume_at ASC, run_id ASC
-                    LIMIT $5""",
+            params: list[Any] = [
                 RunStatus.WAITING.value,
                 RunStatus.PAUSED.value,
                 RunStatus.RUNNING.value,
                 now,
-                limit,
+                admission_source,
+            ]
+            after_sql = ""
+            if after is not None:
+                after_sql = " AND (resume_at > $6 OR (resume_at = $6 AND run_id > $7))"
+                params.extend(after)
+            params.append(limit)
+            rows = await conn.fetch(
+                f"""SELECT run_id FROM graph_continuations
+                    WHERE status IN ($1, $2, $3)
+                      AND resume_at IS NOT NULL
+                      AND resume_at <= $4
+                      AND ($5::text IS NULL OR admission_source = $5)
+                      {after_sql}
+                 ORDER BY resume_at ASC, run_id ASC
+                    LIMIT ${len(params)}""",
+                *params,
             )
         return [str(row["run_id"]) for row in rows]
 
@@ -141,6 +163,7 @@ def _values(continuation: GraphContinuation) -> tuple[Any, ...]:
         continuation.run_id,
         continuation.status.value,
         continuation.project_id,
+        continuation.admission_source,
         continuation.created_at,
         continuation.resume_at,
         continuation.version,

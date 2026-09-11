@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.graph.traversal_commit import TraversalCheckpoint, TraversalCommit
 from maistro.runs.model import RunStatus
+from maistro.runs.sources import ADMISSION_SOURCE
 
 from .types import DurableRunRecord
 
@@ -47,6 +48,9 @@ class GraphContinuation(BaseModel):
     version: int = Field(default=0, ge=0)
     status: RunStatus = RunStatus.CREATED
     project_id: str = ""
+    # Nullable for pre-ownership continuations; recovery never infers an owner
+    # for those rows from whichever consumer happens to scan them first.
+    admission_source: str | None = None
     created_at: datetime | None = None
 
     @classmethod
@@ -60,6 +64,11 @@ class GraphContinuation(BaseModel):
             version=record.version,
             status=record.run.status,
             project_id=record.run.project_id,
+            admission_source=(
+                record.run.provenance.get(ADMISSION_SOURCE)
+                if isinstance(record.run.provenance.get(ADMISSION_SOURCE), str)
+                else None
+            ),
             created_at=record.run.created_at,
         )
 
@@ -84,10 +93,18 @@ class GraphContinuationStore(Protocol):
         *,
         limit: int = 100,
         project_id: str | None = None,
+        admission_source: str | None = None,
     ) -> list[str]: ...
 
-    async def list_due_run_ids(self, *, now: datetime, limit: int = 100) -> list[str]:
-        """Return persisted wait/claim continuations whose deadline is due."""
+    async def list_due_run_ids(
+        self,
+        *,
+        now: datetime,
+        limit: int = 100,
+        admission_source: str | None = None,
+        after: tuple[datetime, str] | None = None,
+    ) -> list[str]:
+        """Return due rows after owner filtering and an exclusive cursor."""
         ...
 
     async def list_run_ids_for_project(self, project_id: str, *, limit: int = 25) -> list[str]: ...
@@ -137,24 +154,37 @@ class InMemoryGraphContinuationStore:
         *,
         limit: int = 100,
         project_id: str | None = None,
+        admission_source: str | None = None,
     ) -> list[str]:
         rows = [
             row
             for row in self._rows.values()
-            if row.status is status and (project_id is None or row.project_id == project_id)
+            if row.status is status
+            and (project_id is None or row.project_id == project_id)
+            and (admission_source is None or row.admission_source == admission_source)
         ]
         rows.sort(key=lambda row: (row.created_at or datetime.min, row.run_id))
         return [row.run_id for row in rows[:limit]]
 
-    async def list_due_run_ids(self, *, now: datetime, limit: int = 100) -> list[str]:
+    async def list_due_run_ids(
+        self,
+        *,
+        now: datetime,
+        limit: int = 100,
+        admission_source: str | None = None,
+        after: tuple[datetime, str] | None = None,
+    ) -> list[str]:
         rows = [
             row
             for row in self._rows.values()
             if row.status in _RECOVERY_VISIBLE_STATUSES
             and row.resume_at is not None
             and row.resume_at <= now
+            and (admission_source is None or row.admission_source == admission_source)
         ]
         rows.sort(key=lambda row: (row.resume_at, row.run_id))
+        if after is not None:
+            rows = [row for row in rows if (row.resume_at, row.run_id) > after]
         return [row.run_id for row in rows[:limit]]
 
     async def list_run_ids_for_project(self, project_id: str, *, limit: int = 25) -> list[str]:
@@ -171,6 +201,7 @@ CREATE TABLE IF NOT EXISTS graph_continuations (
     run_id            TEXT PRIMARY KEY,
     status            TEXT NOT NULL,
     project_id        TEXT NOT NULL,
+    admission_source  TEXT,
     created_at        TEXT,
     resume_at         TEXT,
     version           INTEGER NOT NULL DEFAULT 0,
@@ -178,7 +209,9 @@ CREATE TABLE IF NOT EXISTS graph_continuations (
 );
 
 CREATE INDEX IF NOT EXISTS idx_graph_continuations_status
-    ON graph_continuations (status, project_id);
+    ON graph_continuations (status, project_id, admission_source);
+CREATE INDEX IF NOT EXISTS idx_graph_continuations_status_owner
+    ON graph_continuations (status, admission_source, created_at);
 
 CREATE INDEX IF NOT EXISTS idx_graph_continuations_project
     ON graph_continuations (project_id, created_at);
@@ -196,6 +229,16 @@ class SqliteGraphContinuationStore:
         self._lock = asyncio.Lock()
 
     async def ensure_schema(self) -> None:
+        # The SQLite twin can outlive the Alembic schema. Add the nullable
+        # owner column before creating the owner-aware indexes so old local
+        # continuations remain readable and explicitly unclassified.
+        columns = await self._conn.execute("PRAGMA table_info(graph_continuations)")
+        if columns.description is not None:
+            names = {str(row[1]) for row in await columns.fetchall()}
+            if names and "admission_source" not in names:
+                await self._conn.execute(
+                    "ALTER TABLE graph_continuations ADD COLUMN admission_source TEXT"
+                )
         await self._conn.executescript(_SCHEMA)
         await self._conn.commit()
 
@@ -236,38 +279,47 @@ class SqliteGraphContinuationStore:
         *,
         limit: int = 100,
         project_id: str | None = None,
+        admission_source: str | None = None,
     ) -> list[str]:
-        if project_id is None:
-            cursor = await self._conn.execute(
-                "SELECT run_id FROM graph_continuations WHERE status = ? "
-                "ORDER BY created_at ASC, run_id ASC LIMIT ?",
-                (status.value, limit),
-            )
-        else:
-            cursor = await self._conn.execute(
-                "SELECT run_id FROM graph_continuations "
-                "WHERE status = ? AND project_id = ? "
-                "ORDER BY created_at ASC, run_id ASC LIMIT ?",
-                (status.value, project_id, limit),
-            )
+        query = (
+            "SELECT run_id FROM graph_continuations "
+            "WHERE status = ? AND (? IS NULL OR project_id = ?) "
+            "AND (? IS NULL OR admission_source = ?) "
+            "ORDER BY created_at ASC, run_id ASC LIMIT ?"
+        )
+        cursor = await self._conn.execute(
+            query,
+            (status.value, project_id, project_id, admission_source, admission_source, limit),
+        )
         return [str(row[0]) for row in await cursor.fetchall()]
 
-    async def list_due_run_ids(self, *, now: datetime, limit: int = 100) -> list[str]:
-        cursor = await self._conn.execute(
-            """SELECT run_id FROM graph_continuations
+    async def list_due_run_ids(
+        self,
+        *,
+        now: datetime,
+        limit: int = 100,
+        admission_source: str | None = None,
+        after: tuple[datetime, str] | None = None,
+    ) -> list[str]:
+        query = """SELECT run_id FROM graph_continuations
                 WHERE status IN (?, ?, ?)
                   AND resume_at IS NOT NULL
                   AND resume_at <= ?
-             ORDER BY resume_at ASC, run_id ASC
-                LIMIT ?""",
-            (
-                RunStatus.WAITING.value,
-                RunStatus.PAUSED.value,
-                RunStatus.RUNNING.value,
-                now.isoformat(),
-                limit,
-            ),
-        )
+                  AND (? IS NULL OR admission_source = ?)"""
+        params: list[object] = [
+            RunStatus.WAITING.value,
+            RunStatus.PAUSED.value,
+            RunStatus.RUNNING.value,
+            now.isoformat(),
+            admission_source,
+            admission_source,
+        ]
+        if after is not None:
+            query += " AND (resume_at, run_id) > (?, ?)"
+            params.extend((after[0].isoformat(), after[1]))
+        query += " ORDER BY resume_at ASC, run_id ASC LIMIT ?"
+        params.append(limit)
+        cursor = await self._conn.execute(query, params)
         return [str(row[0]) for row in await cursor.fetchall()]
 
     async def list_run_ids_for_project(self, project_id: str, *, limit: int = 25) -> list[str]:
@@ -292,6 +344,7 @@ class SqliteGraphContinuationStore:
         values = (
             continuation.status.value,
             continuation.project_id,
+            continuation.admission_source,
             continuation.created_at.isoformat() if continuation.created_at else None,
             continuation.resume_at.isoformat() if continuation.resume_at else None,
             continuation.version,
@@ -300,16 +353,16 @@ class SqliteGraphContinuationStore:
         if insert:
             await self._conn.execute(
                 """INSERT INTO graph_continuations
-                       (status, project_id, created_at, resume_at, version,
+                       (status, project_id, admission_source, created_at, resume_at, version,
                         continuation_json, run_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (*values, continuation.run_id),
             )
         else:
             await self._conn.execute(
                 """UPDATE graph_continuations
-                      SET status = ?, project_id = ?, created_at = ?, resume_at = ?,
-                          version = ?, continuation_json = ?
+                      SET status = ?, project_id = ?, admission_source = ?, created_at = ?,
+                          resume_at = ?, version = ?, continuation_json = ?
                     WHERE run_id = ?""",
                 (*values, continuation.run_id),
             )

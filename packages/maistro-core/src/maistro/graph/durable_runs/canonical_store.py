@@ -137,11 +137,13 @@ class CanonicalDurableRunStore:
         *,
         limit: int = 100,
         project_id: str | None = None,
+        admission_source: str | None = None,
     ) -> list[DurableRunRecord]:
         run_ids = await self._continuations.list_run_ids_by_status(
             status,
             limit=limit,
             project_id=project_id,
+            admission_source=admission_source,
         )
         return await self._assemble_all(run_ids)
 
@@ -150,8 +152,15 @@ class CanonicalDurableRunStore:
         *,
         now: datetime,
         limit: int = 100,
+        admission_source: str | None = None,
+        after: tuple[datetime, str] | None = None,
     ) -> list[DurableRunRecord]:
-        run_ids = await self._continuations.list_due_run_ids(now=now, limit=limit)
+        run_ids = await self._continuations.list_due_run_ids(
+            now=now,
+            limit=limit,
+            admission_source=admission_source,
+            after=after,
+        )
         records = await self._assemble_all(run_ids)
         return [
             record

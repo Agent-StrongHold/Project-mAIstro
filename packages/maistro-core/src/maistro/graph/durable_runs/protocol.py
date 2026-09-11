@@ -28,10 +28,18 @@ class DurableRunStore(Protocol):
         *,
         limit: int = 100,
         project_id: str | None = None,
+        admission_source: str | None = None,
     ) -> list[DurableRunRecord]: ...
 
-    async def list_due(self, *, now: datetime, limit: int = 100) -> list[DurableRunRecord]:
-        """Return persisted graph continuations whose timed resume is due."""
+    async def list_due(
+        self,
+        *,
+        now: datetime,
+        limit: int = 100,
+        admission_source: str | None = None,
+        after: tuple[datetime, str] | None = None,
+    ) -> list[DurableRunRecord]:
+        """Return due continuations after applying indexed ownership filtering."""
         ...
 
     async def list_for_project(
