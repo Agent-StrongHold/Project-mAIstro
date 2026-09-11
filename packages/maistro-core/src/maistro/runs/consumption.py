@@ -104,7 +104,18 @@ class ScheduleAttemptExecutor:
         self._attempts = AttemptExecutionService(
             store=run_store, runtime=resolved_runtime, lease_ttl=lease_ttl
         )
-        self._service = RunExecutionService(store=run_store, runtime=resolved_runtime)
+        # Same `lease_ttl` as `_attempts` above (#1112, #1124): a resume is a
+        # retry of the same logical work as first reach, and a fresh Attempt
+        # `retry_node` creates without a TTL never expires and is never
+        # reclaimable -- a scheduled Run would be crash-recoverable on its
+        # first physical try and stranded RUNNING forever after any later
+        # timer/HITL pause. `RunExecutionService.retry_node` forwards its
+        # `lease_ttl` straight to the same `AttemptExecutionService` heartbeat
+        # mechanism `_attempts` uses, so first reach and resume share one
+        # recovery guarantee rather than two.
+        self._service = RunExecutionService(
+            store=run_store, runtime=resolved_runtime, lease_ttl=lease_ttl
+        )
         self._runtime_id = type(resolved_runtime).__name__
         self._lease_ttl = lease_ttl
         self._timeout_s = timeout_s
