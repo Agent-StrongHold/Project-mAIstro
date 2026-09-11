@@ -29,6 +29,21 @@ class JobStatus(StrEnum):
     FAILED = "failed"
 """
 
+WORK_LITERAL = """
+import typing
+from typing_extensions import Literal as L
+
+RunStatus: TypeAlias = typing.Literal[
+    "pending",
+    "running",
+    "completed",
+    "errored",
+    "stopped",
+] | None
+QueueState = L["queued", "running", "failed"]
+ConfigurationValues = typing.Literal["queued", "running", "failed"]
+"""
+
 
 @pytest.fixture(scope="module")
 def gate():
@@ -95,6 +110,24 @@ def test_a_dotted_enum_base_is_recognised(gate) -> None:
     assert set(gate.work_state_enums(source, "pkg.jobs")) == {"pkg.jobs::JobStatus"}
 
 
+def test_literal_aliases_support_qualified_imports_pep604_and_split_values(gate) -> None:
+    found = gate.work_state_literals(WORK_LITERAL, "pkg.jobs")
+    assert found == {
+        "pkg.jobs::RunStatus": {"PENDING", "RUNNING", "COMPLETED", "ERRORED", "STOPPED"},
+        "pkg.jobs::QueueState": {"QUEUED", "RUNNING", "FAILED"},
+    }
+
+
+def test_literal_alias_requires_a_status_shaped_name(gate) -> None:
+    source = 'from typing import Literal\nValues = Literal["queued", "running", "failed"]'
+    assert gate.work_state_literals(source, "pkg.jobs") == {}
+
+
+def test_literal_alias_with_two_work_states_is_below_signature(gate) -> None:
+    source = 'from typing import Literal\nJobStatus = Literal["running", "failed"]'
+    assert gate.work_state_literals(source, "pkg.jobs") == {}
+
+
 def test_syntax_errors_do_not_crash_the_sweep(gate) -> None:
     assert gate.work_state_enums("def (:", "pkg.broken") == {}
 
@@ -111,6 +144,12 @@ def test_an_unclassified_enum_fails_by_name(gate) -> None:
     found = {"pkg.jobs::JobStatus": {"PENDING", "RUNNING", "FAILED"}}
     failures = gate.audit(ledger(), found)
     assert any("pkg.jobs::JobStatus" in f and "unclassified" in f for f in failures)
+
+
+def test_an_unclassified_literal_fails_by_name(gate) -> None:
+    found = {"services.rsi::RunStatus": {"PENDING", "RUNNING", "COMPLETED"}}
+    failures = gate.audit(ledger(), found)
+    assert any("services.rsi::RunStatus" in f and "unclassified" in f for f in failures)
 
 
 def test_an_entry_whose_enum_is_gone_fails_until_pruned(gate) -> None:
@@ -143,6 +182,15 @@ def test_an_invented_classification_fails(gate) -> None:
     found = {"pkg.jobs::JobStatus": {"PENDING", "RUNNING", "FAILED"}}
     failures = gate.audit(ledger(**{"pkg.jobs::JobStatus": entry(classification="FINE")}), found)
     assert any("'FINE' is not one of" in f for f in failures)
+
+
+@pytest.mark.parametrize("classification", ["DOMAIN", "PROJECTION", "RECEIPT"])
+def test_noncanonical_dispositions_are_allowed(gate, classification: str) -> None:
+    found = {"pkg.jobs::JobStatus": {"PENDING", "RUNNING", "FAILED"}}
+    assert (
+        gate.audit(ledger(**{"pkg.jobs::JobStatus": entry(classification=classification)}), found)
+        == []
+    )
 
 
 def test_a_missing_rationale_fails(gate) -> None:
