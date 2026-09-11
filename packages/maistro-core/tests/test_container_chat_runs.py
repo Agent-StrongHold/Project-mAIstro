@@ -11,13 +11,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from maistro.container import Container, create_container
 from maistro.runs.admission import ADMISSION_SOURCE
-from maistro.runs.chat_admission import ADMISSION_INCOMPLETE, CHAT_SOURCE, SESSION_ID_KEY
-from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
+from maistro.runs.chat_admission import (
+    ADMISSION_INCOMPLETE,
+    CHAT_SOURCE,
+    EXECUTION_NEVER_STARTED,
+    SESSION_ID_KEY,
+)
+from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
 from maistro.types.config import AgentConfig
 
 
@@ -455,3 +461,138 @@ async def test_compensation_failure_is_logged_never_raised(
         await container._cancel_incomplete_admission(run)
 
     assert "could not be compensated" in caplog.text
+
+
+# --- #338: RUNNING chat admission with no NodeRun (crash after admission) -
+
+
+async def _stranded_running_chat_run(
+    container: Container,
+    *,
+    age: timedelta = timedelta(minutes=10),
+) -> Run:
+    """A chat Run admitted for real, then backdated to RUNNING with no NodeRun.
+
+    Uses the real `chat_admitter` rather than a hand-built Graph so the shape
+    (single node, provenance) matches what `_admit_chat_turn` actually
+    produces. `ChatAttemptExecutor.execute()` is never called, which is the
+    point: this is what a process crash between admission returning and the
+    turn's first NodeRun being persisted leaves behind — durable RUNNING
+    state a request handler never got the chance to compensate.
+    """
+    admitted = await container.chat_admitter.admit(
+        [{"role": "user", "content": "hi"}],
+        session_id=None,
+        intent_hint="",
+        known_task_types=container.config.task_types,
+    )
+    assert admitted is not None
+    at = datetime.now(UTC) - age
+    await container.run_store.transition_run(admitted.run_id, RunStatus.QUEUED, at=at)
+    running = await container.run_store.transition_run(admitted.run_id, RunStatus.RUNNING, at=at)
+    return running
+
+
+async def test_stranded_running_admission_with_no_noderun_is_cancelled() -> None:
+    container = await _container()
+    stranded = await _stranded_running_chat_run(container)
+
+    recovered = await container.recover_stranded_chat_admissions()
+
+    assert recovered == 1
+    current = await container.run_store.get_run(stranded.run_id)
+    assert current is not None
+    assert current.status is RunStatus.CANCELLED
+    assert current.error == EXECUTION_NEVER_STARTED
+
+
+async def test_a_running_admission_still_within_its_grace_period_is_left_alone() -> None:
+    """A turn that started a moment ago is in flight, not stranded."""
+    container = await _container()
+    fresh = await _stranded_running_chat_run(container, age=timedelta(seconds=1))
+
+    recovered = await container.recover_stranded_chat_admissions()
+
+    assert recovered == 0
+    current = await container.run_store.get_run(fresh.run_id)
+    assert current is not None
+    assert current.status is RunStatus.RUNNING
+    assert current.error is None
+
+
+async def test_a_running_chat_run_with_a_noderun_already_is_left_alone() -> None:
+    """Old and RUNNING is not on its own stranded — a long turn looks the same
+    until its NodeRun is checked, which is why the sweep checks it."""
+    container = await _container()
+    running = await _stranded_running_chat_run(container)
+    node_id = running.graph.materialize().nodes[0].node_id
+    await container.run_store.create_node_run(running.run_id, node_id=node_id)
+
+    recovered = await container.recover_stranded_chat_admissions()
+
+    assert recovered == 0
+    current = await container.run_store.get_run(running.run_id)
+    assert current is not None
+    assert current.status is RunStatus.RUNNING
+
+
+async def test_a_stranded_admission_from_a_non_chat_source_is_left_alone() -> None:
+    """Scoped to `CHAT_SOURCE`: a schedule Run claims its NodeRun and Attempt
+    atomically with RUNNING (#251), so this state is not schedule's defect to
+    fix here even if it somehow arose."""
+    from maistro.graph import Graph, Node
+
+    container = await _container()
+    project_id = (await container.project_scope_store.create_root("non-chat")).project_id
+    graph = Graph(
+        workspace_id="non-chat",
+        project_id=project_id,
+        name="g",
+        nodes=[Node(node_id="n1", node_type="agent")],
+    )
+    run = await container.run_store.create_run(graph, provenance={ADMISSION_SOURCE: "schedule"})
+    at = datetime.now(UTC) - timedelta(minutes=10)
+    await container.run_store.transition_run(run.run_id, RunStatus.QUEUED, at=at)
+    await container.run_store.transition_run(run.run_id, RunStatus.RUNNING, at=at)
+
+    recovered = await container.recover_stranded_chat_admissions()
+
+    assert recovered == 0
+    current = await container.run_store.get_run(run.run_id)
+    assert current is not None
+    assert current.status is RunStatus.RUNNING
+
+
+async def test_stranded_admission_recovery_is_idempotent() -> None:
+    container = await _container()
+    stranded = await _stranded_running_chat_run(container)
+
+    first = await container.recover_stranded_chat_admissions()
+    second = await container.recover_stranded_chat_admissions()
+
+    assert first == 1
+    assert second == 0
+    current = await container.run_store.get_run(stranded.run_id)
+    assert current is not None
+    assert current.status is RunStatus.CANCELLED
+    assert current.error == EXECUTION_NEVER_STARTED
+
+
+async def test_stranded_admission_recovery_respects_the_limit() -> None:
+    container = await _container()
+    stranded = [await _stranded_running_chat_run(container) for _ in range(3)]
+
+    recovered = await container.recover_stranded_chat_admissions(limit=2)
+    assert recovered == 2
+
+    statuses = {
+        run.run_id: (await container.run_store.get_run(run.run_id)).status  # type: ignore[union-attr]
+        for run in stranded
+    }
+    assert sorted(statuses.values(), key=lambda status: status.value) == sorted(
+        [RunStatus.CANCELLED, RunStatus.CANCELLED, RunStatus.RUNNING],
+        key=lambda status: status.value,
+    )
+
+    remaining = await container.recover_stranded_chat_admissions()
+    assert remaining == 1

@@ -91,6 +91,13 @@ TIMEOUT_FAILURE = "timeout"
 #: for the log, not for anyone holding the run_id.
 ADMISSION_INCOMPLETE = "admission_incomplete"
 
+#: What a compensated Run records when admission reached RUNNING durably but
+#: nothing ever executed under it (#338). Distinct from `ADMISSION_INCOMPLETE`:
+#: admission itself finished here -- what never started is the physical
+#: Attempt, because the process died between `_admit_chat_turn` returning and
+#: `ChatAttemptExecutor.execute()` persisting the turn's first NodeRun.
+EXECUTION_NEVER_STARTED = "execution_never_started"
+
 
 def failure_category(exc: BaseException) -> str:
     """The failure a chat Run may record, with no provider detail in it.
@@ -327,6 +334,7 @@ __all__ = [
     "CHAT_SOURCE",
     "DEFAULT_TURN_NAME",
     "DEFERRED_AGENT_SELECTION",
+    "EXECUTION_NEVER_STARTED",
     "MAX_RECORDED_ANSWER_CHARS",
     "MAX_RETAINED_CHAT_RUNS",
     "REQUEST_ID_KEY",
