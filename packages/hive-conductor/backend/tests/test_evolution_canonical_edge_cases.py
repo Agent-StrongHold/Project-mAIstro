@@ -15,10 +15,13 @@ from services.evolution import (
     _EvolutionService,
 )
 from services.evolution_graph import (
+    CanonicalExecutionUnavailable,
     _append_execution_ref,
     _BattleInput,
+    _engine_container,
     _published_evaluation_ref,
     _TournamentWork,
+    canonical_execution_owner,
 )
 
 from maistro.graph.nodes.base import NodeContext
@@ -91,6 +94,28 @@ def test_run_one_cycle_rejects_half_initialized_domain_state(
 
     with pytest.raises(RuntimeError, match="population is not initialized"):
         asyncio.run(service._run_one_cycle())
+
+
+def test_cycle_route_when_service_is_not_started_is_explicitly_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.evolution as evolution_service
+
+    def _not_started() -> Any:
+        from services.evolution import EvolutionServiceNotStarted
+
+        raise EvolutionServiceNotStarted("EvolutionService not started")
+
+    monkeypatch.setattr(evolution_service, "get_evolution_service", _not_started)
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(trigger_cycle(SimpleNamespace(state=SimpleNamespace())))
+
+    assert caught.value.status_code == 503
+    assert caught.value.detail == {
+        "code": "evolution_unavailable",
+        "availability": "unavailable",
+        "message": "EvolutionService not started",
+    }
 
 
 def test_stub_cycle_route_returns_explicit_availability_error(
@@ -174,6 +199,50 @@ def test_canonical_run_failure_projects_identity_status_and_diagnostic(
         "diagnostic": diagnostic,
         "message": f"Evolution cycle canonical Run canonical-failed-run did not complete: {diagnostic}",
     }
+
+
+def test_canonical_owner_reports_engine_not_started(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.engine as engine_module
+
+    def _not_started() -> Any:
+        raise RuntimeError("EngineService not started")
+
+    monkeypatch.setattr(engine_module, "get_engine", _not_started)
+    with pytest.raises(CanonicalExecutionUnavailable, match="engine is not started"):
+        canonical_execution_owner()
+
+
+def test_canonical_owner_uses_legacy_engine_port_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner = SimpleNamespace(
+        run_store=object(), graph_run_store=object(), project_scope_store=object()
+    )
+    engine = SimpleNamespace(agent_port=None, _agent_port=SimpleNamespace(container=owner))
+
+    import services.engine as engine_module
+
+    monkeypatch.setattr(engine_module, "get_engine", lambda: engine)
+    assert canonical_execution_owner() is owner
+
+
+def test_canonical_owner_rejects_incomplete_execution_spine() -> None:
+    owner = SimpleNamespace(run_store=object(), graph_run_store=None, project_scope_store=object())
+
+    with pytest.raises(CanonicalExecutionUnavailable, match="missing graph_run_store"):
+        canonical_execution_owner(owner)
+
+
+def test_engine_container_wrapper_uses_canonical_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.evolution_graph as evolution_graph
+
+    owner = object()
+    monkeypatch.setattr(evolution_graph, "canonical_execution_owner", lambda: owner)
+    assert _engine_container() is owner
 
 
 def test_execution_refs_ignore_malformed_history_and_do_not_duplicate_attempts() -> None:
