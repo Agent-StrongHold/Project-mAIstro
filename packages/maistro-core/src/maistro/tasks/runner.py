@@ -367,22 +367,24 @@ class TaskRunner:
             # terminal Run reporting result=None and error=None.
             if result.success:
                 files_changed = result.code.files_changed if result.code else []
-                await self._queue.update_status(
+                transitioned = await self._queue.update_status(
                     task_id,
                     TaskStatus.COMPLETED,
                     result={"files_changed": files_changed},
                 )
-                self._queue.set_result(
-                    task_id,
-                    TaskResult(files_changed=files_changed),
-                )
+                if transitioned:
+                    self._queue.set_result(
+                        task_id,
+                        TaskResult(files_changed=files_changed),
+                    )
                 await self._emit_progress_webhook(task_id)
             else:
-                await self._queue.update_status(
+                transitioned = await self._queue.update_status(
                     task_id, TaskStatus.FAILED, error=result.final_answer
                 )
-                self._queue.set_result(
-                    task_id,
-                    TaskResult(error=result.final_answer),
-                )
+                if transitioned:
+                    self._queue.set_result(
+                        task_id,
+                        TaskResult(error=result.final_answer),
+                    )
                 await self._emit_progress_webhook(task_id)

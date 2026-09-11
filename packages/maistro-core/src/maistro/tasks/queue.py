@@ -84,10 +84,10 @@ async def _write_record(factory: Any, values: dict[str, Any]) -> None:
 
 
 # How long `cancel()` waits for a cancelled execution's CancelledError handlers
-# to finish before answering anyway. Bounded, because an executor that ignores
-# cancellation must not hold a caller's HTTP request open forever — the same
-# policy bound `TaskRunner.CANCELLED_SETTLE_TIMEOUT` applies when shutdown
-# settles its workers.
+# to finish before declaring that cancellation did not settle. Bounded, because
+# an executor that ignores cancellation must not hold a caller's HTTP request
+# open forever — the same policy bound `TaskRunner.CANCELLED_SETTLE_TIMEOUT`
+# applies when shutdown settles its workers.
 CANCELLATION_SETTLE_TIMEOUT = 5.0
 
 # Maximum number of tasks stored in memory before pruning terminal tasks
@@ -372,10 +372,10 @@ class TaskQueue:
         bounded by ``settle_timeout`` — for the CancelledError handlers to
         finish rather than returning while cancellation is still in flight.
 
-        Returns False when the task is unknown, the Run refused, or the work
-        already reached a terminal state on its own; in every one of those
-        cases the receipt was not cancelled and the caller must not report a
-        cancellation.
+        Returns False when the task is unknown, the Run refused, the work
+        already reached a terminal state on its own, or cancellation did not
+        settle within ``settle_timeout``. In every case the caller must not
+        report a successful cancellation.
         """
         if not await self.update_status(task_id, TaskStatus.CANCELLED):
             return False
@@ -389,6 +389,10 @@ class TaskQueue:
                     task_id=task_id,
                     timeout=settle_timeout,
                 )
+                # The receipt records the cancellation request, but the
+                # physical execution is still alive. Do not let the API claim
+                # success while the work can still mutate the workspace.
+                return False
         return True
 
     def remove(self, task_id: str) -> bool:

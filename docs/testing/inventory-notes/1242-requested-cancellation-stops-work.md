@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +8
+  packages/maistro-core/tests: +9
 ---
 
 # #1242 — a requested cancellation stops the running work
@@ -25,7 +25,7 @@ cancellation (receipt not terminal — keep recording
 
 ## The tests
 
-Eight tests in `packages/maistro-core/tests/tasks/test_requested_cancellation.py`:
+Nine tests in `packages/maistro-core/tests/tasks/test_requested_cancellation.py`:
 
 - `test_cancel_stops_the_running_work` — the regression. Proves the failure
   mode on the unfixed tree (executor completed after `cancel()` returned True;
@@ -38,6 +38,9 @@ Eight tests in `packages/maistro-core/tests/tasks/test_requested_cancellation.py
   existing `CancellationCause.REQUESTED` reconciliation), NodeRun cancelled,
   Run CANCELLED, all driven through `queue.cancel` — the product path, not the
   never-wired `TaskAttemptExecutor.cancel`.
+- `test_cancel_does_not_report_success_before_work_settles` — a
+  cancellation-suppressing executor keeps the cancellation response from
+  claiming success while it remains alive, and cannot attach a later result.
 - `test_cancel_reaches_work_still_waiting_for_a_lane` — a dispatched task
   parked at the lane gate is stopped too, and the gate's handed-permit
   cancellation branch is exercised end to end.

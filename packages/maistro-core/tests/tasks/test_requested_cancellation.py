@@ -80,6 +80,54 @@ async def test_cancel_stops_the_running_work() -> None:
         await runner.stop(drain_timeout=2.0)
 
 
+async def test_cancel_does_not_report_success_before_work_settles() -> None:
+    """A cancellation-suppressing executor cannot make cancellation succeed.
+
+    The old queue returned True after a short settle timeout even though this
+    executor was still alive. Once it eventually returns, its result must not
+    be attached to the already-cancelled receipt.
+    """
+    queue = TaskQueue()
+    started = asyncio.Event()
+    cancellation_seen = asyncio.Event()
+    release = asyncio.Event()
+    finished = asyncio.Event()
+
+    async def executor(_request: TaskCreate) -> ConductorOutput:
+        started.set()
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            cancellation_seen.set()
+            await release.wait()
+            finished.set()
+            return _ok("ignored cancellation")
+        raise AssertionError("unreachable")
+
+    runner = TaskRunner(queue, executor)
+    await runner.start()
+    try:
+        task = await queue.submit(TaskCreate(description="must settle first"))
+        await asyncio.wait_for(started.wait(), timeout=10)
+
+        assert await queue.cancel(task.task_id, settle_timeout=0.01) is False
+        assert cancellation_seen.is_set()
+        assert not finished.is_set()
+        receipt = queue.get(task.task_id)
+        assert receipt is not None
+        assert receipt.status is TaskStatus.CANCELLED
+        assert receipt.result is None
+
+        release.set()
+        await asyncio.wait_for(finished.wait(), timeout=10)
+        await asyncio.sleep(0)  # flush the execution's done callback
+        assert queue.get(task.task_id).result is None
+        assert queue.get(task.task_id).status is TaskStatus.CANCELLED
+    finally:
+        release.set()
+        await runner.stop(drain_timeout=2.0)
+
+
 async def test_cancel_reaches_work_still_waiting_for_a_lane() -> None:
     """A dispatched task parked at the lane gate is also running work the
     caller asked to stop — it must never get its permit and execute."""
