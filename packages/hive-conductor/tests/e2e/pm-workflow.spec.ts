@@ -17,7 +17,10 @@
 import { test, expect, Page } from "@playwright/test";
 import { PM_PASS, loginAsPM, setupIfNeeded } from "./session";
 
-async function elevateDagWrites(page: Page, taskId: string) {
+async function elevateDagWrites(
+  page: Page,
+  taskId: string,
+): Promise<{ "X-Elevated-Task": string }> {
   // DAG creation/runs and optimizer mutations are protected operations. The
   // setup-created daily user is assigned dags.write but must prove possession
   // of its password for a task-scoped elevation before exercising that power.
@@ -31,6 +34,9 @@ async function elevateDagWrites(page: Page, taskId: string) {
   expect(response.status()).toBe(200);
   const body = await response.json();
   expect(body.elevated_permissions).toContain("dags.write");
+  // HTTP elevation is bound to the task named by every gated request. Keep
+  // the API calls in this workflow under the same binding (#1239).
+  return { "X-Elevated-Task": taskId };
 }
 
 test.describe("PM Workflow — Full UI Walkthrough", () => {
@@ -68,9 +74,10 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
 
   test("05 — PM can create a DAG via API (simulating DagBuilder)", async ({ page }) => {
     await loginAsPM(page);
-    await elevateDagWrites(page, "e2e-create-dag");
+    const elevatedHeaders = await elevateDagWrites(page, "e2e-create-dag");
 
     const createResp = await page.request.post("/v1/dags", {
+      headers: elevatedHeaders,
       data: {
         name: "Sprint Retro Digest",
         description: "Collect retro notes and produce action items",
@@ -84,20 +91,25 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
 
   test("06 — PM can activate and run a DAG", async ({ page }) => {
     await loginAsPM(page);
-    await elevateDagWrites(page, "e2e-run-dag");
+    const elevatedHeaders = await elevateDagWrites(page, "e2e-run-dag");
 
     const createResp = await page.request.post("/v1/dags", {
+      headers: elevatedHeaders,
       data: { name: "E2E Run Test", description: "test" },
     });
     expect(createResp.status()).toBe(201);
     const dag = await createResp.json();
 
-    const activateResp = await page.request.post(`/v1/dags/${dag.id}/activate`);
+    const activateResp = await page.request.post(`/v1/dags/${dag.id}/activate`, {
+      headers: elevatedHeaders,
+    });
     expect(activateResp.status()).toBe(200);
     const activated = await activateResp.json();
     expect(activated.status).toBe("active");
 
-    const runResp = await page.request.post(`/v1/dags/${dag.id}/run`);
+    const runResp = await page.request.post(`/v1/dags/${dag.id}/run`, {
+      headers: elevatedHeaders,
+    });
     expect(runResp.status()).toBe(200);
     const run = await runResp.json();
     expect(run.execution_id).toBeTruthy();
@@ -105,17 +117,22 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
 
   test("07 — PM can give thumbs feedback on a run", async ({ page }) => {
     await loginAsPM(page);
-    await elevateDagWrites(page, "e2e-feedback-dag");
+    const elevatedHeaders = await elevateDagWrites(page, "e2e-feedback-dag");
 
     const createResp = await page.request.post("/v1/dags", {
+      headers: elevatedHeaders,
       data: { name: "Feedback Test DAG", description: "test" },
     });
     expect(createResp.status()).toBe(201);
     const dag = await createResp.json();
 
-    const activateResp = await page.request.post(`/v1/dags/${dag.id}/activate`);
+    const activateResp = await page.request.post(`/v1/dags/${dag.id}/activate`, {
+      headers: elevatedHeaders,
+    });
     expect(activateResp.status()).toBe(200);
-    const runResp = await page.request.post(`/v1/dags/${dag.id}/run`);
+    const runResp = await page.request.post(`/v1/dags/${dag.id}/run`, {
+      headers: elevatedHeaders,
+    });
     expect(runResp.status()).toBe(200);
     const run = await runResp.json();
     expect(run.execution_id).toBeTruthy();
@@ -128,15 +145,18 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
 
   test("08 — PM can trigger optimizer and see proposals", async ({ page }) => {
     await loginAsPM(page);
-    await elevateDagWrites(page, "e2e-optimize-dag");
+    const elevatedHeaders = await elevateDagWrites(page, "e2e-optimize-dag");
 
     const createResp = await page.request.post("/v1/dags", {
+      headers: elevatedHeaders,
       data: { name: "Optimizer Test DAG", description: "test" },
     });
     expect(createResp.status()).toBe(201);
     const dag = await createResp.json();
 
-    const optResp = await page.request.post(`/v1/optimizer/${dag.id}/run`);
+    const optResp = await page.request.post(`/v1/optimizer/${dag.id}/run`, {
+      headers: elevatedHeaders,
+    });
     expect([200, 400]).toContain(optResp.status());
 
     const proposalsResp = await page.request.get(`/v1/optimizer/${dag.id}/proposals`);

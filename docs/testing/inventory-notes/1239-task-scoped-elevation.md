@@ -37,4 +37,5 @@ Existing elevation tests were updated to the stronger contract, not relaxed:
 every helper that elevates now sends `X-Elevated-Task` on its gated calls,
 and the `test_auth_routes.py` permission-contract case now asserts the
 cross-task and no-task denials that the old union check would have failed.
-Node counts elsewhere are unchanged.
+The PM Playwright workflow likewise carries its returned task binding on every
+protected DAG/optimizer call. Node counts elsewhere are unchanged.
