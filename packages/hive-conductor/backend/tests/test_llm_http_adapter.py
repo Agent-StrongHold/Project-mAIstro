@@ -17,6 +17,7 @@ Responses→chat.completions fallback are all real; only the socket is not.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -24,7 +25,9 @@ import pytest
 from adapters.llm_http import HttpOpenAIProtocolLLM
 from models.schemas import ChatCompletionRequest
 
+from maistro.container import create_container
 from maistro.http import get_shared_client, override_transport
+from maistro.types.config import AgentConfig
 
 pytestmark = pytest.mark.asyncio
 
@@ -43,6 +46,59 @@ def _adapter(variant: str = "chat_completions") -> HttpOpenAIProtocolLLM:
 
 def _req(**kw: Any) -> ChatCompletionRequest:
     return ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}], model="m", **kw)
+
+
+async def test_hive_builder_uses_container_governed_egress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The shipped Hive builder retains the real Container Invocation ledger."""
+    import services.chat_completion as chat_completion
+
+    container = await create_container(
+        AgentConfig(
+            router_api_key="k",
+            workspace_id="ws-hive",
+            litellm_url="https://gateway.invalid",
+            litellm_key="container-key",
+        )
+    )
+    monkeypatch.setattr(
+        chat_completion,
+        "get_settings",
+        lambda: SimpleNamespace(
+            litellm_api_base="https://gateway.invalid",
+            litellm_key="container-key",
+            llm_http_variant="chat_completions",
+        ),
+    )
+    monkeypatch.setattr(
+        chat_completion, "_resolve_litellm_api_key", lambda _settings: "container-key"
+    )
+    monkeypatch.setattr(
+        "services.engine.get_engine",
+        lambda: SimpleNamespace(agent_port=SimpleNamespace(container=container)),
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "model": "hive-model-v1",
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 2},
+            },
+        )
+
+    with override_transport(httpx.MockTransport(handler)):
+        port = chat_completion.build_llm_port()
+        result = await port.complete(_req())
+
+    assert result["choices"][0]["message"]["content"] == "ok"
+    assert port._client._egress is container.model_chat_egress  # type: ignore[attr-defined]
+    records = list(container.capability_effects.invocation_store._items.values())
+    assert len(records) == 1
+    assert records[0].binding.capability == "model.chat"
+    assert records[0].binding.provider_name == "m"
 
 
 class TestStreaming:
