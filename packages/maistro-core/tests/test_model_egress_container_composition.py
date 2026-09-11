@@ -386,3 +386,33 @@ async def test_consumer_tick_fails_closed_without_a_declared_binding(
         effect_key="llm.summarize.complete:",
     )
     assert invocations == []
+
+
+async def test_synth_dag_child_resolver_carries_the_container_authorities() -> None:
+    """The synth catalog offers `llm.summarize`, so the parent's child resolver
+    must carry the Container wiring down (#1079).
+
+    `agent.synth_dag` used to fall through to bare registry construction in
+    every production resolver, so a synthesized child graph built its
+    `llm.summarize` against a fresh empty effect context, registry and router
+    no matter what the deployment had configured or what the parent was
+    wired with."""
+    from maistro.graph.nodes.agent_synth_dag import AgentSynthDagNode
+
+    container = await _container()
+    resolver = build_node_resolver(
+        effect_context=container.capability_effects,
+        provider_registry=container.provider_registry,
+        llm_router=container.llm_router,
+    )
+
+    parent = resolver("s", {"nodes": [{"id": "s", "kind": "agent.synth_dag"}]})
+    assert isinstance(parent, AgentSynthDagNode)
+    assert parent._node_resolver is not None
+    assert parent._run_store is None  # bare resolver: no store to inherit
+
+    child = parent._node_resolver("n1", {"nodes": [{"id": "n1", "kind": "llm.summarize"}]})
+    assert isinstance(child, LlmSummarizeNode)
+    assert child._effects is container.capability_effects
+    assert child._registry is container.provider_registry
+    assert child._router is container.llm_router
