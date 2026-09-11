@@ -9,18 +9,12 @@ than retryable failure: an exception can arrive after the remote system has
 already committed the side effect. A provider/adapter may raise
 :class:`EffectNotApplied` only when it can prove no external effect occurred.
 
-**Nothing in this repository constructs an Invocation outside tests.** Neither
-:class:`InvocationExecutionService` nor its governed wrapper is instantiated by
-the container, a route, or a node; the one caller of the seam,
-``HarnessSessionManager.send_invocation``, is itself unreached. This layer is the
-boundary #55 is going to route provider calls through, and it is written and
-tested ahead of that. Read it as a specification with a conformance suite, not
-as a description of what runs today: an id here does not appear in a log line,
-and no stored Invocation row exists in any deployment.
-
-Stating that is the point of the paragraph. A reader who finds a persisted
-effect-key ledger reasonably assumes retries are already deduplicated by it,
-and would then be wrong about how the running system recovers.
+Model capability egress and other approved effect consumers construct
+Invocations through this service. The canonical model adapter is composed by
+production Containers, while the in-memory implementation remains the local
+composition used by tests and embedded runtimes. The effect-key ledger is
+therefore live for those consumers; durable deployments may replace its stores
+without changing this execution authority.
 """
 
 from __future__ import annotations
@@ -222,8 +216,9 @@ UsageExtractor = Callable[[Any], "InvocationUsage | None"]
 class InvocationExecutionService:
     """Resolve one Binding, persist one provider call, and guard effect retries.
 
-    Unreached in production: nothing constructs this outside tests, and the
-    effect-retry guard below therefore protects no live call yet (#55).
+    Production model and capability consumers reach this service through their
+    composed effect context; the retry guard is the single authority for those
+    live calls.
     """
 
     def __init__(self, *, store: InvocationStore) -> None:

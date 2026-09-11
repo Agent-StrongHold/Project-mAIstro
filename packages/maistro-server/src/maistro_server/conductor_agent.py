@@ -54,6 +54,9 @@ class ConductorAgent:
     honouring the classification is the point.
     """
 
+    def __init__(self, model_client: Any = None) -> None:
+        self._model_client = model_client
+
     async def handle(
         self,
         messages: list[dict[str, Any]],
@@ -77,7 +80,10 @@ class ConductorAgent:
 
         task = TaskCreate(description=description, **_tier_kwargs(intent))
         try:
-            result = await run_task(task)
+            kwargs = {}
+            if self._model_client is not None:
+                kwargs["model_client"] = self._model_client
+            result = await run_task(task, **kwargs)
         except Exception as exc:
             # Raised rather than swallowed. `Conduit.route_request` catches
             # around this dispatch, and the endpoint above maps the exception
