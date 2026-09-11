@@ -243,24 +243,36 @@ class TaskQueue:
             request, key, user_id=user_id, workspace_id=workspace_id
         )
 
-    async def _scope_workspace(self, workspace_id: str | None) -> str:
-        """The Workspace a submission will actually land in, for key scoping.
+    async def _scope_binding(self, workspace_id: str | None) -> tuple[str, str]:
+        """Return the effective Workspace and Project for key scoping.
 
-        The scope must name the *effective* Workspace, not the spelled one: a
-        retry that arrives without the Workspace header has to meet the claim
-        its first call made under the default. Routers resolve None to the
-        deployment default, bound admitters know their one Workspace, and an
-        admitter that knows neither gets the submission's own spelling.
+        The scope must name the binding a Run will actually use, not only the
+        header the caller spelled. Routers resolve both values before the
+        claim is written, so two Project bindings in one Workspace cannot
+        accidentally reconcile one another's Runs.
         """
         admitter = self._admitter
+        scope = getattr(admitter, "admission_scope", None)
+        if scope is not None:
+            binding = await scope(workspace_id)
+            if len(binding) != 2:
+                raise RuntimeError("admission_scope must return Workspace and Project")
+            return str(binding[0]).strip(), str(binding[1]).strip()
         route = getattr(admitter, "admitter_for", None)
         if route is not None:
             bound = await route(workspace_id)
-            return str(bound.workspace_id).strip()
+            return (
+                str(getattr(bound, "workspace_id", workspace_id or "")).strip(),
+                str(getattr(bound, "project_id", "")).strip(),
+            )
         fixed = getattr(admitter, "workspace_id", None)
-        if isinstance(fixed, str) and fixed.strip():
-            return fixed.strip()
-        return (workspace_id or "").strip()
+        workspace = (
+            fixed.strip()
+            if isinstance(fixed, str) and fixed.strip()
+            else (workspace_id or "").strip()
+        )
+        project = getattr(admitter, "project_id", "")
+        return workspace, project.strip() if isinstance(project, str) else ""
 
     async def _submit_idempotent(
         self,
@@ -288,9 +300,11 @@ class TaskQueue:
         owner = user_id or request.user_id or ""
         fingerprint = request_fingerprint(request)
         textual = key if key is not None else f"{DERIVED_KEY_PREFIX}{fingerprint}"
+        effective_workspace, effective_project = await self._scope_binding(workspace_id)
         scope_key = admission_scope_key(
             principal=owner,
-            workspace_id=await self._scope_workspace(workspace_id),
+            workspace_id=effective_workspace,
+            project_id=effective_project,
             action=TASK_SUBMIT_ACTION,
             key=textual,
         )

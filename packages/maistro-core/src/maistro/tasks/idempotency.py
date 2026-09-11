@@ -17,12 +17,12 @@ window must therefore send distinct explicit keys; derivation cannot
 distinguish intentions that are indistinguishable on the wire.
 
 **The scope.** The textual key is hashed together with the authenticated
-principal, the effective Workspace, and the admission action
+principal, the effective Workspace and Project, and the admission action
 (``admission_scope_key``). The digest is length-prefixed per part, so no two
-distinct tuples can produce one scope: a key cannot collide across principals
-or Workspaces, and a caller resolving a key computes a scope that only ever
-names claims made under the same principal — another caller's Run is not
-merely forbidden, it is unaddressable.
+distinct tuples can produce one scope: a key cannot collide across principals,
+Workspaces, or Projects, and a caller resolving a key computes a scope that
+only ever names claims made under the same principal — another caller's Run is
+not merely forbidden, it is unaddressable.
 
 **The fingerprint.** Every claim records a fingerprint of the client-meaningful
 payload (everything except ``user_id``, which authentication owns, and the key
@@ -109,7 +109,7 @@ logger = logging.getLogger(__name__)
 
 #: Domain separation for the scope digest. Versioned: a change to the scope
 #: tuple's meaning must not silently reinterpret claims recorded before it.
-IDEMPOTENCY_SCOPE_DOMAIN = "maistro-task-admission:v1"
+IDEMPOTENCY_SCOPE_DOMAIN = "maistro-task-admission:v2"
 
 #: The admission action every task submission claims under. Part of the scope
 #: so a future second admission action (chat, webhooks with their own keys)
@@ -223,19 +223,35 @@ def request_fingerprint(request: TaskCreate) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def admission_scope_key(*, principal: str, workspace_id: str, action: str, key: str) -> str:
+def admission_scope_key(
+    *,
+    principal: str,
+    workspace_id: str,
+    action: str,
+    key: str,
+    project_id: str = "",
+) -> str:
     """The storage key one submission claims under, and the collision answer.
 
     Every scope component is length-prefixed before the join, so the tuple ->
-    digest mapping is injective: no choice of principal, Workspace, action or
-    key can produce another tuple's digest, which is what makes cross-tenant
-    collision structurally impossible rather than merely unlikely. The
-    principal inside the digest is also what keeps another caller from
-    *resolving* a claim it did not make — it computes a different scope and
-    finds nothing, and the Run behind someone else's claim is reachable only
-    through its owner-scoped read paths.
+    digest mapping is injective: no choice of principal, Workspace, Project,
+    action or key can produce another tuple's digest, which is what makes
+    cross-tenant collision structurally impossible rather than merely
+    unlikely. The principal inside the digest is also what keeps another
+    caller from *resolving* a claim it did not make — it computes a different
+    scope and finds nothing, and the Run behind someone else's claim is
+    reachable only through its owner-scoped read paths. ``project_id`` is
+    optional for callers that do not have a canonical Run binding yet; the
+    queue always supplies the effective Project when a Run admitter is wired.
     """
-    parts = (IDEMPOTENCY_SCOPE_DOMAIN, principal, workspace_id, action, key)
+    parts = (
+        IDEMPOTENCY_SCOPE_DOMAIN,
+        principal,
+        workspace_id,
+        project_id,
+        action,
+        key,
+    )
     framed = "\x1f".join(f"{len(part)}:{part}" for part in parts)
     return hashlib.sha256(framed.encode("utf-8")).hexdigest()
 

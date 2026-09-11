@@ -92,6 +92,19 @@ def test_a_key_cannot_cross_principals_workspaces_or_actions() -> None:
     assert base != admission_scope_key(
         principal="u1", workspace_id="w1", action=TASK_SUBMIT_ACTION, key="k2"
     )
+    assert admission_scope_key(
+        principal="u1",
+        workspace_id="w1",
+        project_id="p1",
+        action=TASK_SUBMIT_ACTION,
+        key="k",
+    ) != admission_scope_key(
+        principal="u1",
+        workspace_id="w1",
+        project_id="p2",
+        action=TASK_SUBMIT_ACTION,
+        key="k",
+    )
 
 
 def test_scope_parts_do_not_alias_through_the_separator() -> None:
@@ -724,6 +737,33 @@ async def test_an_explicit_retry_reconciles_to_the_first_run(scoped) -> None:
     assert run_ids == [first.run_id]
 
 
+async def test_same_key_in_distinct_projects_mints_distinct_runs(scoped) -> None:
+    projects, runs, root, first_project = scoped
+    second_project = await projects.create(
+        workspace_id="w1", parent_project_id=root.project_id, name="Other Tasks"
+    )
+    store = InMemoryTaskIdempotencyStore()
+    first_queue = TaskQueue(
+        admitter=TaskRunAdmitter(runs, workspace_id="w1", project_id=first_project.project_id),
+        idempotency_store=store,
+    )
+    second_queue = TaskQueue(
+        admitter=TaskRunAdmitter(runs, workspace_id="w1", project_id=second_project.project_id),
+        idempotency_store=store,
+    )
+    request = TaskCreate(description="same textual key", idempotency_key="shared")
+
+    first = await first_queue.submit(request, user_id="alice")
+    second = await second_queue.submit(request, user_id="alice")
+
+    assert first.run_id is not None and second.run_id is not None
+    assert second.run_id != first.run_id
+    first_run = await runs.get_run(first.run_id)
+    second_run = await runs.get_run(second.run_id)
+    assert first_run is not None and first_run.project_id == first_project.project_id
+    assert second_run is not None and second_run.project_id == second_project.project_id
+
+
 async def test_a_derived_key_reconciles_a_byte_identical_retry(scoped) -> None:
     """No explicit key: the payload fingerprint is the key, so a client that
     never heard of idempotency still gets its timeout-retry reconciled."""
@@ -840,7 +880,11 @@ async def test_a_failed_admission_releases_its_claim(scoped) -> None:
         await queue.submit(request, user_id="alice")
 
     scope = admission_scope_key(
-        principal="alice", workspace_id="w1", action=TASK_SUBMIT_ACTION, key="k"
+        principal="alice",
+        workspace_id="w1",
+        project_id="no-such-project",
+        action=TASK_SUBMIT_ACTION,
+        key="k",
     )
     assert await store.get(scope) is None
 
@@ -1117,7 +1161,11 @@ async def test_a_death_after_the_mint_resolves_to_the_existing_run(scoped, monke
     # discovery entirely.
     record = await store.get(
         admission_scope_key(
-            principal="alice", workspace_id="w1", action=TASK_SUBMIT_ACTION, key="k"
+            principal="alice",
+            workspace_id="w1",
+            project_id=project.project_id,
+            action=TASK_SUBMIT_ACTION,
+            key="k",
         )
     )
     assert record is not None and record.admitted is True
@@ -1141,7 +1189,11 @@ async def test_ambiguous_resolution_rechecks_a_claim_that_lost_a_race(scoped, mo
     queue = TaskQueue(admitter=admitter, idempotency_store=store)
     request = TaskCreate(description="racing ambiguous resolution", idempotency_key="k")
     scope = admission_scope_key(
-        principal="alice", workspace_id="w1", action=TASK_SUBMIT_ACTION, key="k"
+        principal="alice",
+        workspace_id="w1",
+        project_id=project.project_id,
+        action=TASK_SUBMIT_ACTION,
+        key="k",
     )
     stale = datetime.now(UTC) - PENDING_LEASE - timedelta(seconds=1)
     stored_request = json.dumps(
@@ -1218,7 +1270,11 @@ async def test_a_crash_between_mint_and_queue_is_resumed_not_stranded(scoped) ->
     request = TaskCreate(description="crashed between mint and queue", idempotency_key="k")
     task_id = TaskResponse.new_id()
     scope = admission_scope_key(
-        principal="alice", workspace_id="w1", action=TASK_SUBMIT_ACTION, key="k"
+        principal="alice",
+        workspace_id="w1",
+        project_id=project.project_id,
+        action=TASK_SUBMIT_ACTION,
+        key="k",
     )
     # The corpse's durable state, exactly as the crash left it: a begun claim
     # (receipt announced, outcome never recorded) an hour dead — past its

@@ -449,9 +449,11 @@ async def test_a_mid_admission_timeout_across_a_durable_restart_resumes_the_work
     # The crash state, read from the durable files (the 'process' is gone):
     # the claim was begun but its outcome never landed, and the Run it minted
     # is queued and discoverable by the announced receipt.
+    effective_workspace, effective_project = await queue._scope_binding(None)
     scope = admission_scope_key(
         principal="dev",
-        workspace_id="test-workspace",
+        workspace_id=effective_workspace,
+        project_id=effective_project,
         action=TASK_SUBMIT_ACTION,
         key="k-1",
     )

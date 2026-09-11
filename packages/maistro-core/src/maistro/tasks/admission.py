@@ -144,6 +144,23 @@ class TaskRunAdmitter:
         """The single Workspace this admitter files work in."""
         return self._workspace_id
 
+    async def admission_scope(self, workspace_id: str | None = None) -> tuple[str, str]:
+        """Return the immutable Workspace/Project binding for admission keys.
+
+        Idempotency must claim the same scope the Run will use. Resolving a
+        lazy Root Project here makes that binding explicit before the claim is
+        written, instead of scoping only by Workspace and allowing two Project
+        bindings in one process to reconcile the wrong Run. A named Workspace
+        must still match this bound admitter; silently scoping it to the wrong
+        Project would make the key replay an unrelated Run.
+        """
+        if workspace_id is not None and workspace_id != self._workspace_id:
+            raise WorkspaceNotAdmissible(
+                f"admitter is bound to Workspace {self._workspace_id!r} and cannot "
+                f"scope {workspace_id!r}"
+            )
+        return self._workspace_id, await self._resolve_project_id()
+
     async def admit(self, task: TaskResponse, *, workspace_id: str | None = None) -> str:
         """Admit one queued task as a Run and return its ``run_id``.
 
@@ -350,6 +367,11 @@ class WorkspaceRoutingAdmitter:
             )
             self._by_workspace[resolved] = admitter
             return admitter
+
+    async def admission_scope(self, workspace_id: str | None = None) -> tuple[str, str]:
+        """Return the routed Workspace and its canonical Root Project."""
+        admitter = await self.admitter_for(workspace_id)
+        return await admitter.admission_scope()
 
     async def admit(self, task: TaskResponse, *, workspace_id: str | None = None) -> str:
         """Admit one task into the Workspace the submission named."""
