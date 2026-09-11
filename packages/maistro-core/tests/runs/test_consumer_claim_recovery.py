@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
 import pytest
@@ -12,7 +12,8 @@ from pydantic import BaseModel
 
 from maistro.container import Container, create_container
 from maistro.graph import Graph, Node
-from maistro.graph.nodes import BaseNode, NodeContext, register_node
+from maistro.graph.nodes import BaseNode, NodeContext, pause_until, register_node
+from maistro.graph.nodes.base import PAUSE_WAITING_ON_JIRA_SUBTASKS
 from maistro.runs.consumer_claim import ConsumerClaimLost, ConsumerClaimStore
 from maistro.runs.consumption import SCHEDULE_EXECUTOR_ID
 from maistro.runs.model import Attempt, AttemptStatus, RunStatus
@@ -44,6 +45,30 @@ class _EligibleNode(BaseNode[_In, _Out]):
 
 with contextlib.suppress(ValueError):
     register_node(_EligibleNode)
+
+
+class _PostgresResumeNode(BaseNode[_In, _Out]):
+    """Pause once so PostgreSQL can persist and resume a leased Attempt."""
+
+    kind: ClassVar[str] = "test.consumer.postgres-resume-lease"
+    kind_category: ClassVar = "wait"
+    input_schema: ClassVar[type[BaseModel]] = _In
+    output_schema: ClassVar[type[BaseModel]] = _Out
+    reaches: ClassVar[int] = 0
+
+    async def _execute(self, inputs: _In, ctx: NodeContext) -> _Out:
+        del ctx
+        type(self).reaches += 1
+        if type(self).reaches == 1:
+            pause_until(
+                PAUSE_WAITING_ON_JIRA_SUBTASKS,
+                resume_at=datetime.now(UTC) - timedelta(seconds=1),
+            )
+        return _Out(value=inputs.value)
+
+
+with contextlib.suppress(ValueError):
+    register_node(_PostgresResumeNode)
 
 
 async def _container() -> Container:
@@ -398,6 +423,62 @@ async def test_postgres_claim_is_atomic_running_evidence(pg_pool: object) -> Non
     assert persisted_node is not None and persisted_node.status is RunStatus.RUNNING
     assert persisted_attempt is not None and persisted_attempt.status is AttemptStatus.RUNNING
     assert persisted_attempt.execution_lease is not None
+
+
+async def test_postgres_scheduled_resume_preserves_the_attempt_lease(pg_pool: object) -> None:
+    """The scheduled resume path keeps the PostgreSQL recovery contract."""
+    if pg_pool is None:
+        pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+
+    from maistro.projects.pg_scope_store import PgProjectScopeStore
+    from maistro.runs.consumer_claim import ClaimingPgRunStore
+    from maistro.runs.consumption import ScheduleAttemptExecutor, resumable_pause
+    from maistro.runtime import PythonExecutionRuntime
+
+    _PostgresResumeNode.reaches = 0
+    workspace = "postgres-scheduled-resume-lease"
+    projects = PgProjectScopeStore(pg_pool)
+    root = await projects.create_root(workspace)
+    project = await projects.create(
+        workspace_id=workspace,
+        parent_project_id=root.project_id,
+        name="scheduled resume",
+    )
+    store = ClaimingPgRunStore(pg_pool, project_store=projects)
+    graph = Graph(
+        workspace_id=workspace,
+        project_id=project.project_id,
+        name="scheduled resume",
+        nodes=[Node(node_id="n0", node_type=_PostgresResumeNode.kind)],
+    )
+    run = await store.create_run(
+        graph,
+        provenance={ADMISSION_SOURCE: SCHEDULE_SOURCE},
+        initial_status=RunStatus.QUEUED,
+    )
+    executor = ScheduleAttemptExecutor(
+        store,
+        runtime=PythonExecutionRuntime(),
+        lease_ttl=timedelta(seconds=5),
+    )
+
+    parked = await executor.execute(run)
+    (node_run,) = await store.list_node_runs(run.run_id)
+    attempts = await store.list_attempts(node_run.node_run_id)
+    pause = resumable_pause(node_run, attempts, now=datetime.now(UTC))
+    assert parked.status is RunStatus.WAITING
+    assert pause is not None
+    assert attempts[0].execution_lease is not None
+
+    completed = await executor.resume(parked, pause)
+
+    assert completed.status is RunStatus.COMPLETED
+    attempts = await store.list_attempts(node_run.node_run_id)
+    assert len(attempts) == 2
+    resumed = attempts[-1]
+    assert resumed.status is AttemptStatus.COMPLETED
+    assert resumed.execution_lease is not None
+    assert resumed.execution_lease.expires_at is not None
 
 
 def test_run_cursor_key_rejects_non_text_json_timestamp() -> None:

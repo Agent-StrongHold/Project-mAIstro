@@ -104,7 +104,9 @@ class ScheduleAttemptExecutor:
         self._attempts = AttemptExecutionService(
             store=run_store, runtime=resolved_runtime, lease_ttl=lease_ttl
         )
-        self._service = RunExecutionService(store=run_store, runtime=resolved_runtime)
+        self._service = RunExecutionService(
+            store=run_store, runtime=resolved_runtime, lease_ttl=lease_ttl
+        )
         self._runtime_id = type(resolved_runtime).__name__
         self._lease_ttl = lease_ttl
         self._timeout_s = timeout_s
