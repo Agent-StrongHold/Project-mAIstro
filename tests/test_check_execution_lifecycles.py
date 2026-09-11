@@ -12,8 +12,10 @@ update.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -118,6 +120,31 @@ def test_literal_aliases_support_qualified_imports_pep604_and_split_values(gate)
     }
 
 
+def test_literal_aliases_support_pep695_and_private_helper_aliases(gate) -> None:
+    source = """
+from typing import Literal
+
+type _RunStates = Literal["queued", "running"]
+RunStatus = _RunStates | Literal[
+    "failed",
+]
+"""
+    assert gate.work_state_literals(source, "pkg.jobs") == {
+        "pkg.jobs::RunStatus": {"QUEUED", "RUNNING", "FAILED"}
+    }
+
+
+def test_the_real_rsi_literal_is_discovered(gate) -> None:
+    found = gate.discover()
+    assert found["services.rsi::RunStatus"] == {
+        "PENDING",
+        "RUNNING",
+        "COMPLETED",
+        "ERRORED",
+        "STOPPED",
+    }
+
+
 def test_literal_alias_requires_a_status_shaped_name(gate) -> None:
     source = 'from typing import Literal\nValues = Literal["queued", "running", "failed"]'
     assert gate.work_state_literals(source, "pkg.jobs") == {}
@@ -199,6 +226,52 @@ def test_a_new_canonical_literal_cannot_be_banked_by_its_ledger_entry(gate) -> N
     assert gate.audit(ledger(**{name: entry(classification="CANONICAL")}), found) == []
     assert gate._unauthorized_additions([name], {}, set()) == [name]
     assert gate._unauthorized_additions([name], {}, {name}) == []
+
+
+def test_main_rejects_an_unledgered_literal_source_fixture(
+    gate, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Exercise the production discovery path, not a fabricated ``found`` map."""
+    source = tmp_path / "run_status.py"
+    source.write_text(
+        'from typing import Literal\nRunStatus = Literal["queued", "running", "failed"]\n',
+        encoding="utf-8",
+    )
+    reachability = SimpleNamespace(
+        FLAT_APPS=(),
+        _collect_modules=lambda: {"fixture": source},
+        _display_name=lambda key, _apps: key,
+    )
+    monkeypatch.setattr(gate, "_load_reachability", lambda: reachability)
+    ledger_path = tmp_path / "execution-lifecycles.json"
+    ledger_path.write_text(
+        json.dumps({"metric_definition_version": "2", "lifecycles": {}}), encoding="utf-8"
+    )
+    monkeypatch.setattr(gate, "LEDGER", ledger_path)
+
+    class Baseline:
+        base_sha = None
+
+        def loads(self, default=None):
+            return default
+
+    class Receipt:
+        def render(self) -> str:
+            return "fixture provenance"
+
+    provenance = SimpleNamespace(
+        RatchetProvenanceError=RuntimeError,
+        Provenance=lambda **_kwargs: Receipt(),
+        resolve_baseline=lambda *_args, **_kwargs: Baseline(),
+        require_measurement=lambda *_args, **_kwargs: None,
+        require_metric_version=lambda *_args, **_kwargs: None,
+        load_authorizations=lambda *_args, **_kwargs: {},
+        head_sha=lambda *_args, **_kwargs: "fixture",
+    )
+    monkeypatch.setattr(gate, "_provenance", lambda: provenance)
+
+    assert gate.main() == 1
+    assert "fixture::RunStatus" in capsys.readouterr().out
 
 
 def test_a_missing_rationale_fails(gate) -> None:
