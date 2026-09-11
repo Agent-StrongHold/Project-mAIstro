@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import pytest
 from pydantic import BaseModel
@@ -14,6 +14,7 @@ from maistro.graph import Graph, Node
 from maistro.graph.durable_runs import (
     CanonicalDurableRunStore,
     InMemoryGraphContinuationStore,
+    resume_durable_graph,
     run_durable_graph,
 )
 from maistro.graph.durable_runs.hitl import (
@@ -30,7 +31,7 @@ from maistro.graph.durable_runs.stores import (
 )
 from maistro.graph.durable_runs.types import DurableRunRecord
 from maistro.graph.execution_state import GraphExecutionState
-from maistro.graph.nodes import BaseNode, NodeContext, pause_until
+from maistro.graph.nodes import BaseNode, NodeContext, get_node, pause_until
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
 from maistro.runs.lifecycle import transition_attempt, transition_node_run
@@ -543,3 +544,134 @@ async def test_expiry_scan_pages_past_a_long_ineligible_prefix() -> None:
     settled = await expire_hitl_pauses(store, now=_AFTER, limit=5)
 
     assert [record.run_id for record in settled] == ["expired-behind-the-prefix"]
+
+
+# --- #1097: a malformed answer must not rewrite the durable deadline -------
+
+
+async def _canonical_hitl_fixture() -> tuple[Any, Any, Any]:
+    """A real `human.approve_draft` Run, admitted and paused end to end.
+
+    Through the canonical spine rather than a hand-built record, so this
+    proves what `answer_record`/`get_node("human.approve_draft")` actually do
+    together, not what this suite believes they do.
+    """
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("ws-1097")
+    project = await projects.create(
+        workspace_id="ws-1097",
+        parent_project_id=root.project_id,
+        name="deadline preservation",
+    )
+    run_store = InMemoryRunStore(project_store=projects)
+    store = CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore())
+    graph = Graph(
+        workspace_id="ws-1097",
+        project_id=project.project_id,
+        name="approval",
+        nodes=[
+            Node(
+                node_id="ask",
+                node_type="human.approve_draft",
+                inputs={"draft": {"ticket": "PROJ-1"}, "timeout_seconds": 100},
+            )
+        ],
+    )
+    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    paused = await run_durable_graph(
+        graph,
+        store=store,
+        node_resolver=lambda node_id, current_graph: get_node("human.approve_draft")(),
+        run_id=admitted.run_id,
+        run_store=run_store,
+    )
+    return store, run_store, paused
+
+
+@pytest.mark.ac("ADR-090726-9a4e/AC-2")
+async def test_a_malformed_answer_re_pauses_without_moving_the_deadline() -> None:
+    store, run_store, paused = await _canonical_hitl_fixture()
+    original_deadline = hitl_deadline(paused, "ask")
+    assert original_deadline is not None
+
+    def _resolver(node_id: str, current_graph: Any) -> Any:
+        return get_node("human.approve_draft")()
+
+    malformed_at = original_deadline - timedelta(seconds=50)
+    await store.submit_hitl_answer(
+        paused.run_id, "ask", {"reviewer_note": "still deciding"}, at=malformed_at
+    )
+    resumed = await resume_durable_graph(
+        paused.run_id, store=store, node_resolver=_resolver, run_store=run_store
+    )
+
+    assert resumed.status is RunStatus.PAUSED
+    assert hitl_deadline(resumed, "ask") == original_deadline, (
+        "a malformed answer must re-pause on the *original* admitted "
+        "deadline, not a freshly computed now + timeout_seconds"
+    )
+
+
+@pytest.mark.ac("ADR-090726-9a4e/AC-2")
+async def test_repeated_malformed_answers_at_t_minus_1s_cannot_extend_the_deadline() -> None:
+    """The issue's own repro shape: bad answers arriving right up against the
+    deadline must not push it back, and the Run still expires exactly when
+    originally admitted."""
+    store, run_store, paused = await _canonical_hitl_fixture()
+    original_deadline = hitl_deadline(paused, "ask")
+    assert original_deadline is not None
+
+    def _resolver(node_id: str, current_graph: Any) -> Any:
+        return get_node("human.approve_draft")()
+
+    current = paused
+    for offset in (timedelta(seconds=90), timedelta(seconds=30), timedelta(seconds=1)):
+        malformed_at = original_deadline - offset
+        await store.submit_hitl_answer(
+            current.run_id, "ask", {"reviewer_note": "not yet"}, at=malformed_at
+        )
+        current = await resume_durable_graph(
+            current.run_id, store=store, node_resolver=_resolver, run_store=run_store
+        )
+        assert current.status is RunStatus.PAUSED
+        assert hitl_deadline(current, "ask") == original_deadline
+
+    expired = await expire_hitl_pauses(store, now=original_deadline - timedelta(seconds=1))
+    assert expired == []
+
+    expired = await expire_hitl_pauses(store, now=original_deadline + timedelta(seconds=1))
+    assert [record.run_id for record in expired] == [paused.run_id]
+    settled = await run_store.get_run(paused.run_id)
+    assert settled is not None and settled.status is RunStatus.TIMED_OUT
+
+
+@pytest.mark.ac("ADR-090726-9a4e/AC-2")
+async def test_a_valid_answer_before_the_preserved_deadline_still_settles() -> None:
+    """A malformed answer followed by a real verdict still resumes normally --
+    preserving the deadline must not make a good answer un-actionable."""
+    store, run_store, paused = await _canonical_hitl_fixture()
+    original_deadline = hitl_deadline(paused, "ask")
+    assert original_deadline is not None
+
+    def _resolver(node_id: str, current_graph: Any) -> Any:
+        return get_node("human.approve_draft")()
+
+    await store.submit_hitl_answer(
+        paused.run_id,
+        "ask",
+        {"reviewer_note": "later"},
+        at=original_deadline - timedelta(seconds=50),
+    )
+    still_paused = await resume_durable_graph(
+        paused.run_id, store=store, node_resolver=_resolver, run_store=run_store
+    )
+    assert still_paused.status is RunStatus.PAUSED
+    assert hitl_deadline(still_paused, "ask") == original_deadline
+
+    await store.submit_hitl_answer(
+        paused.run_id, "ask", {"verdict": "approved"}, at=original_deadline - timedelta(seconds=10)
+    )
+    settled = await resume_durable_graph(
+        paused.run_id, store=store, node_resolver=_resolver, run_store=run_store
+    )
+    assert settled.status is RunStatus.COMPLETED

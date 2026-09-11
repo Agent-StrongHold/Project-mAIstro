@@ -80,6 +80,13 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Successful NodeRuns require accepted physical evidence (#1153).** New
+  completion transitions reject a missing `AcceptedNodeOutcome`, including for
+  no-output work. The historical durable-Graph execution entry points delegate
+  to the canonical Attempt executor instead of completing nodes without
+  Attempts. Legacy completed records remain readable and may receive matching
+  evidence without changing their result or lifecycle timestamps.
+
 - **Naive Workspace timestamps no longer decode to a different instant
   depending on the reading host (#1149).** `Workspace.created_at`/`updated_at`
   and `WorkspaceMembership.added_at` now normalize a naive datetime to UTC
@@ -118,6 +125,27 @@ or placeholder-only section.
   same tick are still attempted. A failure raised while listing candidates
   (the store/session itself) still aborts the tick, since that failure
   invalidates the whole scan rather than one Run.
+
+- **A resumed scheduled Attempt now carries the same crash-recovery lease as
+  its first physical try (#1112, #1124).** `ScheduleAttemptExecutor`'s resume
+  path built its `RunExecutionService` without `lease_ttl`, so a fresh Attempt
+  created on resume got the default `lease_ttl=None` — no expiry, never
+  reclaimable — even though first reach opted into a finite, heartbeat-renewed
+  lease. A scheduled Run was therefore crash-recoverable on its first attempt
+  and could be stranded `RUNNING` forever after any later timer/HITL pause.
+  The resume path now forwards the same `lease_ttl` the executor was
+  constructed with.
+
+- **A malformed HITL answer can no longer reset a paused node's durable
+  deadline (#1097).** `human.approve_draft`, `human.delegate_to_role`, and
+  `human.review_and_edit` recomputed `now + timeout_seconds` whenever a
+  resumed answer had a missing, blank, or non-string `verdict`, so repeated
+  malformed answers arriving near the deadline could extend a canonical HITL
+  pause indefinitely. All three now recover the original deadline from the
+  durable pause evidence (`answer_record`'s stamped `_pause` field) the store
+  already carries on every resumed answer, and fall back to a freshly
+  computed deadline only on a node's very first pause, where no earlier
+  deadline exists to preserve.
 
 ## [1.0.0] - TBD
 
