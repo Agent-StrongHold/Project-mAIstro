@@ -55,6 +55,16 @@ class _Client:
         return _Response()
 
 
+class _MalformedResponse(_Response):
+    def json(self) -> dict[str, Any]:
+        return {"model": "claude-opus-4-6", "choices": []}
+
+
+class _MalformedClient(_Client):
+    async def post(self, *args: Any, **kwargs: Any) -> _MalformedResponse:
+        return _MalformedResponse()
+
+
 @pytest.fixture
 def canvas_egress(
     monkeypatch: pytest.MonkeyPatch,
@@ -181,6 +191,13 @@ def test_shipped_canvas_route_records_correlated_invocation(
     assert invocations[0].binding.workspace_id == context["workspace_id"]
     assert invocations[0].binding.project_id == context["project_id"]
 
+    import asyncio
+
+    attempt = asyncio.run(components.run_store.get_attempt(context["attempt_id"]))
+    assert attempt is not None
+    assert attempt.status.value == "completed"
+    assert attempt.result["score"] == 91
+
 
 def test_canvas_route_refuses_missing_execution_context(
     canvas_egress: tuple[CanvasModelEgress, Any, dict[str, str], Any],
@@ -240,6 +257,41 @@ def test_canvas_route_refuses_unavailable_provider(
     attempt = asyncio.run(canvas_egress[3].run_store.get_attempt(context["attempt_id"]))
     assert attempt is not None
     assert attempt.status.value == "failed"
+
+
+def test_canvas_route_fails_malformed_quality_response(
+    canvas_egress: tuple[CanvasModelEgress, Any, dict[str, str], Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    egress, effects, context, components = canvas_egress
+    monkeypatch.setattr(httpx, "AsyncClient", _MalformedClient)
+    monkeypatch.setattr(app.state, "canvas_model_egress", egress, raising=False)
+    client = TestClient(app)
+    login = client.post("/v1/auth/login", json={"username": "testuser", "password": "testpass"})
+    assert login.status_code == 200
+
+    response = client.post(
+        "/v1/canvas/eval",
+        json={"description": "A blue city at dusk", "run_id": context["run_id"]},
+    )
+
+    assert response.status_code == 502
+    assert "score" not in response.json()
+    import asyncio
+
+    attempt = asyncio.run(components.run_store.get_attempt(context["attempt_id"]))
+    assert attempt is not None
+    assert attempt.status.value == "failed"
+    invocations = asyncio.run(
+        effects.invocation_store.list_effect(
+            run_id=context["run_id"],
+            node_run_id=context["node_run_id"],
+            binding_id=context["binding_id"],
+            effect_key="canvas.visual_quality.evaluate",
+        )
+    )
+    assert len(invocations) == 1
+    assert invocations[0].status is InvocationStatus.COMPLETED
 
 
 def test_canvas_route_refuses_missing_binding(

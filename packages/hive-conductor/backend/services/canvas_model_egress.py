@@ -7,6 +7,7 @@ persistence remain owned by ``maistro.capabilities``.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from maistro.capabilities.binding_store import BindingResolutionError
@@ -92,6 +93,7 @@ class CanvasModelEgress:
         *,
         context: dict[str, str],
         request: ModelChatRequest,
+        response_validator: Callable[[ModelCallResult], object] | None = None,
     ) -> ModelCallResult:
         """Cross the governed seam using IDs held by the Canvas execution."""
         required = ("binding_id", "run_id", "node_run_id", "attempt_id")
@@ -122,7 +124,7 @@ class CanvasModelEgress:
                 node_id=node_id,
                 capability=MODEL_CHAT_CAPABILITY,
             )
-            return await self._egress.complete(
+            result = await self._egress.complete(
                 binding=binding,
                 run_id=run.run_id,
                 node_run_id=node_run.node_run_id,
@@ -130,9 +132,18 @@ class CanvasModelEgress:
                 effect_key="canvas.visual_quality.evaluate",
                 request=request,
             )
+            attempt_result = (
+                response_validator(result) if response_validator is not None else result.body
+            )
+            await self._run_store.transition_attempt(
+                attempt.attempt_id,
+                AttemptStatus.COMPLETED,
+                result=attempt_result,
+            )
+            return result
         except Exception as exc:
-            # The canonical Canvas executor owns success projection, but a
-            # refused Binding/provider must still settle the Attempt it owns.
+            # Provider refusal or Canvas response validation must settle the
+            # canonical Attempt instead of returning a score-shaped success.
             await self._fail_attempt(attempt.attempt_id, exc)
             raise
 
