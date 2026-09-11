@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 from services.edit_lock import diff_dag_snapshots, mark_edited
 
+from maistro.runs.model import TERMINAL_RUN_STATUSES
 from routes.audit import log_audit
 
 router = APIRouter(tags=["dags"])
@@ -102,11 +103,13 @@ async def _record_run_projection(*, dag_id: str, user_id: str, result: dict[str,
                     "response": node_result.get("response", "")[:2000],
                 },
             )
-        await store.finish_run(
-            run_id,
-            status=str(result.get("status") or "failed"),
-            result=result,
-        )
+        status = str(result.get("status") or "failed")
+        if status in {terminal.value for terminal in TERMINAL_RUN_STATUSES}:
+            await store.finish_run(run_id, status=status, result=result)
+        else:
+            # Intermediate canonical states are snapshots, not product-owned
+            # terminal decisions. Keep the history row refreshable for recovery.
+            await store.update_run_snapshot(run_id, status=status, result=result)
     except Exception:
         logger.warning(
             "dag_run_projection_not_recorded run_id=%s dag_id=%s",

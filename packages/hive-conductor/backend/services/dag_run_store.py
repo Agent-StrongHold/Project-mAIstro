@@ -39,6 +39,10 @@ from collections import defaultdict, deque
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+# These values mirror the canonical Run lifecycle. The projection may retain a
+# presentation status, but only a canonical terminal state may freeze history.
+_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "timed_out"})
+
 MAX_RUNS = 100
 MAX_EVENTS_PER_RUN = 200
 MAX_SSE_QUEUE = 200
@@ -312,16 +316,34 @@ class DagRunStore:
         BEFORE the deque autoshifts so subscribers + run records stay in sync.
         """
         rid = run_id or uuid.uuid4().hex[:12]
-        run = DagRun(
-            id=rid,
-            started_at=time.time(),
-            user_id=user_id,
-            dag_id=dag_id,
-            canonical_run_id=canonical_run_id,
-            workspace_id=workspace_id,
-            project_id=project_id,
-        )
         async with self._lock:
+            existing = self._runs.get(rid)
+            if existing is not None:
+                # Projection writes are retries and refreshes, not new Run
+                # admissions. Never reset a canonical row's timestamps or
+                # terminal presentation when recovery reprojects it.
+                if user_id:
+                    existing.user_id = user_id
+                if dag_id:
+                    existing.dag_id = dag_id
+                if canonical_run_id:
+                    existing.canonical_run_id = canonical_run_id
+                if workspace_id:
+                    existing.workspace_id = workspace_id
+                if project_id:
+                    existing.project_id = project_id
+                self._persist(existing)
+                return existing
+
+            run = DagRun(
+                id=rid,
+                started_at=time.time(),
+                user_id=user_id,
+                dag_id=dag_id,
+                canonical_run_id=canonical_run_id,
+                workspace_id=workspace_id,
+                project_id=project_id,
+            )
             # If we're at capacity, manually evict before append (otherwise
             # the deque drops eldest silently and our dict grows unbounded).
             if self._order.maxlen is not None and len(self._order) >= self._order.maxlen:
@@ -365,6 +387,27 @@ class DagRunStore:
                 q.put_nowait(ev)
         return ev
 
+    async def update_run_snapshot(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        result: dict[str, Any] | None = None,
+    ) -> None:
+        """Refresh presentation fields without creating terminal history.
+
+        This is used for canonical intermediate results. It deliberately has
+        no finished timestamp; canonical Run state owns terminality.
+        """
+        run = self._runs.get(run_id)
+        if run is None:
+            return
+        run.status = status
+        if result is not None:
+            run.result = result
+        run.finished_at = None
+        self._persist(run)
+
     async def finish_run(
         self,
         run_id: str,
@@ -372,7 +415,7 @@ class DagRunStore:
         status: str = "completed",
         result: dict[str, Any] | None = None,
     ) -> None:
-        """Mark a run finished, with the outcome it finished with.
+        """Record a canonical terminal outcome in presentation history.
 
         `status` and `result` are parameters rather than attributes the caller
         assigns, which is the defect this closes: the run route set
@@ -381,12 +424,21 @@ class DagRunStore:
         reported nothing to the list endpoint (#697).
         """
         run = self._runs.get(run_id)
-        if run and run.finished_at is None:
+        if run is None:
+            return
+
+        # Callers should use update_run_snapshot for intermediate states. Keep
+        # this defensive branch so an older caller cannot freeze a WAITING or
+        # RUNNING projection merely by using the historical method name.
+        if status not in _TERMINAL_STATUSES:
+            await self.update_run_snapshot(run_id, status=status, result=result)
+            return
+        run.status = status
+        if result is not None:
+            run.result = result
+        if run.finished_at is None:
             run.finished_at = time.time()
-            run.status = status
-            if result is not None:
-                run.result = result
-            self._persist(run)
+        self._persist(run)
 
     def list_runs(self, *, limit: int = 25) -> list[dict[str, Any]]:
         recent = list(self._order)[-limit:]
