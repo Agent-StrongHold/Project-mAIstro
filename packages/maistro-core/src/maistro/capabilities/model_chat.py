@@ -19,6 +19,7 @@ registry metadata, then attached to the persisted canonical Invocation.
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict
@@ -49,6 +50,17 @@ from maistro.quota.invocation import QuotaAmount
 if TYPE_CHECKING:
     from maistro.capabilities.effect_context import CapabilityEffectContext
     from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
+
+
+def _estimate_input_tokens(request: ModelChatRequest) -> int:
+    """Conservatively reserve prompt capacity before the provider is called.
+
+    Provider-reported input usage arrives too late to protect admission. The
+    estimate intentionally rounds up a compact JSON representation; settlement
+    replaces it with the provider's measured value.
+    """
+    encoded = json.dumps(request.messages, separators=(",", ":"), ensure_ascii=False)
+    return max(1, (len(encoded) + 3) // 4) if encoded else 0
 
 
 def _gateway_usage(provider: LlmGatewayProvider, body: Any) -> InvocationUsage | None:
@@ -182,7 +194,10 @@ class ModelChatEgress:
             resolver=tracked_resolve,
             executor=execute,
             usage_from=usage_from,
-            quota_estimate=QuotaAmount(output_tokens=request.max_tokens or 0),
+            quota_estimate=QuotaAmount(
+                input_tokens=_estimate_input_tokens(request),
+                output_tokens=request.max_tokens or 0,
+            ),
             principal_id=principal_id,
         )
         body = invocation.result if isinstance(invocation.result, dict) else {}

@@ -83,6 +83,7 @@ def new_in_memory_effect_context(
     policy_evaluator: PolicyEvaluator | None = None,
     credentials: CredentialRouter | None = None,
     quota_admission: QuotaAdmission | None = None,
+    invocation_store: InvocationStore | None = None,
 ) -> CapabilityEffectContext:
     """Build an isolated canonical effect context for local/runtime composition.
 
@@ -92,7 +93,7 @@ def new_in_memory_effect_context(
     """
 
     binding_store = InMemoryBindingStore()
-    invocation_store = InMemoryInvocationStore()
+    invocation_store = invocation_store or InMemoryInvocationStore()
     event_store = InMemoryEventStore()
     quota = quota_admission or InMemoryInvocationQuota(profile_for=resolve_rate_profile)
     invocation_service = InvocationExecutionService(

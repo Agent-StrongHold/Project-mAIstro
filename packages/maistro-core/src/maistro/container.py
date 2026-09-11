@@ -1203,6 +1203,39 @@ def _wire_schedule_admission(
     return ScheduleRunAdmitter(run_store, template_store, schedule_store)
 
 
+async def _wire_capability_effects(*, pg_pool: Any, db_pool: Any) -> CapabilityEffectContext:
+    """Compose durable Invocation and quota authorities for this deployment."""
+    from maistro.capabilities.invocation_store import PgInvocationStore, SqliteInvocationStore
+    from maistro.config.rate_limits import resolve_rate_profile
+    from maistro.quota.invocation import (
+        InMemoryInvocationQuota,
+        PgInvocationQuota,
+        SqliteInvocationQuota,
+    )
+
+    invocation_store: Any
+    quota: Any
+    if pg_pool is not None:
+        invocation_store = PgInvocationStore(pg_pool)
+        await invocation_store.ensure_schema()
+        quota = PgInvocationQuota(pg_pool, profile_for=resolve_rate_profile)
+        await quota.ensure_schema()
+    elif db_pool is not None:
+        invocation_store = SqliteInvocationStore(db_pool)
+        await invocation_store.ensure_schema()
+        quota = SqliteInvocationQuota(db_pool, profile_for=resolve_rate_profile)
+        await quota.ensure_schema()
+    else:
+        invocation_store = None
+        quota = InMemoryInvocationQuota(
+            usage_log=get_default_usage_log(), profile_for=resolve_rate_profile
+        )
+    return new_in_memory_effect_context(
+        quota_admission=quota,
+        invocation_store=invocation_store,
+    )
+
+
 async def create_container(
     config: AgentConfig,
     *,
@@ -1520,7 +1553,7 @@ async def create_container(
 
     # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) -----------
     wired_harness_adapters = _wire_harness_adapters(harness_adapters)
-    capability_effects = new_in_memory_effect_context()
+    capability_effects = await _wire_capability_effects(pg_pool=pg_pool, db_pool=db_pool)
     spawn_harness_node = AgentSpawnHarnessNode(
         adapters=wired_harness_adapters, effect_context=capability_effects
     )

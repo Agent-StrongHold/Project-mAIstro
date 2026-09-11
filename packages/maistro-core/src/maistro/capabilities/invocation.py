@@ -20,7 +20,7 @@ use the explicitly process-local implementation from ``quota.invocation``.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
@@ -552,9 +552,139 @@ def _settled_evidence(
     )
 
 
+class _LlmClientProvider:
+    """Provider handle for an existing LLM client at the Agent seam."""
+
+    slot = "model.chat"
+    trust_tier = "t1"
+
+    def __init__(self, name: str) -> None:
+        self.name = name or "configured-llm"
+
+
+class GovernedLLMClient:
+    """Adapt the legacy Agent LLM protocol onto canonical Invocation.
+
+    Strategies remain interchangeable: Direct, ReAct, and custom strategies
+    receive this adapter instead of a raw client, so no strategy can dispatch
+    around reservation and usage settlement.
+    """
+
+    def __init__(
+        self,
+        client: Any,
+        *,
+        invocation_service: Any,
+        workspace_id: str,
+        project_id: str,
+        principal_id: str = "",
+        agent_id: str = "agent",
+        run_id: str = "",
+        node_run_id: str = "",
+        attempt_id: str = "",
+    ) -> None:
+        self._client = client
+        self._invocations = invocation_service
+        self._workspace_id = workspace_id or "default"
+        self._project_id = project_id or "default"
+        self._principal_id = principal_id
+        self._agent_id = agent_id
+        self._run_id = run_id
+        self._node_run_id = node_run_id
+        self._attempt_id = attempt_id
+        self._sequence = 0
+
+    async def complete(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
+        stream: bool = False,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        from maistro.observability.correlation import current_execution_context
+
+        context = current_execution_context()
+        self._sequence += 1
+        run_id = context.run_id or self._run_id or f"agent-turn:{uuid4().hex}"
+        node_run_id = context.node_run_id or self._node_run_id or self._agent_id
+        attempt_id = context.attempt_id or self._attempt_id or run_id
+        workspace_id = context.workspace_id or self._workspace_id
+        project_id = context.project_id or self._project_id
+        provider = _LlmClientProvider(model)
+        binding = Binding(
+            binding_id=f"agent-llm:{self._agent_id}:{workspace_id}:{project_id}:{model or 'auto'}",
+            workspace_id=workspace_id,
+            project_id=project_id,
+            capability="model.chat",
+            provider_name=provider.name,
+        )
+        request = {
+            "messages": messages,
+            "model": model,
+            "tools": tools,
+            "tool_choice": tool_choice,
+            "stream": stream,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "metadata": metadata,
+        }
+
+        async def resolve(_binding: Binding) -> _LlmClientProvider:
+            return provider
+
+        async def execute(_provider: _LlmClientProvider, payload: dict[str, Any]) -> Any:
+            return await self._client.complete(**payload)
+
+        def usage_from(body: Any) -> InvocationUsage | None:
+            if not isinstance(body, dict) or not isinstance(body.get("usage"), dict):
+                return None
+            usage = body["usage"]
+            return InvocationUsage(
+                input_units=int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0),
+                output_units=int(usage.get("completion_tokens") or usage.get("output_tokens") or 0),
+                model=str(body.get("model") or provider.name),
+                provider=provider.name,
+            )
+
+        estimate = max(1, (len(str(messages)) + 3) // 4)
+        invocation = await self._invocations.invoke(
+            binding=binding,
+            run_id=run_id,
+            node_run_id=node_run_id,
+            attempt_id=attempt_id,
+            effect_key=f"llm-completion:{self._sequence}",
+            request=request,
+            resolver=resolve,
+            executor=execute,
+            usage_from=usage_from,
+            principal_id=self._principal_id,
+            quota_estimate=QuotaAmount(input_tokens=estimate, output_tokens=max_tokens or 0),
+        )
+        if not isinstance(invocation.result, dict):
+            raise TypeError("governed LLM Invocation returned a non-object response")
+        return invocation.result
+
+    async def stream(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        **kwargs: Any,
+    ) -> AsyncIterator[str]:
+        response = await self.complete(messages, model, **kwargs)
+        choices = response.get("choices", [])
+        content = choices[0].get("message", {}).get("content", "") if choices else ""
+        yield str(content or "")
+
+
 __all__ = [
     "CapabilityUnavailable",
     "EffectNotApplied",
+    "GovernedLLMClient",
     "InMemoryInvocationStore",
     "Invocation",
     "InvocationExecutionService",

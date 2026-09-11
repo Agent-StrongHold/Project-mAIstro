@@ -24,6 +24,7 @@ from maistro.capabilities.http_client import HttpxAsyncHttp
 from maistro.capabilities.invocation import (
     CapabilityUnavailable,
     EffectNotApplied,
+    GovernedLLMClient,
     InMemoryInvocationStore,
     Invocation,
     InvocationExecutionService,
@@ -31,7 +32,7 @@ from maistro.capabilities.invocation import (
     InvocationStatus,
     UnsafeEffectRetry,
 )
-from maistro.capabilities.invocation_store import SqliteInvocationStore
+from maistro.capabilities.invocation_store import PgInvocationStore, SqliteInvocationStore
 from maistro.capabilities.protocols import CapabilityProvider
 from maistro.capabilities.providers.harness_safety import (
     ActionGate,
@@ -78,6 +79,7 @@ __all__ = [
     "EffectNotApplied",
     "FallbackPolicy",
     "GovernedInvocationExecutionService",
+    "GovernedLLMClient",
     "GuardedHarnessRunner",
     "HarnessInputBlocked",
     "HarnessRunner",
@@ -94,6 +96,7 @@ __all__ = [
     "InvocationQuotaEvidence",
     "InvocationStatus",
     "OpencodeHarnessRunner",
+    "PgInvocationStore",
     "ProviderHealth",
     "ResolvedBinding",
     "SafeHarnessRunner",

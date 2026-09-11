@@ -5,17 +5,24 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import aiosqlite
 import pytest
 
 from maistro.capabilities.binding import Binding
+from maistro.capabilities.effect_context import new_in_memory_effect_context
 from maistro.capabilities.invocation import (
     EffectNotApplied,
+    GovernedLLMClient,
     InMemoryInvocationStore,
     InvocationExecutionService,
     InvocationStatus,
     InvocationUsage,
 )
-from maistro.quota.invocation import InMemoryInvocationQuota, QuotaAmount
+from maistro.quota.invocation import (
+    InMemoryInvocationQuota,
+    QuotaAmount,
+    SqliteInvocationQuota,
+)
 from maistro.quota.rate_profile import LimitUnit, LimitWindow, ModelRateProfile, RateConstraint
 from maistro.quota.usage_log import InMemoryUsageLog
 from maistro.types.errors import QuotaReserveError
@@ -174,6 +181,105 @@ async def test_concurrent_invocations_cannot_race_one_remaining_reservation() ->
     release.set()
     await first
     assert calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_two_sqlite_replicas_share_reservations_before_dispatch(tmp_path: Any) -> None:
+    path = str(tmp_path / "quota.db")
+    first_conn = await aiosqlite.connect(path)
+    second_conn = await aiosqlite.connect(path)
+    try:
+        first_quota = _sqlite_quota(first_conn)
+        second_quota = _sqlite_quota(second_conn)
+        await first_quota.ensure_schema()
+        first_store = InMemoryInvocationStore()
+        second_store = InMemoryInvocationStore()
+        first = InvocationExecutionService(store=first_store, quota_admission=first_quota)
+        second = InvocationExecutionService(store=second_store, quota_admission=second_quota)
+        started = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        async def execute(_provider: _Provider, _request: Any) -> dict[str, object]:
+            nonlocal calls
+            calls += 1
+            started.set()
+            await release.wait()
+            return {}
+
+        async def invoke(service: InvocationExecutionService, key: str) -> object:
+            return await service.invoke(
+                binding=_binding(),
+                run_id=key,
+                node_run_id=key,
+                attempt_id=key,
+                effect_key=key,
+                request={},
+                resolver=_resolver,
+                executor=execute,
+                principal_id="principal-1",
+            )
+
+        owner = asyncio.create_task(invoke(first, "one"))
+        await started.wait()
+        contender = asyncio.create_task(invoke(second, "two"))
+        with pytest.raises(QuotaReserveError):
+            await contender
+        release.set()
+        await owner
+        assert calls == 1
+    finally:
+        await first_conn.close()
+        await second_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_governed_llm_adapter_records_alternate_strategy_calls() -> None:
+    quota = _quota()
+    effects = new_in_memory_effect_context(quota_admission=quota)
+
+    class FakeLLM:
+        async def complete(self, **_kwargs: Any) -> dict[str, Any]:
+            return {
+                "model": "model-a",
+                "choices": [{"message": {"content": "governed"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            }
+
+    client = GovernedLLMClient(
+        FakeLLM(),
+        invocation_service=effects.invocations,
+        workspace_id="workspace-1",
+        project_id="project-1",
+        principal_id="principal-1",
+        agent_id="direct",
+        run_id="turn-1",
+    )
+    assert (await client.complete([], "model-a"))["choices"]
+    with pytest.raises(QuotaReserveError):
+        await client.complete([], "model-a")
+    records = await effects.invocation_store.list_effect(
+        run_id="turn-1",
+        node_run_id="direct",
+        binding_id="agent-llm:direct:workspace-1:project-1:model-a",
+        effect_key="llm-completion:2",
+    )
+    assert records and records[0].quota is not None and records[0].quota.state == "denied"
+
+
+def _sqlite_quota(conn: Any) -> SqliteInvocationQuota:
+    return SqliteInvocationQuota(
+        conn,
+        profile_for=lambda provider: ModelRateProfile(
+            provider=provider,
+            model=provider,
+            scope_key_fields=("provider", "model", "workspace", "principal"),
+            constraints=(
+                RateConstraint(unit=LimitUnit.REQUESTS, window=LimitWindow.MINUTE, limit=1),
+            ),
+        ),
+    )
 
 
 @pytest.mark.asyncio
