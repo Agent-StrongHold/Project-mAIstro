@@ -477,6 +477,8 @@ async def test_hive_facade_uses_governed_model_egress_on_canonical_run(
     """
     import httpx
 
+    from maistro.capabilities.binding import Binding
+    from maistro.capabilities.providers.llm_gateway import MODEL_CHAT_CAPABILITY
     from maistro.container import create_container
     from maistro.types.config import AgentConfig
 
@@ -514,6 +516,15 @@ async def test_hive_facade_uses_governed_model_egress_on_canonical_run(
         )
     )
     root = await container.project_scope_store.create_root("ws-1")
+    await container.capability_effects.bindings.put(
+        Binding(
+            binding_id="legacy-model-binding",
+            workspace_id="ws-1",
+            project_id=root.project_id,
+            node_id="n1",
+            capability=MODEL_CHAT_CAPABILITY,
+        )
+    )
     run_store = container.run_store
     durable_store = container.graph_run_store
     effects = container.capability_effects
@@ -533,6 +544,7 @@ async def test_hive_facade_uses_governed_model_egress_on_canonical_run(
                     "id": "n1",
                     "name": "worker",
                     "model": "legacy-model",
+                    "binding_id": "legacy-model-binding",
                     "config": {"execution_tier": "safe"},
                 }
             ],
@@ -549,7 +561,7 @@ async def test_hive_facade_uses_governed_model_egress_on_canonical_run(
     assert invocation.run_id == result["run_id"]
     assert invocation.node_run_id
     assert invocation.attempt_id
-    assert invocation.binding.binding_id == (f"hive-legacy-model:ws-1:{root.project_id}:n1")
+    assert invocation.binding.binding_id == "legacy-model-binding"
     assert invocation.binding.provider_name == "legacy-model"
     assert invocation.usage is not None
     assert invocation.usage.model_version == "legacy-model-v2"
@@ -570,6 +582,8 @@ async def test_hive_gateway_failure_terminalizes_canonical_run_and_node(
     """A dispatched gateway failure cannot leave the durable run successful."""
     import httpx
 
+    from maistro.capabilities.binding import Binding
+    from maistro.capabilities.providers.llm_gateway import MODEL_CHAT_CAPABILITY
     from maistro.container import create_container
     from maistro.types.config import AgentConfig
 
@@ -599,6 +613,15 @@ async def test_hive_gateway_failure_terminalizes_canonical_run_and_node(
         )
     )
     root = await container.project_scope_store.create_root("ws-1")
+    await container.capability_effects.bindings.put(
+        Binding(
+            binding_id="legacy-model-binding",
+            workspace_id="ws-1",
+            project_id=root.project_id,
+            node_id="n1",
+            capability=MODEL_CHAT_CAPABILITY,
+        )
+    )
 
     import services.canonical_dag_runner as canonical
 
@@ -608,7 +631,14 @@ async def test_hive_gateway_failure_terminalizes_canonical_run_and_node(
         {
             "id": "hive-failed",
             "description": "failure task",
-            "nodes": [{"id": "n1", "model": "legacy-model", "config": {"execution_tier": "safe"}}],
+            "nodes": [
+                {
+                    "id": "n1",
+                    "model": "legacy-model",
+                    "binding_id": "legacy-model-binding",
+                    "config": {"execution_tier": "safe"},
+                }
+            ],
             "edges": [],
         },
         workspace_id="ws-1",
@@ -623,6 +653,120 @@ async def test_hive_gateway_failure_terminalizes_canonical_run_and_node(
     assert len(node_runs) == 1
     assert node_runs[0].status.value == "failed"
     assert node_runs[0].node_run_id == invocations[0].node_run_id
+
+
+@pytest.mark.asyncio
+async def test_canonical_tool_model_fallbacks_share_attempt_correlated_egress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Clarify and grounded search are model adapters, not model providers."""
+    import httpx
+
+    from maistro.capabilities.binding import Binding
+    from maistro.capabilities.providers.llm_gateway import MODEL_CHAT_CAPABILITY
+    from maistro.container import create_container
+    from maistro.tools import browser
+    from maistro.types.config import AgentConfig
+
+    class _Response:
+        status_code = 200
+
+        def __init__(self, body: dict[str, Any]) -> None:
+            self._body = body
+
+        def json(self) -> dict[str, Any]:
+            return self._body
+
+    class _Client:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *_args: Any) -> None:
+            return None
+
+        async def post(self, *_args: Any, **kwargs: Any) -> _Response:
+            messages = kwargs["json"]["messages"]
+            prompt = str(messages[-1]["content"])
+            if "Search the web for:" in prompt:
+                content = '{"summary":"grounded","citations":[]}'
+            else:
+                content = '{"answers":{"1":"chosen"}}'
+            return _Response(
+                {
+                    "model": "tool-model-v2",
+                    "choices": [{"message": {"content": content}}],
+                    "usage": {"prompt_tokens": 2, "completion_tokens": 3},
+                }
+            )
+
+    class _BrokenBrowser:
+        def __init__(self) -> None:
+            raise RuntimeError("browser unavailable")
+
+    _Client.is_closed = False
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(browser, "BrowserClient", _BrokenBrowser)
+    monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
+    monkeypatch.delenv("SERPER_API_KEY", raising=False)
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+
+    container = await create_container(
+        AgentConfig(
+            router_api_key="test-key", workspace_id="ws-1", litellm_url="http://gateway.test"
+        )
+    )
+    root = await container.project_scope_store.create_root("ws-1")
+    for node_id, binding_id in (("clarify", "clarify-binding"), ("grounded", "grounded-binding")):
+        await container.capability_effects.bindings.put(
+            Binding(
+                binding_id=binding_id,
+                workspace_id="ws-1",
+                project_id=root.project_id,
+                node_id=node_id,
+                capability=MODEL_CHAT_CAPABILITY,
+            )
+        )
+
+    import services.canonical_dag_runner as canonical
+
+    monkeypatch.setattr(canonical, "_container", lambda: container)
+    monkeypatch.setattr(canonical, "get_run_store", lambda: container.graph_run_store)
+    result = await canonical.execute_dag(
+        {
+            "id": "hive-tool-egress",
+            "description": "tool fallback task",
+            "nodes": [
+                {
+                    "id": "clarify",
+                    "tool": "clarify",
+                    "binding_id": "clarify-binding",
+                    "tool_config": {"questions": ["Which scope?"]},
+                },
+                {
+                    "id": "grounded",
+                    "tool": "web_search",
+                    "binding_id": "grounded-binding",
+                    "tool_config": {"max_results": 1},
+                },
+            ],
+            "edges": [{"id": "clarify-grounded", "from_node": "clarify", "to_node": "grounded"}],
+        },
+        workspace_id="ws-1",
+        project_id=root.project_id,
+    )
+
+    assert result["status"] == "completed"
+    invocations = list(container.capability_effects.invocation_store._items.values())  # type: ignore[attr-defined]
+    assert {invocation.binding.binding_id for invocation in invocations} == {
+        "clarify-binding",
+        "grounded-binding",
+    }
+    assert all(invocation.run_id == result["run_id"] for invocation in invocations)
+    assert all(invocation.node_run_id and invocation.attempt_id for invocation in invocations)
+    assert result["node_results"]["grounded"]["success"] is True
 
 
 @pytest.mark.asyncio

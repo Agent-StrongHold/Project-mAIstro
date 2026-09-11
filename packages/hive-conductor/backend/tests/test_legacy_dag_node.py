@@ -593,6 +593,38 @@ async def test_governed_model_failure_cannot_report_success(
     assert invocations[0].status.value == ("failed" if failure == "connect" else "unknown")
 
 
+async def test_model_node_without_operator_binding_fails_closed() -> None:
+    from maistro.capabilities.effect_context import new_in_memory_effect_context
+    from maistro.providers.registry import InMemoryProviderRegistry
+    from maistro.providers.router import CostAwareRouter
+
+    effects = new_in_memory_effect_context()
+    registry = InMemoryProviderRegistry()
+    node = _adapter_node(
+        {"id": "n1", "model": "model", "config": {"execution_tier": "safe"}},
+        node_env={"LITELLM_API_BASE": "http://gateway.test"},
+        effect_context=effects,
+        provider_registry=registry,
+        llm_router=CostAwareRouter(registry),
+    )
+
+    result = await node.run(
+        node.input_schema(),
+        NodeContext(
+            run_id="run-1",
+            dag_id="dag-1",
+            node_id="n1",
+            node_run_id="node-run-1",
+            attempt_id="attempt-1",
+            workspace_id="ws-1",
+            project_id="project-1",
+        ),
+    )
+
+    assert result.success is False
+    assert list(effects.invocation_store._items.values()) == []  # type: ignore[attr-defined]
+
+
 async def test_a_sandbox_tier_adapter_node_runs_the_isolated_subprocess(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

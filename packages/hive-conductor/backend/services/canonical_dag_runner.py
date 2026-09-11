@@ -14,8 +14,6 @@ import os
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from maistro.capabilities.binding import Binding
-from maistro.capabilities.providers.llm_gateway import MODEL_CHAT_CAPABILITY
 from maistro.graph.conditions import CONDITION_OPERATORS
 from maistro.graph.definitions import Edge, Graph, Node
 from maistro.graph.durable_runs import (
@@ -158,7 +156,7 @@ def _validate_acyclic_and_reachable(
         )
 
 
-def _legacy_scout_node(*, workspace_id: str = "", project_id: str = "") -> dict[str, Any]:
+def _legacy_scout_node(*, binding_id: str = "") -> dict[str, Any]:
     """Represent the old pre-entry Scout as ordinary canonical physical work."""
     node = {
         "id": _SCOUT_NODE_ID,
@@ -169,12 +167,8 @@ def _legacy_scout_node(*, workspace_id: str = "", project_id: str = "") -> dict[
         "config": {"execution_tier": "safe"},
         "compat_synthetic": "legacy_run_scout",
     }
-    if workspace_id and project_id:
-        node["binding_id"] = _legacy_model_binding_id(
-            workspace_id=workspace_id,
-            project_id=project_id,
-            node_id=_SCOUT_NODE_ID,
-        )
+    if binding_id.strip():
+        node["binding_id"] = binding_id.strip()
     return node
 
 
@@ -201,7 +195,7 @@ def _execution_shape(
     if not dag_data.get("run_scout"):
         return nodes, edges, entry
 
-    scout = _legacy_scout_node(workspace_id=workspace_id, project_id=project_id)
+    scout = _legacy_scout_node(binding_id=str(dag_data.get("scout_binding_id") or ""))
     scout_edge = {
         "id": _SCOUT_EDGE_ID,
         "from_node": _SCOUT_NODE_ID,
@@ -249,19 +243,6 @@ def _edge_metadata(raw: Mapping[str, Any]) -> dict[str, Any]:
     return metadata
 
 
-def _annotate_synthetic_model_bindings(
-    nodes: list[dict[str, Any]], *, workspace_id: str, project_id: str
-) -> None:
-    """Keep the synthetic Scout's durable raw-node metadata aligned with its Binding."""
-    for node in nodes:
-        if node.get("compat_synthetic") == "legacy_run_scout":
-            node["binding_id"] = _legacy_model_binding_id(
-                workspace_id=workspace_id,
-                project_id=project_id,
-                node_id=str(node["id"]),
-            )
-
-
 def graph_from_legacy_dag(
     dag_data: Mapping[str, Any], *, workspace_id: str, project_id: str
 ) -> Graph:
@@ -269,8 +250,6 @@ def graph_from_legacy_dag(
     nodes, raw_edges, entry = _execution_shape(
         dag_data, workspace_id=workspace_id, project_id=project_id
     )
-    _annotate_synthetic_model_bindings(nodes, workspace_id=workspace_id, project_id=project_id)
-
     graph_nodes = [
         Node(
             node_id=str(raw["id"]),
@@ -392,88 +371,6 @@ def _node_env(
     for key, value in (user_credentials or {}).items():
         environment[f"USER_CRED_{key.upper()}"] = value
     return environment
-
-
-def _legacy_model_binding_id(*, workspace_id: str, project_id: str, node_id: str) -> str:
-    """Name the deployment-provisioned Binding for one legacy model node."""
-    return f"hive-legacy-model:{workspace_id}:{project_id}:{node_id}"
-
-
-def _needs_model_binding(raw_node: Mapping[str, Any]) -> bool:
-    tool_name = raw_node.get("tool")
-    return not tool_name or tool_name in {"clarify", "web_search"}
-
-
-async def _prepare_model_bindings(
-    dag_data: Mapping[str, Any],
-    *,
-    workspace_id: str,
-    project_id: str,
-    container: Any,
-) -> dict[str, Any]:
-    """Provision default Hive model Bindings in the canonical effect store.
-
-    Legacy DAG records predate Binding ids. Giving those records a deterministic
-    Workspace/Project/Node-scoped Binding preserves their behavior while making
-    authorization explicit before the canonical Run starts. Explicit Binding
-    ids remain caller-owned and are never silently replaced.
-    """
-    if container is None or container.capability_effects is None:
-        return dict(dag_data)
-
-    prepared = dict(dag_data)
-    raw_nodes = dag_data.get("nodes", [])
-    if not isinstance(raw_nodes, list):
-        return prepared
-    prepared_nodes: list[Any] = []
-    for raw in raw_nodes:
-        if not isinstance(raw, Mapping):
-            prepared_nodes.append(raw)
-            continue
-        node = dict(raw)
-        config = node.get("config")
-        config_map = config if isinstance(config, Mapping) else {}
-        binding_id = str(
-            node.get("binding_id")
-            or node.get("model_binding_id")
-            or config_map.get("binding_id")
-            or config_map.get("model_binding_id")
-            or ""
-        ).strip()
-        node_id = str(node.get("id") or "").strip()
-        if _needs_model_binding(node) and not binding_id and node_id:
-            binding_id = _legacy_model_binding_id(
-                workspace_id=workspace_id,
-                project_id=project_id,
-                node_id=node_id,
-            )
-            node["binding_id"] = binding_id
-            await container.capability_effects.bindings.put(
-                Binding(
-                    binding_id=binding_id,
-                    workspace_id=workspace_id,
-                    project_id=project_id,
-                    node_id=node_id,
-                    capability=MODEL_CHAT_CAPABILITY,
-                )
-            )
-        prepared_nodes.append(node)
-    if dag_data.get("run_scout"):
-        await container.capability_effects.bindings.put(
-            Binding(
-                binding_id=_legacy_model_binding_id(
-                    workspace_id=workspace_id,
-                    project_id=project_id,
-                    node_id=_SCOUT_NODE_ID,
-                ),
-                workspace_id=workspace_id,
-                project_id=project_id,
-                node_id=_SCOUT_NODE_ID,
-                capability=MODEL_CHAT_CAPABILITY,
-            )
-        )
-    prepared["nodes"] = prepared_nodes
-    return prepared
 
 
 def _resolver(
@@ -647,12 +544,9 @@ async def execute_dag(
         project_id=project_id,
     )
     container = _container()
-    prepared_dag = await _prepare_model_bindings(
-        dag_data,
-        workspace_id=resolved_workspace,
-        project_id=resolved_project,
-        container=container,
-    )
+    # Binding authorization is bootstrapped from operator configuration; a DAG
+    # may reference it but can never manufacture one during admission.
+    prepared_dag = dict(dag_data)
     graph = graph_from_legacy_dag(
         prepared_dag,
         workspace_id=resolved_workspace,
