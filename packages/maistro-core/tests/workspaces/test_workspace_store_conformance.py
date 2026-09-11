@@ -81,6 +81,17 @@ class _SqliteBackend:
         await store.ensure_schema()
         return store
 
+    async def independent_project_store(self):
+        import aiosqlite
+
+        from maistro.projects.sqlite_scope_store import SqliteProjectScopeStore
+
+        conn = await aiosqlite.connect(self._path)
+        self._connections.append(conn)
+        store = SqliteProjectScopeStore(conn)
+        await store.ensure_schema()
+        return store
+
     async def close(self) -> None:
         for conn in self._connections:
             await conn.close()
@@ -102,6 +113,11 @@ class _PostgresBackend:
         store = PgWorkspaceStore(self._pool, project_store=PgProjectScopeStore(self._pool))
         await store.recover()
         return store
+
+    async def independent_project_store(self):
+        from maistro.projects.pg_scope_store import PgProjectScopeStore
+
+        return PgProjectScopeStore(self._pool)
 
     async def close(self) -> None:
         return None
@@ -460,6 +476,19 @@ class TestWorkspaceLifecycleRecovery:
                     workspace_id=workspace.workspace_id,
                     parent_project_id=root.project_id,
                     name="must not be admitted",
+                )
+
+            # A separately constructed durable Project store must consult the
+            # database journal itself; the Workspace store's callback is not an
+            # authorization boundary.
+            independent = await backend.independent_project_store()
+            with pytest.raises(ProjectScopeDenied, match="not active"):
+                await independent.root_for_workspace(workspace.workspace_id)
+            with pytest.raises(ProjectScopeDenied, match="not active"):
+                await independent.create(
+                    workspace_id=workspace.workspace_id,
+                    parent_project_id=root.project_id,
+                    name="independent store must not admit",
                 )
         finally:
             store.project_store.purge_workspace = original  # type: ignore[method-assign]
