@@ -428,3 +428,38 @@ async def test_sqlite_record_fire_from_two_connections_does_not_lose_an_incremen
 
         final = await store_a.get(schedule.schedule_id)
         assert final is not None and final.runs_so_far == callers
+
+
+async def test_a_failed_sqlite_write_rolls_back_and_frees_the_critical_section(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A write that raises inside the critical section must leave nothing
+    behind: not a half-applied row, and not an open transaction that would
+    make the next writer's `BEGIN IMMEDIATE` fail."""
+    async with aiosqlite.connect(tmp_path / "rollback.db") as conn:
+        store = SqliteScheduleStore(conn)
+        await store.ensure_schema()
+        schedule = await store.put(_schedule(name="hourly"))
+
+        async def refuse(_schedule: Schedule) -> None:
+            raise RuntimeError("disk said no")
+
+        monkeypatch.setattr(store, "_upsert", refuse)
+        with pytest.raises(RuntimeError, match="disk said no"):
+            await store.record_fire(
+                schedule.schedule_id,
+                fired_at=NOON,
+                run_id="run-1",
+                next_due_at=NOON + timedelta(hours=1),
+            )
+        monkeypatch.undo()
+
+        untouched = await store.get(schedule.schedule_id)
+        assert untouched is not None and untouched.runs_so_far == 0
+        advanced = await store.record_fire(
+            schedule.schedule_id,
+            fired_at=NOON,
+            run_id="run-1",
+            next_due_at=NOON + timedelta(hours=1),
+        )
+        assert advanced is not None and advanced.runs_so_far == 1
