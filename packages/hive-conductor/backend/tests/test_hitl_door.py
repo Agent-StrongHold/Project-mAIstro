@@ -221,13 +221,15 @@ async def test_hitl_routes_are_scoped_to_the_callers_workspaces(scoped_client) -
         pending = scoped_client.get("/v1/hitl/pending").json()
         assert {item["run_id"] for item in pending} == {mine_id, mine_second_id}
 
+        # A foreign id is indistinguishable from a missing id as well as being
+        # unable to mutate it; otherwise this door leaks Run existence.
         assert (
             scoped_client.post(
                 f"/v1/hitl/{other_id}/ask/answer", json={"answer": "yes"}
             ).status_code
-            == 403
+            == 404
         )
-        assert scoped_client.post(f"/v1/hitl/{other_id}/ask/cancel").status_code == 403
+        assert scoped_client.post(f"/v1/hitl/{other_id}/ask/cancel").status_code == 404
         record = await store.get(other_id)
         assert record is not None
         assert record.run.status is RunStatus.PAUSED
