@@ -127,6 +127,20 @@ def _reconcile_runtime_provisioned(inspector: sa.Inspector) -> None:
             f"owns (missing: {sorted(missing)}); it is not the runtime-"
             "provisioned claim table, and the migration will not stamp over it"
         )
+    # The claim protocol's insert-replay and takeover guard rest on a unique
+    # constraint on scope_key (INSERT ... ON CONFLICT, the UPDATE ... WHERE
+    # scope_key = ...). An earlier runtime provisioning that predates the
+    # PRIMARY KEY in ensure_schema leaves a column-complete table with no such
+    # constraint — adopting it as-is would stamp head over a shape the store
+    # cannot write to. Reconstruct it: a duplicate scope_key would fail the
+    # CREATE exactly as it should, loudly, rather than letting the chain
+    # pretend the table is usable when it is not.
+    pk = inspector.get_pk_constraint("task_idempotency")
+    pk_columns = set(pk.get("constrained_columns", []))
+    if "scope_key" not in pk_columns:
+        if pk.get("name"):
+            op.drop_constraint(pk["name"], "task_idempotency", type_="primary")
+        op.create_primary_key("pk_task_idempotency", "task_idempotency", ["scope_key"])
     index_names = {ix["name"] for ix in inspector.get_indexes("task_idempotency")}
     if "ix_task_idempotency_expires" not in index_names:
         # The purge query's scan bound — same reason as on the create path.
@@ -134,5 +148,11 @@ def _reconcile_runtime_provisioned(inspector: sa.Inspector) -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("ix_task_idempotency_expires", table_name="task_idempotency")
-    op.drop_table("task_idempotency")
+    # IF EXISTS: the table may have been created by runtime provisioning
+    # (ensure_schema) and dropped again by a test's cleanup, or never created
+    # at all on a fresh database where alembic auto-stamps to head before
+    # downgrading. The downgrade must be idempotent, not crash on a missing
+    # index or table. Matches the DROP ... IF EXISTS pattern used by every
+    # earlier migration in this chain (see SPEC-178).
+    op.execute("DROP INDEX IF EXISTS ix_task_idempotency_expires")
+    op.execute("DROP TABLE IF EXISTS task_idempotency")

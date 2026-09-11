@@ -317,6 +317,45 @@ class TestTheChainSurvivesRuntimeSelfProvisioning:
         }
         assert _query("select version_num from alembic_version") == [("033",)]
 
+    def test_adopts_runtime_provisioned_table_without_a_primary_key(self, empty_database) -> None:
+        """A provisioning that predates the PRIMARY KEY in ensure_schema leaves
+        a column-complete table with no unique constraint — adopting it as-is
+        would stamp head over a shape the store's ON CONFLICT cannot use. The
+        migration must reconstruct the PK, or refuse."""
+        _alembic("upgrade", "032")
+        # All ten columns, but no PK — the shape the prior finding reported:
+        # the store's INSERT ... ON CONFLICT(scope_key) failed because no
+        # unique constraint existed.
+        _execute(
+            "create table task_idempotency ("
+            "scope_key text not null,"
+            "claim_token text not null,"
+            "fingerprint text not null,"
+            "request text not null,"
+            "task_id text,"
+            "run_id text,"
+            "completed_at bigint not null default 0,"
+            "created_at bigint not null,"
+            "expires_at bigint not null,"
+            "lease_expires_at bigint not null"
+            ")"
+        )
+        try:
+            result = _alembic("upgrade", "head")
+            assert result.returncode == 0, result.stderr
+            assert _query("select version_num from alembic_version") == [("033",)]
+            pks = {
+                str(row[0])
+                for row in _query(
+                    "select a.attname from pg_index i "
+                    "join pg_attribute a on a.attnum = any(i.indkey) and a.attrelid = i.indrelid "
+                    "where i.indrelid = 'task_idempotency'::regclass and i.indisprimary"
+                )
+            }
+            assert pks == {"scope_key"}, f"primary key missing or wrong: {pks}"
+        finally:
+            _execute("drop table task_idempotency")
+
     def test_upgrade_refuses_to_stamp_over_a_foreign_table_shape(self, empty_database) -> None:
         """A table under the claims name WITHOUT the columns migration 033
         owns is not the runtime's provisioning, and stamping head over a shape

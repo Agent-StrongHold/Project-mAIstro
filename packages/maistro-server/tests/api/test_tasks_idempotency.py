@@ -502,3 +502,35 @@ async def test_a_mid_admission_timeout_across_a_durable_restart_resumes_the_work
     assert await asyncio.wait_for(restarted_queue.next_task(), timeout=1) == record.task_id
     discovered = await restarted_runs.find_run_by_task_receipt(record.task_id)
     assert discovered is not None and discovered.run_id == run_id
+
+
+# ── the CORS boundary: the idempotency key must reach a browser client ──
+
+
+def test_the_idempotency_key_header_is_allowed_cross_origin() -> None:
+    """The Idempotency-Key header must survive CORS preflight — without it, a
+    browser client that retries a task submission cannot send the key that
+    reconciles the retry, and the preflight returns 400 Disallowed CORS
+    headers. The workspace-scope headers carry the same requirement: the
+    Conductor's cross-origin boundary is trusted Hive, and it carries the
+    Workspace binding on those headers.
+
+    These wire-level tests mount only the router (no middleware), so they
+    cannot catch a CORS omission — this inspects the production app's own
+    CORSMiddleware configuration, the same seam
+    ``test_the_run_id_header_is_readable_cross_origin`` guards for the Run-Id
+    header.
+    """
+    from maistro.tasks.http_contract import (
+        IDEMPOTENCY_KEY_HEADER,
+        WORKSPACE_ID_HEADER,
+        WORKSPACE_SCOPE_SIGNATURE_HEADER,
+    )
+    from maistro_server.main import app
+
+    cors = [m for m in app.user_middleware if m.cls.__name__ == "CORSMiddleware"]
+    assert cors, "the app no longer installs CORSMiddleware"
+    allow_headers = set(cors[0].kwargs["allow_headers"])
+    assert IDEMPOTENCY_KEY_HEADER in allow_headers
+    assert WORKSPACE_ID_HEADER in allow_headers
+    assert WORKSPACE_SCOPE_SIGNATURE_HEADER in allow_headers
