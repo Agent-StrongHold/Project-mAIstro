@@ -111,7 +111,7 @@ EXPECTED_TABLES = frozenset(
         # live on the message table (#327).
         "session_turns",
         "sessions",
-        # Admission claims for task submission (033). Durable and replica-shareable
+        # Admission claims for task submission (034). Durable and replica-shareable
         # so a retried submit resolves to the original receipt rather than minting
         # a second Run (#1176).
         "task_idempotency",
@@ -256,7 +256,7 @@ class TestIndexIntent:
 class TestTheChainSurvivesRuntimeSelfProvisioning:
     """The claims table has two owners (#1176): this chain, and the runtime —
     `PgTaskIdempotencyStore.ensure_schema` provisions it at wire time, before
-    the chain has necessarily reached 033. The first cut of the migration met
+    the chain has necessarily reached 034. The first cut of the migration met
     that table and died on `DuplicateTable`, so `alembic upgrade head` — the
     command every documented Postgres setup path runs — exited 1 on exactly
     the deployments that provisioned early. The upgrade now adopts a table
@@ -302,7 +302,7 @@ class TestTheChainSurvivesRuntimeSelfProvisioning:
         }
 
     def test_upgrade_head_adopts_the_runtime_provisioned_table(self, empty_database) -> None:
-        _alembic("upgrade", "032")
+        _alembic("upgrade", "033")
         self._provision_at_runtime()
         assert "claim_token" in self._claim_columns(), "provisioning did not run"
 
@@ -315,14 +315,14 @@ class TestTheChainSurvivesRuntimeSelfProvisioning:
                 "select indexname from pg_indexes where tablename = 'task_idempotency'"
             )
         }
-        assert _query("select version_num from alembic_version") == [("033",)]
+        assert _query("select version_num from alembic_version") == [("034",)]
 
     def test_adopts_runtime_provisioned_table_without_a_primary_key(self, empty_database) -> None:
         """A provisioning that predates the PRIMARY KEY in ensure_schema leaves
         a column-complete table with no unique constraint — adopting it as-is
         would stamp head over a shape the store's ON CONFLICT cannot use. The
         migration must reconstruct the PK, or refuse."""
-        _alembic("upgrade", "032")
+        _alembic("upgrade", "033")
         # All ten columns, but no PK — the shape the prior finding reported:
         # the store's INSERT ... ON CONFLICT(scope_key) failed because no
         # unique constraint existed.
@@ -343,7 +343,7 @@ class TestTheChainSurvivesRuntimeSelfProvisioning:
         try:
             result = _alembic("upgrade", "head")
             assert result.returncode == 0, result.stderr
-            assert _query("select version_num from alembic_version") == [("033",)]
+            assert _query("select version_num from alembic_version") == [("034",)]
             pks = {
                 str(row[0])
                 for row in _query(
@@ -357,10 +357,10 @@ class TestTheChainSurvivesRuntimeSelfProvisioning:
             _execute("drop table task_idempotency")
 
     def test_upgrade_refuses_to_stamp_over_a_foreign_table_shape(self, empty_database) -> None:
-        """A table under the claims name WITHOUT the columns migration 033
+        """A table under the claims name WITHOUT the columns migration 034
         owns is not the runtime's provisioning, and stamping head over a shape
         the store cannot read would hide the damage behind a green upgrade."""
-        _alembic("upgrade", "032")
+        _alembic("upgrade", "033")
         _execute("create table task_idempotency (scope_key text primary key)")
         try:
             result = _alembic("upgrade", "head")

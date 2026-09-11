@@ -359,7 +359,7 @@ def _pending_row(fingerprint: str = "fp") -> FakeRecord:
 
 
 async def test_ensure_schema_provisions_the_table() -> None:
-    """A configured pool gets durable claims even before migration 033 runs:
+    """A configured pool gets durable claims even before migration 034 runs:
     wiring provisions the table itself, loudly better than the restart-unsafe
     in-memory fallback the previous wiring reached for."""
     pool = FakePool()
@@ -369,7 +369,7 @@ async def test_ensure_schema_provisions_the_table() -> None:
     ddl = [c for c in pool.calls if "CREATE" in c.sql]
     assert any("CREATE TABLE IF NOT EXISTS task_idempotency" in c.sql for c in ddl)
     assert any("ix_task_idempotency_expires" in c.sql for c in ddl)
-    # The provisioned shape mirrors migration 033, column for column.
+    # The provisioned shape mirrors migration 034, column for column.
     table = next(c.sql for c in ddl if "CREATE TABLE" in c.sql)
     for column in (
         "scope_key TEXT PRIMARY KEY",

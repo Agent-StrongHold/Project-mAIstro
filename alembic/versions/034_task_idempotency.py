@@ -60,8 +60,8 @@ index is created and the revision is stamped. Columns missing means the table
 is not the claim table, and failing loudly beats stamping head over a schema
 the store cannot read or write.
 
-Revision ID: 033
-Revises: 032
+Revision ID: 034
+Revises: 033
 Create Date: 2026-09-09
 """
 
@@ -72,8 +72,8 @@ from typing import Final
 import sqlalchemy as sa
 from alembic import op
 
-revision = "033"
-down_revision = "032"
+revision = "034"
+down_revision = "033"
 branch_labels = None
 depends_on = None
 
@@ -123,7 +123,7 @@ def _reconcile_runtime_provisioned(inspector: sa.Inspector) -> None:
     missing = {col.name for col in CLAIM_COLUMNS} - columns
     if missing:
         raise RuntimeError(
-            "task_idempotency already exists without the columns migration 033 "
+            "task_idempotency already exists without the columns migration 034 "
             f"owns (missing: {sorted(missing)}); it is not the runtime-"
             "provisioned claim table, and the migration will not stamp over it"
         )
