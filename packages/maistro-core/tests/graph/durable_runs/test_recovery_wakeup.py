@@ -69,6 +69,15 @@ class _RunStore:
         ][:limit]
 
 
+class _FailingRunStore:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def get_run(self, run_id: str):
+        self.calls.append(run_id)
+        raise OSError("canonical database session is unavailable")
+
+
 def _record(run_id: str, status: RunStatus, resume_at: datetime | None):
     return SimpleNamespace(
         run_id=run_id,
@@ -196,26 +205,33 @@ async def test_one_unexpected_candidate_failure_does_not_starve_later_due_runs(
 
 
 @pytest.mark.asyncio
-async def test_factory_failure_terminalizes_the_candidate_for_later_recovery() -> None:
-    """A resolver failure uses the executor's durable failed-Run policy."""
+async def test_factory_failure_terminalizes_each_candidate_for_later_recovery() -> None:
+    """A real resolver failure uses durable failure policy for every candidate."""
     now = datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
-    run = _queued_run("resolver-poisoned").model_copy(update={"status": RunStatus.WAITING})
+    runs = [
+        _queued_run(f"resolver-poisoned-{index}").model_copy(update={"status": RunStatus.WAITING})
+        for index in range(1, 4)
+    ]
     store = _DueInMemoryStore()
-    await store.create(
-        DurableRunRecord(
-            run=run,
-            graph_state=GraphExecutionState(
-                run_id=run.run_id,
-                active_node_ids=("node-1",),
-                blackboard_snapshot={"task_objective": "Recovery graph"},
-            ),
-            resume_at=now - timedelta(seconds=1),
-            version=1,
+    for run in runs:
+        await store.create(
+            DurableRunRecord(
+                run=run,
+                graph_state=GraphExecutionState(
+                    run_id=run.run_id,
+                    active_node_ids=("node-1",),
+                    blackboard_snapshot={"task_objective": "Recovery graph"},
+                ),
+                resume_at=now - timedelta(seconds=1),
+                version=1,
+            )
         )
-    )
 
-    def _broken_factory(_run: Run):
-        raise RuntimeError("resolver unavailable")
+    factory_calls: list[str] = []
+
+    def _broken_factory(run: Run):
+        factory_calls.append(run.run_id)
+        raise RuntimeError(f"resolver unavailable for {run.run_id}")
 
     assert (
         await recovery.resume_due_graph_runs(
@@ -224,41 +240,37 @@ async def test_factory_failure_terminalizes_the_candidate_for_later_recovery() -
             node_resolver_factory=_broken_factory,
             now=now,
         )
-        == 1
+        == 3
     )
-    failed = await store.get(run.run_id)
-    assert failed is not None
-    assert failed.run.status is RunStatus.FAILED
-    assert failed.run.error is not None
-    assert failed.run.error == "PhysicalExecutionError: resolver unavailable"
+    assert factory_calls == [run.run_id for run in runs]
+    for run in runs:
+        failed = await store.get(run.run_id)
+        assert failed is not None
+        assert failed.run.status is RunStatus.FAILED
+        assert failed.run.error == (
+            f"PhysicalExecutionError: resolver unavailable for {run.run_id}"
+        )
 
 
 @pytest.mark.asyncio
-async def test_global_store_failure_aborts_the_due_tick(monkeypatch) -> None:
-    """A classified store outage must not produce misleading later success."""
+async def test_global_run_store_failure_aborts_the_due_tick() -> None:
+    """A canonical store outage must not produce misleading later success."""
     now = datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
     store = _Store(
         _record("waiting-1", RunStatus.WAITING, now - timedelta(seconds=1)),
         _record("waiting-2", RunStatus.WAITING, now - timedelta(seconds=1)),
     )
-    calls: list[str] = []
+    run_store = _FailingRunStore()
 
-    async def _store_is_down(run_id: str, **kwargs) -> None:
-        del kwargs
-        calls.append(run_id)
-        raise recovery.RecoveryInfrastructureError("database session is unavailable")
-
-    monkeypatch.setattr(recovery, "resume_durable_graph", _store_is_down)
-
-    with pytest.raises(recovery.RecoveryInfrastructureError, match="database session"):
+    with pytest.raises(recovery.RecoveryInfrastructureError, match="canonical recovery"):
         await recovery.resume_due_graph_runs(
             store=store,
-            run_store=object(),
+            run_store=run_store,
             node_resolver=lambda _node_id, _graph: None,
             now=now,
         )
 
-    assert calls == ["waiting-1"]
+    assert run_store.calls == ["waiting-1"]
 
 
 @pytest.mark.asyncio

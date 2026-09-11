@@ -59,6 +59,35 @@ class _CandidateStore:
         return call
 
 
+class _CandidateRunStore:
+    """Apply the same boundary to canonical Run/NodeRun/Attempt persistence.
+
+    The durable continuation store is only half of the recovery path. Once a
+    canonical Run is present, execution reads and writes the separate
+    ``RunStore`` too. A raw database/session exception there is infrastructure
+    wide; lifecycle races and integrity errors remain candidate-local through
+    their ``KeyError``/``ValueError`` base classes.
+    """
+
+    def __init__(self, store: RunStore) -> None:
+        self._store = store
+
+    def __getattr__(self, name: str) -> Any:
+        operation = getattr(self._store, name)
+
+        async def call(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return await operation(*args, **kwargs)
+            except (KeyError, ValueError, RecoveryInfrastructureError):
+                raise
+            except Exception as exc:
+                raise RecoveryInfrastructureError(
+                    f"canonical recovery RunStore operation {name!r} failed"
+                ) from exc
+
+        return call
+
+
 _SAFE_DETAIL = re.compile(r"(?i)\b(password|token|secret|api[_-]?key)\b\s*[=:]\s*[^\s,;]+")
 
 
@@ -130,20 +159,22 @@ async def _resume_due_candidate(
     candidate: DurableRunRecord,
     *,
     store: DurableRunStore,
-    run_store: RunStore,
+    run_store: RunStore | None,
     resolver_for: Callable[[Run], NodeResolver],
     runtime: ExecutionRuntime | None,
     moment: datetime,
     events: RecoveryEventSink | None,
 ) -> bool:
     """Attempt one candidate and isolate only failures that belong to it."""
+    candidate_store = _CandidateStore(store)
+    candidate_run_store = _CandidateRunStore(run_store) if run_store is not None else None
     try:
         result = await resume_durable_graph(
             candidate.run_id,
-            store=_CandidateStore(store),
+            store=candidate_store,
             node_resolver=_lazy_resolver(candidate.run, resolver_for),
             runtime=runtime,
-            run_store=run_store,
+            run_store=candidate_run_store,
             events=events,
         )
     except RecoveryInfrastructureError:
@@ -155,7 +186,7 @@ async def _resume_due_candidate(
     except (KeyError, ValueError):
         # Only a record still due after the failure is a real error; a record
         # another actor already moved on is settled, not resumed.
-        if not await _is_still_resume_due(store, candidate.run_id, moment):
+        if not await _is_still_resume_due(candidate_store, candidate.run_id, moment):
             return False
         raise
     except Exception as exc:
@@ -214,9 +245,14 @@ async def resume_due_graph_runs(
     _require_resolver_choice(node_resolver, node_resolver_factory)
     resolver_for = _per_run_resolver(node_resolver, node_resolver_factory)
 
-    await _reconcile_if_supported(store, limit=limit)
-    moment = now if now is not None else datetime.now(UTC)
-    candidates = await store.list_due(now=moment, limit=limit)
+    try:
+        await _reconcile_if_supported(store, limit=limit)
+        moment = now if now is not None else datetime.now(UTC)
+        candidates = await store.list_due(now=moment, limit=limit)
+    except RecoveryInfrastructureError:
+        raise
+    except Exception as exc:
+        raise RecoveryInfrastructureError("durable recovery scan failed") from exc
     resumed = 0
 
     for candidate in candidates:
