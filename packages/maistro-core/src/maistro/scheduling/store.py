@@ -215,14 +215,16 @@ class SqliteScheduleStore:
         `SELECT ... FOR UPDATE`.
         """
         async with self._write_lock:
-            await self._conn.execute("BEGIN IMMEDIATE")
             try:
+                # BEGIN may reach SQLite before its await is cancelled, and
+                # COMMIT may fail too. Both belong inside the rollback fence,
+                # before the next writer can acquire this connection's lock.
+                await self._conn.execute("BEGIN IMMEDIATE")
                 yield
+                await self._conn.commit()
             except BaseException:
                 await self._conn.rollback()
                 raise
-            else:
-                await self._conn.commit()
 
     async def ensure_schema(self) -> None:
         await self._conn.execute(_SCHEMA)

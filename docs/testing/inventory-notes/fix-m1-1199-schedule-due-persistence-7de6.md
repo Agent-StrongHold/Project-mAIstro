@@ -19,10 +19,10 @@ untouched and the due cursor is stored) but is not counted. Nine are
 parametrized store conformance cases in `test_store.py` counted per backend:
 `record_fire(fired_at=None)` moving only the due cursor on memory, SQLite and
 PostgreSQL (three), eight same-store callers racing one cursor without a lost
-increment on the same three backends (three), plus three SQLite-only cases —
+increment on the same three backends (three), plus three SQLite-only cases:
 a `put` paused mid-commit while `record_fire` starts, proving every writer
 shares the one `BEGIN IMMEDIATE` critical section; two connections to one
 file racing `record_fire` without a lost increment; and a write that raises
 inside the critical section rolling back and leaving the next writer able to
-begin. The PostgreSQL legs skip without `MAISTRO_TEST_PG_DSN` and run in the
-pg17/pg18 jobs.
+begin. The PostgreSQL legs skip without `MAISTRO_TEST_PG_DSN` and are collected
+by quality.yml's PostgreSQL coverage producer, not ci.yml's pg17/pg18 jobs.
