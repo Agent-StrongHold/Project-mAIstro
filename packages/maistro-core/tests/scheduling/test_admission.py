@@ -159,6 +159,50 @@ class TestTheCursor:
         assert stored.last_run_id == result.run_ids[-1]
         assert await runs.get_run(stored.last_run_id) is not None
 
+    async def test_duplicate_claim_reconciles_the_winning_run_id(self, harness) -> None:
+        """A crash after admission must not leave overlap checks blind.
+
+        Resetting the schedule projection to its pre-fire snapshot models the
+        process dying before `record_fire`; the Run claim remains canonical.
+        """
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id)
+
+        first = await admitter.admit_due(schedule, now=NOON)
+        winning_run_id = first.run_ids[0]
+        await schedules.put(schedule)
+
+        recovered = await admitter.admit_due(schedule, now=NOON)
+
+        stored = await schedules.get(schedule.schedule_id)
+        assert recovered.run_ids == ()
+        assert recovered.already_fired == (NOON,)
+        assert stored is not None
+        assert stored.last_run_id == winning_run_id
+        winner = await runs.get_run_for_occurrence(schedule.schedule_id, NOON.isoformat())
+        assert winner is not None and winner.run_id == winning_run_id
+
+    async def test_terminal_duplicate_winner_stays_linked_but_does_not_block_next_fire(
+        self, harness
+    ) -> None:
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id)
+
+        first = await admitter.admit_due(schedule, now=NOON)
+        winning_run_id = first.run_ids[0]
+        await runs.transition_run(winning_run_id, RunStatus.CANCELLED)
+        await schedules.put(schedule)
+
+        recovered = await admitter.admit_due(schedule, now=NOON)
+        stored = await schedules.get(schedule.schedule_id)
+        assert recovered.run_ids == ()
+        assert stored is not None and stored.last_run_id == winning_run_id
+
+        later = await admitter.admit_due(stored, now=NOON + timedelta(hours=1))
+
+        assert len(later.run_ids) == 1
+        assert later.run_ids[0] != winning_run_id
+
     async def test_the_cursor_does_not_move_when_no_run_was_created(self, harness) -> None:
         """The ordering the issue names: advancing first would skip an
         occurrence that never ran, permanently and silently."""

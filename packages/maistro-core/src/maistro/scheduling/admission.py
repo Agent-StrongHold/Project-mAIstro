@@ -66,7 +66,7 @@ from maistro.runs.sources import (
     SCHEDULE_SOURCE,
     SCHEDULED_FOR_KEY,
 )
-from maistro.runs.store import DuplicateOccurrence
+from maistro.runs.store import DuplicateOccurrence, RunIntegrityError
 from maistro.scheduling.engine import SkipReason, evaluate
 
 if TYPE_CHECKING:
@@ -189,16 +189,42 @@ class ScheduleRunAdmitter:
             )
 
         run_ids: list[str] = []
+        # The cursor's last_run_id follows the newest consumed occurrence, not
+        # merely the newest Run created by this admitter. A duplicate claim may
+        # be the winning Run from another ticker (or before this process
+        # crashed), and losing that identity is what makes overlap recovery
+        # unsafe.
+        consumed_run_ids: list[str] = []
         admitted: list[FireDecision] = []
         already_fired: list[datetime] = []
         consumed: list[FireDecision] = []
         failures: list[Exception] = []
         for fire in decision.fires:
             try:
-                run_ids.append(await self._admit_one(schedule, template, fire))
+                run_id = await self._admit_one(schedule, template, fire)
+                run_ids.append(run_id)
+                consumed_run_ids.append(run_id)
                 admitted.append(fire)
                 consumed.append(fire)
-            except DuplicateOccurrence:
+            except DuplicateOccurrence as exc:
+                # The unique claim proves that a canonical Run exists, but the
+                # exception alone does not identify it. Resolve through the
+                # RunStore's occurrence index before advancing the cursor; a
+                # provenance scan here would make recovery linear and would
+                # duplicate the store's execution authority.
+                winner = await self._runs.get_run_for_occurrence(exc.schedule_id, exc.scheduled_for)
+                if winner is None:
+                    failure = RunIntegrityError(
+                        "duplicate occurrence claim has no resolvable canonical Run"
+                    )
+                    logger.warning(
+                        "schedule %s could not reconcile occurrence %s: %s",
+                        schedule.schedule_id,
+                        fire.scheduled_for.isoformat(),
+                        failure,
+                    )
+                    failures.append(failure)
+                    break
                 # **Continue**, unlike every other failure below. The claim
                 # refusing this insert says the occurrence already has its Run
                 # (#220) — nothing is owed, so stopping here would re-enumerate
@@ -207,13 +233,16 @@ class ScheduleRunAdmitter:
                 # Counted as consumed so the cursor may pass it, but *not* as
                 # admitted: `fires` feeds `runs_so_far`, and both tickers
                 # counting one firing would exhaust `max_runs` at half the
-                # occurrences it was configured for.
+                # occurrences it was configured for. The winning identity is
+                # nevertheless carried into the cursor projection.
                 logger.info(
-                    "schedule %s occurrence %s was already admitted elsewhere",
+                    "schedule %s occurrence %s was already admitted elsewhere as %s",
                     schedule.schedule_id,
                     fire.scheduled_for.isoformat(),
+                    winner.run_id,
                 )
                 already_fired.append(fire.scheduled_for)
+                consumed_run_ids.append(winner.run_id)
                 consumed.append(fire)
             except Exception as exc:
                 # **Stop**, rather than continue. `record_fire` moves the cursor
@@ -255,11 +284,11 @@ class ScheduleRunAdmitter:
             # `Schedule.last_run_id` is a pointer to the latest occurrence, not
             # a history of them; the history is on the Runs, each naming this
             # schedule.
-            # None when the batch's last consumed occurrence was one another
-            # admitter had claimed: `_advance` keeps the existing id rather
-            # than clearing it, and pointing `last_run_id` at an older Run of
-            # ours would be less true than leaving it where it was.
-            run_id=run_ids[-1] if run_ids else None,
+            # The newest consumed occurrence may have been claimed by another
+            # admitter. Its resolved winner is the truthful linkage; leaving an
+            # older id in place makes `_canonical_active_run()` lie about live
+            # work after a crash between Run creation and this write.
+            run_id=consumed_run_ids[-1],
             next_due_at=decision.next_due_at if complete else schedule.next_due_at,
             fires=len(admitted),
             disable=disable,

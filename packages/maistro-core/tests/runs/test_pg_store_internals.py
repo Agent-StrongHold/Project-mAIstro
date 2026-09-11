@@ -80,6 +80,31 @@ class TestIntegrityFailureMapping:
 
 
 class TestStatusListingEvidence:
+    async def test_occurrence_claim_resolves_through_the_indexed_lookup(self) -> None:
+        projects = InMemoryProjectScopeStore()
+        root = await projects.create_root("w1")
+        graph = Graph(
+            workspace_id="w1",
+            project_id=root.project_id,
+            name="g",
+            nodes=[Node(node_id="n1", node_type="agent", name="a")],
+        )
+        run = Run(
+            workspace_id="w1",
+            project_id=root.project_id,
+            graph=GraphSnapshot.from_graph(graph),
+            provenance=_occurrence_provenance(),
+        )
+        store = PgRunStore(
+            _PoolReturning([{"payload": json_of(run), "archive_key": None}]),
+            project_store=projects,
+        )
+
+        resolved = await store.get_run_for_occurrence("sched-1", "2026-08-24T12:00:00+00:00")
+
+        assert resolved is not None
+        assert resolved.run_id == run.run_id
+
     async def test_status_listing_uses_the_canonical_row_hydrator(self) -> None:
         projects = InMemoryProjectScopeStore()
         root = await projects.create_root("w1")
@@ -232,6 +257,9 @@ class _PoolReturning:
 
     async def fetch(self, *_args: object) -> list[dict[str, object]]:
         return self._rows
+
+    async def fetchrow(self, *_args: object) -> dict[str, object] | None:
+        return self._rows[0] if self._rows else None
 
 
 class _PoolRaising:
