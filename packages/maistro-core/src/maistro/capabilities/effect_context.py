@@ -145,8 +145,12 @@ def default_effect_context() -> CapabilityEffectContext:
     ledger. No default Binding is created here; absence remains a hard refusal.
     """
 
+    global _process_effect_context
     if _process_effect_context is None:
-        return new_in_memory_effect_context()
+        # Cache the explicit ephemeral fallback too: registry-constructed nodes
+        # must never each receive a private effect authority before a Container
+        # publishes its selected context.
+        _process_effect_context = new_in_memory_effect_context()
     return _process_effect_context
 
 
