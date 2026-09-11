@@ -9,6 +9,7 @@ from __future__ import annotations
 import pathlib
 import shutil
 import sys
+from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
@@ -90,28 +91,72 @@ class TestKeyAndActivate:
 
         calls: list[tuple[str, dict[str, Any]]] = []
 
+        from services import governed_model
+        from services.governed_model import GovernedModelRuntime
+
+        from maistro.capabilities.effect_context import new_in_memory_effect_context
+        from maistro.capabilities.providers import llm_gateway
+        from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
+        from maistro.providers.registry import InMemoryProviderRegistry
+        from maistro.providers.router import CostAwareRouter
+        from maistro.providers.types import ModelMetadata
+
         class _Resp:
             status_code = 200
 
             @staticmethod
             def json() -> dict[str, Any]:
-                return {"usage": {"total_tokens": 2}}
+                return {
+                    "model": "mistral/mistral-large-latest",
+                    "choices": [{"message": {"content": "pong"}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                }
 
         class _Client:
-            def __init__(self, *a: Any, **k: Any) -> None: ...
-
-            def __enter__(self) -> _Client:
+            async def __aenter__(self) -> _Client:
                 return self
 
-            def __exit__(self, *a: Any) -> None: ...
+            async def __aexit__(self, *args: Any) -> None:
+                del args
 
-            def post(self, url: str, headers: Any = None, json: Any = None) -> _Resp:
-                calls.append((url, json))
+            async def post(self, url: str, **kwargs: Any) -> _Resp:
+                calls.append((url, kwargs.get("json", {})))
                 return _Resp()
 
-        import routes.providers as providers_mod
+        @asynccontextmanager
+        async def _shared_client(*args: Any, **kwargs: Any):
+            del args, kwargs
+            yield _Client()
 
-        monkeypatch.setattr(providers_mod.httpx, "Client", _Client)
+        registry = InMemoryProviderRegistry(
+            models=[
+                ModelMetadata(
+                    name="mistral/mistral-large-latest",
+                    provider="mistral",
+                    cost_per_1k_input=0.0,
+                    cost_per_1k_output=0.0,
+                    latency_p50_ms=100,
+                )
+            ]
+        )
+
+        class _Root:
+            project_id = "root-project"
+
+        class _ProjectScope:
+            async def root_for_workspace(self, workspace_id: str) -> _Root:
+                assert workspace_id == "default"
+                return _Root()
+
+        runtime = GovernedModelRuntime(
+            effects=new_in_memory_effect_context(),
+            registry=registry,
+            router=CostAwareRouter(registry),
+            endpoint=GatewayEndpoint(base_url="http://litellm.test", api_key="master"),
+            project_scope_store=_ProjectScope(),
+        )
+        monkeypatch.setattr(governed_model, "_runtime", lambda: runtime)
+        monkeypatch.setattr(llm_gateway, "shared_client", _shared_client)
 
         r = admin_client.post("/v1/providers/mistral/activate")
         assert r.status_code == 200
