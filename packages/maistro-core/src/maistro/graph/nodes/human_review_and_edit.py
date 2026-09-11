@@ -9,7 +9,6 @@ rather than just swap in a whole new draft.
 
 from __future__ import annotations
 
-from datetime import timedelta
 from typing import Any, ClassVar, Literal, cast
 
 from pydantic import BaseModel, Field
@@ -19,7 +18,7 @@ from .base import (
     PAUSE_AWAITING_HUMAN_REVIEW,
     BaseNode,
     NodeContext,
-    now_utc,
+    hitl_resume_at,
     pause_until,
 )
 
@@ -87,7 +86,7 @@ class HumanReviewAndEditNode(BaseNode[ReviewAndEditIn, ReviewAndEditOut]):
                     timed_out=bool(resumed.get("timed_out", False)),
                 )
 
-        resume_at = now_utc() + timedelta(seconds=inputs.timeout_seconds)
+        resume_at = hitl_resume_at(ctx, inputs.timeout_seconds)
         pause_until(
             PAUSE_AWAITING_HUMAN_REVIEW,
             resume_at=resume_at,

@@ -12,6 +12,7 @@ payload), so the run stays PAUSED and a corrected answer can still settle it.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -90,6 +91,34 @@ async def test_approve_draft_unknown_verdict_string_fails_not_approves() -> None
 
     assert result.status == "failed"
     assert result.output is None
+
+
+@pytest.mark.ac("ADR-090726-9a4e/AC-2")
+@pytest.mark.ac("ADR-090726-9a4e/AC-3")
+@pytest.mark.ac("ADR-090726-9a4e/AC-4")
+@pytest.mark.parametrize(
+    ("kind", "inputs"),
+    [
+        ("human.approve_draft", {"draft": {"ticket": "PROJ-1"}}),
+        ("human.delegate_to_role", {"role": "on_call_pm"}),
+        ("human.review_and_edit", {"document": {"terms": {"price": 10}}}),
+    ],
+)
+async def test_malformed_verdict_reuses_durable_pause_deadline(
+    kind: str, inputs: dict[str, Any]
+) -> None:
+    """A malformed answer re-pauses on the server's prior pause evidence."""
+    deadline = datetime(2026, 9, 7, 12, 0, tzinfo=UTC)
+    ctx = _ctx("n", {"verdict": "   "})
+    ctx.metadata["resumed_pause"] = {
+        "paused_reason": "awaiting_human_approval",
+        "resume_at": deadline.isoformat(),
+    }
+
+    result = await get_node(kind)().run(inputs, ctx)
+
+    assert result.status == "paused"
+    assert result.resume_at == deadline
 
 
 # --- human.delegate_to_role ---------------------------------------------------
