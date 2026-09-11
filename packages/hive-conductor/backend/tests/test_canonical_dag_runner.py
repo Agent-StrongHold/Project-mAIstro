@@ -466,6 +466,125 @@ def test_recovery_refuses_a_run_whose_nodes_lack_durable_legacy_metadata() -> No
 
 
 @pytest.mark.asyncio
+async def test_hive_facade_uses_governed_model_egress_on_canonical_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real Hive facade keeps the canonical Run/Attempt context on egress.
+
+    ``graph_runner.execute_dag`` still supplies its historical builder for
+    standalone compatibility. A wired Container must nevertheless force the
+    model-backed legacy adapter through the governed caller.
+    """
+    from types import SimpleNamespace
+
+    import httpx
+
+    from maistro.capabilities.binding import Binding
+    from maistro.capabilities.effect_context import new_in_memory_effect_context
+    from maistro.capabilities.providers.llm_gateway import MODEL_CHAT_CAPABILITY
+    from maistro.graph.durable_runs import InMemoryGraphContinuationStore
+    from maistro.graph.durable_runs.canonical_store import CanonicalDurableRunStore
+    from maistro.projects.scope_store import InMemoryProjectScopeStore
+    from maistro.providers.registry import InMemoryProviderRegistry
+    from maistro.providers.router import CostAwareRouter
+    from maistro.runs.store import InMemoryRunStore
+
+    class _Response:
+        status_code = 200
+
+        def json(self) -> dict[str, Any]:
+            return {
+                "model": "legacy-model-v2",
+                "choices": [{"message": {"content": "canonical answer"}}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 5},
+            }
+
+    class _Client:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *_args: Any) -> None:
+            return None
+
+        async def post(self, *_args: Any, **_kwargs: Any) -> _Response:
+            return _Response()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    monkeypatch.setenv("LITELLM_API_BASE", "http://gateway.test")
+
+    project_store = InMemoryProjectScopeStore()
+    root = await project_store.create_root("ws-1")
+    run_store = InMemoryRunStore(project_store=project_store)
+    durable_store = CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore())
+    effects = new_in_memory_effect_context()
+    await effects.bindings.put(
+        Binding(
+            binding_id="hive-model-binding",
+            workspace_id="ws-1",
+            project_id=root.project_id,
+            node_id="n1",
+            capability=MODEL_CHAT_CAPABILITY,
+        )
+    )
+    registry = InMemoryProviderRegistry()
+    container = SimpleNamespace(
+        config=SimpleNamespace(workspace_id="ws-1"),
+        run_store=run_store,
+        graph_run_store=durable_store,
+        capability_effects=effects,
+        provider_registry=registry,
+        llm_router=CostAwareRouter(registry),
+    )
+
+    import services.canonical_dag_runner as canonical
+    import services.graph_runner as facade
+
+    monkeypatch.setattr(canonical, "_container", lambda: container)
+    monkeypatch.setattr(canonical, "get_run_store", lambda: durable_store)
+    result = await facade.execute_dag(
+        {
+            "id": "hive-governed",
+            "name": "hive-governed",
+            "description": "governed task",
+            "nodes": [
+                {
+                    "id": "n1",
+                    "name": "worker",
+                    "model": "legacy-model",
+                    "binding_id": "hive-model-binding",
+                    "config": {"execution_tier": "safe"},
+                }
+            ],
+            "edges": [],
+        },
+        workspace_id="ws-1",
+        project_id=root.project_id,
+    )
+
+    assert result["status"] == "completed"
+    runs = list(effects.invocation_store._items.values())  # type: ignore[attr-defined]
+    assert len(runs) == 1
+    invocation = runs[0]
+    assert invocation.run_id == result["run_id"]
+    assert invocation.node_run_id
+    assert invocation.attempt_id
+    assert invocation.binding.provider_name == "legacy-model"
+    assert invocation.usage is not None
+    assert invocation.usage.model_version == "legacy-model-v2"
+    assert invocation.usage.input_units == 3
+    assert invocation.usage.output_units == 5
+    run = await run_store.get_run(result["run_id"])
+    assert run is not None
+    node_runs = await run_store.list_node_runs(result["run_id"])
+    assert [node_run.node_run_id for node_run in node_runs] == [invocation.node_run_id]
+    attempts = await run_store.list_attempts(invocation.node_run_id)
+    assert [attempt.attempt_id for attempt in attempts] == [invocation.attempt_id]
+
+
+@pytest.mark.asyncio
 async def test_a_metrics_recording_failure_never_fails_the_completed_run(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

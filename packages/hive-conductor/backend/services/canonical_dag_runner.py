@@ -366,6 +366,9 @@ def _resolver(
     execution_mode: str,
     on_response: OnResponseHook | None,
     llm_builder: Callable[[OnResponseHook | None], Any] | None,
+    effect_context: Any = None,
+    provider_registry: Any = None,
+    llm_router: Any = None,
 ):
     def resolve(node_id: str, _graph: Graph) -> LegacyConductorNode:
         try:
@@ -379,6 +382,9 @@ def _resolver(
             execution_mode=execution_mode,
             on_response=on_response,
             llm_builder=llm_builder,
+            effect_context=effect_context,
+            provider_registry=provider_registry,
+            llm_router=llm_router,
         )
 
     return resolve
@@ -400,6 +406,7 @@ def _recovery_resolver(run: Run):
     if execution_mode not in {"interactive", "autonomous"}:
         raise ValueError(f"Run {run.run_id!r} has invalid legacy execution_mode {execution_mode!r}")
     legacy_dag_id = str(graph.metadata.get("legacy_dag_id") or graph.graph_id)
+    container = _container()
     return _resolver(
         raw_by_id,
         task_desc=graph.description or graph.name,
@@ -414,6 +421,9 @@ def _recovery_resolver(run: Run):
         execution_mode=execution_mode,
         on_response=None,
         llm_builder=None,
+        effect_context=container.capability_effects if container is not None else None,
+        provider_registry=container.provider_registry if container is not None else None,
+        llm_router=container.llm_router if container is not None else None,
     )
 
 
@@ -541,6 +551,7 @@ async def execute_dag(
         )
         admitted_run_id = admitted.run_id
 
+    container = _container()
     record = await run_durable_graph(
         graph,
         store=get_run_store(),
@@ -555,6 +566,9 @@ async def execute_dag(
             execution_mode=execution_mode,
             on_response=on_response,
             llm_builder=llm_builder,
+            effect_context=container.capability_effects if container is not None else None,
+            provider_registry=container.provider_registry if container is not None else None,
+            llm_router=container.llm_router if container is not None else None,
         ),
         actor_principal_id=user_id or None,
         run_id=admitted_run_id,

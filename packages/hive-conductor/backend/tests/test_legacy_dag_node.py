@@ -161,6 +161,39 @@ async def test_clarify_renders_each_question_with_its_answer(
     assert "A: answer 1" in results["n1"]["response"]
 
 
+async def test_clarify_uses_the_supplied_governed_model_caller() -> None:
+    from services.tool_executor import clarify
+
+    captured: dict[str, Any] = {}
+
+    async def model_call(messages: list[dict[str, Any]], **kwargs: Any) -> str:
+        captured["messages"] = messages
+        captured.update(kwargs)
+        return '{"answers": {"1": "governed answer"}}'
+
+    answers = await clarify(["why?"], {"input": "task"}, model_call=model_call)
+
+    assert answers == {"1": "governed answer"}
+    assert captured["model"] == "chat"
+    assert "Original request: task" in captured["messages"][0]["content"]
+
+
+async def test_grounded_search_uses_the_supplied_governed_model_caller() -> None:
+    from services.tool_executor import _gemini_grounded_search
+
+    async def model_call(_messages: list[dict[str, Any]], **_kwargs: Any) -> str:
+        return '{"summary": "current", "citations": [{"title": "Doc"}]}'
+
+    result = await _gemini_grounded_search("the topic", 1, model_call=model_call)
+
+    assert result == {
+        "query": "the topic",
+        "summary": "current",
+        "citations": [{"title": "Doc"}],
+        "source": "gemini-grounded",
+    }
+
+
 async def test_browse_url_returns_the_extractor_payload_as_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -396,6 +429,157 @@ async def test_an_unapproved_untrusted_adapter_node_refuses_to_execute() -> None
 
     with pytest.raises(PermissionError, match="untrusted node requires admin approval"):
         await node._execute(node.input_schema(), _ctx())
+
+
+async def test_canonical_model_node_records_attempt_correlated_invocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+
+    from maistro.capabilities.binding import Binding
+    from maistro.capabilities.effect_context import new_in_memory_effect_context
+    from maistro.capabilities.providers.llm_gateway import MODEL_CHAT_CAPABILITY
+    from maistro.providers.registry import InMemoryProviderRegistry
+    from maistro.providers.router import CostAwareRouter
+
+    class _Response:
+        status_code = 200
+
+        def json(self) -> dict[str, Any]:
+            return {
+                "model": "model-v2",
+                "choices": [{"message": {"content": "governed answer"}}],
+                "usage": {"prompt_tokens": 4, "completion_tokens": 2},
+            }
+
+    class _Client:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *_args: Any) -> None:
+            return None
+
+        async def post(self, *_args: Any, **_kwargs: Any) -> _Response:
+            return _Response()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    effects = new_in_memory_effect_context()
+    await effects.bindings.put(
+        Binding(
+            binding_id="legacy-model-binding",
+            workspace_id="ws-1",
+            project_id="project-1",
+            node_id="n1",
+            capability=MODEL_CHAT_CAPABILITY,
+        )
+    )
+    registry = InMemoryProviderRegistry()
+    node = _adapter_node(
+        {
+            "id": "n1",
+            "model": "legacy-model",
+            "binding_id": "legacy-model-binding",
+            "config": {"execution_tier": "safe"},
+        },
+        node_env={"LITELLM_API_BASE": "http://gateway.test"},
+        effect_context=effects,
+        provider_registry=registry,
+        llm_router=CostAwareRouter(registry),
+    )
+
+    result = await node.run(
+        node.input_schema(),
+        NodeContext(
+            run_id="run-1",
+            dag_id="dag-1",
+            node_id="n1",
+            node_run_id="node-run-1",
+            attempt_id="attempt-1",
+            workspace_id="ws-1",
+            project_id="project-1",
+        ),
+    )
+
+    assert result.success is True
+    assert result.output is not None
+    assert result.output.response == "governed answer"
+    invocations = list(effects.invocation_store._items.values())  # type: ignore[attr-defined]
+    assert len(invocations) == 1
+    invocation = invocations[0]
+    assert invocation.run_id == "run-1"
+    assert invocation.node_run_id == "node-run-1"
+    assert invocation.attempt_id == "attempt-1"
+    assert invocation.binding.provider_name == "legacy-model"
+    assert invocation.usage is not None
+    assert invocation.usage.input_units == 4
+    assert invocation.usage.output_units == 2
+
+
+async def test_governed_model_failure_cannot_report_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+
+    from maistro.capabilities.binding import Binding
+    from maistro.capabilities.effect_context import new_in_memory_effect_context
+    from maistro.capabilities.providers.llm_gateway import MODEL_CHAT_CAPABILITY
+    from maistro.providers.registry import InMemoryProviderRegistry
+    from maistro.providers.router import CostAwareRouter
+
+    class _Client:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *_args: Any) -> None:
+            return None
+
+        async def post(self, *_args: Any, **_kwargs: Any) -> Any:
+            raise httpx.ConnectError("gateway unavailable")
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    effects = new_in_memory_effect_context()
+    await effects.bindings.put(
+        Binding(
+            binding_id="legacy-failing-binding",
+            workspace_id="ws-1",
+            project_id="project-1",
+            node_id="n1",
+            capability=MODEL_CHAT_CAPABILITY,
+        )
+    )
+    registry = InMemoryProviderRegistry()
+    node = _adapter_node(
+        {"id": "n1", "binding_id": "legacy-failing-binding", "config": {"execution_tier": "safe"}},
+        node_env={"LITELLM_API_BASE": "http://gateway.test"},
+        effect_context=effects,
+        provider_registry=registry,
+        llm_router=CostAwareRouter(registry),
+    )
+
+    result = await node.run(
+        node.input_schema(),
+        NodeContext(
+            run_id="run-1",
+            dag_id="dag-1",
+            node_id="n1",
+            node_run_id="node-run-1",
+            attempt_id="attempt-1",
+            workspace_id="ws-1",
+            project_id="project-1",
+        ),
+    )
+
+    assert result.success is False
+    assert result.status == "failed"
+    invocations = list(effects.invocation_store._items.values())  # type: ignore[attr-defined]
+    assert len(invocations) == 1
+    assert invocations[0].status.value == "failed"
 
 
 async def test_a_sandbox_tier_adapter_node_runs_the_isolated_subprocess(
