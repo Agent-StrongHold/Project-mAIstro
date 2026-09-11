@@ -73,9 +73,8 @@ class GovernedInvocationExecutionService:
     REQUIRE_APPROVAL is keyed to the logical effect so a later Attempt reuses
     the same durable human decision rather than manufacturing another request.
 
-    Unreached in production, like the service it wraps: no policy verdict
-    recorded here has ever gated a live provider call, and no approval this
-    would key has ever been requested of a human (#55).
+    The Container composes this wrapper for governed model egress; policy
+    events use the same canonical EventStore as the capability context.
     """
 
     def __init__(

@@ -22,10 +22,7 @@ from maistro.a2a.guest_peers import GuestPeerManager
 from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.intents import IntentRegistry, build_intent_registry
 from maistro.archive.wiring import build_archive_store
-from maistro.capabilities.effect_context import (
-    CapabilityEffectContext,
-    new_in_memory_effect_context,
-)
+from maistro.capabilities.effect_context import CapabilityEffectContext
 from maistro.classifier.engine import ClassifierEngine
 from maistro.graph.durable_runs.canonical_store import CanonicalDurableRunStore
 from maistro.graph.durable_runs.protocol import DurableRunStore
@@ -1543,7 +1540,7 @@ async def create_container(
 
     # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) -----------
     wired_harness_adapters = _wire_harness_adapters(harness_adapters)
-    capability_effects = new_in_memory_effect_context()
+    capability_effects = await _wire_capability_effects(db_pool=db_pool, pg_pool=pg_pool)
     from maistro.capabilities.model_binding_bootstrap import bootstrap_model_bindings
 
     await bootstrap_model_bindings(config, capability_effects)
@@ -2184,6 +2181,52 @@ async def _wire_sqlite_backend(
         learning_store,
         outcome_store,
         session_store,
+    )
+
+
+async def _wire_capability_effects(
+    *,
+    db_pool: Any,
+    pg_pool: Any,
+) -> CapabilityEffectContext:
+    """Compose capability authorities onto the Container's selected backend.
+
+    Model Binding registration remains configuration/control-plane driven, but
+    its definitions and governed Invocation records use the same durable
+    database as the Container whenever one is configured. Ephemeral containers
+    intentionally retain isolated in-memory authorities and therefore lose
+    them on restart by declaration.
+    """
+    from maistro.capabilities.binding_store import (
+        BindingStore,
+        PgBindingStore,
+        SqliteBindingStore,
+    )
+    from maistro.capabilities.effect_context import new_in_memory_effect_context
+    from maistro.capabilities.invocation_store import PgInvocationStore, SqliteInvocationStore
+    from maistro.events.wiring import wire_canonical_events
+
+    binding_store: BindingStore
+    invocation_store: Any
+    if pg_pool is not None:
+        binding_store = PgBindingStore(pg_pool)
+        invocation_store = PgInvocationStore(pg_pool)
+        await binding_store.ensure_schema()
+        await invocation_store.ensure_schema()
+        canonical_events = await wire_canonical_events(pg_pool=pg_pool)
+    elif db_pool is not None:
+        binding_store = SqliteBindingStore(db_pool)
+        invocation_store = SqliteInvocationStore(db_pool)
+        await binding_store.ensure_schema()
+        await invocation_store.ensure_schema()
+        canonical_events = await wire_canonical_events(db_pool=db_pool)
+    else:
+        return new_in_memory_effect_context()
+
+    return new_in_memory_effect_context(
+        binding_store=binding_store,
+        invocation_store=invocation_store,
+        event_store=canonical_events.store,
     )
 
 

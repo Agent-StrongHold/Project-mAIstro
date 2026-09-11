@@ -79,6 +79,9 @@ def new_in_memory_effect_context(
     *,
     policy_evaluator: PolicyEvaluator | None = None,
     credentials: CredentialRouter | None = None,
+    binding_store: BindingStore | None = None,
+    invocation_store: InvocationStore | None = None,
+    event_store: EventStore | None = None,
 ) -> CapabilityEffectContext:
     """Build an isolated canonical effect context for local/runtime composition.
 
@@ -87,9 +90,9 @@ def new_in_memory_effect_context(
     acquisitions fail closed until one is registered in the requesting scope.
     """
 
-    binding_store = InMemoryBindingStore()
-    invocation_store = InMemoryInvocationStore()
-    event_store = InMemoryEventStore()
+    binding_store = binding_store or InMemoryBindingStore()
+    invocation_store = invocation_store or InMemoryInvocationStore()
+    event_store = event_store or InMemoryEventStore()
     invocation_service = InvocationExecutionService(store=invocation_store)
     governed = GovernedInvocationExecutionService(
         invocation_service=invocation_service,

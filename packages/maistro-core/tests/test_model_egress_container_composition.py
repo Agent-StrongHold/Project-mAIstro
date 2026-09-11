@@ -7,7 +7,8 @@ from typing import Any
 
 import pytest
 
-from maistro.capabilities.binding_store import BindingNotFound
+from maistro.capabilities.binding_store import BindingNotFound, SqliteBindingStore
+from maistro.capabilities.invocation_store import SqliteInvocationStore
 from maistro.capabilities.model_chat import MODEL_CHAT_CAPABILITY
 from maistro.container import Container, build_node_resolver, create_container
 from maistro.graph import Graph, Node
@@ -335,6 +336,102 @@ async def test_consumer_tick_executes_a_configured_summarize_run(
     assert invocation.usage.cost_cents == 1.0
     assert invocation.usage.model == "yaml-model"
     assert invocation.attempt_id == attempts[0].attempt_id
+    assert invocation.workspace_id == "tick-ws"
+    assert invocation.project_id == root.project_id
+    assert invocation.binding.workspace_id == "tick-ws"
+    assert invocation.binding.project_id == root.project_id
+
+
+async def test_sqlite_container_reuses_durable_model_authorities(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Configured Bindings and Invocation evidence survive a Container restart."""
+    import maistro.capabilities.model_chat as model_chat
+
+    database_url = f"sqlite:///{tmp_path / 'model-authorities.db'}"
+    config = AgentConfig(
+        router_api_key="test-key",
+        database_url=database_url,
+        workspace_id="durable-ws",
+        provider_config_path=_provider_yaml(tmp_path),
+        model_bindings=[
+            {
+                "binding_id": "durable-model",
+                "project_id": "durable-project",
+                "provider_name": "yaml-model",
+            }
+        ],
+    )
+
+    first = await create_container(config)
+    try:
+        assert isinstance(first.capability_effects.bindings, SqliteBindingStore)
+        assert isinstance(first.capability_effects.invocation_store, SqliteInvocationStore)
+        loaded = await first.capability_effects.bindings.resolve(
+            "durable-model",
+            workspace_id="durable-ws",
+            project_id="durable-project",
+            node_id="summarize",
+            capability=MODEL_CHAT_CAPABILITY,
+        )
+        assert loaded.binding_id == "durable-model"
+        node = build_node_resolver(
+            effect_context=first.capability_effects,
+            provider_registry=first.provider_registry,
+            llm_router=first.llm_router,
+        )("summarize", {"nodes": [{"id": "summarize", "kind": "llm.summarize"}]})
+
+        async def fake_execute_model_chat(
+            provider: Any, payload: Any, *, endpoint: Any
+        ) -> dict[str, Any]:
+            del provider, payload, endpoint
+            return {
+                "model": "yaml-model",
+                "choices": [{"message": {"content": "durable summary"}}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+            }
+
+        monkeypatch.setattr(model_chat, "execute_model_chat", fake_execute_model_chat)
+        monkeypatch.setenv("MAISTRO_LLM_BASE_URL", "https://gateway.test")
+        result = await node.run(
+            {"text": "Source", "binding_id": "durable-model"},
+            NodeContext(
+                run_id="durable-run",
+                dag_id="durable-graph",
+                node_id="summarize",
+                node_run_id="durable-node-run",
+                attempt_id="durable-attempt",
+                workspace_id="durable-ws",
+                project_id="durable-project",
+            ),
+        )
+        assert result.success is True
+    finally:
+        await first.aclose()
+
+    second = await create_container(config)
+    try:
+        loaded = await second.capability_effects.bindings.resolve(
+            "durable-model",
+            workspace_id="durable-ws",
+            project_id="durable-project",
+            node_id="summarize",
+            capability=MODEL_CHAT_CAPABILITY,
+        )
+        assert loaded.provider_name == "yaml-model"
+        history = await second.capability_effects.invocation_store.list_effect(
+            run_id="durable-run",
+            node_run_id="durable-node-run",
+            binding_id="durable-model",
+            effect_key="llm.summarize.complete:gemini-3.1-flash-lite",
+        )
+        assert len(history) == 1
+        assert history[0].workspace_id == "durable-ws"
+        assert history[0].project_id == "durable-project"
+        assert history[0].binding.workspace_id == "durable-ws"
+    finally:
+        await second.aclose()
 
 
 async def test_consumer_tick_fails_closed_without_a_declared_binding(

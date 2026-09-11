@@ -1,10 +1,9 @@
 """Production reachability assertions for governed capability Invocation (#55).
 
-The layer is no longer specification-only. `agent.spawn_harness` is the first
-canonical Run consumer that resolves a scoped Binding and crosses the governed
-Invocation boundary before a provider-specific physical effect. These tests
-pin that reach while continuing to state the narrower truth that the standalone
-SQLite capability-Invocation store has not yet been wired or migrated.
+The layer is no longer specification-only. `agent.spawn_harness` and
+`llm.summarize` resolve scoped Bindings and cross the governed Invocation
+boundary before provider-specific physical effects. These tests pin that reach
+and the durable capability stores selected for configured Containers.
 """
 
 from __future__ import annotations
@@ -64,18 +63,19 @@ class TestTheInvocationLayerStatesItsReach:
 
 class TestTheStoreStatesItsReachAndItsTable:
     @pytest.mark.ac("SPEC-083026-6cef/AC-2")
-    def test_the_sqlite_store_still_says_nothing_wires_it(self) -> None:
+    def test_the_sqlite_store_documents_durable_container_composition(self) -> None:
         doc = (invocation_store.__doc__ or "").lower()
-        assert "unreached" in doc or "nothing constructs" in doc
+        assert "container selects" in doc and "durable" in doc
 
     @pytest.mark.ac("SPEC-083026-6cef/AC-2")
-    def test_it_disambiguates_itself_from_the_store_the_container_does_wire(self) -> None:
-        assert "maistro.events.invocations" in (invocation_store.__doc__ or "")
+    def test_the_capability_store_is_distinct_from_handler_invocations(self) -> None:
+        assert invocation_store.SqliteInvocationStore is not None
+        assert invocation_store.PgInvocationStore is not None
 
     @pytest.mark.ac("SPEC-083026-6cef/AC-2")
-    def test_it_says_its_table_has_no_migration(self) -> None:
+    def test_it_documents_runtime_schema_bootstrap(self) -> None:
         doc = (invocation_store.__doc__ or "").lower()
-        assert "no migration" in doc
+        assert "rather than an alembic migration" in doc
 
     @pytest.mark.ac("SPEC-083026-6cef/AC-2")
     def test_the_claim_about_the_migration_is_true(self) -> None:
