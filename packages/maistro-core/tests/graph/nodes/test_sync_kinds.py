@@ -23,6 +23,25 @@ from maistro.graph.nodes import (
     get_node,
     list_kinds,
 )
+from maistro.graph.nodes.llm_summarize import LlmSummarizeNode
+from maistro.providers.registry import InMemoryProviderRegistry
+from maistro.providers.router import CostAwareRouter
+from maistro.providers.types import ModelMetadata
+
+
+def _llm_node() -> LlmSummarizeNode:
+    registry = InMemoryProviderRegistry(
+        models=[
+            ModelMetadata(
+                name="gemini-3.1-flash-lite",
+                provider="test-gateway",
+                cost_per_1k_input=0.1,
+                cost_per_1k_output=0.2,
+                latency_p50_ms=100,
+            )
+        ]
+    )
+    return LlmSummarizeNode(registry=registry, router=CostAwareRouter(registry))
 
 
 def _ctx(**overrides: Any) -> NodeContext:
@@ -420,8 +439,8 @@ async def test_llm_summarize_against_litellm_response_shape(
             return _Resp()
 
     monkeypatch.setattr(httpx, "AsyncClient", _Client)
-    Node = get_node("llm.summarize")
-    out = await Node().run(
+    node = _llm_node()
+    out = await node.run(
         {
             "text": "lots of fleet activity ...",
             "style": "bullet",
