@@ -270,7 +270,15 @@ class _ScheduleRunner:
         store: Any,
         scope: tuple[str, str] | None = None,
     ) -> Schedule | None:
-        """Return the editable definition with the durable cursor overlaid."""
+        """Return the editable definition with the durable cursor overlaid.
+
+        The overlay is the store's: `ScheduleStore.put` keeps the cursors
+        `record_fire` recorded on an existing row and returns the row as
+        stored, so the copy this returns carries what is on disk *after* the
+        put, not what a read before it saw. A read-then-put here used to do
+        the overlay itself, and a fire that landed between the two halves
+        was written back over by the stale copy (Codex, #1199).
+        """
         definition = self._as_definition(sid, schedule)
         if definition is None:
             return None
@@ -280,19 +288,8 @@ class _ScheduleRunner:
             )
         if store is None:
             return definition
-        recorded = await store.get(sid)
-        if recorded is not None:
-            definition = definition.model_copy(
-                update={
-                    "last_fired_at": recorded.last_fired_at,
-                    "last_run_id": recorded.last_run_id,
-                    "runs_so_far": recorded.runs_so_far,
-                    "next_due_at": recorded.next_due_at,
-                    "created_at": recorded.created_at,
-                }
-            )
-        await store.put(definition)
-        return definition
+        stored: Schedule = await store.put(definition)
+        return stored
 
     async def _canonical_active_run(self, definition: Schedule, container: Any) -> bool:
         """Whether the schedule's latest Run is still non-terminal."""

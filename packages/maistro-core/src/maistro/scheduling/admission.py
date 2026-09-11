@@ -84,6 +84,8 @@ from maistro.runs.store import DuplicateOccurrence
 from maistro.scheduling.engine import SkipReason, evaluate
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from maistro.graph.definitions import GraphTemplate
     from maistro.graph.templates import GraphTemplateStore
     from maistro.runs.model import Run
@@ -102,6 +104,12 @@ logger = logging.getLogger("maistro.scheduling.admission")
 #: on it "would otherwise lose the occurrence with no record of it". Every other
 #: reason is a decision not to run that occurrence at all.
 _UNCONSUMED_SKIPS: Final = frozenset({SkipReason.BUFFERED, SkipReason.TRUNCATED})
+
+
+def _owes(skipped: Sequence[SkippedFire]) -> bool:
+    """Whether the evaluation left an occurrence that still has to run."""
+    return any(skip.reason in _UNCONSUMED_SKIPS for skip in skipped)
+
 
 #: Skips whose occurrences the policy never acts on, so their claims are not
 #: looked up: the window already dropped them, or the enumeration cap did.
@@ -411,10 +419,11 @@ class ScheduleRunAdmitter:
 
     async def _record_batch(self, schedule: Schedule, due: _Due, batch: _Batch) -> Schedule | None:
         """Advance the cursor past what this batch consumed."""
-        # `next_due_at` is recomputed only when the whole batch landed. A
-        # partial batch leaves occurrences owed, and `evaluate()`'s answer
-        # assumed all of them fired.
-        complete = not batch.failures
+        # `next_due_at` is recomputed only when the whole batch landed and
+        # nothing was held back. A partial batch leaves occurrences owed, and
+        # `evaluate()`'s answer assumed all of them fired; a buffered
+        # occurrence is owed the same way (#1199).
+        complete = not batch.failures and not _owes(due.skipped)
         return await self._schedules.record_fire(
             schedule.schedule_id,
             # The newest occurrence *consumed*, not `now`. This value becomes
@@ -458,7 +467,24 @@ class ScheduleRunAdmitter:
         """
         consumable = [s.scheduled_for for s in due.skipped if s.reason not in _UNCONSUMED_SKIPS]
         consumed = sorted(consumable + list(due.already_fired))
+        # The due cursor moves only when nothing is owed (#1199). `due()`
+        # selects on `next_due_at`, so advancing it past a buffered occurrence
+        # would hide the schedule from the tick until the occurrence *after*
+        # the one it still has to run.
+        next_due_at = schedule.next_due_at if _owes(due.skipped) else due.next_due_at
         if not consumed:
+            if next_due_at is not None and next_due_at != schedule.next_due_at:
+                # Nothing fired and nothing was dropped, but the evaluation
+                # still learned when the next occurrence is — and a schedule
+                # that never records it stays selected by `due()` on every
+                # tick until its first occurrence, however far off that is
+                # (#1199). No occurrence was consumed, so `fired_at=None`
+                # leaves the enumeration cursor where it is; only the due
+                # cursor is written, and only when it changed, so an idle
+                # schedule costs no write per tick.
+                await self._schedules.record_fire(
+                    schedule.schedule_id, fired_at=None, run_id=None, next_due_at=next_due_at
+                )
             return due.admission()
         recorded = await self._schedules.record_fire(
             schedule.schedule_id,
@@ -468,7 +494,7 @@ class ScheduleRunAdmitter:
             # than clearing it, which is what makes "the last Run this
             # schedule produced" survive an occurrence that produced none.
             run_id=_pointer(due.links, consumed),
-            next_due_at=due.next_due_at,
+            next_due_at=next_due_at,
             fires=0,
             fired=list(due.already_fired),
         )
