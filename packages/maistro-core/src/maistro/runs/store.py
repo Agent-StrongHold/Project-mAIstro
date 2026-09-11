@@ -458,6 +458,8 @@ class RunStore(Protocol):
         self, run_id: str, task_id: str, *, target_agent: str | None = None
     ) -> Run: ...
 
+    async def claim_delegation_transport_attempt(self, run_id: str) -> bool: ...
+
     async def transition_run(
         self,
         run_id: str,
@@ -989,6 +991,16 @@ class InMemoryRunStore:
         updated = run.model_copy(update={"provenance": provenance})
         self._runs[run_id] = updated
         return updated.model_copy(deep=True)
+
+    async def claim_delegation_transport_attempt(self, run_id: str) -> bool:
+        """Claim the only allowed attempt to cross the transport boundary."""
+        run = self._require_run(run_id)
+        if run.provenance.get("transport_attempted"):
+            return False
+        provenance = dict(run.provenance)
+        provenance["transport_attempted"] = True
+        self._runs[run_id] = run.model_copy(update={"provenance": provenance})
+        return True
 
     async def transition_run(
         self,

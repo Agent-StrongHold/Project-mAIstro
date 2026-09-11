@@ -589,6 +589,18 @@ class PgRunStore:
             await self._write(conn, "canonical_runs", "run_id", run_id, updated)
         return updated
 
+    async def claim_delegation_transport_attempt(self, run_id: str) -> bool:
+        """Lock the child and record an irreversible transport boundary claim."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            run = Run.model_validate(await self._locked(conn, "canonical_runs", "run_id", run_id))
+            if run.provenance.get("transport_attempted"):
+                return False
+            provenance = dict(run.provenance)
+            provenance["transport_attempted"] = True
+            updated = run.model_copy(update={"provenance": provenance})
+            await self._write(conn, "canonical_runs", "run_id", run_id, updated)
+        return True
+
     async def list_by_status(
         self,
         status: RunStatus,

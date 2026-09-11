@@ -238,6 +238,12 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             return None
         return await self._run_store.attach_delegation_receipt(run_id, task_id, target_agent=target)
 
+    async def _claim_transport_attempt(self, run_id: str) -> bool:
+        """Durably claim the boundary so concurrent recovery cannot both dispatch."""
+        if self._run_store is None:
+            return True
+        return await self._run_store.claim_delegation_transport_attempt(run_id)
+
     async def _resume(self, resumed: dict[str, Any]) -> DelegateRemoteOut:
         """Settle the child Run, then report what the delegate answered.
 
@@ -312,6 +318,27 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             error=out.error,
         )
 
+    async def _recover_cross_instance(
+        self, inputs: DelegateRemoteIn, key: str, child_id: str
+    ) -> DelegateRemoteOut:
+        """Reconcile a claimed boundary without submitting a second request."""
+        assert self._guest_peers is not None
+        assert self._run_store is not None
+        current = await self._run_store.get_run(child_id)
+        receipt = str(current.provenance.get("a2a_task_id") or "") if current else ""
+        if receipt:
+            self._pause(inputs, task_id=receipt, mode="guest_peer", run_id=child_id)
+            return DelegateRemoteOut()
+        reconciled = await self._guest_peers.reconcile(inputs.peer_name or "", key)
+        if reconciled.status == "submitted" and reconciled.task_id:
+            await self._attach_receipt(child_id, reconciled.task_id)
+            self._pause(inputs, task_id=reconciled.task_id, mode="guest_peer", run_id=child_id)
+            return DelegateRemoteOut()
+        return DelegateRemoteOut(
+            status="uncertain",
+            error=reconciled.error or "transport acceptance is uncertain; reconcile required",
+        )
+
     async def _dispatch_cross_instance(
         self, inputs: DelegateRemoteIn, ctx: NodeContext
     ) -> DelegateRemoteOut:
@@ -337,16 +364,12 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             if receipt:
                 self._pause(inputs, task_id=receipt, mode="guest_peer", run_id=child_id)
                 return DelegateRemoteOut()
-            reconciled = await self._guest_peers.reconcile(inputs.peer_name or "", key)
-            if reconciled.status == "submitted" and reconciled.task_id:
-                await self._attach_receipt(child_id, reconciled.task_id)
-                self._pause(inputs, task_id=reconciled.task_id, mode="guest_peer", run_id=child_id)
-                return DelegateRemoteOut()
-            if reconciled.status == "uncertain":
-                return DelegateRemoteOut(
-                    status="uncertain",
-                    error=reconciled.error or "transport acceptance is uncertain",
-                )
+
+        claimed = await self._claim_transport_attempt(child_id)
+        if not claimed:
+            # Another replica may have crossed the boundary while this one was
+            # reserving the same child. Reconcile; never POST a second time.
+            return await self._recover_cross_instance(inputs, key, child_id)
 
         messages = [{"role": "user", "content": inputs.task}]
         if self._run_store is None:
@@ -372,6 +395,10 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
                     status="uncertain", error=result.error or "transport acceptance is uncertain"
                 )
             return DelegateRemoteOut(status="failed", task_id=result.task_id, error=result.error)
+        if not result.task_id:
+            return DelegateRemoteOut(
+                status="uncertain", error="peer accepted work without a transport receipt"
+            )
 
         await self._attach_receipt(child_id, result.task_id)
         self._pause(inputs, task_id=result.task_id, mode="guest_peer", run_id=child_id)
@@ -411,6 +438,22 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             child_id = await self._reserve_child(
                 inputs, ctx, parent=parent, mode="in_process", target=target
             )
+
+        claimed = await self._claim_transport_attempt(child_id)
+        if not claimed:
+            # A durable claim without a receipt means another worker may have
+            # accepted work and died before attaching it. The local task map is
+            # the only receipt authority available; absent that, stay
+            # explicitly uncertain instead of admitting a second task.
+            task = self._a2a_delegator.get_task_by_delegation_key(key)
+            if task is None:
+                return DelegateRemoteOut(
+                    status="uncertain",
+                    error="transport acceptance is uncertain; reconcile required",
+                )
+            await self._attach_receipt(child_id, task.id, target=task.to_agent)
+            self._pause(inputs, task_id=task.id, mode="in_process", run_id=child_id)
+            return DelegateRemoteOut()
 
         try:
             task_id = self._a2a_delegator.delegate_task(
