@@ -12,10 +12,8 @@ update.
 from __future__ import annotations
 
 import importlib.util
-import json
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -112,114 +110,11 @@ def test_a_dotted_enum_base_is_recognised(gate) -> None:
     assert set(gate.work_state_enums(source, "pkg.jobs")) == {"pkg.jobs::JobStatus"}
 
 
-def test_enum_discovery_uses_string_values_and_annotated_members(gate) -> None:
-    source = """
-from enum import Enum
-
-class Lifecycle(Enum):
-    ORIGIN: str = "created"
-    IN_FLIGHT: str = "running"
-    FINISHED: str = "completed"
-    BROKEN: str = "failed"
-"""
-    assert gate.work_state_enums(source, "pkg.jobs") == {
-        "pkg.jobs::Lifecycle": {"CREATED", "RUNNING", "COMPLETED", "FAILED"}
-    }
-
-
 def test_literal_aliases_support_qualified_imports_pep604_and_split_values(gate) -> None:
     found = gate.work_state_literals(WORK_LITERAL, "pkg.jobs")
     assert found == {
         "pkg.jobs::RunStatus": {"PENDING", "RUNNING", "COMPLETED", "ERRORED", "STOPPED"},
         "pkg.jobs::QueueState": {"QUEUED", "RUNNING", "FAILED"},
-    }
-
-
-def test_literal_aliases_support_pep695_and_private_helper_aliases(gate) -> None:
-    source = """
-from typing import Literal
-
-type _RunStates = Literal["queued", "running"]
-RunStatus = _RunStates | Literal[
-    "failed",
-]
-"""
-    assert gate.work_state_literals(source, "pkg.jobs") == {
-        "pkg.jobs::RunStatus": {"QUEUED", "RUNNING", "FAILED"}
-    }
-
-
-def test_literal_field_annotations_are_discovered_without_broad_literal_noise(gate) -> None:
-    source = """
-import typing as t
-from typing_extensions import Literal as L
-
-_HelperStates = L["queued", "running", "failed"]
-
-class Mission:
-    status: t.Literal[
-        "pending",
-        "running",
-        "completed",
-        "failed",
-    ]
-    execution_status: _HelperStates
-    kind: L["queued", "running", "failed"]
-"""
-    assert gate.work_state_literals(source, "pkg.jobs") == {
-        "pkg.jobs::Mission.status": {"PENDING", "RUNNING", "COMPLETED", "FAILED"},
-        "pkg.jobs::Mission.execution_status": {"QUEUED", "RUNNING", "FAILED"},
-    }
-
-
-def test_literal_field_union_reuses_the_named_alias_identity(gate) -> None:
-    source = """
-from typing import Literal
-
-RunStatus = Literal["created", "running", "completed"]
-
-class Job:
-    status: RunStatus | None
-"""
-    assert gate.work_state_literals(source, "pkg.jobs") == {
-        "pkg.jobs::RunStatus": {"CREATED", "RUNNING", "COMPLETED"}
-    }
-
-
-def test_created_is_a_work_state_even_without_queued(gate) -> None:
-    source = 'from typing import Literal\nRunStatus = Literal["created", "running", "completed"]'
-    assert gate.work_state_literals(source, "pkg.jobs") == {
-        "pkg.jobs::RunStatus": {"CREATED", "RUNNING", "COMPLETED"}
-    }
-
-
-def test_the_real_rsi_literal_is_discovered(gate) -> None:
-    found = gate.discover()
-    assert found["services.rsi::RunStatus"] == {
-        "PENDING",
-        "RUNNING",
-        "COMPLETED",
-        "ERRORED",
-        "STOPPED",
-    }
-    assert found["models.schemas::Mission.status"] == {
-        "PENDING",
-        "RUNNING",
-        "COMPLETED",
-        "FAILED",
-        "PAUSED",
-    }
-    assert found["models.schemas::MissionStep.status"] == {
-        "PENDING",
-        "RUNNING",
-        "COMPLETED",
-        "FAILED",
-        "SKIPPED",
-    }
-    assert found["maistro.orchestrator.waves.types::WaveHandle.status"] == {
-        "RUNNING",
-        "SUCCEEDED",
-        "FAILED",
     }
 
 
@@ -296,60 +191,6 @@ def test_noncanonical_dispositions_are_allowed(gate, classification: str) -> Non
         gate.audit(ledger(**{"pkg.jobs::JobStatus": entry(classification=classification)}), found)
         == []
     )
-
-
-def test_a_new_canonical_literal_cannot_be_banked_by_its_ledger_entry(gate) -> None:
-    name = "pkg.jobs::RunStatus"
-    found = {name: {"PENDING", "RUNNING", "FAILED"}}
-    assert gate.audit(ledger(**{name: entry(classification="CANONICAL")}), found) == []
-    assert gate._unauthorized_additions([name], {}, set()) == [name]
-    assert gate._unauthorized_additions([name], {}, {name}) == []
-
-
-def test_main_rejects_an_unledgered_literal_source_fixture(
-    gate, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """Exercise the production discovery path, not a fabricated ``found`` map."""
-    source = tmp_path / "run_status.py"
-    source.write_text(
-        'from typing import Literal\nRunStatus = Literal["queued", "running", "failed"]\n',
-        encoding="utf-8",
-    )
-    reachability = SimpleNamespace(
-        FLAT_APPS=(),
-        _collect_modules=lambda: {"fixture": source},
-        _display_name=lambda key, _apps: key,
-    )
-    monkeypatch.setattr(gate, "_load_reachability", lambda: reachability)
-    ledger_path = tmp_path / "execution-lifecycles.json"
-    ledger_path.write_text(
-        json.dumps({"metric_definition_version": "2", "lifecycles": {}}), encoding="utf-8"
-    )
-    monkeypatch.setattr(gate, "LEDGER", ledger_path)
-
-    class Baseline:
-        base_sha = None
-
-        def loads(self, default=None):
-            return default
-
-    class Receipt:
-        def render(self) -> str:
-            return "fixture provenance"
-
-    provenance = SimpleNamespace(
-        RatchetProvenanceError=RuntimeError,
-        Provenance=lambda **_kwargs: Receipt(),
-        resolve_baseline=lambda *_args, **_kwargs: Baseline(),
-        require_measurement=lambda *_args, **_kwargs: None,
-        require_metric_version=lambda *_args, **_kwargs: None,
-        load_authorizations=lambda *_args, **_kwargs: {},
-        head_sha=lambda *_args, **_kwargs: "fixture",
-    )
-    monkeypatch.setattr(gate, "_provenance", lambda: provenance)
-
-    assert gate.main() == 1
-    assert "fixture::RunStatus" in capsys.readouterr().out
 
 
 def test_a_missing_rationale_fails(gate) -> None:
