@@ -15,6 +15,7 @@ called by nobody.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -22,7 +23,7 @@ import pytest
 from maistro.graph.definitions import GraphTemplate, Node
 from maistro.graph.templates import GraphTemplateNotFound, InMemoryGraphTemplateStore
 from maistro.projects.scope_store import InMemoryProjectScopeStore
-from maistro.runs.model import RunStatus
+from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
 from maistro.runs.sources import (
     ADMISSION_SOURCE,
     SCHEDULE_CATCHUP_KEY,
@@ -33,6 +34,7 @@ from maistro.runs.sources import (
 )
 from maistro.runs.store import InMemoryRunStore
 from maistro.scheduling.admission import ScheduleRunAdmitter
+from maistro.scheduling.engine import FireDecision, SkipReason
 from maistro.scheduling.model import OverlapPolicy, Schedule
 from maistro.scheduling.store import InMemoryScheduleStore
 
@@ -605,3 +607,159 @@ class TestAdmissionState:
         run = await runs.get_run(result.run_ids[0])
         assert run is not None
         assert run.status is RunStatus.QUEUED
+
+
+async def _crashed_before_record_fire(harness, schedule: Schedule, when: datetime) -> str:
+    """Ticker A's half of the #1059 sequence: the Run for `when` exists and
+    the cursor was never stamped, which is exactly what dying between
+    `create_run` and `record_fire` leaves behind."""
+    admitter, _runs, templates, _schedules, _project_id = harness
+    template = await templates.get(TEMPLATE_ID)
+    assert template is not None
+    return await admitter._admit_one(schedule, template, FireDecision(scheduled_for=when))
+
+
+class TestADuplicateClaimLinksTheWinningRun:
+    """Recovering the Run that won an occurrence claim (#1059).
+
+    Occurrence uniqueness (#220) stops a second Run for `(schedule_id,
+    scheduled_for)`; it did not say which Run won. A ticker refused with
+    `DuplicateOccurrence` advanced the cursor with `run_id=None`, so
+    `Schedule.last_run_id` stayed stale while the winner was live, the caller
+    answered `active_run` from the wrong Run, and a SKIP schedule admitted a
+    later occurrence on top of the one still running.
+    """
+
+    async def test_a_crash_before_record_fire_links_the_winner_on_the_next_tick(
+        self, harness
+    ) -> None:
+        """The issue's sequence: ticker A creates the Run for T and dies before
+        `record_fire`; ticker B re-enumerates T, is refused, and must leave
+        `last_run_id` naming A's Run rather than nothing."""
+        admitter, _runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id)
+        winner = await _crashed_before_record_fire(harness, schedule, NOON)
+        before = await schedules.get(schedule.schedule_id)
+        assert before is not None and before.last_run_id is None
+
+        result = await admitter.admit_due(schedule, now=NOON)
+
+        stored = await schedules.get(schedule.schedule_id)
+        assert result.run_ids == ()
+        assert result.already_fired == (NOON,)
+        assert stored is not None
+        assert stored.last_run_id == winner
+        assert stored.last_fired_at == NOON
+
+    async def test_skip_is_judged_against_the_winning_run_once_it_is_linked(self, harness) -> None:
+        """The property the link buys. `evaluate()`'s contract is that the
+        caller answers `active_run` from Run state via `last_run_id`, so a
+        stale pointer was a SKIP schedule that could not see its own in-flight
+        Run and ran the next occurrence beside it."""
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, overlap_policy=OverlapPolicy.SKIP)
+        await _crashed_before_record_fire(harness, schedule, NOON)
+        await admitter.admit_due(schedule, now=NOON)
+        linked = await schedules.get(schedule.schedule_id)
+        assert linked is not None and linked.last_run_id is not None
+        winner = await runs.get_run(linked.last_run_id)
+        assert winner is not None
+        active = winner.status not in TERMINAL_RUN_STATUSES
+        assert active is True
+
+        later = await admitter.admit_due(linked, now=NOON + timedelta(hours=1), active_run=active)
+
+        assert later.run_ids == ()
+        assert [skip.reason for skip in later.skipped] == [SkipReason.OVERLAP]
+
+    async def test_a_finished_winner_is_linked_but_does_not_block_the_next_occurrence(
+        self, harness
+    ) -> None:
+        """Linked truthfully -- it is the latest occurrence's Run -- while a
+        terminal Run is not an active one, so the next occurrence fires."""
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, overlap_policy=OverlapPolicy.SKIP)
+        winner = await _crashed_before_record_fire(harness, schedule, NOON)
+        await runs.transition_run(winner, RunStatus.CANCELLED, error="operator")
+        await admitter.admit_due(schedule, now=NOON)
+        linked = await schedules.get(schedule.schedule_id)
+        assert linked is not None and linked.last_run_id == winner
+        run = await runs.get_run(winner)
+        assert run is not None
+        active = run.status not in TERMINAL_RUN_STATUSES
+        assert active is False
+
+        later = await admitter.admit_due(linked, now=NOON + timedelta(hours=1), active_run=active)
+
+        assert len(later.run_ids) == 1
+        after = await schedules.get(schedule.schedule_id)
+        assert after is not None and after.last_run_id == later.run_ids[0]
+
+    async def test_two_tickers_racing_one_occurrence_converge_on_one_run_and_cursor(
+        self, harness
+    ) -> None:
+        """Whichever ticker loses the claim links the other's Run, so both end
+        with the same `last_run_id`, one fire counted, and the cursor on T."""
+        admitter, runs, templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, max_runs=4)
+        rival = ScheduleRunAdmitter(runs, templates, schedules)
+
+        first, second = await asyncio.gather(
+            admitter.admit_due(schedule, now=NOON), rival.admit_due(schedule, now=NOON)
+        )
+
+        created = first.run_ids + second.run_ids
+        assert len(created) == 1
+        assert sorted((first.already_fired, second.already_fired)) == [(), (NOON,)]
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        assert stored.last_run_id == created[0]
+        assert stored.runs_so_far == 1
+        assert stored.last_fired_at == NOON
+
+    async def test_the_pointer_follows_the_newest_occurrence_whoever_admitted_it(
+        self, harness
+    ) -> None:
+        """Under ALLOW a batch mixes this ticker's Runs with a rival's. The
+        pointer is the Run behind the newest *consumed* occurrence, not the
+        newest Run of ours -- an older Run of ours would be less true."""
+        admitter, _runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(
+            schedules,
+            project_id,
+            last_fired_at=NOON - timedelta(hours=3),
+            catchup_window_seconds=6 * 3600.0,
+            overlap_policy=OverlapPolicy.ALLOW,
+        )
+        # A rival took the *newest* of the three due occurrences.
+        rival = await _crashed_before_record_fire(harness, schedule, NOON)
+
+        result = await admitter.admit_due(schedule, now=NOON)
+
+        stored = await schedules.get(schedule.schedule_id)
+        assert len(result.run_ids) == 2
+        assert result.already_fired == (NOON,)
+        assert stored is not None
+        assert stored.last_run_id == rival
+        assert stored.last_run_id not in result.run_ids
+
+    async def test_an_unresolvable_winner_leaves_the_pointer_where_it_was(self, harness) -> None:
+        """The stores only evict or purge a *terminal* Run, so a claim whose
+        Run cannot be found is one that finished. Nothing live is owed a link,
+        and both clearing the pointer and refusing the batch would be wrong."""
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, last_run_id="an-earlier-run")
+        await _crashed_before_record_fire(harness, schedule, NOON)
+
+        async def _gone(schedule_id: str, scheduled_for: str) -> None:
+            return None
+
+        runs.get_run_for_occurrence = _gone  # type: ignore[method-assign]
+
+        result = await admitter.admit_due(schedule, now=NOON)
+
+        stored = await schedules.get(schedule.schedule_id)
+        assert result.already_fired == (NOON,)
+        assert stored is not None
+        assert stored.last_run_id == "an-earlier-run"
+        assert stored.last_fired_at == NOON

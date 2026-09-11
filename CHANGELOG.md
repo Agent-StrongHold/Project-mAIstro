@@ -80,6 +80,18 @@ or placeholder-only section.
 
 ### Fixed
 
+- **A schedule refused by the occurrence claim now links the Run that won it
+  (#1059).** Occurrence uniqueness stopped a second Run for
+  `(schedule_id, scheduled_for)` but not the stale cursor behind it: a ticker
+  that died between creating the Run and `record_fire`, followed by any other
+  ticker, left `Schedule.last_run_id` empty while the winning Run was still
+  live, so the overlap policy was judged against nothing and a `SKIP` schedule
+  could admit its next occurrence beside the one still running.
+  `ScheduleRunAdmitter` now resolves the winner through a new
+  `RunStore.get_run_for_occurrence()` — served from the same unique index that
+  enforces the claim on every backend, never a provenance scan — and
+  `last_run_id` follows the newest consumed occurrence whichever ticker
+  admitted it.
 - **Successful NodeRuns require accepted physical evidence (#1153).** New
   completion transitions reject a missing `AcceptedNodeOutcome`, including for
   no-output work. The historical durable-Graph execution entry points delegate

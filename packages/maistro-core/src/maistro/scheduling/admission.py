@@ -40,7 +40,10 @@ batch, because the cursor moves past everything it covers and continuing would
 lose the failure or duplicate the success. A duplicate is the opposite case:
 that occurrence *did* fire, so it is consumed — the cursor may pass it — while
 not counting toward `max_runs`, which the admitter that actually created the
-Run counts for itself.
+Run counts for itself. What it does carry is the *winner's* identity (#1059):
+`last_run_id` is linked to the Run that holds the claim, because the caller
+answers `active_run` from that pointer and a stale one let a SKIP schedule run
+two occurrences at once.
 
 **Exhaustion is decided against the fires that actually happened.**
 `ScheduleEvaluation.exhausted` answers "does `max_runs` run out once these
@@ -192,10 +195,14 @@ class ScheduleRunAdmitter:
         admitted: list[FireDecision] = []
         already_fired: list[datetime] = []
         consumed: list[FireDecision] = []
+        # The Run behind each consumed occurrence whose Run is known, in
+        # occurrence order -- ours, or the one that won the claim (#1059).
+        linked: list[str] = []
         failures: list[Exception] = []
         for fire in decision.fires:
             try:
                 run_ids.append(await self._admit_one(schedule, template, fire))
+                linked.append(run_ids[-1])
                 admitted.append(fire)
                 consumed.append(fire)
             except DuplicateOccurrence:
@@ -208,11 +215,7 @@ class ScheduleRunAdmitter:
                 # admitted: `fires` feeds `runs_so_far`, and both tickers
                 # counting one firing would exhaust `max_runs` at half the
                 # occurrences it was configured for.
-                logger.info(
-                    "schedule %s occurrence %s was already admitted elsewhere",
-                    schedule.schedule_id,
-                    fire.scheduled_for.isoformat(),
-                )
+                linked.extend(await self._winning_run_id(schedule, fire))
                 already_fired.append(fire.scheduled_for)
                 consumed.append(fire)
             except Exception as exc:
@@ -251,15 +254,18 @@ class ScheduleRunAdmitter:
             # cursor past occurrences this batch stopped short of and lose them
             # permanently — the exact failure the ordering above prevents.
             fired_at=consumed[-1].scheduled_for,
-            # The newest Run, matching the cursor being the newest fire.
-            # `Schedule.last_run_id` is a pointer to the latest occurrence, not
-            # a history of them; the history is on the Runs, each naming this
-            # schedule.
-            # None when the batch's last consumed occurrence was one another
-            # admitter had claimed: `_advance` keeps the existing id rather
-            # than clearing it, and pointing `last_run_id` at an older Run of
-            # ours would be less true than leaving it where it was.
-            run_id=run_ids[-1] if run_ids else None,
+            # The Run behind the newest consumed occurrence, matching the
+            # cursor being the newest fire -- whether this admitter created it
+            # or another one won the claim on it (#1059). `Schedule.last_run_id`
+            # is a pointer to the latest occurrence, not a history of them; the
+            # history is on the Runs, each naming this schedule. Pointing it at
+            # a Run of ours older than a rival's winner would leave the caller
+            # answering `active_run` from the wrong Run, which is exactly how a
+            # SKIP schedule came to overlap itself.
+            # None only when no consumed occurrence's Run is resolvable, in
+            # which case `_advance` keeps the existing id rather than clearing
+            # it.
+            run_id=linked[-1] if linked else None,
             next_due_at=decision.next_due_at if complete else schedule.next_due_at,
             fires=len(admitted),
             disable=disable,
@@ -312,6 +318,34 @@ class ScheduleRunAdmitter:
             next_due_at=decision.next_due_at,
             cancel_active_run=decision.cancel_active_run,
         )
+
+    async def _winning_run_id(self, schedule: Schedule, fire: FireDecision) -> tuple[str, ...]:
+        """The Run that holds the claim this admitter was just refused (#1059).
+
+        A `DuplicateOccurrence` says the firing happened; it does not say
+        which Run it became, and `record_fire` needs that Run to keep
+        `last_run_id` truthful. Before this the cursor advanced past a rival's
+        occurrence with the pointer stale, the caller then answered
+        `active_run` from the wrong Run, and a SKIP schedule admitted a later
+        occurrence on top of the one still running.
+
+        Empty, not an error, when the claim's Run can no longer be found: the
+        stores only ever evict or purge a *terminal* Run, so an unresolvable
+        winner is one that has finished, and nothing needs to be linked for
+        overlap to be judged correctly. Logged either way, because "this tick
+        admitted nothing because it was already admitted" is an operational
+        fact and the winner's identity is the useful half of it.
+        """
+        winner = await self._runs.get_run_for_occurrence(
+            schedule.schedule_id, fire.scheduled_for.isoformat()
+        )
+        logger.info(
+            "schedule %s occurrence %s was already admitted elsewhere as Run %s",
+            schedule.schedule_id,
+            fire.scheduled_for.isoformat(),
+            winner.run_id if winner is not None else "<no longer resolvable>",
+        )
+        return (winner.run_id,) if winner is not None else ()
 
     @staticmethod
     def _exhausted_after(schedule: Schedule, *, fires: int) -> bool:

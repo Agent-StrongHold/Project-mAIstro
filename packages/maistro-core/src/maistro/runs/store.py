@@ -332,6 +332,17 @@ class RunStore(Protocol):
 
     async def get_run(self, run_id: str) -> Run | None: ...
 
+    async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
+        """The Run holding the claim on `(schedule_id, scheduled_for)`, if any (#1059).
+
+        The claim proves a Run exists for the occurrence; this is how a caller
+        refused by `DuplicateOccurrence` finds out *which* one, so it can link
+        the schedule's cursor to the Run that actually won rather than merely
+        knowing that someone fired it. Served from the same index that enforces
+        the claim, never from a scan over every Run's provenance.
+        """
+        ...
+
     async def transition_run(
         self,
         run_id: str,
@@ -768,6 +779,10 @@ class InMemoryRunStore:
     async def get_run(self, run_id: str) -> Run | None:
         run = self._runs.get(run_id)
         return run.model_copy(deep=True) if run is not None else None
+
+    async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
+        run_id = self._occurrences.get((schedule_id, scheduled_for))
+        return await self.get_run(run_id) if run_id is not None else None
 
     async def transition_run(
         self,
