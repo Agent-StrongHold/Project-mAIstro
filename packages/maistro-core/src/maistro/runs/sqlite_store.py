@@ -336,6 +336,20 @@ class SqliteRunStore:
             )
             return updated
 
+    async def claim_delegation_transport_attempt(self, run_id: str) -> bool:
+        """Persist the transport boundary claim before making the call."""
+        async with self._write_lock:
+            run = await self._require_run(run_id)
+            if run.provenance.get("transport_attempted"):
+                return False
+            provenance = dict(run.provenance)
+            provenance["transport_attempted"] = True
+            updated = run.model_copy(update={"provenance": provenance})
+            await self._update_payload(
+                "canonical_runs", "run_id", run_id, updated.status.value, json_of(updated)
+            )
+            return True
+
     async def list_by_status(
         self,
         status: RunStatus,

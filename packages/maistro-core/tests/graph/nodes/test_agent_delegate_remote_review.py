@@ -92,6 +92,23 @@ class _RecordingDelegator(A2ADelegator):
         return super().delegate_task(from_agent, task, to_agent, *args, **kwargs)
 
 
+class _FailingDelegator(_RecordingDelegator):
+    """Fail after the durable boundary claim, before accepting a local task."""
+
+    def delegate_task(self, from_agent, task, to_agent, *args: Any, **kwargs: Any):  # type: ignore[no-untyped-def]
+        self.dispatched.append((from_agent, task, to_agent))
+        raise RuntimeError("injected transport failure before acceptance")
+
+
+class _ReservationFailingStore(InMemoryRunStore):
+    """Inject a database failure while reserving a child Run."""
+
+    async def create_run(self, graph, *, parent_run_id=None, **kwargs: Any):  # type: ignore[no-untyped-def]
+        if parent_run_id is not None:
+            raise RuntimeError("injected child admission failure")
+        return await super().create_run(graph, parent_run_id=parent_run_id, **kwargs)
+
+
 def _recording_delegator() -> _RecordingDelegator:
     delegator = _RecordingDelegator()
     delegator.register_agent_capability("planner", ["researcher"])
@@ -327,6 +344,59 @@ class TestAdmissionAndTransportConverge:
         second = await node.run(inputs, ctx)
         assert second.status == "paused"
         assert len(delegator._tasks) == 1
+
+    async def test_admission_failure_happens_before_any_local_dispatch(self) -> None:
+        project_store = InMemoryProjectScopeStore()
+        root = await project_store.create_root("workspace-1")
+        project = await project_store.create(
+            workspace_id="workspace-1", parent_project_id=root.project_id, name="Project"
+        )
+        store = _ReservationFailingStore(project_store=project_store)
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        delegator = _recording_delegator()
+        node = AgentDelegateRemoteNode(a2a_delegator=delegator, run_store=store)
+
+        result = await node.run(
+            {"from_agent": "planner", "task": "x", "to_agent": "researcher"},
+            _ctx(run_id=parent.run_id),
+        )
+
+        assert result.status == "failed"
+        assert delegator.dispatched == []
+
+    async def test_restart_after_boundary_claim_stays_uncertain_without_resubmitting(self) -> None:
+        store, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+        first_delegator = _FailingDelegator()
+        first_delegator.register_agent_capability("planner", ["researcher"])
+        inputs = {"from_agent": "planner", "task": "x", "to_agent": "researcher"}
+        ctx = _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id)
+
+        first = await AgentDelegateRemoteNode(a2a_delegator=first_delegator, run_store=store).run(
+            inputs, ctx
+        )
+        assert first.status == "failed"
+
+        second_delegator = _recording_delegator()
+        second = await AgentDelegateRemoteNode(a2a_delegator=second_delegator, run_store=store).run(
+            inputs, ctx
+        )
+
+        assert second.status == "completed"
+        assert second.output.status == "uncertain"
+        assert second_delegator.dispatched == []
+        child = await store.find_delegation_run(
+            AgentDelegateRemoteNode(
+                a2a_delegator=second_delegator, run_store=store
+            )._delegation_key(AgentDelegateRemoteNode.input_schema.model_validate(inputs), ctx)
+        )
+        assert child is not None
+        assert child.provenance["transport_attempted"] is True
 
 
 class TestScopeIsCheckedBeforeDispatch:
