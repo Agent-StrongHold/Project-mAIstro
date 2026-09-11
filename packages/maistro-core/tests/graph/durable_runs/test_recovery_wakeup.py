@@ -182,6 +182,18 @@ async def test_one_unexpected_candidate_failure_does_not_starve_later_due_runs(
     assert "RuntimeError: resolver exploded password=<redacted>" in caplog.text
     assert "not-a-secret" not in caplog.text
 
+    calls.clear()
+    assert (
+        await recovery.resume_due_graph_runs(
+            store=store,
+            run_store=object(),
+            node_resolver=lambda _node_id, _graph: None,
+            now=now,
+        )
+        == 2
+    )
+    assert calls == ["waiting-1", "waiting-2", "waiting-3"]
+
 
 @pytest.mark.asyncio
 async def test_factory_failure_terminalizes_the_candidate_for_later_recovery() -> None:
