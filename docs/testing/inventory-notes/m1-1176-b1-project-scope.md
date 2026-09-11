@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +2
+  packages/maistro-core/tests: +1
 ---
 # m1-1176-b1-project-scope
 

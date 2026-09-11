@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests/tasks: +1
+  packages/maistro-core/tests: +1
 ---
 # m1-1176-b1-ambiguous-race
 
