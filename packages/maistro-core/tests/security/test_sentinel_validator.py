@@ -215,14 +215,15 @@ def test_only_repairs_no_errors_allowed_with_repaired_data():
     assert verdict.repaired_data == {"name": "x", "count": 5}
 
 
-def test_error_alongside_repair_still_allowed():
-    # "count" has a non-coercible type error, but "status" is fuzzy-repaired.
-    # The asymmetric rule: has_errors and not was_repaired -> deny. Since a
-    # repair DID happen elsewhere, the error is overridden and allowed=True.
+def test_unrelated_repair_does_not_override_schema_error():
+    # A warning repair on "status" must not mask the non-coercible type error
+    # on the unrelated "count" field.
     verdict = validate_and_repair(
         {"name": "x", "count": "not-a-number", "status": "activ"}, _schema()
     )
-    assert verdict.allowed is True
+    assert verdict.allowed is False
+    assert verdict.repaired is False
+    assert verdict.repaired_data is None
     assert any(v.severity == "error" for v in verdict.violations)
     assert any(v.severity == "warning" for v in verdict.violations)
 
