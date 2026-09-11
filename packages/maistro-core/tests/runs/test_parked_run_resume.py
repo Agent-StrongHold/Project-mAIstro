@@ -284,14 +284,14 @@ async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_d
     """A resumed physical try has the same crash boundary as first reach.
 
     The store fixture covers memory, SQLite, and PostgreSQL when configured. A
-    separate container invokes the ordinary recovery tick against that store,
-    which models a restarted worker without introducing schedule-owned repair.
-    The final explicit retry proves recovery leaves the canonical spine usable
-    by the policy that owns retry decisions.
+    fresh durable store is reopened for the SQLite and PostgreSQL legs before
+    the ordinary recovery tick, modeling a restarted worker without introducing
+    schedule-owned repair. The final explicit retry proves recovery leaves the
+    canonical spine usable by the policy that owns retry decisions.
     """
     from maistro.runs.consumption import ScheduleAttemptExecutor, resumable_pause
 
-    store, workspace, project_id = schedule_spine
+    store, workspace, project_id, reopen = schedule_spine
     recovery_container = await _container()
     graph = Graph(
         workspace_id=workspace,
@@ -360,7 +360,11 @@ async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_d
         # running in another process.
         store.renew_lease = _dead  # type: ignore[method-assign]
 
-        recovery_container.run_store = store
+        # Reopen the durable store before recovery. PostgreSQL gets a fresh
+        # store object and SQLite closes/reopens its file-backed connection;
+        # neither relies on the worker's process-local store state.
+        recovery_store = await reopen()
+        recovery_container.run_store = recovery_store
         assert (
             await recovery_container.recover_abandoned_attempts(
                 now=live_lease.expires_at + timedelta(microseconds=1)
@@ -368,9 +372,9 @@ async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_d
             == 1
         )
 
-        recovered = await store.get_attempt(resumed.attempt_id)
-        recovered_node = await store.get_node_run(node_run.node_run_id)
-        recovered_run = await store.get_run(run.run_id)
+        recovered = await recovery_store.get_attempt(resumed.attempt_id)
+        recovered_node = await recovery_store.get_node_run(node_run.node_run_id)
+        recovered_run = await recovery_store.get_run(run.run_id)
         assert recovered is not None and recovered.status is AttemptStatus.CANCELLED
         assert recovered_node is not None and recovered_node.status is RunStatus.WAITING
         assert recovered_run is not None and recovered_run.status is RunStatus.WAITING
@@ -384,7 +388,7 @@ async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_d
         from maistro.runtime import PythonExecutionRuntime
 
         retry_service = RunExecutionService(
-            store=store,
+            store=recovery_store,
             runtime=PythonExecutionRuntime(),
             lease_ttl=ttl,
         )
@@ -400,8 +404,8 @@ async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_d
             executor_id="schedule-consumer",
         )
         assert retried.status is AttemptStatus.COMPLETED
-        completed_node = await store.get_node_run(node_run.node_run_id)
-        completed_run = await store.get_run(run.run_id)
+        completed_node = await recovery_store.get_node_run(node_run.node_run_id)
+        completed_run = await recovery_store.get_run(run.run_id)
         assert completed_node is not None and completed_node.status is RunStatus.COMPLETED
         assert completed_run is not None and completed_run.status is RunStatus.COMPLETED
     finally:

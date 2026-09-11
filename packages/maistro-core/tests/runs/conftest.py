@@ -61,7 +61,7 @@ async def spine(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
 
 
 @pytest.fixture(params=["memory", "sqlite", "postgres"])
-async def schedule_spine(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
+async def schedule_spine(request: pytest.FixtureRequest, pg_pool: Any, tmp_path: Any) -> Any:
     """Claim-capable durable stores for schedule-consumer acceptance tests.
 
     The ordinary conformance spine deliberately exposes the base RunStore
@@ -86,7 +86,17 @@ async def schedule_spine(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
         project = await projects.create(
             workspace_id=workspace, parent_project_id=root.project_id, name="Schedule"
         )
-        yield ClaimingPgRunStore(pg_pool, project_store=projects), workspace, project.project_id
+
+        async def reopen() -> Any:
+            """Return a fresh store object, as a restarted worker would use."""
+            return ClaimingPgRunStore(pg_pool, project_store=projects)
+
+        yield (
+            ClaimingPgRunStore(pg_pool, project_store=projects),
+            workspace,
+            project.project_id,
+            reopen,
+        )
         return
 
     projects = InMemoryProjectScopeStore()
@@ -95,22 +105,38 @@ async def schedule_spine(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
         workspace_id=f"{WORKSPACE}-schedule", parent_project_id=root.project_id, name="Schedule"
     )
     if request.param == "memory":
-        yield (
-            ClaimingInMemoryRunStore(project_store=projects),
-            f"{WORKSPACE}-schedule",
-            project.project_id,
-        )
+        store = ClaimingInMemoryRunStore(project_store=projects)
+
+        async def reopen() -> Any:
+            # In-memory persistence has no process restart to model; retain the
+            # store so this leg still exercises the canonical recovery seam.
+            return store
+
+        yield store, f"{WORKSPACE}-schedule", project.project_id, reopen
         return
 
-    conn = await aiosqlite.connect(":memory:")
+    # Use a file-backed database so this leg can close and reopen its
+    # connection, rather than accidentally proving recovery only on :memory:.
+    db_path = tmp_path / "schedule.sqlite3"
+    conn = await aiosqlite.connect(str(db_path))
     # Build the same SQLite project/run schema as `spine`, but expose the
     # atomic claim implementation used by the production execution wiring.
     store = ClaimingSqliteRunStore(conn, project_store=projects)
     await store.ensure_schema()
+    current_conn = conn
+
+    async def reopen() -> Any:
+        nonlocal current_conn
+        await current_conn.close()
+        current_conn = await aiosqlite.connect(str(db_path))
+        restarted = ClaimingSqliteRunStore(current_conn, project_store=projects)
+        await restarted.ensure_schema()
+        return restarted
+
     try:
-        yield store, f"{WORKSPACE}-schedule", project.project_id
+        yield store, f"{WORKSPACE}-schedule", project.project_id, reopen
     finally:
-        await conn.close()
+        await current_conn.close()
 
 
 @pytest.fixture
