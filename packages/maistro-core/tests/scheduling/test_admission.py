@@ -214,6 +214,7 @@ class TestTheCursor:
         assert result.next_due_at is not None
         assert after is not None and before is not None
         assert after.last_fired_at == before.last_fired_at
+        assert after.next_due_at == result.next_due_at
 
 
 class TestBoundedRecurrence:

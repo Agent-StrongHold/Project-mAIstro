@@ -307,6 +307,13 @@ class ScheduleRunAdmitter:
                 next_due_at=decision.next_due_at,
                 fires=0,
             )
+        elif not decision.skipped and decision.next_due_at != schedule.next_due_at:
+            # A fresh future schedule is returned by due() because its cursor
+            # is unknown. Persisting the computed cursor makes that one-time
+            # initialization durable instead of selecting it on every tick.
+            await self._schedules.record_evaluation(
+                schedule.schedule_id, next_due_at=decision.next_due_at
+            )
         return ScheduleAdmission(
             skipped=decision.skipped,
             next_due_at=decision.next_due_at,
