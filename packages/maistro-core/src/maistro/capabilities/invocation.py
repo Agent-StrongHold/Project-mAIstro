@@ -150,7 +150,7 @@ class InvocationStore(Protocol):
         self,
         *,
         run_id: str,
-        node_run_id: str,
+        node_run_id: str | None,
         binding_id: str,
         effect_key: str,
     ) -> list[Invocation]: ...
@@ -187,15 +187,17 @@ class InMemoryInvocationStore:
         self,
         *,
         run_id: str,
-        node_run_id: str,
+        node_run_id: str | None,
         binding_id: str,
         effect_key: str,
     ) -> list[Invocation]:
-        identity = (run_id, node_run_id, binding_id, effect_key)
         return [
             item.model_copy(deep=True)
             for item in sorted(self._items.values(), key=lambda candidate: candidate.created_at)
-            if item.effect_identity == identity
+            if item.run_id == run_id
+            and (node_run_id is None or item.node_run_id == node_run_id)
+            and item.binding.binding_id == binding_id
+            and item.effect_key == effect_key
         ]
 
 
@@ -240,9 +242,11 @@ class InvocationExecutionService:
     ) -> Invocation | None:
         """Return the latest canonical Invocation for one logical effect identity."""
 
+        # NodeRun is a physical logical visit and may change on graph retry;
+        # the replay key is the stable logical effect identity.
         history = await self._store.list_effect(
             run_id=run_id,
-            node_run_id=node_run_id,
+            node_run_id=None,
             binding_id=binding.binding_id,
             effect_key=effect_key,
         )
@@ -272,9 +276,11 @@ class InvocationExecutionService:
 
         _require(effect_key, "effect_key")
         async with self._effect_lock:
+            # NodeRun changes across graph visits; do not scope replay history
+            # to the physical visit when the effect key is stable by Run/node.
             history = await self._store.list_effect(
                 run_id=run_id,
-                node_run_id=node_run_id,
+                node_run_id=None,
                 binding_id=binding.binding_id,
                 effect_key=effect_key,
             )

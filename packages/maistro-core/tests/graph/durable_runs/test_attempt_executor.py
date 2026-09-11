@@ -99,6 +99,23 @@ class _Blocking(BaseNode[_Empty, _Seed]):
         return _Seed(seed="unreachable")
 
 
+class _UnboundEffect(BaseNode[_Empty, _Seed]):
+    kind: ClassVar[str] = "test.attempt.unbound_effect"
+    kind_category: ClassVar[str] = "sync.transform"
+    input_schema: ClassVar[type[BaseModel]] = _Empty
+    output_schema: ClassVar[type[BaseModel]] = _Seed
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.EFFECT_KEY
+    calls: ClassVar[int] = 0
+
+    def replay_effect_key(self, inputs: _Empty, ctx: NodeContext) -> str:
+        del inputs, ctx
+        return ""
+
+    async def _execute(self, inputs: _Empty, ctx: NodeContext) -> _Seed:
+        type(self).calls += 1
+        raise RuntimeError("effect key unavailable")
+
+
 class _NeverRetry(BaseNode[_Empty, _Seed]):
     kind: ClassVar[str] = "test.attempt.never_retry"
     kind_category: ClassVar[str] = "sync.transform"
@@ -110,6 +127,22 @@ class _NeverRetry(BaseNode[_Empty, _Seed]):
     async def _execute(self, inputs: _Empty, ctx: NodeContext) -> _Seed:
         type(self).calls += 1
         raise RuntimeError("ambiguous effect")
+
+
+def _unbound_effect_graph() -> Graph:
+    return Graph(
+        workspace_id="ws-1",
+        project_id="project-1",
+        name="Unbound effect",
+        nodes=[
+            Node(
+                node_id="unbound",
+                node_type=_UnboundEffect.kind,
+                policies={"max_attempts": 3},
+            )
+        ],
+        metadata={"entry_node": "unbound"},
+    )
 
 
 def _never_retry_graph() -> Graph:
@@ -188,6 +221,12 @@ def _blocking_graph() -> Graph:
         nodes=[Node(node_id="blocking", node_type=_Blocking.kind)],
         metadata={"entry_node": "blocking"},
     )
+
+
+def _unbound_effect_resolver(node_id: str, graph: Graph) -> BaseNode[Any, Any]:
+    del graph
+    assert node_id == "unbound"
+    return _UnboundEffect()
 
 
 def _never_retry_resolver(node_id: str, graph: Graph) -> BaseNode[Any, Any]:
@@ -281,6 +320,22 @@ async def test_public_durable_executor_routes_each_node_run_through_attempt_runt
         node_run.node_run_id for node_run in record.node_runs
     }
     assert set(runtime.execution_ids) == {attempt.attempt_id for attempt in record.attempts}
+
+
+@pytest.mark.asyncio
+async def test_effect_key_contract_requires_a_recorded_key_before_retry() -> None:
+    _UnboundEffect.calls = 0
+    store = InMemoryDurableRunStore()
+
+    record = await run_durable_graph(
+        _unbound_effect_graph(),
+        store=store,
+        node_resolver=_unbound_effect_resolver,
+    )
+
+    assert record.status is RunStatus.FAILED
+    assert _UnboundEffect.calls == 1
+    assert len(record.attempts) == 1
 
 
 @pytest.mark.asyncio

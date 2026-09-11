@@ -137,7 +137,7 @@ async def test_missing_provider_fails_closed_without_invocation_record() -> None
         run_id="r1",
         node_run_id="nr1",
         binding_id="b1",
-        effect_key="agent.spawn_harness.dispatch:claude_code",
+        effect_key=str(result.metadata["replay_effect_key"]),
     )
     assert history == []
 
@@ -168,7 +168,7 @@ async def test_dispatch_pauses_after_completed_correlated_invocation() -> None:
         run_id="r1",
         node_run_id="nr1",
         binding_id="b1",
-        effect_key="agent.spawn_harness.dispatch:claude_code",
+        effect_key=str(result.metadata["replay_effect_key"]),
     )
     assert len(history) == 1
     invocation = history[0]
@@ -200,10 +200,36 @@ async def test_completed_effect_replay_does_not_dispatch_twice() -> None:
         run_id="r1",
         node_run_id="nr1",
         binding_id="b1",
-        effect_key="agent.spawn_harness.dispatch:claude_code",
+        effect_key=str(first.metadata["replay_effect_key"]),
     )
     assert len(history) == 1
     assert history[0].attempt_id == "a1"
+
+
+async def test_completed_effect_replay_survives_a_new_node_run() -> None:
+    """A graph retry visits a new NodeRun but keeps one logical effect."""
+    adapter = FakeHarnessAdapter()
+    effects = await _effects_with_binding()
+    node = AgentSpawnHarnessNode(
+        adapters={"claude_code": adapter},
+        effect_context=effects,
+    )
+    inputs = {"harness_type": "claude_code", "task": "once", "binding_id": "b1"}
+
+    first = await node.run(inputs, _ctx(node_run_id="nr1", attempt_id="a1"))
+    second = await node.run(inputs, _ctx(node_run_id="nr2", attempt_id="a2"))
+
+    assert first.status == second.status == "paused"
+    assert first.metadata["invocation_id"] == second.metadata["invocation_id"]
+    assert len(adapter.dispatched) == 1
+    history = await effects.invocation_store.list_effect(
+        run_id="r1",
+        node_run_id=None,
+        binding_id="b1",
+        effect_key=str(first.metadata["replay_effect_key"]),
+    )
+    assert len(history) == 1
+    assert history[0].node_run_id == "nr1"
 
 
 async def test_dispatch_passes_domain_context_to_provider_adapter() -> None:

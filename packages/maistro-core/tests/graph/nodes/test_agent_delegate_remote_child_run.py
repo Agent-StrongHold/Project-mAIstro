@@ -136,6 +136,37 @@ class TestDelegationFilesAChildRun:
             is not None
         )
 
+    async def test_independent_worker_reuses_receipt_without_local_task_deduplication(self) -> None:
+        """The durable claim, not a worker-local A2A queue, is the authority."""
+        store, _projects, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+        first_worker = AgentDelegateRemoteNode(
+            a2a_delegator=_delegator(),
+            run_store=store,
+        )
+        inputs = {"from_agent": "planner", "task": "research X", "to_agent": "researcher"}
+        context = _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id)
+
+        first = await first_worker.run(inputs, context)
+        second_delegator = _delegator()
+        second_worker = AgentDelegateRemoteNode(
+            a2a_delegator=second_delegator,
+            run_store=store,
+        )
+        second = await second_worker.run(
+            inputs,
+            context.model_copy(update={"node_run_id": "lease-loss-retry"}),
+        )
+
+        assert first.status == second.status == "paused"
+        assert first.metadata["run_id"] == second.metadata["run_id"]
+        assert first.metadata["task_id"] == second.metadata["task_id"]
+        assert len(second_delegator._tasks) == 0
+        assert len(first_worker._a2a_delegator._tasks) == 1  # type: ignore[union-attr]
+
     async def test_concurrent_workers_atomically_claim_one_child_and_task(self) -> None:
         """Lease-loss overlap cannot admit two canonical children."""
         store, _projects, project = await _spine()

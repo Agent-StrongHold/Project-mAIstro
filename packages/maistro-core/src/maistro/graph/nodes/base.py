@@ -158,6 +158,8 @@ class Node(Protocol):
 
     async def run(self, inputs: BaseModel, ctx: NodeContext) -> NodeResult: ...
 
+    def replay_effect_key(self, inputs: BaseModel, ctx: NodeContext) -> str: ...
+
 
 class BaseNode(Generic[InputT, OutputT]):
     """Concrete base class for node kinds — handles the boilerplate of
@@ -196,7 +198,9 @@ class BaseNode(Generic[InputT, OutputT]):
         else:
             validated = inputs  # type: ignore[assignment]
         start = time.perf_counter()
+        effect_key = ""
         try:
+            effect_key = self.replay_effect_key(validated, ctx)
             output = await self._execute(validated, ctx)
             latency_ms = int((time.perf_counter() - start) * 1000)
             return NodeResult(
@@ -204,6 +208,7 @@ class BaseNode(Generic[InputT, OutputT]):
                 output=output,
                 latency_ms=latency_ms,
                 status="completed",
+                metadata={"replay_effect_key": effect_key} if effect_key else {},
             )
         except _NodePaused as exc:
             latency_ms = int((time.perf_counter() - start) * 1000)
@@ -213,7 +218,11 @@ class BaseNode(Generic[InputT, OutputT]):
                 latency_ms=latency_ms,
                 status="paused",
                 resume_at=exc.resume_at,
-                metadata={"paused_reason": exc.reason, **exc.metadata},
+                metadata={
+                    "paused_reason": exc.reason,
+                    **exc.metadata,
+                    **({"replay_effect_key": effect_key} if effect_key else {}),
+                },
             )
         except Exception as exc:
             latency_ms = int((time.perf_counter() - start) * 1000)
@@ -224,7 +233,20 @@ class BaseNode(Generic[InputT, OutputT]):
                 status="failed",
                 error_code=type(exc).__name__,
                 error_message=str(exc)[:512],
+                metadata={"replay_effect_key": effect_key} if effect_key else {},
             )
+
+    def replay_effect_key(self, inputs: InputT, ctx: NodeContext) -> str:
+        """Return the stable key a retryable effect must reconcile.
+
+        The executor records and checks this key on every outcome. Effectful
+        subclasses may override it when their external adapter uses a narrower
+        operation namespace, but they must still bind it to the same Run/node
+        logical identity rather than to a physical Attempt or NodeRun.
+        """
+        if self.replay_semantics is ReplaySemantics.EFFECT_KEY:
+            return replay_effect_key(ctx, self.kind, inputs.model_dump(mode="json"))
+        return ""
 
     async def _execute(self, inputs: InputT, ctx: NodeContext) -> OutputT:
         """Subclasses implement this. Return the typed output (or raise)."""

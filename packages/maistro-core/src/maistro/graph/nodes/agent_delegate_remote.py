@@ -322,7 +322,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
 
         parent = await self._preflight_child_scope(inputs, ctx)
         effect_key = self._effect_key(inputs, ctx)
-        run_id, _claimed = await self._claim_child_run(
+        run_id, claimed = await self._claim_child_run(
             inputs,
             ctx,
             parent=parent,
@@ -340,10 +340,11 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             DelegationMessages([{"role": "user", "content": inputs.task}], effect_key=effect_key),
         )
         if result.status in ("rejected", "failed"):
-            if result.status == "rejected":
-                # Rejection is known before admission, so remove the provisional
-                # claim. A transport failure stays claimed because its physical
-                # effect is ambiguous and must be retried with the same key.
+            # Rejection is known before admission, so remove only this
+            # worker's provisional claim. A transport failure stays claimed
+            # because its physical effect is ambiguous and must be retried
+            # with the same key.
+            if result.status == "rejected" and claimed:
                 await self._discard_child_claim(run_id)
                 run_id = ""
             return DelegateRemoteOut(
@@ -371,10 +372,46 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
 
         parent = await self._preflight_child_scope(inputs, ctx)
         effect_key = self._effect_key(inputs, ctx)
+        # Claim the canonical logical effect before filing an in-process task.
+        # The A2A delegator is worker-local, so its own metadata lookup cannot
+        # prevent two independent workers from queueing the same work. Resolve
+        # the target through the same authority first so the child snapshot
+        # records the concrete agent selected for automatic delegation.
         try:
-            # This local admission is synchronous and deduplicates by effect
-            # key itself, so validating it before claiming the canonical child
-            # cannot create an ambiguous external effect.
+            target = self._a2a_delegator.resolve_target(
+                inputs.from_agent,
+                inputs.task,
+                inputs.to_agent,
+                delegation_mode=DelegationMode.ALLOW_ALL
+                if inputs.to_agent is None
+                else DelegationMode.ALLOW_LIST,
+            )
+        except ValueError as exc:
+            return DelegateRemoteOut(status="rejected", error=str(exc))
+        run_id, claimed = await self._claim_child_run(
+            inputs,
+            ctx,
+            parent=parent,
+            target=target,
+            effect_key=effect_key,
+            mode="in_process",
+        )
+        if not claimed:
+            existing = await self._run_store.get_run(run_id) if self._run_store else None
+            receipt = str(existing.provenance.get("a2a_task_id") or "") if existing else ""
+            if not receipt:
+                # The first worker may have dispatched and lost its lease before
+                # recording the receipt. Re-dispatching would be an ambiguous
+                # duplicate, so surface the effect for reconciliation instead.
+                return DelegateRemoteOut(
+                    status="failed",
+                    run_id=run_id,
+                    error="delegation effect is claimed but its task receipt is unavailable",
+                )
+            self._pause(inputs, task_id=receipt, mode="in_process", run_id=run_id)
+            return DelegateRemoteOut()  # unreachable
+
+        try:
             task_id = self._a2a_delegator.delegate_task(
                 inputs.from_agent,
                 inputs.task,
@@ -385,17 +422,11 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
                 metadata={"effect_key": effect_key},
             )
         except ValueError as exc:
+            # No task was admitted, so the provisional claim is safe to remove.
+            await self._discard_child_claim(run_id)
             return DelegateRemoteOut(status="rejected", error=str(exc))
 
         target = self._admitted_target(task_id, inputs)
-        run_id, _claimed = await self._claim_child_run(
-            inputs,
-            ctx,
-            parent=parent,
-            target=target,
-            effect_key=effect_key,
-            mode="in_process",
-        )
         await self._record_task_receipt(run_id, task_id, target)
         self._pause(inputs, task_id=task_id, mode="in_process", run_id=run_id)
         return DelegateRemoteOut()  # unreachable

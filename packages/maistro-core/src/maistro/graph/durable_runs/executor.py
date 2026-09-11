@@ -594,10 +594,13 @@ def _may_revisit_after(prior_state: GraphExecutionState, item: _FrontierItem) ->
         return False
     # EFFECT_KEY is a contract, not a descriptive label: the node must have a
     # logical Node/Run identity available for its effect key to be meaningful.
-    if item.replay_semantics is ReplaySemantics.EFFECT_KEY and not (
-        item.ctx.run_id and item.ctx.node_id
-    ):
-        return False
+    if item.replay_semantics is ReplaySemantics.EFFECT_KEY:
+        if not (item.ctx.run_id and item.ctx.node_id):
+            return False
+        # BaseNode records the key produced by its executable contract. A
+        # retryable effect without that boundary is not safe to revisit.
+        if not item.result.metadata.get("replay_effect_key"):
+            return False
     visits = prior_state.visit_counts.get(item.node_id, 0)
     return visits < _visit_budget(item.spec)
 
