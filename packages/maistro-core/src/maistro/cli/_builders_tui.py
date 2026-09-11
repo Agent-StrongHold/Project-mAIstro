@@ -112,17 +112,27 @@ class CodingScreen(Vertical):
         Binding("ctrl+r", "reject_changes", "Reject"),
     ]
 
-    def __init__(self, session_id: str, repo_url: str, work_dir: Path) -> None:
+    def __init__(
+        self,
+        session_id: str,
+        repo_url: str,
+        work_dir: Path,
+        canonical_run_ids: list[str] | None = None,
+    ) -> None:
         super().__init__()
         self.session_id = session_id
         self.repo_url = repo_url
         self.work_dir = work_dir
+        self.canonical_run_ids = list(canonical_run_ids or [])
+        self._builder_session: object | None = None
+        self._turn_runner: object | None = None
+        self._execution_spine: object | None = None
 
     def compose(self) -> ComposeResult:
         yield Horizontal(
             Vertical(
                 Static(
-                    f"[bold]session:[/bold] {self.session_id}  [bold]repo:[/bold] {self.repo_url}",
+                    self._session_bar_text(),
                     id="session-bar",
                 ),
                 RichLog(id="chat-log", highlight=True, markup=True),
@@ -153,26 +163,72 @@ class CodingScreen(Vertical):
         chat.write("[dim]agent is thinking...[/dim]")
         self._run_agent_turn(text)
 
-    @work(exclusive=True)
-    async def _run_agent_turn(self, text: str) -> None:
-        chat = self.query_one("#chat-log", RichLog)
-        try:
-            from maistro_bootstrap.builders.agent_loop import AgentLoopConfig, TurnRunner
-            from maistro_bootstrap.builders.responses_callable import ResponsesAPICallable
-            from maistro_bootstrap.builders.sandbox import LocalWorktreeSandbox
-            from maistro_bootstrap.builders.session import BuilderSession
+    def _session_bar_text(self) -> str:
+        latest = self.canonical_run_ids[-1] if self.canonical_run_ids else "none"
+        return (
+            f"[bold]session:[/bold] {self.session_id}  [bold]repo:[/bold] {self.repo_url}  "
+            f"[bold]canonical run:[/bold] {latest}"
+        )
+
+    async def _get_execution(self) -> tuple[object, object, object]:
+        if self._builder_session is None or self._turn_runner is None:
+            from maistro_bootstrap.builders.agent_loop import (  # type: ignore[import-not-found]
+                AgentLoopConfig,
+                TurnRunner,
+            )
+            from maistro_bootstrap.builders.responses_callable import (  # type: ignore[import-not-found]
+                ResponsesAPICallable,
+            )
+            from maistro_bootstrap.builders.sandbox import (  # type: ignore[import-not-found]
+                LocalWorktreeSandbox,
+            )
+            from maistro_bootstrap.builders.session import (  # type: ignore[import-not-found]
+                BuilderSession,
+            )
 
             session = BuilderSession(sandbox=LocalWorktreeSandbox(self.work_dir))
             runner = TurnRunner(session=session, config=AgentLoopConfig())
             runner.set_llm(ResponsesAPICallable())  # type: ignore[arg-type]
+            self._builder_session = session
+            self._turn_runner = runner
 
+        if self._execution_spine is None:
+            from maistro.builders.interactive import BuildersExecutionSpine
+
+            self._execution_spine = await BuildersExecutionSpine.open()
+        return self._builder_session, self._turn_runner, self._execution_spine
+
+    @work(exclusive=True)
+    async def _run_agent_turn(self, text: str) -> None:
+        chat = self.query_one("#chat-log", RichLog)
+        try:
+            from maistro.builders.interactive import InteractiveTurnResult
+            from maistro.runs.model import RunStatus
+
+            session, runner, spine = await self._get_execution()
+            session.add_user(text)  # type: ignore[attr-defined]
             messages = [
                 {"role": "system", "content": "You are a coding assistant."},
-                {"role": "user", "content": text},
+                *session.messages,  # type: ignore[attr-defined]
             ]
-            result = await runner.execute_turn(messages=messages)
+            result = await spine.executor().execute(  # type: ignore[attr-defined]
+                session_id=self.session_id,
+                repo=str(self.work_dir),
+                prompt=text,
+                messages=messages,
+                runner=runner,
+            )
+            if not isinstance(result, InteractiveTurnResult):  # pragma: no cover - type guard
+                raise TypeError("canonical Builders executor returned an invalid result")
+            self.canonical_run_ids.append(result.run_id)
+            from maistro.cli._builders_sessions import record_session_run
 
-            chat.write(f"\n[bold green]agent:[/bold green] {result.get('content', 'done')}")
+            record_session_run(self.session_id, result.run_id)
+            self.query_one("#session-bar", Static).update(self._session_bar_text())
+            if result.status is not RunStatus.COMPLETED:
+                chat.write(f"[red]Canonical run {result.run_id} failed: {result.error}[/red]")
+                return
+            chat.write(f"\n[bold green]agent:[/bold green] {result.output or 'done'}")
         except ImportError:
             chat.write("[yellow]Agent not available (maistro-bootstrap not installed).[/yellow]")
             chat.write(f"[dim]You said: {text}[/dim]")
@@ -276,7 +332,12 @@ class BuildersApp(App[None]):
                 f"\n  [red]Path no longer exists: {work_dir}[/red]"
             )
             return
-        self._open_coding_screen(session_id, entry.repo_url, work_dir)
+        self._open_coding_screen(
+            session_id,
+            entry.repo_url,
+            work_dir,
+            canonical_run_ids=entry.canonical_run_ids,
+        )
 
     @work
     async def _open_repo(self, repo: str) -> None:
@@ -308,7 +369,13 @@ class BuildersApp(App[None]):
         except Exception as exc:
             recent.update(f"\n  [red]Failed to open: {exc}[/red]")
 
-    def _open_coding_screen(self, session_id: str, repo: str, work_dir: Path) -> None:
+    def _open_coding_screen(
+        self,
+        session_id: str,
+        repo: str,
+        work_dir: Path,
+        canonical_run_ids: list[str] | None = None,
+    ) -> None:
         welcome = self.query_one(WelcomeScreen)
         welcome.remove()
-        self.mount(CodingScreen(session_id, repo, work_dir))
+        self.mount(CodingScreen(session_id, repo, work_dir, canonical_run_ids))

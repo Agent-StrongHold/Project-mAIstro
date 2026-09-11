@@ -24,6 +24,7 @@ class BuilderSessionEntry:
     path: str
     repo_url: str
     last_opened: float = field(default_factory=time.time)
+    canonical_run_ids: list[str] = field(default_factory=list)
 
     @property
     def status_label(self) -> str:
@@ -53,11 +54,16 @@ def load_sessions() -> list[BuilderSessionEntry]:
 
 
 def record_session(session_id: str, path: Path, repo_url: str) -> None:
+    existing = next((e for e in load_sessions() if e.id == session_id), None)
     entries = [e for e in load_sessions() if e.id != session_id]
     entries.insert(
         0,
         BuilderSessionEntry(
-            id=session_id, path=str(path), repo_url=repo_url, last_opened=time.time()
+            id=session_id,
+            path=str(path),
+            repo_url=repo_url,
+            last_opened=time.time(),
+            canonical_run_ids=list(existing.canonical_run_ids) if existing else [],
         ),
     )
     entries = entries[:_MAX_ENTRIES]
@@ -66,6 +72,23 @@ def record_session(session_id: str, path: Path, repo_url: str) -> None:
         json.dumps([e.__dict__ for e in entries], indent=2),
         encoding="utf-8",
     )
+
+
+def record_session_run(session_id: str, canonical_run_id: str) -> None:
+    """Persist the exact canonical Run identity that produced a turn."""
+    entries = load_sessions()
+    for entry in entries:
+        if entry.id != session_id:
+            continue
+        if canonical_run_id not in entry.canonical_run_ids:
+            entry.canonical_run_ids.append(canonical_run_id)
+        entry.last_opened = time.time()
+        _HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _HISTORY_FILE.write_text(
+            json.dumps([e.__dict__ for e in entries], indent=2),
+            encoding="utf-8",
+        )
+        return
 
 
 def get_session(session_id: str) -> BuilderSessionEntry | None:

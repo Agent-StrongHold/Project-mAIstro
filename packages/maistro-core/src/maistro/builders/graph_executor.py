@@ -26,9 +26,10 @@ This module also hosts the canonical execution adapter (#734):
 a canonical ``Graph`` and drives it through the public durable
 Run/NodeRun/Attempt spine, keeping Builders prompts, context, skip
 predicates, gates, revision feedback, hooks and result projection as domain
-state. The legacy :class:`GraphPipelineExecutor` above remains the parity
-oracle while the parent convergence issue (#49) chooses product composition.
-The adapter lives in this module rather than one of its own because a new
+state. The legacy :class:`GraphPipelineExecutor` above remains a parity oracle for
+focused domain tests and compatibility callers; shipped Builders composition
+uses :class:`CanonicalGraphPipelineExecutor`. The adapter lives in this module
+rather than one of its own because a new
 module identity would register as new unreachable-module debt against the
 trusted-base reachability ratchet, and #734 defers reachability bookkeeping
 to #49; it already shares this module's private dispatch helpers.
@@ -104,7 +105,13 @@ class _GateRoute(enum.Enum):
 
 
 class GraphPipelineExecutor:
-    """Drive a PipelineGraph to completion."""
+    """Parity/reference executor for Builders domain behavior.
+
+    Production composition must use ``CanonicalGraphPipelineExecutor``; this
+    class remains to compare graph semantics while the domain strategy is
+    migrated and for compatibility with callers that explicitly request the
+    legacy oracle.
+    """
 
     def __init__(
         self,

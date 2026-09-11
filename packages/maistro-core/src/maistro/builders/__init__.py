@@ -30,6 +30,11 @@ from maistro.builders.graph_executor import (
     GraphPipelineExecutor,
     PipelineDispatcher,
 )
+from maistro.builders.interactive import (
+    BuildersExecutionSpine,
+    CanonicalInteractiveTurnExecutor,
+    InteractiveTurnResult,
+)
 from maistro.builders.orchestrator import BuildersOrchestrator, RunState
 from maistro.builders.pipeline import (
     BUILDER_PIPELINE,
@@ -57,9 +62,11 @@ __all__ = [
     "BuildersDAG",
     "BuildersDagFailure",
     "BuildersDagResult",
+    "BuildersExecutionSpine",
     "BuildersOrchestrator",
     "BuildersRuntime",
     "CanonicalGraphPipelineExecutor",
+    "CanonicalInteractiveTurnExecutor",
     "DagRun",
     "DispatchResult",
     "Gate",
@@ -68,6 +75,7 @@ __all__ = [
     "InMemoryEventBus",
     "InMemoryGitHubService",
     "InMemoryWorkspaceService",
+    "InteractiveTurnResult",
     "IssueUpdate",
     "PipelineDispatcher",
     "PipelineGraph",

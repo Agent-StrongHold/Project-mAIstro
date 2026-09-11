@@ -469,34 +469,14 @@
       ]
     },
     {
-      "id": "builders-competing-executor",
-      "subsystem": "Builders pipeline",
-      "disposition": "RETIRE",
-      "rationale": "builders/graph_executor.py drives a PipelineGraph to completion on its own traversal loop and writes free-text run.status values ('running', 'completed', 'failed at <node>'), which is a second execution lifecycle over the same work the canonical Run/NodeRun/Attempt records describe. #49 migrates Builders onto canonical Graph/Run; this module is what that migration removes, after parity (#35).",
-      "replaced_by": "maistro.graph.durable_runs executor over maistro.runs (ADR-062, ADR-081226-a66b)",
-      "modules": [
-        "maistro.builders.graph_executor"
-      ]
-    },
-    {
       "id": "builders-domain-logic",
       "subsystem": "Builders pipeline",
       "disposition": "CONNECT",
-      "rationale": "The spec-to-tests-to-code-to-review domain that ADR-090 and ADR-099 keep. builders/dag.py implements SPEC-070226-82ea, which implements ADR-099 \u2014 current accepted architecture, not something superseded. builders/orchestrator.py states the convergence rule outright in its own docstring: 'Core owns workflow state. Builders runtime only returns results.' graph.py is the PipelineGraph data model, logger.py records builder actions and XP, runtime.py is the shared runtime for Frank, Mason and Auditor. An earlier disposition marked six of these RETIRE as a 'duplicate lifecycle'; reading them shows only graph_executor.py fits that description.",
+      "rationale": "The Builders domain strategy that ADR-090 and ADR-099 keep. The shipped interactive path enters through the Textual TUI and admits each ReAct turn through the canonical Graph/Run/NodeRun/Attempt adapter; the five-stage definitions remain reusable domain composition. The legacy GraphPipelineExecutor is parity/reference-only and the public BuilderPipeline uses the canonical adapter. The remaining listed modules are library-only definitions or projections, not execution authorities.",
       "root": "Graph nodes registered in maistro.graph.nodes (#49)",
       "modules": [
-        "maistro.builders",
-        "maistro.builders.contracts",
-        "maistro.builders.dag",
-        "maistro.builders.graph",
         "maistro.builders.logger",
-        "maistro.builders.orchestrator",
-        "maistro.builders.pipeline",
-        "maistro.builders.property_gen",
-        "maistro.builders.runtime",
-        "maistro.builders.services",
         "maistro.builders.spec_coverage",
-        "maistro.builders.spec_emitter",
         "maistro.builders.spec_templates",
         "maistro.builders.verifier"
       ]

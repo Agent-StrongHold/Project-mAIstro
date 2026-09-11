@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import types
+from pathlib import Path
 
 import pytest
 import typer
@@ -37,6 +38,13 @@ class TestLaunchApp:
         _launch_app()
 
         assert ran == [True]
+
+
+def test_shipped_tui_admits_turns_through_canonical_adapter() -> None:
+    source = (Path(__file__).parents[2] / "src/maistro/cli/_builders_tui.py").read_text()
+
+    assert "BuildersExecutionSpine" in source
+    assert "execute_turn(" not in source
 
 
 class TestBuildersMain:
