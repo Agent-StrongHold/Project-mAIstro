@@ -70,9 +70,15 @@ class ModelStore(Generic[T]):
         return self._data[key]
 
     def __setitem__(self, key: str, value: T) -> None:
-        self._data[key] = value
         if self._persisted is not None:
+            # Acknowledged persistence BEFORE the in-memory mutation (#1238):
+            # PersistedStore.put blocks until the writer commits and raises on
+            # failure. A caller that receives the error must not find memory
+            # already showing a mutation the durable store refused — that
+            # mismatch is what made acknowledged writes vanish (or deleted
+            # records resurrect) after a restart.
             self._persisted.put(self._store_name, key, value)
+        self._data[key] = value
 
     def __contains__(self, key: str) -> bool:
         return key in self._data
@@ -158,9 +164,10 @@ class JsonStore:
         return self._data[key]
 
     def __setitem__(self, key: str, value: Any) -> None:
-        self._data[key] = value
         if self._persisted is not None:
+            # Persist before mutating memory (#1238) — see ModelStore.__setitem__.
             self._persisted.put_raw(self._store_name, key, json.dumps(value, default=str))
+        self._data[key] = value
 
     def put_if_absent(self, key: str, value: Any) -> bool:
         """Insert once, using the durable backend's conflict decision when present.
