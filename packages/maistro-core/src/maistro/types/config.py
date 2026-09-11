@@ -9,7 +9,6 @@ from typing import Annotated
 
 from pydantic import BaseModel, Field, StringConstraints, field_validator
 
-
 NonBlankStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 

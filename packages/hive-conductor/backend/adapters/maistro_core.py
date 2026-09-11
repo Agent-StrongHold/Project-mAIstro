@@ -163,6 +163,7 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         # reads both `DATABASE_URL` and the `DB_*` set the shipped compose
         # file passes.
         database_url=resolve_database_url(),
+        model_bindings=settings.model_bindings,
     )
 
     container = await create_container(config)

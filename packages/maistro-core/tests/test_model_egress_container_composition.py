@@ -116,7 +116,9 @@ async def test_container_resolved_summarize_uses_real_authorities_and_governed_i
 
     calls: list[str] = []
 
-    async def fake_execute_model_chat(provider: Any, payload: Any, *, endpoint: Any) -> dict[str, Any]:
+    async def fake_execute_model_chat(
+        provider: Any, payload: Any, *, endpoint: Any
+    ) -> dict[str, Any]:
         del payload
         calls.append(provider.name)
         assert provider.metadata is metadata
@@ -151,7 +153,7 @@ async def test_container_resolved_summarize_uses_real_authorities_and_governed_i
     )
 
     assert result.success is True
-    assert getattr(result.output, "summary") == "A governed summary."
+    assert result.output.summary == "A governed summary."
     assert calls == ["yaml-model"]
 
     invocations = await container.capability_effects.invocation_store.list_effect(
