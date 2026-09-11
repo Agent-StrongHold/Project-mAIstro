@@ -249,6 +249,130 @@ def test_disabled_surface_requires_owner_and_is_not_production_enabled(tmp_path:
     assert any("cannot be production_enabled" in error for error in errors)
 
 
+def test_fake_success_survives_logging_and_assignment_before_the_return(tmp_path: Path) -> None:
+    """The exact #1144 fixture: a literal success-shaped return preceded by
+    ordinary non-branching statements must still be caught."""
+    _write(
+        tmp_path / "backend/routes.py",
+        """
+from fastapi import APIRouter
+router = APIRouter()
+@router.post("/build")
+def build():
+    log("build requested")
+    build_id = "fixture-123"
+    return {"status": "completed", "id": build_id}
+""",
+    )
+    [surface] = discover_backend_surfaces(tmp_path, ["backend"])
+    assert surface.obvious_fake_success is True
+
+
+def test_fake_success_detection_does_not_flag_a_handler_that_does_real_work(
+    tmp_path: Path,
+) -> None:
+    """The regression this widening must not introduce: a handler that awaits
+    a real effect and only *then* returns a status-shaped dict is not an
+    obvious no-op, no matter how its return reads."""
+    _write(
+        tmp_path / "backend/routes.py",
+        """
+from fastapi import APIRouter
+router = APIRouter()
+@router.post("/cycle")
+async def trigger_cycle():
+    try:
+        run_id = await svc.run_one_cycle()
+        return {"status": "completed", "run_id": run_id}
+    except RuntimeError:
+        raise HTTPException(status_code=503)
+""",
+    )
+    [surface] = discover_backend_surfaces(tmp_path, ["backend"])
+    assert surface.obvious_fake_success is False
+
+
+def test_fake_success_detection_stops_at_a_nested_helper_function(tmp_path: Path) -> None:
+    """A `return` inside a closure defined *inside* the handler is not the
+    handler's own return path and must not be attributed to it."""
+    _write(
+        tmp_path / "backend/routes.py",
+        """
+from fastapi import APIRouter
+router = APIRouter()
+@router.post("/build")
+def build():
+    def _inner():
+        return {"status": "unrelated"}
+    work = do_real_work()
+    return {"status": "completed", "work": work}
+""",
+    )
+    [surface] = discover_backend_surfaces(tmp_path, ["backend"])
+    assert surface.obvious_fake_success is False
+
+
+def test_discovers_add_api_route_registration_and_resolves_its_handler(tmp_path: Path) -> None:
+    """The non-decorator FastAPI registration form (#1144): the route must be
+    discovered, and an obvious fake-success handler registered this way must
+    still be caught."""
+    _write(
+        tmp_path / "backend/routes.py",
+        """
+from fastapi import APIRouter
+router = APIRouter()
+
+def build():
+    log("build requested")
+    return {"status": "completed"}
+
+router.add_api_route("/build", build, methods=["POST"])
+""",
+    )
+    [surface] = discover_backend_surfaces(tmp_path, ["backend"])
+    assert (surface.method, surface.route, surface.handler) == ("POST", "/build", "build")
+    assert surface.obvious_fake_success is True
+
+
+def test_add_api_route_with_an_unresolvable_endpoint_is_still_discovered(tmp_path: Path) -> None:
+    """A handler the gate cannot statically resolve is never silently omitted
+    from the inventory -- it still needs an explicit matrix disposition."""
+    _write(
+        tmp_path / "backend/routes.py",
+        """
+from fastapi import APIRouter
+router = APIRouter()
+router.add_api_route("/build", handlers.get("build"), methods=["POST"])
+""",
+    )
+    [surface] = discover_backend_surfaces(tmp_path, ["backend"])
+    assert (surface.method, surface.route) == ("POST", "/build")
+    assert surface.handler == "<unresolved endpoint>"
+    assert surface.obvious_fake_success is False
+
+
+def test_a_dynamically_built_route_path_is_never_silently_dropped(tmp_path: Path) -> None:
+    """A non-literal route path (an f-string, a variable) is exactly the
+    'non-literal routes' half of #1144's title: it must still surface as a
+    discoverable, matrix-required entry rather than disappear."""
+    _write(
+        tmp_path / "backend/routes.py",
+        """
+from fastapi import APIRouter
+router = APIRouter()
+PREFIX = "/v2"
+@router.post(f"{PREFIX}/build")
+def build(): return work()
+""",
+    )
+    [surface] = discover_backend_surfaces(tmp_path, ["backend"])
+    assert surface.method == "POST"
+    assert surface.route.startswith("<dynamic-route:")
+    (tmp_path / "frontend").mkdir()
+    errors = validate_matrix(tmp_path, _matrix())
+    assert any("unclassified backend surface" in error for error in errors)
+
+
 def test_repository_surface_matrix_is_complete() -> None:
     matrix = load_matrix(MATRIX)
     errors = validate_matrix(ROOT, matrix, strict=False)

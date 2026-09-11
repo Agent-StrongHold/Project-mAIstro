@@ -121,6 +121,22 @@ def _literal_methods(call: ast.Call) -> list[str]:
     return []
 
 
+def _route_path(expr: ast.expr, *, dynamic_at: ast.expr) -> str:
+    """The route string a registration names, literal or a stand-in for one that is not.
+
+    A path built from an f-string, a variable, or any other non-literal
+    expression cannot be read statically -- but the registration is still a
+    shipped mutating/WebSocket surface (#1144), so it is never silently
+    dropped from discovery. It gets a synthetic, line-stable identifier
+    instead, which the matrix must explicitly classify like any other route:
+    "requires an explicit reviewed dynamic-route declaration" rather than
+    disappearing because the checker could not read the string.
+    """
+    if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+        return expr.value
+    return f"<dynamic-route:{dynamic_at.lineno}>"
+
+
 def _decorated_routes(node: ast.AsyncFunctionDef | ast.FunctionDef) -> list[tuple[str, str]]:
     routes: list[tuple[str, str]] = []
     for decorator in node.decorator_list:
@@ -128,12 +144,10 @@ def _decorated_routes(node: ast.AsyncFunctionDef | ast.FunctionDef) -> list[tupl
             continue
         if not decorator.args:
             continue
-        path = decorator.args[0]
-        if not isinstance(path, ast.Constant) or not isinstance(path.value, str):
-            continue
+        path = _route_path(decorator.args[0], dynamic_at=decorator)
         name = decorator.func.attr.lower()
         methods = [name.upper()] if name.upper() in MUTATING_METHODS else []
-        if name == "api_route":
+        if name in {"api_route", "route"}:
             methods = _literal_methods(decorator)
         elif name == "websocket":
             # Every WebSocket route is a shipped execution/control surface
@@ -141,17 +155,84 @@ def _decorated_routes(node: ast.AsyncFunctionDef | ast.FunctionDef) -> list[tupl
             # entirely and, per this repo's own `AuthMiddleware`, bypasses
             # ordinary HTTP middleware too (#1122).
             methods = [WEBSOCKET_METHOD]
-        routes.extend((method, path.value) for method in methods)
+        routes.extend((method, path) for method in methods)
     return routes
 
 
-def _returned_status(node: ast.AsyncFunctionDef | ast.FunctionDef) -> str | None:
-    # Deliberately conservative: a production handler is only called an obvious
-    # fake when its entire body is a literal success-shaped return. More complex
-    # handlers must be classified from evidence in the matrix, not guessed here.
-    if len(node.body) != 1 or not isinstance(node.body[0], ast.Return):
-        return None
-    value = node.body[0].value
+def _call_attr_name(call: ast.Call) -> str | None:
+    func = call.func
+    return func.attr if isinstance(func, ast.Attribute) else None
+
+
+def _handler_name(expr: ast.expr) -> str | None:
+    """The referenced handler's name for a call-registered route, best effort."""
+    if isinstance(expr, ast.Name):
+        return expr.id
+    if isinstance(expr, ast.Attribute):
+        return expr.attr
+    return None
+
+
+#: Placeholder handler identity for a resolvable route whose endpoint
+#: argument is not a plain name/attribute this gate can read statically.
+#: Still a real, matrix-required entry (#1144) -- only body inspection for an
+#: obvious fake-success no-op is unavailable for it.
+_UNRESOLVED_ENDPOINT = "<unresolved endpoint>"
+
+
+def _add_api_route_calls(tree: ast.Module) -> list[tuple[str, str, str | None]]:
+    """`(method, path, handler_name)` for every `*.add_api_route(...)` call.
+
+    The non-decorator registration form FastAPI supports alongside
+    `@router.post(...)`; a route registered this way carries no decorator for
+    `_decorated_routes` to see at all; this walks the whole module for the
+    call directly instead.
+    """
+    found: list[tuple[str, str, str | None]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or _call_attr_name(node) != "add_api_route":
+            continue
+        if not node.args:
+            continue
+        path = _route_path(node.args[0], dynamic_at=node)
+        endpoint = node.args[1] if len(node.args) >= 2 else None
+        for keyword in node.keywords:
+            if keyword.arg == "endpoint":
+                endpoint = keyword.value
+        handler = _handler_name(endpoint) if endpoint is not None else None
+        methods = _literal_methods(node)
+        found.extend((method, path, handler) for method in methods)
+    return found
+
+
+class _OwnReturns(ast.NodeVisitor):
+    """Every `return` statement in one function's own body, not a nested scope.
+
+    A `return` belonging to a closure/helper defined *inside* the handler is
+    not the handler's own return path and must not be attributed to it, so
+    this stops descending at any nested function/lambda/class boundary.
+    """
+
+    def __init__(self) -> None:
+        self.returns: list[ast.Return] = []
+
+    def visit_Return(self, node: ast.Return) -> None:
+        self.returns.append(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        pass
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        pass
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        pass
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        pass
+
+
+def _literal_success_status(value: ast.expr | None) -> str | None:
     if not isinstance(value, ast.Dict):
         return None
     for key, item in zip(value.keys, value.values, strict=True):
@@ -162,6 +243,129 @@ def _returned_status(node: ast.AsyncFunctionDef | ast.FunctionDef) -> str | None
     return None
 
 
+#: Call names this gate accepts as observability rather than real work, when
+#: used as their own statement (`log(...)`, `logger.info(...)`). Anything
+#: else -- a service call, a database write, a background-task scheduler --
+#: means the handler is not a no-op, however its final `return` reads.
+_LOG_LIKE_CALL_NAMES = {"log", "logger", "logging", "metrics", "print"}
+
+
+def _call_root_name(call: ast.Call) -> str | None:
+    func = call.func
+    if isinstance(func, ast.Attribute):
+        base = func.value
+        return base.id if isinstance(base, ast.Name) else None
+    if isinstance(func, ast.Name):
+        return func.id
+    return None
+
+
+class _RealWorkDetector(ast.NodeVisitor):
+    """Whether a handler's own body does anything beyond logging/metrics and
+    a canned literal return, stopping at nested function/lambda/class scopes.
+
+    `await`, `try`, and `with`/`async with` are each independently strong
+    evidence that real work happens: real I/O, a call worth guarding against
+    failure, or a resource being held. Any call other than a bare
+    logging/metrics statement is treated the same way -- this gate does not
+    try to prove a given call is inert, only to recognize the narrow shape
+    that is obviously not.
+    """
+
+    def __init__(self) -> None:
+        self.has_real_work = False
+
+    def visit_Await(self, node: ast.Await) -> None:
+        self.has_real_work = True
+
+    def visit_Try(self, node: ast.Try) -> None:
+        self.has_real_work = True
+
+    def visit_With(self, node: ast.With) -> None:
+        self.has_real_work = True
+
+    def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
+        self.has_real_work = True
+
+    def visit_Call(self, node: ast.Call) -> None:
+        root = _call_root_name(node)
+        if root is None or root.lower() not in _LOG_LIKE_CALL_NAMES:
+            self.has_real_work = True
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        pass
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        pass
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        pass
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        pass
+
+
+def _does_real_work(node: ast.AsyncFunctionDef | ast.FunctionDef) -> bool:
+    detector = _RealWorkDetector()
+    for statement in node.body:
+        detector.visit(statement)
+        if detector.has_real_work:
+            return True
+    return False
+
+
+def _returned_status(node: ast.AsyncFunctionDef | ast.FunctionDef) -> str | None:
+    """The literal `status` every reachable return in this handler agrees on,
+    for a handler whose own body does no real work beyond that return.
+
+    Deliberately conservative, but over the *whole* body rather than one
+    statement: flags a handler only when every one of its own return
+    statements -- found anywhere in it, through ordinary control flow,
+    regardless of what non-branching logging/metrics/assignment statements
+    precede them -- is the identical literal success-shaped dict, *and*
+    nothing else in the body does real work (#1144). A handler that awaits a
+    real effect, guards one with `try`/`with`, or calls anything beyond
+    logging is not "obvious" no matter how its return reads; it must be
+    classified from evidence in the matrix, not guessed here.
+    """
+    if _does_real_work(node):
+        return None
+    collector = _OwnReturns()
+    for statement in node.body:
+        collector.visit(statement)
+    if not collector.returns:
+        return None
+    statuses = {_literal_success_status(ret.value) for ret in collector.returns}
+    if len(statuses) != 1:
+        return None
+    (status,) = statuses
+    return status
+
+
+def _obvious_fake(node: ast.AsyncFunctionDef | ast.FunctionDef) -> bool:
+    status = _returned_status(node)
+    return status in SUCCESS_STATUS if status is not None else False
+
+
+def _function_defs(tree: ast.Module) -> dict[str, ast.AsyncFunctionDef | ast.FunctionDef]:
+    """Every function defined anywhere in this module, by name.
+
+    Best-effort correlation for a non-decorator route registration
+    (`router.add_api_route("/x", handler, ...)`), which names its handler by
+    reference rather than wrapping it: more than one function can share a
+    name across nested scopes, in which case the last one encountered wins.
+    That is acceptable here -- this dict only inspects a *candidate*
+    handler's obvious-fake-success shape, never decides whether the route
+    itself exists.
+    """
+    return {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
+    }
+
+
 def _source_surfaces(path: Path, repo_root: Path) -> list[BackendSurface]:
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -169,11 +373,9 @@ def _source_surfaces(path: Path, repo_root: Path) -> list[BackendSurface]:
         return []
     source = path.relative_to(repo_root).as_posix()
     surfaces: list[BackendSurface] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
-            continue
-        status = _returned_status(node)
-        obvious_fake = status in SUCCESS_STATUS if status is not None else False
+    functions = _function_defs(tree)
+    for node in functions.values():
+        obvious_fake = _obvious_fake(node)
         for method, route in _decorated_routes(node):
             surfaces.append(
                 BackendSurface(
@@ -184,6 +386,17 @@ def _source_surfaces(path: Path, repo_root: Path) -> list[BackendSurface]:
                     obvious_fake_success=obvious_fake,
                 )
             )
+    for method, route, handler_name in _add_api_route_calls(tree):
+        handler_def = functions.get(handler_name) if handler_name else None
+        surfaces.append(
+            BackendSurface(
+                source=source,
+                method=method,
+                route=route,
+                handler=handler_name or _UNRESOLVED_ENDPOINT,
+                obvious_fake_success=_obvious_fake(handler_def) if handler_def else False,
+            )
+        )
     return surfaces
 
 
