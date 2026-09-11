@@ -49,6 +49,22 @@ def _check_max_runs(value: int | None) -> int | None:
     return value
 
 
+async def _sync_canonical_schedule(schedule: Schedule) -> None:
+    """Persist a product schedule in the canonical ScheduleStore when wired."""
+    from services.engine import get_engine
+
+    container = getattr(get_engine().agent_port, "container", None)
+    store = getattr(container, "schedule_store", None)
+    if store is None or container is None:
+        return
+
+    from services.scheduler import _ScheduleRunner
+
+    runner = _ScheduleRunner()
+    scope = await runner._canonical_scope(schedule, container)
+    await runner._definition_for(schedule.id, schedule, store=store, scope=scope)
+
+
 @router.get("", response_model=list[Schedule])
 def list_schedules() -> list[Schedule]:
     return list(stores.schedules.values())
@@ -82,7 +98,7 @@ class CreateScheduleBody(BaseModel):
 
 
 @router.post("", response_model=Schedule, status_code=201)
-def create_schedule(body: CreateScheduleBody) -> Schedule:
+async def create_schedule(body: CreateScheduleBody) -> Schedule:
     sid = str(uuid4())
     t = _now()
     schedule = Schedule(
@@ -101,6 +117,7 @@ def create_schedule(body: CreateScheduleBody) -> Schedule:
         updated_at=t,
     )
     stores.schedules[sid] = schedule
+    await _sync_canonical_schedule(schedule)
     return schedule
 
 
@@ -128,7 +145,7 @@ class UpdateScheduleBody(BaseModel):
 
 
 @router.put("/{schedule_id}", response_model=Schedule)
-def update_schedule(schedule_id: str, body: UpdateScheduleBody) -> Schedule:
+async def update_schedule(schedule_id: str, body: UpdateScheduleBody) -> Schedule:
     if schedule_id not in stores.schedules:
         raise HTTPException(status_code=404, detail="schedule not found")
     schedule = stores.schedules[schedule_id]
@@ -137,14 +154,21 @@ def update_schedule(schedule_id: str, body: UpdateScheduleBody) -> Schedule:
     updates["updated_at"] = t
     schedule = schedule.model_copy(update=updates)
     stores.schedules[schedule_id] = schedule
+    await _sync_canonical_schedule(schedule)
     return schedule
 
 
 @router.delete("/{schedule_id}", status_code=204)
-def delete_schedule(schedule_id: str) -> None:
+async def delete_schedule(schedule_id: str) -> None:
     if schedule_id not in stores.schedules:
         raise HTTPException(status_code=404, detail="schedule not found")
     stores.schedules.pop(schedule_id)
+    from services.engine import get_engine
+
+    container = getattr(get_engine().agent_port, "container", None)
+    store = getattr(container, "schedule_store", None)
+    if store is not None:
+        await store.delete(schedule_id)
 
 
 @router.post("/{schedule_id}/run", response_model=Schedule)

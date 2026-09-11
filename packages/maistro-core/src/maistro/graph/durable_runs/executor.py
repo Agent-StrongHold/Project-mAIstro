@@ -74,6 +74,9 @@ class _FrontierItem:
     node_run: NodeRun
     ctx: NodeContext
     result: NodeResult
+    # Copied from the resolved node, not inferred from catalog metadata at the
+    # fold. This keeps retry safety tied to the implementation actually run.
+    retry_safe: bool = True
 
 
 def _replace_state(
@@ -574,20 +577,16 @@ def _visit_budget(spec: GraphNode) -> int:
 
 
 def _may_revisit_after(prior_state: GraphExecutionState, item: _FrontierItem) -> bool:
-    """Whether this failed node has a try left, and is the kind that earns one.
+    """Whether this failed node has a safe try left.
 
-    A retry here is the node's **next visit** -- a new NodeRun, with its own
-    Attempt -- not a second Attempt under the one that just completed. The
-    distinction is the whole reason the Attempt firewall refuses to redispatch
-    a completed Attempt: completion means the physical work ran, side effects
-    and all. A node that ran and did not succeed is a *logical* failure, and
-    asking for it again is asking for another visit.
-
-    Transport failures never reach this decision. A 429 or a 5xx is the call
-    not landing rather than the work failing, and `maistro.resilience`
-    classifies and retries those beneath the Attempt, where repeating is safe
-    because nothing was accomplished yet.
+    A logical retry is a new NodeRun and therefore can repeat an external
+    effect. Only nodes that declare themselves idempotent may spend a graph
+    retry budget; non-idempotent nodes fail closed after physical evidence is
+    recorded. The declaration is copied from the resolved implementation into
+    ``_FrontierItem`` so it is executable policy rather than palette metadata.
     """
+    if not item.retry_safe:
+        return False
     visits = prior_state.visit_counts.get(item.node_id, 0)
     return visits < _visit_budget(item.spec)
 

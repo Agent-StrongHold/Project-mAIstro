@@ -62,6 +62,14 @@ class _FlakyStep(BaseNode[_In, _Out]):
         return _Out()
 
 
+class _UnsafeFlakyStep(_FlakyStep):
+    """A non-idempotent effect must not be repeated as a logical node retry."""
+
+    kind: ClassVar[str] = "test.node_retry.unsafe"
+    idempotent: ClassVar[bool] = False
+    external_io: ClassVar[bool] = True
+
+
 class _AskStep(BaseNode[_In, _Out]):
     kind: ClassVar[str] = "test.node_retry.ask"
     kind_category: ClassVar = "hitl"
@@ -136,6 +144,20 @@ async def test_a_node_that_fails_then_succeeds_gets_a_second_visit() -> None:
         assert [item.status for item in attempts] == [AttemptStatus.COMPLETED], (
             "each visit is one physically complete try; only the logical outcome differed"
         )
+
+
+async def test_non_idempotent_failure_does_not_spend_a_retry_budget() -> None:
+    """A completed physical try is not replayed when its effect is unsafe."""
+    run_store, workspace_id, project_id = await _spine()
+    node = _UnsafeFlakyStep(failures=1)
+    graph = _graph(workspace_id, project_id, _UnsafeFlakyStep.kind, policies={"max_attempts": 3})
+
+    record = await _run(graph, node, run_store)
+
+    assert record.status is RunStatus.FAILED
+    assert node.calls == 1
+    node_runs = await run_store.list_node_runs(record.run_id)
+    assert len(node_runs) == 1
 
 
 async def test_the_budget_bounds_the_tries_and_the_run_still_fails() -> None:

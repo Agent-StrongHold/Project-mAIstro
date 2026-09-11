@@ -504,7 +504,17 @@ async def _execute_frontier(
         inputs: dict[str, Any],
     ) -> Any:
         prior_completion_accepted = False
+        retry_safe = bool(getattr(node, "idempotent", False))
         attempts = await execution_store.list_attempts(node_run.node_run_id)
+        if (
+            attempts
+            and attempts[-1].status in {AttemptStatus.CANCELLED, AttemptStatus.TIMED_OUT}
+            and not retry_safe
+        ):
+            raise RunIntegrityError(
+                f"node {node_id!r} cannot be redispatched after an incomplete physical "
+                "Attempt because its implementation is not idempotent"
+            )
         if attempts and attempts[-1].status is AttemptStatus.COMPLETED:
             persisted_result = NodeResult.model_validate(attempts[-1].result)
             prior_completion_accepted = _requires_continuation_redispatch(
@@ -519,6 +529,7 @@ async def _execute_frontier(
                     node_run,
                     ctx,
                     persisted_result,
+                    retry_safe=retry_safe,
                 )
 
         raw_result: NodeResult | None = None
@@ -557,6 +568,7 @@ async def _execute_frontier(
             node_run,
             ctx,
             raw_result,
+            retry_safe=retry_safe,
         )
 
     return tuple(

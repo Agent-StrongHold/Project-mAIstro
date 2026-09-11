@@ -146,6 +146,11 @@ class _RootNode:
 
 class _WorkItemNode:
     kind = "orchestrator.work_item"
+    # Handler retries are logical retries over a pure projection; declaring the
+    # contract here keeps the durable executor from treating this compatibility
+    # adapter as an unknown, unsafe effect node.
+    idempotent = True
+    external_io = False
 
     def __init__(
         self,

@@ -115,6 +115,34 @@ def _remove_row(row: Any) -> None:
     stores.schedules._data.pop(row.id, None)  # type: ignore[attr-defined]
 
 
+def test_tick_reads_due_schedules_from_canonical_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A durable schedule fires even when the Hive dictionary is empty."""
+    from services.scheduler import _ScheduleRunner
+
+    async def scenario() -> None:
+        container, row, root = await _fixture()
+        runner = _ScheduleRunner()
+        definition = runner._as_definition(row.id, row)
+        assert definition is not None
+        await container.schedule_store.put(
+            definition.model_copy(update={"workspace_id": "ws-1", "project_id": root.project_id})
+        )
+        monkeypatch.setattr(
+            _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
+        )
+
+        import stores
+
+        assert row.id not in stores.schedules
+        await runner._tick()
+
+        recorded = await container.schedule_store.get(row.id)
+        assert recorded is not None and recorded.last_run_id
+        assert await container.run_store.get_run(recorded.last_run_id) is not None
+
+    asyncio.run(scenario())
+
+
 def test_two_live_runners_claim_one_occurrence(monkeypatch: pytest.MonkeyPatch) -> None:
     from services.scheduler import _ScheduleRunner
 

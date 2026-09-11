@@ -300,6 +300,33 @@ class AgentSynthDagNode(BaseNode[SynthDagIn, SynthDagOut]):
         )
         self._max_depth = max_depth
 
+    async def run(self, inputs: SynthDagIn | BaseModel | dict[str, Any], ctx: NodeContext) -> Any:
+        """Make a declined child dispatch a failed logical NodeResult.
+
+        ``BaseNode`` treats a returned output as a successful physical call.
+        For this composite node, an output that explicitly says execution was
+        unsuccessful must also fail the parent NodeRun; otherwise a missing
+        canonical dependency would be accepted as completed work.
+        """
+        result = await super().run(inputs, ctx)
+        output = result.output
+        if (
+            isinstance(output, SynthDagOut)
+            and not output.success
+            and result.success
+            and output.error is not None
+            and output.error.startswith("canonical child-Run execution is unavailable")
+        ):
+            return result.model_copy(
+                update={
+                    "success": False,
+                    "status": "failed",
+                    "error_code": "SynthDagExecutionUnavailable",
+                    "error_message": output.error,
+                }
+            )
+        return result
+
     def _child_resolver(self) -> NodeResolver:
         """The resolver the child graph builds its nodes with.
 
@@ -387,21 +414,14 @@ class AgentSynthDagNode(BaseNode[SynthDagIn, SynthDagOut]):
     ) -> SynthDagOut:
         """Run the approved config as a canonical child Run, or say why not (#520)."""
         if self._run_store is None:
-            if self._llm_call is None:
-                return SynthDagOut(
-                    success=True,
-                    synthesized_nodes=synthesized_kinds,
-                    rationale=synth.rationale,
-                    run_output="dag synthesized — no llm_call provided, execution skipped",
-                )
-            # An llm_call used to select the ephemeral GraphRun path here,
-            # executing the subtree with no canonical records (#520). Declining
-            # is the honest replacement: the synthesis stands, and the output
-            # says exactly why nothing ran.
+            # A synthesized graph is executable work, not a preview. Returning
+            # success here used to make a missing canonical dependency look like
+            # a completed child Run, while no NodeRun or Attempt existed (#1193).
             return SynthDagOut(
-                success=True,
+                success=False,
                 synthesized_nodes=synthesized_kinds,
                 rationale=synth.rationale,
+                error="canonical child-Run execution is unavailable: durable run store is not wired",
                 run_output=(
                     "dag synthesized — not executed: canonical dispatch requires "
                     "a durable run store; the in-process GraphRun path is retired (#520)"

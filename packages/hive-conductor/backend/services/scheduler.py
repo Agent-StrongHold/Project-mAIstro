@@ -134,24 +134,46 @@ class _ScheduleRunner:
         import stores
 
         now = datetime.now(UTC)
-        for sid, schedule in list(stores.schedules.items()):
-            if not getattr(schedule, "enabled", False):
-                continue
-            try:
-                await self._evaluate_schedule(sid, schedule, now=now)
-            except Exception as exc:
-                logger.warning("Failed to evaluate schedule %s: %s", sid, exc)
+        container = self._canonical_container()
+        schedule_store = getattr(container, "schedule_store", None) if container else None
+        admitter = self._canonical_admitter(container)
+        if schedule_store is not None:
+            # Once the canonical spine is wired, due/cursor state comes from the
+            # ScheduleStore. The Hive dictionary is only a response projection;
+            # consulting it here would make a restarted or second replica miss
+            # durable schedules (#1199).
+            if admitter is None:
+                logger.warning("Canonical ScheduleStore is present without schedule admission")
+                self._last_check = now
+                return
+            schedules = await schedule_store.due(now=now)
+            for schedule in schedules:
+                try:
+                    await self._evaluate_schedule(schedule.schedule_id, schedule, now=now)
+                except Exception as exc:
+                    logger.warning("Failed to evaluate schedule %s: %s", schedule.schedule_id, exc)
+        else:
+            # Standalone/demo mode has no canonical schedule authority.
+            for sid, schedule in list(stores.schedules.items()):
+                if not getattr(schedule, "enabled", False):
+                    continue
+                try:
+                    await self._evaluate_schedule(sid, schedule, now=now)
+                except Exception as exc:
+                    logger.warning("Failed to evaluate schedule %s: %s", sid, exc)
 
         self._last_check = now
 
     def _as_definition(self, sid: str, schedule: Any) -> Schedule | None:
-        """Project the live ``/v1/schedules`` row onto the canonical definition.
+        """Project a product row or canonical schedule onto its definition.
 
-        The synthetic scope values below are retained only for the standalone
-        compatibility path.  A configured Hive replaces them with the actual
-        configured Workspace and its canonical Root Project before persisting
-        or admitting the definition.
+        Canonical ticks already provide a ``maistro.scheduling.Schedule``. Do
+        not round-trip it through the retiring Hive row shape or its durable
+        cursor can be replaced by stale projection fields.
         """
+        if isinstance(schedule, Schedule):
+            return schedule
+
         template_id = str(getattr(schedule, "mission_template_id", "") or "")
         if not template_id:
             return None
@@ -341,7 +363,7 @@ class _ScheduleRunner:
                 "system",
                 target=sid,
                 detail={
-                    "name": schedule.name,
+                    "name": getattr(schedule, "name", sid),
                     "scheduled_for": provenance.get("scheduled_for"),
                     "catchup": provenance.get("catchup", False),
                 },
@@ -351,7 +373,10 @@ class _ScheduleRunner:
                 "system",
                 target=sid,
                 detail={
-                    "dag_id": str(schedule.mission_template_id),
+                    "dag_id": str(
+                        getattr(schedule, "mission_template_id", None)
+                        or getattr(schedule, "graph_template_id", "")
+                    ),
                     "run_id": run_id,
                     "status": run.status.value if run is not None else "unknown",
                     "template_version": (
@@ -365,7 +390,10 @@ class _ScheduleRunner:
                 "system",
                 target=sid,
                 detail={
-                    "dag_id": str(schedule.mission_template_id),
+                    "dag_id": str(
+                        getattr(schedule, "mission_template_id", None)
+                        or getattr(schedule, "graph_template_id", "")
+                    ),
                     "error": type(exc).__name__,
                 },
             )
