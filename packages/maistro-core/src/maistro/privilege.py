@@ -23,6 +23,10 @@ class UsersTamperError(Exception):
     """Raised when users.toml signature verification fails."""
 
 
+class UsersTrustRootError(Exception):
+    """Raised when the external users.toml trust root is missing or unauthenticated."""
+
+
 class InsufficientUsersError(Exception):
     """Raised when fewer than 2 users are provided during initialization."""
 
@@ -124,12 +128,38 @@ def _verify(data: str, key: str, signature: str) -> bool:
 
 
 class UsersStore:
-    """Manages users.toml with admin signature verification."""
+    """Deprecated standalone store authenticated by deployment trust material.
 
-    def __init__(self, data_dir: str | Path, allow_single_user: bool = False) -> None:
+    ``trusted_signing_key`` must come from outside ``users.toml`` (for example,
+    a host-owned secret file, keychain, or vault). The file contains user data
+    only and is never allowed to select its verification authority.
+
+    This compatibility store is not wired into Conductor's production
+    privilege initialization, which uses :class:`PrivilegeGuard` directly.
+
+    Trust-root rotation and recovery are operator migrations built from this
+    public API only: authenticate the existing artifact by constructing a
+    store bound to the *current* external secret (a tampered artifact or a
+    wrong secret raises :class:`UsersTamperError`), move the authenticated
+    artifact aside, then re-initialize a store bound to the *new* external
+    secret with the verified roster — a constructor bound to the new secret
+    fails closed on the stale artifact. There is no file-triggerable
+    migration: ``users.toml`` cannot name, replace, or initiate a change of
+    verification authority.
+    """
+
+    def __init__(
+        self,
+        data_dir: str | Path,
+        *,
+        trusted_signing_key: str,
+        allow_single_user: bool = False,
+    ) -> None:
+        if not trusted_signing_key:
+            raise UsersTrustRootError("A non-empty external users.toml trust root is required")
         self._data_dir = Path(data_dir)
         self._users: list[UserInfo] = []
-        self._admin_key = ""
+        self._trusted_signing_key = trusted_signing_key
         self._allow_single_user = allow_single_user
         self._loaded = False
         if self._data_dir.exists():
@@ -151,7 +181,6 @@ class UsersStore:
                 UserInfo(admin_name, admin_public_key, "admin"),
                 UserInfo(user_name, user_public_key, "user"),
             ]
-        self._admin_key = admin_public_key
         self._loaded = True
         self._write()
 
@@ -166,7 +195,7 @@ class UsersStore:
             lines.append(f'role = "{u.role}"')
             lines.append("")
         content = "\n".join(lines)
-        signature = _sign(content, self._admin_key)
+        signature = _sign(content, self._trusted_signing_key)
         toml_path.write_text(f"# sig: {signature}\n{content}")
 
     def _load(self) -> None:
@@ -176,25 +205,22 @@ class UsersStore:
         if not toml_path.exists():
             return
         raw = toml_path.read_text()
-        newline_pos = raw.index("\n")
-        sig_line = raw[:newline_pos]
-        content = raw[newline_pos + 1 :]
+        parts = raw.split("\n", 1)
+        if len(parts) < 2:
+            raise UsersTamperError("Missing content in users.toml")
+        sig_line, content = parts
         if not sig_line.startswith("# sig: "):
             raise UsersTamperError("Missing signature in users.toml")
         stored_sig = sig_line[len("# sig: ") :]
 
-        admin_key, users = self._parse_users(content)
-
-        if not _verify(content, admin_key, stored_sig):
+        if not _verify(content, self._trusted_signing_key, stored_sig):
             raise UsersTamperError("Signature verification failed — users.toml tampered")
 
-        self._users = users
-        self._admin_key = admin_key
+        self._users = self._parse_users(content)
         self._loaded = True
 
     @staticmethod
-    def _parse_users(content: str) -> tuple[str, list[UserInfo]]:
-        admin_key = ""
+    def _parse_users(content: str) -> list[UserInfo]:
         users: list[UserInfo] = []
         current: dict[str, str] = {}
         for line in content.splitlines():
@@ -203,8 +229,6 @@ class UsersStore:
                 if current:
                     u = UserInfo(current["name"], current["public_key"], current["role"])
                     users.append(u)
-                    if u.role == "admin":
-                        admin_key = u.public_key
                 current = {}
             elif "=" in line and current is not None:
                 k, v = line.split("=", 1)
@@ -212,9 +236,7 @@ class UsersStore:
         if current:
             u = UserInfo(current["name"], current["public_key"], current["role"])
             users.append(u)
-            if u.role == "admin":
-                admin_key = u.public_key
-        return admin_key, users
+        return users
 
     def admin(self) -> UserInfo:
         self._load()
@@ -229,6 +251,17 @@ class UsersStore:
             if u.public_key == public_key:
                 return u
         raise LookupError(f"No user with public key: {public_key}")
+
+    def users(self) -> tuple[UserInfo, ...]:
+        """Return the authenticated roster as a read-only tuple.
+
+        The documented trust-root rotation derives the roster shape from this
+        already-authenticated data (a single-user roster created with
+        ``allow_single_user=True`` contains no secondary user) rather than
+        from any roster description carried by ``users.toml`` itself.
+        """
+        self._load()
+        return tuple(self._users)
 
 
 class PrivilegeGuard:
