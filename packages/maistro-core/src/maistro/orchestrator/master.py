@@ -27,7 +27,7 @@ from maistro.graph.durable_runs import (
 from maistro.graph.durable_runs.attempt_executor import run_durable_graph
 from maistro.graph.durable_runs.executor import MAX_NODE_VISITS
 from maistro.graph.durable_runs.protocol import DurableRunStore
-from maistro.graph.nodes.base import NodeContext, NodeResult
+from maistro.graph.nodes.base import NodeContext, NodeResult, ReplaySemantics
 from maistro.orchestrator.output_security import (
     HANDLER_ERROR_RESULT,
     HANDLER_INVALID_RESULT,
@@ -146,6 +146,9 @@ class _RootNode:
 
 class _WorkItemNode:
     kind = "orchestrator.work_item"
+    # Handler retries are an explicit orchestrator contract. The handler's
+    # logical WorkItem identity is the effect key for this adapter.
+    replay_semantics = ReplaySemantics.EFFECT_KEY
 
     def __init__(
         self,

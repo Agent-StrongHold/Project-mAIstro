@@ -332,6 +332,12 @@ class RunStore(Protocol):
 
     async def get_run(self, run_id: str) -> Run | None: ...
 
+    async def find_child_run_by_effect(
+        self,
+        parent_run_id: str,
+        effect_key: str,
+    ) -> Run | None: ...
+
     async def transition_run(
         self,
         run_id: str,
@@ -768,6 +774,19 @@ class InMemoryRunStore:
     async def get_run(self, run_id: str) -> Run | None:
         run = self._runs.get(run_id)
         return run.model_copy(deep=True) if run is not None else None
+
+    async def find_child_run_by_effect(
+        self,
+        parent_run_id: str,
+        effect_key: str,
+    ) -> Run | None:
+        for run in self._runs.values():
+            if (
+                run.parent_run_id == parent_run_id
+                and run.provenance.get("effect_key") == effect_key
+            ):
+                return run.model_copy(deep=True)
+        return None
 
     async def transition_run(
         self,

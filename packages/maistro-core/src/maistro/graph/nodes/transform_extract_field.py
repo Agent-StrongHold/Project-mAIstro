@@ -11,7 +11,7 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, Field
 
 from . import register_node
-from .base import BaseNode, NodeContext
+from .base import BaseNode, NodeContext, ReplaySemantics
 
 
 class ExtractFieldIn(BaseModel):
@@ -32,7 +32,7 @@ class TransformExtractFieldNode(BaseNode[ExtractFieldIn, ExtractFieldOut]):
     input_schema: ClassVar[type[BaseModel]] = ExtractFieldIn
     output_schema: ClassVar[type[BaseModel]] = ExtractFieldOut
     cost_hint: ClassVar[float] = 0.0
-    idempotent: ClassVar[bool] = True
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.PURE
     external_io: ClassVar[bool] = False
     display_name: ClassVar[str] = "Extract field"
     description: ClassVar[str] = (
