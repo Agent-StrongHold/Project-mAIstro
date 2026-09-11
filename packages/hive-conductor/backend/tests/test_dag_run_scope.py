@@ -136,6 +136,25 @@ def test_list_hides_runs_outside_the_callers_workspace(
     assert all(row["workspace_id"] in allowed for row in rows)
 
 
+def test_list_applies_the_limit_after_scope_filtering(
+    authed_client: Any, admin_client: Any
+) -> None:
+    """A foreign recent run cannot consume the caller's only list slot.
+
+    Scope filtering must happen before pagination: otherwise the globally
+    newest out-of-scope row can hide an in-scope row from a small page.
+    """
+    mine = _workspace(authed_client, "Mine")
+    theirs = _workspace(admin_client, "Admin Only")
+    _seed_run("r-mine-before-foreign", workspace_id=mine)
+    _seed_run("r-theirs-newest", workspace_id=theirs)
+
+    response = authed_client.get("/v1/dag-runs?limit=1")
+
+    assert response.status_code == 200
+    assert [row["id"] for row in response.json()] == ["r-mine-before-foreign"]
+
+
 # ─── detail ──────────────────────────────────────────────────────────────────
 
 
