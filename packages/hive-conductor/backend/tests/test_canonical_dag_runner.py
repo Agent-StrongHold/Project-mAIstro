@@ -564,6 +564,68 @@ async def test_hive_facade_uses_governed_model_egress_on_canonical_run(
 
 
 @pytest.mark.asyncio
+async def test_hive_gateway_failure_terminalizes_canonical_run_and_node(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dispatched gateway failure cannot leave the durable run successful."""
+    import httpx
+
+    from maistro.container import create_container
+    from maistro.types.config import AgentConfig
+
+    class _Response:
+        status_code = 500
+
+        def json(self) -> dict[str, Any]:
+            return {"error": "gateway failure"}
+
+    class _Client:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *_args: Any) -> None:
+            return None
+
+        async def post(self, *_args: Any, **_kwargs: Any) -> _Response:
+            return _Response()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    container = await create_container(
+        AgentConfig(
+            router_api_key="test-key", workspace_id="ws-1", litellm_url="http://gateway.test"
+        )
+    )
+    root = await container.project_scope_store.create_root("ws-1")
+
+    import services.canonical_dag_runner as canonical
+
+    monkeypatch.setattr(canonical, "_container", lambda: container)
+    monkeypatch.setattr(canonical, "get_run_store", lambda: container.graph_run_store)
+    result = await canonical.execute_dag(
+        {
+            "id": "hive-failed",
+            "description": "failure task",
+            "nodes": [{"id": "n1", "model": "legacy-model", "config": {"execution_tier": "safe"}}],
+            "edges": [],
+        },
+        workspace_id="ws-1",
+        project_id=root.project_id,
+    )
+
+    assert result["status"] == "failed"
+    invocations = list(container.capability_effects.invocation_store._items.values())  # type: ignore[attr-defined]
+    assert len(invocations) == 1
+    assert invocations[0].status.value == "unknown"
+    node_runs = await container.run_store.list_node_runs(result["run_id"])
+    assert len(node_runs) == 1
+    assert node_runs[0].status.value == "failed"
+    assert node_runs[0].node_run_id == invocations[0].node_run_id
+
+
+@pytest.mark.asyncio
 async def test_a_metrics_recording_failure_never_fails_the_completed_run(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
