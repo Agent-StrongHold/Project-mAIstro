@@ -446,6 +446,25 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
         assert isinstance(unrecorded.value.__cause__, RunIntegrityError)
         assert conduit.calls == 1
 
+    async def test_a_spine_refusal_before_the_dispatch_still_falls_back_to_answering(
+        self,
+    ) -> None:
+        """The pre-dispatch rule, exercised where the spine itself refuses
+        mid-flight rather than before the executor starts: the Attempt's
+        RUNNING write fails, the model has not been called, so the plain
+        `RunIntegrityError` reaches the container and the turn is answered
+        once through the fallback."""
+        container = await _container()
+        container.conduit = conduit = _Conduit(content="42")
+        container.run_store = _RecordingVeto(  # type: ignore[assignment]
+            container.run_store, method="transition_attempt", target=AttemptStatus.RUNNING
+        )
+
+        result = await container.route_request(MESSAGES)
+
+        assert result["choices"][0]["message"]["content"] == "42"
+        assert conduit.calls == 1
+
     async def test_a_failure_before_the_dispatch_is_not_dressed_as_one_after_it(self) -> None:
         """The other half of the same signal. Nothing physical happened, so
         the plain `RunIntegrityError` still reaches the caller and its
