@@ -1,18 +1,21 @@
 """Reusable integration contracts for M1 cross-product parity (#459).
 
 This module is test/evidence code only. It deliberately does not emulate a
-product runtime or fill a missing convergence seam. Product scenarios assert
-the exact source-level dependency state before touching a surface that is still
-owned by an active convergence PR. An unavailable scenario is therefore a
-named, evidence-backed state in the suite rather than a test suppression.
+product runtime or fill a missing convergence seam. Source probes remain
+optional development diagnostics; strict closeout evidence requires a real
+producer and observer callback and records an unavailable seam as a failure.
 """
 
 from __future__ import annotations
 
+import asyncio
 import importlib
+import inspect
 import json
-from collections.abc import Mapping
+import os
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Final
 
@@ -25,6 +28,21 @@ class DependencyUnavailable(AssertionError):
 
 class ParityContractError(AssertionError):
     """A product projection diverged from canonical execution identity/lifecycle."""
+
+
+class ScenarioAbstained(AssertionError):
+    """A required product scenario did not execute its real producer boundary."""
+
+
+class CloseoutFailure(AssertionError):
+    """The strict M1 closeout report contains a failed required scenario."""
+
+
+class ParityMode(StrEnum):
+    """The development diagnostic mode and the fail-closed M1 closeout mode."""
+
+    DEVELOPMENT = "development"
+    M1_CLOSEOUT = "m1-closeout"
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,11 +143,11 @@ SCHEDULER = Dependency(
 
 CONDUCTOR_INSPECTION = Dependency(
     key="Conductor canonical inspection plane",
-    issue=65,
+    issue=1036,
     pr=None,
     description=(
-        "GET /v1/dag-runs/{run_id} must resolve canonical Run evidence instead of the "
-        "product-private dag_run_store authority."
+        "The #1036 inspection/control boundary must resolve canonical Run evidence "
+        "instead of a product-private dag_run_store authority."
     ),
     probes=(
         SourceProbe(
@@ -211,6 +229,164 @@ def require_dependencies(*dependencies: Dependency) -> None:
     assessment = dependency_assessment(*dependencies)
     if assessment.blockers:
         raise DependencyUnavailable(" | ".join(assessment.blockers))
+
+
+@dataclass(frozen=True, slots=True)
+class ScenarioExecution:
+    """The real product observation returned by an executed scenario."""
+
+    observation: Mapping[str, Any] | None = None
+
+
+ScenarioCallable = Callable[[], ScenarioExecution | Awaitable[ScenarioExecution]]
+ScenarioValidator = Callable[[Mapping[str, Any]], None]
+
+
+@dataclass(frozen=True, slots=True)
+class ParityScenario:
+    """One required producer -> canonical spine -> observer/control scenario."""
+
+    name: str
+    dependencies: tuple[Dependency, ...]
+    execute: ScenarioCallable
+    validate_observation: ScenarioValidator | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ScenarioEvidence:
+    """Machine-readable result for one required scenario."""
+
+    name: str
+    status: str
+    executed: bool
+    blockers: tuple[str, ...] = ()
+    error: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "scenario": self.name,
+            "status": self.status,
+            "executed": self.executed,
+            "blockers": list(self.blockers),
+            "error": self.error,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CloseoutReport:
+    """The complete strict report; no strict scenario can be BLOCKED-as-green."""
+
+    evidence: tuple[ScenarioEvidence, ...]
+
+    @property
+    def passed(self) -> bool:
+        return bool(self.evidence) and all(item.status == "PASSED" for item in self.evidence)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "mode": ParityMode.M1_CLOSEOUT.value,
+            "scenarios": [item.as_dict() for item in self.evidence],
+            "passed": self.passed,
+        }
+
+
+def parity_mode(value: str | None = None) -> ParityMode:
+    """Resolve the explicit mode switch used by the closeout invocation."""
+    raw = value if value is not None else os.environ.get("MAISTRO_PARITY_MODE", "development")
+    try:
+        return ParityMode(raw)
+    except ValueError as exc:
+        allowed = ", ".join(item.value for item in ParityMode)
+        raise ValueError(f"MAISTRO_PARITY_MODE must be one of: {allowed}") from exc
+
+
+def _emit_evidence(evidence: ScenarioEvidence) -> None:
+    """Emit one JSON object per scenario for CI log/artifact consumers."""
+    print(f"M1_PARITY_EVIDENCE {json.dumps(evidence.as_dict(), sort_keys=True)}")
+
+
+async def execute_scenario(
+    scenario: ParityScenario,
+    *,
+    mode: ParityMode | None = None,
+    raise_on_failure: bool = True,
+) -> ScenarioEvidence:
+    """Run one scenario, converting every strict abstention into a failure."""
+    selected_mode = mode or parity_mode()
+    assessment = dependency_assessment(*scenario.dependencies)
+    if assessment.blockers:
+        status = "FAILED" if selected_mode is ParityMode.M1_CLOSEOUT else "BLOCKED"
+        evidence = ScenarioEvidence(
+            name=scenario.name,
+            status=status,
+            executed=False,
+            blockers=assessment.blockers,
+        )
+        _emit_evidence(evidence)
+        if selected_mode is ParityMode.M1_CLOSEOUT and raise_on_failure:
+            raise DependencyUnavailable(" | ".join(assessment.blockers))
+        return evidence
+
+    try:
+        result = scenario.execute()
+        if inspect.isawaitable(result):
+            result = await result
+        if not isinstance(result, ScenarioExecution):
+            raise ScenarioAbstained(
+                f"{scenario.name} returned no real ScenarioExecution observation"
+            )
+        if scenario.validate_observation is not None:
+            if result.observation is None:
+                raise ScenarioAbstained(f"{scenario.name} returned no product observation")
+            scenario.validate_observation(result.observation)
+    except BaseException as exc:
+        if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+            raise
+        status = "FAILED" if selected_mode is ParityMode.M1_CLOSEOUT else "BLOCKED"
+        evidence = ScenarioEvidence(
+            name=scenario.name,
+            status=status,
+            executed=False,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        _emit_evidence(evidence)
+        if selected_mode is ParityMode.M1_CLOSEOUT and raise_on_failure:
+            raise
+        return evidence
+
+    evidence = ScenarioEvidence(name=scenario.name, status="PASSED", executed=True)
+    _emit_evidence(evidence)
+    return evidence
+
+
+def execute_scenario_sync(
+    scenario: ParityScenario,
+    *,
+    mode: ParityMode | None = None,
+) -> ScenarioEvidence:
+    """Synchronous wrapper for ordinary pytest tests and small CI probes."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(execute_scenario(scenario, mode=mode))
+    raise RuntimeError("execute_scenario_sync cannot run inside an active event loop")
+
+
+async def execute_closeout(scenarios: tuple[ParityScenario, ...]) -> CloseoutReport:
+    """Execute every required scenario and raise only after all evidence is emitted."""
+    evidence: list[ScenarioEvidence] = []
+    for scenario in scenarios:
+        evidence.append(
+            await execute_scenario(
+                scenario,
+                mode=ParityMode.M1_CLOSEOUT,
+                raise_on_failure=False,
+            )
+        )
+    report = CloseoutReport(tuple(evidence))
+    if not report.passed:
+        raise CloseoutFailure(json.dumps(report.as_dict(), sort_keys=True))
+    return report
 
 
 @dataclass(slots=True)

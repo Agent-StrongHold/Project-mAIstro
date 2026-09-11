@@ -185,6 +185,27 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY}"
 
   # ---------------------------------------------------------------------------
+  # M1 closeout — a release is not a closure candidate unless strict parity
+  # executed every required producer -> canonical spine -> Conductor scenario.
+  # The job intentionally fails on an unavailable seam; source probes and
+  # development-mode BLOCKED evidence cannot satisfy this release gate.
+  # ---------------------------------------------------------------------------
+  m1-closeout:
+    name: M1 strict cross-product parity closeout
+    needs: guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: ./.github/actions/setup-uv
+      - run: uv sync --locked --extra dev
+      - name: Execute strict M1 closeout scenarios
+        run: uv run python scripts/run-m1-closeout.py
+
+  # ---------------------------------------------------------------------------
   # wheels — build the publish set, twine check it, install+import it clean.
   #
   # The publish set is FIVE packages. maistro-server, maistro-turing,
@@ -194,7 +215,7 @@ jobs:
   # ---------------------------------------------------------------------------
   wheels:
     name: Build + verify wheels
-    needs: guard
+    needs: [guard, m1-closeout]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -295,7 +316,7 @@ jobs:
   # ---------------------------------------------------------------------------
   pypi:
     name: Publish to ${{ needs.guard.outputs.prerelease == 'true' && 'TestPyPI' || 'PyPI' }}
-    needs: [guard, wheels]
+    needs: [guard, wheels, m1-closeout]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment:
@@ -345,7 +366,7 @@ jobs:
   # ---------------------------------------------------------------------------
   images:
     name: Build, push + sign images
-    needs: [guard, wheels]
+    needs: [guard, wheels, m1-closeout]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     environment:
