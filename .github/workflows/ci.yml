@@ -326,6 +326,22 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    env:
+      # The root suite includes the shipped-state `check-*` self-checks, which
+      # run a full ratchet against THIS repository. On a push to `develop` the
+      # resolver's local fallback (`origin/develop`) degenerates to HEAD and a
+      # clean worktree is the self-referential state #534 refuses, so without
+      # a named base every one of those self-checks exits "cannot compare"
+      # instead of "compared and passed" (#1235). Name the event's own base,
+      # exactly as vulture-ratchet.yml does, so the trusted baseline is the
+      # revision this push replaces. tests/conftest.py captures this value and
+      # keeps it away from every test except the gate self-checks that opt in.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.event.before }}
     steps:
       - uses: actions/checkout@v7
         with:

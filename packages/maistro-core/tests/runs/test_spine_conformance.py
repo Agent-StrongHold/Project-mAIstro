@@ -24,8 +24,19 @@ import pytest
 
 from maistro.graph import Graph, Node
 from maistro.projects.scope import ProjectNotEmpty
-from maistro.runs.lifecycle import StaleLeaseRenewal, UnearnedRunCompletion
-from maistro.runs.model import AcceptedNodeOutcome, AttemptResult, AttemptStatus, RunStatus
+from maistro.runs.lifecycle import (
+    InvalidLifecycleTransition,
+    StaleLeaseRenewal,
+    UnearnedRunCompletion,
+)
+from maistro.runs.model import (
+    AcceptedNodeOutcome,
+    AttemptResult,
+    AttemptStatus,
+    NodeRun,
+    RunStatus,
+    evidence_values_equal,
+)
 from maistro.runs.reconciliation import (
     AttemptLifecycleReconciler,
     CancellationCause,
@@ -69,6 +80,55 @@ async def _node_run(spine: Any) -> Any:
     store, _workspace, _project_id = spine
     run = await _run(spine)
     return await store.create_node_run(run.run_id, node_id="node-1")
+
+
+async def _complete_node_run(store: Any, node_run_id: str, *, result: Any = None) -> NodeRun:
+    """Complete a new fixture through the same physical-evidence store contract."""
+    attempt = await store.create_attempt(node_run_id)
+    await store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
+    terminal = await store.transition_attempt(
+        attempt.attempt_id, AttemptStatus.COMPLETED, result=result
+    )
+    outcome = AcceptedNodeOutcome(
+        node_run_id=node_run_id,
+        attempt_result=AttemptResult.from_attempt(terminal),
+        result=result,
+    )
+    return await store.transition_node_run(
+        node_run_id, RunStatus.COMPLETED, result=result, accepted_outcome=outcome
+    )
+
+
+async def _load_legacy_node_fixture(store: Any, completed: NodeRun) -> NodeRun:
+    """Simulate a persisted pre-acceptance row, without reopening production writes.
+
+    New writes cannot create this shape after #1153. Only this historical repair
+    fixture strips the field in storage; all reads and repair transitions are real.
+    """
+    from maistro.runs.pg_store import PgRunStore
+    from maistro.runs.sqlite_store import SqliteRunStore
+    from maistro.runs.store import InMemoryRunStore
+
+    legacy = completed.model_copy(update={"accepted_outcome": None}, deep=True)
+    if isinstance(store, InMemoryRunStore):
+        store._node_runs[legacy.node_run_id] = legacy
+    elif isinstance(store, SqliteRunStore):
+        await store._conn.execute(
+            "UPDATE canonical_node_runs SET payload = ? WHERE node_run_id = ?",
+            (legacy.model_dump_json(), legacy.node_run_id),
+        )
+        await store._conn.commit()
+    elif isinstance(store, PgRunStore):
+        await store._pool.execute(
+            "UPDATE canonical_node_runs SET payload = $1::text::jsonb WHERE node_run_id = $2",
+            legacy.model_dump_json(),
+            legacy.node_run_id,
+        )
+    else:
+        raise AssertionError(f"unsupported historical fixture backend: {type(store)!r}")
+    reloaded = await store.get_node_run(legacy.node_run_id)
+    assert reloaded is not None and reloaded.accepted_outcome is None
+    return reloaded
 
 
 # ── identity round-trips ──────────────────────────────────────────
@@ -167,15 +227,19 @@ async def test_legacy_completed_node_run_can_backfill_evidence_under_terminal_ru
     terminal = await store.transition_attempt(
         attempt.attempt_id, AttemptStatus.COMPLETED, result={"answer": "ok"}
     )
-    completed = await store.transition_node_run(
-        node_run.node_run_id, RunStatus.COMPLETED, result=terminal.result
-    )
-    await store.transition_run(run.run_id, RunStatus.COMPLETED, result=completed.result)
     outcome = AcceptedNodeOutcome(
         node_run_id=node_run.node_run_id,
         attempt_result=AttemptResult.from_attempt(terminal),
-        result=completed.result,
+        result=terminal.result,
     )
+    completed = await store.transition_node_run(
+        node_run.node_run_id,
+        RunStatus.COMPLETED,
+        result=terminal.result,
+        accepted_outcome=outcome,
+    )
+    completed = await _load_legacy_node_fixture(store, completed)
+    await store.transition_run(run.run_id, RunStatus.COMPLETED, result=completed.result)
 
     migrated = await store.transition_node_run(
         node_run.node_run_id,
@@ -188,6 +252,46 @@ async def test_legacy_completed_node_run_can_backfill_evidence_under_terminal_ru
     assert migrated.status is RunStatus.COMPLETED
     assert migrated.accepted_outcome == outcome
     assert migrated.finished_at == completed.finished_at
+    assert migrated.started_at == completed.started_at
+    assert migrated.updated_at == completed.updated_at
+    assert migrated.result == completed.result
+    assert migrated.error == completed.error
+
+
+@pytest.mark.parametrize(
+    "alteration",
+    [
+        {"result": {"different": True}},
+        {"error": "different"},
+        {"logical_status": RunStatus.WAITING},
+    ],
+)
+async def test_legacy_evidence_backfill_cannot_rewrite_terminal_history(
+    spine: Any, alteration: dict[str, Any]
+) -> None:
+    store, _workspace, _project_id = spine
+    run = await _run(spine)
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+    node_run = await store.create_node_run(run.run_id, node_id="node-1")
+    await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
+    await store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+    completed = await _complete_node_run(store, node_run.node_run_id, result={"original": True})
+    assert completed.accepted_outcome is not None
+    changed = completed.accepted_outcome.model_copy(update=alteration)
+    legacy = await _load_legacy_node_fixture(store, completed)
+    await store.transition_run(run.run_id, RunStatus.COMPLETED, result=legacy.result)
+
+    with pytest.raises(InvalidLifecycleTransition, match="legacy completed NodeRun"):
+        await store.transition_node_run(
+            legacy.node_run_id,
+            RunStatus.COMPLETED,
+            result=changed.result,
+            error=changed.error,
+            accepted_outcome=changed,
+        )
+
+    assert await store.get_node_run(legacy.node_run_id) == legacy
 
 
 async def test_a_child_run_cannot_cross_workspaces(spine: Any) -> None:
@@ -506,6 +610,38 @@ async def test_a_non_finite_result_reloads_unchanged(spine: Any, value: Any, che
 
     assert reloaded is not None
     assert check(reloaded.result)
+
+
+async def test_status_listing_decodes_the_same_evidence_as_get_run(spine: Any) -> None:
+    """Status enumeration must return the canonical value, not its JSON tag.
+
+    The PostgreSQL status query used to decode the JSON payload without the
+    evidence pass that ``get_run`` uses, so this comparison caught a persisted
+    Run changing meaning solely because a recovery caller listed it by status.
+    """
+    store, workspace, project_id = spine
+    run = await store.create_run(_graph(workspace, project_id))
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+    evidence = {"nan": float("nan"), "positive": float("inf"), "nested": [-float("inf")]}
+
+    persisted = await store.transition_run(
+        run.run_id,
+        RunStatus.FAILED,
+        result=evidence,
+        error="canonical evidence failure",
+    )
+    loaded = await store.get_run(run.run_id)
+    listed = await store.list_by_status(RunStatus.FAILED)
+
+    assert loaded is not None
+    assert [item.run_id for item in listed] == [run.run_id]
+    assert listed[0].error == loaded.error == persisted.error
+    assert evidence_values_equal(listed[0].result, loaded.result)
+    assert evidence_values_equal(listed[0].result, persisted.result)
+    assert math.isnan(listed[0].result["nan"])
+    assert listed[0].result["positive"] == float("inf")
+    assert listed[0].result["nested"][0] == float("-inf")
 
 
 async def test_non_finite_evidence_survives_inside_a_container(spine: Any) -> None:
@@ -1485,7 +1621,7 @@ async def _assert_completion_over_a_failed_node_refused(spine: Any) -> None:
     store, _workspace, _project_id = spine
     run, (failed, done) = await _two_node_running_run(spine)
     await store.transition_node_run(failed.node_run_id, RunStatus.FAILED, error="boom")
-    await store.transition_node_run(done.node_run_id, RunStatus.COMPLETED)
+    await _complete_node_run(store, done.node_run_id)
 
     with pytest.raises(UnearnedRunCompletion) as caught:
         await store.transition_run(run.run_id, RunStatus.COMPLETED, result={"ok": True})
@@ -1504,7 +1640,7 @@ async def _assert_failure_over_a_failed_node_allowed(spine: Any) -> None:
     store, _workspace, _project_id = spine
     run, (failed, done) = await _two_node_running_run(spine)
     await store.transition_node_run(failed.node_run_id, RunStatus.FAILED, error="boom")
-    await store.transition_node_run(done.node_run_id, RunStatus.COMPLETED)
+    await _complete_node_run(store, done.node_run_id)
 
     settled = await store.transition_run(run.run_id, RunStatus.FAILED, error="node-1 failed")
 
@@ -1519,7 +1655,7 @@ async def _assert_cancellation_over_completed_nodes_allowed(spine: Any) -> None:
     store, _workspace, _project_id = spine
     run, (first, second) = await _two_node_running_run(spine)
     for node_run in (first, second):
-        await store.transition_node_run(node_run.node_run_id, RunStatus.COMPLETED)
+        await _complete_node_run(store, node_run.node_run_id)
 
     settled = await store.transition_run(run.run_id, RunStatus.CANCELLED, error="user asked")
 
@@ -1539,8 +1675,9 @@ async def _assert_a_retried_node_does_not_condemn_its_run(spine: Any) -> None:
     for status in (RunStatus.QUEUED, RunStatus.RUNNING, RunStatus.FAILED):
         await store.transition_node_run(first.node_run_id, status)
     second = await store.create_node_run(run.run_id, node_id="node-1")
-    for status in (RunStatus.QUEUED, RunStatus.RUNNING, RunStatus.COMPLETED):
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING):
         await store.transition_node_run(second.node_run_id, status)
+    await _complete_node_run(store, second.node_run_id)
 
     assert second.ordinal > first.ordinal
     settled = await store.transition_run(run.run_id, RunStatus.COMPLETED, result={"ok": True})

@@ -284,6 +284,9 @@ class TestSubscribersAreNotHistory:
             "status",
             "result",
             "canonical_run_id",
+            # The canonical scope the run was admitted into (#1174).
+            "workspace_id",
+            "project_id",
             "events",
         }
 
