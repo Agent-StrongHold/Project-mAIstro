@@ -21,9 +21,10 @@ rather than recreated.
 
 `packages/hive-conductor/backend/tests` (+9):
 
-- `test_scheduler.py` (+5) — with a Container present, `fire_now` enters
-  `ScheduleRunAdmitter.admit_manual` through the real scope resolution (real
-  Workspace/Root Project; the compatibility registry is asserted unread), primes
+- `test_scheduler.py` (+5) — with a Container present, `fire_now` consumes the
+  Container's injected `schedule_admitter` (a spy proves no second admitter is
+  constructed) and enters `admit_manual` through the real scope resolution
+  (real Workspace/Root Project; the compatibility registry is asserted unread), primes
   the durable template from the registry exactly as a tick would, refuses with
   the product refusal and untouched state when no durable template resolves,
   fails closed (`ScheduleAdmissionUnavailable`) instead of degrading when a

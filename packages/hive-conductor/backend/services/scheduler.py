@@ -221,19 +221,16 @@ class _ScheduleRunner:
 
     @staticmethod
     def _canonical_admitter(container: Any) -> ScheduleRunAdmitter | None:
-        """Build the one production schedule admission boundary.
+        """Read the Container-owned schedule admission boundary.
 
-        Attribute reads are explicit so the wiring-read fitness gate can prove
-        that these Container fields are actually consumed.
+        The Container constructs this seam once so every producer shares the
+        same admission authority and its store dependencies. Reconstructing an
+        admitter here would let the scheduler silently invent a second
+        authority, especially when the configured seam is absent.
         """
         if container is None:
             return None
-        run_store = getattr(container, "run_store", None)
-        template_store = getattr(container, "template_store", None)
-        schedule_store = getattr(container, "schedule_store", None)
-        if run_store is None or template_store is None or schedule_store is None:
-            return None
-        return ScheduleRunAdmitter(run_store, template_store, schedule_store)
+        return getattr(container, "schedule_admitter", None)
 
     async def _canonical_scope(self, schedule: Any, container: Any) -> tuple[str, str]:
         """Resolve real Workspace/Project ownership for a Hive schedule.

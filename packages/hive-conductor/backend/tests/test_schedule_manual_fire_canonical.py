@@ -209,8 +209,9 @@ def test_manual_fire_on_a_half_wired_container_is_a_503_not_a_fallback(
     service._agent_port = SimpleNamespace(
         container=SimpleNamespace(
             run_store=object(),
-            template_store=None,  # the missing collaborator
+            template_store=object(),
             schedule_store=object(),
+            schedule_admitter=None,  # the canonical collaborator is missing
             project_scope_store=None,
         )
     )

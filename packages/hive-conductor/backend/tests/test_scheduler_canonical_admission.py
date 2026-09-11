@@ -63,6 +63,7 @@ async def _fixture(
     from maistro.graph.templates import InMemoryGraphTemplateStore
     from maistro.projects.scope_store import InMemoryProjectScopeStore
     from maistro.runs.store import InMemoryRunStore
+    from maistro.scheduling.admission import ScheduleRunAdmitter
     from maistro.scheduling.store import InMemoryScheduleStore
 
     projects = InMemoryProjectScopeStore()
@@ -92,6 +93,7 @@ async def _fixture(
         run_store=runs,
         template_store=templates,
         schedule_store=schedules,
+        schedule_admitter=ScheduleRunAdmitter(runs, templates, schedules),
         project_scope_store=projects,
     )
     row = _Row(
@@ -243,7 +245,7 @@ def test_half_wired_container_fails_closed_for_recurring_fire(
 
     async def scenario() -> None:
         container, row, _root = await _fixture()
-        container.template_store = None
+        container.schedule_admitter = None
         _install_row(row)
         monkeypatch.setattr(
             _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)

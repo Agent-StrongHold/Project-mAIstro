@@ -1011,14 +1011,19 @@ async def _canonical_manual_fixture(*, template: bool = True) -> tuple[Any, Any]
     from maistro.graph.templates import InMemoryGraphTemplateStore
     from maistro.projects.scope_store import InMemoryProjectScopeStore
     from maistro.runs.store import InMemoryRunStore
+    from maistro.scheduling.admission import ScheduleRunAdmitter
     from maistro.scheduling.store import InMemoryScheduleStore
 
     projects = InMemoryProjectScopeStore()
     root = await projects.create_root("ws-1")
+    run_store = InMemoryRunStore(project_store=projects)
+    template_store = InMemoryGraphTemplateStore()
+    schedule_store = InMemoryScheduleStore()
     container = SimpleNamespace(
-        run_store=InMemoryRunStore(project_store=projects),
-        template_store=InMemoryGraphTemplateStore(),
-        schedule_store=InMemoryScheduleStore(),
+        run_store=run_store,
+        template_store=template_store,
+        schedule_store=schedule_store,
+        schedule_admitter=ScheduleRunAdmitter(run_store, template_store, schedule_store),
         project_scope_store=projects,
     )
     if template:
@@ -1066,6 +1071,15 @@ def test_a_manual_fire_in_production_enters_the_canonical_admitter(
     async def scenario() -> None:
         container, root = await _canonical_manual_fixture()
         _with_container(monkeypatch, container)
+        canonical_admitter = container.schedule_admitter
+        calls: list[Any] = []
+
+        class _AdmitterSpy:
+            async def admit_manual(self, *args: Any, **kwargs: Any) -> Any:
+                calls.append(self)
+                return await canonical_admitter.admit_manual(*args, **kwargs)
+
+        container.schedule_admitter = _AdmitterSpy()
 
         import services.dag_agents as dag_agents
 
@@ -1078,6 +1092,7 @@ def test_a_manual_fire_in_production_enters_the_canonical_admitter(
         try:
             run_id = await fire_now("s-canonical-manual")
             assert run_id
+            assert calls == [container.schedule_admitter]
 
             assert len(container.run_store._runs) == 1  # type: ignore[attr-defined]
             run = await container.run_store.get_run(run_id)
@@ -1180,7 +1195,7 @@ def test_a_half_wired_container_fails_closed_instead_of_degrading(
 
     async def scenario() -> None:
         container, _root = await _canonical_manual_fixture()
-        container.template_store = None  # the collaborator that went missing
+        container.schedule_admitter = None  # the canonical seam that went missing
         _with_container(monkeypatch, container)
         row = _canonical_row()
         stores.schedules._data[row.id] = row  # type: ignore[attr-defined]
