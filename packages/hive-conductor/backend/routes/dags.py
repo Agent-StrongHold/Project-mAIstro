@@ -169,7 +169,7 @@ async def _record_run_projection(*, dag_id: str, user_id: str, result: dict[str,
     """Mirror canonical Run facts into the bounded Recent Runs projection.
 
     The projection uses the canonical Run id as its own key and copies the
-    canonical terminal status. It cannot mint a second execution identity or
+    canonical Run status. It cannot mint a second execution identity or
     recompute whether the DAG succeeded.
     """
     run_id = str(result.get("run_id") or "")
