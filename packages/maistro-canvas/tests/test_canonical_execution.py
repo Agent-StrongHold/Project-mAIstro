@@ -83,7 +83,8 @@ async def test_scope_binding_requires_explicit_non_empty_authorized_scope() -> N
         CanvasCanonicalExecution(runs, workspace_id="workspace-1", project_id=" ")
 
 
-async def test_admission_rolls_back_run_when_queue_transition_fails() -> None:
+async def test_admission_is_queued_in_the_single_canonical_write() -> None:
+    """There is no post-admission queue transition left to crash between."""
     projects = InMemoryProjectScopeStore()
     root = await projects.create_root("workspace-1")
     runs = _QueueTransitionFailingRunStore(project_store=projects)
@@ -93,17 +94,18 @@ async def test_admission_rolls_back_run_when_queue_transition_fails() -> None:
         project_id=root.project_id,
     )
 
-    with pytest.raises(RuntimeError, match="queue transition failed"):
-        await adapter.admit(
-            job_id="job-admission-rollback",
-            canvas_id="canvas-1",
-            layer_id="layer-1",
-            action="generate",
-            actor_principal_id="user-1",
-        )
+    run_id = await adapter.admit(
+        job_id="job-admission-rollback",
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action="generate",
+        actor_principal_id="user-1",
+    )
 
-    assert len(runs.deleted_runs) == 1
-    assert await runs.get_run(runs.deleted_runs[0]) is None
+    admitted = await runs.get_run(run_id)
+    assert admitted is not None
+    assert admitted.status is RunStatus.QUEUED
+    assert runs.deleted_runs == []
 
 
 async def test_admission_creates_one_scoped_run_with_stage_graph() -> None:
