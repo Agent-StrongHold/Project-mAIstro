@@ -358,46 +358,186 @@ async def test_post_seed_during_real_cycle_is_admitted_after_pair_plan(
 
 
 @pytest.mark.asyncio
-async def test_seeding_during_battle_traversal_cannot_change_persisted_pairs(
+async def test_post_seed_during_battle_traversal_cannot_change_persisted_pairs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class _MutatingTournament(_Tournament):
-        def __init__(self) -> None:
-            super().__init__()
-            self._seeded = False
+    import httpx
+    import services.evolution as evolution_service
+    import services.evolution_graph as evolution_graph
+    from fastapi import FastAPI
+    from routes import evolution as evolution_routes
 
-        def record_battle(self, **kwargs: Any) -> None:
-            super().record_battle(**kwargs)
-            if not self._seeded:
-                population.add(_Genome("battle-seeded"))
-                seeded = population.get("battle-seeded")
-                assert seeded is not None
-                seeded.eval_scores["proxy"] = 0.88
-                self._seeded = True
+    battle_started = asyncio.Event()
+    release_battle = asyncio.Event()
+
+    async def _pausing_battle(self: Any, inputs: Any, ctx: Any) -> Any:
+        if not battle_started.is_set():
+            battle_started.set()
+            await release_battle.wait()
+        return await original_battle(self, inputs, ctx)
+
+    original_battle = evolution_graph._BattleNode._execute
+    monkeypatch.setattr(evolution_graph._BattleNode, "_execute", _pausing_battle)
+    monkeypatch.setattr(cycle_module, "EvolutionCycle", _Cycle)
+    monkeypatch.setattr(
+        cycle_module,
+        "EvolutionConfig",
+        lambda **_: _config(population_size=5, eval_batch_size=4),
+    )
+
+    class _RouteHarness(_Harness):
+        def __init__(self, *, benchmark_fidelity: str) -> None:
+            self.fidelity = benchmark_fidelity
+
+    import maistro_evolve.harness as harness_module
+
+    monkeypatch.setattr(harness_module, "EvalHarness", _RouteHarness)
+    owner = await _container()
+    monkeypatch.setattr(evolution_graph, "_engine_container", lambda: owner)
+    monkeypatch.setattr(
+        "maistro_evolve.diversity.emergency_spawn",
+        lambda _existing, count: [_Genome(f"seed-{index}") for index in range(count)],
+    )
+
+    population = _Population([_Genome(f"g{index}") for index in range(1, 5)])
+    service = evolution_service._EvolutionService()
+    service._population = population
+    service._tournament = _Tournament()
+    previous = evolution_service._service
+    evolution_service._service = service
+    try:
+        app = FastAPI()
+        app.include_router(evolution_routes.router, prefix="/v1/evolution")
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            cycle_task = asyncio.create_task(client.post("/v1/evolution/cycle"))
+            await battle_started.wait()
+            seed_task = asyncio.create_task(client.post("/v1/evolution/seed", json={"count": 1}))
+            await asyncio.sleep(0)
+            assert seed_task.done() is False
+
+            release_battle.set()
+            cycle_response = await cycle_task
+            seed_response = await seed_task
+    finally:
+        evolution_service._service = previous
+
+    assert cycle_response.status_code == 200
+    assert seed_response.status_code == 200
+    assert seed_response.json() == {"seeded": 1, "population_size": 6}
+
+    run_id = cycle_response.json()["run_id"]
+    record = await owner.run_store.get_run(run_id)
+    assert record is not None
+    assert record.status is RunStatus.COMPLETED
+    assert record.provenance["evolve_membership_ids"] == ["g1", "g2", "g3", "g4"]
+    assert record.provenance["evolve_battle_capacity"] == 2
+
+    node_runs = await owner.run_store.list_node_runs(run_id)
+    plan = next(item for item in node_runs if item.node_id == "evolve-plan-pairs")
+    battles = [item for item in node_runs if item.node_id.startswith("evolve-battle-")]
+    assert len(plan.result["pairs"]) == len(battles) == 2
+    planned = {tuple(pair) for pair in plan.result["pairs"]}
+    assert all(
+        (item.result["genome_a_id"], item.result["genome_b_id"]) in planned for item in battles
+    )
+    assert all("seed-0" not in pair for pair in plan.result["pairs"])
+    assert len([item for item in node_runs if item.node_id == "evolve-finalize"]) == 1
+    for node_run in battles:
+        attempts = await owner.run_store.list_attempts(node_run.node_run_id)
+        assert len(attempts) == 1
+        assert attempts[0].status is AttemptStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_racing_post_cycle_requests_persist_separate_canonical_plans(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+    import services.evolution as evolution_service
+    import services.evolution_graph as evolution_graph
+    from fastapi import FastAPI
+    from routes import evolution as evolution_routes
+
+    evaluation_started = asyncio.Event()
+    release_evaluation = asyncio.Event()
+
+    class _PausingHarness(_Harness):
+        def __init__(self, *, benchmark_fidelity: str) -> None:
+            self.fidelity = benchmark_fidelity
+
+        async def evaluate_genome(
+            self,
+            genome: _Genome,
+            benchmarks: list[str],
+            llm_call: Any,
+        ):
+            if not evaluation_started.is_set():
+                evaluation_started.set()
+                await release_evaluation.wait()
+            return await super().evaluate_genome(genome, benchmarks, llm_call)
 
     monkeypatch.setattr(cycle_module, "EvolutionCycle", _Cycle)
-    population = _Population([_Genome(f"g{index}") for index in range(1, 5)])
-    tournament = _MutatingTournament()
+    monkeypatch.setattr(
+        cycle_module,
+        "EvolutionConfig",
+        lambda **_: _config(population_size=5, eval_batch_size=4),
+    )
+    import maistro_evolve.harness as harness_module
+
+    monkeypatch.setattr(harness_module, "EvalHarness", _PausingHarness)
     owner = await _container()
+    monkeypatch.setattr(evolution_graph, "_engine_container", lambda: owner)
 
-    record = await run_canonical_evolution_cycle(
-        population=population,
-        tournament=tournament,
-        config=_config(population_size=5, eval_batch_size=4),
-        harness=_Harness(),
-        container=owner,
-    )
+    population = _Population([_Genome(f"g{index}") for index in range(1, 5)])
+    service = evolution_service._EvolutionService()
+    service._population = population
+    service._tournament = _Tournament()
+    previous = evolution_service._service
+    evolution_service._service = service
+    try:
+        app = FastAPI()
+        app.include_router(evolution_routes.router, prefix="/v1/evolution")
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            first = asyncio.create_task(client.post("/v1/evolution/cycle"))
+            await evaluation_started.wait()
+            second = asyncio.create_task(client.post("/v1/evolution/cycle"))
+            await asyncio.sleep(0)
+            assert second.done() is False
 
-    assert record.run.status is RunStatus.COMPLETED
-    assert len(tournament.battles) == 2
-    assert all("battle-seeded" not in battle for battle in tournament.battles)
-    plan = next(
-        item
-        for item in await owner.run_store.list_node_runs(record.run_id)
-        if item.node_id == "evolve-plan-pairs"
-    )
-    assert len(plan.result["pairs"]) == 2
-    assert all("battle-seeded" not in pair for pair in plan.result["pairs"])
+            release_evaluation.set()
+            first_response = await first
+            second_response = await second
+    finally:
+        evolution_service._service = previous
+
+    assert first_response.status_code == second_response.status_code == 200
+    assert first_response.json()["run_id"] != second_response.json()["run_id"]
+    assert service.cycle_count == 2
+
+    for response in (first_response, second_response):
+        run_id = response.json()["run_id"]
+        record = await owner.run_store.get_run(run_id)
+        assert record is not None
+        assert record.status is RunStatus.COMPLETED
+        node_runs = await owner.run_store.list_node_runs(run_id)
+        plan = next(item for item in node_runs if item.node_id == "evolve-plan-pairs")
+        battles = [item for item in node_runs if item.node_id.startswith("evolve-battle-")]
+        assert len(plan.result["pairs"]) == len(battles)
+        planned = {tuple(pair) for pair in plan.result["pairs"]}
+        observed = {(item.result["genome_a_id"], item.result["genome_b_id"]) for item in battles}
+        assert observed == planned
+        assert record.provenance["evolve_battle_capacity"] >= len(plan.result["pairs"])
+        assert (
+            record.graph.materialize().metadata["evolve_membership_ids"]
+            == record.provenance["evolve_membership_ids"]
+        )
+        assert len([item for item in node_runs if item.node_id == "evolve-finalize"]) == 1
+        for battle in battles:
+            attempts = await owner.run_store.list_attempts(battle.node_run_id)
+            assert len(attempts) == 1
+            assert attempts[0].status is AttemptStatus.COMPLETED
 
 
 @pytest.mark.asyncio
