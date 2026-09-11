@@ -293,6 +293,29 @@ def graph_from_legacy_dag(
     return Graph(**graph_kwargs)
 
 
+async def resolve_execution_scope(
+    dag_data: Mapping[str, Any],
+    *,
+    workspace_id: str | None = None,
+    project_id: str | None = None,
+) -> tuple[str, str]:
+    """Resolve the Workspace/Project a legacy-DAG execution will be admitted into.
+
+    The projection writers that open a run's history BEFORE the execution
+    produces its canonical Run (the chat workflow tool) must record the same
+    scope the execution will resolve, so the projection row carries its
+    canonical Workspace from birth instead of being patched after the fact
+    (#1174). This is the resolver `execute_dag` itself uses -- a second call,
+    never a second mapping.
+    """
+    resolved_workspace, resolved_project, _ = await _scope(
+        dag_data,
+        workspace_id=workspace_id,
+        project_id=project_id,
+    )
+    return resolved_workspace, resolved_project
+
+
 async def _scope(
     dag_data: Mapping[str, Any],
     *,
@@ -462,6 +485,13 @@ def _project(record: Any, raw_by_id: Mapping[str, dict[str, Any]]) -> dict[str, 
     return {
         "status": status.value,
         "run_id": record.run_id,
+        # The canonical scope the Run was admitted into. The projection
+        # mirrors it verbatim (#1174): Hive inspection authorizes a run at
+        # the Workspace boundary the canonical Run already carries, so the
+        # result says where it ran rather than leaving every reader to
+        # re-derive -- or guess -- the mapping.
+        "workspace_id": record.run.workspace_id,
+        "project_id": record.run.project_id,
         "cycles": record.graph_state.cycle,
         "node_results": node_results,
         "annotations": dict(record.graph_state.blackboard_snapshot.get("node_annotations") or {}),

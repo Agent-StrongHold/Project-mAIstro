@@ -489,7 +489,7 @@ class PgRunStore:
             raise ValueError("limit must be positive")
         if offset < 0:
             raise ValueError("offset must not be negative")
-        sql = "SELECT payload FROM canonical_runs WHERE status = $1 AND payload IS NOT NULL"
+        sql = "SELECT payload, archive_key FROM canonical_runs WHERE status = $1 AND payload IS NOT NULL"
         params: list[object] = [status.value]
         if project_id is not None:
             sql += f" AND project_id = ${len(params) + 1}"
@@ -504,7 +504,10 @@ class PgRunStore:
         params.append(offset)
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(sql, *params)
-        return [Run.model_validate(decode_payload(row["payload"])) for row in rows]
+        # Route status enumeration through the same row hydrator as every
+        # other PostgreSQL read. In particular, it restores canonical evidence
+        # tags (including non-finite result values) before model validation.
+        return [Run.model_validate(await self._hydrate(row)) for row in rows]
 
     async def has_runs_in_project(self, project_id: str) -> bool:
         """Whether any Run is filed in this Project.

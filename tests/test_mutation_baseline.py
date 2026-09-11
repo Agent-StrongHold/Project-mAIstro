@@ -38,7 +38,10 @@ def _rows(path: Path, source: str, *, killed: int, survived: int) -> None:
 
 
 def test_unbaselined_source_below_the_global_floor_now_fails(
-    module, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    module,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    real_repository_ratchet_base: None,
 ) -> None:
     """The global floor applies to every measured source, reviewed or not.
 
@@ -59,7 +62,9 @@ def test_unbaselined_source_below_the_global_floor_now_fails(
     assert "below required 90.0%" in capsys.readouterr().err
 
 
-def test_unbaselined_source_clearing_the_floor_passes(module, tmp_path: Path) -> None:
+def test_unbaselined_source_clearing_the_floor_passes(
+    module, tmp_path: Path, real_repository_ratchet_base: None
+) -> None:
     """The floor is a floor, not a blanket rejection of unreviewed sources."""
     rows = tmp_path / "rows.jsonl"
     _rows(rows, "packages/example.py", killed=19, survived=1)  # 95%
@@ -69,7 +74,9 @@ def test_unbaselined_source_clearing_the_floor_passes(module, tmp_path: Path) ->
     assert module.main([str(rows), "--baseline", str(baseline)]) == 0
 
 
-def test_write_baseline_merges_the_legacy_candidate(module, tmp_path: Path) -> None:
+def test_write_baseline_merges_the_legacy_candidate(
+    module, tmp_path: Path, real_repository_ratchet_base: None
+) -> None:
     rows = tmp_path / "rows.jsonl"
     _rows(rows, "packages/example.py", killed=19, survived=1)
     baseline = tmp_path / "baseline.json"
@@ -85,7 +92,9 @@ def test_write_baseline_merges_the_legacy_candidate(module, tmp_path: Path) -> N
     }
 
 
-def test_baselined_source_regression_fails(module, tmp_path: Path) -> None:
+def test_baselined_source_regression_fails(
+    module, tmp_path: Path, real_repository_ratchet_base: None
+) -> None:
     rows = tmp_path / "rows.jsonl"
     rows.write_text(
         json.dumps(
