@@ -494,6 +494,40 @@ async def test_expiry_tick_is_bounded_and_ignores_unelapsed_pauses() -> None:
     assert len(remaining) == 1
 
 
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+async def test_expiry_deadline_query_skips_an_ineligible_paused_prefix(
+    backend: str, tmp_path: Path
+) -> None:
+    if backend == "memory":
+        store = InMemoryDurableRunStore()
+    else:
+        store = SqliteDurableRunStore(tmp_path / "hitl-fairness.db")
+
+    # These records are older in the operator's mental ordering, but their
+    # durable pause entries are not HITL. They must not consume the settlement
+    # limit or become a repeatedly reread prefix.
+    for index in range(3):
+        nonhuman = _with_pause_entry(
+            _paused_record(f"nonhuman-{index}"),
+            {"kind": "wait", "metadata": {}, "resume_at": _DEADLINE.isoformat()},
+        ).model_copy(update={"resume_at": None})
+        await store.create(nonhuman)
+    future = _with_pause_entry(
+        _paused_record("future-hitl"),
+        {"kind": "hitl", "metadata": {}, "resume_at": (_AFTER + timedelta(days=1)).isoformat()},
+    ).model_copy(update={"resume_at": None})
+    await store.create(future)
+
+    expired = _paused_record("expired-hitl").model_copy(update={"resume_at": None})
+    await store.create(expired)
+
+    settled = await expire_hitl_pauses(store, now=_AFTER, limit=1)
+
+    assert [record.run_id for record in settled] == ["expired-hitl"]
+    assert await store.get("expired-hitl") is not None
+    assert (await store.get("expired-hitl")).status is RunStatus.TIMED_OUT
+
+
 async def test_expiry_tick_ignores_nonhuman_pauses_and_lost_races() -> None:
     assert await expire_hitl_pauses(InMemoryDurableRunStore(), now=_AFTER, limit=0) == []
 
