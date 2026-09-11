@@ -47,6 +47,7 @@ def _canvas_model_egress(request: Request) -> Any:
         effects=getattr(container, "capability_effects", None),
         registry=getattr(container, "provider_registry", None),
         router=getattr(container, "llm_router", None),
+        run_store=getattr(container, "run_store", None),
     )
     if any(value is None for value in kwargs.values()):
         raise RuntimeError("Canvas governed model egress is incompletely composed")

@@ -113,12 +113,12 @@ class Invocation(BaseModel):
     @model_validator(mode="after")
     def _validate_invocation(self) -> Invocation:
         _require(self.invocation_id, "invocation_id")
-        if self.workspace_id != self.binding.workspace_id:
-            raise ValueError("Invocation workspace_id must match its Binding")
-        if self.project_id != self.binding.project_id:
-            raise ValueError("Invocation project_id must match its Binding")
         _require(self.workspace_id, "workspace_id")
         _require(self.project_id, "project_id")
+        if self.workspace_id != self.binding.workspace_id:
+            raise ValueError("Invocation workspace_id must match its resolved Binding")
+        if self.project_id != self.binding.project_id:
+            raise ValueError("Invocation project_id must match its resolved Binding")
         _require(self.run_id, "run_id")
         _require(self.node_run_id, "node_run_id")
         _require(self.attempt_id, "attempt_id")

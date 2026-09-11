@@ -74,7 +74,7 @@ class Binding(BaseModel):
 
 
 class ResolvedBinding(BaseModel):
-    """Immutable provider/configuration decision persisted with an Invocation."""
+    """Immutable scoped provider decision persisted with an Invocation."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
