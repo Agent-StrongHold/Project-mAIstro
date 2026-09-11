@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
@@ -271,6 +272,89 @@ async def test_seeding_during_evaluation_cannot_expand_frozen_pair_plan(
     assert {frozenset(pair) for pair in plan.result["pairs"]} == {frozenset({"g1", "g2"})}
     assert all("seeded" not in pair for pair in plan.result["pairs"])
     assert record.run.status is RunStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_post_seed_during_real_cycle_is_admitted_after_pair_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+    import services.evolution as evolution_service
+    import services.evolution_graph as evolution_graph
+    from fastapi import FastAPI
+    from routes import evolution as evolution_routes
+
+    import maistro_evolve.harness as harness_module
+    from maistro.runs.model import RunStatus
+
+    evaluation_started = asyncio.Event()
+    release_evaluation = asyncio.Event()
+
+    class _PausingHarness(_Harness):
+        def __init__(self, *, benchmark_fidelity: str) -> None:
+            self.fidelity = benchmark_fidelity
+
+        async def evaluate_genome(
+            self,
+            genome: _Genome,
+            benchmarks: list[str],
+            llm_call: Any,
+        ):
+            evaluation_started.set()
+            await release_evaluation.wait()
+            return await super().evaluate_genome(genome, benchmarks, llm_call)
+
+    monkeypatch.setattr(cycle_module, "EvolutionCycle", _Cycle)
+    monkeypatch.setattr(
+        cycle_module,
+        "EvolutionConfig",
+        lambda **_: _config(population_size=3, eval_batch_size=2),
+    )
+    monkeypatch.setattr(harness_module, "EvalHarness", _PausingHarness)
+    owner = await _container()
+    monkeypatch.setattr(evolution_graph, "_engine_container", lambda: owner)
+    monkeypatch.setattr(
+        "maistro_evolve.diversity.emergency_spawn",
+        lambda _existing, count: [_Genome(f"seed-{index}") for index in range(count)],
+    )
+
+    population = _Population([_Genome("g1"), _Genome("g2")])
+    service = evolution_service._EvolutionService()
+    service._population = population
+    service._tournament = _Tournament()
+    previous = evolution_service._service
+    evolution_service._service = service
+    try:
+        app = FastAPI()
+        app.include_router(evolution_routes.router, prefix="/v1/evolution")
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            cycle_task = asyncio.create_task(client.post("/v1/evolution/cycle"))
+            await evaluation_started.wait()
+            seed_task = asyncio.create_task(client.post("/v1/evolution/seed", json={"count": 1}))
+            await asyncio.sleep(0)
+            assert seed_task.done() is False
+
+            release_evaluation.set()
+            cycle_response = await cycle_task
+            seed_response = await seed_task
+    finally:
+        evolution_service._service = previous
+
+    assert cycle_response.status_code == 200
+    assert cycle_response.json()["status"] == "completed"
+    assert seed_response.status_code == 200
+    assert seed_response.json() == {"seeded": 1, "population_size": 4}
+    record = await owner.run_store.get_run(cycle_response.json()["run_id"])
+    assert record is not None
+    assert record.status is RunStatus.COMPLETED
+    plan = next(
+        item
+        for item in await owner.run_store.list_node_runs(record.run_id)
+        if item.node_id == "evolve-plan-pairs"
+    )
+    assert {frozenset(pair) for pair in plan.result["pairs"]} == {frozenset({"g1", "g2"})}
+    assert all("seed-0" not in pair for pair in plan.result["pairs"])
 
 
 @pytest.mark.asyncio

@@ -19,6 +19,15 @@ from services.evolution_graph import (
 from maistro.graph.nodes.base import NodeContext
 
 
+def _evolution_test_app():
+    from fastapi import FastAPI
+    from routes import evolution as evolution_routes
+
+    app = FastAPI()
+    app.include_router(evolution_routes.router, prefix="/v1/evolution")
+    return app
+
+
 def test_actor_provenance_and_cycle_run_id_projection(monkeypatch: pytest.MonkeyPatch) -> None:
     requests = [
         (SimpleNamespace(state=SimpleNamespace(user_id="principal-1", user={})), "principal-1"),
@@ -154,3 +163,159 @@ def test_tournament_work_rejects_corrupt_persisted_pair_work() -> None:
 
     with pytest.raises(ValueError, match="genome disappeared"):
         work.run_pair(_BattleInput(pairs=[("g1", "missing")], pair_index=0))
+
+
+@pytest.mark.asyncio
+async def test_post_seed_waits_before_pair_planning_and_during_battle_traversal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+    import services.evolution as evolution_service
+    import services.evolution_graph as evolution_graph
+
+    from maistro.runs.model import RunStatus
+
+    class _Population:
+        def __init__(self) -> None:
+            self.items: list[Any] = []
+
+        def list_all(self) -> list[Any]:
+            return list(self.items)
+
+        def add(self, genome: Any) -> None:
+            self.items.append(genome)
+
+    population = _Population()
+    service = _EvolutionService()
+    service._population = population
+    service._tournament = SimpleNamespace()
+    admitted = asyncio.Event()
+    begin_pair_planning = asyncio.Event()
+    pair_planning = asyncio.Event()
+    release_pair_planning = asyncio.Event()
+    battle_traversal = asyncio.Event()
+    release_battle = asyncio.Event()
+
+    async def _canonical(**_: Any) -> Any:
+        admitted.set()
+        await begin_pair_planning.wait()
+        pair_planning.set()
+        await release_pair_planning.wait()
+        battle_traversal.set()
+        await release_battle.wait()
+        return SimpleNamespace(
+            run_id="canonical-route-run",
+            run=SimpleNamespace(status=RunStatus.COMPLETED, error=None),
+        )
+
+    monkeypatch.setattr(evolution_graph, "run_canonical_evolution_cycle", _canonical)
+    monkeypatch.setattr(
+        "maistro_evolve.diversity.emergency_spawn",
+        lambda _existing, count: [SimpleNamespace(id=f"seed-{index}") for index in range(count)],
+    )
+    previous = evolution_service._service
+    evolution_service._service = service
+    try:
+        app = _evolution_test_app()
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            cycle_task = asyncio.create_task(client.post("/v1/evolution/cycle"))
+            await admitted.wait()
+
+            seed_task = asyncio.create_task(client.post("/v1/evolution/seed", json={"count": 1}))
+            await asyncio.sleep(0)
+            assert seed_task.done() is False
+
+            begin_pair_planning.set()
+            await pair_planning.wait()
+            assert seed_task.done() is False
+
+            release_pair_planning.set()
+            await battle_traversal.wait()
+            assert seed_task.done() is False
+
+            release_battle.set()
+            cycle_response = await cycle_task
+            seed_response = await seed_task
+    finally:
+        evolution_service._service = previous
+
+    assert cycle_response.status_code == 200
+    assert cycle_response.json() == {
+        "status": "completed",
+        "cycle_count": 1,
+        "run_id": "canonical-route-run",
+    }
+    assert seed_response.status_code == 200
+    assert seed_response.json() == {"seeded": 1, "population_size": 1}
+
+
+@pytest.mark.asyncio
+async def test_racing_post_cycle_requests_share_one_cycle_admission_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+    import services.evolution as evolution_service
+    import services.evolution_graph as evolution_graph
+
+    from maistro.runs.model import RunStatus
+
+    class _Population:
+        def list_all(self) -> list[Any]:
+            return []
+
+    service = _EvolutionService()
+    service._population = _Population()
+    service._tournament = SimpleNamespace()
+    first_entered = asyncio.Event()
+    second_entered = asyncio.Event()
+    first_release = asyncio.Event()
+    second_release = asyncio.Event()
+    active = 0
+    peak_active = 0
+    calls = 0
+
+    async def _canonical(**_: Any) -> Any:
+        nonlocal active, peak_active, calls
+        calls += 1
+        ordinal = calls
+        active += 1
+        peak_active = max(peak_active, active)
+        (first_entered if ordinal == 1 else second_entered).set()
+        await (first_release if ordinal == 1 else second_release).wait()
+        active -= 1
+        return SimpleNamespace(
+            run_id=f"canonical-route-run-{ordinal}",
+            run=SimpleNamespace(status=RunStatus.COMPLETED, error=None),
+        )
+
+    monkeypatch.setattr(evolution_graph, "run_canonical_evolution_cycle", _canonical)
+    previous = evolution_service._service
+    evolution_service._service = service
+    try:
+        app = _evolution_test_app()
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            first = asyncio.create_task(client.post("/v1/evolution/cycle"))
+            await first_entered.wait()
+            second = asyncio.create_task(client.post("/v1/evolution/cycle"))
+            await asyncio.sleep(0)
+            assert second.done() is False
+            assert calls == 1
+            assert peak_active == 1
+
+            first_release.set()
+            first_response = await first
+            await second_entered.wait()
+            second_release.set()
+            second_response = await second
+    finally:
+        evolution_service._service = previous
+
+    assert first_response.status_code == 200
+    assert first_response.json()["run_id"] == "canonical-route-run-1"
+    assert second_response.status_code == 200
+    assert second_response.json()["run_id"] == "canonical-route-run-2"
+    assert service.cycle_count == 2
+    assert active == 0
+    assert peak_active == 1
