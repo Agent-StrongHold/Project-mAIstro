@@ -207,6 +207,17 @@ class ChatRunAdmitter:
         """How many admitted chat Runs this process is still tracking."""
         return len(self._window)
 
+    async def sweep(self) -> int:
+        """Re-apply the window after a Run becomes terminal.
+
+        Admission can only sweep Runs that are terminal at the time a new Run
+        arrives. The canonical chat execution seam terminalizes after
+        dispatch, so it calls this hook as well; otherwise a final burst that
+        ends with no following admission would leave completed Runs beyond
+        the policy window until the next turn.
+        """
+        return await self._sweep()
+
     async def admit(
         self,
         messages: list[dict[str, Any]],

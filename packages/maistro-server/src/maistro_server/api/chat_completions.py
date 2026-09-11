@@ -221,8 +221,20 @@ async def _admit_turn(
         await _container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
         running: Run = await _container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
         return running
+    except asyncio.CancelledError:
+        # The request may be gone, but the Run was already persisted. Keep the
+        # compensation alive so admission cannot strand CREATED or QUEUED
+        # state before propagating the disconnect.
+        if run is not None:
+            await asyncio.shield(_container._cancel_incomplete_admission(run))
+        raise
     except Exception:
         logger.exception("chat_completions_run_admission_failed")
+        # This helper admits before Container.route_request can adopt the Run;
+        # compensate here rather than returning None with a CREATED/QUEUED row
+        # that no later seam owns.
+        if run is not None:
+            await _container._cancel_incomplete_admission(run)
         return None
 
 

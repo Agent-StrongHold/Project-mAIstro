@@ -602,6 +602,7 @@ class Container:
                 RunStatus.CANCELLED,
                 error=ADMISSION_INCOMPLETE,
             )
+            await self._sweep_chat_runs()
         except Exception:
             logger.warning(
                 "stranded chat Run %s could not be compensated", run.run_id, exc_info=True
@@ -652,7 +653,18 @@ class Container:
         except Exception:
             logger.warning("chat Run %s could not be terminalized", run.run_id, exc_info=True)
             return False
+        await self._sweep_chat_runs()
         return True
+
+    async def _sweep_chat_runs(self) -> None:
+        """Trim terminal chat Runs after the canonical seam closes one."""
+        if self.chat_admitter is None:
+            return
+        try:
+            await asyncio.shield(self.chat_admitter.sweep())
+        except Exception:
+            # Retention is housekeeping and must not replace the turn's answer.
+            logger.warning("chat Run retention sweep failed", exc_info=True)
 
     async def _terminalize(
         self,

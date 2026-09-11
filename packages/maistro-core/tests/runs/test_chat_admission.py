@@ -338,7 +338,14 @@ async def test_concurrent_admissions_sweep_without_colliding(spine) -> None:
 
     assert len({run.run_id for run in admitted}) == 8
     for run in admitted:
-        assert await runs.get_run(run.run_id) is not None
+        await runs.transition_run(run.run_id, RunStatus.QUEUED)
+        await runs.transition_run(run.run_id, RunStatus.CANCELLED)
+    # A concurrent burst can finish after its last admission. The execution
+    # seam calls this same hook; keep the direct admitter contract explicit too.
+    await admitter.sweep()
+
+    surviving = [run for run in admitted if await runs.get_run(run.run_id) is not None]
+    assert len(surviving) <= 2
 
 
 async def test_a_turn_with_no_intent_hint_names_no_agent(spine) -> None:

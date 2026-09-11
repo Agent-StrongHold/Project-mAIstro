@@ -25,6 +25,7 @@ from fastapi.testclient import TestClient
 
 from maistro.agents.types import ConductorOutput, LLMProviderError
 from maistro.container import create_container
+from maistro.runs.model import RunStatus
 from maistro.types.config import AgentConfig
 from maistro_server.api import chat_completions as chat_api
 from maistro_server.api.chat_completions import (
@@ -176,6 +177,41 @@ class TestNonStreamingChatCompletions:
                 },
             )
         assert response.json()["model"] == "maistro-tier-3"
+
+
+class TestAdmissionCompensation:
+    def test_failed_pre_route_admission_does_not_strand_a_run(self, client: TestClient) -> None:
+        """The endpoint admits before Container.route_request for header access."""
+        container = chat_api._container
+        assert container is not None
+        inner = container.run_store
+
+        class _VetoQueued:
+            def __init__(self) -> None:
+                self.veto = True
+
+            def __getattr__(self, name):
+                return getattr(inner, name)
+
+            async def transition_run(self, run_id, target, **kwargs):
+                if target is RunStatus.QUEUED and self.veto:
+                    self.veto = False
+                    raise RuntimeError("queue write failed")
+                return await inner.transition_run(run_id, target, **kwargs)
+
+        container.run_store = _VetoQueued()
+        with patch(RUN_TASK, AsyncMock(return_value=_output("recovered"))):
+            response = client.post(
+                "/v1/chat/completions",
+                json={"messages": [{"role": "user", "content": "hi"}]},
+            )
+
+        assert response.status_code == 200
+        assert response.json()["choices"][0]["message"]["content"] == "recovered"
+        statuses = [run.status for run in inner._runs.values()]
+        assert statuses
+        assert all(status in {RunStatus.CANCELLED, RunStatus.COMPLETED} for status in statuses)
+        assert RunStatus.CANCELLED in statuses
 
 
 class TestStreamingChatCompletions:
