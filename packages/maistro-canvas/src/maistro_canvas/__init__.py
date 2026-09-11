@@ -14,7 +14,11 @@ try:
 except importlib.metadata.PackageNotFoundError:  # pragma: no cover - editable/unbuilt checkout
     __version__ = "0.9.0-dev"
 
-from maistro_canvas.canvas.composition import CanvasRuntime, build_canvas_runtime
+from maistro_canvas.canvas.composition import (
+    CanvasRuntime,
+    build_canvas_router,
+    build_canvas_runtime,
+)
 from maistro_canvas.export import (
     ExporterDependencyError,
     ExportLayer,
@@ -145,6 +149,7 @@ __all__ = [
     "WorldStyleConflictError",
     "WorldStylePartial",
     "__version__",
+    "build_canvas_router",
     "build_canvas_runtime",
     "export_html",
     "export_pptx",

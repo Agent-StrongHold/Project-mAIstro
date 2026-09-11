@@ -23,7 +23,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from maistro_canvas.canvas.routes import make_canvas_router
+from maistro_canvas.canvas.routes import _make_canvas_router
 from maistro_canvas.types import CanvasRecord
 
 
@@ -90,7 +90,7 @@ def _make_app() -> FastAPI:
     store = _FakeStore()
     app = FastAPI()
     app.include_router(
-        make_canvas_router(
+        _make_canvas_router(
             store=store,  # type: ignore[arg-type]
             executor=_FakeExecutor(),  # type: ignore[arg-type]
             compositor=_FakeCompositor(),  # type: ignore[arg-type]

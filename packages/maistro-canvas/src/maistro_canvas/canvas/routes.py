@@ -75,6 +75,7 @@ from maistro_canvas.types import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from maistro_canvas.canvas.composition import CanvasRuntime
     from maistro_canvas.canvas.executor import CanvasExecutor
     from maistro_canvas.protocols import CanvasStore, CompositorService
     from maistro_canvas.types import CanvasRecord, GenerationJobRecord, LayerRecord
@@ -312,17 +313,19 @@ _ASPECT_RATIO_BASES: dict[str, tuple[int, int]] = {
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Factory — injects deps so tests can override cleanly
+# Factory — production receives the complete canonical runtime. The private
+# registration helper remains available to package tests without making an
+# alternate executor injection part of the shipped boundary.
 # ─────────────────────────────────────────────────────────────────────
 
 
-def make_canvas_router(
+def _make_canvas_router(
     *,
     store: CanvasStore,
     executor: CanvasExecutor,
     compositor: CompositorService,
 ) -> APIRouter:
-    """Return a router with the given dependencies closed over."""
+    """Register handlers against already-selected dependencies."""
     router = APIRouter()
     _register_canvas_routes(router, store, executor, compositor)
     _register_layer_routes(router, store, executor, compositor)
@@ -330,6 +333,20 @@ def make_canvas_router(
     _register_composite_routes(router, store, executor, compositor)
     _register_export_routes(router, store, executor, compositor)
     return router
+
+
+def make_canvas_router(*, runtime: CanvasRuntime, compositor: CompositorService) -> APIRouter:
+    """Return the production router bound to canonical Canvas execution.
+
+    A route cannot be mounted with a separately injected executor. The runtime
+    owns the scope-bound ``CanvasCanonicalExecution`` and its worker together,
+    so every generation admission through this boundary is canonical.
+    """
+    return _make_canvas_router(
+        store=runtime.store,
+        executor=runtime.executor,
+        compositor=compositor,
+    )
 
 
 def _register_canvas_routes(

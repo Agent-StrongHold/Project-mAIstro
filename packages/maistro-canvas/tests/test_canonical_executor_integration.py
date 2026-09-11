@@ -6,6 +6,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.model import AttemptStatus, RunStatus
@@ -15,7 +17,7 @@ from maistro_canvas.canvas.canonical_execution import (
     canonical_run_id,
     correlate_run,
 )
-from maistro_canvas.canvas.composition import build_canvas_runtime
+from maistro_canvas.canvas.composition import build_canvas_router, build_canvas_runtime
 from maistro_canvas.canvas.executor import CanvasExecutor
 from maistro_canvas.canvas.runner import CanvasJobRunner
 from maistro_canvas.protocols import ImageData
@@ -171,6 +173,51 @@ class _FailingRunnerExecutor:
             raise AssertionError("terminal hook should not be called")
         self.failures.append(str(exc))
         return "Generation failed: provider service temporarily unavailable."
+
+
+async def test_production_router_factory_admits_canonical_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The mounted production factory cannot bypass the canonical adapter."""
+    monkeypatch.setenv("CANVAS_API_TOKEN", "canvas-test-token")
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("workspace-1")
+    runs = InMemoryRunStore(project_store=projects)
+    store = _CanvasStore()
+    store.ORG = "default"
+    store.canvas.org_id = store.ORG
+    router = build_canvas_router(
+        store=store,  # type: ignore[arg-type]
+        image_client=_ImageClient(),  # type: ignore[arg-type]
+        model_registry=_Registry(),
+        warden=_Warden(),
+        run_store=runs,
+        workspace_id="workspace-1",
+        project_id=root.project_id,
+        compositor=object(),  # type: ignore[arg-type]
+    )
+    app = FastAPI()
+    app.include_router(router, prefix="/api/canvas")
+
+    with TestClient(
+        app,
+        raise_server_exceptions=True,
+        headers={"Authorization": "Bearer canvas-test-token"},
+    ) as client:
+        response = client.post(
+            "/api/canvas/canvas-1/layers/layer-1/generate",
+            json={"prompt": "a safe landscape"},
+        )
+
+    assert response.status_code == 202, response.text
+    job_id = response.json()["job_id"]
+    job = await store.get_job(job_id, org_id=_CanvasStore.ORG)
+    assert job is not None
+    run_id = canonical_run_id(job.params)
+    assert run_id is not None
+    admitted = await runs.get_run(run_id)
+    assert admitted is not None
+    assert admitted.actor_principal_id == "default"
 
 
 async def test_generation_request_and_runner_are_visible_on_canonical_spine() -> None:

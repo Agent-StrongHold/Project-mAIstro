@@ -21,7 +21,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from maistro_canvas.canvas.routes import make_canvas_router
+from maistro_canvas.canvas.routes import _make_canvas_router
 from maistro_canvas.types import (
     CanvasRecord,
     CompositeResult,
@@ -199,7 +199,7 @@ class _Harness:
     def app(self) -> FastAPI:
         app = FastAPI()
         app.include_router(
-            make_canvas_router(
+            _make_canvas_router(
                 store=self.store,  # type: ignore[arg-type]
                 executor=self.executor,  # type: ignore[arg-type]
                 compositor=self.compositor,  # type: ignore[arg-type]
