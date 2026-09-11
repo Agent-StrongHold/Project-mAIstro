@@ -306,13 +306,16 @@ class SqliteGraphContinuationStore:
                 (*values, continuation.run_id),
             )
         else:
-            await self._conn.execute(
+            cursor = await self._conn.execute(
                 """UPDATE graph_continuations
                       SET status = ?, project_id = ?, created_at = ?, resume_at = ?,
                           version = ?, continuation_json = ?
-                    WHERE run_id = ?""",
-                (*values, continuation.run_id),
+                    WHERE run_id = ? AND version < ?""",
+                (*values, continuation.run_id, continuation.version),
             )
+            if cursor.rowcount != 1:
+                await self._conn.commit()
+                raise ValueError(f"version regression: incoming={continuation.version}")
         await self._conn.commit()
 
 
