@@ -234,9 +234,7 @@ async def test_pg_replicas_converge_on_one_occurrence_and_schedule_pointer(pg_po
     from maistro.scheduling.pg_store import PgScheduleStore
     from maistro.testing.postgres import postgres_dsn
 
-    runs, schedules, templates, _template, schedule = await _pg_context(
-        pg_pool, OverlapPolicy.SKIP
-    )
+    runs, schedules, templates, _template, schedule = await _pg_context(pg_pool, OverlapPolicy.SKIP)
     other_pool = await asyncpg.create_pool(
         postgres_dsn(), min_size=1, max_size=2, init=_register_json_codecs
     )
