@@ -1638,6 +1638,13 @@ async def _tool_run_workflow(
                 "status": "completed",
                 "warning": f"the run completed; recording it did not: {e}",
             }
+        unavailable = getattr(e, "result", None)
+        if isinstance(unavailable, dict) and unavailable.get("status") == "unavailable":
+            return {
+                "status": "unavailable",
+                "run_id": None,
+                "error": str(unavailable.get("error") or e),
+            }
         return {"error": f"DAG execution failed: {e}"}
 
 

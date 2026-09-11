@@ -24,12 +24,16 @@ from maistro.graph.durable_runs import (
 )
 from maistro.graph.types import DEFAULT_SYSTEM_PROMPTS, JSON_OUTPUT_SCHEMAS, AgentRole
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run
-from services.dag_agents import _container, get_run_store
+from services.dag_agents import (
+    GraphExecutionUnavailableError,
+    _canonical_execution_stores,
+    _container,
+    get_run_store,
+)
 from services.legacy_dag_node import LegacyConductorNode, OnResponseHook
 from services.node_metrics_store import record_run_completion
 
 logger = logging.getLogger(__name__)
-_COMPAT_SCOPE = "hive-standalone-compat"
 _SCOUT_NODE_ID = "__hive_legacy_scout__"
 _SCOUT_EDGE_ID = "__hive_legacy_scout_to_entry__"
 
@@ -322,13 +326,10 @@ async def _scope(
     workspace_id: str | None,
     project_id: str | None,
 ) -> tuple[str, str, Any]:
+    # Scope is executable only when both canonical stores are wired. Do not
+    # fabricate a compatibility scope for work that cannot be recovered.
+    canonical_run_store, _graph_run_store = _canonical_execution_stores()
     container = _container()
-    if container is None:
-        return (
-            workspace_id or str(dag_data.get("workspace_id") or _COMPAT_SCOPE),
-            project_id or str(dag_data.get("project_id") or _COMPAT_SCOPE),
-            None,
-        )
 
     resolved_workspace = (
         workspace_id
@@ -339,7 +340,7 @@ async def _scope(
     if resolved_project is None:
         root = await container.project_scope_store.root_for_workspace(resolved_workspace)
         resolved_project = root.project_id
-    return resolved_workspace, resolved_project, container.run_store
+    return resolved_workspace, resolved_project, canonical_run_store
 
 
 def _node_env(
@@ -420,7 +421,7 @@ def _recovery_resolver(run: Run):
 async def recover_stranded_dag_runs(*, limit: int = 100) -> int:
     """Recover only canonical Runs admitted by the shipped legacy DAG adapter."""
     container = _container()
-    if container is None or container.graph_run_store is None:
+    if container is None or container.run_store is None or container.graph_run_store is None:
         return 0
     return await recover_queued_graph_runs(
         store=container.graph_run_store,
@@ -444,7 +445,7 @@ async def wake_due_dag_runs(*, limit: int = 100) -> int:
     bus exactly as ``recover_abandoned_attempts`` reports them (#62).
     """
     container = _container()
-    if container is None or container.graph_run_store is None:
+    if container is None or container.run_store is None or container.graph_run_store is None:
         return 0
     return await resume_due_graph_runs(
         store=container.graph_run_store,
@@ -511,11 +512,15 @@ async def execute_dag(
     llm_builder: Callable[[OnResponseHook | None], Any] | None = None,
 ) -> dict[str, Any]:
     """Run a shipped Hive DAG as one canonical durable Graph Run."""
-    resolved_workspace, resolved_project, canonical_run_store = await _scope(
-        dag_data,
-        workspace_id=workspace_id,
-        project_id=project_id,
-    )
+    try:
+        resolved_workspace, resolved_project, canonical_run_store = await _scope(
+            dag_data,
+            workspace_id=workspace_id,
+            project_id=project_id,
+        )
+        graph_run_store = get_run_store()
+    except GraphExecutionUnavailableError as exc:
+        return exc.result
     graph = graph_from_legacy_dag(
         dag_data,
         workspace_id=resolved_workspace,
@@ -531,19 +536,16 @@ async def execute_dag(
         "execution_mode": execution_mode,
     }
 
-    admitted_run_id = None
-    if canonical_run_store is not None:
-        admitted = await canonical_run_store.create_run(
-            graph,
-            initial_status=RunStatus.QUEUED,
-            actor_principal_id=user_id or None,
-            provenance=provenance,
-        )
-        admitted_run_id = admitted.run_id
+    admitted = await canonical_run_store.create_run(
+        graph,
+        initial_status=RunStatus.QUEUED,
+        actor_principal_id=user_id or None,
+        provenance=provenance,
+    )
 
     record = await run_durable_graph(
         graph,
-        store=get_run_store(),
+        store=graph_run_store,
         node_resolver=_resolver(
             raw_by_id,
             task_desc=task_desc,
@@ -557,7 +559,7 @@ async def execute_dag(
             llm_builder=llm_builder,
         ),
         actor_principal_id=user_id or None,
-        run_id=admitted_run_id,
+        run_id=admitted.run_id,
         run_store=canonical_run_store,
         provenance=provenance,
     )

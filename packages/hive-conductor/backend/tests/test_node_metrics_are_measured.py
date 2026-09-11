@@ -17,6 +17,7 @@ from __future__ import annotations
 import ast
 import pathlib
 import sys
+from types import SimpleNamespace
 from typing import Any, ClassVar
 
 import pytest
@@ -522,6 +523,30 @@ def synth_dag_id():
         registry.deregister("synth-metrics")
 
 
+@pytest.fixture()
+def canonical_container() -> Any:
+    from maistro.graph.durable_runs import (
+        CanonicalDurableRunStore,
+        InMemoryGraphContinuationStore,
+    )
+    from maistro.runs import InMemoryRunStore
+
+    class _Projects:
+        async def get(self, project_id: str) -> Any:
+            return SimpleNamespace(project_id=project_id, workspace_id="w1")
+
+    projects = _Projects()
+    run_store = InMemoryRunStore(project_store=projects)
+    return SimpleNamespace(
+        config=SimpleNamespace(workspace_id="w1"),
+        project_scope_store=projects,
+        a2a_delegator=object(),
+        guest_peers=object(),
+        run_store=run_store,
+        graph_run_store=CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore()),
+    )
+
+
 class TestTheIngestDecisionDrivenThroughTheRealPath:
     """The classes above assert on `_is_terminal` and on source shape; these
     run `run_registered_dag` itself, which is where the decision is actually
@@ -529,8 +554,13 @@ class TestTheIngestDecisionDrivenThroughTheRealPath:
     """
 
     @pytest.mark.ac("SPEC-083026-2642/AC-3")
-    async def test_a_finished_run_reaches_the_ingest(self, synth_dag_id: str) -> None:
+    async def test_a_finished_run_reaches_the_ingest(
+        self, synth_dag_id: str, canonical_container: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import services.dag_agents as dag_agents
         import services.node_metrics_store as metrics_module
+
+        monkeypatch.setattr(dag_agents, "_container", lambda: canonical_container)
         from services.dag_agents import run_registered_dag
 
         seen: list[Any] = []
@@ -544,14 +574,21 @@ class TestTheIngestDecisionDrivenThroughTheRealPath:
 
     @pytest.mark.ac("SPEC-083026-2642/AC-3")
     async def test_a_failing_ingest_does_not_fail_the_run(
-        self, synth_dag_id: str, caplog: Any
+        self,
+        synth_dag_id: str,
+        canonical_container: Any,
+        caplog: Any,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Named rather than bare: a metrics write must not fail a run that
         already produced a result, but an operator has to be able to find out
         that the observations were dropped."""
         import logging
 
+        from services import dag_agents
         from services.dag_agents import run_registered_dag
+
+        monkeypatch.setattr(dag_agents, "_container", lambda: canonical_container)
 
         def _boom(record: Any) -> int:
             raise RuntimeError("the metrics buffer is gone")
@@ -566,7 +603,11 @@ class TestTheIngestDecisionDrivenThroughTheRealPath:
 
     @pytest.mark.ac("SPEC-083026-2642/AC-3")
     async def test_a_run_that_stopped_at_a_pause_is_deferred_not_ingested(
-        self, synth_dag_id: str, caplog: Any
+        self,
+        synth_dag_id: str,
+        canonical_container: Any,
+        caplog: Any,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """`run_durable_graph` returns as soon as the graph stops advancing, so
         a wait or HITL node hands back a record that is not a finished run."""
@@ -574,6 +615,7 @@ class TestTheIngestDecisionDrivenThroughTheRealPath:
 
         import services.dag_agents as dag_agents
 
+        monkeypatch.setattr(dag_agents, "_container", lambda: canonical_container)
         real = dag_agents.run_durable_graph
         seen: list[Any] = []
 

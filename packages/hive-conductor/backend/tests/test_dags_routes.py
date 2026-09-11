@@ -272,6 +272,37 @@ def test_run_champion_success_uses_canonical_run_id(
     assert body["run_id"] == "champion-run"
 
 
+def test_run_champion_unavailable_is_explicit(
+    admin_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import services.graph_runner as graph_runner
+
+    async def unavailable() -> dict[str, Any]:
+        raise graph_runner.CanonicalDagExecutionError(
+            {
+                "status": "unavailable",
+                "run_id": None,
+                "error": "canonical Graph execution is unavailable",
+                "node_results": {},
+            }
+        )
+
+    monkeypatch.setattr(graph_runner, "execute_champion", unavailable)
+    response = admin_client.post("/v1/dags/run-champion")
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "unavailable",
+        "execution_id": None,
+        "run_id": None,
+        "result": {
+            "status": "unavailable",
+            "run_id": None,
+            "error": "canonical Graph execution is unavailable",
+            "node_results": {},
+        },
+    }
+
+
 def test_run_champion_failure(admin_client: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     import services.graph_runner as graph_runner
 

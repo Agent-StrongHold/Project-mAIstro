@@ -74,11 +74,9 @@ def _paused_record(run_id: str, *, deadline: datetime) -> Any:
 
 
 @pytest.fixture
-def seeded(admin_client: Any) -> Iterator[_Seeded]:
-    from services.dag_agents import get_run_store
-
-    store = get_run_store()
-    assert isinstance(store, InMemoryDurableRunStore)
+def seeded(admin_client: Any, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Seeded]:
+    store = InMemoryDurableRunStore()
+    monkeypatch.setattr("services.dag_agents.get_run_store", lambda: store)
     created: list[str] = []
 
     async def _seed(run_id: str, *, deadline: datetime) -> None:

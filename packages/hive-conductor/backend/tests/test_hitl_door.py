@@ -62,7 +62,7 @@ def _paused_record(run_id: str, *, kind: str = "hitl") -> Any:
 
 
 @pytest.fixture
-def seeded(admin_client):
+def seeded(admin_client, monkeypatch):
     """Seed the app's own durable store, and clear what this test added.
 
     `admin_client` rather than `authed_client`: answering a pause resumes the
@@ -72,9 +72,10 @@ def seeded(admin_client):
     `test_an_unscoped_principal_cannot_answer` -- and these use a principal
     that holds the scope.
     """
-    from services.dag_agents import get_run_store
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
 
-    store = get_run_store()
+    store = InMemoryDurableRunStore()
+    monkeypatch.setattr("services.dag_agents.get_run_store", lambda: store)
     created: list[str] = []
 
     async def _seed(run_id: str, **kwargs: Any) -> None:
