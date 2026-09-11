@@ -9,6 +9,16 @@
   ],
   "backend_surfaces": [
     {
+      "source": "packages/hive-conductor/backend/routes/dag_runs.py",
+      "method": "POST",
+      "route": "/{run_id}/cancel",
+      "handler": "cancel_run",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "requests canonical Run cancellation after Workspace authorization",
+      "effect_owner": "services.dag_run_inspection.cancel_visible_run -> RunStore.transition_run"
+    },
+    {
       "source": "packages/hive-conductor/backend/main.py",
       "method": "POST",
       "route": "/{confirm_id}/respond",

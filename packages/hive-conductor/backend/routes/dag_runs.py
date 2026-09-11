@@ -26,10 +26,16 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from services.dag_run_inspection import can_inspect_run, list_visible_runs, visible_run_detail
-from services.dag_run_store import get_dag_run_store
+from services.dag_run_inspection import (
+    can_inspect_run,
+    cancel_visible_run,
+    list_visible_runs,
+    visible_run_detail,
+)
 
 router = APIRouter(tags=["dag-runs"])
+# The route delegates list/detail/control to the canonical RunStore service;
+# DagRunStore is retained below only for bounded UI event presentation.
 
 
 def _user_id(request: Request) -> str:
@@ -72,7 +78,7 @@ def retention() -> dict[str, Any]:
     per-run scoping applies, exactly as before (#1174 scoped the run-bearing
     routes, not this description of the store's bounds).
     """
-    from services.dag_run_store import MAX_EVENTS_PER_RUN, MAX_RUNS
+    from services.dag_run_store import MAX_EVENTS_PER_RUN, MAX_RUNS, get_dag_run_store
 
     store = get_dag_run_store()
     return {
@@ -93,6 +99,16 @@ async def get_run(run_id: str, request: Request) -> dict[str, Any]:
     return detail
 
 
+@router.post("/{run_id}/cancel")
+async def cancel_run(run_id: str, request: Request) -> dict[str, Any]:
+    """Request cancellation through the canonical Run lifecycle."""
+    uid = _user_id(request)
+    detail = await cancel_visible_run(uid, run_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    return detail
+
+
 @router.get("/{run_id}/events")
 async def stream_run_events(run_id: str, request: Request) -> StreamingResponse:
     """SSE stream of pm_node_* events for one run. Cancels when the client
@@ -104,6 +120,8 @@ async def stream_run_events(run_id: str, request: Request) -> StreamingResponse:
     # out-of-scope id gets the same 404 a missing run gets.
     if not await can_inspect_run(uid, run_id):
         raise HTTPException(status_code=404, detail="run not found")
+
+    from services.dag_run_store import get_dag_run_store
 
     store = get_dag_run_store()
     q = store.subscribe(run_id)
