@@ -14,7 +14,10 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from maistro.runs.retention_scope import GlobalRetentionGrant
 
 from maistro.security.secret_equal import secret_equal
 
@@ -272,6 +275,7 @@ class PrivilegeGuard:
         self._admin_key = ""
         self._user_key = ""
         self._admin_key_version = 0
+        self._retention_grant_epoch = 0
         self._pending_elevations: dict[str, ElevationRequest] = {}
         self._grants: list[ElevationGrant] = []
         self._policies: list[_Policy] = []
@@ -286,7 +290,31 @@ class PrivilegeGuard:
         self._admin_key = admin_public_key
         self._user_key = user_public_key
         self._admin_key_version = 0
+        self._retention_grant_epoch += 1
         self._initialized = True
+
+    def issue_global_retention_grant(self, admin_key: str) -> GlobalRetentionGrant:
+        """Issue a revocable capability for explicitly global Run retention.
+
+        This uses the existing privilege authority rather than treating an
+        audit label as permission.  Admin-key rotation or reinitialization
+        invalidates every grant that was issued before it.
+        """
+        if not self._initialized or not secret_equal(admin_key, self._admin_key):
+            raise ElevationDeniedError("Only the admin can authorize global retention")
+        from maistro.runs.retention_scope import GlobalRetentionGrant
+
+        epoch = self._retention_grant_epoch
+        authorized_by = self._admin_key
+
+        def _is_valid() -> bool:
+            return (
+                self._initialized
+                and self._retention_grant_epoch == epoch
+                and secret_equal(self._admin_key, authorized_by)
+            )
+
+        return GlobalRetentionGrant._issue(authorized_by, _is_valid)
 
     def propose_elevation(self, request: ElevationRequest) -> str:
         token = hmac.new(
@@ -335,6 +363,7 @@ class PrivilegeGuard:
         if not secret_equal(old_key, self._admin_key):
             raise ElevationDeniedError("old_key does not match current admin key")
         self._admin_key_version += 1
+        self._retention_grant_epoch += 1
         self._admin_key = new_key
         for grant in self._grants:
             grant._valid = False

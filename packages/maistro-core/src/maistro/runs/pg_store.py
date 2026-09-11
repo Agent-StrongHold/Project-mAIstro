@@ -64,6 +64,7 @@ from maistro.runs.model import (
 from maistro.runs.retention_scope import (
     RetentionScope,
     WorkspaceRetentionScope,
+    require_retention_scope,
 )
 from maistro.runs.sources import occurrence_key
 from maistro.runs.store import (
@@ -298,6 +299,7 @@ class PgRunStore:
         scope, because the predicate is inside the SELECT: candidates outside
         the scope are invisible to this transaction's locks.
         """
+        scope = require_retention_scope(scope)
         if limit <= 0:
             raise ValueError("limit must be positive")
         cutoff = now if now is not None else datetime.now(UTC)

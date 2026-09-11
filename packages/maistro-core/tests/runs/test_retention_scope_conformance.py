@@ -35,6 +35,7 @@ from maistro.graph.durable_runs.continuation import (
     SqliteGraphContinuationStore,
 )
 from maistro.graph.execution_state import GraphExecutionState
+from maistro.privilege import PrivilegeGuard
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.retention_scope import (
@@ -539,14 +540,16 @@ async def test_a_schedule_cursor_is_only_released_by_its_own_scope(
 
 
 async def test_a_global_sweep_is_explicit_and_touches_every_workspace(
-    scope_world: Any,
+    scope_world: Any, tmp_path: Any
 ) -> None:
     world = scope_world
     await _expired_terminal_run(world, *world.a)
     await _expired_terminal_run(world, *world.b)
 
+    guard = PrivilegeGuard(data_dir=tmp_path)
+    guard.initialize(admin_public_key="pk_admin", user_public_key="pk_user")
     outcome = await world.runs.purge_expired_runs(
-        GlobalRetentionScope(authorized_by="operator"), now=NOW
+        GlobalRetentionScope(guard.issue_global_retention_grant("pk_admin")), now=NOW
     )
 
     assert outcome.runs == 2
@@ -556,9 +559,24 @@ async def test_a_global_sweep_is_explicit_and_touches_every_workspace(
     assert await world.runs.list_by_status(RunStatus.COMPLETED) == []
 
 
-def test_a_global_scope_names_its_principal() -> None:
-    with pytest.raises(ValueError):
-        GlobalRetentionScope(authorized_by="   ")
+def test_a_global_scope_requires_an_authority_capability() -> None:
+    with pytest.raises(TypeError, match="PrivilegeGuard-issued grant"):
+        GlobalRetentionScope("operator")  # type: ignore[arg-type]
+
+
+def test_a_global_grant_is_revoked_when_the_admin_key_rotates(tmp_path: Any) -> None:
+    guard = PrivilegeGuard(data_dir=tmp_path)
+    guard.initialize(admin_public_key="pk_admin", user_public_key="pk_user")
+    scope = GlobalRetentionScope(guard.issue_global_retention_grant("pk_admin"))
+    guard.rotate_admin_key("pk_admin", "pk_admin-v2")
+
+    with pytest.raises(PermissionError, match="no longer valid"):
+        scope.grant.validate()
+
+
+async def test_an_invalid_runtime_scope_is_rejected(scope_world: Any) -> None:
+    with pytest.raises(TypeError, match="requires WorkspaceRetentionScope"):
+        await scope_world.runs.purge_expired_runs(None, now=NOW)  # type: ignore[arg-type]
 
 
 def test_a_workspace_scope_refuses_an_empty_workspace() -> None:

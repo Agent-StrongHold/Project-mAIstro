@@ -268,12 +268,18 @@ async def wire_execution_spine(
         from maistro.scheduling.store import InMemoryScheduleStore
 
         project_scope_store = InMemoryProjectScopeStore()
-        run_store = ClaimingInMemoryRunStore(
-            project_store=project_scope_store, archive_store=archive_store
-        )
         template_store = InMemoryGraphTemplateStore()
         schedule_store = InMemoryScheduleStore()
         continuation_store = InMemoryGraphContinuationStore()
+        # These are one in-memory execution spine, not independent defaults:
+        # retention must reclaim the continuation and Schedule cursor beside
+        # the Run it deletes (#1175).
+        run_store = ClaimingInMemoryRunStore(
+            project_store=project_scope_store,
+            archive_store=archive_store,
+            continuation_store=continuation_store,
+            schedule_store=schedule_store,
+        )
 
     # The Project store refuses to delete a Project that owns Runs, and only
     # the Run store can answer that. PostgreSQL has a foreign key for it; this

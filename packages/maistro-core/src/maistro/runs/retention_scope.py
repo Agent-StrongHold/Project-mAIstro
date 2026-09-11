@@ -40,6 +40,7 @@ rather than silently destroyed.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -47,9 +48,12 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from maistro.runs.model import Run
 
 __all__ = [
+    "GlobalRetentionGrant",
     "GlobalRetentionScope",
+    "RetentionAuthorizationError",
     "RetentionScope",
     "WorkspaceRetentionScope",
+    "require_retention_scope",
     "run_in_purge_scope",
 ]
 
@@ -71,26 +75,87 @@ class WorkspaceRetentionScope:
             raise ValueError("workspace_id must be a non-empty string")
 
 
-@dataclass(frozen=True)
+class RetentionAuthorizationError(PermissionError):
+    """A global retention capability is absent, forged, revoked, or expired."""
+
+
+class GlobalRetentionGrant:
+    """Opaque global-retention capability issued by the privilege authority.
+
+    A principal name is attribution, not authorization.  The grant therefore
+    carries a validator owned by :class:`PrivilegeGuard`; key rotation or
+    guard reinitialization invalidates it before a purge can select a row.
+    ``_issue`` is intentionally the only constructor used by the privilege
+    subsystem, so callers cannot turn an arbitrary string into authority.
+    """
+
+    __slots__ = ("_authorized_by", "_validator")
+
+    def __init__(
+        self,
+        authorized_by: str,
+        validator: Callable[[], bool],
+        *,
+        _issued: object,
+    ) -> None:
+        if _issued is not _GRANT_ISSUANCE_TOKEN:
+            raise TypeError("global retention grants must be issued by PrivilegeGuard")
+        if not authorized_by.strip():
+            raise ValueError("authorized_by must name the admin principal")
+        self._authorized_by = authorized_by
+        self._validator = validator
+
+    @classmethod
+    def _issue(cls, authorized_by: str, validator: Callable[[], bool]) -> GlobalRetentionGrant:
+        return cls(authorized_by, validator, _issued=_GRANT_ISSUANCE_TOKEN)
+
+    @property
+    def authorized_by(self) -> str:
+        return self._authorized_by
+
+    def validate(self) -> None:
+        if not self._validator():
+            raise RetentionAuthorizationError(
+                "global retention grant is no longer valid; obtain a fresh admin grant"
+            )
+
+
+_GRANT_ISSUANCE_TOKEN = object()
+
+
 class GlobalRetentionScope:
     """Explicitly authorized store-wide retention (#1175).
 
-    Store-wide deletion exists — an operator decommissioning a deployment is
-    its legitimate user — but it must never be what falls out of *omitting* a
-    predicate, which is exactly what the pre-#1175 signature rewarded. The
-    authorization is part of the value: whoever's name is in ``authorized_by``
-    is who asked every Run in the store to be deletable, and it travels in the
-    purge outcome for the same audit reason the Runs' own provenance does.
+    Store-wide deletion is supported only with a capability issued by the
+    existing privilege authority.  In particular, ``authorized_by`` is a
+    read-only audit attribute of that capability, not a caller-supplied bypass.
     """
 
-    authorized_by: str
+    __slots__ = ("grant",)
 
-    def __post_init__(self) -> None:
-        if not self.authorized_by.strip():
-            raise ValueError("authorized_by must name the principal that authorized a global purge")
+    def __init__(self, grant: GlobalRetentionGrant) -> None:
+        if not isinstance(grant, GlobalRetentionGrant):
+            raise TypeError("GlobalRetentionScope requires a PrivilegeGuard-issued grant")
+        self.grant = grant
+
+    @property
+    def authorized_by(self) -> str:
+        return self.grant.authorized_by
 
 
 RetentionScope = WorkspaceRetentionScope | GlobalRetentionScope
+
+
+def require_retention_scope(scope: object) -> RetentionScope:
+    """Validate both the runtime scope type and global deletion authority."""
+    if not isinstance(scope, (WorkspaceRetentionScope, GlobalRetentionScope)):
+        raise TypeError(
+            "purge_expired_runs requires WorkspaceRetentionScope or an authorized "
+            "GlobalRetentionScope"
+        )
+    if isinstance(scope, GlobalRetentionScope):
+        scope.grant.validate()
+    return scope
 
 
 def run_in_purge_scope(run: Run, scope: RetentionScope) -> bool:
@@ -100,6 +165,7 @@ def run_in_purge_scope(run: Run, scope: RetentionScope) -> bool:
     can translate it into their candidate SQL's WHERE clause while this stays
     the one statement of what the predicate means.
     """
+    require_retention_scope(scope)
     if isinstance(scope, WorkspaceRetentionScope):
         return run.workspace_id == scope.workspace_id
     return True

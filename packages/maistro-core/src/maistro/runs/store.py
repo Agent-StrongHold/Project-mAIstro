@@ -41,6 +41,7 @@ from maistro.runs.retention_scope import (
     GlobalRetentionScope,
     RetentionScope,
     WorkspaceRetentionScope,
+    require_retention_scope,
     run_in_purge_scope,
 )
 from maistro.runs.sources import (
@@ -795,6 +796,7 @@ class InMemoryRunStore:
         `CanonicalDurableRunStore.reconcile_persistence`, the same backstop
         the durable stores keep for a crash.
         """
+        scope = require_retention_scope(scope)
         if limit <= 0:
             raise ValueError("limit must be positive")
         cutoff = now if now is not None else datetime.now(UTC)

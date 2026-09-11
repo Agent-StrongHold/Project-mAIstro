@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -20,6 +21,7 @@ from maistro.observability.metrics import (
     retention_dependents_purged_total,
     retention_purged_total,
 )
+from maistro.privilege import PrivilegeGuard
 from maistro.runs.retention import (
     DEFAULT_CHAT_RETENTION_SECONDS,
     UNBOUNDED_RETENTION,
@@ -36,7 +38,12 @@ from maistro.runs.store import PurgeOutcome
 NOW = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
 SCOPE = WorkspaceRetentionScope(workspace_id="workspace-1")
 OTHER = WorkspaceRetentionScope(workspace_id="workspace-2")
-GLOBAL = GlobalRetentionScope(authorized_by="operator")
+
+
+def _global_scope(tmp_path: Path) -> GlobalRetentionScope:
+    guard = PrivilegeGuard(data_dir=tmp_path)
+    guard.initialize(admin_public_key="pk_admin", user_public_key="pk_user")
+    return GlobalRetentionScope(guard.issue_global_retention_grant("pk_admin"))
 
 
 class SpyStore:
@@ -282,14 +289,17 @@ async def test_a_per_sweep_scope_overrides_the_construction_scope() -> None:
     assert store.calls[0][0] is OTHER
 
 
-async def test_a_global_scope_reaches_the_store_intact() -> None:
+async def test_a_global_scope_reaches_the_store_intact(tmp_path: Path) -> None:
     """Store-wide deletion is an explicitly attributed act, not a missing
     predicate: the grant travels to the store and into the outcome."""
     store = SpyStore(purged=2)
-    sweeper = RunRetentionSweeper(store, RetentionPolicy(sweep_interval_seconds=0), scope=GLOBAL)  # type: ignore[arg-type]
+    global_scope = _global_scope(tmp_path)
+    sweeper = RunRetentionSweeper(
+        store, RetentionPolicy(sweep_interval_seconds=0), scope=global_scope
+    )  # type: ignore[arg-type]
 
     assert await sweeper.sweep_now(now=NOW) == 2
-    assert store.calls[0][0] is GLOBAL
+    assert store.calls[0][0] is global_scope
     assert sweeper.last_outcome is not None
     assert sweeper.last_outcome.mode == "global"
     assert sweeper.last_outcome.is_global
@@ -315,7 +325,7 @@ def _mode_total(mode: str) -> float:
     )
 
 
-async def test_purged_runs_are_counted_by_mode() -> None:
+async def test_purged_runs_are_counted_by_mode(tmp_path: Path) -> None:
     """The health metric identifies the authorization mode, never a Workspace
     id — Workspaces are caller-created and metric labels are bounded (#818)."""
     before_workspace = _mode_total("workspace")
@@ -324,7 +334,9 @@ async def test_purged_runs_are_counted_by_mode() -> None:
         SpyStore(purged=3), RetentionPolicy(sweep_interval_seconds=0), scope=SCOPE
     )  # type: ignore[arg-type]
     widened = RunRetentionSweeper(
-        SpyStore(purged=2), RetentionPolicy(sweep_interval_seconds=0), scope=GLOBAL
+        SpyStore(purged=2),
+        RetentionPolicy(sweep_interval_seconds=0),
+        scope=_global_scope(tmp_path),
     )  # type: ignore[arg-type]
 
     await scoped.sweep_now(now=NOW)

@@ -38,7 +38,7 @@ from maistro.observability.metrics import (
     retention_dependents_purged_total,
     retention_purged_total,
 )
-from maistro.runs.retention_scope import GlobalRetentionScope
+from maistro.runs.retention_scope import GlobalRetentionScope, require_retention_scope
 from maistro.runs.store import DEFAULT_PURGE_BATCH, PurgeOutcome, RetentionScope
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -193,7 +193,7 @@ class RunRetentionSweeper:
                 "retention sweep has no deletion scope: construct the sweeper with a "
                 "RetentionScope or pass one to this sweep; nothing is deleted by default"
             )
-        return scope
+        return require_retention_scope(scope)
 
     def _due(self) -> bool:
         if not self._policy.bounded:
