@@ -84,10 +84,11 @@ class InvocationUsage(BaseModel):
             raise ValueError("units must be a non-empty string")
         if self.input_units < 0 or self.output_units < 0:
             raise ValueError("usage units cannot be negative")
-        if self.cost_cents is not None and (
-            not math.isfinite(self.cost_cents) or self.cost_cents < 0
-        ):
-            raise ValueError("cost_cents must be finite and nonnegative")
+        if self.cost_cents is not None:
+            if self.cost_cents < 0:
+                raise ValueError("cost_cents cannot be negative")
+            if not math.isfinite(self.cost_cents):
+                raise ValueError("cost_cents must be finite")
         return self
 
 
@@ -249,9 +250,7 @@ class InvocationExecutionService:
     in-memory store remains the explicit local/test composition.
     """
 
-    def __init__(
-        self, *, store: InvocationStore, quota: InvocationQuota | None = None
-    ) -> None:
+    def __init__(self, *, store: InvocationStore, quota: InvocationQuota | None = None) -> None:
         self._store = store
         # Opt-in until canonical backend composition is migrated. No per-call
         # quota override: alternative Agent/router strategies share this hook.
@@ -276,7 +275,7 @@ class InvocationExecutionService:
         )
         return history[-1] if history else None
 
-    async def invoke(
+    async def invoke(  # noqa: C901 - admission, dispatch, and terminal accounting share one lock
         self,
         *,
         binding: Binding,
@@ -311,11 +310,13 @@ class InvocationExecutionService:
             failed_effect: Invocation | None = None
             if history:
                 latest = history[-1]
-                if latest.status in {InvocationStatus.COMPLETED, InvocationStatus.FAILED}:
+                if (
+                    latest.status in {InvocationStatus.COMPLETED, InvocationStatus.FAILED}
+                    and self._quota is not None
+                ):
                     # Repair the terminal-save/accounting-write crash window.
                     # This is an absolute observation, not another usage charge.
-                    if self._quota is not None:
-                        await self._quota.observe(latest)
+                    await self._quota.observe(latest)
                 if latest.status is InvocationStatus.COMPLETED:
                     return latest
                 if latest.status is InvocationStatus.FAILED:
