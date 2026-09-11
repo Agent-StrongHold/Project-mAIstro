@@ -193,6 +193,14 @@ def test_noncanonical_dispositions_are_allowed(gate, classification: str) -> Non
     )
 
 
+def test_a_new_canonical_literal_cannot_be_banked_by_its_ledger_entry(gate) -> None:
+    name = "pkg.jobs::RunStatus"
+    found = {name: {"PENDING", "RUNNING", "FAILED"}}
+    assert gate.audit(ledger(**{name: entry(classification="CANONICAL")}), found) == []
+    assert gate._unauthorized_additions([name], {}, set()) == [name]
+    assert gate._unauthorized_additions([name], {}, {name}) == []
+
+
 def test_a_missing_rationale_fails(gate) -> None:
     found = {"pkg.jobs::JobStatus": {"PENDING", "RUNNING", "FAILED"}}
     failures = gate.audit(ledger(**{"pkg.jobs::JobStatus": entry(rationale="  ")}), found)

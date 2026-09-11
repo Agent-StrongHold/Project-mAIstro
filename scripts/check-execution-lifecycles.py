@@ -290,6 +290,13 @@ def _entries(ledger: object) -> dict[str, object]:
     return dict(entries) if isinstance(entries, dict) else {}
 
 
+def _unauthorized_additions(
+    added: list[str], authorized: dict[str, str], visible_at_base: set[str]
+) -> list[str]:
+    """Keep a candidate classification from authorizing a newly added identity."""
+    return [name for name in added if name not in authorized and name not in visible_at_base]
+
+
 def audit(ledger: dict[str, object], found: dict[str, set[str]]) -> list[str]:
     """Every way the candidate ledger and code disagree, named."""
     entries = ledger.get("lifecycles")
@@ -362,9 +369,7 @@ def main() -> int:
     # trusted source distinguishes newly visible aliases from code introduced by
     # this change; the latter still needs a prior grant.
     visible_at_base = _discover_at_revision(trusted_ref.base_sha, found)
-    unauthorized = [
-        name for name in added if name not in authorized and name not in visible_at_base
-    ]
+    unauthorized = _unauthorized_additions(added, authorized, visible_at_base)
     unbanked_authorized = [
         name for name in added if name in authorized and name not in candidate_entries
     ]
