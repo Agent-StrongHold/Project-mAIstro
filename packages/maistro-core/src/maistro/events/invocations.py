@@ -1,23 +1,16 @@
-"""Handler invocation records with idempotency keys (ADR-086 / SPEC-070226-b234).
+"""Durable dispatch records for the at-least-once Event contract.
 
-Each (trigger_id, event_id) pair is a unique idempotency key: a handler is
-invoked at most once successfully per event. A crash mid-handler leaves the
-invocation in a non-terminal status; replay retries the SAME row instead of
-creating a duplicate, so redelivery produces no duplicate committed effect.
+The (trigger_id, event_id) key and lease deduplicate MAIstro dispatch only:
+they do not prove that a remote handler did not commit before SUCCESS was
+saved. Automatic replay is therefore permitted only for a trigger whose
+handler durably deduplicates the stable delivery key at its own commit boundary.
+Unsafe handlers are recorded as blocked and hold the Event for reconciliation.
 
-**The key deduplicates rows; the lease deduplicates dispatch.** Those are not
-the same guarantee, and conflating them is how "at most once successfully" gets
-claimed by a store that cannot deliver it. Two workers calling `get_or_create`
-on one key converge on a single row and *both* receive it in a non-terminal
-status — whereupon both would call the handler. So dispatch goes through
-`claim`, which hands the invocation to exactly one caller and returns `None` to
-the rest. The lease expires, because a worker that dies mid-handler must not
-wedge the event forever; `MAX_ATTEMPTS` still bounds the retries that follow.
-
-This only became reachable with a store more than one process can open — which
-is why the PostgreSQL backend is where it had to be answered (#135). In-memory
-and SQLite implement the same contract so one conformance suite covers all
-three, and so the semantics cannot drift per backend.
+`claim` hands one active dispatcher the row and returns `None` to racing
+workers. The lease expires because a dead worker must not wedge an Event
+forever; bounded attempts still apply to handlers admitted by the idempotent
+contract. In-memory, SQLite, and PostgreSQL implement the same dispatch
+semantics.
 """
 
 from __future__ import annotations
@@ -49,6 +42,7 @@ class InvocationStatus(StrEnum):
     SUCCESS = "success"
     FAILED = "failed"
     RETRYING = "retrying"
+    UNSAFE = "unsafe"
 
 
 TERMINAL_STATUSES = frozenset({InvocationStatus.SUCCESS, InvocationStatus.FAILED})
@@ -122,17 +116,18 @@ class InMemoryInvocationStore:
         self._lock = asyncio.Lock()
 
     async def get(self, trigger_id: str, event_id: int) -> HandlerInvocation | None:
-        return self._invocations.get((trigger_id, event_id))
+        invocation = self._invocations.get((trigger_id, event_id))
+        return _copy_invocation(invocation) if invocation is not None else None
 
     async def get_or_create(self, trigger_id: str, event_id: int) -> HandlerInvocation:
         async with self._lock:
             key = (trigger_id, event_id)
             existing = self._invocations.get(key)
             if existing is not None:
-                return existing
+                return _copy_invocation(existing)
             invocation = HandlerInvocation(trigger_id=trigger_id, event_id=event_id)
             self._invocations[key] = invocation
-            return invocation
+            return _copy_invocation(invocation)
 
     async def claim(
         self, trigger_id: str, event_id: int, *, lease_seconds: float = DEFAULT_LEASE_SECONDS
@@ -150,14 +145,30 @@ class InMemoryInvocationStore:
                 return None
             invocation.attempts += 1
             invocation.lease_expires_at = now + lease_seconds
-            return invocation
+            return _copy_invocation(invocation)
 
     async def save(self, invocation: HandlerInvocation) -> None:
         async with self._lock:
-            self._invocations[(invocation.trigger_id, invocation.event_id)] = invocation
+            self._invocations[(invocation.trigger_id, invocation.event_id)] = _copy_invocation(
+                invocation
+            )
 
     async def list_for_event(self, event_id: int) -> list[HandlerInvocation]:
-        return [i for i in self._invocations.values() if i.event_id == event_id]
+        return [_copy_invocation(i) for i in self._invocations.values() if i.event_id == event_id]
+
+
+def _copy_invocation(invocation: HandlerInvocation) -> HandlerInvocation:
+    """Keep in-memory reads snapshot-like, as durable stores are."""
+
+    return HandlerInvocation(
+        trigger_id=invocation.trigger_id,
+        event_id=invocation.event_id,
+        status=invocation.status,
+        attempts=invocation.attempts,
+        last_error=invocation.last_error,
+        created_at=invocation.created_at,
+        lease_expires_at=invocation.lease_expires_at,
+    )
 
 
 _SCHEMA = """

@@ -90,7 +90,7 @@ async def test_bus_events_are_bridged_into_the_durable_log() -> None:
 
 
 async def test_process_durable_events_delivers_to_matching_trigger() -> None:
-    from maistro.events.trigger_store import TriggerDefinition
+    from maistro.events.trigger_store import HandlerDeliveryContract, TriggerDefinition
 
     container = await _container()
     delivered = []
@@ -100,7 +100,12 @@ async def test_process_durable_events_delivers_to_matching_trigger() -> None:
 
     container.handler_caller = _caller
     await container.trigger_store.add(
-        TriggerDefinition(trigger_id="t1", name="on-agent", event_pattern="agent.*")
+        TriggerDefinition(
+            trigger_id="t1",
+            name="on-agent",
+            event_pattern="agent.*",
+            delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+        )
     )
     await container.durable_event_log.append("agent.created")
     cursor = await container.process_durable_events()

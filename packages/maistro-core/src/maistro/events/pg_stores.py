@@ -36,7 +36,7 @@ from maistro.events.invocations import (
     HandlerInvocation,
     InvocationStatus,
 )
-from maistro.events.trigger_store import TriggerDefinition
+from maistro.events.trigger_store import HandlerDeliveryContract, TriggerDefinition
 
 if TYPE_CHECKING:
     import asyncpg
@@ -64,7 +64,8 @@ CREATE TABLE IF NOT EXISTS trigger_definitions (
     name TEXT NOT NULL DEFAULT '',
     event_pattern TEXT NOT NULL DEFAULT '',
     handler_url TEXT NOT NULL DEFAULT '',
-    enabled BOOLEAN NOT NULL DEFAULT TRUE
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    delivery_contract TEXT NOT NULL DEFAULT 'unsafe'
 );
 CREATE INDEX IF NOT EXISTS idx_trigger_enabled ON trigger_definitions(enabled);
 
@@ -115,6 +116,10 @@ async def ensure_event_schema(pool: asyncpg.Pool) -> None:
     async with pool.acquire() as conn, conn.transaction():
         await conn.execute("SELECT pg_advisory_xact_lock($1)", _SCHEMA_LOCK_KEY)
         await conn.execute(_SCHEMA)
+        await conn.execute(
+            "ALTER TABLE trigger_definitions ADD COLUMN IF NOT EXISTS "
+            "delivery_contract TEXT NOT NULL DEFAULT 'unsafe'"
+        )
 
 
 class PgEventLog:
@@ -216,21 +221,23 @@ class PgTriggerStore:
     async def add(self, trigger: TriggerDefinition) -> None:
         await self._pool.execute(
             """INSERT INTO trigger_definitions
-               (trigger_id, name, event_pattern, handler_url, enabled)
-               VALUES ($1,$2,$3,$4,$5)
+               (trigger_id, name, event_pattern, handler_url, enabled, delivery_contract)
+               VALUES ($1,$2,$3,$4,$5,$6)
                ON CONFLICT (trigger_id) DO UPDATE SET
                  name=EXCLUDED.name, event_pattern=EXCLUDED.event_pattern,
-                 handler_url=EXCLUDED.handler_url, enabled=EXCLUDED.enabled""",
+                 handler_url=EXCLUDED.handler_url, enabled=EXCLUDED.enabled,
+                 delivery_contract=EXCLUDED.delivery_contract""",
             trigger.trigger_id,
             trigger.name,
             trigger.event_pattern,
             trigger.handler_url,
             trigger.enabled,
+            trigger.delivery_contract.value,
         )
 
     async def get(self, trigger_id: str) -> TriggerDefinition | None:
         row = await self._pool.fetchrow(
-            "SELECT trigger_id, name, event_pattern, handler_url, enabled "
+            "SELECT trigger_id, name, event_pattern, handler_url, enabled, delivery_contract "
             "FROM trigger_definitions WHERE trigger_id = $1",
             trigger_id,
         )
@@ -243,7 +250,8 @@ class PgTriggerStore:
 
     async def list_triggers(self) -> list[TriggerDefinition]:
         rows = await self._pool.fetch(
-            "SELECT trigger_id, name, event_pattern, handler_url, enabled FROM trigger_definitions"
+            "SELECT trigger_id, name, event_pattern, handler_url, enabled, delivery_contract "
+            "FROM trigger_definitions"
         )
         return [_row_to_trigger(r) for r in rows]
 
@@ -253,7 +261,7 @@ class PgTriggerStore:
         # Doing it differently here would make "the same trigger matches" a
         # per-backend question.
         rows = await self._pool.fetch(
-            "SELECT trigger_id, name, event_pattern, handler_url, enabled "
+            "SELECT trigger_id, name, event_pattern, handler_url, enabled, delivery_contract "
             "FROM trigger_definitions WHERE enabled = TRUE"
         )
         return [t for t in (_row_to_trigger(r) for r in rows) if t.matches(event_type)]
@@ -398,6 +406,7 @@ def _row_to_trigger(row: Any) -> TriggerDefinition:
         event_pattern=row["event_pattern"] or "",
         handler_url=row["handler_url"] or "",
         enabled=bool(row["enabled"]),
+        delivery_contract=HandlerDeliveryContract(row["delivery_contract"] or "unsafe"),
     )
 
 

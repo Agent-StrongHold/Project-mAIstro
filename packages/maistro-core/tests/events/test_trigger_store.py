@@ -8,6 +8,7 @@ import aiosqlite
 import pytest
 
 from maistro.events.trigger_store import (
+    HandlerDeliveryContract,
     InMemoryTriggerStore,
     SqliteTriggerStore,
     TriggerDefinition,
@@ -65,6 +66,7 @@ class TestTriggerStore:
             name="log-delegations",
             event_pattern="agent.delegated",
             handler_url="http://localhost:8000/handlers/log",
+            delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
         )
         await store.add(t)
         got = await store.get(t.trigger_id)
@@ -73,6 +75,14 @@ class TestTriggerStore:
         assert got.event_pattern == "agent.delegated"
         assert got.handler_url == "http://localhost:8000/handlers/log"
         assert got.enabled
+        assert got.delivery_contract is HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT
+
+    async def test_unknown_delivery_contract_defaults_unsafe(self, store: TriggerStore) -> None:
+        trigger = TriggerDefinition(trigger_id="unsafe", event_pattern="task.created")
+        await store.add(trigger)
+        got = await store.get("unsafe")
+        assert got is not None
+        assert got.delivery_contract is HandlerDeliveryContract.UNSAFE
 
     async def test_get_missing(self, store: TriggerStore) -> None:
         assert await store.get("nope") is None

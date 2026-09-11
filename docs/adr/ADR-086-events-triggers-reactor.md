@@ -38,17 +38,20 @@ turns events into action — the substrate every proactive behavior in the engin
 
 ADR-037 names the event bus and the `policy.decision` / `security.violation` events, but does not say
 how events are delivered, what happens on a crash mid-handling, or how an event causes work to run.
-Proactive automation — scheduled tasks (ADR-046), proactive producers — needs a dependable answer:
-events must not be silently lost, handlers must not double-apply, and a process restart must not
-strand in-flight work. This ADR pins those semantics.
+Proactive automation — scheduled tasks (ADR-046), proactive producers — needs a dependable
+answer: events must not be silently lost, and a process restart must not strand in-flight work. A
+local dispatch record cannot make an arbitrary remote commit exactly-once, so this ADR also states
+where idempotency must be proven.
 
 ## Decision
 
 **Delivery is AT-LEAST-ONCE.** The event bus guarantees an event reaches its handlers at least once;
-it may deliver more than once (retry, redelivery after crash). Consequently **handlers MUST be
-idempotent** — and they reuse the existing **ADR-038 idempotency-key contract** rather than inventing
-a new dedupe mechanism. A handler keyed by idempotency-key that has already applied an effect is a
-no-op on redelivery.
+it may deliver more than once (retry, redelivery after crash). The `(trigger_id, event_id)`
+Invocation row deduplicates MAIstro dispatch only; it does not deduplicate a remote commit.
+Therefore an effectful handler is eligible for automatic replay only when it consumes the stable
+ADR-038 idempotency key and stores that key at its own effect commit boundary. A handler that cannot
+prove this is `UNSAFE` for automatic replay and must be held for reconciliation or moved to the
+canonical governed Capability/Provider/Binding/Invocation seam (#55).
 
 **Triggers are declarative rules** of the form `(event-pattern -> recipe)`. The reactor evaluates
 incoming events against the registered trigger patterns and, on a match, fires the bound recipe.
@@ -57,20 +60,23 @@ evaluates them.
 
 **Events and their processing are durable and replayable** via an **event log**. Events are appended
 to the log before handling; a crash mid-handling **replays** from the log on restart rather than
-dropping the event. Combined with idempotent handlers, replay is safe: a partially-applied handler
-re-runs to completion without double-applying its committed effects.
+dropping the event. For an opted-in idempotent handler, the HTTP delivery repeats the same stable
+key, so a partially-applied handler can re-run without double-applying its committed effect. A
+response loss or timeout remains an ambiguous remote outcome; HTTP 2xx and the local SUCCESS write
+are not one transaction.
 
 This event log + trigger + reactor stack is the **substrate for proactive automation**: scheduled
 tasks (ADR-046) and proactive producers are expressed as triggers firing recipes, so they inherit
-at-least-once delivery, idempotency, and crash-replay for free.
+at-least-once delivery and crash-replay. Effect safety still depends on each trigger's declared
+handler-owned idempotency contract.
 
 ## Acceptance criteria
 
 - [ ] The event bus delivers each event to its handlers at least once; redelivery is possible and
       expected.
-- [ ] Handlers are idempotent and key their dedupe on the ADR-038 idempotency-key contract; a
-      redelivered event produces no duplicate committed effect (property test: deliver twice, observe
-      one effect).
+- [ ] Opted-in handlers consume and durably deduplicate the stable ADR-038 idempotency key;
+      unsafe handlers are not automatically replayed (property test: deliver twice, observe one
+      effect for the opted-in handler).
 - [ ] A trigger is a declarative `(event-pattern -> recipe)` rule; the reactor fires the bound recipe
       on a pattern match.
 - [ ] Events are appended to a durable event log before handling; a crash mid-handling replays from
@@ -81,8 +87,8 @@ at-least-once delivery, idempotency, and crash-replay for free.
 ## Consequences
 
 - ADR-037 gains explicit delivery semantics; "the bus delivers events" now has a contract.
-- The at-least-once + idempotent + replay combination makes proactive automation crash-safe by
-  construction rather than by per-handler care.
+- The at-least-once + handler-owned idempotency-key + replay combination makes opted-in proactive
+  automation safe across post-effect crashes; the local Invocation row alone makes no such claim.
 - Triggers being data (not code) means new proactive behavior is authored as rules, not deployed as
   handler code — the reactor stays fixed.
 
@@ -90,4 +96,5 @@ at-least-once delivery, idempotency, and crash-replay for free.
 
 - The on-disk format and retention policy of the event log.
 - The pattern language for triggers (a follow-up SPEC).
-- Exactly-once / transactional delivery — explicitly not provided; idempotency is the contract.
+- Exactly-once / transactional delivery — explicitly not provided; handler-owned idempotency is
+  the supported contract, and the local Invocation row is not an external-effect authority.

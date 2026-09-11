@@ -12,6 +12,7 @@ import pytest
 from maistro.events.durable_log import InMemoryEventLog, LoggedEvent
 from maistro.events.invocations import (
     MAX_ATTEMPTS,
+    HandlerInvocation,
     InMemoryInvocationStore,
     InvocationStatus,
 )
@@ -19,9 +20,14 @@ from maistro.events.processing import (
     HANDLER_FAILED_EVENT,
     HandlerCallError,
     HTTPHandlerCaller,
+    handler_idempotency_key,
     process_events,
 )
-from maistro.events.trigger_store import InMemoryTriggerStore, TriggerDefinition
+from maistro.events.trigger_store import (
+    HandlerDeliveryContract,
+    InMemoryTriggerStore,
+    TriggerDefinition,
+)
 
 
 class RecordingCaller:
@@ -53,7 +59,11 @@ async def test_matching_trigger_invoked_once(
     stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore],
 ) -> None:
     log, triggers, invocations = stores
-    t = TriggerDefinition(name="agents", event_pattern="agent.*")
+    t = TriggerDefinition(
+        delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+        name="agents",
+        event_pattern="agent.*",
+    )
     await triggers.add(t)
     e = await log.append("agent.created")
     await log.append("task.created")  # no matching trigger
@@ -76,8 +86,16 @@ async def test_multiple_triggers_fan_out(
     stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore],
 ) -> None:
     log, triggers, invocations = stores
-    t1 = TriggerDefinition(name="a", event_pattern="agent.*")
-    t2 = TriggerDefinition(name="b", event_pattern="agent.created")
+    t1 = TriggerDefinition(
+        delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+        name="a",
+        event_pattern="agent.*",
+    )
+    t2 = TriggerDefinition(
+        delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+        name="b",
+        event_pattern="agent.created",
+    )
     await triggers.add(t1)
     await triggers.add(t2)
     e = await log.append("agent.created")
@@ -93,7 +111,11 @@ async def test_retry_up_to_three_attempts_then_failed(
     stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore],
 ) -> None:
     log, triggers, invocations = stores
-    t = TriggerDefinition(name="always-fails", event_pattern="task.failed")
+    t = TriggerDefinition(
+        delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+        name="always-fails",
+        event_pattern="task.failed",
+    )
     await triggers.add(t)
     e = await log.append("task.failed")
     caller = RecordingCaller()
@@ -128,7 +150,11 @@ async def test_transient_failure_recovers(
     stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore],
 ) -> None:
     log, triggers, invocations = stores
-    t = TriggerDefinition(name="flaky", event_pattern="x.y")
+    t = TriggerDefinition(
+        delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+        name="flaky",
+        event_pattern="x.y",
+    )
     await triggers.add(t)
     e = await log.append("x.y")
     caller = RecordingCaller()
@@ -149,7 +175,11 @@ async def test_cursor_holds_back_on_unsettled_event(
     stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore],
 ) -> None:
     log, triggers, invocations = stores
-    t = TriggerDefinition(name="flaky", event_pattern="a.*")
+    t = TriggerDefinition(
+        delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+        name="flaky",
+        event_pattern="a.*",
+    )
     await triggers.add(t)
     e1 = await log.append("a.one")
     await log.append("a.two")
@@ -174,8 +204,16 @@ async def test_crash_replay_no_duplicate_successful_invocations(
     reactor restart with lost cursor); A is NOT re-invoked, B completes, and
     each (trigger, event) pair has exactly one successful invocation."""
     log, triggers, invocations = stores
-    ok = TriggerDefinition(name="ok", event_pattern="agent.*")
-    crashy = TriggerDefinition(name="crashy", event_pattern="agent.*")
+    ok = TriggerDefinition(
+        delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+        name="ok",
+        event_pattern="agent.*",
+    )
+    crashy = TriggerDefinition(
+        delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+        name="crashy",
+        event_pattern="agent.*",
+    )
     await triggers.add(ok)
     await triggers.add(crashy)
     e = await log.append("agent.delegated")
@@ -210,7 +248,12 @@ async def test_disabled_trigger_not_invoked(
     stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore],
 ) -> None:
     log, triggers, invocations = stores
-    t = TriggerDefinition(name="off", event_pattern="agent.*", enabled=False)
+    t = TriggerDefinition(
+        delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+        name="off",
+        event_pattern="agent.*",
+        enabled=False,
+    )
     await triggers.add(t)
     await log.append("agent.created")
     caller = RecordingCaller()
@@ -222,7 +265,11 @@ async def test_limit_batches(
     stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore],
 ) -> None:
     log, triggers, invocations = stores
-    t = TriggerDefinition(name="all", event_pattern="e.*")
+    t = TriggerDefinition(
+        delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+        name="all",
+        event_pattern="e.*",
+    )
     await triggers.add(t)
     for _ in range(5):
         await log.append("e.n")
@@ -241,26 +288,35 @@ class TestHTTPHandlerCaller:
         def handle(request: httpx.Request) -> httpx.Response:
             seen["url"] = str(request.url)
             seen["body"] = request.read()
+            seen["headers"] = dict(request.headers)
             return httpx.Response(200)
 
         transport = httpx.MockTransport(handle)
         async with httpx.AsyncClient(transport=transport) as client:
             caller = HTTPHandlerCaller(client=client)
-            trigger = TriggerDefinition(handler_url="http://handlers.local/log")
+            trigger = TriggerDefinition(
+                delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+                handler_url="http://handlers.local/log",
+            )
             event = LoggedEvent(id=7, event_type="agent.created", payload={"a": 1})
             await caller(trigger, event)
 
         assert seen["url"] == "http://handlers.local/log"
         assert b'"agent.created"' in seen["body"]  # type: ignore[operator]
+        assert seen["headers"]["idempotency-key"] == handler_idempotency_key(trigger, event)
 
     async def test_raises_on_error_status(self) -> None:
         transport = httpx.MockTransport(lambda _: httpx.Response(500, text="nope"))
         async with httpx.AsyncClient(transport=transport) as client:
             caller = HTTPHandlerCaller(client=client)
-            trigger = TriggerDefinition(handler_url="http://handlers.local/x")
+            trigger = TriggerDefinition(
+                delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+                handler_url="http://handlers.local/x",
+            )
             event = LoggedEvent(id=1, event_type="a.b")
-            with pytest.raises(HandlerCallError, match="500"):
+            with pytest.raises(HandlerCallError, match="500") as exc_info:
                 await caller(trigger, event)
+            assert exc_info.value.ambiguous
 
     async def test_raises_on_transport_error(self) -> None:
         def handle(request: httpx.Request) -> httpx.Response:
@@ -269,10 +325,135 @@ class TestHTTPHandlerCaller:
         transport = httpx.MockTransport(handle)
         async with httpx.AsyncClient(transport=transport) as client:
             caller = HTTPHandlerCaller(client=client)
-            trigger = TriggerDefinition(handler_url="http://handlers.local/x")
+            trigger = TriggerDefinition(
+                delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+                handler_url="http://handlers.local/x",
+            )
             event = LoggedEvent(id=1, event_type="a.b")
-            with pytest.raises(HandlerCallError, match="transport error"):
+            with pytest.raises(HandlerCallError, match="transport error") as exc_info:
                 await caller(trigger, event)
+            assert exc_info.value.ambiguous
+
+
+async def test_unsafe_handler_is_held_without_dispatch(
+    stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore],
+) -> None:
+    log, triggers, invocations = stores
+    trigger = TriggerDefinition(name="unsafe", event_pattern="task.created")
+    await triggers.add(trigger)
+    event = await log.append("task.created")
+    caller = RecordingCaller()
+
+    cursor = await process_events(log, triggers, invocations, caller)
+
+    assert cursor == 0
+    assert caller.calls == []
+    invocation = await invocations.get(trigger.trigger_id, event.id)
+    assert invocation is not None
+    assert invocation.status is InvocationStatus.UNSAFE
+    assert "unsafe for automatic replay" in invocation.last_error
+
+
+async def test_worker_death_before_dispatch_is_reclaimed() -> None:
+    log = InMemoryEventLog()
+    triggers = InMemoryTriggerStore()
+    invocations = InMemoryInvocationStore()
+    trigger = TriggerDefinition(
+        trigger_id="t-before-dispatch",
+        event_pattern="task.created",
+        delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+    )
+    await triggers.add(trigger)
+    event = await log.append("task.created")
+    assert await invocations.claim(trigger.trigger_id, event.id, lease_seconds=-1.0) is not None
+    caller = RecordingCaller()
+
+    cursor = await process_events(log, triggers, invocations, caller)
+
+    assert cursor == event.id
+    assert caller.calls == [(trigger.trigger_id, event.id)]
+
+
+class _CrashOnSuccessSaveStore(InMemoryInvocationStore):
+    """Fault injection for the window after remote commit and before SUCCESS."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.crash_once = True
+
+    async def save(self, invocation: HandlerInvocation) -> None:
+        if self.crash_once and invocation.status is InvocationStatus.SUCCESS:
+            self.crash_once = False
+            raise RuntimeError("worker died before SUCCESS persistence")
+        await super().save(invocation)
+
+
+async def test_remote_commit_before_success_save_is_deduplicated_on_replay() -> None:
+    log = InMemoryEventLog()
+    triggers = InMemoryTriggerStore()
+    invocations = _CrashOnSuccessSaveStore()
+    trigger = TriggerDefinition(
+        trigger_id="t-commit",
+        event_pattern="task.created",
+        delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+    )
+    await triggers.add(trigger)
+    event = await log.append("task.created")
+    effects: set[str] = set()
+    deliveries: list[str] = []
+
+    async def caller(current_trigger: TriggerDefinition, current_event: LoggedEvent) -> None:
+        key = handler_idempotency_key(current_trigger, current_event)
+        deliveries.append(key)
+        effects.add(key)  # The remote handler's commit-boundary dedupe.
+
+    with pytest.raises(RuntimeError, match="before SUCCESS"):
+        await process_events(log, triggers, invocations, caller)
+
+    # A restarted worker can reclaim the expired lease. The external effect
+    # store sees the same key and turns the redelivery into a no-op.
+    pending = await invocations.get(trigger.trigger_id, event.id)
+    assert pending is not None
+    pending.lease_expires_at = 0.0
+    await invocations.save(pending)
+    cursor = await process_events(log, triggers, invocations, caller, after_id=0)
+
+    assert cursor == event.id
+    assert len(deliveries) == 2
+    assert len(effects) == 1
+    saved = await invocations.get(trigger.trigger_id, event.id)
+    assert saved is not None and saved.status is InvocationStatus.SUCCESS
+
+
+async def test_failure_before_commit_retries_and_ambiguous_transport_is_marked() -> None:
+    log = InMemoryEventLog()
+    triggers = InMemoryTriggerStore()
+    invocations = InMemoryInvocationStore()
+    trigger = TriggerDefinition(
+        trigger_id="t-failure",
+        event_pattern="task.created",
+        delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
+    )
+    await triggers.add(trigger)
+    await log.append("task.created")
+    calls = 0
+
+    async def caller(_trigger: TriggerDefinition, _event: LoggedEvent) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise HandlerCallError("connection refused before commit")
+        raise HandlerCallError("response lost after commit", ambiguous=True)
+
+    assert await process_events(log, triggers, invocations, caller) == 0
+    invocation = await invocations.get(trigger.trigger_id, 1)
+    assert invocation is not None and invocation.status is InvocationStatus.RETRYING
+    assert "connection refused" in invocation.last_error
+
+    assert await process_events(log, triggers, invocations, caller) == 0
+    invocation = await invocations.get(trigger.trigger_id, 1)
+    assert invocation is not None and invocation.status is InvocationStatus.RETRYING
+    assert invocation.last_error.startswith("ambiguous remote outcome:")
 
 
 class YieldingCaller(RecordingCaller):
@@ -324,6 +505,7 @@ class TestConcurrentWorkersDispatchOnce:
         invocations = InMemoryInvocationStore()
         await trigger_store.add(
             TriggerDefinition(
+                delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
                 trigger_id="t1",
                 name="t1",
                 event_pattern="task.created",
@@ -363,6 +545,7 @@ class TestConcurrentWorkersDispatchOnce:
         invocations = InMemoryInvocationStore()
         await trigger_store.add(
             TriggerDefinition(
+                delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
                 trigger_id="t1",
                 name="t1",
                 event_pattern="task.created",

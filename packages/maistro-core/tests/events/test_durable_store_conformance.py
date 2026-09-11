@@ -35,6 +35,7 @@ from maistro.events.invocations import (
     SqliteInvocationStore,
 )
 from maistro.events.trigger_store import (
+    HandlerDeliveryContract,
     InMemoryTriggerStore,
     SqliteTriggerStore,
     TriggerDefinition,
@@ -196,16 +197,28 @@ class TestEventLog:
 class TestTriggerStore:
     async def test_add_then_get_round_trips(self, trigger_store):
         trigger = TriggerDefinition(
-            trigger_id="t1", name="n", event_pattern="task.*", handler_url="http://h", enabled=True
+            trigger_id="t1",
+            name="n",
+            event_pattern="task.*",
+            handler_url="http://h",
+            enabled=True,
+            delivery_contract=HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
         )
         await trigger_store.add(trigger)
         read = await trigger_store.get("t1")
         assert read is not None
-        assert (read.name, read.event_pattern, read.handler_url, read.enabled) == (
+        assert (
+            read.name,
+            read.event_pattern,
+            read.handler_url,
+            read.enabled,
+            read.delivery_contract,
+        ) == (
             "n",
             "task.*",
             "http://h",
             True,
+            HandlerDeliveryContract.AT_LEAST_ONCE_IDEMPOTENT,
         )
 
     async def test_get_returns_none_for_an_unknown_id(self, trigger_store):

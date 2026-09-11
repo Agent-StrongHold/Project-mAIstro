@@ -13,9 +13,24 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from enum import StrEnum
 from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from uuid import uuid4
+
+
+class HandlerDeliveryContract(StrEnum):
+    """External-effect contract required before the reactor may replay.
+
+    The durable Invocation row only deduplicates MAIstro dispatch. It cannot
+    prove that a remote commit did not happen before a worker died. Only a
+    handler that stores/deduplicates the stable delivery key qualifies for
+    automatic at-least-once replay; unknown handlers fail closed.
+    """
+
+    AT_LEAST_ONCE_IDEMPOTENT = "at_least_once_idempotent"
+    UNSAFE = "unsafe"
+
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -47,6 +62,9 @@ class TriggerDefinition:
     event_pattern: str = ""
     handler_url: str = ""
     enabled: bool = True
+    # Existing trigger rows default to unsafe until their remote commit
+    # protocol is explicitly attested by the operator.
+    delivery_contract: HandlerDeliveryContract = HandlerDeliveryContract.UNSAFE
 
     def matches(self, event_type: str) -> bool:
         return self.enabled and pattern_matches(self.event_pattern, event_type)
@@ -108,7 +126,8 @@ CREATE TABLE IF NOT EXISTS trigger_definitions (
     name TEXT NOT NULL DEFAULT '',
     event_pattern TEXT NOT NULL DEFAULT '',
     handler_url TEXT NOT NULL DEFAULT '',
-    enabled INTEGER NOT NULL DEFAULT 1
+    enabled INTEGER NOT NULL DEFAULT 1,
+    delivery_contract TEXT NOT NULL DEFAULT 'unsafe'
 )
 """
 
@@ -125,29 +144,40 @@ class SqliteTriggerStore:
 
     async def ensure_schema(self) -> None:
         await self._conn.execute(_SCHEMA)
+        # Existing installations predate the explicit replay contract. Keep
+        # those handlers disabled for automatic replay until opted in.
+        columns = await self._conn.execute("PRAGMA table_info(trigger_definitions)")
+        names = {str(row[1]) for row in await columns.fetchall()}
+        if "delivery_contract" not in names:
+            await self._conn.execute(
+                "ALTER TABLE trigger_definitions ADD COLUMN delivery_contract TEXT "
+                "NOT NULL DEFAULT 'unsafe'"
+            )
         await self._conn.commit()
 
     async def add(self, trigger: TriggerDefinition) -> None:
         await self._conn.execute(
             """INSERT INTO trigger_definitions
-               (trigger_id, name, event_pattern, handler_url, enabled)
-               VALUES (?,?,?,?,?)
+               (trigger_id, name, event_pattern, handler_url, enabled, delivery_contract)
+               VALUES (?,?,?,?,?,?)
                ON CONFLICT(trigger_id) DO UPDATE SET
                  name=excluded.name, event_pattern=excluded.event_pattern,
-                 handler_url=excluded.handler_url, enabled=excluded.enabled""",
+                 handler_url=excluded.handler_url, enabled=excluded.enabled,
+                 delivery_contract=excluded.delivery_contract""",
             (
                 trigger.trigger_id,
                 trigger.name,
                 trigger.event_pattern,
                 trigger.handler_url,
                 1 if trigger.enabled else 0,
+                trigger.delivery_contract.value,
             ),
         )
         await self._conn.commit()
 
     async def get(self, trigger_id: str) -> TriggerDefinition | None:
         cursor = await self._conn.execute(
-            "SELECT trigger_id, name, event_pattern, handler_url, enabled "
+            "SELECT trigger_id, name, event_pattern, handler_url, enabled, delivery_contract "
             "FROM trigger_definitions WHERE trigger_id = ?",
             (trigger_id,),
         )
@@ -162,14 +192,15 @@ class SqliteTriggerStore:
 
     async def list_triggers(self) -> list[TriggerDefinition]:
         cursor = await self._conn.execute(
-            "SELECT trigger_id, name, event_pattern, handler_url, enabled FROM trigger_definitions"
+            "SELECT trigger_id, name, event_pattern, handler_url, enabled, delivery_contract "
+            "FROM trigger_definitions"
         )
         rows = await cursor.fetchall()
         return [self._row_to_trigger(tuple(r)) for r in rows]
 
     async def get_matching(self, event_type: str) -> list[TriggerDefinition]:
         cursor = await self._conn.execute(
-            "SELECT trigger_id, name, event_pattern, handler_url, enabled "
+            "SELECT trigger_id, name, event_pattern, handler_url, enabled, delivery_contract "
             "FROM trigger_definitions WHERE enabled = 1"
         )
         rows = await cursor.fetchall()
@@ -191,4 +222,5 @@ class SqliteTriggerStore:
             event_pattern=str(row[2] or ""),
             handler_url=str(row[3] or ""),
             enabled=bool(row[4]),
+            delivery_contract=HandlerDeliveryContract(str(row[5] or "unsafe")),
         )

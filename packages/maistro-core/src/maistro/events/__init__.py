@@ -37,9 +37,11 @@ from maistro.events.processing import (
     HandlerCaller,
     HandlerCallError,
     HTTPHandlerCaller,
+    handler_idempotency_key,
     process_events,
 )
 from maistro.events.trigger_store import (
+    HandlerDeliveryContract,
     InMemoryTriggerStore,
     SqliteTriggerStore,
     TriggerDefinition,
@@ -75,6 +77,7 @@ __all__ = [
     "HTTPHandlerCaller",
     "HandlerCallError",
     "HandlerCaller",
+    "HandlerDeliveryContract",
     "HandlerInvocation",
     "InMemoryEventLog",
     "InMemoryEventStore",
@@ -95,6 +98,7 @@ __all__ = [
     "TriggerStore",
     "append_from_bus_event",
     "get_event_bus",
+    "handler_idempotency_key",
     "pattern_matches",
     "process_events",
 ]
