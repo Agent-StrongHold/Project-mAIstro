@@ -1,4 +1,10 @@
-"""Discover, benchmark, and select the best LiteLLM models for builders routing.
+"""Operator-only model probe and persisted cache maintenance.
+
+Disposition: intentional non-product diagnostic infrastructure. The explicit
+CLI may probe an operator-configured gateway, but ordinary Builders execution
+only reads a previously persisted cache or configured default. This module is
+not a reusable product model client and does not grant product credentials or
+model authority.
 
 Two tiers, two different probes:
 
@@ -11,9 +17,12 @@ Scoring: quality_pass * 1000 / latency_ms
 Quota/cost data is fetched from /model/info and folded into the output.
 Cache lives at ~/.config/maistro/builders/model_cache.json, TTL 24 h.
 
-Standalone:
+Standalone operator diagnostic (the explicit CLI is required):
     python -m maistro_bootstrap.builders.model_selector [--top N]
     python -m maistro_bootstrap.builders.model_selector --models gemini-flash cerebras-llama3.1-8b
+
+``run_benchmark`` rejects implicit/programmatic use unless its caller marks the
+operation as this explicit operator probe. Builders never calls it.
 """
 
 from __future__ import annotations
@@ -275,8 +284,18 @@ def run_benchmark(
     models: list[str] | None = None,
     *,
     verbose: bool = True,
+    operator_probe: bool = False,
 ) -> dict[str, Any]:
-    """Probe models with tier-appropriate tests. Returns results dict."""
+    """Probe models with tier-appropriate tests for an explicit operator run.
+
+    The guard keeps this diagnostic from becoming an accidental product model
+    client if a Builder or another library caller imports the helper later.
+    """
+    if not operator_probe:
+        raise RuntimeError(
+            "model selection probes are operator-only; invoke the module CLI or "
+            "pass operator_probe=True explicitly"
+        )
     with httpx.Client(timeout=_CAPABLE_LATENCY_CAP_S + 5) as client:
         if models is None:
             if verbose:
@@ -368,7 +387,12 @@ def load_cache() -> dict[str, Any] | None:
 
 
 def best_model(tier: str = "capable") -> str:
-    """Return the best cached model for a tier; runs benchmark if stale."""
+    """Return a persisted model choice; never probe from product composition.
+
+    Operators refresh the cache explicitly with this module's CLI. Keeping the
+    fallback cache-only prevents a stale diagnostic from becoming an implicit
+    product egress or credential-policy bypass.
+    """
     cache = load_cache()
     if cache and cache.get(f"{tier}_model"):
         return str(cache[f"{tier}_model"])
@@ -380,19 +404,12 @@ def best_model(tier: str = "capable") -> str:
             or "google-gemini-2.5-flash"
         )
 
-    logger.info("model cache stale — running benchmark (background)")
-    try:
-        results = run_benchmark(verbose=False)
-        save_cache(results)
-        winners = results[tier]
-        return (
-            winners[0]["model"]
-            if winners
-            else (os.environ.get("DEFAULT_MODEL") or "google-gemini-2.5-flash")
-        )
-    except Exception as exc:
-        logger.warning("benchmark failed (%s) — using env default", exc)
-        return os.environ.get("DEFAULT_MODEL") or "google-gemini-2.5-flash"
+    logger.info("model cache unavailable — using configured default")
+    return (
+        os.environ.get("MAISTRO_BUILDERS_MODEL")
+        or os.environ.get("DEFAULT_MODEL")
+        or "google-gemini-2.5-flash"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -409,7 +426,7 @@ if __name__ == "__main__":
     parser.add_argument("--top", type=int, default=8)
     args = parser.parse_args()
 
-    results = run_benchmark(models=args.models, verbose=True)
+    results = run_benchmark(models=args.models, verbose=True, operator_probe=True)
     save_cache(results)
 
     sep = "=" * 68

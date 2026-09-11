@@ -64,6 +64,10 @@ class GatewayAuthError(EffectNotApplied, PermissionError):
     """Authentication failed before a model completion was accepted."""
 
 
+class ProviderRegistrationError(RuntimeError):
+    """The gateway rejected or could not receive provider registration."""
+
+
 class LlmGatewayProvider:
     """Slot-specific resolved Provider handle for one model-chat call.
 
@@ -200,6 +204,43 @@ def _checked_body(response: Any) -> dict[str, object]:
     return body
 
 
+async def register_provider_models(
+    endpoint: GatewayEndpoint,
+    *,
+    models: tuple[str, ...],
+    api_key: str,
+) -> None:
+    """Register provider models through the gateway's Provider admin seam.
+
+    Registration is Provider-internal setup, not a model completion. It stays
+    beside the approved gateway Provider so control-plane callers cannot own a
+    second HTTP implementation or accidentally persist the transient key.
+    """
+
+    admin_base = endpoint.base_url.rstrip("/")
+    if admin_base.endswith("/v1"):
+        admin_base = admin_base[:-3].rstrip("/")
+    try:
+        async with shared_client(timeout=30.0) as client:
+            for model in models:
+                response = await client.post(
+                    f"{admin_base}/model/new",
+                    headers=endpoint.authorization_header(),
+                    json={
+                        "model_name": model,
+                        "litellm_params": {"model": model, "api_key": api_key},
+                    },
+                )
+                if response.status_code >= 400:
+                    raise ProviderRegistrationError(
+                        f"LiteLLM registration failed for {model}: HTTP {response.status_code}"
+                    )
+    except ProviderRegistrationError:
+        raise
+    except httpx.HTTPError as exc:
+        raise ProviderRegistrationError(f"LiteLLM gateway unreachable: {exc}") from exc
+
+
 async def execute_model_chat(  # noqa: C901 - protocol fallback stays below one Provider
     provider: ResolvedCapabilityProvider,
     request: object,
@@ -268,5 +309,7 @@ __all__ = [
     "GatewayEndpoint",
     "LlmGatewayProvider",
     "ModelChatRequest",
+    "ProviderRegistrationError",
     "execute_model_chat",
+    "register_provider_models",
 ]
