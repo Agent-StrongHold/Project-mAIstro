@@ -9,6 +9,7 @@ slightly different".
 from __future__ import annotations
 
 from typing import Any
+from uuid import uuid4
 
 import aiosqlite
 import pytest
@@ -55,6 +56,59 @@ async def spine(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
     await store.ensure_schema()
     try:
         yield store, WORKSPACE, project.project_id
+    finally:
+        await conn.close()
+
+
+@pytest.fixture(params=["memory", "sqlite", "postgres"])
+async def schedule_spine(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
+    """Claim-capable durable stores for schedule-consumer acceptance tests.
+
+    The ordinary conformance spine deliberately exposes the base RunStore
+    contract. Schedule execution additionally requires the atomic consumer
+    claim capability, so this fixture uses the production claiming variants
+    without changing what unrelated conformance tests exercise.
+    """
+    from maistro.runs.consumer_claim import (
+        ClaimingInMemoryRunStore,
+        ClaimingPgRunStore,
+        ClaimingSqliteRunStore,
+    )
+
+    if request.param == "postgres":
+        if pg_pool is None:
+            pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+        from maistro.projects.pg_scope_store import PgProjectScopeStore
+
+        workspace = f"{WORKSPACE}-schedule-{request.node.name}-{uuid4().hex}"
+        projects = PgProjectScopeStore(pg_pool)
+        root = await projects.create_root(workspace)
+        project = await projects.create(
+            workspace_id=workspace, parent_project_id=root.project_id, name="Schedule"
+        )
+        yield ClaimingPgRunStore(pg_pool, project_store=projects), workspace, project.project_id
+        return
+
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root(f"{WORKSPACE}-schedule")
+    project = await projects.create(
+        workspace_id=f"{WORKSPACE}-schedule", parent_project_id=root.project_id, name="Schedule"
+    )
+    if request.param == "memory":
+        yield (
+            ClaimingInMemoryRunStore(project_store=projects),
+            f"{WORKSPACE}-schedule",
+            project.project_id,
+        )
+        return
+
+    conn = await aiosqlite.connect(":memory:")
+    # Build the same SQLite project/run schema as `spine`, but expose the
+    # atomic claim implementation used by the production execution wiring.
+    store = ClaimingSqliteRunStore(conn, project_store=projects)
+    await store.ensure_schema()
+    try:
+        yield store, f"{WORKSPACE}-schedule", project.project_id
     finally:
         await conn.close()
 

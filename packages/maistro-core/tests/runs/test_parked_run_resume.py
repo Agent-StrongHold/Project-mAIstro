@@ -279,7 +279,7 @@ class TestAnElapsedPollResumes:
 
 @pytest.mark.ac("ADR-082526-b36a/AC-7")
 async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_death(
-    spine: Any,
+    schedule_spine: Any,
 ) -> None:
     """A resumed physical try has the same crash boundary as first reach.
 
@@ -289,15 +289,8 @@ async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_d
     """
     from maistro.runs.consumption import ScheduleAttemptExecutor, resumable_pause
 
-    store, workspace, project_id = spine
+    store, workspace, project_id = schedule_spine
     recovery_container = await _container()
-    if not callable(getattr(store, "claim_consumer_run", None)):
-        # The bare conformance memory fixture intentionally tests RunStore only;
-        # production wiring uses the claiming memory store.
-        store = recovery_container.run_store
-        workspace = "schedule-resume-memory"
-        root = await recovery_container.project_scope_store.create_root(workspace)
-        project_id = root.project_id
     graph = Graph(
         workspace_id=workspace,
         project_id=project_id,
@@ -309,7 +302,9 @@ async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_d
         provenance={ADMISSION_SOURCE: SCHEDULE_SOURCE, SCHEDULE_INPUTS_KEY: {"marker": "m"}},
         initial_status=RunStatus.QUEUED,
     )
-    ttl = timedelta(seconds=0.06)
+    # Leave room for a real PostgreSQL round trip while keeping the recovery
+    # window short enough to exercise the heartbeat and expiry boundary.
+    ttl = timedelta(seconds=0.5)
     executor = ScheduleAttemptExecutor(store, lease_ttl=ttl)
 
     parked = await executor.execute(run)
@@ -342,9 +337,11 @@ async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_d
             raise ConnectionError("resumed worker is gone")
 
         # Stop the heartbeat without orderly cancellation: this is the process
-        # death boundary, leaving the Attempt durably RUNNING for recovery.
+        # death boundary, leaving the Attempt durably RUNNING for recovery. The
+        # recovery tick's explicit clock advances past the unrenewed expiry, so
+        # this remains deterministic even when a durable backend has a sweep
+        # running in another process.
         store.renew_lease = _dead  # type: ignore[method-assign]
-        await asyncio.sleep(ttl.total_seconds() * 2)
 
         recovery_container.run_store = store
         assert (
