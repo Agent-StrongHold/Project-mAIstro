@@ -1075,9 +1075,9 @@ def test_a_manual_fire_in_production_enters_the_canonical_admitter(
         calls: list[Any] = []
 
         class _AdmitterSpy:
-            async def admit_manual(self, *args: Any, **kwargs: Any) -> Any:
+            async def admit_due(self, *args: Any, **kwargs: Any) -> Any:
                 calls.append(self)
-                return await canonical_admitter.admit_manual(*args, **kwargs)
+                return await canonical_admitter.admit_due(*args, **kwargs)
 
         container.schedule_admitter = _AdmitterSpy()
 

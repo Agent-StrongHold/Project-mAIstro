@@ -62,10 +62,10 @@ class ScheduleAdmissionUnavailable(RuntimeError):
 async def fire_now(sid: str) -> str:
     """Fire a schedule now through the one canonical admission authority.
 
-    Configured production enters ``ScheduleRunAdmitter.admit_manual`` — the
-    same Container, canonical Workspace/Project scope, durable ``GraphTemplate``
-    resolution, occurrence claim, and cursor transaction the recurring loop
-    uses — so a manual fire and a scheduled fire of one schedule are
+    Configured production enters ``ScheduleRunAdmitter.admit_due(manual=True)`` —
+    the same Container, canonical Workspace/Project scope, durable
+    ``GraphTemplate`` resolution, occurrence claim, and cursor transaction the
+    recurring loop uses — so a manual fire and a scheduled fire of one schedule are
     indistinguishable in Run history apart from their provenance.  The
     compatibility path below remains only for processes with no core Container
     at all; a Container that is missing one of its admission collaborators
@@ -455,7 +455,7 @@ class _ScheduleRunner:
         """Configured Hive manual fire: the recurring path's authority, once.
 
         ``_evaluate_canonical`` derives its occurrences from the cron;
-        ``admit_manual`` takes the one the caller asked for. Everything else is
+        ``admit_due(manual=True)`` takes the one the caller asked for. Everything else is
         deliberately identical — canonical Workspace/Project scope via
         ``_canonical_scope`` (never the synthetic ``hive:schedule:{id}``
         identities the compatibility path used), the durable ``GraphTemplate``
@@ -483,7 +483,7 @@ class _ScheduleRunner:
         await self._prime_template(definition, container)
         now = datetime.now(UTC)
         try:
-            admission = await admitter.admit_manual(definition, now=now)
+            admission = await admitter.admit_due(definition, now=now, manual=True)
         except GraphTemplateNotFound as exc:
             # The durable template is the authority; the registry was only ever
             # a migration source above. Nothing was created, so the schedule's

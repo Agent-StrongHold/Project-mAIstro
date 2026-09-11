@@ -10,20 +10,21 @@ moved onto the canonical `ScheduleRunAdmitter` authority (#1119), and every
 behavior the migration promised got its own test.
 
 `packages/maistro-core/tests` (+6, `tests/scheduling/test_admission.py`,
-`TestManualFire`) — `admit_manual` is the explicit manual-occurrence variant of
-`admit_due`: one Run carrying `admission_source`/`schedule_id`/`scheduled_for`
-provenance with QUEUED in the same insert, the cursor advancing only after the
-Run exists, `max_runs` binding manual fires and disabling in the same write,
-exhaustion and an unresolvable durable template refusing with the schedule byte
-for byte unchanged, a failed Run creation leaving no cursor movement, and a
-duplicate claim (two fires racing on one instant) reported as `already_fired`
-rather than recreated.
+`TestManualFire`) — `admit_due(manual=True)` is the explicit
+manual-occurrence variant of the recurring primitive: one Run carrying
+`admission_source`/`schedule_id`/`scheduled_for` provenance with QUEUED in the
+same insert, the cursor advancing only after the Run exists, `max_runs`
+binding manual fires and disabling in the same write, exhaustion and an
+unresolvable durable template refusing with the schedule byte for byte
+unchanged, a failed Run creation leaving no cursor movement, and a duplicate
+claim (two fires racing on one instant) reported as `already_fired` rather than
+recreated.
 
 `packages/hive-conductor/backend/tests` (+9):
 
 - `test_scheduler.py` (+5) — with a Container present, `fire_now` consumes the
   Container's injected `schedule_admitter` (a spy proves no second admitter is
-  constructed) and enters `admit_manual` through the real scope resolution
+  constructed) and enters `admit_due(manual=True)` through the real scope resolution
   (real Workspace/Root Project; the compatibility registry is asserted unread), primes
   the durable template from the registry exactly as a tick would, refuses with
   the product refusal and untouched state when no durable template resolves,

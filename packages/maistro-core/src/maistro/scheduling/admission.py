@@ -49,11 +49,11 @@ recomputes it from the count that survived, so a schedule is never disabled for
 reaching a limit it did not reach.
 
 **A manual fire is the same authority, one occurrence wide (#1119).**
-`admit_manual` exists because a product "run this schedule now" request is not
-an occurrence the cron enumerated — `evaluate()` has nothing to say about it —
-but everything *after* that decision is the recurring path's: the durable
-template resolution, `_admit_one`'s Run with its provenance, the occurrence
-claim, and `record_fire`'s advance-and-disable. A manual fire counts against
+The `manual=True` variant of `admit_due` exists because a product "run this
+schedule now" request is not an occurrence the cron enumerated — `evaluate()`
+has nothing to say about it — but everything *after* that decision is the
+recurring path's: the durable template resolution, `_admit_one`'s Run with its
+provenance, the occurrence claim, and `record_fire`'s advance-and-disable. A manual fire counts against
 `max_runs` and names the schedule in Run provenance exactly as an enumerated
 one does, so the product cannot grow a second set of firing semantics by
 asking for a fire by hand.
@@ -173,13 +173,20 @@ class ScheduleRunAdmitter:
         *,
         now: datetime,
         active_run: bool = False,
+        manual: bool = False,
     ) -> ScheduleAdmission:
-        """Admit every occurrence `schedule` owes at `now`.
+        """Admit due occurrences, or one explicit manual occurrence.
 
         `active_run` is whether a Run this schedule started is still in flight.
         The caller answers it from Run state, which is the only place it lives —
-        the same contract `evaluate()` states.
+        the same contract `evaluate()` states. When `manual` is true, the
+        caller's `now` is the one occurrence to admit and cron overlap policy is
+        deliberately bypassed; the same template, Run, occurrence claim, and
+        cursor authority still handles the request.
         """
+        if manual:
+            return await self._admit_manual(schedule, now=now)
+
         decision = evaluate(schedule, now=now, active_run=active_run)
         if not decision.fires:
             return await self._consume_without_firing(schedule, decision)
@@ -297,7 +304,7 @@ class ScheduleRunAdmitter:
             failures=tuple(failures),
         )
 
-    async def admit_manual(
+    async def _admit_manual(
         self,
         schedule: Schedule,
         *,

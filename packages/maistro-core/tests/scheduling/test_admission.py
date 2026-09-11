@@ -608,7 +608,7 @@ class TestAdmissionState:
 
 
 class TestManualFire:
-    """`admit_manual` (#1119): the recurring authority, one occurrence wide.
+    """`admit_due(manual=True)` (#1119): the recurring authority, one occurrence wide.
 
     A product "run this schedule now" is not an occurrence the cron
     enumerated, so `evaluate()` has nothing to say about it — but everything
@@ -622,7 +622,7 @@ class TestManualFire:
         schedule = await _schedule(schedules, project_id)
         now = NOON + timedelta(minutes=7)
 
-        result = await admitter.admit_manual(schedule, now=now)
+        result = await admitter.admit_due(schedule, now=now, manual=True)
 
         assert len(result.run_ids) == 1
         assert not result.failures and result.already_fired == ()
@@ -652,14 +652,14 @@ class TestManualFire:
         admitter, _runs, _templates, schedules, project_id = harness
         schedule = await _schedule(schedules, project_id, max_runs=2)
 
-        first = await admitter.admit_manual(schedule, now=NOON)
+        first = await admitter.admit_due(schedule, now=NOON, manual=True)
         assert not first.disabled
         # The caller owes the admitter a current cursor — the hive layer
         # re-reads the definition before every fire, as `_definition_for` does
         # for the tick. Firing again on the stale pre-fire copy would undercount.
         current = await schedules.get(schedule.schedule_id)
         assert current is not None
-        second = await admitter.admit_manual(current, now=NOON + timedelta(hours=1))
+        second = await admitter.admit_due(current, now=NOON + timedelta(hours=1), manual=True)
         assert second.disabled
 
         recorded = await schedules.get(schedule.schedule_id)
@@ -674,7 +674,7 @@ class TestManualFire:
         before = await schedules.get(schedule.schedule_id)
 
         with pytest.raises(ManualFireRefused, match="all 1 of its runs"):
-            await admitter.admit_manual(schedule, now=NOON)
+            await admitter.admit_due(schedule, now=NOON, manual=True)
 
         after = await schedules.get(schedule.schedule_id)
         assert after == before
@@ -689,7 +689,7 @@ class TestManualFire:
         before = await schedules.get(schedule.schedule_id)
 
         with pytest.raises(GraphTemplateNotFound):
-            await admitter.admit_manual(schedule, now=NOON)
+            await admitter.admit_due(schedule, now=NOON, manual=True)
 
         after = await schedules.get(schedule.schedule_id)
         assert after == before
@@ -707,7 +707,7 @@ class TestManualFire:
 
         monkeypatch.setattr(runs, "create_run", _fail)
         with pytest.raises(RuntimeError):
-            await admitter.admit_manual(schedule, now=NOON)
+            await admitter.admit_due(schedule, now=NOON, manual=True)
 
         after = await schedules.get(schedule.schedule_id)
         assert after == before
@@ -717,8 +717,8 @@ class TestManualFire:
         admitter, runs, _templates, schedules, project_id = harness
         schedule = await _schedule(schedules, project_id)
 
-        first = await admitter.admit_manual(schedule, now=NOON)
-        second = await admitter.admit_manual(schedule, now=NOON)
+        first = await admitter.admit_due(schedule, now=NOON, manual=True)
+        second = await admitter.admit_due(schedule, now=NOON, manual=True)
 
         assert len(first.run_ids) == 1
         assert second.run_ids == ()
