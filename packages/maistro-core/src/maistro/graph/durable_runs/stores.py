@@ -387,6 +387,23 @@ def _reject_unmigrated_legacy_rows(conn: sqlite3.Connection) -> None:
     )
 
 
+def _backfill_hitl_deadlines(conn: sqlite3.Connection) -> None:
+    """Restore the lookup projection for rows written before the index."""
+    rows = conn.execute(
+        """SELECT run_id, record_json FROM durable_graph_runs
+            WHERE status = ? AND hitl_deadline_at IS NULL""",
+        (RunStatus.PAUSED.value,),
+    ).fetchall()
+    for row in rows:
+        record = DurableRunRecord.model_validate_json(row["record_json"])
+        deadline = earliest_hitl_deadline(record)
+        if deadline is not None:
+            conn.execute(
+                "UPDATE durable_graph_runs SET hitl_deadline_at = ? WHERE run_id = ?",
+                (deadline.isoformat(), row["run_id"]),
+            )
+
+
 class SqliteDurableRunStore:
     """SQLite-backed canonical durable graph checkpoint store.
 
@@ -409,6 +426,7 @@ class SqliteDurableRunStore:
                 "CREATE INDEX IF NOT EXISTS idx_durable_graph_runs_hitl_deadline "
                 "ON durable_graph_runs(status, hitl_deadline_at)"
             )
+            _backfill_hitl_deadlines(conn)
             conn.commit()
 
     def _connect(self) -> sqlite3.Connection:

@@ -199,6 +199,59 @@ async def test_due_deadline_query_agrees_across_backends(store: GraphContinuatio
     assert await store.list_due_run_ids(now=now, limit=1) == ["run-waiting"]
 
 
+async def test_sqlite_pre_index_hitl_pause_is_backfilled(tmp_path: Any) -> None:
+    now = datetime(2026, 8, 29, 12, tzinfo=UTC)
+    deadline = now - timedelta(seconds=1)
+    continuation = _continuation("pre-index-hitl", status=RunStatus.PAUSED).model_copy(
+        update={
+            "graph_state": GraphExecutionState(
+                run_id="pre-index-hitl",
+                active_node_ids=("step",),
+                metadata={
+                    "pauses": {
+                        "step": {
+                            "kind": "hitl",
+                            "resume_at": deadline.isoformat(),
+                        }
+                    }
+                },
+            )
+        }
+    )
+    async with aiosqlite.connect(tmp_path / "pre-index.db") as conn:
+        await conn.execute(
+            """CREATE TABLE graph_continuations (
+                run_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                created_at TEXT,
+                resume_at TEXT,
+                version INTEGER NOT NULL DEFAULT 0,
+                continuation_json TEXT NOT NULL
+            )"""
+        )
+        await conn.execute(
+            """INSERT INTO graph_continuations
+               (run_id, status, project_id, created_at, resume_at, version, continuation_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                continuation.run_id,
+                continuation.status.value,
+                continuation.project_id,
+                continuation.created_at.isoformat(),
+                None,
+                continuation.version,
+                continuation.model_dump_json(),
+            ),
+        )
+        await conn.commit()
+
+        store = SqliteGraphContinuationStore(conn)
+        await store.ensure_schema()
+
+        assert await store.list_hitl_due_run_ids(now=now, limit=1) == ["pre-index-hitl"]
+
+
 async def test_hitl_due_query_is_deadline_ordered_and_status_selective(
     store: GraphContinuationStore,
 ) -> None:

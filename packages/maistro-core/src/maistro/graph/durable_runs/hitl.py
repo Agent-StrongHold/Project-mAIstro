@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -82,6 +82,55 @@ def settlement_time(at: datetime | None = None) -> datetime:
     return moment.astimezone(UTC)
 
 
+def _deadline_from_pause(
+    pause: Mapping[str, object],
+    *,
+    node_id: str,
+    run_id: str,
+) -> datetime | None:
+    raw = pause.get("resume_at")
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise HitlSettlementError(
+            f"run {run_id!r} HITL deadline for node {node_id!r} is not an ISO timestamp"
+        )
+    try:
+        deadline = datetime.fromisoformat(raw)
+    except ValueError as exc:
+        raise HitlSettlementError(
+            f"run {run_id!r} HITL deadline for node {node_id!r} is invalid"
+        ) from exc
+    if deadline.tzinfo is None:
+        raise HitlSettlementError(
+            f"run {run_id!r} HITL deadline for node {node_id!r} has no timezone"
+        )
+    return deadline.astimezone(UTC)
+
+
+def earliest_hitl_deadline_from_state(
+    active_node_ids: Collection[str],
+    metadata: Mapping[str, object],
+    *,
+    run_id: str,
+) -> datetime | None:
+    """Project the earliest valid active HITL deadline from graph state."""
+    pauses_raw = metadata.get("pauses", {})
+    pauses = pauses_raw if isinstance(pauses_raw, Mapping) else {}
+    deadlines: list[datetime] = []
+    for node_id in active_node_ids:
+        pause_raw = pauses.get(node_id)
+        if not isinstance(pause_raw, Mapping) or pause_raw.get("kind") != "hitl":
+            continue
+        try:
+            deadline = _deadline_from_pause(pause_raw, node_id=node_id, run_id=run_id)
+        except HitlSettlementError:
+            continue
+        if deadline is not None:
+            deadlines.append(deadline)
+    return min(deadlines) if deadlines else None
+
+
 def earliest_hitl_deadline(record: DurableRunRecord) -> datetime | None:
     """Return the earliest valid deadline for the active HITL frontier.
 
@@ -90,15 +139,11 @@ def earliest_hitl_deadline(record: DurableRunRecord) -> datetime | None:
     Malformed or non-HITL frontier entries are deliberately not indexed; they
     cannot become a timeout through discovery alone.
     """
-    deadlines: list[datetime] = []
-    for node_id in record.graph_state.active_node_ids:
-        try:
-            deadline = hitl_deadline(record, node_id)
-        except HitlSettlementError:
-            continue
-        if deadline is not None:
-            deadlines.append(deadline)
-    return min(deadlines) if deadlines else None
+    return earliest_hitl_deadline_from_state(
+        record.graph_state.active_node_ids,
+        record.graph_state.metadata,
+        run_id=record.run_id,
+    )
 
 
 async def expire_hitl_pauses(
