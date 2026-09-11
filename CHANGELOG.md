@@ -91,6 +91,34 @@ or placeholder-only section.
   the same stored row would decode to a different instant depending on which
   host read it.
 
+- **Bounded recovery and HITL scans can no longer be starved by an ineligible
+  prefix ahead of the eligible work behind it (#1098, #1056, #1109, #1127).**
+  `recover_queued_graph_runs`, `resume_due_graph_runs`, `expire_hitl_pauses`,
+  and `GET /v1/hitl/pending` previously queried a fixed-size page and filtered
+  eligibility afterward: if more rows than the tick's `limit`/the caller's
+  page ahead of the eligible ones belonged to another consumer, had no
+  deadline yet, or were machine-only pauses, every tick re-read the same
+  prefix and the eligible work behind it was never reached, even though it
+  was durably correct and its deadline had passed. All four now page the
+  underlying store with an advancing keyset cursor and filter as they walk,
+  bounded by a fixed inspection ceiling per call so one pathological prefix
+  cannot turn a single tick into an unbounded scan. `DurableRunStore` and
+  `GraphContinuationStore` (memory, SQLite, PostgreSQL) gained an `after`
+  keyset-cursor parameter on their status/due listings to support this.
+
+- **A candidate-local failure during Graph recovery no longer aborts the
+  whole tick (#1143).** `recover_queued_graph_runs` and
+  `resume_due_graph_runs` previously let any exception other than
+  `LiveAttemptOwned` (and a narrow already-settled `KeyError`/`ValueError`
+  recheck) escape the per-candidate loop, so one Run whose resume path
+  raised — a resolver bug, a downstream API error — silently abandoned every
+  other due/queued candidate in the same batch. An unexpected failure tied to
+  one candidate is now logged and isolated: the candidate's durable state is
+  left untouched for a later retry, and later independent candidates in the
+  same tick are still attempted. A failure raised while listing candidates
+  (the store/session itself) still aborts the tick, since that failure
+  invalidates the whole scan rather than one Run.
+
 ## [1.0.0] - TBD
 
 First tagged release. Prior to this, the repository had no tags, no release

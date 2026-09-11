@@ -13,13 +13,27 @@ from maistro.runs.model import GraphSnapshot, Run, RunStatus
 pytestmark = [pytest.mark.contract("behavioral")]
 
 
+def _due_cursor(record) -> tuple[str, str]:
+    resume_at = getattr(record, "resume_at", None)
+    return (resume_at.isoformat() if resume_at else "", record.run_id)
+
+
 class _Store:
     def __init__(self, *records) -> None:
         self.records = {record.run_id: record for record in records}
 
-    async def list_due(self, *, now: datetime, limit: int = 100):
+    async def list_due(
+        self,
+        *,
+        now: datetime,
+        limit: int = 100,
+        after: tuple[str, str] | None = None,
+    ):
         del now
-        return list(self.records.values())[:limit]
+        rows = sorted(self.records.values(), key=_due_cursor)
+        if after is not None:
+            rows = [row for row in rows if _due_cursor(row) > after]
+        return rows[:limit]
 
     async def get(self, run_id: str):
         return self.records.get(run_id)
@@ -51,14 +65,20 @@ class _RunStore:
         limit: int = 100,
         offset: int = 0,
         project_id: str | None = None,
-        after=None,
+        after: tuple[str, str] | None = None,
     ) -> list[Run]:
-        del offset, after
-        return [
-            run
-            for run in self.runs.values()
-            if run.status is status and (project_id is None or run.project_id == project_id)
-        ][:limit]
+        del offset
+        rows = sorted(
+            (
+                run
+                for run in self.runs.values()
+                if run.status is status and (project_id is None or run.project_id == project_id)
+            ),
+            key=lambda run: (run.created_at.isoformat(), run.run_id),
+        )
+        if after is not None:
+            rows = [run for run in rows if (run.created_at.isoformat(), run.run_id) > after]
+        return rows[:limit]
 
 
 def _record(run_id: str, status: RunStatus, resume_at: datetime | None):
@@ -138,7 +158,13 @@ async def test_losing_a_cross_replica_resume_race_is_idempotent(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_resume_failure_stays_visible_when_the_record_is_still_eligible(monkeypatch) -> None:
+async def test_resume_failure_is_isolated_when_the_record_is_still_eligible(
+    monkeypatch, caplog
+) -> None:
+    """A candidate-local failure (#1143) is logged and isolated, not raised: it
+    would otherwise abort the whole tick for one Run's own resolver/node bug,
+    exactly the defect #1143 exists to fix. The candidate's durable state is
+    untouched, so a later tick can still retry it."""
     now = datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
     waiting = _record("waiting", RunStatus.WAITING, now - timedelta(seconds=1))
     store = _Store(waiting)
@@ -149,7 +175,65 @@ async def test_resume_failure_stays_visible_when_the_record_is_still_eligible(mo
 
     monkeypatch.setattr(recovery, "resume_durable_graph", _broken)
 
-    with pytest.raises(ValueError, match="broken recovery invariant"):
+    with caplog.at_level("ERROR", logger="maistro.graph.durable_runs.recovery"):
+        count = await recovery.resume_due_graph_runs(
+            store=store,
+            run_store=object(),
+            node_resolver=lambda _node_id, _graph: None,
+            now=now,
+        )
+
+    assert count == 0
+    assert "waiting" in caplog.text
+    assert "broken recovery invariant" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_poisoned_due_candidate_does_not_starve_later_candidates(monkeypatch) -> None:
+    """The core #1143 fixture: three due candidates, the first deterministically
+    poisoned. Candidates two and three must still be attempted every tick."""
+    now = datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
+    poisoned = _record("poisoned", RunStatus.WAITING, now - timedelta(seconds=3))
+    second = _record("second", RunStatus.WAITING, now - timedelta(seconds=2))
+    third = _record("third", RunStatus.WAITING, now - timedelta(seconds=1))
+    store = _Store(poisoned, second, third)
+    calls: list[str] = []
+
+    async def _resume(run_id: str, **kwargs) -> None:
+        del kwargs
+        if run_id == "poisoned":
+            raise RuntimeError("resolver bug tied to this one Run")
+        calls.append(run_id)
+
+    monkeypatch.setattr(recovery, "resume_durable_graph", _resume)
+
+    count = await recovery.resume_due_graph_runs(
+        store=store,
+        run_store=object(),
+        node_resolver=lambda _node_id, _graph: None,
+        now=now,
+    )
+
+    assert count == 2
+    assert calls == ["second", "third"]
+
+
+@pytest.mark.asyncio
+async def test_a_deliberate_store_failure_aborts_the_tick_rather_than_isolating(
+    monkeypatch,
+) -> None:
+    """A failure raised while *listing* candidates is infrastructure-wide
+    (#1143): it invalidates the whole scan and must propagate, never produce a
+    misleadingly successful partial count."""
+    now = datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
+
+    class _BrokenListingStore(_Store):
+        async def list_due(self, **kwargs):
+            raise ConnectionError("database connection lost")
+
+    store = _BrokenListingStore(_record("waiting", RunStatus.WAITING, now - timedelta(seconds=1)))
+
+    with pytest.raises(ConnectionError, match="database connection lost"):
         await recovery.resume_due_graph_runs(
             store=store,
             run_store=object(),
@@ -522,9 +606,13 @@ async def test_a_queued_resume_failure_reraises_when_the_record_vanished(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_a_queued_resume_failure_reraises_when_the_run_is_still_queued(monkeypatch) -> None:
-    """Still queued after the failure means nobody else took it -- hiding that
-    would strand the Run behind a one-shot tick that already moved on."""
+async def test_a_queued_resume_failure_is_isolated_when_the_run_is_still_queued(
+    monkeypatch, caplog
+) -> None:
+    """Still queued after the failure means nobody else took it, but the
+    failure is still candidate-local (#1143): it is logged and isolated, not
+    raised, so the Run stays QUEUED for a later tick instead of aborting the
+    batch for every other queued candidate."""
     run = _queued_run()
     initial = recovery._initial_queued_record(run)
     store = _BootstrapStore(initial)
@@ -535,12 +623,69 @@ async def test_a_queued_resume_failure_reraises_when_the_run_is_still_queued(mon
 
     monkeypatch.setattr(recovery, "resume_durable_graph", _broken)
 
-    with pytest.raises(ValueError, match="broken queued recovery invariant"):
-        await recovery.recover_queued_graph_runs(
+    with caplog.at_level("ERROR", logger="maistro.graph.durable_runs.recovery"):
+        recovered = await recovery.recover_queued_graph_runs(
             store=store,
             run_store=_RunStore(run),
             node_resolver_factory=lambda _run: lambda _node_id, _graph: None,
             eligible=lambda _candidate: True,
+        )
+
+    assert recovered == 0
+    assert "broken queued recovery invariant" in caplog.text
+    still_queued = await store.get(run.run_id)
+    assert still_queued is not None
+    assert still_queued.run.status is RunStatus.QUEUED
+
+
+@pytest.mark.asyncio
+async def test_a_poisoned_queued_candidate_does_not_starve_later_candidates(monkeypatch) -> None:
+    """The #1143 fixture for the queued path: three eligible QUEUED Runs, the
+    first deterministically poisoned. The other two must still be attempted."""
+    poisoned = _queued_run("poisoned")
+    second = _queued_run("second")
+    third = _queued_run("third")
+    run_store = _RunStore(poisoned, second, third)
+    store = _BootstrapStore()
+    calls: list[str] = []
+
+    async def _resume(run_id: str, **kwargs) -> None:
+        del kwargs
+        if run_id == "poisoned":
+            raise RuntimeError("resolver bug tied to this one Run")
+        calls.append(run_id)
+
+    monkeypatch.setattr(recovery, "resume_durable_graph", _resume)
+
+    recovered = await recovery.recover_queued_graph_runs(
+        store=store,
+        run_store=run_store,
+        eligible=lambda _candidate: True,
+        node_resolver_factory=lambda _run: lambda _node_id, _graph: None,
+    )
+
+    assert recovered == 2
+    assert sorted(calls) == ["second", "third"]
+
+
+@pytest.mark.asyncio
+async def test_a_deliberate_run_store_failure_aborts_the_queued_tick(monkeypatch) -> None:
+    """A failure raised while listing QUEUED candidates is infrastructure-wide
+    (#1143) and must abort the tick rather than being isolated per candidate."""
+
+    class _BrokenListingRunStore(_RunStore):
+        async def list_by_status(self, *args, **kwargs):
+            raise ConnectionError("database connection lost")
+
+    run = _queued_run()
+    store = _BootstrapStore()
+
+    with pytest.raises(ConnectionError, match="database connection lost"):
+        await recovery.recover_queued_graph_runs(
+            store=store,
+            run_store=_BrokenListingRunStore(run),
+            eligible=lambda _candidate: True,
+            node_resolver_factory=lambda _run: lambda _node_id, _graph: None,
         )
 
 

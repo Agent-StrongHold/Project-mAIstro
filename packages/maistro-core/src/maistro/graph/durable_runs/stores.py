@@ -257,17 +257,22 @@ class InMemoryDurableRunStore:
         *,
         limit: int = 100,
         project_id: str | None = None,
+        after: tuple[str, str] | None = None,
     ) -> list[DurableRunRecord]:
-        out: list[DurableRunRecord] = []
-        for record in self._rows.values():
-            if record.run.status is not status:
-                continue
-            if project_id is not None and record.run.project_id != project_id:
-                continue
-            out.append(_clone(record))
-            if len(out) >= limit:
-                break
-        return out
+        matching = [
+            record
+            for record in self._rows.values()
+            if record.run.status is status
+            and (project_id is None or record.run.project_id == project_id)
+        ]
+        matching.sort(key=lambda record: (record.run.created_at.isoformat(), record.run_id))
+        if after is not None:
+            matching = [
+                record
+                for record in matching
+                if (record.run.created_at.isoformat(), record.run_id) > after
+            ]
+        return [_clone(record) for record in matching[:limit]]
 
     async def list_for_project(self, project_id: str, *, limit: int = 25) -> list[DurableRunRecord]:
         runs = [record for record in self._rows.values() if record.run.project_id == project_id]
@@ -426,6 +431,7 @@ class SqliteDurableRunStore:
         *,
         limit: int = 100,
         project_id: str | None = None,
+        after: tuple[str, str] | None = None,
     ) -> list[DurableRunRecord]:
         return await asyncio.to_thread(
             _list_by_status_sync,
@@ -433,6 +439,7 @@ class SqliteDurableRunStore:
             status,
             limit,
             project_id,
+            after,
         )
 
     async def list_for_project(self, project_id: str, *, limit: int = 25) -> list[DurableRunRecord]:
@@ -603,13 +610,20 @@ def _list_by_status_sync(
     status: RunStatus,
     limit: int,
     project_id: str | None,
+    after: tuple[str, str] | None = None,
 ) -> list[DurableRunRecord]:
+    # Oldest-first (#1056, #1109): a bounded fair scan pages this with an
+    # advancing `(created_at, run_id)` cursor, which requires one stable
+    # ordering direction to mean forward progress.
     query = "SELECT * FROM durable_graph_runs WHERE status = ?"
     params: list[Any] = [status.value]
     if project_id is not None:
         query += " AND project_id = ?"
         params.append(project_id)
-    query += " ORDER BY created_at DESC LIMIT ?"
+    if after is not None:
+        query += " AND (created_at, run_id) > (?, ?)"
+        params.extend(after)
+    query += " ORDER BY created_at ASC, run_id ASC LIMIT ?"
     params.append(limit)
     with store._connect() as conn:
         rows = conn.execute(query, params).fetchall()

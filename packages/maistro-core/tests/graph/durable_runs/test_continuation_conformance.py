@@ -199,6 +199,71 @@ async def test_due_deadline_query_agrees_across_backends(store: GraphContinuatio
     assert await store.list_due_run_ids(now=now, limit=1) == ["run-waiting"]
 
 
+async def test_status_listing_pages_forward_with_an_advancing_cursor(
+    store: GraphContinuationStore,
+) -> None:
+    """The keyset cursor #1056/#1109 rely on: paging with ``after`` walks
+    strictly forward past what has already been read, on every backend, so a
+    bounded fair scan can advance past an ineligible prefix of any length
+    instead of re-reading the same fixed page forever."""
+    for i in range(5):
+        await store.create(_continuation(f"run-{i}", status=RunStatus.PAUSED, minutes=i))
+
+    first_page = await store.list_run_ids_by_status(RunStatus.PAUSED, limit=2)
+    assert first_page == ["run-0", "run-1"]
+
+    cursor = (
+        (await store.get("run-1")).created_at.isoformat(),  # type: ignore[union-attr]
+        "run-1",
+    )
+    second_page = await store.list_run_ids_by_status(RunStatus.PAUSED, limit=2, after=cursor)
+    assert second_page == ["run-2", "run-3"]
+
+    cursor = (
+        (await store.get("run-3")).created_at.isoformat(),  # type: ignore[union-attr]
+        "run-3",
+    )
+    third_page = await store.list_run_ids_by_status(RunStatus.PAUSED, limit=2, after=cursor)
+    assert third_page == ["run-4"]
+
+    # Past the end, the cursor returns nothing rather than wrapping around.
+    cursor = (
+        (await store.get("run-4")).created_at.isoformat(),  # type: ignore[union-attr]
+        "run-4",
+    )
+    assert await store.list_run_ids_by_status(RunStatus.PAUSED, limit=2, after=cursor) == []
+
+
+async def test_due_listing_pages_forward_with_an_advancing_cursor(
+    store: GraphContinuationStore,
+) -> None:
+    """The due-index twin of the status-listing cursor test, on the
+    ``resume_at``-then-``run_id`` order #1098's fair scan walks."""
+    now = datetime(2026, 8, 29, 12, tzinfo=UTC)
+    for i in range(5):
+        await store.create(
+            _continuation(
+                f"due-{i}",
+                status=RunStatus.WAITING,
+                resume_at=now - timedelta(seconds=5 - i),
+            )
+        )
+
+    first_page = await store.list_due_run_ids(now=now, limit=2)
+    assert first_page == ["due-0", "due-1"]
+
+    second_record = await store.get("due-1")
+    assert second_record is not None and second_record.resume_at is not None
+    cursor = (second_record.resume_at.isoformat(), "due-1")
+    second_page = await store.list_due_run_ids(now=now, limit=2, after=cursor)
+    assert second_page == ["due-2", "due-3"]
+
+    last_record = await store.get("due-4")
+    assert last_record is not None and last_record.resume_at is not None
+    cursor = (last_record.resume_at.isoformat(), "due-4")
+    assert await store.list_due_run_ids(now=now, limit=2, after=cursor) == []
+
+
 async def test_a_delete_removes_the_continuation_and_reports_what_it_removed(
     store: GraphContinuationStore,
 ) -> None:
