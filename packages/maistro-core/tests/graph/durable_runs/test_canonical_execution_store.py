@@ -21,7 +21,13 @@ from maistro.graph.durable_runs.stores import InMemoryDurableRunStore
 from maistro.graph.durable_runs.types import DurableRunRecord
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.projects.scope_store import InMemoryProjectScopeStore
-from maistro.runs import AttemptStatus, InMemoryRunStore, RunStatus
+from maistro.runs import (
+    AcceptedNodeOutcome,
+    AttemptResult,
+    AttemptStatus,
+    InMemoryRunStore,
+    RunStatus,
+)
 from maistro.runs.lifecycle import transition_node_run
 from maistro.runs.store import ActiveAttemptExists, RunIntegrityError, StaleExecutionFence
 
@@ -90,7 +96,18 @@ async def test_the_records_own_precondition_still_fires_on_the_delegated_path() 
     """The aggregate knows this Run is finished with the node before the
     canonical row does, so it is the one that has to refuse."""
     store, run_store, execution_store, record, node_run_id = await _bound_store()
-    settled = transition_node_run(record.node_runs[0], RunStatus.COMPLETED)
+    attempt = await execution_store.create_attempt(node_run_id)
+    await execution_store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
+    terminal = await execution_store.transition_attempt(attempt.attempt_id, AttemptStatus.COMPLETED)
+    current = await store.get(record.run_id)
+    assert current is not None
+    record = current
+    outcome = AcceptedNodeOutcome(
+        node_run_id=node_run_id, attempt_result=AttemptResult.from_attempt(terminal)
+    )
+    settled = transition_node_run(
+        record.node_runs[0], RunStatus.COMPLETED, accepted_outcome=outcome
+    )
     await store.update(
         record.model_copy(update={"node_runs": (settled,), "version": record.version + 1})
     )
