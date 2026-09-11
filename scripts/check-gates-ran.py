@@ -88,6 +88,28 @@ class Verdict:
         return not self.not_executed and bool(self.absent or self.unfinished)
 
 
+def _supersedes(candidate: dict[str, Any], incumbent: dict[str, Any]) -> bool:
+    """Whether `candidate` should replace `incumbent` as a name's judged attempt.
+
+    Multiple check runs can share one name for one commit: GitHub's own reruns,
+    and -- since the quality.yml/security.yml concurrency fix (#1229) -- two
+    independently triggered workflow runs (`push` and `pull_request`) landing
+    in one concurrency group, where the loser is `cancelled` rather than
+    simply absent. A `cancelled`/`skipped`/`stale`/`action_required` run never
+    certifies that the enforcement it names ran to a verdict, so it must never
+    shadow a sibling run for the same name that did -- regardless of which one
+    the API happens to return later. Only when both runs agree on having
+    executed (or both failed to) does list order -- the later entry being the
+    newer attempt -- decide, preserving judging-by-latest-attempt for an
+    ordinary rerun sequence.
+    """
+    candidate_executed = candidate.get("conclusion") not in NON_EXECUTED
+    incumbent_executed = incumbent.get("conclusion") not in NON_EXECUTED
+    if candidate_executed != incumbent_executed:
+        return candidate_executed
+    return True
+
+
 def evaluate(
     required: list[str],
     check_runs: list[dict[str, Any]],
@@ -97,7 +119,10 @@ def evaluate(
     latest: dict[str, dict[str, Any]] = {}
     for run in check_runs:
         name = run.get("name")
-        if isinstance(name, str):
+        if not isinstance(name, str):
+            continue
+        incumbent = latest.get(name)
+        if incumbent is None or _supersedes(run, incumbent):
             latest[name] = run
 
     verdict = Verdict()
