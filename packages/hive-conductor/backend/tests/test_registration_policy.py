@@ -446,6 +446,55 @@ class TestInvitations:
         assert outcomes.count(403) == 7
         assert len(stores.users) == before + 1
 
+    def test_concurrent_open_registration_claims_username_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The UUID-keyed user store cannot be the uniqueness boundary (#1248).
+
+        Slow the post-check password step so every pre-fix request observes the
+        username as available before any UUID row is written. The route's
+        critical section must turn that check-then-write into one winner and
+        seven 409 responses, rather than seven identities with one username.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        import stores
+        from main import app
+        from routes import auth as auth_routes
+        from services import registration_policy as rp
+
+        from maistro.security.auth_throttle import AuthThrottle
+
+        rp.set_mode("open", actor="admin:test")
+        monkeypatch.setattr(
+            auth_routes, "_REGISTER_THROTTLE", AuthThrottle(auth_routes._STRICTER.register)
+        )
+
+        def slow_hash(_password: str) -> str:
+            # Release the GIL while the old route's check-to-write window is
+            # open, without spending Argon2 work on eight test accounts.
+            time.sleep(0.1)
+            return "test-registration-hash"
+
+        monkeypatch.setattr(auth_routes, "hash_password", slow_hash)
+        before = len(stores.users)
+        barrier = threading.Barrier(8)
+
+        def attempt(_index: int) -> int:
+            barrier.wait(timeout=10)
+            response = TestClient(app).post(
+                "/v1/auth/register", json=_register_body("same-username")
+            )
+            return response.status_code
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            outcomes = list(pool.map(attempt, range(8)))
+
+        assert outcomes.count(200) == 1
+        assert outcomes.count(409) == 7
+        assert len(stores.users) == before + 1
+        assert [u.username for u in stores.users.values()].count("same-username") == 1
+
     def test_invitation_that_loses_the_redemption_race_is_refused(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
