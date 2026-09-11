@@ -319,6 +319,39 @@ async def test_gate_revision_is_new_node_run_and_attempt_evidence_with_feedback(
 
 
 @pytest.mark.asyncio
+async def test_gate_without_revise_target_reoffers_itself_and_records_new_evidence() -> None:
+    graph = PipelineGraph([_node("review", gate=lambda _ctx: False, max_revisions=1)])
+    dispatcher = ScriptedDispatcher()
+
+    run, record, owner = await _canonical(graph, dispatcher)
+
+    assert record.run.status is RunStatus.FAILED
+    assert run.status == "failed at review"
+    assert run.failed_stage_error == "Gate failed after 1 revisions"
+    assert dispatcher.calls == ["review", "review"]
+    node_runs = await owner.run_store.list_node_runs(record.run_id)
+    assert len(node_runs) == 2
+    assert node_runs[0].status is RunStatus.COMPLETED
+    assert node_runs[1].status is RunStatus.FAILED
+    attempts = [
+        attempt
+        for node_run in node_runs
+        for attempt in await owner.run_store.list_attempts(node_run.node_run_id)
+    ]
+    assert len(attempts) == 2
+
+
+@pytest.mark.asyncio
+async def test_canonical_identity_is_in_the_builders_receipt_projection() -> None:
+    graph = PipelineGraph([_node("tests")])
+
+    run, record, _ = await _canonical(graph, ScriptedDispatcher())
+
+    assert run.canonical_run_id == record.run_id
+    assert run.to_dict()["canonical_run_id"] == record.run_id
+
+
+@pytest.mark.asyncio
 async def test_dispatch_failure_fails_canonical_run_and_never_starts_downstream() -> None:
     graph = PipelineGraph([_node("tests"), _node("code", ("tests",))])
     dispatcher = ScriptedDispatcher(fail={"tests"})

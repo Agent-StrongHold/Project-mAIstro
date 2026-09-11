@@ -233,8 +233,9 @@ class GraphPipelineExecutor:
 
         revisions[node.name] = used + 1
         run.revisions = dict(revisions)
-        # validate() guarantees revise_target is a present ancestor.
-        target = node.revise_target or ""
+        # A declared target is validated as an ancestor. Without one, revise
+        # the gate itself so the bounded gate contract cannot silently complete.
+        target = node.revise_target or node.name
         stale = {target} | set(graph.descendants(target))
         completed.difference_update(stale)
         skipped.difference_update(stale)
@@ -377,7 +378,10 @@ def _gate_decision(graph: PipelineGraph, node: PipelineNode, run: Any) -> _GateD
         return _GateDecision(route="proceed", halt_error=error)
 
     run.revisions[node.name] = used + 1
-    target = node.revise_target or ""
+    # A gate without an explicit target revises its own evaluation.  The
+    # canonical graph therefore gets a real conditional back-edge instead of
+    # silently treating the failed gate as terminal.
+    target = node.revise_target or node.name
     stale = {target} | set(graph.descendants(target))
     run.skipped_stages[:] = [name for name in run.skipped_stages if name not in stale]
 
@@ -556,12 +560,12 @@ def _revision_edges(graph: PipelineGraph) -> list[Edge]:
     return [
         Edge(
             from_node=_stage_node_id(node.name),
-            to_node=_stage_node_id(node.revise_target),
+            to_node=_stage_node_id(node.revise_target or node.name),
             condition="route == 'revise'",
             metadata={"builders_revision": True},
         )
         for node in graph
-        if node.gate is not None and node.revise_target is not None
+        if node.gate is not None
     ]
 
 

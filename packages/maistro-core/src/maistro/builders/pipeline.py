@@ -160,6 +160,9 @@ class PipelineRun:
     revisions: dict[str, int] = field(default_factory=dict)
     gate_exhausted: list[str] = field(default_factory=list)
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    # Identity of the canonical Run that owns lifecycle evidence for this
+    # compatibility receipt. Builders domain state remains local to this run.
+    canonical_run_id: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -172,6 +175,7 @@ class PipelineRun:
             "skipped_stages": list(self.skipped_stages),
             "revisions": dict(self.revisions),
             "gate_exhausted": list(self.gate_exhausted),
+            "canonical_run_id": self.canonical_run_id,
             "created_at": self.created_at.isoformat(),
         }
 

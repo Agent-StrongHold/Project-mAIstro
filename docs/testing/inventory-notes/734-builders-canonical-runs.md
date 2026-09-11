@@ -5,7 +5,7 @@ Issue: #734
 Parent: #49
 
 inventory-delta:
-  packages/maistro-core/tests: +15
+  packages/maistro-core/tests: +17
 ---
 
 ## Claim and collision boundary
@@ -29,7 +29,7 @@ If parity cannot be reached through the existing public canonical execution API 
 
 ## Evidence
 
-Seven focused behavioral tests compare representative legacy/private Builders execution with the canonical adapter for ready-wave ordering/concurrency, skips and unsupported stages, failure and timeout behavior, gate revision feedback, iteration bounds, and canonical completion projection.
+Nine focused behavioral tests compare representative legacy/private Builders execution with the canonical adapter for ready-wave ordering/concurrency, skips and unsupported stages, failure and timeout behavior, gate revision feedback, iteration bounds, canonical completion projection, and self-revising gates. The receipt identity test also verifies the canonical Run link is serialized for downstream consumers.
 
 Canonical evidence directly inspects the Run store and requires one canonical Run per pipeline execution, canonical NodeRun/Attempt evidence for physical stage execution and re-execution, and Builders domain state to remain a projection rather than a second generic lifecycle authority.
 
