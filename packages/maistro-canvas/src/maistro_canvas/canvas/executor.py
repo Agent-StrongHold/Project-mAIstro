@@ -12,7 +12,6 @@ safe, actionable message.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
@@ -130,6 +129,7 @@ class CanvasExecutor:
         region: str = "full",
         strength: float = 0.6,
         actor_principal_id: str | None = None,
+        idempotency_key: str | None = None,
     ) -> GenerationJobRecord:
         """Validate preconditions and enqueue a Canvas-domain generation receipt.
 
@@ -155,9 +155,10 @@ class CanvasExecutor:
                 region=region,
                 strength=strength,
                 actor_principal_id=actor_principal_id,
+                idempotency_key=idempotency_key,
             )
 
-    async def _start_job_locked(
+    async def _start_job_locked(  # noqa: C901 - admission preconditions are intentionally explicit
         self,
         *,
         canvas_id: str,
@@ -172,6 +173,7 @@ class CanvasExecutor:
         region: str,
         strength: float,
         actor_principal_id: str | None,
+        idempotency_key: str | None,
     ) -> GenerationJobRecord:
         layer = await self._store.get_layer(layer_id, org_id=org_id)
         if layer is None:
@@ -194,14 +196,29 @@ class CanvasExecutor:
         if action == JobAction.REFINE and not layer.image_path:
             raise RefineNoSourceError(f"layer {layer_id!r} has no image_path; cannot refine")
 
+        # An idempotency key gives a retry a durable operation identity. Without
+        # one, each request intentionally remains a new generation.
+        operation_id = idempotency_key.strip() if idempotency_key is not None else None
+        if operation_id == "":
+            operation_id = None
         active = await self._store.active_job_for_layer(layer_id, org_id=org_id)
         if active is not None:
+            if (
+                operation_id is not None
+                and active.params.get("canvas_operation_id") == operation_id
+            ):
+                return active
             raise JobInProgressError(
                 f"layer {layer_id!r} already has an active job ({active.id!r})"
             )
 
+        job_id = (
+            str(uuid.uuid5(uuid.NAMESPACE_URL, f"maistro-canvas:{org_id}:{operation_id}"))
+            if operation_id is not None
+            else str(uuid.uuid4())
+        )
         job = GenerationJobRecord(
-            id=str(uuid.uuid4()),
+            id=job_id,
             layer_id=layer_id,
             canvas_id=canvas_id,
             action=action,
@@ -217,24 +234,41 @@ class CanvasExecutor:
             },
             org_id=org_id,
         )
+        if operation_id is not None:
+            job.params["canvas_operation_id"] = operation_id
 
         if self._canonical_execution is None:
             return await self._store.create_job(job, org_id=org_id)
 
+        receipt = {
+            "action": job.action,
+            "model_id": job.model_id,
+            "prompt": job.prompt,
+            "params": dict(job.params),
+            "org_id": org_id,
+        }
         run_id = await self._canonical_execution.admit(
             job_id=job.id,
             canvas_id=canvas_id,
             layer_id=layer_id,
             action=action,
             actor_principal_id=actor_principal_id,
+            operation_id=operation_id,
+            receipt=receipt,
         )
         correlate_run(job.params, run_id)
-        try:
-            return await self._store.create_job(job, org_id=org_id)
-        except BaseException:
-            with contextlib.suppress(Exception):
-                await self._canonical_execution.cancel(run_id)
-            raise
+        # A retry after process death may have a receipt already. Returning that
+        # durable projection is idempotent and avoids a second insert.
+        existing = await self._store.get_job(job.id, org_id=org_id)
+        if existing is not None:
+            return existing
+        return await self._store.create_job(job, org_id=org_id)
+
+    async def reconcile_admissions(self) -> list[GenerationJobRecord]:
+        """Repair missing/lagging receipt projections from canonical Runs."""
+        if self._canonical_execution is None:
+            return []
+        return await self._canonical_execution.reconcile_admissions(self._store)
 
     async def run_job(self, job_id: str, *, org_id: str) -> GenerationJobRecord:
         """Execute a pending job synchronously (compatibility path for tests/CLI)."""
