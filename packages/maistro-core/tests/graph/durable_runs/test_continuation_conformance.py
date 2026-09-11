@@ -199,6 +199,36 @@ async def test_due_deadline_query_agrees_across_backends(store: GraphContinuatio
     assert await store.list_due_run_ids(now=now, limit=1) == ["run-waiting"]
 
 
+async def test_hitl_due_query_is_deadline_ordered_and_status_selective(
+    store: GraphContinuationStore,
+) -> None:
+    now = datetime(2026, 8, 29, 12, tzinfo=UTC)
+    await store.create(
+        _continuation(
+            "hitl-due",
+            status=RunStatus.PAUSED,
+            resume_at=None,
+        ).model_copy(update={"hitl_deadline_at": now - timedelta(seconds=1)})
+    )
+    await store.create(
+        _continuation(
+            "hitl-future",
+            status=RunStatus.PAUSED,
+            resume_at=None,
+        ).model_copy(update={"hitl_deadline_at": now + timedelta(seconds=1)})
+    )
+    await store.create(
+        _continuation(
+            "wait-due",
+            status=RunStatus.WAITING,
+            resume_at=now - timedelta(seconds=2),
+        ).model_copy(update={"hitl_deadline_at": now - timedelta(seconds=2)})
+    )
+
+    assert await store.list_hitl_due_run_ids(now=now, limit=1) == ["hitl-due"]
+    assert await store.list_hitl_due_run_ids(now=now, limit=10) == ["hitl-due"]
+
+
 async def test_a_delete_removes_the_continuation_and_reports_what_it_removed(
     store: GraphContinuationStore,
 ) -> None:

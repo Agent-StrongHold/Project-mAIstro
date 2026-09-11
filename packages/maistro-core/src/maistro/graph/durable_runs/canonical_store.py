@@ -21,6 +21,7 @@ from maistro.runs.model import Attempt, NodeRun, RunStatus
 from maistro.runs.store import RunIntegrityError, RunStore
 
 from .continuation import GraphContinuation, GraphContinuationStore
+from .hitl import earliest_hitl_deadline
 from .spine import mirror_lifecycle
 from .stores import answer_record, settle_hitl_record
 from .types import DurableRunRecord
@@ -159,6 +160,22 @@ class CanonicalDurableRunStore:
             if record.run.status in _RECOVERY_VISIBLE_STATUSES
             and record.resume_at is not None
             and record.resume_at <= now
+        ][:limit]
+
+    async def list_hitl_due(
+        self,
+        *,
+        now: datetime,
+        limit: int = 100,
+    ) -> list[DurableRunRecord]:
+        run_ids = await self._continuations.list_hitl_due_run_ids(now=now, limit=limit)
+        records = await self._assemble_all(run_ids)
+        return [
+            record
+            for record in records
+            if record.run.status is RunStatus.PAUSED
+            and (deadline := earliest_hitl_deadline(record)) is not None
+            and deadline <= now
         ][:limit]
 
     async def list_for_project(
