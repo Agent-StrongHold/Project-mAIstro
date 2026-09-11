@@ -84,7 +84,24 @@ class VisualQualityEgress(Protocol):
         *,
         context: dict[str, str],
         request: ModelChatRequest,
+        response_validator: Callable[[Any], object] | None = None,
     ) -> Any: ...
+
+
+def _parse_visual_quality_result(result: Any) -> dict[str, Any]:
+    body = getattr(result, "body", None)
+    if not isinstance(body, dict):
+        raise ValueError("visual quality provider returned no response body")
+    try:
+        content = body["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise ValueError("visual quality provider returned no message content") from exc
+    if not isinstance(content, str):
+        raise ValueError("visual quality provider returned non-text message content")
+    parsed = json.loads(content)
+    if not isinstance(parsed, dict):
+        raise ValueError("visual quality response must be a JSON object")
+    return parsed
 
 
 async def visual_quality_eval(
@@ -112,7 +129,14 @@ async def visual_quality_eval(
         "- Detail richness (25 pts): Are textures, lighting, and depth well-described?\n\n"
         'Reply with JSON only: {"score": int, "composition": int, "color": int, "style": int, "detail": int, "rationale": str}'
     )
-    result = await egress.complete(
+    parsed: dict[str, Any] | None = None
+
+    def validate(result: Any) -> dict[str, Any]:
+        nonlocal parsed
+        parsed = _parse_visual_quality_result(result)
+        return parsed
+
+    await egress.complete(
         context={key: str(value) for key, value in context.items()},
         request=ModelChatRequest(
             model="claude-opus-4-6",
@@ -125,19 +149,9 @@ async def visual_quality_eval(
             ],
             temperature=0.0,
         ),
+        response_validator=validate,
     )
-    body = getattr(result, "body", None)
-    if not isinstance(body, dict):
-        raise ValueError("visual quality provider returned no response body")
-    try:
-        content = body["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise ValueError("visual quality provider returned no message content") from exc
-    if not isinstance(content, str):
-        raise ValueError("visual quality provider returned non-text message content")
-    parsed = json.loads(content)
-    if not isinstance(parsed, dict):
-        raise ValueError("visual quality response must be a JSON object")
+    assert parsed is not None  # The validator runs before the egress settles success.
     return parsed
 
 
