@@ -996,9 +996,9 @@ class Container:
         round). `CREATED` is the window between persisting the Attempt and
         transitioning it: an exception there leaves a `CREATED` Attempt that
         nothing owns. Reading it as live re-creates the same hole one step in,
-        and worse than the NodeRun case, because `ScheduleAttemptExecutor`
-        configures no lease TTL -- so nothing expires it and no recovery tick
-        reclaims it. It is re-parked with the rest.
+        but the schedule executor does configure a finite lease TTL, so the
+        ordinary recovery tick can reclaim it if the creator dies. It is
+        re-parked with the rest.
 
         Re-parking rather than failing, because nothing about the pause has
         changed: the next tick may try again, and terminalizing would throw away
