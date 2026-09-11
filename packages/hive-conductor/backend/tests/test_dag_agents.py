@@ -270,6 +270,44 @@ def test_ordinary_node_kinds_are_unaffected_by_the_wiring(monkeypatch) -> None:
 
 
 @pytest.mark.ac("ADR-082826-d9f5/AC-1")
+def test_a_registered_dag_is_visible_to_a_second_hive_composition(
+    monkeypatch: pytest.MonkeyPatch, synth_dag_id: str
+) -> None:
+    """A second Hive composition can read the run after the first is gone."""
+
+    from maistro.graph.durable_runs import (
+        CanonicalDurableRunStore,
+        InMemoryGraphContinuationStore,
+    )
+    from maistro.projects.scope_store import InMemoryProjectScopeStore
+    from maistro.runs import InMemoryRunStore
+
+    projects = InMemoryProjectScopeStore()
+    root = asyncio.run(projects.create_root("w-replica"))
+    run_store = InMemoryRunStore(project_store=projects)
+    continuation = InMemoryGraphContinuationStore()
+    first_graph_store = CanonicalDurableRunStore(run_store, continuation)
+    first = _StubContainer(runs=run_store, graph_runs=first_graph_store)
+    _with_container(monkeypatch, first)
+
+    _graph, record = asyncio.run(
+        run_registered_dag(synth_dag_id, workspace_id="w-replica", project_id=root.project_id)
+    )
+
+    # Simulate the next Hive process/replica creating its own projection object
+    # over the same canonical persistence, rather than the old private store.
+    second = _StubContainer(
+        runs=run_store,
+        graph_runs=CanonicalDurableRunStore(run_store, continuation),
+    )
+    _with_container(monkeypatch, second)
+    visible = asyncio.run(second.graph_run_store.get(record.run_id))
+
+    assert visible is not None
+    assert visible.run_id == record.run_id
+    assert visible.run.status is RunStatus.COMPLETED
+
+
 def test_a_registered_dag_is_findable_on_the_canonical_spine(monkeypatch, synth_dag_id) -> None:
     """The defect #44 exists to remove, at the surface that had it.
 

@@ -37,6 +37,14 @@ async def validate_proposal(
         result_b = await execute_dag(variant_b)
     except Exception as e:
         logger.warning("validation_run_failed proposal=%s error=%s", proposal.get("kind"), e)
+        unavailable = getattr(e, "result", None)
+        if isinstance(unavailable, dict) and unavailable.get("status") == "unavailable":
+            return {
+                **proposal,
+                "status": "unavailable",
+                "validated": False,
+                "reason": str(unavailable.get("error") or e),
+            }
         return {**proposal, "validated": False, "reason": f"Variant B failed to run: {e}"}
 
     # Score variant B
@@ -363,6 +371,10 @@ async def hill_climb_models(
     current_cost = MODEL_COST.get(current_model, 0.20)
     winners = []
     for r in results:
+        # Failed validation has no score and must never become a winner merely
+        # because its candidate model is cheaper than the baseline.
+        if r.get("status") == "unavailable" or "variant_b_score" not in r:
+            continue
         q = r.get("variant_b_score", 0)
         c = r.get("_cost", 999)
         if q > baseline_score:

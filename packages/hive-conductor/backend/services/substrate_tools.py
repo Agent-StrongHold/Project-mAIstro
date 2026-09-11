@@ -169,7 +169,7 @@ async def tool_hill_climb(
     """Real hill climbing: run -> eval -> inject critique -> re-run."""
     from stores import dags as dag_store
 
-    from services.graph_runner import execute_dag
+    from services.graph_runner import CanonicalDagExecutionError, execute_dag
 
     dag_id = args.get("dag_id", "")
     max_attempts = min(args.get("max_attempts", 3), 5)
@@ -182,7 +182,21 @@ async def tool_hill_climb(
 
     best_score, best_result, attempts = 0, None, []
     for attempt in range(1, max_attempts + 1):
-        result = await execute_dag(dag_data, user_id=user_id)
+        try:
+            result = await execute_dag(dag_data, user_id=user_id)
+        except CanonicalDagExecutionError as exc:
+            # A missing canonical spine is a supported degraded capability, not
+            # a generic tool failure and never a zero-score hill-climb.
+            return {
+                "status": exc.result.get("status", "failed"),
+                "dag_id": dag_id,
+                "error": str(exc),
+                "run_id": exc.result.get("run_id"),
+                "attempts": attempts,
+                "best_score": best_score,
+                "target": target_score,
+                "passed": False,
+            }
         output = "\n".join(
             r.get("response", "")
             for r in result.get("node_results", {}).values()

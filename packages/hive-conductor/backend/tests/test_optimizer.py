@@ -570,6 +570,80 @@ def test_run_endpoint_with_apply_auto_true(admin_client: Any) -> None:
     assert r.json()["auto_applied"] >= 1
 
 
+async def test_model_hill_climb_does_not_promote_unavailable_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing spine cannot become a cheaper model recommendation."""
+    from services import dag_agents
+    from services.validation_gate import hill_climb_models
+
+    monkeypatch.setattr(dag_agents, "_container", lambda: None)
+    out = await hill_climb_models({"nodes": [{"id": "n1", "model": "gpt-5.5"}]}, baseline_score=0.0)
+
+    assert out == []
+
+
+def test_run_endpoint_reports_unavailable_without_the_canonical_spine(
+    admin_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Optimizer validation must not surface proposals after a refused run."""
+    import stores
+    from services import dag_agents
+
+    dag_id = "d-no-spine-optimizer"
+    stores.dags[dag_id] = {
+        "id": dag_id,
+        "name": "No spine",
+        "description": "exercise unavailable Graph execution",
+        "nodes": [{"id": "n1", "role": "worker", "prompt": "work"}],
+        "edges": [],
+    }
+    try:
+        monkeypatch.setattr(dag_agents, "_container", lambda: None)
+        _seed_metrics(dag_id, "n1", count=10, failed=8, p95=100)
+
+        response = admin_client.post(f"/v1/optimizer/{dag_id}/run")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "unavailable"
+        assert body["validated"] is False
+        assert body["proposals"] == []
+        assert body["proposals_tested"] == 0
+        assert "canonical Graph execution" in body["error"]
+    finally:
+        stores.dags.pop(dag_id, None)
+
+
+async def test_authorized_hill_climb_reports_unavailable_without_the_spine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The chat-authorized hill-climb tool keeps the degraded result explicit."""
+    import stores
+    from services import dag_agents
+    from services.substrate_tools import tool_hill_climb
+
+    dag_id = "d-no-spine-hill-climb"
+    stores.dags[dag_id] = {
+        "id": dag_id,
+        "name": "No spine",
+        "nodes": [{"id": "n1", "role": "worker", "prompt": "work"}],
+        "edges": [],
+        "eval_rubric": {"criteria": [{"name": "quality"}]},
+    }
+    try:
+        monkeypatch.setattr(dag_agents, "_container", lambda: None)
+
+        result = await tool_hill_climb({"dag_id": dag_id, "max_attempts": 2}, "user-1")
+
+        assert result["status"] == "unavailable"
+        assert result["run_id"] is None
+        assert result["attempts"] == []
+        assert result["passed"] is False
+    finally:
+        stores.dags.pop(dag_id, None)
+
+
 def test_run_endpoint_empty_dag_id_returns_400(admin_client: Any) -> None:
     """FastAPI's path can't be empty, but if a service-level ValueError
     bubbles, the route translates it to 400."""
