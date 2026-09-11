@@ -24,6 +24,8 @@ from maistro.agents.intents import IntentRegistry, build_intent_registry
 from maistro.archive.wiring import build_archive_store
 from maistro.capabilities.effect_context import (
     CapabilityEffectContext,
+    build_effect_context,
+    configure_default_effect_context,
     new_in_memory_effect_context,
 )
 from maistro.classifier.engine import ClassifierEngine
@@ -1453,17 +1455,6 @@ async def create_container(
         durable_event_log = InMemoryEventLog()
         trigger_store = InMemoryTriggerStore()
         invocation_store = InMemoryInvocationStore()
-        if pg_pool is not None:
-            # The durable-event stores (ADR-086) have a SQLite implementation
-            # and no PostgreSQL one, so a PostgreSQL deployment gets in-memory
-            # here even though it configured a durable database. Saying so is
-            # the whole point of #122: the operator learns it now rather than
-            # after a restart drops the event log, triggers and invocations.
-            logger.warning(
-                "Durable events are in-memory despite a PostgreSQL backend: the event log, "
-                "triggers and invocations are lost on restart. No PostgreSQL implementation "
-                "exists yet (#135)."
-            )
     handler_caller = HTTPHandlerCaller()
 
     event_bus = EventBus()
@@ -1518,9 +1509,15 @@ async def create_container(
     # --- Hierarchical orchestration (ADR-101) ------------------------------
     harness_registry, hierarchy = _wire_hierarchy(agents, skill_registry)
 
+    # --- Canonical governed capability effects (#55 / #1133) --------------
+    capability_effects = await _wire_capability_effects(
+        pg_pool=pg_pool,
+        db_pool=db_pool,
+    )
+    configure_default_effect_context(capability_effects)
+
     # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) -----------
     wired_harness_adapters = _wire_harness_adapters(harness_adapters)
-    capability_effects = new_in_memory_effect_context()
     spawn_harness_node = AgentSpawnHarnessNode(
         adapters=wired_harness_adapters, effect_context=capability_effects
     )
@@ -1838,6 +1835,11 @@ _REQUIRED_PG_TABLES: Final = (
     # `postgresql://` deployment that skipped `alembic upgrade head` should hear
     # about it once, at startup, naming every table it lacks.
     *WORKSPACE_PG_TABLES,
+    # Canonical capability effect authority and its event stream (#1133).
+    "canonical_event_log",
+    "capability_bindings",
+    "capability_invocations",
+    "capability_approvals",
 )
 
 
@@ -2160,6 +2162,56 @@ async def _wire_sqlite_durable_events(
     await sqlite_trigger_store.ensure_schema()
     await sqlite_invocation_store.ensure_schema()
     return sqlite_event_log, sqlite_trigger_store, sqlite_invocation_store
+
+
+async def _wire_capability_effects(
+    *,
+    pg_pool: Any,
+    db_pool: Any,
+) -> CapabilityEffectContext:
+    """Compose the sole governed effect context from the selected backend."""
+    from maistro.capabilities.approval_store import (
+        ApprovalStore,
+        PgApprovalStore,
+        SqliteApprovalStore,
+    )
+    from maistro.capabilities.binding_store import (
+        BindingStore,
+        PgBindingStore,
+        SqliteBindingStore,
+    )
+    from maistro.capabilities.invocation import InvocationStore as CapabilityInvocationStore
+    from maistro.capabilities.invocation_store import PgInvocationStore, SqliteInvocationStore
+    from maistro.events.envelope import EventStore, SqliteEventStore
+
+    if pg_pool is not None:
+        # Managed PostgreSQL startup already verifies these tables. Do not create
+        # them here: a missing migration must fail loudly, not downgrade or
+        # silently bootstrap a schema the operator did not apply.
+        from maistro.events.pg_envelope import PgEventStore
+
+        bindings: BindingStore = PgBindingStore(pg_pool)
+        invocations: CapabilityInvocationStore = PgInvocationStore(pg_pool)
+        approvals: ApprovalStore = PgApprovalStore(pg_pool)
+        events: EventStore = PgEventStore(pg_pool)
+    elif db_pool is not None:
+        bindings = SqliteBindingStore(db_pool)
+        invocations = SqliteInvocationStore(db_pool)
+        approvals = SqliteApprovalStore(db_pool)
+        events = SqliteEventStore(db_pool)
+        await bindings.ensure_schema()
+        await invocations.ensure_schema()
+        await approvals.ensure_schema()
+        await events.ensure_schema()
+    else:
+        return new_in_memory_effect_context()
+
+    return build_effect_context(
+        bindings=bindings,
+        invocation_store=invocations,
+        approval_store=approvals,
+        event_store=events,
+    )
 
 
 async def _wire_pg_durable_events(
