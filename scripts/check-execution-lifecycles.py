@@ -10,8 +10,9 @@ reviewed classification/rationale for identities already admitted, and stale
 entries must be pruned immediately.
 
 Discovery is deliberately syntax-independent within a small static vocabulary:
-Enum subclasses and status-shaped Literal type aliases are treated alike. The
-value/name heuristic keeps ordinary configuration Literals out of this ledger;
+Enum subclasses, status-shaped Literal type aliases, and status-shaped Literal
+field annotations are treated alike. The value/name heuristic keeps ordinary
+configuration Literals out of this ledger;
 free-text and database-column audits remain separate gates.
 """
 
@@ -221,10 +222,10 @@ def _literal_aliases(tree: ast.AST) -> dict[str, ast.expr]:
     return aliases
 
 
-def _literal_vocabularies(tree: ast.AST, module: str) -> dict[str, set[str]]:
+def _literal_alias_vocabularies(
+    aliases: dict[str, ast.expr], literal_names: set[str], module: str
+) -> dict[str, set[str]]:
     found: dict[str, set[str]] = {}
-    aliases = _literal_aliases(tree)
-    literal_names = _literal_names(tree)
     for name, value in aliases.items():
         if not _looks_like_status_alias(name):
             continue
@@ -234,8 +235,55 @@ def _literal_vocabularies(tree: ast.AST, module: str) -> dict[str, set[str]]:
     return found
 
 
+def _literal_field_vocabularies(
+    tree: ast.AST,
+    aliases: dict[str, ast.expr],
+    literal_names: set[str],
+    module: str,
+    alias_vocabularies: dict[str, set[str]],
+) -> dict[str, set[str]]:
+    """Find status-shaped Literal annotations on model/dataclass fields.
+
+    A field annotation is a vocabulary even when it has no separately named
+    alias (for example ``status: Literal[... ]``). Fields that reference an
+    already-discovered named alias use that alias identity once, rather than
+    creating a second ledger row for every consumer.
+    """
+    found: dict[str, set[str]] = {}
+    for owner in ast.walk(tree):
+        if not isinstance(owner, ast.ClassDef):
+            continue
+        for node in owner.body:
+            if not isinstance(node, ast.AnnAssign) or not isinstance(node.target, ast.Name):
+                continue
+            field_name = node.target.id
+            if not _looks_like_status_alias(field_name):
+                continue
+            states = _normalized_work_states(
+                _literal_values(node.annotation, aliases, literal_names)
+            )
+            if len(states) < _MIN_WORK_STATES:
+                continue
+            if isinstance(node.annotation, ast.Name) and (
+                f"{module}::{node.annotation.id}" in alias_vocabularies
+            ):
+                continue
+            found[f"{module}::{owner.name}.{field_name}"] = states
+    return found
+
+
+def _literal_vocabularies(tree: ast.AST, module: str) -> dict[str, set[str]]:
+    aliases = _literal_aliases(tree)
+    literal_names = _literal_names(tree)
+    alias_vocabularies = _literal_alias_vocabularies(aliases, literal_names, module)
+    return {
+        **alias_vocabularies,
+        **_literal_field_vocabularies(tree, aliases, literal_names, module, alias_vocabularies),
+    }
+
+
 def work_state_vocabularies(source: str, module: str) -> dict[str, set[str]]:
-    """Find enum and status-shaped Literal vocabularies in one source file."""
+    """Find Enum and status-shaped Literal vocabularies in one source file."""
     try:
         tree = ast.parse(source)
     except SyntaxError:
@@ -254,13 +302,11 @@ def work_state_literals(source: str, module: str) -> dict[str, set[str]]:
         tree = ast.parse(source)
     except SyntaxError:
         return {}
-    enum_names = {
-        node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and _is_enum(node)
-    }
+    enum_vocabularies = _enum_vocabularies(tree, module)
     return {
         name: states
         for name, states in work_state_vocabularies(source, module).items()
-        if name.rsplit("::", 1)[-1] not in enum_names
+        if name not in enum_vocabularies
     }
 
 

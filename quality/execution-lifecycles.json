@@ -1,5 +1,5 @@
 {
-  "_comment": "Every execution-looking work-state vocabulary in production code, classified (#36/#1136). The convergence program's central claim is that Run/NodeRun/Attempt is the one execution identity; a new enum or status-shaped Literal alias whose members are work states is how a second one gets built, usually without anyone deciding to. scripts/check-execution-lifecycles.py detects both shapes and ratchets against this file in both directions: an unclassified identity fails, and an entry whose identity no longer exists fails until pruned. CANONICAL = part of the spine. DOMAIN = a genuinely different lifecycle. PROJECTION and RECEIPT = non-authoritative views or admission records. CONVERGE = a competing work-state machine, with the issue that removes it. Free-text and database-column audits remain separate; services.dag_run_store and maistro_canvas.canvas.runner are recorded in docs/architecture/CONVERGENCE-MATRIX.md.",
+  "_comment": "Every execution-looking work-state vocabulary in production code, classified (#36/#1136). The convergence program's central claim is that Run/NodeRun/Attempt is the one execution identity; a new enum, status-shaped Literal alias, or status-shaped Literal field whose members are work states is how a second one gets built, usually without anyone deciding to. scripts/check-execution-lifecycles.py detects all three shapes and ratchets against this file in both directions: an unclassified identity fails, and an entry whose identity no longer exists fails until pruned. CANONICAL = part of the spine. DOMAIN = a genuinely different lifecycle. PROJECTION and RECEIPT = non-authoritative views or admission records. CONVERGE = a competing work-state machine, with the issue that removes it. Free-text and database-column audits remain separate; services.dag_run_store and maistro_canvas.canvas.runner are recorded in docs/architecture/CONVERGENCE-MATRIX.md.",
   "metric_definition_version": "2",
   "lifecycles": {
     "maistro.runs.model::RunStatus": {
@@ -60,6 +60,31 @@
       "classification": "CONVERGE",
       "rationale": "RSI's Literal run status is a product-local execution ladder. #50 makes each improvement cycle a canonical Run over the authorized work source.",
       "converged_by": "#50"
+    },
+    "maistro.graph.nodes.agent_spawn_harness::SpawnHarnessOut.status": {
+      "classification": "PROJECTION",
+      "rationale": "The node output reports a delegated harness result; canonical Run/NodeRun/Attempt state remains authoritative."
+    },
+    "maistro.graph.nodes.base::NodeResult.status": {
+      "classification": "PROJECTION",
+      "rationale": "NodeResult is an output projection of a node execution, not an independent execution owner."
+    },
+    "maistro.orchestrator.waves.types::WaveHandle.status": {
+      "classification": "CONVERGE",
+      "rationale": "WaveHandle carries a parallel branch execution ladder that must become Graph nodes and canonical NodeRuns under #44.",
+      "converged_by": "#44"
+    },
+    "models.schemas::Container.status": {
+      "classification": "DOMAIN",
+      "rationale": "Container health/availability state is product infrastructure domain state, not canonical Run terminal truth."
+    },
+    "models.schemas::Mission.status": {
+      "classification": "DOMAIN",
+      "rationale": "Mission progress is a Hive product-domain projection; canonical Run/NodeRun/Attempt state owns physical execution."
+    },
+    "models.schemas::MissionStep.status": {
+      "classification": "DOMAIN",
+      "rationale": "Mission-step progress is a Hive product-domain projection; it does not replace canonical Run/NodeRun/Attempt state."
     }
   }
 }
