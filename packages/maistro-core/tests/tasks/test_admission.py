@@ -171,6 +171,52 @@ async def test_a_new_queue_rehydrates_a_queued_run(scoped) -> None:
     assert await restarted.next_task() == submitted.task_id
 
 
+async def test_death_after_run_admission_is_recoverable(scoped) -> None:
+    _projects, runs, _root, project = scoped
+    delegate = TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+
+    class _ProcessDeath(BaseException):
+        pass
+
+    class _CrashAfterAdmission:
+        async def admit(self, task, *, workspace_id=None):
+            run_id = await delegate.admit(task, workspace_id=workspace_id)
+            raise _ProcessDeath(run_id)
+
+        async def record_transition(self, run_id, status, **kwargs):
+            return await delegate.record_transition(run_id, status, **kwargs)
+
+    with pytest.raises(_ProcessDeath):
+        await TaskQueue(admitter=_CrashAfterAdmission()).submit(
+            TaskCreate(description="death after admission")
+        )
+
+    restarted = TaskQueue(admitter=delegate)
+    assert await restarted.recover(runs) == 1
+    assert await restarted.next_task()
+
+
+async def test_death_after_receipt_before_notification_is_recoverable(scoped) -> None:
+    _projects, runs, _root, project = scoped
+    admitter = TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+
+    class _ProcessDeath(BaseException):
+        pass
+
+    class _CrashQueue:
+        async def put(self, _task_id):
+            raise _ProcessDeath
+
+    queue = TaskQueue(admitter=admitter)
+    queue._pending = _CrashQueue()  # type: ignore[assignment]
+    with pytest.raises(_ProcessDeath):
+        await queue.submit(TaskCreate(description="death before notification"))
+
+    restarted = TaskQueue(admitter=admitter)
+    assert await restarted.recover(runs) == 1
+    assert await restarted.next_task()
+
+
 async def test_two_recovery_receipts_have_one_canonical_transition_winner(scoped) -> None:
     _projects, runs, _root, project = scoped
     admitter = TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
