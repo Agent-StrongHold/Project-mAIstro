@@ -105,6 +105,36 @@ class TestDelegationFilesAChildRun:
         assert child.workspace_id == parent.workspace_id
         assert child.project_id == parent.project_id
 
+    async def test_replaying_the_same_logical_delegation_reuses_the_child_and_task(
+        self,
+    ) -> None:
+        """A lease-loss retry cannot turn one logical delegation into two tasks."""
+        store, _projects, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+        delegator = _delegator()
+        node = AgentDelegateRemoteNode(a2a_delegator=delegator, run_store=store)
+        context = _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id)
+        inputs = {"from_agent": "planner", "task": "research X", "to_agent": "researcher"}
+
+        first = await node.run(inputs, context)
+        retry_context = context.model_copy(update={"node_run_id": "node-run-retry-3"})
+        second = await node.run(inputs, retry_context)
+
+        assert first.status == second.status == "paused"
+        assert first.metadata["run_id"] == second.metadata["run_id"]
+        assert first.metadata["task_id"] == second.metadata["task_id"]
+        assert len(delegator._tasks) == 1
+        assert (
+            await store.find_child_run_by_effect(
+                parent.run_id,
+                node._effect_key(node.input_schema.model_validate(inputs), context),
+            )
+            is not None
+        )
+
     async def test_the_child_run_provenance_names_the_task_the_mode_and_both_agents(
         self,
     ) -> None:

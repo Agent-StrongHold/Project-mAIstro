@@ -461,6 +461,12 @@ class RunStore(Protocol):
 
     async def claim_delegation_transport_attempt(self, run_id: str) -> bool: ...
 
+    async def find_child_run_by_effect(
+        self,
+        parent_run_id: str,
+        effect_key: str,
+    ) -> Run | None: ...
+
     async def transition_run(
         self,
         run_id: str,
@@ -1003,6 +1009,19 @@ class InMemoryRunStore:
         provenance["transport_attempted"] = True
         self._runs[run_id] = run.model_copy(update={"provenance": provenance})
         return True
+
+    async def find_child_run_by_effect(
+        self,
+        parent_run_id: str,
+        effect_key: str,
+    ) -> Run | None:
+        for run in self._runs.values():
+            if (
+                run.parent_run_id == parent_run_id
+                and run.provenance.get("effect_key") == effect_key
+            ):
+                return run.model_copy(deep=True)
+        return None
 
     async def transition_run(
         self,

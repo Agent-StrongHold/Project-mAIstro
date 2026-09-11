@@ -39,6 +39,7 @@ from .base import (
     PAUSE_AWAITING_REMOTE_DELEGATION,
     BaseNode,
     NodeContext,
+    ReplaySemantics,
     now_utc,
     pause_until,
 )
@@ -173,7 +174,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
     input_schema: ClassVar[type[BaseModel]] = DelegateRemoteIn
     output_schema: ClassVar[type[BaseModel]] = DelegateRemoteOut
     cost_hint: ClassVar[float] = 0.0
-    idempotent: ClassVar[bool] = False
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.EFFECT_KEY
     external_io: ClassVar[bool] = True
     display_name: ClassVar[str] = "Agent: delegate to remote session"
     description: ClassVar[str] = (
@@ -671,6 +672,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         task_id: str,
         mode: str,
         target: str,
+        effect_key: str = "",
     ) -> str:
         """File the delegated work as a child Run of the delegating NodeRun.
 
@@ -717,6 +719,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
                 "delegating_agent": inputs.from_agent,
                 "target_agent": target,
                 "peer_name": inputs.peer_name,
+                "effect_key": effect_key,
             },
         )
         return child.run_id

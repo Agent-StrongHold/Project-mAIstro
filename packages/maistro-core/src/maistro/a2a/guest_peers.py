@@ -74,6 +74,14 @@ class InMemoryAuditLogger:
         )
 
 
+class DelegationMessages(list[dict[str, str]]):
+    """JSON-compatible messages carrying transport idempotency metadata."""
+
+    def __init__(self, messages: list[dict[str, str]], *, effect_key: str = "") -> None:
+        super().__init__(messages)
+        self.effect_key = effect_key
+
+
 class GuestPeerManager:
     """Registry of trusted external A2A peers with secure delegation."""
 
@@ -169,10 +177,15 @@ class GuestPeerManager:
         idempotency_key: str | None = None,
     ) -> DelegationResult:
         """Delegate a task to an external A2A peer."""
+        if idempotency_key is None:
+            # Replay contract: an unkeyed delegation inherits the delegating
+            # node's effect key, so a replayed effect cannot re-dispatch work.
+            idempotency_key = str(getattr(messages, "effect_key", "")) or None
         if idempotency_key is not None:
             cached = self._idempotent_receipts.get((peer_name, idempotency_key))
             if cached is not None:
                 return cached
+
 
         peer = self.get_peer(peer_name)
         rejection = self._admission_rejection(peer, agent_id)
