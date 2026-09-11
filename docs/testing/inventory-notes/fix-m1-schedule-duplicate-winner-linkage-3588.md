@@ -1,11 +1,12 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +41
+  packages/maistro-core/tests: +52
 ---
 # fix-m1-schedule-duplicate-winner-linkage-3588
 
-Forty-one new tests for recovering the Run that won an occurrence claim
-(#1059); nothing was removed or moved. Twenty-four came with the change, and
+Fifty-two new tests for recovering the Run that won an occurrence claim
+(#1059); nothing was removed or moved. Forty-one are described first; the
+eleven from the second review round follow at the end. Twenty-four came with the change, and
 seventeen with the Codex review findings on it (below).
 
 Six behavioral cases in `packages/maistro-core/tests/scheduling/test_admission.py`
@@ -51,3 +52,22 @@ case in `packages/maistro-core/tests/runs/test_archive_conformance.py`
 holds its occurrence claim — a second Run is refused and
 `get_run_for_occurrence` still resolves it — which is what migration 034's
 promoted claim columns exist for.
+
+The second review round added eleven. Six in `test_admission.py`
+(`TestRecoveryBeyondTheCatchUpHorizon`): a winner one cadence back is
+recovered under the default one-hour window; SKIP defers to, and
+CANCEL_OTHER cancels, a live winner that crashed two occurrences before the
+horizon; a batch of two crashed winners is recovered contiguously; the claim
+walk stops at the first occurrence without a Run (three lookups after a
+five-hour outage, not five); and an idle tick costs no lookup. The existing
+unresolvable-newest-winner test was rewritten in place (the pointer now stays
+where it was rather than naming an earlier Run of the batch) and is not
+counted. Five are PostgreSQL-only, in
+`packages/maistro-core/tests/persistence/test_pg_schedule_claims.py`, so
+ci.yml's pg17/pg18 jobs run them on both server versions: a stale write
+cannot move the cursor backward; two pools recording one occurrence count it
+once and exhaust `max_runs=1`; `put` keeps the cursors a concurrent
+`record_fire` wrote; a due-cursor write counts no fire by default; and an
+archived winner's tombstone keeps its promoted claim columns, refuses a
+second Run and still resolves by occurrence. All five skip without
+`MAISTRO_TEST_PG_DSN`.

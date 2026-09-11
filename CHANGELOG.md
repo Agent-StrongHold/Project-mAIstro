@@ -110,11 +110,20 @@ or placeholder-only section.
   still counted. The advance is monotonic as well: a delayed ticker's write
   for an older occurrence can no longer move `last_fired_at`, `last_run_id` or
   `next_due_at` backward over a rival's newer one, and reaching `max_runs`
-  disables the schedule in the store whether or not the caller asked. On
-  PostgreSQL the occurrence claim is promoted out of the payload into
-  `schedule_id`/`scheduled_for` columns (migration `034`), so archiving a cold
-  winner — which sets its payload to NULL — no longer releases the claim on
-  the occurrence it ran.
+  disables the schedule in the store whether or not the caller asked. The
+  pointer names the Run behind the newest fired occurrence or stays where it
+  was: when that winner cannot be resolved, no earlier Run of the same batch
+  stands in for it. A winner that crashed before the catch-up horizon — the
+  ticker died mid-fire and stayed down longer than the window, so no later
+  evaluation enumerates its occurrence — is recovered by walking the claims
+  forward from the cursor, one lookup per contiguous crashed Run and none on
+  an idle tick. On PostgreSQL the occurrence claim is promoted out of the
+  payload into `schedule_id`/`scheduled_for` columns (migration `034`), so
+  archiving a cold winner — which sets its payload to NULL — no longer
+  releases the claim on the occurrence it ran. Rows archived *before* the
+  migration have no payload left to backfill from and stay without a claim;
+  they are already terminal and older than the catch-up window, so nothing
+  re-fires them, but a lookup by occurrence does not find them.
 - **A schedule's due cursor is recorded on every evaluation, and SQLite
   `record_fire` is serialized (#1199).** `ScheduleRunAdmitter` computed
   `next_due_at` on an evaluation that fired nothing but never persisted it, so

@@ -81,7 +81,7 @@ from maistro.runs.sources import (
     SCHEDULED_FOR_KEY,
 )
 from maistro.runs.store import DuplicateOccurrence
-from maistro.scheduling.engine import SkipReason, evaluate
+from maistro.scheduling.engine import SkipReason, enumeration_start, evaluate
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -144,24 +144,21 @@ def _live_claim(claims: dict[datetime, Run]) -> Run | None:
     return None
 
 
-def _pointer(links: dict[datetime, str], consumed: list[datetime]) -> str | None:
-    """The Run `last_run_id` should name after consuming `consumed`.
+def _pointer(links: dict[datetime, str], fired: list[datetime]) -> str | None:
+    """The Run `last_run_id` should name after `fired` occurrences got Runs.
 
-    The Run behind the newest consumed occurrence whose Run is known — ours,
-    or the rival's that won the claim (#1059). `Schedule.last_run_id` is a
-    pointer to the latest Run this schedule produced, not a history of them;
-    the history is on the Runs, each naming this schedule. When the newest
-    occurrence's winner cannot be resolved (only ever a finished Run that was
-    evicted or purged), the next newest known Run is the truer pointer than one
-    from before this batch: it may still be live, and overlap is judged
-    against it. None only when no consumed occurrence's Run is known, in which
-    case `_advance` keeps the existing pointer rather than clearing it.
+    The Run behind the *newest* fired occurrence — ours, or the rival's that
+    won the claim (#1059). `Schedule.last_run_id` is a pointer to the latest
+    Run this schedule produced, not a history of them; the history is on the
+    Runs, each naming this schedule. When that winner cannot be resolved (only
+    ever a finished Run that was evicted or purged) the answer is None, and
+    `_advance` keeps the existing pointer: an earlier Run of this batch must
+    not masquerade as the newest, because the caller answers `active_run`
+    from the pointer and would be judging overlap against a Run that is not
+    the latest. Occurrences consumed *without* a Run (a policy skip) are not
+    in `fired`: they produced nothing, so they do not compete for the pointer.
     """
-    for moment in sorted(consumed, reverse=True):
-        run_id = links.get(moment)
-        if run_id is not None:
-            return run_id
-    return None
+    return links.get(max(fired)) if fired else None
 
 
 @dataclass(frozen=True)
@@ -242,7 +239,10 @@ class _Due:
         *,
         active_run_id: str | None,
     ) -> _Due:
-        already = sorted(m for m in _enumerated(decision) if m in claims)
+        # Every claim found is an occurrence to consume: the enumerated ones
+        # the policy would otherwise act on, and the ones before the horizon
+        # the evaluation never saw.
+        already = sorted(claims)
         return cls(
             fires=tuple(f for f in decision.fires if f.scheduled_for not in claims),
             skipped=tuple(s for s in decision.skipped if s.scheduled_for not in claims),
@@ -306,7 +306,7 @@ class ScheduleRunAdmitter:
         whatever the pointer said.
         """
         decision = evaluate(schedule, now=now, active_run=active_run)
-        claims = await self._existing_claims(schedule, decision)
+        claims = await self._existing_claims(schedule, decision, now=now)
         live = _live_claim(claims)
         if live is not None and not active_run:
             decision = evaluate(schedule, now=now, active_run=True)
@@ -349,7 +349,7 @@ class ScheduleRunAdmitter:
         )
 
     async def _existing_claims(
-        self, schedule: Schedule, decision: ScheduleEvaluation
+        self, schedule: Schedule, decision: ScheduleEvaluation, *, now: datetime
     ) -> dict[datetime, Run]:
         """The Runs that already hold a claim on this evaluation's occurrences.
 
@@ -365,12 +365,35 @@ class ScheduleRunAdmitter:
         One index probe per enumerated occurrence, which is zero on an idle
         tick. Occurrences the window already dropped or the enumeration cap
         truncated are not looked up: the policy does not act on them.
+
+        The enumeration starts after the catch-up horizon, so a winner that
+        crashed before it — the ticker died mid-fire and stayed down longer
+        than the window — is never enumerated at all. Those claims are walked
+        instead, from the cursor forward (`_claims_before`): a batch admits
+        occurrences in order and dies at one, so its Runs sit contiguously
+        after the cursor and the walk stops at the first occurrence without a
+        Run. Bounded by one batch's worth of lookups, and one lookup on the
+        common path. A claim that is not contiguous from the cursor is not
+        found; nothing this admitter does can leave one.
         """
         claims: dict[datetime, Run] = {}
         for moment in _enumerated(decision):
             run = await self._runs.get_run_for_occurrence(schedule.schedule_id, moment.isoformat())
             if run is not None:
                 claims[moment] = run
+        claims.update(await self._claims_before(schedule, enumeration_start(schedule, now=now)))
+        return claims
+
+    async def _claims_before(self, schedule: Schedule, since: datetime) -> dict[datetime, Run]:
+        """Contiguous claims from the cursor up to and including `since`."""
+        claims: dict[datetime, Run] = {}
+        moment = schedule.next_fire_after(schedule.last_fired_at or schedule.created_at)
+        while moment <= since:
+            run = await self._runs.get_run_for_occurrence(schedule.schedule_id, moment.isoformat())
+            if run is None:
+                break
+            claims[moment] = run
+            moment = schedule.next_fire_after(moment)
         return claims
 
     async def _admit_batch(self, schedule: Schedule, template: GraphTemplate, due: _Due) -> _Batch:
@@ -489,11 +512,12 @@ class ScheduleRunAdmitter:
         recorded = await self._schedules.record_fire(
             schedule.schedule_id,
             fired_at=consumed[-1],
-            # The Run behind the newest consumed occurrence that has one, or
-            # None when none does: `_advance` keeps the existing id rather
-            # than clearing it, which is what makes "the last Run this
-            # schedule produced" survive an occurrence that produced none.
-            run_id=_pointer(due.links, consumed),
+            # The Run behind the newest occurrence that *has* one — a skip
+            # produced nothing and does not compete — or None when its Run
+            # cannot be resolved: `_advance` keeps the existing id rather than
+            # clearing it, which is what makes "the last Run this schedule
+            # produced" survive an occurrence that produced none.
+            run_id=_pointer(due.links, list(due.already_fired)),
             next_due_at=next_due_at,
             fires=0,
             fired=list(due.already_fired),

@@ -1008,13 +1008,13 @@ class TestRecoverySeesTheRunStoreBeforeThePolicy:
         assert stored.runs_so_far == 1
         assert stored.enabled is True
 
-    async def test_an_unresolvable_newest_winner_yields_the_pointer_to_our_newest_run(
+    async def test_an_unresolvable_newest_winner_leaves_the_pointer_where_it_was(
         self, harness
     ) -> None:
         """Under ALLOW, ours for T-2h and T-1h; a rival's for T whose Run is
-        gone (only ever a finished one). The pointer is the next newest known
-        Run — ours for T-1h, which may still be live — not the one from before
-        the batch, and not nothing."""
+        gone (only ever a finished one). The pointer names the latest Run or
+        nothing new: our T-1h Run is not the latest and must not masquerade
+        as it, so the pointer from before the batch stays (#1059 review)."""
         admitter, runs, _templates, schedules, project_id = harness
         schedule = await _schedule(
             schedules,
@@ -1041,7 +1041,7 @@ class TestRecoverySeesTheRunStoreBeforeThePolicy:
         assert len(result.run_ids) == 2
         assert result.already_fired == (NOON,)
         assert stored is not None
-        assert stored.last_run_id == result.run_ids[-1]
+        assert stored.last_run_id == "an-earlier-run", "no earlier Run of this batch stands in"
         assert stored.last_fired_at == NOON
         assert stored.runs_so_far == 3, "the rival's firing still counts"
 
@@ -1083,3 +1083,137 @@ class TestRecoverySeesTheRunStoreBeforeThePolicy:
         assert final.last_run_id == ahead.run_ids[-1]
         assert final.next_due_at == stored.next_due_at
         assert final.runs_so_far == 2
+
+
+class TestRecoveryBeyondTheCatchUpHorizon:
+    """A winner that crashed before the catch-up horizon is still recovered.
+
+    `evaluate()` enumerates from the horizon forward, so a ticker that died
+    mid-fire and stayed down longer than the window leaves a Run at an
+    occurrence no later evaluation looks at: never linked, never counted, and
+    invisible to the overlap policy. The admitter walks the claims forward
+    from the cursor instead — one lookup per contiguous crashed Run, one on
+    the common path — up to where the enumeration begins (#1059 review).
+    """
+
+    async def test_a_winner_one_cadence_back_is_recovered_with_the_default_window(
+        self, harness
+    ) -> None:
+        """Hourly schedule, one-hour window, next tick a full hour later: the
+        crashed occurrence is exactly at the horizon and would not be
+        enumerated."""
+        admitter, _runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, overlap_policy=OverlapPolicy.SKIP)
+        winner = await _crashed_before_record_fire(harness, schedule, NOON)
+
+        later = await admitter.admit_due(schedule, now=NOON + timedelta(hours=1), active_run=False)
+
+        assert later.run_ids == ()
+        assert later.already_fired == (NOON,)
+        assert later.active_run_id == winner
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        assert stored.last_run_id == winner
+        assert stored.runs_so_far == 1
+
+    async def test_skip_defers_to_a_winner_that_crashed_before_the_horizon(self, harness) -> None:
+        """Down for three hours: the NOON winner is two occurrences behind the
+        horizon and still live, so SKIP must not fire 15:00 beside it."""
+        admitter, _runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, overlap_policy=OverlapPolicy.SKIP)
+        winner = await _crashed_before_record_fire(harness, schedule, NOON)
+
+        later = await admitter.admit_due(schedule, now=NOON + timedelta(hours=3), active_run=False)
+
+        assert later.run_ids == ()
+        assert later.already_fired == (NOON,)
+        assert later.active_run_id == winner
+        assert SkipReason.OVERLAP in {skip.reason for skip in later.skipped}
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        assert stored.last_run_id == winner
+        assert stored.last_fired_at == NOON + timedelta(hours=3)
+        assert stored.runs_so_far == 1, "the crashed firing is counted once"
+
+    async def test_cancel_other_cancels_a_winner_that_crashed_before_the_horizon(
+        self, harness
+    ) -> None:
+        admitter, _runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, overlap_policy=OverlapPolicy.CANCEL_OTHER)
+        winner = await _crashed_before_record_fire(harness, schedule, NOON)
+
+        later = await admitter.admit_due(schedule, now=NOON + timedelta(hours=3), active_run=False)
+
+        assert len(later.run_ids) == 1
+        assert later.cancel_active_run is True
+        assert later.active_run_id == winner
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        assert stored.last_run_id == later.run_ids[0]
+        assert stored.runs_so_far == 2
+
+    async def test_a_batch_of_crashed_winners_is_recovered_contiguously(self, harness) -> None:
+        """A ticker that admitted 12:00 and 13:00 in one batch and died before
+        recording leaves two Runs after the cursor; both are found."""
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, overlap_policy=OverlapPolicy.ALLOW)
+        first = await _crashed_before_record_fire(harness, schedule, NOON)
+        second = await _crashed_before_record_fire(harness, schedule, NOON + timedelta(hours=1))
+
+        later = await admitter.admit_due(schedule, now=NOON + timedelta(hours=4))
+
+        assert later.already_fired == (NOON, NOON + timedelta(hours=1))
+        assert len(later.run_ids) == 1
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        assert stored.runs_so_far == 3
+        assert stored.last_run_id == later.run_ids[0]
+        for run_id in (first, second):
+            assert await runs.get_run(run_id) is not None, "recovered, not replaced"
+
+    async def test_the_walk_stops_at_the_first_occurrence_without_a_run(self, harness) -> None:
+        """Bounded by the crashed batch, not by the outage: after five hours
+        down, the lookups are the crashed occurrence, the empty one after it,
+        and the one occurrence the window still enumerates."""
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, overlap_policy=OverlapPolicy.ALLOW)
+        await _crashed_before_record_fire(harness, schedule, NOON)
+        looked_up: list[str] = []
+        real_lookup = runs.get_run_for_occurrence
+
+        async def _counted(schedule_id: str, scheduled_for: str):
+            looked_up.append(scheduled_for)
+            return await real_lookup(schedule_id, scheduled_for)
+
+        runs.get_run_for_occurrence = _counted  # type: ignore[method-assign]
+
+        later = await admitter.admit_due(schedule, now=NOON + timedelta(hours=5))
+
+        assert later.already_fired == (NOON,)
+        assert sorted(looked_up) == sorted(
+            [
+                (NOON + timedelta(hours=5)).isoformat(),
+                NOON.isoformat(),
+                (NOON + timedelta(hours=1)).isoformat(),
+            ]
+        )
+
+    async def test_an_idle_tick_costs_one_lookup_at_most(self, harness) -> None:
+        """The common path: nothing crashed, nothing due. The walk probes the
+        first occurrence after the cursor, finds no Run, and stops."""
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(
+            schedules, project_id, last_fired_at=NOON, next_due_at=NOON + timedelta(hours=1)
+        )
+        looked_up: list[str] = []
+        real_lookup = runs.get_run_for_occurrence
+
+        async def _counted(schedule_id: str, scheduled_for: str):
+            looked_up.append(scheduled_for)
+            return await real_lookup(schedule_id, scheduled_for)
+
+        runs.get_run_for_occurrence = _counted  # type: ignore[method-assign]
+
+        await admitter.admit_due(schedule, now=NOON + timedelta(minutes=1))
+
+        assert looked_up == []
