@@ -256,7 +256,9 @@ class TestProtectedOpsPermissionMatrix:
             json={"password": "pw", "permissions": ["agents.delete"], "task_id": "t-del"},
         )
         assert e.status_code == 200, e.text
-        r = c.delete("/v1/agents/foo")
+        # Elevation is task-scoped (#1239): the request must name the task the
+        # grant was issued for.
+        r = c.delete("/v1/agents/foo", headers={"X-Elevated-Task": "t-del"})
         assert r.status_code != 403
 
     def test_admin_bypasses_permission_gate_entirely(self) -> None:

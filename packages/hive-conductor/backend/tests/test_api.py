@@ -365,6 +365,12 @@ def test_elevate_flow() -> None:
     data = r.json()
     assert data["task_id"] == "t-1"
     assert "elevated_permissions" in data
+    # Grants are time-boxed (#1239, ADR-028/068): the response records the
+    # bound the grant will die at.
+    assert data["expires_at"]
+    who = c.get("/v1/auth/whoami").json()["user"]
+    assert who["elevated_tasks"] == ["t-1"]
+    assert who["elevated_grants"]["t-1"]["expires_at"] == data["expires_at"]
 
 
 def test_elevate_wrong_password() -> None:
@@ -413,10 +419,22 @@ def test_elevation_only_activates_granted_permissions() -> None:
                 "task_id": "frank-task-1",
             },
         )
-        r2 = c.put("/v1/settings", json={"temperature": 0.5})
+        r2 = c.put(
+            "/v1/settings",
+            json={"temperature": 0.5},
+            headers={"X-Elevated-Task": "frank-task-1"},
+        )
         assert r2.status_code == 200, "should work after elevation for granted perm"
 
-        r3 = c.delete("/v1/settings")
+        # Without naming the task, the grant does not answer (#1239): the old
+        # session-wide union would have let this through.
+        r2_unnamed = c.put("/v1/settings", json={"temperature": 0.5})
+        assert r2_unnamed.status_code == 403, "elevated perm must not apply without task context"
+
+        r3 = c.delete(
+            "/v1/settings",
+            headers={"X-Elevated-Task": "frank-task-1"},
+        )
         assert r3.status_code == 403, (
             "should still be blocked for ungranted perm even with elevation"
         )
@@ -482,11 +500,19 @@ def test_elevation_revoked_on_task_completion() -> None:
             "/v1/auth/elevate",
             json={"password": "frankpass", "permissions": ["config.write"], "task_id": "m-1"},
         )
-        r = c.put("/v1/settings", json={"temperature": 0.5})
+        r = c.put(
+            "/v1/settings",
+            json={"temperature": 0.5},
+            headers={"X-Elevated-Task": "m-1"},
+        )
         assert r.status_code == 200, "should work with elevated perm"
 
         c.patch("/v1/tasks/m-1/status", json={"status": "completed"})
-        r2 = c.put("/v1/settings", json={"temperature": 0.5})
+        r2 = c.put(
+            "/v1/settings",
+            json={"temperature": 0.5},
+            headers={"X-Elevated-Task": "m-1"},
+        )
         assert r2.status_code == 403, "perm should die with the task"
     finally:
         stores.users.pop("frank", None)

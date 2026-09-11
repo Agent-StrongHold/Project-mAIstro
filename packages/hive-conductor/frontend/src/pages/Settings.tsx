@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { apiGet, apiPatch } from "../lib/api";
+import { apiFetch, apiGet, apiPatch } from "../lib/api";
 import { PageHeader, SecretField } from "../components/shared";
 
 type Settings = Record<string, unknown>;
@@ -29,16 +29,28 @@ export default function Settings() {
   }
 
   async function elevateAndSave(key: string) {
+    // The save must name the task it was elevated for (#1239): the middleware
+    // only honours an elevated permission for the task the request declares,
+    // so the same id goes into X-Elevated-Task below. The id is sanitized to
+    // the charset /v1/auth/elevate accepts.
+    const taskId = `settings-edit-${key}-${Date.now()}`.replace(/[^A-Za-z0-9._:-]/g, "-");
     try {
-      await fetch("/v1/auth/elevate", {
+      const res = await fetch("/v1/auth/elevate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
-        body: JSON.stringify({ password: elevPassword, permissions: ["config.write"], task_id: `settings-edit-${key}-${Date.now()}` }),
+        body: JSON.stringify({ password: elevPassword, permissions: ["config.write"], task_id: taskId }),
       });
+      if (!res.ok) throw new Error("elevate failed");
       setElevating(false);
       setElevPassword("");
-      await saveSetting(key);
+      await apiFetch("/v1/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", "X-Elevated-Task": taskId },
+        body: JSON.stringify({ [key]: parseVal(editVal, settings?.[key]) }),
+      });
+      setEditing(null);
+      await load();
     } catch {
       setElevPassword("");
     }

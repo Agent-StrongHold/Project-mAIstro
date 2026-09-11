@@ -37,6 +37,8 @@ def _config_writer(task_id: str) -> TestClient:
         json={"password": "pw", "permissions": ["config.write"], "task_id": task_id},
     )
     assert e.status_code == 200, e.text
+    # Task-scoped elevation (#1239): gated calls name the task elevated for.
+    c.headers["X-Elevated-Task"] = task_id
     return c
 
 

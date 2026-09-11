@@ -93,6 +93,9 @@ def _config_writer(task_id: str, *permissions: str) -> TestClient:
         ).status_code
         == 200
     )
+    # Elevation is task-scoped (#1239): every gated call this client makes is
+    # made under the task it elevated for.
+    client.headers["X-Elevated-Task"] = task_id
     return client
 
 

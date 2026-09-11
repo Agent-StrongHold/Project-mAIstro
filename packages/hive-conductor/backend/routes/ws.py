@@ -39,9 +39,22 @@ async def _authenticate(websocket: WebSocket, permission: str | None = None) -> 
     if user is None:
         await websocket.close(code=_POLICY_VIOLATION, reason="Authentication required")
         return None
-    if permission is not None and not principal_has_permission(user, permission):
-        await websocket.close(code=_POLICY_VIOLATION, reason=f"Permission '{permission}' required")
-        return None
+    if permission is not None:
+        # Task-scoped elevation needs the task the socket acts under (#1239).
+        # Browsers cannot set custom headers on a WebSocket handshake, so the
+        # query parameter is the browser-reachable spelling; the header is
+        # accepted for non-browser clients. Either way the value is only a
+        # lookup key into the caller's own grants — a forged id finds nothing.
+        task_id = (
+            websocket.query_params.get("elevated_task")
+            or websocket.headers.get("x-elevated-task")
+            or ""
+        ).strip() or None
+        if not principal_has_permission(user, permission, task_id):
+            await websocket.close(
+                code=_POLICY_VIOLATION, reason=f"Permission '{permission}' required"
+            )
+            return None
     return user
 
 

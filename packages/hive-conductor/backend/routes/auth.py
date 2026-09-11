@@ -1,7 +1,11 @@
 """Auth routes — login, logout, whoami, elevate (2FA stub).
 
 Elevation is task-scoped: permissions are bound to a task_id and revoked
-when the task completes, fails, or is cancelled.
+when the task completes, fails, or is cancelled — or when the grant's TTL
+expires, whichever comes first (#1239; ADR-028 time-boxed delegation,
+ADR-068 §D short-TTL elevation grant). Requests exercising an elevated
+permission must name the task they act under (`X-Elevated-Task` header);
+the middleware grants only what THAT task's still-valid grant covers.
 """
 
 from __future__ import annotations
@@ -9,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time as _time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 from uuid import uuid4
 
@@ -186,6 +190,24 @@ class ElevateBody(BaseModel):
     permissions: list[str] = Field(default_factory=list)
     task_id: str
 
+    @field_validator("task_id")
+    @classmethod
+    def validate_task_id(cls, value: str) -> str:
+        """A grant may only be bound to a well-formed task id (#1239).
+
+        Unvalidated ids let a client mint grants under strings no task will
+        ever complete, which used to mean the grant could never be revoked —
+        only the TTL below bounds it now. The charset also keeps the id safe
+        to carry in the `X-Elevated-Task` header and in audit `target` fields:
+        no whitespace or control characters, no header or log injection.
+        """
+        tid = value.strip()
+        if not tid or len(tid) > 128 or not re.fullmatch(r"[A-Za-z0-9._:-]+", tid):
+            raise ValueError(
+                "task_id must be 1-128 characters of letters, digits, '.', '_', ':' or '-'"
+            )
+        return tid
+
 
 def _resolve_session(session_id: str) -> dict[str, Any] | None:
     if not session_id or session_id not in stores.sessions:
@@ -212,9 +234,82 @@ def _resolve_session(session_id: str) -> dict[str, Any] | None:
     return sess
 
 
-def _active_grants(sess: dict[str, Any]) -> dict[str, list[str]]:
+def _grant_expiry(grant: dict[str, Any]) -> datetime | None:
+    """Parse a grant's expiry, or None when it has none.
+
+    A grant without a parseable expiry is treated as already dead by
+    `_active_grants` — fail closed (#1239): the whole point of the TTL is
+    that no grant outlives a recorded bound.
+    """
+    raw = grant.get("expires_at") if isinstance(grant, dict) else None
+    if not isinstance(raw, str):
+        return None
+    try:
+        expires = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=UTC)
+    return expires
+
+
+def _normalize_grant(grant: Any) -> dict[str, Any] | None:
+    """Coerce a stored grant to the current shape, or None if unusable.
+
+    Legacy sessions stored bare permission lists with no expiry. There is no
+    durable session store to migrate, and a grant with no recorded bound is
+    exactly the indefinite privilege #1239 closed, so legacy entries read as
+    expired rather than being trusted.
+    """
+    if isinstance(grant, dict):
+        perms = grant.get("permissions")
+        if isinstance(perms, list) and _grant_expiry(grant) is not None:
+            return grant
+        return None
+    return None
+
+
+def _active_grants(sess: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """The session's still-valid grants: task id -> {permissions, expires_at}.
+
+    Expired (or malformed, or legacy unbounded) entries are dropped, so a
+    grant dies at its expiry even if nothing revokes it — and a grant that
+    was recorded before the TTL existed reads as expired, not eternal.
+    """
     grants = sess.get("elevated_grants", {})
-    return {tid: perms for tid, perms in grants.items() if isinstance(perms, list)}
+    if not isinstance(grants, dict):
+        return {}
+    now = datetime.now(UTC)
+    active: dict[str, dict[str, Any]] = {}
+    for task_id, grant in grants.items():
+        normalized = _normalize_grant(grant)
+        if normalized is None:
+            continue
+        expires = _grant_expiry(normalized)
+        assert expires is not None  # _normalize_grant guarantees a parseable bound
+        if expires <= now:
+            continue
+        active[str(task_id)] = normalized
+    return active
+
+
+def _prune_expired_grants(session_id: str, sess: dict[str, Any]) -> dict[str, Any]:
+    """Write back the session without its dead grants, and return it.
+
+    Pruning matters beyond hygiene: an expired grant left in the store is one
+    `revoke_task_elevation`-shaped bug away from resurrection. The caller
+    (`get_current_user`) runs on every authenticated request, so expiry is
+    enforced lazily but persistently.
+    """
+    grants = sess.get("elevated_grants", {})
+    if not isinstance(grants, dict):
+        return sess
+    active = _active_grants(sess)
+    if len(active) == len(grants):
+        return sess
+    pruned = {**sess, "elevated_grants": active}
+    stores.sessions[session_id] = pruned
+    return pruned
 
 
 def get_current_user(session_id: str | None) -> dict[str, Any] | None:
@@ -226,10 +321,10 @@ def get_current_user(session_id: str | None) -> dict[str, Any] | None:
     user = stores.users.get(sess["user_id"])
     if user is None or not user.is_active:
         return None
-    grants = _active_grants(sess)
+    grants = _active_grants(_prune_expired_grants(session_id, sess))
     all_elevated: list[str] = []
     for perms in grants.values():
-        for p in perms:
+        for p in perms.get("permissions", []):
             if p not in all_elevated:
                 all_elevated.append(p)
     return {
@@ -238,8 +333,13 @@ def get_current_user(session_id: str | None) -> dict[str, Any] | None:
         "role": user.role,
         "permissions": user.permissions,
         "did": user.did,
+        # Display-only union of ACTIVE grants: what the client may still
+        # act on somewhere. The authorization decision itself never consumes
+        # this field — `principal_has_permission` reads `elevated_grants`
+        # against the task the request names (#1239).
         "elevated_permissions": all_elevated,
         "elevated_tasks": list(grants.keys()),
+        "elevated_grants": grants,
     }
 
 
@@ -853,21 +953,36 @@ def elevate(
             detail="None of the requested permissions are assigned to your account",
         )
 
-    grants: dict[str, list[str]] = sess.get("elevated_grants", {})
-    grants[body.task_id] = granted
+    grants: dict[str, Any] = sess.get("elevated_grants", {})
+    if not isinstance(grants, dict):
+        grants = {}
+    # Task-scoped AND time-boxed (ADR-028 "15 min, 1 hour — auto-revokes";
+    # ADR-068 §D "short-TTL elevation grant"). Task completion revokes first;
+    # the TTL is the backstop for ids nothing will ever revoke (#1239).
+    expires_at = datetime.now(UTC) + timedelta(
+        seconds=max(1, get_settings().elevation_grant_ttl_seconds)
+    )
+    grants[body.task_id] = {
+        "permissions": granted,
+        "expires_at": expires_at.isoformat(),
+    }
     stores.sessions[hive_session] = {**sess, "elevated_grants": grants}
     log_audit(
         "elevate",
         user.username,
         target=body.task_id,
-        detail={"permissions": granted},
+        detail={"permissions": granted, "expires_at": grants[body.task_id]["expires_at"]},
         severity="warning",
     )
     return {
         "ok": True,
         "task_id": body.task_id,
         "elevated_permissions": granted,
-        "message": "Permissions elevated for this task. They will be revoked when the task completes.",
+        "expires_at": grants[body.task_id]["expires_at"],
+        "message": (
+            "Permissions elevated for this task. They are revoked when the task "
+            "completes or the grant expires, whichever comes first."
+        ),
     }
 
 
