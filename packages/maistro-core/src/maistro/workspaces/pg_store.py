@@ -313,13 +313,5 @@ class PgWorkspaceStore:
         if other_owner is None:
             raise WorkspaceAccessDenied("a Workspace must retain at least one owner")
 
-    async def _purge(self, workspace_id: str) -> None:
-        """Undo `create`'s rows after the Root Project failed."""
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                "DELETE FROM canonical_workspaces WHERE workspace_id = $1",
-                workspace_id,
-            )
-
 
 __all__ = ["PgWorkspaceStore"]

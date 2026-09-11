@@ -319,4 +319,4 @@ async def remove_project_membership(
     await project_store.remove_membership(project_id, principal_id=principal_id)
 
 
-__all__ = ["get_project_scope_store", "router"]
+__all__ = ["get_project_scope_store", "remove_project_membership", "router"]
