@@ -130,6 +130,11 @@ def _coerce_job(row: Any) -> GenerationJobRecord:
         started_at=d.get("started_at"),
         completed_at=d.get("completed_at"),
         created_at=d.get("created_at", datetime.now(UTC)),
+        attempts=int(d.get("attempts", 0)),
+        max_attempts=int(d.get("max_attempts", 3)),
+        leased_by=d.get("leased_by"),
+        lease_expires_at=d.get("lease_expires_at"),
+        org_id=d.get("org_id", ""),
     )
 
 
@@ -597,11 +602,13 @@ class PgCanvasStore:
                     INSERT INTO generation_jobs
                         (id, layer_id, canvas_id, action, status, model_id,
                          prompt, params, result_paths, selected_index,
-                         error_message, started_at, completed_at, created_at)
+                         error_message, started_at, completed_at, created_at,
+                         attempts, max_attempts, leased_by, lease_expires_at)
                     VALUES
                         (:id, :lid, :cid, :action, :status, :model,
                          :prompt, CAST(:params AS jsonb), CAST(:paths AS jsonb), :sel,
-                         :err, :start, :done, :created)
+                         :err, :start, :done, :created,
+                         :attempts, :max_attempts, :leased_by, :lease_expires_at)
                 """),
                 {
                     "id": job.id,
@@ -618,6 +625,10 @@ class PgCanvasStore:
                     "start": job.started_at,
                     "done": job.completed_at,
                     "created": job.created_at,
+                    "attempts": job.attempts,
+                    "max_attempts": job.max_attempts,
+                    "leased_by": job.leased_by,
+                    "lease_expires_at": job.lease_expires_at,
                 },
             )
             await session.commit()
@@ -628,7 +639,7 @@ class PgCanvasStore:
         async with AsyncSession(self._engine) as session:
             result = await session.execute(
                 text(
-                    "SELECT j.* FROM generation_jobs j"
+                    "SELECT j.*, c.org_id FROM generation_jobs j"
                     " JOIN layers l ON l.id = j.layer_id"
                     " JOIN canvases c ON c.id = l.canvas_id"
                     " WHERE j.id = :id AND c.org_id = :org"
@@ -645,7 +656,9 @@ class PgCanvasStore:
                     UPDATE generation_jobs SET
                         status = :status, result_paths = CAST(:paths AS jsonb),
                         selected_index = :sel, error_message = :err,
-                        started_at = :start, completed_at = :done
+                        started_at = :start, completed_at = :done,
+                        attempts = :attempts, max_attempts = :max_attempts,
+                        leased_by = :leased_by, lease_expires_at = :lease_expires_at
                     WHERE id = :id AND layer_id IN
                         (SELECT l.id FROM layers l
                          JOIN canvases c ON c.id = l.canvas_id
@@ -660,6 +673,10 @@ class PgCanvasStore:
                     "err": job.error_message,
                     "start": job.started_at,
                     "done": job.completed_at,
+                    "attempts": job.attempts,
+                    "max_attempts": job.max_attempts,
+                    "leased_by": job.leased_by,
+                    "lease_expires_at": job.lease_expires_at,
                 },
             )
             if cast(CursorResult[Any], result).rowcount == 0:
@@ -673,7 +690,7 @@ class PgCanvasStore:
         async with AsyncSession(self._engine) as session:
             result = await session.execute(
                 text("""
-                    SELECT j.* FROM generation_jobs j
+                    SELECT j.*, c.org_id FROM generation_jobs j
                     JOIN layers l ON l.id = j.layer_id
                     JOIN canvases c ON c.id = l.canvas_id
                     WHERE j.layer_id = :lid AND c.org_id = :org
@@ -689,7 +706,7 @@ class PgCanvasStore:
         async with AsyncSession(self._engine) as session:
             result = await session.execute(
                 text(
-                    "SELECT j.* FROM generation_jobs j"
+                    "SELECT j.*, c.org_id FROM generation_jobs j"
                     " JOIN layers l ON l.id = j.layer_id"
                     " JOIN canvases c ON c.id = l.canvas_id"
                     " WHERE j.layer_id = :lid AND c.org_id = :org"
@@ -699,6 +716,110 @@ class PgCanvasStore:
             )
             rows = result.mappings().all()
             return [_coerce_job(r) for r in rows]
+
+    async def claim_next_pending(
+        self, worker_id: str, lease_seconds: int
+    ) -> GenerationJobRecord | None:
+        """Atomically claim the oldest pending receipt for one worker lease."""
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive")
+        async with AsyncSession(self._engine) as session:
+            claimed = await session.execute(
+                text("""
+                    WITH candidate AS (
+                        SELECT j.id
+                        FROM generation_jobs j
+                        JOIN layers l ON l.id = j.layer_id
+                        JOIN canvases c ON c.id = l.canvas_id
+                        WHERE j.status = 'pending'
+                        ORDER BY j.created_at ASC
+                        FOR UPDATE OF j SKIP LOCKED
+                        LIMIT 1
+                    )
+                    UPDATE generation_jobs AS j
+                    SET status = 'running',
+                        attempts = j.attempts + 1,
+                        leased_by = :worker,
+                        lease_expires_at = now() + (:lease_seconds * INTERVAL '1 second'),
+                        started_at = COALESCE(j.started_at, now())
+                    FROM candidate
+                    WHERE j.id = candidate.id
+                    RETURNING j.id
+                """),
+                {"worker": worker_id, "lease_seconds": lease_seconds},
+            )
+            row = claimed.first()
+            if row is None:
+                return None
+            result = await session.execute(
+                text("""
+                    SELECT j.*, c.org_id
+                    FROM generation_jobs j
+                    JOIN layers l ON l.id = j.layer_id
+                    JOIN canvases c ON c.id = l.canvas_id
+                    WHERE j.id = :id
+                """),
+                {"id": row[0]},
+            )
+            job_row = result.mappings().first()
+            if job_row is None:
+                raise JobNotFoundError(str(row[0]))
+            await session.commit()
+            return _coerce_job(job_row)
+
+    async def reap_expired_leases(self) -> list[GenerationJobRecord]:
+        """Requeue expired leases or terminalize receipts at their retry ceiling."""
+        async with AsyncSession(self._engine) as session:
+            reaped = await session.execute(
+                text("""
+                    WITH expired AS (
+                        SELECT j.id
+                        FROM generation_jobs j
+                        WHERE j.status = 'running'
+                          AND j.lease_expires_at IS NOT NULL
+                          AND j.lease_expires_at < now()
+                        FOR UPDATE OF j SKIP LOCKED
+                    )
+                    UPDATE generation_jobs AS j
+                    SET status = CASE
+                            WHEN j.attempts >= j.max_attempts THEN 'failed'
+                            ELSE 'pending'
+                        END,
+                        error_message = CASE
+                            WHEN j.attempts >= j.max_attempts
+                                THEN COALESCE(j.error_message,
+                                    'Generation failed: worker lost (lease expired).')
+                            ELSE j.error_message
+                        END,
+                        completed_at = CASE
+                            WHEN j.attempts >= j.max_attempts THEN now()
+                            ELSE j.completed_at
+                        END,
+                        leased_by = NULL,
+                        lease_expires_at = NULL
+                    FROM expired
+                    WHERE j.id = expired.id
+                    RETURNING j.id
+                """),
+            )
+            ids = [row[0] for row in reaped]
+            if not ids:
+                await session.commit()
+                return []
+            result = await session.execute(
+                text("""
+                    SELECT j.*, c.org_id
+                    FROM generation_jobs j
+                    JOIN layers l ON l.id = j.layer_id
+                    JOIN canvases c ON c.id = l.canvas_id
+                    WHERE j.id = ANY(:ids)
+                    ORDER BY j.created_at ASC
+                """),
+                {"ids": ids},
+            )
+            rows = result.mappings().all()
+            await session.commit()
+            return [_coerce_job(row) for row in rows]
 
     # ── Composites ────────────────────────────────────────────────────
 

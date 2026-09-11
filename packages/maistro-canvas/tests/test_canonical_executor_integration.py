@@ -108,6 +108,17 @@ class _ImageClient:
         return ImageData(width=64, height=64, url="image://refined")
 
 
+class _FailThenSucceedImageClient(_ImageClient):
+    def __init__(self) -> None:
+        self.generate_calls = 0
+
+    async def generate(self, **kwargs: object) -> list[ImageData]:
+        self.generate_calls += 1
+        if self.generate_calls == 1:
+            raise RuntimeError("503 provider body contains credential=secret")
+        return await super().generate(**kwargs)
+
+
 class _Registry:
     def is_registered(self, model_id: str) -> bool:
         return model_id == "draft-model"
@@ -212,6 +223,53 @@ async def test_generation_request_and_runner_are_visible_on_canonical_spine() ->
     completed = await runs.get_run(run_id)
     assert completed is not None
     assert completed.status is RunStatus.COMPLETED
+
+
+async def test_provider_retry_keeps_both_sanitised_attempts_inspectable() -> None:
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("workspace-1")
+    runs = InMemoryRunStore(project_store=projects)
+    canonical = CanvasCanonicalExecution(
+        runs,
+        workspace_id="workspace-1",
+        project_id=root.project_id,
+    )
+    store = _CanvasStore()
+    executor = CanvasExecutor(
+        store=store,  # type: ignore[arg-type]
+        image_client=_FailThenSucceedImageClient(),  # type: ignore[arg-type]
+        model_registry=_Registry(),
+        warden=_Warden(),
+        canonical_execution=canonical,
+    )
+
+    job = await executor.start_job(
+        org_id=_CanvasStore.ORG,
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action=JobAction.GENERATE,
+    )
+    job.max_attempts = 2
+
+    runner = CanvasJobRunner(store=store, executor=executor)
+    assert await runner.tick_once() is True
+    assert job.status == JobStatus.PENDING
+
+    assert await runner.tick_once() is True
+    assert job.status == JobStatus.DONE
+    assert job.result_paths == ["image://generated"]
+
+    run_id = canonical_run_id(job.params)
+    assert run_id is not None
+    node_runs = await runs.list_node_runs(run_id)
+    assert len(node_runs) == 1
+    attempts = await runs.list_attempts(node_runs[0].node_run_id)
+    assert [attempt.status for attempt in attempts] == [
+        AttemptStatus.FAILED,
+        AttemptStatus.COMPLETED,
+    ]
+    assert attempts[0].error == "Generation failed: provider service temporarily unavailable."
+    assert "credential=secret" not in (attempts[0].error or "")
 
 
 async def test_receipt_persistence_failure_compensates_admitted_run() -> None:
