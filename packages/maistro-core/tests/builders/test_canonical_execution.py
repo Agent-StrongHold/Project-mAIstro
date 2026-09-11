@@ -13,8 +13,8 @@ from maistro.builders.graph import PipelineGraph, PipelineNode, RunContext
 from maistro.builders.graph_executor import (
     CanonicalGraphPipelineExecutor,
     DispatchResult,
-    GraphPipelineExecutor,
     _canonical_graph,
+    _LegacyGraphPipelineExecutor,
     _mark_skipped,
     _project_canonical_record,
     _resolver,
@@ -30,6 +30,13 @@ from maistro.runs.model import RunStatus
 from maistro.runs.store import InMemoryRunStore
 
 pytestmark = pytest.mark.contract("behavioral")
+
+
+def test_legacy_executor_is_private_and_canonical_adapter_is_public() -> None:
+    import maistro.builders as builders
+
+    assert not hasattr(builders, "GraphPipelineExecutor")
+    assert builders.CanonicalGraphPipelineExecutor is CanonicalGraphPipelineExecutor
 
 
 class ScriptedDispatcher:
@@ -175,7 +182,7 @@ async def test_stage_wave_parity_creates_one_canonical_run_node_runs_and_attempt
     canonical_dispatcher = ScriptedDispatcher(delay=0.01)
     legacy_run = _run(graph, run_id="legacy")
 
-    await GraphPipelineExecutor(legacy_dispatcher).execute(graph, legacy_run)
+    await _LegacyGraphPipelineExecutor(legacy_dispatcher).execute(graph, legacy_run)
     canonical_run, record, owner = await _canonical(graph, canonical_dispatcher)
 
     assert legacy_run.status == canonical_run.status == "completed"
@@ -226,7 +233,7 @@ async def test_multiple_root_ready_wave_preserves_concurrency_with_control_front
     canonical_dispatcher = ScriptedDispatcher(delay=0.01)
     legacy_run = _run(graph, run_id="legacy")
 
-    await GraphPipelineExecutor(legacy_dispatcher).execute(graph, legacy_run)
+    await _LegacyGraphPipelineExecutor(legacy_dispatcher).execute(graph, legacy_run)
     canonical_run, record, owner = await _canonical(graph, canonical_dispatcher)
 
     assert legacy_run.status == canonical_run.status == "completed"
@@ -256,7 +263,7 @@ async def test_skip_and_unsupported_stage_domain_projection_matches_legacy() -> 
     canonical_dispatcher = ScriptedDispatcher(unsupported={"tests"})
     legacy_run = _run(graph, run_id="legacy")
 
-    await GraphPipelineExecutor(legacy_dispatcher).execute(graph, legacy_run)
+    await _LegacyGraphPipelineExecutor(legacy_dispatcher).execute(graph, legacy_run)
     canonical_run, record, owner = await _canonical(graph, canonical_dispatcher)
 
     assert legacy_run.status == canonical_run.status == "completed"
@@ -271,6 +278,34 @@ async def test_skip_and_unsupported_stage_domain_projection_matches_legacy() -> 
     node_runs = await owner.run_store.list_node_runs(record.run_id)
     assert node_runs[0].result["skipped"] is True
     assert node_runs[1].result["skipped"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["failure", "timeout"])
+async def test_failure_and_timeout_match_private_oracle(
+    mode: str,
+) -> None:
+    """The canonical adapter preserves externally visible terminal behavior."""
+    graph = PipelineGraph([_node("tests", timeout_seconds=0.001 if mode == "timeout" else 600.0)])
+    kwargs: dict[str, Any] = {}
+    if mode == "failure":
+        kwargs["fail"] = {"tests"}
+    else:
+        kwargs["delay"] = 0.02
+    legacy_dispatcher = ScriptedDispatcher(**kwargs)
+    canonical_dispatcher = ScriptedDispatcher(**kwargs)
+    legacy_run = _run(graph, run_id="legacy")
+
+    await _LegacyGraphPipelineExecutor(legacy_dispatcher).execute(graph, legacy_run)
+    canonical_run, record, owner = await _canonical(graph, canonical_dispatcher)
+
+    assert canonical_run.status == legacy_run.status == "failed at tests"
+    assert canonical_dispatcher.calls == legacy_dispatcher.calls == ["tests"]
+    assert canonical_run.failed_stage_error == legacy_run.failed_stage_error
+    assert record.run.status is RunStatus.FAILED
+    node_runs = await owner.run_store.list_node_runs(record.run_id)
+    assert len(node_runs) == 1
+    assert node_runs[0].status is RunStatus.FAILED
 
 
 @pytest.mark.asyncio
@@ -292,7 +327,7 @@ async def test_gate_revision_is_new_node_run_and_attempt_evidence_with_feedback(
     canonical_dispatcher = ScriptedDispatcher(outputs=outputs)
     legacy_run = _run(graph, run_id="legacy")
 
-    await GraphPipelineExecutor(legacy_dispatcher).execute(graph, legacy_run)
+    await _LegacyGraphPipelineExecutor(legacy_dispatcher).execute(graph, legacy_run)
     canonical_run, record, owner = await _canonical(graph, canonical_dispatcher)
 
     expected_calls = ["implement", "review", "implement", "review"]

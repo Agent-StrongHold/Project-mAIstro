@@ -1,4 +1,4 @@
-"""Behavioral tests for GraphPipelineExecutor: waves, skips, gates, budgets."""
+"""Behavioral tests for _LegacyGraphPipelineExecutor: waves, skips, gates, budgets."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ import pytest
 from maistro.builders.graph import PipelineGraph, PipelineNode, RunContext
 from maistro.builders.graph_executor import (
     DispatchResult,
-    GraphPipelineExecutor,
     _build_prompt,
+    _LegacyGraphPipelineExecutor,
 )
 from maistro.graph.node import IterationBudget
 
@@ -97,7 +97,7 @@ async def test_happy_path_runs_all_nodes_in_dependency_order() -> None:
     graph = PipelineGraph([_node("a"), _node("b", ("a",)), _node("c", ("b",))])
     run = FakeRun()
 
-    await GraphPipelineExecutor(dispatcher).execute(graph, run)
+    await _LegacyGraphPipelineExecutor(dispatcher).execute(graph, run)
 
     assert run.status == "completed"
     assert dispatcher.calls == ["a", "b", "c"]
@@ -113,7 +113,7 @@ async def test_invalid_graph_never_executes() -> None:
     graph = PipelineGraph([_node("a", ("b",)), _node("b", ("a",))])
     run = FakeRun()
 
-    await GraphPipelineExecutor(dispatcher).execute(graph, run)
+    await _LegacyGraphPipelineExecutor(dispatcher).execute(graph, run)
 
     assert run.status.startswith("invalid graph")
     assert dispatcher.calls == []
@@ -125,7 +125,7 @@ async def test_independent_nodes_run_concurrently() -> None:
     graph = PipelineGraph([_node("a"), _node("b"), _node("c", ("a", "b"))])
     run = FakeRun()
 
-    await GraphPipelineExecutor(dispatcher).execute(graph, run)
+    await _LegacyGraphPipelineExecutor(dispatcher).execute(graph, run)
 
     assert run.status == "completed"
     assert dispatcher.max_in_flight == 2
@@ -138,7 +138,7 @@ async def test_skip_if_skips_node_and_unblocks_dependents() -> None:
     graph = PipelineGraph([_node("a", skip_if=lambda ctx: True), _node("b", ("a",))])
     run = FakeRun()
 
-    await GraphPipelineExecutor(dispatcher).execute(graph, run)
+    await _LegacyGraphPipelineExecutor(dispatcher).execute(graph, run)
 
     assert run.status == "completed"
     assert run.skipped_stages == ["a"]
@@ -151,7 +151,7 @@ async def test_unsupported_agent_is_skipped() -> None:
     graph = PipelineGraph([_node("a"), _node("b", ("a",))])
     run = FakeRun()
 
-    await GraphPipelineExecutor(dispatcher).execute(graph, run)
+    await _LegacyGraphPipelineExecutor(dispatcher).execute(graph, run)
 
     assert run.status == "completed"
     assert run.skipped_stages == ["a"]
@@ -165,7 +165,7 @@ async def test_failure_halts_downstream() -> None:
     graph = PipelineGraph([_node("a"), _node("b", ("a",))])
     run = FakeRun()
 
-    await GraphPipelineExecutor(dispatcher).execute(graph, run)
+    await _LegacyGraphPipelineExecutor(dispatcher).execute(graph, run)
 
     assert run.status == "failed at a"
     assert run.failed_stage_error == "a broke"
@@ -185,7 +185,7 @@ async def test_timeout_fails_node_without_on_complete() -> None:
     graph = PipelineGraph([_node("a", timeout_seconds=0.01, on_complete=hook)])
     run = FakeRun()
 
-    await GraphPipelineExecutor(dispatcher).execute(graph, run)
+    await _LegacyGraphPipelineExecutor(dispatcher).execute(graph, run)
 
     assert run.status == "failed at a"
     assert "timed out" in run.failed_stage_error
@@ -204,7 +204,7 @@ async def test_on_complete_receives_run_and_output() -> None:
     graph = PipelineGraph([_node("a", on_complete=hook)])
     run = FakeRun()
 
-    await GraphPipelineExecutor(dispatcher).execute(graph, run)
+    await _LegacyGraphPipelineExecutor(dispatcher).execute(graph, run)
 
     assert seen == [(run, "a output")]
     assert run.context["a"] == "a output"
@@ -220,7 +220,7 @@ async def test_on_complete_can_fail_the_run() -> None:
     graph = PipelineGraph([_node("a", on_complete=hook), _node("b", ("a",))])
     run = FakeRun()
 
-    await GraphPipelineExecutor(dispatcher).execute(graph, run)
+    await _LegacyGraphPipelineExecutor(dispatcher).execute(graph, run)
 
     assert run.status == "failed at a"
     assert dispatcher.calls == ["a"]
@@ -247,7 +247,7 @@ async def test_gate_failure_revises_target_with_feedback() -> None:
     )
     run = FakeRun()
 
-    await GraphPipelineExecutor(dispatcher).execute(graph, run)
+    await _LegacyGraphPipelineExecutor(dispatcher).execute(graph, run)
 
     assert run.status == "completed"
     assert dispatcher.calls == ["implement", "review", "implement", "review"]
@@ -275,7 +275,7 @@ async def test_gate_exhausted_fail_policy_halts_run() -> None:
     )
     run = FakeRun()
 
-    await GraphPipelineExecutor(dispatcher).execute(graph, run)
+    await _LegacyGraphPipelineExecutor(dispatcher).execute(graph, run)
 
     assert run.status == "failed at review"
     assert "Gate failed after 1 revisions" in run.failed_stage_error
@@ -304,7 +304,7 @@ async def test_gate_exhausted_continue_policy_proceeds_downstream() -> None:
     )
     run = FakeRun()
 
-    await GraphPipelineExecutor(dispatcher).execute(graph, run)
+    await _LegacyGraphPipelineExecutor(dispatcher).execute(graph, run)
 
     assert run.status == "completed"
     assert run.gate_exhausted == ["review"]
@@ -328,9 +328,9 @@ async def test_budget_exhaustion_halts_gracefully() -> None:
     )
     run = FakeRun()
 
-    await GraphPipelineExecutor(dispatcher, budget=IterationBudget(max_iterations=5)).execute(
-        graph, run
-    )
+    await _LegacyGraphPipelineExecutor(
+        dispatcher, budget=IterationBudget(max_iterations=5)
+    ).execute(graph, run)
 
     assert "iteration budget exhausted" in run.status
     assert len(dispatcher.calls) == 5
@@ -356,7 +356,7 @@ async def test_revision_clears_descendants_of_target() -> None:
     )
     run = FakeRun()
 
-    await GraphPipelineExecutor(dispatcher).execute(graph, run)
+    await _LegacyGraphPipelineExecutor(dispatcher).execute(graph, run)
 
     assert run.status == "completed"
     assert dispatcher.calls.count("docs") == 2

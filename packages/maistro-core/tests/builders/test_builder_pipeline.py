@@ -111,6 +111,29 @@ async def test_builder_pipeline_records_canonical_run_and_stage_attempts() -> No
 
 
 @pytest.mark.asyncio
+async def test_invalid_custom_graph_returns_legacy_receipt_without_admission() -> None:
+    dispatcher = ScriptedDispatcher({"code": "should not run"})
+    pipeline = BuilderPipeline(
+        dispatcher,
+        nodes=[
+            PipelineNode(
+                name="code",
+                agent_name="mason",
+                prompt_template="code",
+                depends_on=("missing",),
+            )
+        ],
+    )
+
+    run = await pipeline.execute(issue_number=734, title="Builders", repo="acme/widget")
+
+    assert run.status == "invalid graph: Node 'code' depends on undeclared node 'missing'"
+    assert run.canonical_run_id is None
+    assert all(stage.status is StageStatus.PENDING for stage in run.stages)
+    assert dispatcher.prompts == {}
+
+
+@pytest.mark.asyncio
 async def test_atomic_issue_skips_decompose_and_clean_review_skips_cleanup() -> None:
     dispatcher = ScriptedDispatcher(
         {

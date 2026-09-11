@@ -565,6 +565,12 @@ class BuilderPipeline:
         # Wrap each node's on_complete with spec verification if configured
         nodes = self._wrap_nodes_with_verification(self._nodes)
         graph = PipelineGraph(nodes)
+        errors = graph.validate()
+        if errors:
+            # Preserve the legacy invalid-graph receipt without admitting a
+            # canonical Run for work that must never start.
+            run.status = f"invalid graph: {'; '.join(errors)}"
+            return run
         await self._canonical_executor.execute(graph, run)
         return run
 
