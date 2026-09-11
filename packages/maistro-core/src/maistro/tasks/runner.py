@@ -253,8 +253,11 @@ class TaskRunner:
                 await self._emit_progress_webhook(task_id)
         except Exception as exc:
             await logger.aexception("task_execution_failed", task_id=task_id)
-            await self._queue.update_status(task_id, TaskStatus.FAILED, error=str(exc))
-            self._queue.set_result(task_id, TaskResult(error=str(exc)))
+            transitioned = await self._queue.update_status(
+                task_id, TaskStatus.FAILED, error=str(exc)
+            )
+            if transitioned:
+                self._queue.set_result(task_id, TaskResult(error=str(exc)))
             await self._emit_progress_webhook(task_id)
         finally:
             self._gate.release(lane)

@@ -128,6 +128,50 @@ async def test_cancel_does_not_report_success_before_work_settles() -> None:
         await runner.stop(drain_timeout=2.0)
 
 
+async def test_cancelled_work_cannot_attach_a_late_failure() -> None:
+    """A work item that handles cancellation and then fails cannot rewrite the receipt.
+
+    The cancellation request wins the receipt transition. If the executor later
+    raises while unwinding, both the claim and runner failure paths must respect
+    that terminal state instead of attaching an error result to it.
+    """
+    queue = TaskQueue()
+    started = asyncio.Event()
+    cancellation_seen = asyncio.Event()
+    release = asyncio.Event()
+    finished = asyncio.Event()
+
+    async def executor(_request: TaskCreate) -> ConductorOutput:
+        started.set()
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            cancellation_seen.set()
+            await release.wait()
+            finished.set()
+            raise RuntimeError("late failure after cancellation") from None
+        raise AssertionError("unreachable")
+
+    runner = TaskRunner(queue, executor)
+    await runner.start()
+    try:
+        task = await queue.submit(TaskCreate(description="late failure"))
+        await asyncio.wait_for(started.wait(), timeout=10)
+
+        assert await queue.cancel(task.task_id, settle_timeout=0.01) is False
+        assert cancellation_seen.is_set()
+
+        release.set()
+        await asyncio.wait_for(finished.wait(), timeout=10)
+        receipt = queue.get(task.task_id)
+        assert receipt is not None
+        assert receipt.status is TaskStatus.CANCELLED
+        assert receipt.result is None
+    finally:
+        release.set()
+        await runner.stop(drain_timeout=2.0)
+
+
 async def test_cancel_reaches_work_still_waiting_for_a_lane() -> None:
     """A dispatched task parked at the lane gate is also running work the
     caller asked to stop — it must never get its permit and execute."""

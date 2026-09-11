@@ -484,9 +484,10 @@ class TaskQueue:
                 # as an accident, and attach an error result to a receipt the
                 # caller was told is simply cancelled.
                 raise
-            await self.update_status(task_id, TaskStatus.FAILED)
-            self.set_result(task_id, TaskResult(error=str(exc)))
-            await logger.aexception("task_failed", task_id=task_id)
+            transitioned = await self.update_status(task_id, TaskStatus.FAILED)
+            if transitioned:
+                self.set_result(task_id, TaskResult(error=str(exc)))
+                await logger.aexception("task_failed", task_id=task_id)
             raise
         finally:
             self._claimed.discard(task_id)
