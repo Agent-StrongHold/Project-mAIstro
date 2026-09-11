@@ -127,11 +127,29 @@ def clear_default_effect_context(context: CapabilityEffectContext) -> None:
         _process_effect_context = None
 
 
+def _context_has_closed_store(context: CapabilityEffectContext) -> bool:
+    """Avoid handing registry nodes a context whose SQLite owner was closed."""
+    for store in (
+        context.bindings,
+        context.invocation_store,
+        context.event_store,
+        context.approval_store,
+    ):
+        connection = getattr(store, "_conn", None)
+        if (
+            connection is not None
+            and hasattr(connection, "_connection")
+            and connection._connection is None  # aiosqlite's closed marker
+        ):
+            return True
+    return False
+
+
 def default_effect_context() -> CapabilityEffectContext:
     """Ephemeral default; production Container constructs its context explicitly."""
 
     global _process_effect_context
-    if _process_effect_context is None:
+    if _process_effect_context is None or _context_has_closed_store(_process_effect_context):
         # Cache the explicit ephemeral fallback too: registry-constructed nodes
         # must never each receive a private effect authority before a Container
         # publishes its selected context.
