@@ -406,6 +406,7 @@ class Container:
         *,
         auth: Any = None,
         session_id: str | None = None,
+        request_id: str | None = None,
         intent_hint: str = "",
         run: Run | None = None,
     ) -> dict[str, Any]:
@@ -457,6 +458,7 @@ class Container:
                 messages,
                 auth=auth,
                 session_id=session_id,
+                request_id=request_id,
                 intent_hint=intent_hint,
             )
 
@@ -530,6 +532,7 @@ class Container:
         *,
         auth: Any = None,
         session_id: str | None = None,
+        request_id: str | None = None,
         intent_hint: str = "",
     ) -> Run | None:
         """Admit this turn as a canonical Run, or None when none is wired.
@@ -546,6 +549,7 @@ class Container:
             run = await self.chat_admitter.admit(
                 messages,
                 session_id=session_id,
+                request_id=request_id,
                 intent_hint=intent_hint,
                 known_task_types=self.config.task_types,
                 actor_principal_id=getattr(auth, "user_id", None) or None,

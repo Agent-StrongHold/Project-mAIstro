@@ -253,13 +253,19 @@ async def test_a_turn_yields_a_run_id_that_resolves(wired, client: TestClient) -
     with patch(RUN_TASK, AsyncMock(return_value=_output("42"))):
         response = client.post(
             "/v1/chat/completions",
-            json={"messages": [{"role": "user", "content": "what is the answer"}]},
+            headers={"X-Request-ID": "req-chat-1"},
+            json={
+                "session_id": "session-chat-1",
+                "messages": [{"role": "user", "content": "what is the answer"}],
+            },
         )
 
     run_id = response.json()["run_id"]
     run = await wired.get_run(run_id)
     assert run is not None
     assert run.provenance[ADMISSION_SOURCE] == CHAT_SOURCE
+    assert run.provenance["session_id"] == "session-chat-1"
+    assert run.provenance["request_id"] == "req-chat-1"
     assert run.status is RunStatus.COMPLETED
 
 

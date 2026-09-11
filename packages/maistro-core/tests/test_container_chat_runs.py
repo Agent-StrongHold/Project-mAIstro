@@ -44,13 +44,16 @@ async def test_a_turn_yields_a_run_id_that_resolves() -> None:
     container.conduit = _Conduit()
 
     result = await container.route_request(
-        [{"role": "user", "content": "what broke?"}], session_id="sess-1"
+        [{"role": "user", "content": "what broke?"}],
+        session_id="sess-1",
+        request_id="req-1",
     )
 
     run = await container.run_store.get_run(result["run_id"])
     assert run is not None
     assert run.provenance[ADMISSION_SOURCE] == CHAT_SOURCE
     assert run.provenance[SESSION_ID_KEY] == "sess-1"
+    assert run.provenance["request_id"] == "req-1"
 
 
 async def test_the_openai_shape_is_untouched() -> None:
