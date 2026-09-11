@@ -304,15 +304,12 @@ class SqliteWorkspaceStore:
             await self._begin_immediate()
             try:
                 await self._require_workspace(workspace_id)
-                cursor = await self._conn.execute(
+                await self._conn.execute(
                     """UPDATE canonical_workspace_lifecycle
                           SET state = ?, updated_at = CURRENT_TIMESTAMP
                         WHERE workspace_id = ? AND state = ?""",
                     (state, workspace_id, self._ACTIVE),
                 )
-                if cursor.rowcount == 0:
-                    await self._conn.rollback()
-                    raise WorkspaceNotFound(workspace_id)
             except BaseException:
                 await self._conn.rollback()
                 raise

@@ -304,6 +304,109 @@ class TestWorkspaceLifecycleRecovery:
         assert root.workspace_id == workspace.workspace_id
         assert root.is_root
 
+    async def test_restart_rolls_back_visible_workspace_when_root_is_missing(self, backend) -> None:
+        """A pre-journal active orphan is rolled back, never given a new root."""
+        if not backend.supports_lifecycle_recovery:
+            pytest.skip("the in-memory reference has no durable restart boundary")
+
+        from maistro.workspaces.model import Workspace, WorkspaceMembership
+
+        store = await backend.store()
+        workspace = Workspace(name="Legacy orphan")
+        owner = WorkspaceMembership(
+            workspace_id=workspace.workspace_id,
+            user_id=_user("creator-"),
+            role=WorkspaceRole.OWNER,
+            added_at=workspace.created_at,
+        )
+        # An older database had no lifecycle row, so migration would mark this
+        # committed Workspace active even though its Root Project was missing.
+        await store._stage_workspace_create(workspace, owner)
+        await store._set_state(workspace.workspace_id, store._ACTIVE)
+        assert await store.get(workspace.workspace_id) is not None
+        with pytest.raises(ProjectNotFound):
+            await store.project_store.root_for_workspace(workspace.workspace_id)
+
+        recovered = await backend.store()
+        assert await recovered.get(workspace.workspace_id) is None
+        with pytest.raises(ProjectNotFound):
+            await recovered.project_store.root_for_workspace(workspace.workspace_id)
+
+    async def test_durable_creation_recovers_when_compensation_also_fails(self, backend) -> None:
+        """A failed compensator leaves a staged row for restart reconciliation."""
+        if not backend.supports_lifecycle_recovery:
+            pytest.skip("the in-memory reference has no durable restart boundary")
+
+        store = await backend.store()
+        original_create_root = store.project_store.create_root
+        original_purge = store.project_store.purge_workspace
+        seen: list[str] = []
+
+        async def fail_create_root(workspace_id: str) -> None:
+            seen.append(workspace_id)
+            raise RuntimeError(f"root failed for {workspace_id}")
+
+        async def fail_purge(workspace_id: str) -> None:
+            raise RuntimeError(f"purge failed for {workspace_id}")
+
+        store.project_store.create_root = fail_create_root  # type: ignore[method-assign]
+        store.project_store.purge_workspace = fail_purge  # type: ignore[method-assign]
+        try:
+            with pytest.raises(RuntimeError, match="root failed"):
+                await store.create(creator_user_id=_user("creator-"), name="Staged failure")
+        finally:
+            store.project_store.create_root = original_create_root  # type: ignore[method-assign]
+            store.project_store.purge_workspace = original_purge  # type: ignore[method-assign]
+
+        recovered = await backend.store()
+        # The failed compensator left the identity in `creating`; recovery
+        # must finish it with the original Workspace ID rather than erase it.
+        assert len(seen) == 1
+        staged = await recovered.get(seen[0])
+        assert staged is not None
+        root = await recovered.project_store.root_for_workspace(seen[0])
+        assert root.workspace_id == seen[0]
+
+    async def test_sqlite_lifecycle_write_failures_rollback(self, backend) -> None:
+        """SQLite's helper failures roll back and leave a retryable database."""
+        store = await backend.store()
+        if type(store).__name__ != "SqliteWorkspaceStore":
+            pytest.skip("this exercises SQLite transaction rollback details")
+
+        with pytest.raises(WorkspaceNotFound):
+            await store._set_state("missing", store._ACTIVE)
+
+        workspace = await store.create(creator_user_id=_user("creator-"), name="Rollback")
+        import sqlite3
+
+        with pytest.raises(sqlite3.IntegrityError):
+            await store.create(
+                creator_user_id=_user("duplicate-"),
+                name="Duplicate",
+                workspace_id=workspace.workspace_id,
+            )
+        assert await store.get(workspace.workspace_id) is not None
+
+        await store._set_state_if_active(workspace.workspace_id, store._DELETING)
+        original_execute = store._conn.execute
+
+        async def fail_final_delete(sql, *args, **kwargs):
+            if isinstance(sql, str) and sql.lstrip().startswith("DELETE FROM canonical_workspaces"):
+                raise RuntimeError("final delete failed")
+            return await original_execute(sql, *args, **kwargs)
+
+        store._conn.execute = fail_final_delete  # type: ignore[method-assign]
+        try:
+            with pytest.raises(RuntimeError, match="final delete failed"):
+                await store._delete_workspace(workspace.workspace_id, store._DELETING)
+        finally:
+            store._conn.execute = original_execute  # type: ignore[method-assign]
+
+        recovered = await backend.store()
+        assert await recovered.get(workspace.workspace_id) is None
+        with pytest.raises(ProjectNotFound):
+            await recovered.project_store.root_for_workspace(workspace.workspace_id)
+
     async def test_restart_finishes_delete_when_project_purge_failed_before_it(
         self, backend
     ) -> None:
