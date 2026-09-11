@@ -22,7 +22,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
+from services.dag_execution_scope import DagWorkspaceSelectionError, authorize_hive_dag_scope
 from services.optimizer import (
     DECISION_ACCEPTED,
     DECISION_REJECTED,
@@ -48,11 +49,18 @@ async def trigger_optimizer(
     request: Request,
     apply_auto: bool = False,
     validate: bool = True,
+    workspace_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
     """Run optimizer. When validate=True (default), proposals are tested
     against the actual DAG before being surfaced. Only strictly-improving
     mutations are proposed."""
     actor = _user_id(request)
+    try:
+        scope = await authorize_hive_dag_scope(workspace_id=workspace_id or "", user_id=actor)
+    except DagWorkspaceSelectionError as exc:
+        raise HTTPException(
+            status_code=403, detail="DAG Workspace scope is not authorized"
+        ) from exc
     try:
         result = await run_optimizer(dag_id, actor=actor, apply_auto=apply_auto)
     except ValueError as exc:
@@ -70,7 +78,7 @@ async def trigger_optimizer(
 
             # Run current DAG to get REAL baseline score (not historical)
             try:
-                baseline_result = await execute_dag(dict(dag_data))
+                baseline_result = await execute_dag(dict(dag_data), scope=scope)
                 task = dag_data.get("description", dag_data.get("name", ""))
                 baseline_eval = await evaluate_dag_run(baseline_result, task)
                 baseline = float(baseline_eval.get("total", 0))
@@ -81,12 +89,13 @@ async def trigger_optimizer(
                 dict(dag_data),
                 result["proposals"],
                 baseline,
+                scope=scope,
             )
             # Also test model variants
             from services.validation_gate import hill_climb_models, hill_climb_params
 
-            model_improvements = await hill_climb_models(dict(dag_data), baseline)
-            param_improvements = await hill_climb_params(dict(dag_data), baseline)
+            model_improvements = await hill_climb_models(dict(dag_data), baseline, scope=scope)
+            param_improvements = await hill_climb_params(dict(dag_data), baseline, scope=scope)
             validated.extend(model_improvements)
             validated.extend(param_improvements)
 

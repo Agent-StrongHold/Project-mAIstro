@@ -458,13 +458,16 @@ def test_chat_workflow_tool_opens_the_projection_with_resolved_scope(
     monkeypatch.setattr(graph_runner, "execute_dag", _fake_execute_dag)
     monkeypatch.setattr(eval_judge_service, "score_run", _fake_score_run)
 
-    out = asyncio.run(_tool_run_workflow({"dag_id": dag_id}, _AUTHED_USER_ID, None))
+    out = asyncio.run(
+        _tool_run_workflow({"dag_id": dag_id, "workspace_id": ws}, _AUTHED_USER_ID, None)
+    )
     assert out.get("run_id"), out  # surfaces the tool's error text on failure
 
     row = get_dag_run_store().get_run(str(out["run_id"]))
     assert row is not None
     assert row["workspace_id"] == ws
-    assert row["project_id"] == "proj-chat"
+    assert row["project_id"]
+    assert row["project_id"] != "proj-chat"
 
 
 # ── authorization tracks the canonical grant ──────────────────────────

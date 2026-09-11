@@ -16,6 +16,8 @@ import copy
 import logging
 from typing import Any
 
+from services.dag_execution_scope import DagExecutionScope
+
 logger = logging.getLogger("hive.validation_gate")
 
 
@@ -23,6 +25,8 @@ async def validate_proposal(
     dag_data: dict[str, Any],
     proposal: dict[str, Any],
     baseline_score: float,
+    *,
+    scope: DagExecutionScope,
 ) -> dict[str, Any]:
     """Test a proposed mutation. Returns the proposal with validation results."""
     from services.benchmark_eval import evaluate_dag_run
@@ -34,7 +38,7 @@ async def validate_proposal(
 
     # Run variant B
     try:
-        result_b = await execute_dag(variant_b)
+        result_b = await execute_dag(variant_b, scope=scope)
     except Exception as e:
         logger.warning("validation_run_failed proposal=%s error=%s", proposal.get("kind"), e)
         return {**proposal, "validated": False, "reason": f"Variant B failed to run: {e}"}
@@ -120,11 +124,13 @@ async def validate_and_filter_proposals(
     dag_data: dict[str, Any],
     proposals: list[dict[str, Any]],
     baseline_score: float,
+    *,
+    scope: DagExecutionScope,
 ) -> list[dict[str, Any]]:
     """Validate all proposals, return only those that strictly improve."""
     validated = []
     for p in proposals:
-        result = await validate_proposal(dag_data, p, baseline_score)
+        result = await validate_proposal(dag_data, p, baseline_score, scope=scope)
         if result.get("validated"):
             validated.append(result)
         else:
@@ -164,6 +170,8 @@ PARAM_GRID = {
 async def hill_climb_params(
     dag_data: dict[str, Any],
     baseline_score: float,
+    *,
+    scope: DagExecutionScope,
 ) -> list[dict[str, Any]]:
     """Test parameter variations, return any that beat baseline."""
     import asyncio
@@ -176,7 +184,7 @@ async def hill_climb_params(
             from services.benchmark_eval import evaluate_dag_run
             from services.graph_runner import execute_dag
 
-            result = await execute_dag(variant)
+            result = await execute_dag(variant, scope=scope)
             task = dag_data.get("description", dag_data.get("name", ""))
             score = await evaluate_dag_run(result, task)
             total = float(score.get("total", 0))
@@ -278,6 +286,8 @@ def _filter_above_knee(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
 async def hill_climb_models(
     dag_data: dict[str, Any],
     baseline_score: float,
+    *,
+    scope: DagExecutionScope,
 ) -> list[dict[str, Any]]:
     """Test all candidate models in parallel, return any that beat baseline."""
     import asyncio
@@ -299,7 +309,7 @@ async def hill_climb_models(
             },
         }
         _start = _time.monotonic()
-        result = await validate_proposal(dag_data, proposal, baseline_score)
+        result = await validate_proposal(dag_data, proposal, baseline_score, scope=scope)
         _elapsed_ms = int((_time.monotonic() - _start) * 1000)
         result["model_tested"] = model
         result["latency_ms"] = _elapsed_ms

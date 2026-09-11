@@ -23,6 +23,10 @@ class _WorkspaceCreateKwargs(TypedDict):
 
 @runtime_checkable
 class WorkspaceStore(Protocol):
+    #: The Project tree paired with this Workspace authority.  Workspace
+    #: admission resolves the existing Root Project through this same object.
+    project_store: ProjectScopeStore
+
     async def create(
         self,
         *,
