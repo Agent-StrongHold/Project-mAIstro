@@ -475,19 +475,10 @@ async def test_hive_facade_uses_governed_model_egress_on_canonical_run(
     standalone compatibility. A wired Container must nevertheless force the
     model-backed legacy adapter through the governed caller.
     """
-    from types import SimpleNamespace
-
     import httpx
 
-    from maistro.capabilities.binding import Binding
-    from maistro.capabilities.effect_context import new_in_memory_effect_context
-    from maistro.capabilities.providers.llm_gateway import MODEL_CHAT_CAPABILITY
-    from maistro.graph.durable_runs import InMemoryGraphContinuationStore
-    from maistro.graph.durable_runs.canonical_store import CanonicalDurableRunStore
-    from maistro.projects.scope_store import InMemoryProjectScopeStore
-    from maistro.providers.registry import InMemoryProviderRegistry
-    from maistro.providers.router import CostAwareRouter
-    from maistro.runs.store import InMemoryRunStore
+    from maistro.container import create_container
+    from maistro.types.config import AgentConfig
 
     class _Response:
         status_code = 200
@@ -513,31 +504,19 @@ async def test_hive_facade_uses_governed_model_egress_on_canonical_run(
             return _Response()
 
     monkeypatch.setattr(httpx, "AsyncClient", _Client)
-    monkeypatch.setenv("LITELLM_API_BASE", "http://gateway.test")
+    monkeypatch.delenv("LITELLM_API_BASE", raising=False)
 
-    project_store = InMemoryProjectScopeStore()
-    root = await project_store.create_root("ws-1")
-    run_store = InMemoryRunStore(project_store=project_store)
-    durable_store = CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore())
-    effects = new_in_memory_effect_context()
-    await effects.bindings.put(
-        Binding(
-            binding_id="hive-model-binding",
+    container = await create_container(
+        AgentConfig(
+            router_api_key="test-key",
             workspace_id="ws-1",
-            project_id=root.project_id,
-            node_id="n1",
-            capability=MODEL_CHAT_CAPABILITY,
+            litellm_url="http://gateway.test",
         )
     )
-    registry = InMemoryProviderRegistry()
-    container = SimpleNamespace(
-        config=SimpleNamespace(workspace_id="ws-1"),
-        run_store=run_store,
-        graph_run_store=durable_store,
-        capability_effects=effects,
-        provider_registry=registry,
-        llm_router=CostAwareRouter(registry),
-    )
+    root = await container.project_scope_store.create_root("ws-1")
+    run_store = container.run_store
+    durable_store = container.graph_run_store
+    effects = container.capability_effects
 
     import services.canonical_dag_runner as canonical
     import services.graph_runner as facade
@@ -554,7 +533,6 @@ async def test_hive_facade_uses_governed_model_egress_on_canonical_run(
                     "id": "n1",
                     "name": "worker",
                     "model": "legacy-model",
-                    "binding_id": "hive-model-binding",
                     "config": {"execution_tier": "safe"},
                 }
             ],
@@ -571,6 +549,7 @@ async def test_hive_facade_uses_governed_model_egress_on_canonical_run(
     assert invocation.run_id == result["run_id"]
     assert invocation.node_run_id
     assert invocation.attempt_id
+    assert invocation.binding.binding_id == (f"hive-legacy-model:ws-1:{root.project_id}:n1")
     assert invocation.binding.provider_name == "legacy-model"
     assert invocation.usage is not None
     assert invocation.usage.model_version == "legacy-model-v2"

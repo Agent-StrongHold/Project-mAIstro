@@ -191,6 +191,8 @@ async def clarify(
         max_tokens=2048,
     )
     data = json.loads(content)
+    if not isinstance(data, dict):
+        raise RuntimeError("clarification model returned a non-object answers payload")
     answers = data.get("answers", data)
     if not isinstance(answers, dict):
         raise RuntimeError("clarification model returned a non-object answers payload")
