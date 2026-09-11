@@ -222,7 +222,6 @@
         "packages/maistro-core/src/maistro/graph/nodes/dashboard_append_section.py::unused variable 'sections_total'",
         "packages/maistro-core/src/maistro/graph/nodes/human_approve_draft.py::unused variable 'modified_draft'",
         "packages/maistro-core/src/maistro/graph/nodes/human_approve_draft.py::unused variable 'reviewer_note'",
-        "packages/maistro-core/src/maistro/graph/nodes/human_ask_question.py::unused variable 'answered_at'",
         "packages/maistro-core/src/maistro/graph/nodes/human_delegate_to_role.py::unused variable 'modified_payload'",
         "packages/maistro-core/src/maistro/graph/nodes/human_delegate_to_role.py::unused variable 'reviewer_note'",
         "packages/maistro-core/src/maistro/graph/nodes/human_review_and_edit.py::unused variable 'edits'",
