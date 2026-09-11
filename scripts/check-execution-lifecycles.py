@@ -31,7 +31,7 @@ LEDGER = ROOT / "quality" / "execution-lifecycles.json"
 REACHABILITY = ROOT / "scripts" / "check-reachability.py"
 _PROVENANCE_SOURCE = ROOT / "scripts" / "ratchet_provenance.py"
 RATCHET = "execution-lifecycles"
-METRIC_DEFINITION_VERSION = "2"
+METRIC_DEFINITION_VERSION = "3"
 
 CLASSIFICATIONS = frozenset({"CANONICAL", "DOMAIN", "PROJECTION", "RECEIPT", "CONVERGE"})
 _ENUM_BASES = frozenset({"Enum", "StrEnum", "IntEnum", "IntFlag", "Flag"})
@@ -42,10 +42,12 @@ _WORK_STATES = frozenset(
         "ABORTED",
         "ACTIVE",
         "ASSIGNED",
+        "CREATED",
         "BLOCKED",
         "CANCELED",
         "CANCELLED",
         "CLAIMED",
+        "CODING",
         "COMPLETE",
         "COMPLETED",
         "DONE",
@@ -55,13 +57,17 @@ _WORK_STATES = frozenset(
         "IN_PROGRESS",
         "PAUSED",
         "PENDING",
+        "PLANNING",
         "QUEUED",
         "RETRYING",
+        "REVIEWING",
         "RUNNING",
         "SKIPPED",
         "STOPPED",
+        "TESTING",
         "SUCCEEDED",
         "TIMED_OUT",
+        "YIELDED",
         "TIMEOUT",
         "WAITING",
     }
@@ -94,16 +100,6 @@ def _load_reachability() -> object:
     sys.modules["_reachability"] = module
     spec.loader.exec_module(module)
     return module
-
-
-def _enum_members(node: ast.ClassDef) -> set[str]:
-    return {
-        target.id
-        for statement in node.body
-        if isinstance(statement, ast.Assign)
-        for target in statement.targets
-        if isinstance(target, ast.Name)
-    }
 
 
 def _attribute_name(node: ast.expr) -> str:
@@ -188,7 +184,27 @@ def _enum_vocabularies(tree: ast.AST, module: str) -> dict[str, set[str]]:
     for node in ast.walk(tree):
         if not isinstance(node, ast.ClassDef) or not _is_enum(node):
             continue
-        states = _enum_members(node) & _WORK_STATES
+        values: set[str] = set()
+        for statement in node.body:
+            if isinstance(statement, ast.Assign):
+                targets = statement.targets
+                value = statement.value
+            elif isinstance(statement, ast.AnnAssign):
+                targets = (statement.target,)
+                value = statement.value
+            else:
+                continue
+            for target in targets:
+                if not isinstance(target, ast.Name):
+                    continue
+                values.add(target.id)
+                if (
+                    value is not None
+                    and isinstance(value, ast.Constant)
+                    and isinstance(value.value, str)
+                ):
+                    values.add(value.value)
+        states = _normalized_work_states(values)
         if len(states) >= _MIN_WORK_STATES:
             found[f"{module}::{node.name}"] = states
     return found
@@ -235,6 +251,16 @@ def _literal_alias_vocabularies(
     return found
 
 
+def _contains_discovered_alias(
+    node: ast.expr, alias_vocabularies: dict[str, set[str]], module: str
+) -> bool:
+    """Avoid a second identity when a field annotation wraps a local alias."""
+    return any(
+        isinstance(name, ast.Name) and f"{module}::{name.id}" in alias_vocabularies
+        for name in ast.walk(node)
+    )
+
+
 def _literal_field_vocabularies(
     tree: ast.AST,
     aliases: dict[str, ast.expr],
@@ -264,9 +290,7 @@ def _literal_field_vocabularies(
             )
             if len(states) < _MIN_WORK_STATES:
                 continue
-            if isinstance(node.annotation, ast.Name) and (
-                f"{module}::{node.annotation.id}" in alias_vocabularies
-            ):
+            if _contains_discovered_alias(node.annotation, alias_vocabularies, module):
                 continue
             found[f"{module}::{owner.name}.{field_name}"] = states
     return found
