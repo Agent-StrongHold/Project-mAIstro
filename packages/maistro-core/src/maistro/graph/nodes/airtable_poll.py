@@ -1,10 +1,4 @@
-"""`airtable.poll` — read records from an Airtable base + table.
-
-Optional `since_iso` filter uses Airtable's `LAST_MODIFIED_TIME()` formula
-so the daily-status DAG can pull only "last 24h" records.
-
-PAT is passed in by the caller (Hive cred store), not the env.
-"""
+"""`airtable.poll` - read records through the governed capability egress."""
 
 from __future__ import annotations
 
@@ -12,14 +6,22 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
-from maistro.http import shared_client
+from maistro.capabilities.binding_store import BindingNotFound
+from maistro.capabilities.effect_context import CapabilityEffectContext, default_effect_context
+from maistro.capabilities.pm_polling import (
+    AIRTABLE_POLL_CAPABILITY,
+    AirtablePollRequest,
+    invoke_airtable_poll,
+)
 
 from . import register_node
 from .base import BaseNode, NodeContext
 
 
 class AirtablePollIn(BaseModel):
-    pat: str
+    binding_id: str = Field(
+        description="Pre-authorized Airtable Binding for this workspace/project"
+    )
     base_id: str = Field(description="Airtable base id, e.g. appXXXXXXXXXXXXXX")
     table: str = Field(description="Table name (URL-encoded as needed)")
     since_iso: str | None = Field(
@@ -56,41 +58,50 @@ class AirtablePollNode(BaseNode[AirtablePollIn, AirtablePollOut]):
     external_io: ClassVar[bool] = True
     display_name: ClassVar[str] = "Airtable: poll table"
     description: ClassVar[str] = (
-        "Read recently-modified records from an Airtable base + table. "
-        "Token comes from the Hive credential store at runtime."
+        "Read records through a pre-authorized Airtable capability Binding. "
+        "Credentials are resolved from the Binding's credential references."
     )
 
+    def __init__(self, *, effect_context: CapabilityEffectContext | None = None) -> None:
+        self._effects = effect_context or default_effect_context()
+
     async def _execute(self, inputs: AirtablePollIn, ctx: NodeContext) -> AirtablePollOut:
-        params: dict[str, Any] = {
-            "pageSize": inputs.page_size,
-            "sort[0][field]": inputs.sort_field,
-            "sort[0][direction]": inputs.sort_direction,
-        }
-        if inputs.since_iso:
-            params["filterByFormula"] = f"IS_AFTER(LAST_MODIFIED_TIME(), '{inputs.since_iso}')"
-
-        async with shared_client(timeout=inputs.timeout_s) as client:
-            resp = await client.get(
-                f"https://api.airtable.com/v0/{inputs.base_id}/{inputs.table}",
-                headers={"Authorization": f"Bearer {inputs.pat}"},
-                params=params,
+        if not inputs.binding_id.strip():
+            raise BindingNotFound(
+                "airtable.poll requires a pre-authorized Binding before any request"
             )
-
-        if resp.status_code == 401:
-            raise PermissionError("airtable_auth_failed status=401")
-        if resp.status_code == 403:
-            raise PermissionError("airtable_forbidden status=403")
-        if resp.status_code >= 400:
-            raise RuntimeError(f"airtable_http_error status={resp.status_code}")
-
-        data = resp.json()
+        binding = await self._effects.bindings.resolve(
+            inputs.binding_id,
+            workspace_id=str(ctx.workspace_id or ""),
+            project_id=str(ctx.project_id or ""),
+            node_id=ctx.node_id,
+            capability=AIRTABLE_POLL_CAPABILITY,
+        )
+        invocation = await invoke_airtable_poll(
+            self._effects,
+            binding=binding,
+            run_id=ctx.run_id,
+            node_run_id=ctx.node_run_id,
+            attempt_id=ctx.attempt_id,
+            effect_key=f"airtable.poll.records:{inputs.base_id}:{inputs.table}:{inputs.since_iso or ''}",
+            request=AirtablePollRequest(
+                base_id=inputs.base_id,
+                table=inputs.table,
+                since_iso=inputs.since_iso,
+                sort_field=inputs.sort_field,
+                sort_direction=inputs.sort_direction,
+                page_size=inputs.page_size,
+            ),
+            timeout_s=inputs.timeout_s,
+        )
+        data = invocation.result if isinstance(invocation.result, dict) else {}
         records = [
             AirtableRecord(
-                id=r.get("id", ""),
-                fields=r.get("fields", {}) or {},
-                created_time=r.get("createdTime", "") or "",
+                id=record.get("id", ""),
+                fields=record.get("fields", {}) or {},
+                created_time=record.get("createdTime", "") or "",
             )
-            for r in data.get("records", [])
+            for record in data.get("records", [])
         ]
         return AirtablePollOut(
             records=records,
