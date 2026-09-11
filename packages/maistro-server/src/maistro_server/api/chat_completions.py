@@ -211,6 +211,10 @@ async def _admit_turn(
     """
     if _container is None or _container.chat_admitter is None:
         return None
+    # Admission is best effort. Initialize before entering the try block so a
+    # failure before persistence still follows the no-refusal path without
+    # masking the original failure with an unbound local error.
+    run: Run | None = None
     try:
         run = await _container.chat_admitter.admit(
             [m.model_dump() for m in request.messages],
@@ -327,9 +331,16 @@ async def _close_if_open(run: Run) -> None:
         return
     try:
         current = await _container.run_store.get_run(run.run_id)
-        if current is None or current.status in TERMINAL_RUN_STATUSES:
+        if current is None:
             return
-        await _container.run_store.transition_run(run.run_id, RunStatus.CANCELLED, error=ABANDONED)
+        if current.status not in TERMINAL_RUN_STATUSES:
+            await _container.run_store.transition_run(
+                run.run_id, RunStatus.CANCELLED, error=ABANDONED
+            )
+        # The stream admits before dispatch, so a burst can make every Run live
+        # until cleanup. Sweep after terminalizing the last one as well as on
+        # the normal route so abandoned streams cannot bypass the chat bound.
+        await _container._sweep_chat_runs()
     except Exception:
         logger.exception("chat_completions_abandoned_run_close_failed", run_id=run.run_id)
 
