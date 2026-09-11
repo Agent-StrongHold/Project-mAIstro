@@ -81,7 +81,7 @@ or placeholder-only section.
 ### Fixed
 
 - **A chat turn whose canonical record fails *after* the model answered is no
-  longer asked again (part of #1108).** `Container._execute_chat_turn` fell
+  longer asked again (#1108).** `Container._execute_chat_turn` fell
   back to a fresh `dispatch()` on any `RunIntegrityError` without knowing
   which side of the model call it came from, so a store failure while
   persisting the completed Attempt or reconciling its NodeRun re-ran the
@@ -94,7 +94,8 @@ or placeholder-only section.
   dispatch that itself failed and then could not be recorded arrives as its
   own exception rather than the recording error. The pre-dispatch fallback —
   answering a turn whose spine could not be written before the model was
-  called — is unchanged.
+  called — is unchanged; #1108's other half (refusing a turn outright when no
+  canonical spine is wired) is not addressed here.
 - **Successful NodeRuns require accepted physical evidence (#1153).** New
   completion transitions reject a missing `AcceptedNodeOutcome`, including for
   no-output work. The historical durable-Graph execution entry points delegate
