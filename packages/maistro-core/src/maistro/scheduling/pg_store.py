@@ -110,13 +110,13 @@ class PgScheduleStore:
         self,
         schedule_id: str,
         *,
-        fired_at: datetime,
+        fired_at: datetime | None,
         run_id: str | None,
         next_due_at: datetime | None,
         fires: int = 1,
         disable: bool = False,
     ) -> Schedule | None:
-        """Advance the cursor under a row lock, so a concurrent tick cannot lose it."""
+        """Advance the cursors under a row lock, so a concurrent tick cannot lose them."""
         async with self._pool.acquire() as conn, conn.transaction():
             payload = await conn.fetchval(
                 "SELECT payload FROM schedules WHERE schedule_id = $1 FOR UPDATE",

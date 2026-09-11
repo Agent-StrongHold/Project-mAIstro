@@ -10,17 +10,37 @@ There is deliberately no execution table here. Fires are recorded as a
 cursor on the schedule (`last_fired_at`, `last_run_id`, `runs_so_far`) and
 the execution itself lives in Run history, so this store never becomes a
 second place that believes it knows what is running.
+
+Two cursors live on a schedule and `record_fire` is the one writer of both
+(#1199). `last_fired_at` is the *enumeration* cursor — where the next
+evaluation starts looking for occurrences — and moves only when an occurrence
+was consumed. `next_due_at` is the *due* cursor — when the next evaluation is
+worth running at all, which is what `due()` selects on — and moves whenever an
+evaluation learns it, including one that found nothing to fire: a schedule
+whose first occurrence is next week must not be re-evaluated every tick until
+then because its first evaluation left `next_due_at` empty. Passing
+`fired_at=None` records the due cursor alone.
+
+The SQLite store serializes `record_fire` the way the PostgreSQL store's row
+lock does: the read and the write happen inside one `BEGIN IMMEDIATE`
+critical section, so a tick and a manual fire advancing the same schedule
+cannot both read `runs_so_far = 4` and both write `5`, and cannot lose each
+other's `last_run_id` or `next_due_at`.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from maistro.scheduling.model import Schedule
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     import aiosqlite
 
 __all__ = [
@@ -58,20 +78,27 @@ class ScheduleStore(Protocol):
         self,
         schedule_id: str,
         *,
-        fired_at: datetime,
+        fired_at: datetime | None,
         run_id: str | None,
         next_due_at: datetime | None,
         fires: int = 1,
         disable: bool = False,
     ) -> Schedule | None:
-        """Advance the cursor after firing, and disable on exhaustion."""
+        """Advance the cursors after an evaluation, and disable on exhaustion.
+
+        `fired_at` is the newest occurrence consumed and becomes the
+        enumeration cursor; `None` says no occurrence was consumed, so that
+        cursor stays where it is and only `next_due_at` (the due cursor) is
+        recorded (#1199). Implementations serialize the read-then-write so two
+        callers advancing one schedule cannot lose each other's update.
+        """
         ...
 
 
 def _advance(
     schedule: Schedule,
     *,
-    fired_at: datetime,
+    fired_at: datetime | None,
     run_id: str | None,
     next_due_at: datetime | None,
     fires: int,
@@ -80,7 +107,7 @@ def _advance(
     """The cursor advance, shared by every implementation so they cannot drift."""
     return schedule.model_copy(
         update={
-            "last_fired_at": fired_at,
+            "last_fired_at": fired_at if fired_at is not None else schedule.last_fired_at,
             "last_run_id": run_id if run_id is not None else schedule.last_run_id,
             "runs_so_far": schedule.runs_so_far + fires,
             "next_due_at": None if disable else next_due_at,
@@ -124,7 +151,7 @@ class InMemoryScheduleStore:
         self,
         schedule_id: str,
         *,
-        fired_at: datetime,
+        fired_at: datetime | None,
         run_id: str | None,
         next_due_at: datetime | None,
         fires: int = 1,
@@ -167,6 +194,35 @@ class SqliteScheduleStore:
 
     def __init__(self, conn: aiosqlite.Connection) -> None:
         self._conn = conn
+        # One connection, so this orders same-process writers; `BEGIN
+        # IMMEDIATE` is what protects a second process sharing this file.
+        # Every writer takes it through `_serialized_write` (#1199), for the
+        # reason `SqliteProjectScopeStore` gives: SQLite starts a transaction
+        # implicitly on a connection's first DML statement, so an unlocked
+        # writer left mid-statement would make a locked one's `BEGIN
+        # IMMEDIATE` raise "cannot start a transaction within a transaction"
+        # the moment their awaits interleaved.
+        self._write_lock = asyncio.Lock()
+
+    @asynccontextmanager
+    async def _serialized_write(self) -> AsyncIterator[None]:
+        """Take this connection's one write-critical section.
+
+        `BEGIN IMMEDIATE` takes SQLite's write lock before the read rather
+        than at the first write, which is what makes `record_fire`'s
+        read-then-write one unit instead of two halves another writer can
+        land between — the property `PgScheduleStore.record_fire` holds with
+        `SELECT ... FOR UPDATE`.
+        """
+        async with self._write_lock:
+            await self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield
+            except BaseException:
+                await self._conn.rollback()
+                raise
+            else:
+                await self._conn.commit()
 
     async def ensure_schema(self) -> None:
         await self._conn.execute(_SCHEMA)
@@ -185,6 +241,12 @@ class SqliteScheduleStore:
         return Schedule.model_validate(json.loads(definition))
 
     async def put(self, schedule: Schedule) -> Schedule:
+        async with self._serialized_write():
+            await self._upsert(schedule)
+        return schedule
+
+    async def _upsert(self, schedule: Schedule) -> None:
+        """The one write, issued only inside `_serialized_write`."""
         await self._conn.execute(
             "INSERT INTO schedules "
             "(schedule_id, workspace_id, project_id, enabled, next_due_at, definition) "
@@ -202,8 +264,6 @@ class SqliteScheduleStore:
                 schedule.model_dump_json(),
             ),
         )
-        await self._conn.commit()
-        return schedule
 
     async def get(self, schedule_id: str) -> Schedule | None:
         async with self._conn.execute(
@@ -213,11 +273,11 @@ class SqliteScheduleStore:
         return self._row_to_schedule(row[0]) if row else None
 
     async def delete(self, schedule_id: str) -> bool:
-        cursor = await self._conn.execute(
-            "DELETE FROM schedules WHERE schedule_id = ?", (schedule_id,)
-        )
-        await self._conn.commit()
-        return bool(cursor.rowcount)
+        async with self._serialized_write():
+            cursor = await self._conn.execute(
+                "DELETE FROM schedules WHERE schedule_id = ?", (schedule_id,)
+            )
+            return bool(cursor.rowcount)
 
     async def list_for_project(self, *, workspace_id: str, project_id: str) -> list[Schedule]:
         async with self._conn.execute(
@@ -241,17 +301,24 @@ class SqliteScheduleStore:
         self,
         schedule_id: str,
         *,
-        fired_at: datetime,
+        fired_at: datetime | None,
         run_id: str | None,
         next_due_at: datetime | None,
         fires: int = 1,
         disable: bool = False,
     ) -> Schedule | None:
-        schedule = await self.get(schedule_id)
-        if schedule is None:
-            return None
-        return await self.put(
-            _advance(
+        """Advance the cursors inside one write-critical section (#1199).
+
+        The read and the write share the `BEGIN IMMEDIATE` transaction, so a
+        tick and a manual fire advancing the same schedule queue behind each
+        other instead of both reading the same `runs_so_far` and each writing
+        it plus one — the lost update the PostgreSQL row lock prevents.
+        """
+        async with self._serialized_write():
+            schedule = await self.get(schedule_id)
+            if schedule is None:
+                return None
+            advanced = _advance(
                 schedule,
                 fired_at=fired_at,
                 run_id=run_id,
@@ -259,4 +326,5 @@ class SqliteScheduleStore:
                 fires=fires,
                 disable=disable,
             )
-        )
+            await self._upsert(advanced)
+            return advanced

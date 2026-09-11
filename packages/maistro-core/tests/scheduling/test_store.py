@@ -5,9 +5,11 @@ exists to prevent — a schedule that quietly stops existing — is exactly what
 store that drifts from its protocol reintroduces.
 
 PostgreSQL joined the list in #231. It is the only one two processes can
-share, so it is also the only one where `record_fire` racing itself is
-reachable; `test_concurrent_record_fire_does_not_lose_an_increment` covers
-that separately, because the in-memory and SQLite stores cannot exhibit it.
+share; `test_concurrent_record_fire_does_not_lose_an_increment` covers two
+replicas racing on it. Two *callers* racing on one store — a tick and a manual
+fire — is reachable on every backend, and SQLite lost that race until #1199,
+so `test_concurrent_record_fire_on_one_store_does_not_lose_an_increment` runs
+against all three.
 """
 
 from __future__ import annotations
@@ -266,3 +268,163 @@ def test_every_implementation_satisfies_the_protocol() -> None:
 
     assert isinstance(InMemoryScheduleStore(), ScheduleStore)
     assert isinstance(PgScheduleStore(None), ScheduleStore)  # type: ignore[arg-type]
+
+
+# --- the due cursor without a fire (#1199) ------------------------------------
+
+
+async def test_record_fire_without_a_fired_at_moves_only_the_due_cursor(
+    store: ScheduleStore,
+) -> None:
+    """An evaluation that fired nothing still learned when the next occurrence
+    is. Recording that must not stamp `last_fired_at` — that cursor is where
+    enumeration resumes, and moving it for a fire that did not happen would
+    skip whatever it moved past."""
+    schedule = await store.put(
+        _schedule(last_fired_at=NOON - timedelta(hours=1), last_run_id="run-0", runs_so_far=1)
+    )
+    advanced = await store.record_fire(
+        schedule.schedule_id,
+        fired_at=None,
+        run_id=None,
+        next_due_at=NOON + timedelta(hours=1),
+        fires=0,
+    )
+    assert advanced is not None
+    assert advanced.last_fired_at == NOON - timedelta(hours=1)
+    assert advanced.last_run_id == "run-0"
+    assert advanced.runs_so_far == 1
+    assert advanced.next_due_at == NOON + timedelta(hours=1)
+    reloaded = await store.get(schedule.schedule_id)
+    assert reloaded is not None
+    assert reloaded.last_fired_at == NOON - timedelta(hours=1)
+    assert reloaded.next_due_at == NOON + timedelta(hours=1)
+    # ...and `due()` reads the recorded cursor: not before it, yes at it.
+    assert await store.due(now=NOON) == []
+    assert [s.schedule_id for s in await store.due(now=NOON + timedelta(hours=1))] == [
+        schedule.schedule_id
+    ]
+
+
+# --- write serialization (#1199) ----------------------------------------------
+
+
+async def test_concurrent_record_fire_on_one_store_does_not_lose_an_increment(
+    store: ScheduleStore,
+) -> None:
+    """A tick and a manual fire advancing the same cursor at once.
+
+    Both used to be reachable on SQLite as a read, a model copy, and a write
+    with nothing between the read and the write — so two callers interleaving
+    at the awaits both read `runs_so_far = n` and both wrote `n + 1`. The
+    counter is what `max_runs` exhaustion is computed from, and the same lost
+    update dropped the other caller's `last_run_id` and `next_due_at`.
+    """
+    schedule = await store.put(_schedule(name="hourly"))
+
+    callers = 8
+    await asyncio.gather(
+        *(
+            store.record_fire(
+                schedule.schedule_id,
+                fired_at=NOON + timedelta(minutes=n),
+                run_id=f"run-{n}",
+                next_due_at=NOON + timedelta(hours=n + 1),
+            )
+            for n in range(callers)
+        )
+    )
+
+    final = await store.get(schedule.schedule_id)
+    assert final is not None
+    assert final.runs_so_far == callers
+    # Whichever caller landed last, its cursor is what survived: the counter
+    # and the cursors were written by the same caller, not mixed.
+    assert final.last_run_id is not None
+    winner = int(final.last_run_id.removeprefix("run-"))
+    assert final.last_fired_at == NOON + timedelta(minutes=winner)
+    assert final.next_due_at == NOON + timedelta(hours=winner + 1)
+
+
+async def test_concurrent_put_and_record_fire_on_one_sqlite_connection(tmp_path) -> None:
+    """Every SQLite writer goes through the one write-critical section.
+
+    `put` and `delete` are locked too, not only `record_fire`: SQLite opens a
+    transaction implicitly on a connection's first DML statement, so a `put`
+    left mid-flight across an `await` would make `record_fire`'s own `BEGIN
+    IMMEDIATE` raise "cannot start a transaction within a transaction" rather
+    than merely race with it. Forces the interleaving deterministically: the
+    connection's `commit()` is paused after `put`'s INSERT has executed and
+    `record_fire` is started inside that window.
+    """
+    conn = await aiosqlite.connect(tmp_path / "put-vs-fire.db")
+    try:
+        store = SqliteScheduleStore(conn)
+        await store.ensure_schema()
+        schedule = await store.put(_schedule(name="hourly"))
+
+        paused_before_commit = asyncio.Event()
+        release_commit = asyncio.Event()
+        real_commit = conn.commit
+
+        async def commit_after_release() -> None:
+            paused_before_commit.set()
+            await release_commit.wait()
+            await real_commit()
+
+        conn.commit = commit_after_release  # type: ignore[method-assign]
+        put_task = asyncio.ensure_future(store.put(_schedule(name="other")))
+        try:
+            await paused_before_commit.wait()
+            fire_task = asyncio.ensure_future(
+                store.record_fire(
+                    schedule.schedule_id,
+                    fired_at=NOON,
+                    run_id="run-1",
+                    next_due_at=NOON + timedelta(hours=1),
+                )
+            )
+            await asyncio.sleep(0)
+            release_commit.set()
+            _, advanced = await asyncio.gather(put_task, fire_task)
+        finally:
+            conn.commit = real_commit  # type: ignore[method-assign]
+
+        assert advanced is not None and advanced.runs_so_far == 1
+        reloaded = await store.get(schedule.schedule_id)
+        assert reloaded is not None and reloaded.last_run_id == "run-1"
+        assert len(await store.list_for_project(workspace_id="w1", project_id="p1")) == 2
+    finally:
+        await conn.close()
+
+
+async def test_sqlite_record_fire_from_two_connections_does_not_lose_an_increment(
+    tmp_path,
+) -> None:
+    """The cross-process half: two connections to one file, which is what a
+    manual fire from a second process looks like. The in-process lock cannot
+    see the other connection; `BEGIN IMMEDIATE` taking SQLite's write lock
+    before the read is what makes the second connection wait instead of
+    reading a count it is about to overwrite."""
+    path = tmp_path / "two-writers.db"
+    async with aiosqlite.connect(path) as first, aiosqlite.connect(path) as second:
+        store_a = SqliteScheduleStore(first)
+        await store_a.ensure_schema()
+        store_b = SqliteScheduleStore(second)
+        schedule = await store_a.put(_schedule(name="hourly"))
+
+        callers = 6
+        await asyncio.gather(
+            *(
+                (store_a if n % 2 else store_b).record_fire(
+                    schedule.schedule_id,
+                    fired_at=NOON + timedelta(minutes=n),
+                    run_id=f"run-{n}",
+                    next_due_at=NOON + timedelta(hours=n + 1),
+                )
+                for n in range(callers)
+            )
+        )
+
+        final = await store_a.get(schedule.schedule_id)
+        assert final is not None and final.runs_so_far == callers

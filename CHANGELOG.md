@@ -88,6 +88,24 @@ or placeholder-only section.
 
 ### Fixed
 
+- **A schedule's due cursor is recorded on every evaluation, and SQLite
+  `record_fire` is serialized (#1199).** `ScheduleRunAdmitter` computed
+  `next_due_at` on an evaluation that fired nothing but never persisted it, so
+  a schedule whose first occurrence was days away stayed `next_due_at=None`
+  and was selected by `ScheduleStore.due()` on every tick until then.
+  `record_fire` now takes `fired_at=None` to record the due cursor alone —
+  the enumeration cursor (`last_fired_at`), `last_run_id` and `runs_so_far`
+  are untouched — and the admitter writes it whenever it changes and nothing
+  is owed; a `BUFFER_ONE` occurrence held behind an active Run keeps the
+  schedule due rather than hiding it until the occurrence after it.
+  `SqliteScheduleStore.record_fire` was a get-then-put with nothing between
+  the read and the write, so a tick and a manual fire advancing one schedule
+  could both read `runs_so_far = n` and both write `n + 1`, losing each
+  other's `last_run_id` and `next_due_at` with it; every SQLite writer now
+  goes through one `BEGIN IMMEDIATE` critical section, matching the
+  PostgreSQL store's `FOR UPDATE`. The live Hive tick still enumerates its
+  own schedule rows; moving it onto `ScheduleStore.due()` is #1199's
+  remaining scope.
 - **Project membership is one canonical row per `(project, principal)`, and
   is now explicitly revocable (#1148).** `ProjectScopeStore.set_membership`
   used to mint a fresh `membership_id` on every call, so a re-grant, role
