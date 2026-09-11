@@ -14,7 +14,12 @@ from functools import lru_cache
 from typing import Any
 
 from maistro.capabilities.binding import Binding
-from maistro.capabilities.binding_store import BindingStore, InMemoryBindingStore
+from maistro.capabilities.binding_store import (
+    BindingStore,
+    InMemoryBindingStore,
+    PgBindingStore,
+    SqliteBindingStore,
+)
 from maistro.capabilities.credential_routing import CredentialRouting
 from maistro.capabilities.governed_invocation import (
     GovernedInvocationExecutionService,
@@ -26,8 +31,10 @@ from maistro.capabilities.invocation import (
     InvocationExecutionService,
     InvocationStore,
 )
+from maistro.capabilities.invocation_store import PgInvocationStore, SqliteInvocationStore
 from maistro.credentials.router import CredentialRouter
-from maistro.events.envelope import EventStore, InMemoryEventStore
+from maistro.events.envelope import EventStore, InMemoryEventStore, SqliteEventStore
+from maistro.events.pg_envelope import PgEventStore
 from maistro.policy.types import Decision, PolicyVerdict
 
 
@@ -105,6 +112,62 @@ def new_in_memory_effect_context(
     )
 
 
+async def new_sqlite_effect_context(
+    conn: Any,
+    *,
+    credentials: CredentialRouter | None = None,
+    policy_evaluator: PolicyEvaluator | None = None,
+) -> CapabilityEffectContext:
+    """Build the canonical effect authority on the container's SQLite database."""
+
+    bindings = SqliteBindingStore(conn)
+    invocation_store = SqliteInvocationStore(conn)
+    event_store = SqliteEventStore(conn)
+    await bindings.ensure_schema()
+    await invocation_store.ensure_schema()
+    await event_store.ensure_schema()
+    governed = GovernedInvocationExecutionService(
+        invocation_service=InvocationExecutionService(store=invocation_store),
+        event_store=event_store,
+        policy_evaluator=policy_evaluator or _m1_binding_authorized_policy,
+    )
+    return CapabilityEffectContext(
+        bindings=bindings,
+        invocations=governed,
+        invocation_store=invocation_store,
+        event_store=event_store,
+        credentials=credentials or CredentialRouter(),
+    )
+
+
+async def new_postgres_effect_context(
+    pool: Any,
+    *,
+    credentials: CredentialRouter | None = None,
+    policy_evaluator: PolicyEvaluator | None = None,
+) -> CapabilityEffectContext:
+    """Build the canonical effect authority on a shared PostgreSQL pool."""
+
+    bindings = PgBindingStore(pool)
+    invocation_store = PgInvocationStore(pool)
+    event_store = PgEventStore(pool)
+    await bindings.ensure_schema()
+    await invocation_store.ensure_schema()
+    await event_store.ensure_schema()
+    governed = GovernedInvocationExecutionService(
+        invocation_service=InvocationExecutionService(store=invocation_store),
+        event_store=event_store,
+        policy_evaluator=policy_evaluator or _m1_binding_authorized_policy,
+    )
+    return CapabilityEffectContext(
+        bindings=bindings,
+        invocations=governed,
+        invocation_store=invocation_store,
+        event_store=event_store,
+        credentials=credentials or CredentialRouter(),
+    )
+
+
 @lru_cache(maxsize=1)
 def default_effect_context() -> CapabilityEffectContext:
     """Process-wide canonical context used by registry-constructed effect nodes.
@@ -121,4 +184,6 @@ __all__ = [
     "CapabilityEffectContext",
     "default_effect_context",
     "new_in_memory_effect_context",
+    "new_postgres_effect_context",
+    "new_sqlite_effect_context",
 ]

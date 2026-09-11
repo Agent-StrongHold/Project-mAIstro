@@ -9,18 +9,12 @@ than retryable failure: an exception can arrive after the remote system has
 already committed the side effect. A provider/adapter may raise
 :class:`EffectNotApplied` only when it can prove no external effect occurred.
 
-**Nothing in this repository constructs an Invocation outside tests.** Neither
-:class:`InvocationExecutionService` nor its governed wrapper is instantiated by
-the container, a route, or a node; the one caller of the seam,
-``HarnessSessionManager.send_invocation``, is itself unreached. This layer is the
-boundary #55 is going to route provider calls through, and it is written and
-tested ahead of that. Read it as a specification with a conformance suite, not
-as a description of what runs today: an id here does not appear in a log line,
-and no stored Invocation row exists in any deployment.
-
-Stating that is the point of the paragraph. A reader who finds a persisted
-effect-key ledger reasonably assumes retries are already deduplicated by it,
-and would then be wrong about how the running system recovers.
+The container composes :class:`InvocationExecutionService` and its governed
+wrapper through :mod:`maistro.capabilities.effect_context`. SQLite and
+PostgreSQL deployments use the durable stores from that module; ephemeral
+composition remains explicitly in-memory and fails closed without a Binding.
+Every provider call still enters this service before dispatch, so the effect-key
+ledger is the retry authority rather than a node-local convention.
 """
 
 from __future__ import annotations
@@ -104,6 +98,8 @@ class Invocation(BaseModel):
     run_id: str
     node_run_id: str
     attempt_id: str
+    workspace_id: str = ""
+    project_id: str = ""
     binding: ResolvedBinding
     effect_key: str
     status: InvocationStatus = InvocationStatus.CREATED
@@ -122,6 +118,16 @@ class Invocation(BaseModel):
         _require(self.node_run_id, "node_run_id")
         _require(self.attempt_id, "attempt_id")
         _require(self.effect_key, "effect_key")
+        if not self.workspace_id:
+            self.workspace_id = self.binding.workspace_id
+        if not self.project_id:
+            self.project_id = self.binding.project_id
+        _require(self.workspace_id, "workspace_id")
+        _require(self.project_id, "project_id")
+        if self.workspace_id != self.binding.workspace_id:
+            raise ValueError("Invocation workspace_id does not match its resolved Binding")
+        if self.project_id != self.binding.project_id:
+            raise ValueError("Invocation project_id does not match its resolved Binding")
         terminal = self.status in TERMINAL_INVOCATION_STATUSES
         if terminal and self.finished_at is None:
             raise ValueError("terminal Invocation requires finished_at")
@@ -154,6 +160,12 @@ class InvocationStore(Protocol):
         binding_id: str,
         effect_key: str,
     ) -> list[Invocation]: ...
+
+
+class EffectClaimStore(Protocol):
+    """Optional atomic claim used by multi-worker durable Invocation stores."""
+
+    async def claim(self, invocation: Invocation) -> Invocation: ...
 
 
 class InMemoryInvocationStore:
@@ -198,6 +210,22 @@ class InMemoryInvocationStore:
             if item.effect_identity == identity
         ]
 
+    async def claim(self, invocation: Invocation) -> Invocation:
+        """Atomically claim an effect when contexts share this store."""
+        async with self._lock:
+            history = [
+                item
+                for item in sorted(self._items.values(), key=lambda candidate: candidate.created_at)
+                if item.effect_identity == invocation.effect_identity
+            ]
+            if history and history[-1].status is not InvocationStatus.FAILED:
+                return history[-1].model_copy(deep=True)
+            if invocation.invocation_id in self._items:
+                raise ValueError(f"Invocation {invocation.invocation_id!r} already exists")
+            persisted = invocation.model_copy(deep=True)
+            self._items[persisted.invocation_id] = persisted
+            return persisted.model_copy(deep=True)
+
 
 class EffectNotApplied(RuntimeError):
     """Provider proves the requested external effect definitely did not occur."""
@@ -220,11 +248,7 @@ UsageExtractor = Callable[[Any], "InvocationUsage | None"]
 
 
 class InvocationExecutionService:
-    """Resolve one Binding, persist one provider call, and guard effect retries.
-
-    Unreached in production: nothing constructs this outside tests, and the
-    effect-retry guard below therefore protects no live call yet (#55).
-    """
+    """Resolve one Binding, persist one provider call, and guard effect retries."""
 
     def __init__(self, *, store: InvocationStore) -> None:
         self._store = store
@@ -298,16 +322,35 @@ class InvocationExecutionService:
                     f"capability {binding.capability!r} unavailable: {provider.reason}"
                 )
             resolved = ResolvedBinding.from_provider(binding, provider)
-            invocation = await self._store.create(
-                Invocation(
-                    run_id=run_id,
-                    node_run_id=node_run_id,
-                    attempt_id=attempt_id,
-                    binding=resolved,
-                    effect_key=effect_key,
-                    request=request,
-                )
+            candidate = Invocation(
+                run_id=run_id,
+                node_run_id=node_run_id,
+                attempt_id=attempt_id,
+                workspace_id=binding.workspace_id,
+                project_id=binding.project_id,
+                binding=resolved,
+                effect_key=effect_key,
+                request=request,
             )
+            claim = getattr(self._store, "claim", None)
+            invocation = (
+                await claim(candidate) if callable(claim) else await self._store.create(candidate)
+            )
+            if invocation.status is InvocationStatus.COMPLETED:
+                return invocation
+            if (
+                invocation.status
+                in {
+                    InvocationStatus.CREATED,
+                    InvocationStatus.RUNNING,
+                    InvocationStatus.UNKNOWN,
+                }
+                and invocation.invocation_id != candidate.invocation_id
+            ):
+                raise UnsafeEffectRetry(
+                    f"effect {effect_key!r} has outcome {invocation.status.value!r}; "
+                    "manual/reconciliation evidence is required before retry"
+                )
             running = invocation.model_copy(
                 update={
                     "status": InvocationStatus.RUNNING,
@@ -374,6 +417,7 @@ class InvocationExecutionService:
 
 __all__ = [
     "CapabilityUnavailable",
+    "EffectClaimStore",
     "EffectNotApplied",
     "InMemoryInvocationStore",
     "Invocation",

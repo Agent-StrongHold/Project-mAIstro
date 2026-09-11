@@ -9,6 +9,7 @@ from maistro.capabilities.approval_store import (
     SqliteApprovalStore,
 )
 from maistro.capabilities.binding import Binding, ResolvedBinding
+from maistro.capabilities.binding_store import BindingDisabled, PgBindingStore, SqliteBindingStore
 from maistro.capabilities.bootstrap import default_capability_registry
 from maistro.capabilities.discovery import discover_into
 from maistro.capabilities.governed_invocation import (
@@ -30,7 +31,7 @@ from maistro.capabilities.invocation import (
     InvocationStatus,
     UnsafeEffectRetry,
 )
-from maistro.capabilities.invocation_store import SqliteInvocationStore
+from maistro.capabilities.invocation_store import PgInvocationStore, SqliteInvocationStore
 from maistro.capabilities.protocols import CapabilityProvider
 from maistro.capabilities.providers.harness_safety import (
     ActionGate,
@@ -70,6 +71,7 @@ __all__ = [
     "ApprovalStatus",
     "AsyncHttp",
     "Binding",
+    "BindingDisabled",
     "CapabilityProvider",
     "CapabilityRegistry",
     "CapabilityUnavailable",
@@ -92,12 +94,15 @@ __all__ = [
     "InvocationPolicyContext",
     "InvocationStatus",
     "OpencodeHarnessRunner",
+    "PgBindingStore",
+    "PgInvocationStore",
     "ProviderHealth",
     "ResolvedBinding",
     "SafeHarnessRunner",
     "SandboxExec",
     "SlotSpec",
     "SqliteApprovalStore",
+    "SqliteBindingStore",
     "SqliteInvocationStore",
     "SubprocessHarnessRunner",
     "Unavailable",

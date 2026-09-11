@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final
@@ -22,11 +22,15 @@ from maistro.a2a.guest_peers import GuestPeerManager
 from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.intents import IntentRegistry, build_intent_registry
 from maistro.archive.wiring import build_archive_store
+from maistro.capabilities.binding import Binding
 from maistro.capabilities.effect_context import (
     CapabilityEffectContext,
     new_in_memory_effect_context,
+    new_postgres_effect_context,
+    new_sqlite_effect_context,
 )
 from maistro.classifier.engine import ClassifierEngine
+from maistro.credentials.router import CredentialRouter
 from maistro.graph.durable_runs.canonical_store import CanonicalDurableRunStore
 from maistro.graph.durable_runs.protocol import DurableRunStore
 from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
@@ -1203,12 +1207,37 @@ def _wire_schedule_admission(
     return ScheduleRunAdmitter(run_store, template_store, schedule_store)
 
 
+async def _wire_capability_effects(
+    *,
+    effect_context: CapabilityEffectContext | None,
+    db_pool: Any,
+    pg_pool: Any,
+    capability_bindings: Iterable[Binding],
+    capability_credentials: CredentialRouter | None,
+) -> CapabilityEffectContext:
+    """Select the durable canonical effect stores for this container."""
+    if effect_context is not None:
+        return effect_context
+    if db_pool is not None:
+        context = await new_sqlite_effect_context(db_pool, credentials=capability_credentials)
+    elif pg_pool is not None:
+        context = await new_postgres_effect_context(pg_pool, credentials=capability_credentials)
+    else:
+        context = new_in_memory_effect_context(credentials=capability_credentials)
+    for binding in capability_bindings:
+        await context.bindings.put(binding)
+    return context
+
+
 async def create_container(
     config: AgentConfig,
     *,
     harness_adapters: dict[str, HarnessAdapter] | None = None,
     embeddings: EmbeddingClient | None = None,
     pg_pool: Any = None,
+    effect_context: CapabilityEffectContext | None = None,
+    capability_bindings: Iterable[Binding] = (),
+    capability_credentials: CredentialRouter | None = None,
 ) -> Container:
     """Wire all dependencies and create the container.
 
@@ -1245,6 +1274,11 @@ async def create_container(
     more specific than a string saying which server to reach, and silently
     opening a second pool while the given one sat unused is the shape of bug
     that reads as "PostgreSQL is configured and nothing is durable".
+
+    `capability_bindings` and `capability_credentials` are the explicit
+    Workspace provisioning seam for retained external-effect nodes. They never
+    accept secret values in Graph input; omitted provisioning leaves the
+    canonical Binding authority empty and therefore fails closed.
     """
     if not config.router_api_key:
         msg = "ROUTER_API_KEY is required."
@@ -1518,9 +1552,20 @@ async def create_container(
     # --- Hierarchical orchestration (ADR-101) ------------------------------
     harness_registry, hierarchy = _wire_hierarchy(agents, skill_registry)
 
+    # --- Canonical capability effects (#55/#1133) --------------------------
+    # Use the same database authority as the Container so a recovered Attempt
+    # cannot repeat an effect merely because this process restarted. A caller
+    # may inject a fully composed context when its deployment owns the stores.
+    capability_effects = await _wire_capability_effects(
+        effect_context=effect_context,
+        db_pool=db_pool,
+        pg_pool=pg_pool,
+        capability_bindings=capability_bindings,
+        capability_credentials=capability_credentials,
+    )
+
     # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) -----------
     wired_harness_adapters = _wire_harness_adapters(harness_adapters)
-    capability_effects = new_in_memory_effect_context()
     spawn_harness_node = AgentSpawnHarnessNode(
         adapters=wired_harness_adapters, effect_context=capability_effects
     )

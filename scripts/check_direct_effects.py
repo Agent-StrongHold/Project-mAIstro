@@ -35,7 +35,7 @@ DISPOSITIONS = frozenset(
 
 # Match model URLs at the HTTP call itself, never endpoint text elsewhere.
 _MODEL_ENDPOINTS = ("chat/completions", "/completions", "/v1/responses")
-_HTTP_EFFECT_METHODS = frozenset({"post", "stream", "send", "request"})
+_HTTP_EFFECT_METHODS = frozenset({"get", "post", "stream", "send", "request"})
 
 # Semantic helpers whose call itself is a model effect.
 # The PM-private helper was retired by #129; future helpers must be reviewed here.
@@ -63,6 +63,16 @@ _FUNCTION_EFFECTS: dict[str, tuple[str, str]] = {
 # entries are deliberately exact path/scope/callee triples rather than fuzzy
 # ``send``/``execute``/``invoke`` matching.
 _PATH_CALLS: dict[tuple[str, str, str], tuple[str, str]] = {
+    (
+        "packages/maistro-core/src/maistro/capabilities/providers/pm_polling.py",
+        "execute_jira",
+        "client.get",
+    ): ("CANONICAL_INVOCATION", "jira-polling-http-provider"),
+    (
+        "packages/maistro-core/src/maistro/capabilities/providers/pm_polling.py",
+        "execute_airtable",
+        "client.get",
+    ): ("CANONICAL_INVOCATION", "airtable-polling-http-provider"),
     (
         "packages/maistro-core/src/maistro/capabilities/governed_invocation.py",
         "GovernedInvocationExecutionService.invoke",
