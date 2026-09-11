@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests/test_dag_execution_scope.py: +1
+  packages/hive-conductor/backend/tests: +1
 ---
 
 The DAG Workspace-selection tests now seed and authorize through the canonical
