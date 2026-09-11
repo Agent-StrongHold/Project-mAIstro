@@ -1127,6 +1127,81 @@ async def test_a_death_after_the_mint_resolves_to_the_existing_run(scoped, monke
     assert [run.run_id for run in runs_named] == [corpse.run_id]
 
 
+async def test_ambiguous_resolution_rechecks_a_claim_that_lost_a_race(scoped, monkeypatch) -> None:
+    """A discovery result can race a takeover by another retry.
+
+    If resolution loses that race, the row is temporarily non-admitted. The
+    retry must not return the stale begun receipt (with no Run) while the new
+    claimant is still admitting; it must re-read until the winner's outcome is
+    available.
+    """
+    _projects, _runs, _root, project = scoped
+    store = InMemoryTaskIdempotencyStore()
+    admitter = TaskRunAdmitter(_runs, workspace_id="w1", project_id=project.project_id)
+    queue = TaskQueue(admitter=admitter, idempotency_store=store)
+    request = TaskCreate(description="racing ambiguous resolution", idempotency_key="k")
+    scope = admission_scope_key(
+        principal="alice", workspace_id="w1", action=TASK_SUBMIT_ACTION, key="k"
+    )
+    stale = datetime.now(UTC) - PENDING_LEASE - timedelta(seconds=1)
+    stored_request = json.dumps(
+        request.model_copy(update={"user_id": "alice", "idempotency_key": "k"}).model_dump(
+            mode="json"
+        )
+    )
+    claimed = await store.claim(
+        scope,
+        fingerprint=request_fingerprint(request),
+        request=stored_request,
+        now=stale,
+    )
+    assert isinstance(claimed, Claimed)
+    old_task_id = TaskResponse.new_id()
+    assert await store.begin(scope, token=claimed.token, task_id=old_task_id, now=stale)
+
+    async def discover(_task_id: str) -> str:
+        # The old claimant did mint a Run, but another retry takes over before
+        # this caller can record the discovered Run on the claim.
+        return "old-run"
+
+    monkeypatch.setattr(admitter, "run_for_task_receipt", discover)
+    winner_done = asyncio.Event()
+
+    async def racing_resolve(scope_key: str, *, task_id: str, run_id: str) -> bool:
+        current = await store.get(scope_key)
+        assert current is not None
+        takeover = await store.take_over_resolved(
+            scope_key,
+            task_id=task_id,
+            fingerprint=current.fingerprint,
+            request=current.request,
+            now=datetime.now(UTC),
+        )
+        assert isinstance(takeover, Claimed)
+
+        async def finish_winner() -> None:
+            await asyncio.sleep(0.01)
+            now = datetime.now(UTC)
+            assert await store.begin(
+                scope_key, token=takeover.token, task_id="winner-task", now=now
+            )
+            assert await store.complete(
+                scope_key, token=takeover.token, task_id="winner-task", run_id="winner-run"
+            )
+            winner_done.set()
+
+        winner_task = asyncio.create_task(finish_winner())
+        winner_task.add_done_callback(lambda task: None if task.cancelled() else task.exception())
+        return False
+
+    monkeypatch.setattr(store, "resolve_run", racing_resolve)
+    replay = await queue.submit(request, user_id="alice")
+    await asyncio.wait_for(winner_done.wait(), timeout=1)
+
+    assert replay.task_id == "winner-task"
+    assert replay.run_id == "winner-run"
+
+
 async def test_a_crash_between_mint_and_queue_is_resumed_not_stranded(scoped) -> None:
     """The crash-after-create probe: a claimant that died in the instant after
     minting the Run but before it was queued left canonical state no retry

@@ -471,10 +471,17 @@ class TaskQueue:
         run_id = await discover(record.task_id)
         if run_id is None:
             return await self._take_over_resolved(store, scope_key, record)
+        # Discovery and resolution race with another retry that may take over
+        # the lapsed claim. A failed resolve therefore cannot replay the stale
+        # `record`: the row may now belong to a fresh, non-admitted claimant,
+        # and returning it would hand out a receipt with no Run while the
+        # winner is still admitting. Re-read and only return a completed row;
+        # otherwise the caller's claim loop waits for (or takes over) the
+        # current claimant instead of manufacturing an outcome from history.
         with contextlib.suppress(Exception):
             await store.resolve_run(scope_key, task_id=record.task_id, run_id=run_id)
         fresh = await store.get(scope_key)
-        return fresh if fresh is not None and fresh.admitted else record
+        return fresh if fresh is not None and fresh.admitted else None
 
     async def _take_over_resolved(
         self, store: TaskIdempotencyStore, scope_key: str, record: AdmissionRecord
