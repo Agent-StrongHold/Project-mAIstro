@@ -404,6 +404,34 @@ async def test_deleting_a_run_with_a_child_is_refused(spine) -> None:
     assert await runs.get_run(parent.run_id) is not None
 
 
+async def test_retention_walks_past_a_terminal_parent_with_a_child(spine) -> None:
+    """One undeletable parent must not strand younger eligible chat Runs."""
+    _projects, runs, root = spine
+    admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id, max_retained=2)
+    parent = await admitter.admit(_turn("parent"))
+    await runs.transition_run(parent.run_id, RunStatus.QUEUED)
+    await runs.transition_run(parent.run_id, RunStatus.RUNNING)
+    child_graph = parent.graph.materialize().model_copy(
+        update={"graph_id": "child-graph"}, deep=True
+    )
+    child = await runs.create_run(child_graph, parent_run_id=parent.run_id)
+    await runs.transition_run(child.run_id, RunStatus.QUEUED)
+    await runs.transition_run(child.run_id, RunStatus.RUNNING)
+    await runs.transition_run(child.run_id, RunStatus.COMPLETED)
+    await runs.transition_run(parent.run_id, RunStatus.COMPLETED)
+
+    second = await admitter.admit(_turn("second"))
+    await runs.transition_run(second.run_id, RunStatus.QUEUED)
+    await runs.transition_run(second.run_id, RunStatus.RUNNING)
+    await runs.transition_run(second.run_id, RunStatus.COMPLETED)
+    third = await admitter.admit(_turn("third"))
+
+    assert admitter.retained == 2
+    assert await runs.get_run(parent.run_id) is not None
+    assert await runs.get_run(second.run_id) is None
+    assert await runs.get_run(third.run_id) is not None
+
+
 def test_a_turns_outcome_records_its_answer() -> None:
     from maistro.runs.chat_admission import MAX_RECORDED_ANSWER_CHARS, chat_turn_outcome
 
