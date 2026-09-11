@@ -90,6 +90,13 @@ or placeholder-only section.
   chat Run with no NodeRun after a bounded grace period, recording
   `execution_never_started` — a new, distinct category from the existing
   `admission_incomplete` (which covers the earlier CREATED/QUEUED gap).
+- **Successful NodeRuns require accepted physical evidence (#1153).** New
+  completion transitions reject a missing `AcceptedNodeOutcome`, including for
+  no-output work. The historical durable-Graph execution entry points delegate
+  to the canonical Attempt executor instead of completing nodes without
+  Attempts. Legacy completed records remain readable and may receive matching
+  evidence without changing their result or lifecycle timestamps.
+
 - **Naive Workspace timestamps no longer decode to a different instant
   depending on the reading host (#1149).** `Workspace.created_at`/`updated_at`
   and `WorkspaceMembership.added_at` now normalize a naive datetime to UTC
