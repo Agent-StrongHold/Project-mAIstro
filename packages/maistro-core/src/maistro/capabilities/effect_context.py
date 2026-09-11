@@ -1,11 +1,4 @@
-"""Composition root for the canonical governed capability-effect boundary.
-
-This module owns no dispatch semantics. It composes the accepted Binding and
-Invocation authorities so production consumers can cross one governed seam
-instead of constructing private executors. The process default is intentionally
-empty of Bindings: an unconfigured consumer fails closed rather than obtaining
-a provider merely because one happens to be registered elsewhere.
-"""
+"""Composition root for the canonical governed capability-effect boundary."""
 
 from __future__ import annotations
 
@@ -37,8 +30,6 @@ async def _m1_binding_authorized_policy(
     request: Any,
     context: InvocationPolicyContext,
 ) -> PolicyVerdict:
-    """M1 baseline after canonical Binding scope resolution has succeeded."""
-
     del binding, request, context
     return PolicyVerdict(
         Decision.ALLOW,
@@ -49,7 +40,7 @@ async def _m1_binding_authorized_policy(
 
 @dataclass(frozen=True)
 class CapabilityEffectContext:
-    """Wired canonical Binding and Invocation authorities for effect consumers."""
+    """Wired canonical Binding, Invocation, and quota authorities."""
 
     bindings: BindingStore
     invocations: GovernedInvocationExecutionService
@@ -58,8 +49,6 @@ class CapabilityEffectContext:
     credentials: CredentialRouter = field(default_factory=CredentialRouter)
 
     def credential_routing(self) -> CredentialRouting:
-        """Credential routing for this context's Provider selection seam (#58)."""
-
         return CredentialRouting(self.credentials)
 
 
@@ -68,39 +57,38 @@ def new_in_memory_effect_context(
     policy_evaluator: PolicyEvaluator | None = None,
     credentials: CredentialRouter | None = None,
     quota: InvocationQuota | None = None,
+    bindings: BindingStore | None = None,
+    invocation_store: InvocationStore | None = None,
+    event_store: EventStore | None = None,
 ) -> CapabilityEffectContext:
-    """Build an isolated canonical effect context for tests and explicit ephemeral use.
+    """Compose the canonical effect seam from backend-selected authorities.
 
-    Production composition passes its canonical quota collaborator here. Keeping
-    quota on the context, rather than on an Agent/router call, makes every effect
-    consumer crossing this context share one admission/accounting authority.
+    The historical name is retained for compatibility. Production may supply
+    durable stores and quota; omitted collaborators intentionally select the
+    isolated in-memory implementations used by tests and ephemeral deployments.
     """
 
-    binding_store = InMemoryBindingStore()
-    invocation_store = InMemoryInvocationStore()
-    event_store = InMemoryEventStore()
-    invocation_service = InvocationExecutionService(store=invocation_store, quota=quota)
+    binding_store = bindings or InMemoryBindingStore()
+    inv_store = invocation_store or InMemoryInvocationStore()
+    events = event_store or InMemoryEventStore()
+    invocation_service = InvocationExecutionService(store=inv_store, quota=quota)
     governed = GovernedInvocationExecutionService(
         invocation_service=invocation_service,
-        event_store=event_store,
+        event_store=events,
         policy_evaluator=policy_evaluator or _m1_binding_authorized_policy,
     )
     return CapabilityEffectContext(
         bindings=binding_store,
         invocations=governed,
-        invocation_store=invocation_store,
-        event_store=event_store,
+        invocation_store=inv_store,
+        event_store=events,
         credentials=credentials or CredentialRouter(),
     )
 
 
 @lru_cache(maxsize=1)
 def default_effect_context() -> CapabilityEffectContext:
-    """Ephemeral process default for callers that deliberately have no quota policy.
-
-    Production Container wiring does not use this default. It constructs the
-    context explicitly with the backend-selected quota authority.
-    """
+    """Ephemeral default; production Container constructs its context explicitly."""
 
     return new_in_memory_effect_context()
 
