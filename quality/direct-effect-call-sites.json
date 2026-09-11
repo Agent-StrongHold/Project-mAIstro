@@ -158,13 +158,13 @@
     "packages/hive-conductor/backend/services/legacy_dag_node.py::_tool_clarify::MODEL_EFFECT:hive.clarify#1": {
       "path": "packages/hive-conductor/backend/services/legacy_dag_node.py",
       "qualname": "_tool_clarify",
-      "line": 186,
+      "line": 188,
       "category": "MODEL_EFFECT",
       "entry_point": "hive.clarify",
       "callee": "clarify",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
       "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
+      "rationale": "Compatibility adapter shapes clarification output; the supplied model caller performs the governed Invocation."
     },
     "packages/hive-conductor/backend/services/legacy_dag_node.py::_tool_clarify::MODEL_EFFECT:hive.clarify#2": {
       "path": "packages/hive-conductor/backend/services/legacy_dag_node.py",
@@ -173,9 +173,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "hive.clarify",
       "callee": "clarify",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
       "owner": "#56",
-      "rationale": "Compatibility adapter supplies the canonical model caller; physical model egress is recorded by Invocation."
+      "rationale": "Compatibility adapter forwards the canonical model caller; physical model egress is recorded by Invocation."
     },
     "packages/hive-conductor/backend/services/legacy_dag_node.py::_tool_web_search::TOOL_EFFECT:hive.web_search#1": {
       "path": "packages/hive-conductor/backend/services/legacy_dag_node.py",

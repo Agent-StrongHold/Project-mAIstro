@@ -518,8 +518,9 @@ async def test_canonical_model_node_records_attempt_correlated_invocation(
     assert invocation.usage.output_units == 2
 
 
+@pytest.mark.parametrize("failure", ["connect", "http500", "timeout"])
 async def test_governed_model_failure_cannot_report_success(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
     import httpx
 
@@ -528,6 +529,12 @@ async def test_governed_model_failure_cannot_report_success(
     from maistro.capabilities.providers.llm_gateway import MODEL_CHAT_CAPABILITY
     from maistro.providers.registry import InMemoryProviderRegistry
     from maistro.providers.router import CostAwareRouter
+
+    class _Response:
+        status_code = 500
+
+        def json(self) -> dict[str, Any]:
+            return {"error": "gateway failure"}
 
     class _Client:
         def __init__(self, *_args: Any, **_kwargs: Any) -> None:
@@ -540,7 +547,11 @@ async def test_governed_model_failure_cannot_report_success(
             return None
 
         async def post(self, *_args: Any, **_kwargs: Any) -> Any:
-            raise httpx.ConnectError("gateway unavailable")
+            if failure == "connect":
+                raise httpx.ConnectError("gateway unavailable")
+            if failure == "timeout":
+                raise httpx.ReadTimeout("gateway timed out")
+            return _Response()
 
     monkeypatch.setattr(httpx, "AsyncClient", _Client)
     effects = new_in_memory_effect_context()
@@ -579,7 +590,7 @@ async def test_governed_model_failure_cannot_report_success(
     assert result.status == "failed"
     invocations = list(effects.invocation_store._items.values())  # type: ignore[attr-defined]
     assert len(invocations) == 1
-    assert invocations[0].status.value == "failed"
+    assert invocations[0].status.value == ("failed" if failure == "connect" else "unknown")
 
 
 async def test_a_sandbox_tier_adapter_node_runs_the_isolated_subprocess(
