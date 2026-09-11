@@ -13,6 +13,7 @@ from maistro.runs.execution import (
     AttemptExecutionService,
     AttemptReconciler,
 )
+from maistro.runs.lifecycle import InvalidLifecycleTransition
 from maistro.runs.model import (
     TERMINAL_ATTEMPT_STATUSES,
     TERMINAL_RUN_STATUSES,
@@ -195,7 +196,31 @@ class RunExecutionService:
 
         return await self._attempts.cancel(attempt_id)
 
-    async def cancel_run(self, run_id: str) -> Run:
+    async def _fence_cancelled_run(self, run_id: str, *, error: str) -> Run:
+        """Persist the cancellation winner, tolerating a concurrent loser."""
+        try:
+            await self._store.transition_run(
+                run_id,
+                RunStatus.CANCELLED,
+                error=error,
+            )
+        except InvalidLifecycleTransition:
+            current = await self._store.get_run(run_id)
+            if current is None:
+                raise ValueError(f"Run {run_id!r} disappeared during cancellation") from None
+            if current.status is not RunStatus.CANCELLED:
+                return current
+        current = await self._store.get_run(run_id)
+        if current is None:
+            raise ValueError(f"Run {run_id!r} disappeared during cancellation")
+        return current
+
+    async def cancel_run(
+        self,
+        run_id: str,
+        *,
+        error: str = "execution cancelled",
+    ) -> Run:
         """Fence and cancel one Run through its physical Attempts.
 
         The Run transition is persisted before signaling local Runtime owners.
@@ -225,11 +250,12 @@ class RunExecutionService:
             # Normal completion won the race before the cancellation fence.
             return run
 
-        await self._store.transition_run(
-            run_id,
-            RunStatus.CANCELLED,
-            error="execution cancelled",
-        )
+        # Another canceller or normal completion may win this durable fence
+        # after the initial read. Only cancellation is idempotent; a completed
+        # or failed outcome remains authoritative.
+        fenced = await self._fence_cancelled_run(run_id, error=error)
+        if fenced.status is not RunStatus.CANCELLED:
+            return fenced
         owner_found = await AttemptExecutionService.cancel_registered_run(run_id)
         if not owner_found:
             # No in-process owner exists. Do not claim an external worker
