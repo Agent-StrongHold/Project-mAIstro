@@ -1,13 +1,14 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +15
+  packages/maistro-core/tests: +16
   packages/hive-conductor/backend/tests: +10
 ---
 
 # #1120: manual schedule fire through the canonical admission spine
 
 Adds five occurrence-identity cases to `test_spine_conformance.py`, each run
-against all three Run stores (memory, SQLite, PostgreSQL — hence +15): a
+against all three Run stores (memory, SQLite, PostgreSQL — hence +15), plus a
+legacy SQLite schema-upgrade case in `test_sqlite_store.py`: a
 retried manual fire is one occurrence even across different wall-clock
 instants (`schedule_fire_id` is the identity, not `datetime.now()`); a manual
 token never consumes a nominal `(schedule_id, scheduled_for)` claim (the

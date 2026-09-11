@@ -131,7 +131,13 @@ CREATE INDEX IF NOT EXISTS idx_canonical_runs_parent
 -- Partial on `schedule_id IS NOT NULL`: only scheduled Runs claim an
 -- occurrence, and without the predicate every task and chat Run would collide
 -- on `(NULL, NULL)`.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_canonical_runs_occurrence
+--
+-- This is an in-place schema migration as well as the fresh schema definition.
+-- `CREATE INDEX IF NOT EXISTS` does not replace the pre-034 index on an
+-- existing SQLite file, so a legacy file would keep claiming by
+-- `scheduled_for` and allow a retried manual fire to create another Run.
+DROP INDEX IF EXISTS idx_canonical_runs_occurrence;
+CREATE UNIQUE INDEX idx_canonical_runs_occurrence
     ON canonical_runs(
         json_extract(payload, '$.provenance.schedule_id'),
         COALESCE(
