@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 from scripts.shipped_surface_truth import (
     discover_backend_surfaces,
+    discover_cli_surfaces,
     discover_frontend_surfaces,
     load_matrix,
     validate_matrix,
@@ -29,8 +30,10 @@ def _matrix() -> dict:
     return {
         "schema_version": 2,
         "backend_roots": ["backend"],
+        "cli_roots": [],
         "frontend_roots": ["frontend"],
         "backend_surfaces": [],
+        "cli_surfaces": [],
         "frontend_surfaces": [],
     }
 
@@ -93,6 +96,45 @@ async def stream_events(websocket: WebSocket, run_id: str) -> None:
     (tmp_path / "frontend").mkdir()
     errors = validate_matrix(tmp_path, _matrix())
     assert any("unclassified backend surface" in error and "WEBSOCKET" in error for error in errors)
+
+
+def test_discovers_cli_commands_and_argparse_subcommands(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "cli/app.py",
+        """
+import argparse
+import typer
+app = typer.Typer()
+@app.command("rotate")
+def rotate_key(): pass
+parser = argparse.ArgumentParser()
+sub = parser.add_subparsers()
+sub.add_parser("run")
+""",
+    )
+    surfaces = discover_cli_surfaces(tmp_path, ["cli"])
+    assert [(item.route, item.handler) for item in surfaces] == [
+        ("rotate", "rotate_key"),
+        ("run", "main"),
+    ]
+
+
+def test_missing_cli_surface_disposition_fails_closed(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "cli/app.py",
+        """
+import typer
+app = typer.Typer()
+@app.command("rotate")
+def rotate_key(): pass
+""",
+    )
+    (tmp_path / "backend").mkdir()
+    (tmp_path / "frontend").mkdir()
+    matrix = _matrix()
+    matrix["cli_roots"] = ["cli"]
+    errors = validate_matrix(tmp_path, matrix)
+    assert any("unclassified CLI surface" in error and "rotate" in error for error in errors)
 
 
 def test_repo_wide_backend_discovery_excludes_tests_and_examples(tmp_path: Path) -> None:

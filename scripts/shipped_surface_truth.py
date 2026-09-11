@@ -15,6 +15,8 @@ MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 #: is a distinct kind of shipped execution/control surface (#1122) and must be
 #: discovered on its own terms, not folded into the mutating-method vocabulary.
 WEBSOCKET_METHOD = "WEBSOCKET"
+#: Non-HTTP command entrypoints use the same inventory shape as backend routes.
+CLI_METHOD = "CLI"
 VALID_DISPOSITIONS = {
     "canonical",
     "domain-state",
@@ -207,6 +209,79 @@ def discover_backend_surfaces(repo_root: Path, roots: list[str]) -> list[Backend
     return sorted(set(surfaces))
 
 
+def _cli_decorator_surface(
+    node: ast.AsyncFunctionDef | ast.FunctionDef, source: str
+) -> BackendSurface | None:
+    for decorator in node.decorator_list:
+        if isinstance(decorator, ast.Call) and isinstance(decorator.func, ast.Attribute):
+            if decorator.func.attr not in {"command", "callback"}:
+                continue
+            command = (
+                decorator.args[0].value
+                if decorator.args
+                and isinstance(decorator.args[0], ast.Constant)
+                and isinstance(decorator.args[0].value, str)
+                else node.name
+            )
+            return BackendSurface(source, CLI_METHOD, command, node.name)
+        if isinstance(decorator, ast.Attribute) and decorator.attr in {"command", "callback"}:
+            return BackendSurface(source, CLI_METHOD, node.name, node.name)
+    return None
+
+
+def _cli_call_surface(node: ast.Call, source: str) -> BackendSurface | None:
+    if not isinstance(node.func, ast.Attribute):
+        return None
+    if node.func.attr == "add_parser" and node.args:
+        command = node.args[0]
+        if isinstance(command, ast.Constant) and isinstance(command.value, str):
+            # argparse dispatchers select the callback after parsing; the
+            # module's main function is the stable authority we inventory.
+            return BackendSurface(source, CLI_METHOD, command.value, "main")
+    if (
+        node.func.attr == "run"
+        and node.args
+        and isinstance(node.args[0], ast.Name)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "typer"
+    ):
+        return BackendSurface(source, CLI_METHOD, node.args[0].id, node.args[0].id)
+    return None
+
+
+def _cli_command_surfaces(path: Path, repo_root: Path) -> list[BackendSurface]:
+    """Find declared commands in shipped Typer and argparse entrypoints.
+
+    This is intentionally syntax-level discovery: importing a CLI can execute
+    configuration or prompt for input. A command declaration is still a stable
+    shipped surface even when its framework resolves the final callback at
+    runtime.
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (SyntaxError, UnicodeDecodeError):
+        return []
+    source = path.relative_to(repo_root).as_posix()
+    surfaces: set[BackendSurface] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
+            surface = _cli_decorator_surface(node, source)
+        elif isinstance(node, ast.Call):
+            surface = _cli_call_surface(node, source)
+        else:
+            surface = None
+        if surface is not None:
+            surfaces.add(surface)
+    return sorted(surfaces)
+
+
+def discover_cli_surfaces(repo_root: Path, roots: list[str]) -> list[BackendSurface]:
+    surfaces: list[BackendSurface] = []
+    for path in _iter_source_files(repo_root, roots, (".py",)):
+        surfaces.extend(_cli_command_surfaces(path, repo_root))
+    return sorted(set(surfaces))
+
+
 def _timer_success_signal(text: str) -> bool:
     for match in _TIMER_CALLBACK_RE.finditer(text):
         if _FRONTEND_STATUS_RE.search(match.group("body")):
@@ -251,6 +326,17 @@ def _backend_entry_key(entry: dict[str, Any]) -> str:
         (
             str(entry.get("source", "")),
             str(entry.get("method", "")),
+            str(entry.get("route", "")),
+            str(entry.get("handler", "")),
+        )
+    )
+
+
+def _cli_entry_key(entry: dict[str, Any]) -> str:
+    return ":".join(
+        (
+            str(entry.get("source", "")),
+            str(entry.get("method", CLI_METHOD)),
             str(entry.get("route", "")),
             str(entry.get("handler", "")),
         )
@@ -366,6 +452,7 @@ def _frontend_entry_errors(
 
 def validate_matrix(repo_root: Path, matrix: dict[str, Any], *, strict: bool = False) -> list[str]:
     backend = discover_backend_surfaces(repo_root, list(matrix.get("backend_roots", [])))
+    cli = discover_cli_surfaces(repo_root, list(matrix.get("cli_roots", [])))
     frontend = discover_frontend_surfaces(repo_root, list(matrix.get("frontend_roots", [])))
     backend_entries, duplicate_backend = _index_entries(
         list(matrix.get("backend_surfaces", [])), _backend_entry_key, "backend"
@@ -373,7 +460,11 @@ def validate_matrix(repo_root: Path, matrix: dict[str, Any], *, strict: bool = F
     frontend_entries, duplicate_frontend = _index_entries(
         list(matrix.get("frontend_surfaces", [])), _frontend_entry_key, "frontend"
     )
+    cli_entries, duplicate_cli = _index_entries(
+        list(matrix.get("cli_surfaces", [])), _cli_entry_key, "CLI"
+    )
     discovered_backend = {surface.key: surface for surface in backend}
+    discovered_cli = {surface.key: surface for surface in cli}
     discovered_frontend = {surface.key: surface for surface in frontend}
     auto_frontend_entries = {
         key: entry
@@ -381,13 +472,21 @@ def validate_matrix(repo_root: Path, matrix: dict[str, Any], *, strict: bool = F
         if entry.get("signal") in {"timer-status-simulation", "mutating-api-call"}
     }
 
-    errors = [*duplicate_backend, *duplicate_frontend]
+    errors = [*duplicate_backend, *duplicate_frontend, *duplicate_cli]
     errors.extend(
         _coverage_errors(
             set(discovered_backend),
             set(backend_entries),
             unclassified_label="unclassified backend surface",
             stale_label="stale backend surface entry",
+        )
+    )
+    errors.extend(
+        _coverage_errors(
+            set(discovered_cli),
+            set(cli_entries),
+            unclassified_label="unclassified CLI surface",
+            stale_label="stale CLI surface entry",
         )
     )
     errors.extend(
@@ -399,6 +498,7 @@ def validate_matrix(repo_root: Path, matrix: dict[str, Any], *, strict: bool = F
         )
     )
     errors.extend(_backend_entry_errors(discovered_backend, backend_entries, strict=strict))
+    errors.extend(_backend_entry_errors(discovered_cli, cli_entries, strict=strict))
     errors.extend(_frontend_entry_errors(repo_root, frontend_entries, strict=strict))
     return errors
 
@@ -413,6 +513,10 @@ def discovered_inventory(
             for surface in discover_backend_surfaces(
                 repo_root, list(matrix.get("backend_roots", []))
             )
+        ],
+        "cli_surfaces": [
+            surface.__dict__
+            for surface in discover_cli_surfaces(repo_root, list(matrix.get("cli_roots", [])))
         ],
         "frontend_surfaces": [
             surface.__dict__
