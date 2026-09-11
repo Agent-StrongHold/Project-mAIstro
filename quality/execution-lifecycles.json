@@ -1,6 +1,6 @@
 {
   "_comment": "Every execution-looking work-state vocabulary in production code, classified (#36/#1136). The convergence program's central claim is that Run/NodeRun/Attempt is the one execution identity; a new enum, status-shaped Literal alias, or status-shaped Literal field whose members are work states is how a second one gets built, usually without anyone deciding to. scripts/check-execution-lifecycles.py detects all three shapes and ratchets against this file in both directions: an unclassified identity fails, and an entry whose identity no longer exists fails until pruned. CANONICAL = part of the spine. DOMAIN = a genuinely different lifecycle. PROJECTION and RECEIPT = non-authoritative views or admission records. CONVERGE = a competing work-state machine, with the issue that removes it. Free-text and database-column audits remain separate; services.dag_run_store and maistro_canvas.canvas.runner are recorded in docs/architecture/CONVERGENCE-MATRIX.md.",
-  "metric_definition_version": "2",
+  "metric_definition_version": "3",
   "lifecycles": {
     "maistro.runs.model::RunStatus": {
       "classification": "CANONICAL",

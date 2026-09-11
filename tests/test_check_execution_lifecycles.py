@@ -112,6 +112,21 @@ def test_a_dotted_enum_base_is_recognised(gate) -> None:
     assert set(gate.work_state_enums(source, "pkg.jobs")) == {"pkg.jobs::JobStatus"}
 
 
+def test_enum_discovery_uses_string_values_and_annotated_members(gate) -> None:
+    source = """
+from enum import Enum
+
+class Lifecycle(Enum):
+    ORIGIN: str = "created"
+    IN_FLIGHT: str = "running"
+    FINISHED: str = "completed"
+    BROKEN: str = "failed"
+"""
+    assert gate.work_state_enums(source, "pkg.jobs") == {
+        "pkg.jobs::Lifecycle": {"CREATED", "RUNNING", "COMPLETED", "FAILED"}
+    }
+
+
 def test_literal_aliases_support_qualified_imports_pep604_and_split_values(gate) -> None:
     found = gate.work_state_literals(WORK_LITERAL, "pkg.jobs")
     assert found == {
@@ -154,6 +169,27 @@ class Mission:
     assert gate.work_state_literals(source, "pkg.jobs") == {
         "pkg.jobs::Mission.status": {"PENDING", "RUNNING", "COMPLETED", "FAILED"},
         "pkg.jobs::Mission.execution_status": {"QUEUED", "RUNNING", "FAILED"},
+    }
+
+
+def test_literal_field_union_reuses_the_named_alias_identity(gate) -> None:
+    source = """
+from typing import Literal
+
+RunStatus = Literal["created", "running", "completed"]
+
+class Job:
+    status: RunStatus | None
+"""
+    assert gate.work_state_literals(source, "pkg.jobs") == {
+        "pkg.jobs::RunStatus": {"CREATED", "RUNNING", "COMPLETED"}
+    }
+
+
+def test_created_is_a_work_state_even_without_queued(gate) -> None:
+    source = 'from typing import Literal\nRunStatus = Literal["created", "running", "completed"]'
+    assert gate.work_state_literals(source, "pkg.jobs") == {
+        "pkg.jobs::RunStatus": {"CREATED", "RUNNING", "COMPLETED"}
     }
 
 
