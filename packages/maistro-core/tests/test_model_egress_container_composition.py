@@ -95,7 +95,11 @@ async def test_container_resolved_summarize_uses_real_authorities_and_invocation
                 "binding_id": "model-prod",
                 "project_id": "project-prod",
                 "provider_name": "yaml-model",
-            }
+            },
+            {
+                "binding_id": "model-router",
+                "project_id": "project-prod",
+            },
         ],
     )
     resolver = build_node_resolver(
@@ -170,6 +174,25 @@ async def test_container_resolved_summarize_uses_real_authorities_and_invocation
     assert invocation.usage.model == "yaml-model"
     assert invocation.usage.model_version == "yaml-model-2026-09"
 
+    routed = await node.run(
+        {
+            "text": "Route through the Container's populated registry",
+            "model": "",
+            "binding_id": "model-router",
+        },
+        NodeContext(
+            run_id="run-router",
+            dag_id="graph-prod",
+            node_id="summarize",
+            node_run_id="node-run-router",
+            attempt_id="attempt-router",
+            workspace_id="ws-prod",
+            project_id="project-prod",
+        ),
+    )
+    assert routed.success is True
+    assert calls == ["yaml-model", "yaml-model"]
+
     denied = await node.run(
         {
             "text": "Must not dispatch",
@@ -188,4 +211,4 @@ async def test_container_resolved_summarize_uses_real_authorities_and_invocation
     )
     assert denied.success is False
     assert denied.error_code == "BindingScopeDenied"
-    assert calls == ["yaml-model"]
+    assert calls == ["yaml-model", "yaml-model"]
