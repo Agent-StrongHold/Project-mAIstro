@@ -19,8 +19,11 @@ import httpx
 
 from maistro.http import shared_client
 from maistro.tasks.http_contract import (
+    TASK_OWNER_ID_HEADER,
+    TASK_OWNER_SIGNATURE_HEADER,
     WORKSPACE_ID_HEADER,
     WORKSPACE_SCOPE_SIGNATURE_HEADER,
+    sign_task_owner,
     sign_workspace_scope,
 )
 from maistro.tasks.models import TaskCreate, TaskResponse, TaskStatus
@@ -224,16 +227,25 @@ class MaistroServerTaskBackend:
             else os.getenv("WORKSPACE_SCOPE_KEY", "")
         )
 
-    def _headers(self) -> dict[str, str]:
+    def _headers(self, *, user_id: str | None = None) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
         if self._key:
             headers["Authorization"] = f"Bearer {self._key}"
+        if user_id and self._workspace_scope_key:
+            # The API key identifies this process as the Hive service. This
+            # separate proof carries the browser principal that owns the task;
+            # sending the id without proof would let the service credential
+            # impersonate any Hive user at maistro-server.
+            headers[TASK_OWNER_ID_HEADER] = user_id
+            headers[TASK_OWNER_SIGNATURE_HEADER] = sign_task_owner(
+                user_id, self._workspace_scope_key
+            )
         return headers
 
     async def submit(
         self, create: TaskCreate, *, user_id: str, workspace_id: str | None = None
     ) -> TaskRecord:
-        headers = self._headers()
+        headers = self._headers(user_id=user_id)
         if workspace_id is not None:
             if not workspace_id.strip():
                 raise ValueError("workspace_id must be a non-empty string")
@@ -259,7 +271,7 @@ class MaistroServerTaskBackend:
 
     def get(self, task_id: str, *, user_id: str | None = None) -> TaskRecord | None:
         with httpx.Client(timeout=30.0) as client:
-            r = client.get(f"{self._base}/tasks/{task_id}", headers=self._headers())
+            r = client.get(f"{self._base}/tasks/{task_id}", headers=self._headers(user_id=user_id))
             if r.status_code == 404:
                 return None
             r.raise_for_status()
@@ -267,7 +279,11 @@ class MaistroServerTaskBackend:
 
     def list_tasks(self, *, user_id: str | None = None) -> list[TaskRecord]:
         with httpx.Client(timeout=30.0) as client:
-            r = client.get(f"{self._base}/tasks", headers=self._headers(), params={"limit": 200})
+            r = client.get(
+                f"{self._base}/tasks",
+                headers=self._headers(user_id=user_id),
+                params={"limit": 200},
+            )
             r.raise_for_status()
             body = r.json()
             items = [TaskResponse.model_validate(t) for t in body["items"]]

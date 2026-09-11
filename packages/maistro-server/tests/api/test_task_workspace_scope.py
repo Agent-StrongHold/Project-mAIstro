@@ -9,8 +9,11 @@ from httpx import ASGITransport, AsyncClient
 from maistro.runs.wiring import wire_execution_spine
 from maistro.tasks import queue as queue_module
 from maistro.tasks.http_contract import (
+    TASK_OWNER_ID_HEADER,
+    TASK_OWNER_SIGNATURE_HEADER,
     WORKSPACE_ID_HEADER,
     WORKSPACE_SCOPE_SIGNATURE_HEADER,
+    sign_task_owner,
     sign_workspace_scope,
 )
 from maistro.tasks.queue import configure_task_queue
@@ -56,6 +59,45 @@ def _scope_headers(workspace_id: str) -> dict[str, str]:
         WORKSPACE_ID_HEADER: workspace_id,
         WORKSPACE_SCOPE_SIGNATURE_HEADER: sign_workspace_scope(workspace_id, SCOPE_KEY),
     }
+
+
+def _owner_headers(owner_id: str) -> dict[str, str]:
+    return {
+        TASK_OWNER_ID_HEADER: owner_id,
+        TASK_OWNER_SIGNATURE_HEADER: sign_task_owner(owner_id, SCOPE_KEY),
+    }
+
+
+async def test_signed_hive_owner_survives_the_maistro_service_boundary(
+    durable_spine, client: AsyncClient
+) -> None:
+    del durable_spine
+    owner = "hive-browser-user"
+    response = await client.post(
+        "/tasks",
+        headers=_owner_headers(owner),
+        json={"description": "owned by Hive user", "workspace": TASK_WORKSPACE},
+    )
+
+    assert response.status_code == 202
+    task_id = response.json()["task_id"]
+    assert response.json()["task"]["user_id"] == owner
+    assert (await client.get(f"/tasks/{task_id}", headers=_owner_headers(owner))).status_code == 200
+    assert (await client.get(f"/tasks/{task_id}")).status_code == 404
+
+
+async def test_unsigned_hive_owner_is_rejected_before_admission(
+    durable_spine, client: AsyncClient
+) -> None:
+    del durable_spine
+    response = await client.post(
+        "/tasks",
+        headers={TASK_OWNER_ID_HEADER: "hive-browser-user"},
+        json={"description": "must not admit", "workspace": TASK_WORKSPACE},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["message"] == "Task owner assertion is not authorized"
 
 
 async def test_named_workspace_run_resolves_under_that_workspaces_root_project(

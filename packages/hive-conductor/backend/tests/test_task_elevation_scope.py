@@ -235,6 +235,63 @@ class TestGrantDoesNotOutliveItsBound:
         )
         assert r.status_code == 403
 
+    def test_malformed_grant_and_task_records_fail_closed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from types import SimpleNamespace
+
+        import services.engine as engine_module
+        import stores
+
+        assert auth_routes._grant_expiry({"expires_at": "not-a-date"}) is None
+        naive = auth_routes._grant_expiry({"expires_at": "2026-08-30T00:00:00"})
+        assert naive is not None and naive.tzinfo is UTC
+        assert (
+            auth_routes._task_owner(SimpleNamespace(raw=SimpleNamespace(user_id="raw-owner")))
+            == "raw-owner"
+        )
+        assert auth_routes._task_owner(SimpleNamespace(raw=SimpleNamespace())) is None
+        assert auth_routes._active_grants({"elevated_grants": []}) == {}
+        assert auth_routes._prune_expired_grants("missing", {"elevated_grants": []}) == {
+            "elevated_grants": []
+        }
+        assert (
+            auth_routes._active_grants(
+                {
+                    "elevated_grants": {
+                        "expired-task": {
+                            "permissions": ["config.write"],
+                            "expires_at": (datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
+                        }
+                    }
+                }
+            )
+            == {}
+        )
+
+        def _boom():
+            raise RuntimeError("engine unavailable")
+
+        real_get_engine = engine_module.get_engine
+        monkeypatch.setattr(engine_module, "get_engine", _boom)
+        assert auth_routes.is_active_task_for_user("valid-task", "owner") is False
+        monkeypatch.setattr(engine_module, "get_engine", real_get_engine)
+
+        c = _member_client(["config.write"], "tscope-malformed-session")
+        session_id = c.cookies.get("hive_session")
+        assert session_id
+        stores.sessions[session_id]["elevated_grants"] = []
+        _seed_owned_task(c, "grant-shape-task")
+        response = c.post(
+            "/v1/auth/elevate",
+            json={
+                "password": "pw",
+                "permissions": ["config.write"],
+                "task_id": "grant-shape-task",
+            },
+        )
+        assert response.status_code == 200, response.text
+
     def test_ttl_setting_bounds_the_recorded_expiry(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The grant's bound comes from `elevation_grant_ttl_seconds`."""
         from config import get_settings
@@ -288,6 +345,69 @@ class TestGrantDoesNotOutliveItsBound:
             json={"password": "pw", "permissions": ["config.write"], "task_id": "not-a-task"},
         )
         assert r.status_code == 403
+
+    def test_production_backend_preserves_browser_owner_for_elevation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The real remote adapter must not look up tasks as its service account."""
+        import httpx
+        import services.engine as engine_module
+        from adapters.task_backend import MaistroServerTaskBackend
+        from services.engine import EngineService
+
+        from maistro.tasks.http_contract import TASK_OWNER_ID_HEADER, sign_task_owner
+
+        scope_key = "test-only-task-owner-key"
+        monkeypatch.setenv("WORKSPACE_SCOPE_KEY", scope_key)
+        seen: dict[str, str] = {}
+
+        class _Client:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def get(self, url: str, *, headers: dict[str, str]) -> httpx.Response:
+                seen.update(headers)
+                return httpx.Response(
+                    200,
+                    request=httpx.Request("GET", url),
+                    json={
+                        "task_id": "remote-task",
+                        "status": "queued",
+                        "description": "remote task",
+                        "workspace": "/tmp/maistro-workspace",
+                        "user_id": "tscope-production",
+                        "tier": 2,
+                        "created_at": "2026-08-30T00:00:00Z",
+                    },
+                )
+
+        monkeypatch.setattr(httpx, "Client", lambda **_: _Client())
+        engine = EngineService()
+        engine._backend = MaistroServerTaskBackend(
+            base_url="http://maistro-server",
+            api_key="service-key",
+            workspace_scope_key=scope_key,
+        )
+        monkeypatch.setattr(engine_module, "get_engine", lambda: engine)
+
+        c = _member_client(["config.write"], "tscope-production")
+        elevated = c.post(
+            "/v1/auth/elevate",
+            json={
+                "password": "pw",
+                "permissions": ["config.write"],
+                "task_id": "remote-task",
+            },
+        )
+
+        assert elevated.status_code == 200, elevated.text
+        assert seen[TASK_OWNER_ID_HEADER] == "tscope-production"
+        assert seen["X-Maistro-Task-Owner-Signature"] == sign_task_owner(
+            "tscope-production", scope_key
+        )
 
     def test_foreign_and_terminal_tasks_cannot_receive_a_grant(self) -> None:
         import stores

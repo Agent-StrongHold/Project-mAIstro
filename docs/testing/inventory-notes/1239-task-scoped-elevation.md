@@ -1,6 +1,7 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +29
+  packages/hive-conductor/backend/tests: +32
+  packages/maistro-server/tests: +2
 ---
 # 1239-task-scoped-elevation
 
