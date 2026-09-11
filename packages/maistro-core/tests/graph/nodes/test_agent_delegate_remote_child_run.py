@@ -284,11 +284,15 @@ class TestCrossInstanceDelegationFilesAChildRun:
     """
 
     @staticmethod
-    def _peers(status: str = "submitted", error: str | None = None) -> GuestPeerManager:
+    def _peers(
+        status: str = "submitted",
+        error: str | None = None,
+        task_id: str = "remote-1",
+    ) -> GuestPeerManager:
         guest_peers = GuestPeerManager()
         guest_peers.delegate = AsyncMock(  # type: ignore[method-assign]
             return_value=DelegationResult(
-                task_id="remote-1", peer_name="hub", status=status, error=error
+                task_id=task_id, peer_name="hub", status=status, error=error
             )
         )
         return guest_peers
@@ -363,6 +367,31 @@ class TestCrossInstanceDelegationFilesAChildRun:
 
         assert result.status == "completed"
         assert result.output.status == "rejected"
+        children = [
+            run
+            for run in store._runs.values()  # type: ignore[attr-defined]
+            if run.parent_run_id == parent.run_id
+        ]
+        assert children == []
+
+    async def test_a_submitted_peer_response_without_a_receipt_does_not_pause(self) -> None:
+        """A child without the A2A receipt cannot be resumed or correlated."""
+        store, _projects, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+
+        node = AgentDelegateRemoteNode(guest_peers=self._peers(task_id=""), run_store=store)
+        result = await node.run(
+            {"from_agent": "planner", "task": "research X", "peer_name": "hub"},
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+        )
+
+        assert result.status == "completed"
+        assert result.output.status == "failed"
+        assert "invalid delegation receipt" in (result.output.error or "")
+        assert result.output.run_id == ""
         children = [
             run
             for run in store._runs.values()  # type: ignore[attr-defined]

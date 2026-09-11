@@ -281,6 +281,15 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
                 task_id=result.task_id,
                 error=result.error,
             )
+        if result.status != "submitted" or not result.task_id:
+            # A submitted delegation without a receipt cannot be resumed or
+            # correlated to the child Run. Treat the peer response as a
+            # protocol failure rather than pausing an untraceable execution.
+            return DelegateRemoteOut(
+                status="failed",
+                task_id=result.task_id,
+                error=(result.error or "peer returned an invalid delegation receipt"),
+            )
 
         run_id = await self._create_child_run(
             inputs,
