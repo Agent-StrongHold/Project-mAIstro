@@ -751,16 +751,41 @@ class SqliteRunStore:
         )
         reclaimed: list[Attempt] = []
         async with self._write_lock:
-            for attempt in doomed[:limit]:
+            for candidate in doomed[:limit]:
+                # The candidate query runs before the write lock so it does not
+                # block ordinary reads. Re-read under that lock before settling:
+                # a heartbeat may have renewed this row after the query but
+                # before this writer acquired SQLite's single-writer gate.
+                attempt = await self._require_attempt(candidate.attempt_id)
+                if not lease_is_expired(attempt, moment):
+                    continue
                 settled = reclaim_attempt(attempt, at=moment)
-                await self._update_payload(
-                    "canonical_attempts",
-                    "attempt_id",
-                    attempt.attempt_id,
-                    settled.status.value,
-                    json_of(settled),
+                lease = attempt.execution_lease
+                assert lease is not None and lease.expires_at is not None
+                # The application lock is per store instance, not per database.
+                # Guard the write with the exact lease version so another
+                # process renewing on its own connection wins rather than being
+                # overwritten by this stale sweep.
+                cursor = await self._conn.execute(
+                    """UPDATE canonical_attempts
+                          SET status = ?, payload = ?
+                        WHERE attempt_id = ?
+                          AND status IN ('created', 'running')
+                          AND json_extract(payload, '$.execution_lease.fencing_token') = ?
+                          AND json_extract(payload, '$.execution_lease.expires_at') =
+                              json_extract(?, '$.execution_lease.expires_at')""",
+                    (
+                        settled.status.value,
+                        json_of(settled),
+                        attempt.attempt_id,
+                        lease.fencing_token,
+                        json_of(attempt),
+                    ),
                 )
-                reclaimed.append(settled)
+                updated = cursor.rowcount
+                await self._conn.commit()
+                if updated:
+                    reclaimed.append(settled)
         return reclaimed
 
     async def get_attempt(self, attempt_id: str) -> Attempt | None:

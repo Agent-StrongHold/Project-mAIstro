@@ -1806,6 +1806,7 @@ async def test_a_stale_token_cannot_renew_in_memory(memory_spine: Any) -> None:
     await _assert_a_stale_token_cannot_renew(memory_spine)
 
 
+@pytest.mark.ac("ADR-082526-b36a/AC-7")
 async def test_task_worker_recovery_preserves_attempt_history(spine: Any, monkeypatch) -> None:
     """A task crash is recovered from the canonical persisted spine.
 
