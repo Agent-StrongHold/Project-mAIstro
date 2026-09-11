@@ -558,6 +558,8 @@ async def test_hive_facade_uses_governed_model_egress_on_canonical_run(
     runs = list(effects.invocation_store._items.values())  # type: ignore[attr-defined]
     assert len(runs) == 1
     invocation = runs[0]
+    assert invocation.workspace_id == "ws-1"
+    assert invocation.project_id == root.project_id
     assert invocation.run_id == result["run_id"]
     assert invocation.node_run_id
     assert invocation.attempt_id
@@ -764,6 +766,8 @@ async def test_canonical_tool_model_fallbacks_share_attempt_correlated_egress(
         "clarify-binding",
         "grounded-binding",
     }
+    assert all(invocation.workspace_id == "ws-1" for invocation in invocations)
+    assert all(invocation.project_id == root.project_id for invocation in invocations)
     assert all(invocation.run_id == result["run_id"] for invocation in invocations)
     assert all(invocation.node_run_id and invocation.attempt_id for invocation in invocations)
     assert result["node_results"]["grounded"]["success"] is True
