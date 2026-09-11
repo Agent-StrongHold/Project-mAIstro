@@ -59,7 +59,7 @@ from maistro.security.sentinel.policy import Sentinel
 from maistro.security.warden.detector import Warden
 
 from . import get_node, register_node
-from .base import BaseNode, NodeContext
+from .base import BaseNode, NodeContext, ReplaySemantics
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; runtime import would cycle
     from maistro.graph.definitions import Graph
@@ -265,7 +265,7 @@ class AgentSynthDagNode(BaseNode[SynthDagIn, SynthDagOut]):
     input_schema: ClassVar[type[BaseModel]] = SynthDagIn
     output_schema: ClassVar[type[BaseModel]] = SynthDagOut
     cost_hint: ClassVar[float] = 8.0
-    idempotent: ClassVar[bool] = False
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.NON_RETRYABLE
     external_io: ClassVar[bool] = False
     display_name: ClassVar[str] = "Agent: synthesize DAG"
     description: ClassVar[str] = (

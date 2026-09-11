@@ -28,15 +28,17 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 from pydantic import BaseModel, Field
 
 from maistro.a2a.delegate import A2ADelegator, DelegationMode
-from maistro.a2a.guest_peers import GuestPeerManager
+from maistro.a2a.guest_peers import DelegationMessages, GuestPeerManager
 
 from . import register_node
 from .base import (
     PAUSE_AWAITING_REMOTE_DELEGATION,
     BaseNode,
     NodeContext,
+    ReplaySemantics,
     now_utc,
     pause_until,
+    replay_effect_key,
 )
 
 if TYPE_CHECKING:
@@ -142,7 +144,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
     input_schema: ClassVar[type[BaseModel]] = DelegateRemoteIn
     output_schema: ClassVar[type[BaseModel]] = DelegateRemoteOut
     cost_hint: ClassVar[float] = 0.0
-    idempotent: ClassVar[bool] = False
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.EFFECT_KEY
     external_io: ClassVar[bool] = True
     display_name: ClassVar[str] = "Agent: delegate to remote session"
     description: ClassVar[str] = (
@@ -178,6 +180,22 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         if inputs.peer_name is not None:
             return await self._dispatch_cross_instance(inputs, ctx)
         return await self._dispatch_in_process(inputs, ctx)
+
+    @staticmethod
+    def _effect_key(inputs: DelegateRemoteIn, ctx: NodeContext) -> str:
+        return replay_effect_key(ctx, "agent.delegate_remote", inputs.model_dump(mode="json"))
+
+    async def _existing_child_run(self, ctx: NodeContext, effect_key: str) -> Run | None:
+        """Recover a child admitted before a worker lost its lease."""
+        if self._run_store is None or not ctx.node_run_id:
+            return None
+        finder = getattr(self._run_store, "find_child_run_by_effect", None)
+        if finder is None:
+            return None
+        found = await finder(ctx.run_id, effect_key)
+        from maistro.runs.model import Run as CanonicalRun
+
+        return found if isinstance(found, CanonicalRun) else None
 
     async def _resume(self, resumed: dict[str, Any]) -> DelegateRemoteOut:
         """Settle the child Run, then report what the delegate answered.
@@ -266,11 +284,20 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             raise DelegationNotConfiguredError(msg)
 
         parent = await self._preflight_child_scope(inputs, ctx)
+        effect_key = self._effect_key(inputs, ctx)
+        existing = await self._existing_child_run(ctx, effect_key)
+        if existing is not None:
+            self._pause(
+                inputs,
+                task_id=str(existing.provenance.get("a2a_task_id") or ""),
+                mode="guest_peer",
+                run_id=existing.run_id,
+            )
 
         result = await self._guest_peers.delegate(
             inputs.peer_name or "",
             inputs.from_agent,
-            [{"role": "user", "content": inputs.task}],
+            DelegationMessages([{"role": "user", "content": inputs.task}], effect_key=effect_key),
         )
         if result.status in ("rejected", "failed"):
             # No child Run: nothing was admitted, so there is no execution to
@@ -289,6 +316,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             task_id=result.task_id,
             mode="guest_peer",
             target=inputs.peer_name or "",
+            effect_key=effect_key,
         )
         self._pause(inputs, task_id=result.task_id, mode="guest_peer", run_id=run_id)
         return DelegateRemoteOut()  # unreachable
@@ -306,6 +334,15 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             raise DelegationNotConfiguredError(msg)
 
         parent = await self._preflight_child_scope(inputs, ctx)
+        effect_key = self._effect_key(inputs, ctx)
+        existing = await self._existing_child_run(ctx, effect_key)
+        if existing is not None:
+            self._pause(
+                inputs,
+                task_id=str(existing.provenance.get("a2a_task_id") or ""),
+                mode="in_process",
+                run_id=existing.run_id,
+            )
 
         try:
             task_id = self._a2a_delegator.delegate_task(
@@ -315,6 +352,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
                 delegation_mode=DelegationMode.ALLOW_ALL
                 if inputs.to_agent is None
                 else DelegationMode.ALLOW_LIST,
+                metadata={"effect_key": effect_key},
             )
         except ValueError as exc:
             return DelegateRemoteOut(status="rejected", error=str(exc))
@@ -326,6 +364,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             task_id=task_id,
             mode="in_process",
             target=self._admitted_target(task_id, inputs),
+            effect_key=effect_key,
         )
         self._pause(inputs, task_id=task_id, mode="in_process", run_id=run_id)
         return DelegateRemoteOut()  # unreachable
@@ -396,6 +435,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         task_id: str,
         mode: str,
         target: str,
+        effect_key: str,
     ) -> str:
         """File the delegated work as a child Run of the delegating NodeRun.
 
@@ -443,6 +483,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
                 "delegating_agent": inputs.from_agent,
                 "target_agent": target,
                 "peer_name": inputs.peer_name,
+                "effect_key": effect_key,
             },
         )
         return child.run_id

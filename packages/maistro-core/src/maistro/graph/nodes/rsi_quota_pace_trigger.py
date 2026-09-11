@@ -46,7 +46,7 @@ from maistro.quota.rate_profile import ModelRateProfile, UsageSource, cycles_rem
 from maistro.quota.usage_log import InMemoryUsageLog
 
 from . import register_node
-from .base import BaseNode, NodeContext
+from .base import BaseNode, NodeContext, ReplaySemantics
 
 
 class RsiQuotaPaceTriggerIn(BaseModel):
@@ -99,7 +99,7 @@ class RsiQuotaPaceTriggerNode(BaseNode[RsiQuotaPaceTriggerIn, RsiQuotaPaceTrigge
     input_schema: ClassVar[type[BaseModel]] = RsiQuotaPaceTriggerIn
     output_schema: ClassVar[type[BaseModel]] = RsiQuotaPaceTriggerOut
     cost_hint: ClassVar[float] = 0.5
-    idempotent: ClassVar[bool] = True
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.PURE
     external_io: ClassVar[bool] = False
     display_name: ClassVar[str] = "RSI: quota-pace trigger"
     description: ClassVar[str] = (

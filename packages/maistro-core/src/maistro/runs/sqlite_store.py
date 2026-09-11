@@ -306,6 +306,20 @@ class SqliteRunStore:
         )
         return model_of_json(Run, row[0]) if row is not None else None
 
+    async def find_child_run_by_effect(
+        self,
+        parent_run_id: str,
+        effect_key: str,
+    ) -> Run | None:
+        row = await self._fetchone(
+            """SELECT payload FROM canonical_runs
+               WHERE parent_run_id = ?
+                 AND json_extract(payload, '$.provenance.effect_key') = ?
+               ORDER BY rowid LIMIT 1""",
+            (parent_run_id, effect_key),
+        )
+        return model_of_json(Run, row[0]) if row is not None else None
+
     async def list_by_status(
         self,
         status: RunStatus,

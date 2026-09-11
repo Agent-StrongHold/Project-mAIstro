@@ -119,6 +119,12 @@ class A2ADelegator:
                 f"Agent {from_agent} cannot delegate to {to_agent}. Allowed: {capabilities}"
             )
 
+        effect_key = str((metadata or {}).get("effect_key") or "")
+        if effect_key:
+            for existing in self._tasks.values():
+                if existing.metadata.get("effect_key") == effect_key:
+                    return existing.id
+
         if not to_agent:
             to_agent = self._select_best_agent(from_agent, task, delegation_mode)
 

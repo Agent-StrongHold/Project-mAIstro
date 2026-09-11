@@ -464,6 +464,21 @@ class PgRunStore:
         )
         return Run.model_validate(payload) if payload is not None else None
 
+    async def find_child_run_by_effect(
+        self,
+        parent_run_id: str,
+        effect_key: str,
+    ) -> Run | None:
+        payload = await self._payload(
+            """SELECT run_id, payload, archive_key FROM canonical_runs
+               WHERE parent_run_id = $1
+                 AND payload -> 'provenance' ->> 'effect_key' = $2
+               ORDER BY payload ->> 'created_at', run_id LIMIT 1""",
+            parent_run_id,
+            effect_key,
+        )
+        return Run.model_validate(payload) if payload is not None else None
+
     async def list_by_status(
         self,
         status: RunStatus,

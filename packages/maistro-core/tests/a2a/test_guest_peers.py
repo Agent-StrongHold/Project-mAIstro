@@ -102,9 +102,11 @@ async def test_delegate_success_posts_to_tasks_create_with_auth_header(
     seen: dict[str, Any] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        seen["calls"] = int(seen.get("calls", 0)) + 1
         seen["url"] = str(request.url)
         seen["method"] = request.method
         seen["auth"] = request.headers.get("authorization")
+        seen["idempotency"] = request.headers.get("idempotency-key")
         return httpx.Response(200, json={"task_id": "remote-42"})
 
     _patch_transport(monkeypatch, handler)
@@ -118,11 +120,21 @@ async def test_delegate_success_posts_to_tasks_create_with_auth_header(
             auth_credential="secret-token",
         )
     )
-    result = await manager.delegate("hub", "planner", [{"role": "user", "content": "do x"}])
+    result = await manager.delegate(
+        "hub", "planner", [{"role": "user", "content": "do x"}], idempotency_key="effect-1"
+    )
     assert seen["url"] == "http://hub.example/a2a/tasks/create"
     assert seen["method"] == "POST"
     assert seen["auth"] == "Bearer secret-token"
+    assert seen["idempotency"] == "effect-1"
     assert result == DelegationResult(task_id="remote-42", peer_name="hub", status="submitted")
+    assert (
+        await manager.delegate(
+            "hub", "planner", [{"role": "user", "content": "do x"}], idempotency_key="effect-1"
+        )
+        == result
+    )
+    assert seen["calls"] == 1
     assert audit.entries[-1] == {
         "peer_name": "hub",
         "agent_id": "planner",
