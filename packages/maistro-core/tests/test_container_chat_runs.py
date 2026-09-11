@@ -23,6 +23,7 @@ from maistro.runs.chat_admission import (
     EXECUTION_NEVER_STARTED,
     SESSION_ID_KEY,
 )
+from maistro.runs.lifecycle import InvalidLifecycleTransition
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
 from maistro.types.config import AgentConfig
 
@@ -596,3 +597,67 @@ async def test_stranded_admission_recovery_respects_the_limit() -> None:
 
     remaining = await container.recover_stranded_chat_admissions()
     assert remaining == 1
+
+
+async def test_a_noderun_created_between_the_two_checks_is_not_cancelled() -> None:
+    """The re-check immediately before the write is the real guard: a turn
+    that starts in the narrow window between the two reads must not be
+    cancelled out from under it."""
+    container = await _container()
+    stranded = await _stranded_running_chat_run(container)
+    node_id = stranded.graph.materialize().nodes[0].node_id
+
+    class _NodeRunAppearsOnSecondCheck:
+        def __init__(self, inner) -> None:
+            self._inner = inner
+            self._calls = 0
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        async def list_node_runs(self, run_id):
+            if run_id == stranded.run_id:
+                self._calls += 1
+                if self._calls == 2:
+                    await self._inner.create_node_run(run_id, node_id=node_id)
+            return await self._inner.list_node_runs(run_id)
+
+    container.run_store = _NodeRunAppearsOnSecondCheck(container.run_store)  # type: ignore[assignment]
+
+    recovered = await container.recover_stranded_chat_admissions()
+
+    assert recovered == 0
+    current = await container.run_store.get_run(stranded.run_id)
+    assert current is not None
+    assert current.status is RunStatus.RUNNING
+
+
+class _AlreadyTerminalStore:
+    """Refuses `transition_run(..., CANCELLED)` as though another path won."""
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    async def transition_run(self, run_id, target, **kwargs):
+        if target is RunStatus.CANCELLED:
+            raise InvalidLifecycleTransition("already terminal")
+        return await self._inner.transition_run(run_id, target, **kwargs)
+
+
+async def test_a_race_to_terminal_during_compensation_is_logged_and_skipped(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A Run settled through another path between the eligibility check and
+    this sweep's write is not this sweep's to re-litigate."""
+    container = await _container()
+    await _stranded_running_chat_run(container)
+    container.run_store = _AlreadyTerminalStore(container.run_store)  # type: ignore[assignment]
+
+    with caplog.at_level(logging.WARNING):
+        recovered = await container.recover_stranded_chat_admissions()
+
+    assert recovered == 0
+    assert "could not be compensated" in caplog.text
