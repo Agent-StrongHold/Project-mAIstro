@@ -244,6 +244,11 @@ async def test_live_sse_stops_after_workspace_membership_is_revoked(
     assert ": connected" in await anext(iterator)
     assert "pm_node_started" in await anext(iterator)
 
+    # Let the generator pass its pre-wait authorization check and block on the
+    # queue. Revocation while that wait is pending must suppress the queued
+    # event at the second check immediately before yield.
+    pending_frame = asyncio.create_task(anext(iterator))
+    await asyncio.sleep(0)
     revoked = admin_client.delete(f"/v1/workspaces/{ws}/members/{_AUTHED_USER_ID}")
     assert revoked.status_code == 200, revoked.text
     await get_dag_run_store().append_event(
@@ -254,6 +259,68 @@ async def test_live_sse_stops_after_workspace_membership_is_revoked(
         payload={"source": "after-revocation"},
     )
 
+    with pytest.raises(StopAsyncIteration):
+        await pending_frame
+    await iterator.aclose()
+
+
+async def test_sse_emits_keepalive_then_honors_disconnect(
+    authed_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Idle streams keep the connection alive and close after disconnect."""
+    ws = _workspace(authed_client, "Keepalive")
+    await _seed_run_async("r-keepalive", workspace_id=ws)
+
+    from routes import dag_runs
+    from routes.dag_runs import stream_run_events
+
+    class _DisconnectAfterKeepalive(_ScopedRequest):
+        calls = 0
+
+        async def is_disconnected(self) -> bool:
+            self.calls += 1
+            return self.calls > 1
+
+    async def _timeout(awaitable: Any, **_kwargs: Any) -> None:
+        # Close Queue.get() because this deterministic seam does not await it.
+        awaitable.close()
+        raise TimeoutError
+
+    monkeypatch.setattr(dag_runs.asyncio, "wait_for", _timeout)
+    response = await stream_run_events("r-keepalive", _DisconnectAfterKeepalive(_AUTHED_USER_ID))
+    iterator = response.body_iterator
+    assert ": connected" in await anext(iterator)
+    assert ": keepalive" in await anext(iterator)
+    with pytest.raises(StopAsyncIteration):
+        await anext(iterator)
+    await iterator.aclose()
+
+
+async def test_sse_stops_when_membership_is_revoked_during_idle_poll(
+    authed_client: Any, admin_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Revocation detected by an idle poll closes the stream without a frame."""
+    ws = _workspace(admin_client, "Revoked during keepalive")
+    added = admin_client.post(
+        f"/v1/workspaces/{ws}/members",
+        json={"user_id": _AUTHED_USER_ID, "role": "viewer"},
+    )
+    assert added.status_code == 200, added.text
+    await _seed_run_async("r-revoked-during-poll", workspace_id=ws)
+
+    from routes import dag_runs
+    from routes.dag_runs import stream_run_events
+
+    async def _timeout_after_revoke(awaitable: Any, **_kwargs: Any) -> None:
+        awaitable.close()
+        revoked = admin_client.delete(f"/v1/workspaces/{ws}/members/{_AUTHED_USER_ID}")
+        assert revoked.status_code == 200, revoked.text
+        raise TimeoutError
+
+    monkeypatch.setattr(dag_runs.asyncio, "wait_for", _timeout_after_revoke)
+    response = await stream_run_events("r-revoked-during-poll", _ScopedRequest(_AUTHED_USER_ID))
+    iterator = response.body_iterator
+    assert ": connected" in await anext(iterator)
     with pytest.raises(StopAsyncIteration):
         await anext(iterator)
     await iterator.aclose()
