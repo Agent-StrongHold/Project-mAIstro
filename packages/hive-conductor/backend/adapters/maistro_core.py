@@ -205,6 +205,10 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         # react's un-guarded branch. ADR-082526-3ca6: the runtime that owns
         # the agents owns their delegation dependencies.
         tool_executor=dispatch_tool,
+        # Project the same roster allow-lists into the Container-owned A2A
+        # receipt service. Without this, construction was wired but every
+        # in-process delegation still refused as "no capabilities" (#147).
+        a2a_delegator=container.a2a_delegator,
         require_agents=True,
     )
     # The template for runtime materialization. Tolerant on purpose: with
