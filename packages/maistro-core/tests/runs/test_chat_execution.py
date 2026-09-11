@@ -431,12 +431,13 @@ class TestChatAttemptStoreConformance:
     """The chat adapter must persist the same physical record in every store.
 
     The endpoint tests use the in-memory container because they exercise the
-    request wiring. This fixture drives the adapter against the shared spine
+    request wiring. These tests drive the adapter against the shared spine
     fixture so SQLite and PostgreSQL cannot quietly lose chat evidence that the
     reference store retains.
     """
 
-    async def test_a_successful_turn_round_trips_its_attempt(self, spine: Any) -> None:
+    @staticmethod
+    async def _running_run(spine: Any) -> tuple[Any, Any]:
         store, workspace_id, project_id = spine
         graph = Graph(
             workspace_id=workspace_id,
@@ -447,6 +448,10 @@ class TestChatAttemptStoreConformance:
         run = await store.create_run(graph)
         await store.transition_run(run.run_id, RunStatus.QUEUED)
         await store.transition_run(run.run_id, RunStatus.RUNNING)
+        return store, run
+
+    async def test_a_successful_turn_round_trips_its_attempt(self, spine: Any) -> None:
+        store, run = await self._running_run(spine)
 
         async def dispatch() -> dict[str, Any]:
             return {
@@ -478,6 +483,39 @@ class TestChatAttemptStoreConformance:
             "answer_truncated": False,
             ATTEMPT_AGENT_KEY: "researcher",
         }
+
+    async def test_a_refusal_completes_the_attempt_in_every_store(self, spine: Any) -> None:
+        store, run = await self._running_run(spine)
+
+        async def dispatch() -> dict[str, Any]:
+            return {
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": "Request blocked"},
+                        "finish_reason": "content_filter",
+                    }
+                ]
+            }
+
+        await ChatAttemptExecutor(store, lease_ttl=None).execute(run.run_id, MESSAGES, dispatch)
+
+        node_run = (await store.list_node_runs(run.run_id))[0]
+        attempt = (await store.list_attempts(node_run.node_run_id))[0]
+        assert attempt.status is AttemptStatus.COMPLETED
+        assert attempt.result["finish_reason"] == "content_filter"
+
+    async def test_a_raised_failure_fails_the_attempt_in_every_store(self, spine: Any) -> None:
+        store, run = await self._running_run(spine)
+
+        async def dispatch() -> dict[str, Any]:
+            raise RuntimeError("provider failed")
+
+        with pytest.raises(RuntimeError, match="provider failed"):
+            await ChatAttemptExecutor(store, lease_ttl=None).execute(run.run_id, MESSAGES, dispatch)
+
+        node_run = (await store.list_node_runs(run.run_id))[0]
+        attempt = (await store.list_attempts(node_run.node_run_id))[0]
+        assert attempt.status is AttemptStatus.FAILED
 
 
 class TestTheKeysAgree:
