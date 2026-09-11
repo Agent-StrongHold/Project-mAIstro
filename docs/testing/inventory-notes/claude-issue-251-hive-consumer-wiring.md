@@ -6,5 +6,6 @@ inventory-delta:
 
 Adds one end-to-end scheduler tick test proving the configured Hive scheduler
 runs the canonical consumer after `ScheduleRunAdmitter` creates a queued Run.
-The core consumer tests cover terminal NodeRun/Attempt execution; this test
-covers the production reachability seam that invokes that tick.
+The test uses a real core `Container` and asserts the Run, NodeRun, and Attempt
+reach completion; it covers the production reachability seam rather than
+mocking the consumer call.
