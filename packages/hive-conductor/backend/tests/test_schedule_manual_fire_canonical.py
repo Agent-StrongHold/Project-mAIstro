@@ -198,23 +198,11 @@ def test_manual_fire_with_an_unresolvable_template_is_a_409_that_changes_nothing
 
 
 def test_manual_fire_on_a_half_wired_container_is_a_503_not_a_fallback(
-    admin_client: Any,
+    admin_client: Any, _configured_container: Any
 ) -> None:
     """AC: a configured Container missing a collaborator fails closed — the
     compatibility path must not become reachable through its absence."""
-    import services.engine as engine_mod
-
-    service = engine_mod.get_engine()
-    previous = service._agent_port
-    service._agent_port = SimpleNamespace(
-        container=SimpleNamespace(
-            run_store=object(),
-            template_store=object(),
-            schedule_store=object(),
-            schedule_admitter=None,  # the canonical collaborator is missing
-            project_scope_store=None,
-        )
-    )
+    _configured_container.schedule_admitter = None  # the canonical collaborator is missing
     _install(_row())
     try:
         response = admin_client.post(f"/v1/schedules/{_SID}/run")
@@ -225,5 +213,4 @@ def test_manual_fire_on_a_half_wired_container_is_a_503_not_a_fallback(
         assert after["last_run"] is None
         assert after["last_run_id"] is None
     finally:
-        service._agent_port = previous
         _remove()
