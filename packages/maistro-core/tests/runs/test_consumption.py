@@ -164,6 +164,54 @@ async def test_admitted_schedule_run_executes_to_completion() -> None:
     assert attempt.status.value == "completed"
 
 
+async def test_admitted_schedule_run_executes_on_the_sqlite_container(tmp_path: Any) -> None:
+    """The production claim-capable SQLite wiring closes the same loop."""
+    _TickNode.calls = 0
+    container = await create_container(
+        AgentConfig(
+            router_api_key="test-key",
+            database_url=f"sqlite:///{tmp_path / 'consumer.sqlite3'}",
+        )
+    )
+    try:
+        workspace = "sqlite-admitter-consumer-ws"
+        root = await container.project_scope_store.create_root(workspace)
+        template = GraphTemplate(
+            template_id="sqlite-admitter-consumer-template",
+            workspace_id=workspace,
+            version=1,
+            name="sqlite admitter consumer",
+            nodes=[Node(node_id="n1", node_type=_TickNode.kind)],
+        )
+        assert container.template_store is not None
+        await container.template_store.put(template)
+        schedule = Schedule(
+            workspace_id=workspace,
+            project_id=root.project_id,
+            name="sqlite admitter consumer schedule",
+            cron="* * * * *",
+            graph_template_id=template.template_id,
+            created_at=datetime.now(UTC) - timedelta(days=1),
+            last_fired_at=datetime.now(UTC) - timedelta(minutes=1),
+        )
+        await container.schedule_store.put(schedule)
+        assert container.schedule_admitter is not None
+
+        admission = await container.schedule_admitter.admit_due(schedule, now=datetime.now(UTC))
+        assert len(admission.run_ids) == 1
+        assert await container.execute_admitted_runs() == 1
+
+        run = await container.run_store.get_run(admission.run_ids[0])
+        assert run is not None and run.status is RunStatus.COMPLETED
+        (node_run,) = await container.run_store.list_node_runs(run.run_id)
+        (attempt,) = await container.run_store.list_attempts(node_run.node_run_id)
+        assert node_run.status is RunStatus.COMPLETED
+        assert attempt.status.value == "completed"
+        assert _TickNode.calls == 1
+    finally:
+        await container.aclose()
+
+
 @pytest.mark.ac("ADR-082826-b601/AC-2")
 async def test_ineligible_runs_are_never_claimed() -> None:
     """CREATED, foreign-source, and multi-node Runs stay exactly as admitted."""
