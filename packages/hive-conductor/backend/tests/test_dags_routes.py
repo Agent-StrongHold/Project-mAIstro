@@ -331,6 +331,23 @@ async def test_projection_preserves_a_waiting_canonical_run(
     assert projection["finished_at"] is None
     assert projection["node_states"]["worker.n1"] == "running"
 
+    await dags_routes._record_run_projection(
+        dag_id="dag-paused",
+        user_id="admin",
+        result={
+            "status": "paused",
+            "run_id": "run-paused",
+            "workspace_id": "ws-paused",
+            "project_id": "project-paused",
+            "node_results": {"n1": {"role": "worker", "success": False}},
+        },
+    )
+    paused = store.get_run("run-paused")
+    assert paused is not None
+    assert paused["status"] == "paused"
+    assert paused["finished_at"] is None
+    assert paused["node_states"]["worker.n1"] == "running"
+
 
 def test_run_dag_missing_dag_returns_404(admin_client: Any) -> None:
     assert admin_client.post("/v1/dags/missing-dag/run").status_code == 404
