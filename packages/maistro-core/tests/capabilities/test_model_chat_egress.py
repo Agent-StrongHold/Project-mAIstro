@@ -233,14 +233,11 @@ async def test_pinned_unavailable_model_refuses_without_fallback() -> None:
     assert "does not fall back" in provider.reason
 
 
-async def test_unregistered_alias_still_reaches_gateway_with_absent_cost(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Gateway aliases absent from the registry keep today's passthrough."""
+async def test_unregistered_alias_refuses_before_gateway_dispatch() -> None:
+    """A model alias cannot bypass the populated Provider registry."""
 
     effects = new_in_memory_effect_context()
     registry = _registry()
-    _patch_gateway(monkeypatch, _OK_BODY)
     egress = ModelChatEgress(
         effects,
         registry=registry,
@@ -248,21 +245,28 @@ async def test_unregistered_alias_still_reaches_gateway_with_absent_cost(
         endpoint=GatewayEndpoint(base_url="http://gw"),
     )
 
-    result = await egress.complete(
-        binding=_binding(),
-        run_id="r1",
-        node_run_id="nr1",
-        attempt_id="a1",
-        effect_key="test:alias",
-        request=ModelChatRequest(
-            model="gemini-3.1-flash-lite", messages=[{"role": "user", "content": "hi"}]
-        ),
-    )
+    binding = _binding()
+    with pytest.raises(CapabilityUnavailable, match="not registered"):
+        await egress.complete(
+            binding=binding,
+            run_id="r1",
+            node_run_id="nr1",
+            attempt_id="a1",
+            effect_key="test:alias",
+            request=ModelChatRequest(
+                model="gemini-3.1-flash-lite", messages=[{"role": "user", "content": "hi"}]
+            ),
+        )
 
-    assert result.model == "gemini-3.1-flash-lite"
-    assert result.usage is not None
-    assert result.usage.cost_cents is None  # unmeasured is absent, not zero
-    assert result.usage.provider == "llm-gateway"
+    assert (
+        await effects.invocation_store.list_effect(
+            run_id="r1",
+            node_run_id="nr1",
+            binding_id=binding.binding_id,
+            effect_key="test:alias",
+        )
+        == []
+    )
 
 
 async def test_completed_effect_deduplicates_repeat_invocation(
