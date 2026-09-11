@@ -26,6 +26,7 @@ from maistro.graph.execution_state import (
 )
 from maistro.graph.nodes.base import (
     HUMAN_PAUSE_REASONS,
+    RESUMED_PAUSE_KEY,
     TIMER_RESUMABLE_PAUSE_REASONS,
     BaseNode,
     NodeContext,
@@ -1354,6 +1355,18 @@ def _build_ctx(record: DurableRunRecord, node_id: str) -> NodeContext:
         synth_depth = dict(snapshot.get("metadata") or {}).get("synth_depth", 0)
     except (TypeError, ValueError):
         synth_depth = 0
+    metadata: dict[str, Any] = {
+        "hitl_answers": dict(record.hitl_answers),
+        "synth_depth": synth_depth,
+    }
+    answered = record.hitl_answers.get(node_id)
+    if isinstance(answered, Mapping):
+        pause = answered.get("_pause")
+        if isinstance(pause, Mapping):
+            pause_metadata = pause.get("metadata")
+            carried = dict(pause_metadata) if isinstance(pause_metadata, Mapping) else {}
+            carried["resume_at"] = pause.get("resume_at")
+            metadata[RESUMED_PAUSE_KEY] = carried
     return NodeContext(
         run_id=record.run_id,
         dag_id=record.run.graph.graph_id,
@@ -1362,10 +1375,7 @@ def _build_ctx(record: DurableRunRecord, node_id: str) -> NodeContext:
         workspace_id=record.run.workspace_id,
         project_id=record.run.project_id,
         blackboard=blackboard,
-        metadata={
-            "hitl_answers": dict(record.hitl_answers),
-            "synth_depth": synth_depth,
-        },
+        metadata=metadata,
     )
 
 

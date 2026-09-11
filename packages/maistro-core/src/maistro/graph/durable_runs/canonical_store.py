@@ -181,7 +181,7 @@ class CanonicalDurableRunStore:
         *,
         at: datetime | None = None,
     ) -> DurableRunRecord:
-        """Attach an answer and queue the paused canonical Run for resume.
+        """Persist an answer and queue only valid verdicts for resume.
 
         The rule stays where it already was: `answer_record` decides which
         paused NodeRun the answer belongs to, what the remaining pause

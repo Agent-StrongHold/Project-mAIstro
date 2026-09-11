@@ -14,7 +14,8 @@ human.ask_question, ...) live in sibling modules and self-register via
 from __future__ import annotations
 
 import time
-from datetime import UTC, datetime
+from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Generic, Literal, Protocol, TypeVar, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, SerializeAsAny
@@ -332,7 +333,31 @@ def resumed_pause(ctx: NodeContext) -> dict[str, Any]:
     neither, which is what `wait_first_seen:` was.
     """
     carried = (ctx.metadata or {}).get(RESUMED_PAUSE_KEY)
-    return dict(carried) if isinstance(carried, dict) else {}
+    return dict(carried) if isinstance(carried, Mapping) else {}
+
+
+def hitl_resume_at(ctx: NodeContext, timeout_seconds: int) -> datetime | None:
+    """Return the authoritative HITL deadline for this reach.
+
+    A first reach admits a deadline from the node clock. A resumed reach must
+    reuse the deadline carried from the durable pause; it must never derive a
+    new one from wall-clock time after an answer arrives. Malformed or absent
+    carried evidence fails closed with no deadline rather than inventing one.
+    """
+    metadata = ctx.metadata or {}
+    if RESUMED_PAUSE_KEY in metadata:
+        carried = resumed_pause(ctx)
+        raw = carried.get("resume_at")
+        if not isinstance(raw, str):
+            return None
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return None
+        return parsed.astimezone(UTC)
+    return now_utc() + timedelta(seconds=timeout_seconds)
 
 
 def pause_until(
