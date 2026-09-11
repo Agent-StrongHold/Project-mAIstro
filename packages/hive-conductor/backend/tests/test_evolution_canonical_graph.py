@@ -353,6 +353,11 @@ async def test_cycle_route_projects_real_canonical_failures(
     assert failure_stage in detail["diagnostic"]
     assert "evolution service not started" not in detail["message"]
     assert service.cycle_count == 0
+    status = service.status()
+    assert status["running"] is True
+    assert status["execution_available"] is True
+    assert status["last_run_status"] == "failed"
+    assert failure_stage in status["last_error"]
 
     stored = await owner.run_store.get_run(detail["run_id"])
     assert stored is not None
