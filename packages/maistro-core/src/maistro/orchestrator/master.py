@@ -163,6 +163,10 @@ class _WorkItemNode:
         self._handler = handler
         self._security_gate = security_gate
 
+    def logical_effect_key(self, inputs: Any, ctx: NodeContext) -> str:
+        del inputs
+        return f"orchestrator.work_item:{ctx.run_id}:{self._item.task_id}"
+
     def _output(
         self,
         status: str,

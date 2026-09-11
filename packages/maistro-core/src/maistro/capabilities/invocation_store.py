@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS capability_invocations (
     attempt_id TEXT NOT NULL,
     binding_id TEXT NOT NULL,
     effect_key TEXT NOT NULL,
+    effect_scope TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL,
     revision INTEGER NOT NULL DEFAULT 0,
     created_at REAL NOT NULL,
@@ -118,7 +119,6 @@ class SqliteInvocationStore:
             except BaseException:
                 await self._conn.rollback()
                 raise
-        return invocation.model_copy(deep=True)
 
     async def get(self, invocation_id: str) -> Invocation | None:
         cursor = await self._conn.execute(
@@ -141,6 +141,7 @@ class SqliteInvocationStore:
                     invocation.attempt_id,
                     invocation.binding.binding_id,
                     invocation.effect_key,
+                    invocation.effect_scope,
                     invocation.status.value,
                     invocation.revision + 1,
                     invocation.created_at.timestamp(),
@@ -169,13 +170,19 @@ class SqliteInvocationStore:
         node_run_id: str,
         binding_id: str,
         effect_key: str,
+        effect_scope: str | None = None,
     ) -> list[Invocation]:
-        cursor = await self._conn.execute(
-            """SELECT payload_json FROM capability_invocations
+        if effect_scope is None:
+            query = """SELECT payload_json FROM capability_invocations
                WHERE run_id = ? AND node_run_id = ? AND binding_id = ? AND effect_key = ?
-               ORDER BY created_at ASC, invocation_id ASC""",
-            (run_id, node_run_id, binding_id, effect_key),
-        )
+               ORDER BY created_at ASC, invocation_id ASC"""
+            params = (run_id, node_run_id, binding_id, effect_key)
+        else:
+            query = """SELECT payload_json FROM capability_invocations
+               WHERE run_id = ? AND effect_scope = ? AND binding_id = ? AND effect_key = ?
+               ORDER BY created_at ASC, invocation_id ASC"""
+            params = (run_id, effect_scope, binding_id, effect_key)
+        cursor = await self._conn.execute(query, params)
         rows = await cursor.fetchall()
         return [Invocation.model_validate_json(str(row[0])) for row in rows]
 
@@ -211,6 +218,7 @@ class SqliteInvocationStore:
             invocation.attempt_id,
             invocation.binding.binding_id,
             invocation.effect_key,
+            invocation.effect_scope,
             invocation.status.value,
             invocation.revision,
             invocation.created_at.timestamp(),

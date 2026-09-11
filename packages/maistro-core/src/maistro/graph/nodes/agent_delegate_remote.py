@@ -42,6 +42,7 @@ from .base import (
     ReplaySemantics,
     now_utc,
     pause_until,
+    replay_effect_key,
 )
 
 if TYPE_CHECKING:
@@ -211,10 +212,17 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             return await self._dispatch_cross_instance(inputs, ctx)
         return await self._dispatch_in_process(inputs, ctx)
 
+    def logical_effect_key(self, inputs: DelegateRemoteIn, ctx: NodeContext) -> str:
+        return self._effect_key(inputs, ctx)
+
+    @staticmethod
+    def _effect_key(inputs: DelegateRemoteIn, ctx: NodeContext) -> str:
+        return replay_effect_key(ctx, "agent.delegate_remote", inputs.model_dump(mode="json"))
+
     def _delegation_key(self, _inputs: DelegateRemoteIn, ctx: NodeContext) -> str:
         """Stable identity for one parent NodeRun's logical delegation.
 
-<<<<<<< HEAD
+
         The request is not part of the key. A retry may deserialize equivalent
         inputs differently, or receive a changed payload after a crash, but it
         must still adopt the child reservation already made for this parent
@@ -274,56 +282,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         if self._run_store is None:
             return True
         return await self._run_store.claim_delegation_transport_attempt(run_id)
-=======
-    async def _claim_child_run(
-        self,
-        inputs: DelegateRemoteIn,
-        ctx: NodeContext,
-        *,
-        parent: Run | None,
-        target: str,
-        effect_key: str,
-        mode: str,
-    ) -> tuple[str, bool]:
-        """Claim the canonical child before crossing an external effect boundary."""
-        if self._run_store is None or parent is None:
-            return "", True
-        graph = self._child_graph(inputs, parent=parent, target=target)
-        claim = await self._run_store.claim_run_by_effect(
-            graph,
-            effect_key=effect_key,
-            parent_run_id=ctx.run_id,
-            parent_node_run_id=ctx.node_run_id or None,
-            persona_id=parent.persona_id,
-            actor_principal_id=parent.actor_principal_id,
-            provenance={
-                "admission_source": "a2a_delegation",
-                "a2a_task_id": "",
-                "delegation_mode": mode,
-                "delegating_agent": inputs.from_agent,
-                "target_agent": target,
-                "peer_name": inputs.peer_name,
-            },
-        )
-        return claim.run.run_id, claim.claimed
 
-    async def _record_task_receipt(self, run_id: str, task_id: str, target: str) -> None:
-        """Persist the transport receipt without changing canonical lifecycle."""
-        if self._run_store is not None and run_id:
-            await self._run_store.update_run_provenance(
-                run_id,
-                {"a2a_task_id": task_id, "target_agent": target},
-            )
-
-    async def _discard_child_claim(self, run_id: str) -> None:
-        """Remove a claim for a rejection that never became work."""
-        if self._run_store is None or not run_id:
-            return
-        from maistro.runs.model import RunStatus
-
-        await self._run_store.transition_run(run_id, RunStatus.CANCELLED)
-        await self._run_store.delete_run(run_id)
->>>>>>> 86b25709e (fix(graph): atomically claim replay effects)
 
     async def _resume(self, resumed: dict[str, Any]) -> DelegateRemoteOut:
         """Settle the child Run, then report what the delegate answered.
@@ -501,7 +460,6 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             raise DelegationNotConfiguredError(msg)
 
         parent = await self._preflight_child_scope(inputs, ctx)
-<<<<<<< HEAD
         key = self._delegation_key(inputs, ctx)
         child = await self._existing_child(key)
         if child is None:
@@ -538,42 +496,6 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
 
         await self._attach_receipt(child_id, result.task_id)
         self._pause(inputs, task_id=result.task_id, mode="guest_peer", run_id=child_id)
-=======
-        effect_key = self._effect_key(inputs, ctx)
-        run_id, _claimed = await self._claim_child_run(
-            inputs,
-            ctx,
-            parent=parent,
-            target=inputs.peer_name or "",
-            effect_key=effect_key,
-            mode="guest_peer",
-        )
-
-        # A claim exists before the HTTP effect is attempted. A retry may still
-        # call the peer, but the durable receiver sees the same key and returns
-        # the original task instead of filing another delegation.
-        result = await self._guest_peers.delegate(
-            inputs.peer_name or "",
-            inputs.from_agent,
-            DelegationMessages([{"role": "user", "content": inputs.task}], effect_key=effect_key),
-        )
-        if result.status in ("rejected", "failed"):
-            if result.status == "rejected":
-                # Rejection is known before admission, so remove the provisional
-                # claim. A transport failure stays claimed because its physical
-                # effect is ambiguous and must be retried with the same key.
-                await self._discard_child_claim(run_id)
-                run_id = ""
-            return DelegateRemoteOut(
-                status=result.status,
-                task_id=result.task_id,
-                run_id=run_id,
-                error=result.error,
-            )
-
-        await self._record_task_receipt(run_id, result.task_id, inputs.peer_name or "")
-        self._pause(inputs, task_id=result.task_id, mode="guest_peer", run_id=run_id)
->>>>>>> 86b25709e (fix(graph): atomically claim replay effects)
         return DelegateRemoteOut()  # unreachable
 
     async def _submit_to_peer(self, inputs: DelegateRemoteIn, key: str) -> DelegationResult:
@@ -655,7 +577,6 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             raise DelegationNotConfiguredError(msg)
 
         parent = await self._preflight_child_scope(inputs, ctx)
-<<<<<<< HEAD
         key = self._delegation_key(inputs, ctx)
         child = await self._existing_child(key)
         if child is None:
@@ -680,9 +601,6 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         if not claimed:
             return await self._recover_in_process(inputs, key, child_id)
 
-=======
-        effect_key = self._effect_key(inputs, ctx)
->>>>>>> 86b25709e (fix(graph): atomically claim replay effects)
         try:
             # This local admission is synchronous and deduplicates by effect
             # key itself, so validating it before claiming the canonical child
@@ -698,23 +616,9 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             await self._release_unaccepted_child(child_id)
             return DelegateRemoteOut(status="rejected", error=str(exc))
 
-<<<<<<< HEAD
         admitted_target = self._admitted_target(task_id, inputs)
         await self._attach_receipt(child_id, task_id, target=admitted_target)
         self._pause(inputs, task_id=task_id, mode="in_process", run_id=child_id)
-=======
-        target = self._admitted_target(task_id, inputs)
-        run_id, _claimed = await self._claim_child_run(
-            inputs,
-            ctx,
-            parent=parent,
-            target=target,
-            effect_key=effect_key,
-            mode="in_process",
-        )
-        await self._record_task_receipt(run_id, task_id, target)
-        self._pause(inputs, task_id=task_id, mode="in_process", run_id=run_id)
->>>>>>> 86b25709e (fix(graph): atomically claim replay effects)
         return DelegateRemoteOut()  # unreachable
 
     def _admitted_target(self, task_id: str, inputs: DelegateRemoteIn) -> str:
