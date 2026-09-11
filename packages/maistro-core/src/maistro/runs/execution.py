@@ -14,15 +14,18 @@ import asyncio
 import contextlib
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from maistro.observability.correlation import bind_execution_context
 from maistro.runs.model import (
     PAUSE_AWAITS_HUMAN,
+    TERMINAL_ATTEMPT_STATUSES,
+    TERMINAL_RUN_STATUSES,
     AcceptedNodeOutcome,
     Attempt,
     AttemptStatus,
     NodeRun,
+    RunStatus,
 )
 from maistro.runs.reconciliation import (
     AttemptLifecycleReconciler,
@@ -171,7 +174,15 @@ class AttemptExecutionStore(AttemptLifecycleStore, Protocol):
 
 
 class AttemptExecutionService:
-    """Execute physical Attempts while keeping lifecycle authority in domain code."""
+    """Execute physical Attempts while keeping lifecycle authority in domain code.
+
+    The small process-local index is only a signal path to the owner of live
+    physical work. Durable Run/Attempt state remains authoritative, so a
+    restarted process can inspect the record but cannot claim that it stopped a
+    worker it does not own.
+    """
+
+    _active_services: ClassVar[dict[str, AttemptExecutionService]] = {}
 
     def __init__(
         self,
@@ -396,6 +407,7 @@ class AttemptExecutionService:
                 context_factory,
             )
             heartbeat = self._start_heartbeat(attempt.attempt_id, token)
+            self._active_services[attempt.attempt_id] = self
             try:
                 try:
                     result = await self._runtime.execute(
@@ -427,15 +439,36 @@ class AttemptExecutionService:
                 )
                 await self._reconcile(terminal, cancellation=cause)
                 raise
-            terminal = await self._terminalize(
-                attempt.attempt_id,
-                AttemptStatus.COMPLETED,
-                fencing_token=token,
-                result=result,
-            )
-            if reconcile_logical:
-                await self._reconcile(terminal)
-            return terminal
+            else:
+                current_node = await self._store.get_node_run(attempt.node_run_id)
+                current_run = (
+                    await self._store.get_run(current_node.run_id)
+                    if current_node is not None
+                    else None
+                )
+                if current_run is not None and current_run.status is RunStatus.CANCELLED:
+                    # The durable Run transition is the cancellation fence. A
+                    # provider that won the local task race cannot publish a
+                    # stale successful Attempt after that fence.
+                    terminal = await self._terminalize(
+                        attempt.attempt_id,
+                        AttemptStatus.CANCELLED,
+                        fencing_token=token,
+                        error="execution cancelled by Run fence",
+                    )
+                    await self._reconcile(terminal, cancellation=CancellationCause.REQUESTED)
+                    raise asyncio.CancelledError
+                terminal = await self._terminalize(
+                    attempt.attempt_id,
+                    AttemptStatus.COMPLETED,
+                    fencing_token=token,
+                    result=result,
+                )
+                if reconcile_logical:
+                    await self._reconcile(terminal)
+                return terminal
+            finally:
+                self._active_services.pop(attempt.attempt_id, None)
 
     async def accept_outcome(self, outcome: AcceptedNodeOutcome) -> NodeRun:
         """Accept one persisted physical result with an explicit logical disposition."""
@@ -467,8 +500,56 @@ class AttemptExecutionService:
                 "before redispatch"
             )
 
+    @classmethod
+    async def cancel_registered(cls, attempt_id: str) -> bool:
+        """Signal the process that owns an active physical Attempt, if local."""
+        service = cls._active_services.get(attempt_id)
+        if service is None:
+            return False
+        return await service._runtime.cancel(attempt_id)
+
     async def cancel(self, attempt_id: str) -> bool:
-        return await self._runtime.cancel(attempt_id)
+        return await self.cancel_registered(attempt_id)
+
+    @classmethod
+    async def cancel_registered_run(cls, run_id: str) -> bool:
+        """Cancel the local owner of a Run, including its durable projection."""
+        owners: set[AttemptExecutionService] = set()
+        for service in set(cls._active_services.values()):
+            run = await service._store.get_run(run_id)
+            if run is not None:
+                owners.add(service)
+        for service in owners:
+            await service._cancel_local_run(run_id)
+        return bool(owners)
+
+    async def _cancel_local_run(self, run_id: str) -> None:
+        node_runs = await self._store.list_node_runs(run_id)
+        active = [
+            attempt
+            for node_run in node_runs
+            for attempt in await self._store.list_attempts(node_run.node_run_id)
+            if attempt.status not in TERMINAL_ATTEMPT_STATUSES
+        ]
+        current_run = await self._store.get_run(run_id)
+        if current_run is None:
+            raise RunIntegrityError(f"Run {run_id!r} does not exist")
+        if current_run.status is not RunStatus.CANCELLED:
+            await self._store.transition_run(
+                run_id, RunStatus.CANCELLED, error="execution cancelled"
+            )
+        await asyncio.gather(*(self._runtime.cancel(attempt.attempt_id) for attempt in active))
+        for node_run in await self._store.list_node_runs(run_id):
+            if node_run.status in TERMINAL_RUN_STATUSES:
+                continue
+            attempts = await self._store.list_attempts(node_run.node_run_id)
+            if any(attempt.status not in TERMINAL_ATTEMPT_STATUSES for attempt in attempts):
+                continue
+            await self._store.transition_node_run(
+                node_run.node_run_id,
+                RunStatus.CANCELLED,
+                error="execution cancelled",
+            )
 
     async def _terminalize(
         self,

@@ -79,6 +79,18 @@ async def test_an_unknown_run_is_404(wired, client: TestClient) -> None:
     assert client.get("/runs/no-such-run").status_code == 404
 
 
+async def test_run_cancel_uses_the_canonical_lifecycle(wired, client: TestClient) -> None:
+    created = _submit(client)
+
+    response = client.post(f"/runs/{created['run_id']}/cancel")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "cancelled"
+    persisted = await wired.get_run(created["run_id"])
+    assert persisted is not None
+    assert persisted.status.value == "cancelled"
+
+
 async def test_node_runs_are_empty_until_the_task_executes(wired, client: TestClient) -> None:
     """Empty because nothing has run yet, not because nothing ever will."""
     created = _submit(client)

@@ -109,10 +109,14 @@ async def test_parallel_attempts_can_share_one_logical_run_context() -> None:
 async def test_cancel_propagates_to_active_execution() -> None:
     runtime = PythonExecutionRuntime()
     started = asyncio.Event()
+    stopped = asyncio.Event()
 
     async def executor(_work_item: Any, _context: Any) -> None:
         started.set()
-        await asyncio.Event().wait()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
 
     task = asyncio.create_task(
         runtime.execute(None, None, execution_id="attempt-cancel", executor=executor)
@@ -120,11 +124,39 @@ async def test_cancel_propagates_to_active_execution() -> None:
     await started.wait()
 
     assert await runtime.cancel("attempt-cancel") is True
+    assert stopped.is_set()
     with pytest.raises(asyncio.CancelledError):
         await task
 
     assert runtime.metrics().executions_cancelled == 1
     assert await runtime.cancel("attempt-cancel") is False
+
+
+@pytest.mark.asyncio
+async def test_deadline_cancels_a_provider_that_swallows_cancellation() -> None:
+    runtime = PythonExecutionRuntime()
+    stopped = asyncio.Event()
+
+    async def executor(_work_item: Any, _context: Any) -> str:
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            stopped.set()
+            return "late provider response"
+        raise AssertionError("unreachable")
+
+    with pytest.raises(RuntimeDeadlineExceeded):
+        await runtime.execute(
+            None,
+            None,
+            execution_id="attempt-deadline-swallow",
+            executor=executor,
+            timeout_s=0.001,
+        )
+
+    assert stopped.is_set()
+    assert runtime.metrics().executions_timed_out == 1
+    assert runtime.metrics().executions_completed == 0
 
 
 @pytest.mark.asyncio

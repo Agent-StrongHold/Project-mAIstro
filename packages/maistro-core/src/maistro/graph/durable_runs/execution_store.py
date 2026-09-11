@@ -108,6 +108,22 @@ class DurableRunExecutionStore:
         error: str | None = None,
     ) -> Run:
         self._require_run_id(run_id)
+        if self._run_store is not None:
+            canonical = await self._run_store.get_run(run_id)
+            if canonical is None:
+                raise RunIntegrityError(f"Run {run_id!r} does not exist")
+            if canonical.status is not target:
+                canonical = await self._run_store.transition_run(
+                    run_id,
+                    target,
+                    at=at,
+                    result=result,
+                    error=error,
+                )
+            updated = await self._mutate(
+                lambda record: record.model_copy(update={"run": canonical})
+            )
+            return updated.run.model_copy(deep=True)
         updated = await self._mutate(
             lambda record: record.model_copy(
                 update={
@@ -162,9 +178,35 @@ class DurableRunExecutionStore:
                 return record.model_copy(update={"node_runs": tuple(node_runs)})
             raise RunIntegrityError(f"NodeRun {node_run_id!r} does not exist")
 
-        updated = await self._mutate(update)
+        if self._run_store is not None:
+            canonical_node = await self._run_store.get_node_run(node_run_id)
+            if canonical_node is None:
+                raise RunIntegrityError(f"NodeRun {node_run_id!r} does not exist")
+            if canonical_node.status is not target:
+                canonical_node = await self._run_store.transition_node_run(
+                    node_run_id,
+                    target,
+                    at=at,
+                    result=result,
+                    error=error,
+                    accepted_outcome=accepted_outcome,
+                )
+            updated = await self._mutate(
+                lambda record: self._replace_node_run(record, canonical_node)
+            )
+        else:
+            updated = await self._mutate(update)
         node_run = next(item for item in updated.node_runs if item.node_run_id == node_run_id)
         return node_run.model_copy(deep=True)
+
+    @staticmethod
+    def _replace_node_run(record: DurableRunRecord, updated: NodeRun) -> DurableRunRecord:
+        node_runs = list(record.node_runs)
+        for index, node_run in enumerate(node_runs):
+            if node_run.node_run_id == updated.node_run_id:
+                node_runs[index] = updated
+                return record.model_copy(update={"node_runs": tuple(node_runs)})
+        raise RunIntegrityError(f"NodeRun {updated.node_run_id!r} does not exist")
 
     async def create_attempt(
         self,
