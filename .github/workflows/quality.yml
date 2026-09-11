@@ -378,6 +378,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [coverage-unit, coverage-archive, coverage-postgres]
+    env:
+      # The combine step re-runs the root suite as the `scripts` producer, and
+      # that suite carries the shipped-state `check-*` self-checks. On a push
+      # to `develop` the resolver's local fallback degenerates to HEAD and the
+      # #534 self-reference refusal fires, reding this job for "cannot
+      # compare" rather than any coverage regression (#1235). Name the event's
+      # own base, exactly as vulture-ratchet.yml does. tests/conftest.py
+      # captures this value and keeps it away from every test except the gate
+      # self-checks that opt in.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.event.before }}
     steps:
       - uses: actions/checkout@v7
         with:
