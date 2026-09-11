@@ -140,7 +140,7 @@ permissions = "*"
         from maistro.privilege import UsersStore, UsersTamperError
 
         store = UsersStore(data_dir=str(tmp_path), trusted_signing_key=_TRUSTED_SIGNING_KEY)
-        store.initialize("alice", "pk_admin", "bob", "pk_user")
+        store.initialize("alice", "pk_admin", "lilly", "pk_lilly")
 
         # Migration step 1: authenticate the artifact under the current root.
         with pytest.raises(UsersTamperError):
@@ -151,7 +151,7 @@ permissions = "*"
         assert "attacker-nominated-current-key" not in (tmp_path / "users.toml").read_text()
 
         verified = UsersStore(data_dir=str(tmp_path), trusted_signing_key=_TRUSTED_SIGNING_KEY)
-        roster = (verified.admin(), verified.user_by_public_key("pk_user"))
+        roster = (verified.admin(), verified.user_by_public_key("pk_lilly"))
         # Move the authenticated artifact aside (rollback backup); the new
         # store re-signs from scratch under the new external root.
         (tmp_path / "users.toml").rename(tmp_path / "users.toml.pre-rotation")
@@ -176,7 +176,7 @@ permissions = "*"
             trusted_signing_key="host-owned-users-integrity-key-v2",
         )
         assert reloaded.admin().name == "alice"
-        assert reloaded.user_by_public_key("pk_user").name == "bob"
+        assert reloaded.user_by_public_key("pk_lilly").name == "lilly"
         on_disk = (tmp_path / "users.toml").read_text()
         assert _TRUSTED_SIGNING_KEY not in on_disk
         assert "host-owned-users-integrity-key-v2" not in on_disk
@@ -219,6 +219,14 @@ permissions = "*"
         # the host-supplied constructor argument, never from the file.
         public_api = {name for name in vars(UsersStore) if not name.startswith("_")}
         assert public_api == {"initialize", "admin", "user_by_public_key"}
+
+    def test_unsigned_single_line_fails_closed(self, tmp_path: Path) -> None:
+        from maistro.privilege import UsersStore, UsersTamperError
+
+        (tmp_path / "users.toml").write_text('[[users]] name = "eve"')
+
+        with pytest.raises(UsersTamperError, match="Missing content"):
+            UsersStore(data_dir=str(tmp_path), trusted_signing_key=_TRUSTED_SIGNING_KEY)
 
     def test_empty_external_trust_root_is_rejected(self, tmp_path: Path) -> None:
         from maistro.privilege import UsersStore, UsersTrustRootError

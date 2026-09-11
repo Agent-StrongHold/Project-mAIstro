@@ -234,6 +234,9 @@ from maistro.privilege import UsersStore, UsersTamperError
 #    This constructor verifies the HMAC first; a tampered file or a wrong
 #    current secret raises UsersTamperError and the rotation must not proceed.
 verified = UsersStore(data_dir=data_dir, trusted_signing_key=current_key)
+verified_admin = verified.admin()
+# This expected identity is pinned in deployment inventory outside users.toml.
+verified_user = verified.user_by_public_key(expected_user_public_key)
 
 # 2. Move the authenticated artifact aside as a rollback backup, then
 #    re-sign the verified roster under the NEW external secret (use the
@@ -245,10 +248,10 @@ shutil.move(
     os.path.join(data_dir, "users.toml.pre-rotation"),
 )
 UsersStore(data_dir=data_dir, trusted_signing_key=new_key).initialize(
-    admin_name=verified.admin().name,
-    admin_public_key=verified.admin().public_key,
-    user_name="bob",           # the roster confirmed by `verified` in step 1
-    user_public_key="pk_user_001",
+    admin_name=verified_admin.name,
+    admin_public_key=verified_admin.public_key,
+    user_name=verified_user.name,
+    user_public_key=verified_user.public_key,
 )
 ```
 
