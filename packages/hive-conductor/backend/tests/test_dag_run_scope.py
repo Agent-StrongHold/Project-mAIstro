@@ -259,6 +259,27 @@ async def test_live_sse_stops_after_workspace_membership_is_revoked(
     await iterator.aclose()
 
 
+async def test_sse_rechecks_scope_before_first_frame(authed_client: Any, admin_client: Any) -> None:
+    """Revocation before generator startup cannot expose even the preamble."""
+    ws = _workspace(admin_client, "Revoked before stream startup")
+    added = admin_client.post(
+        f"/v1/workspaces/{ws}/members",
+        json={"user_id": _AUTHED_USER_ID, "role": "viewer"},
+    )
+    assert added.status_code == 200, added.text
+    await _seed_run_async("r-revoked-before-start", workspace_id=ws)
+
+    from routes.dag_runs import stream_run_events
+
+    response = await stream_run_events("r-revoked-before-start", _ScopedRequest(_AUTHED_USER_ID))
+    revoked = admin_client.delete(f"/v1/workspaces/{ws}/members/{_AUTHED_USER_ID}")
+    assert revoked.status_code == 200, revoked.text
+
+    with pytest.raises(StopAsyncIteration):
+        await anext(response.body_iterator)
+    await response.body_iterator.aclose()
+
+
 # ─── authentication vs authorization ─────────────────────────────────────────
 
 

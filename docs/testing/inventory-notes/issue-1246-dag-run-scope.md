@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +2
+  packages/hive-conductor/backend/tests: +3
 ---
 # Issue 1246 DAG-run scope pagination
 
