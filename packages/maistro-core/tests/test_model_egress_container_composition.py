@@ -434,6 +434,68 @@ async def test_sqlite_container_reuses_durable_model_authorities(
         await second.aclose()
 
 
+async def test_container_provider_health_refuses_before_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Container registry's health state governs a real node call."""
+    import maistro.capabilities.model_chat as model_chat
+
+    container = await _container(
+        workspace_id="health-ws",
+        provider_config_path=_provider_yaml(tmp_path),
+        model_bindings=[
+            {
+                "binding_id": "health-model",
+                "project_id": "health-project",
+                "provider_name": "yaml-model",
+            }
+        ],
+    )
+    container.provider_registry.mark_unavailable("yaml-model")
+    resolver = build_node_resolver(
+        effect_context=container.capability_effects,
+        provider_registry=container.provider_registry,
+        llm_router=container.llm_router,
+    )
+    node = resolver("summarize", {"nodes": [{"id": "summarize", "kind": "llm.summarize"}]})
+    calls: list[str] = []
+
+    async def must_not_dispatch(provider: Any, payload: Any, *, endpoint: Any) -> dict[str, Any]:
+        del payload, endpoint
+        calls.append(provider.name)
+        raise AssertionError("unavailable provider was dispatched")
+
+    monkeypatch.setattr(model_chat, "execute_model_chat", must_not_dispatch)
+    monkeypatch.setenv("MAISTRO_LLM_BASE_URL", "https://gateway.test")
+    result = await node.run(
+        {"text": "Must not dispatch", "binding_id": "health-model"},
+        NodeContext(
+            run_id="health-run",
+            dag_id="health-graph",
+            node_id="summarize",
+            node_run_id="health-node-run",
+            attempt_id="health-attempt",
+            workspace_id="health-ws",
+            project_id="health-project",
+        ),
+    )
+
+    assert result.success is False
+    assert result.error_code == "CapabilityUnavailable"
+    assert "unavailable" in result.error_message
+    assert calls == []
+    assert (
+        await container.capability_effects.invocation_store.list_effect(
+            run_id="health-run",
+            node_run_id="health-node-run",
+            binding_id="health-model",
+            effect_key="llm.summarize.complete:gemini-3.1-flash-lite",
+        )
+        == []
+    )
+
+
 async def test_consumer_tick_fails_closed_without_a_declared_binding(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
