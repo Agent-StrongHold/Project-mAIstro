@@ -365,6 +365,55 @@ async def test_only_workspace_owner_can_issue_project_denies(api) -> None:
     assert any(item["principal_id"] == "cara" for item in listed.json())
 
 
+async def test_workspace_owner_can_revoke_a_project_membership(api) -> None:
+    app, client, workspaces, projects = api
+    workspace = await workspaces.create(creator_user_id="alice", name="Auth")
+    root = await projects.root_for_workspace(workspace.workspace_id)
+    await projects.set_membership(
+        ProjectMembership(
+            workspace_id=workspace.workspace_id,
+            project_id=root.project_id,
+            principal_id="cara",
+            grants={"publish"},
+        )
+    )
+    _as_user(app, "alice")
+
+    response = client.delete(
+        f"/workspaces/{workspace.workspace_id}/projects/{root.project_id}/memberships/cara"
+    )
+
+    assert response.status_code == 204
+    assert await projects.memberships_for(root.project_id, principal_id="cara") == []
+
+
+async def test_non_owner_cannot_revoke_a_project_membership(api) -> None:
+    app, client, workspaces, projects = api
+    workspace = await workspaces.create(creator_user_id="alice", name="Auth")
+    root = await projects.root_for_workspace(workspace.workspace_id)
+    await workspaces.set_membership(
+        workspace.workspace_id,
+        user_id="bob",
+        role=WorkspaceRole.CONTRIBUTOR,
+    )
+    await projects.set_membership(
+        ProjectMembership(
+            workspace_id=workspace.workspace_id,
+            project_id=root.project_id,
+            principal_id="cara",
+            grants={"publish"},
+        )
+    )
+    _as_user(app, "bob")
+
+    response = client.delete(
+        f"/workspaces/{workspace.workspace_id}/projects/{root.project_id}/memberships/cara"
+    )
+
+    assert response.status_code == 403
+    assert len(await projects.memberships_for(root.project_id, principal_id="cara")) == 1
+
+
 async def test_a_non_owner_delegated_regrant_cannot_clear_an_existing_deny(api) -> None:
     """`set_membership` upserts the one canonical row per (project, principal)
     -- correct per #1148 -- so a request that omits `denies` must not be read

@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-server/tests: +20
+  packages/maistro-server/tests: +22
 ---
 # Project scope API inventory delta
 
