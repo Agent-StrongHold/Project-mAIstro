@@ -19,6 +19,7 @@ from maistro.runs.model import Run, RunStatus
 from maistro.runs.recovery_events import RecoveryEventSink
 from maistro.runs.store import RunStore
 from maistro.runtime import ExecutionRuntime
+from maistro.security.redact import redact
 
 from . import executor as traversal
 from .attempt_executor import LiveAttemptOwned, NodeResolver, resume_durable_graph
@@ -94,7 +95,10 @@ _SAFE_DETAIL = re.compile(r"(?i)\b(password|token|secret|api[_-]?key)\b\s*[=:]\s
 def _sanitized_cause(exc: BaseException) -> str:
     """Return bounded log evidence without copying provider/credential text."""
     detail = str(exc).splitlines()[0].strip() if str(exc) else ""
-    detail = _SAFE_DETAIL.sub(r"\1=<redacted>", detail)
+    # Apply the local key/value rule first so short diagnostic forms such as
+    # ``password=...`` are covered too; the shared redactor then handles URLs,
+    # provider key prefixes, JWTs, and other credential-shaped values.
+    detail = redact(_SAFE_DETAIL.sub(r"\1=<redacted>", detail))
     detail = detail[:240]
     return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
 

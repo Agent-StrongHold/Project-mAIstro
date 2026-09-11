@@ -172,7 +172,10 @@ async def test_one_unexpected_candidate_failure_does_not_starve_later_due_runs(
         del kwargs
         calls.append(run_id)
         if run_id == "waiting-1":
-            raise RuntimeError("resolver exploded password=not-a-secret")
+            raise RuntimeError(
+                "resolver exploded password=not-a-secret "
+                "https://user:pass@example.com sk-ant-abcdefghijklmnop"
+            )
 
     monkeypatch.setattr(recovery, "resume_durable_graph", _resume)
 
@@ -190,6 +193,8 @@ async def test_one_unexpected_candidate_failure_does_not_starve_later_due_runs(
     assert "run_id=waiting-1" in caplog.text
     assert "RuntimeError: resolver exploded password=<redacted>" in caplog.text
     assert "not-a-secret" not in caplog.text
+    assert "https://user:pass@example.com" not in caplog.text
+    assert "sk-ant-abcdefghijklmnop" not in caplog.text
 
     calls.clear()
     assert (
