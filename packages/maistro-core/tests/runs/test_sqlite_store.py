@@ -99,6 +99,38 @@ async def test_delegation_transport_claim_is_one_winner_across_store_instances(
     assert recovered is not None
     assert recovered.provenance["transport_attempted"] is True
     await first_conn.close()
+
+
+async def test_effect_claim_is_atomic_and_survives_store_reload(tmp_path: Path) -> None:
+    project_store, project_id = await _project_store()
+    db_path = tmp_path / "effects.db"
+    first_conn = await aiosqlite.connect(db_path)
+    first_store = SqliteRunStore(first_conn, project_store=project_store)
+    await first_store.ensure_schema()
+
+    first = await first_store.claim_run_by_effect(
+        _graph(project_id),
+        effect_key="remote-effect-1",
+        provenance={"admission_source": "a2a_delegation"},
+    )
+    second = await first_store.claim_run_by_effect(
+        _graph(project_id),
+        effect_key="remote-effect-1",
+        provenance={"admission_source": "a2a_delegation"},
+    )
+    assert first.claimed is True
+    assert second.claimed is False
+    assert second.run.run_id == first.run.run_id
+    await first_conn.close()
+
+    second_conn = await aiosqlite.connect(db_path)
+    second_store = SqliteRunStore(second_conn, project_store=project_store)
+    await second_store.ensure_schema()
+    reloaded = await second_store.claim_run_by_effect(
+        _graph(project_id), effect_key="remote-effect-1"
+    )
+    assert reloaded.claimed is False
+    assert reloaded.run.run_id == first.run.run_id
     await second_conn.close()
 
 
