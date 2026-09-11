@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +6
+  packages/maistro-core/tests: +7
 ---
 
 Issue #1090 adds tests for reserving one canonical child Run before transport,
