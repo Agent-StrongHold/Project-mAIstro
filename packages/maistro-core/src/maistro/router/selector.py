@@ -18,10 +18,15 @@ if TYPE_CHECKING:
 
 
 class RouterEngine:
-    """Implements ModelRouter protocol. Selects the best model for an intent."""
+    """Implements ModelRouter protocol. Selects the best model for an intent.
 
-    def __init__(self, quota_tracker: QuotaTracker) -> None:
-        self._quota = quota_tracker
+    ``quota_tracker`` remains an ignored compatibility argument for callers
+    that construct the legacy router through the container. Quota admission is
+    authoritative only at canonical Invocation, after provider resolution.
+    """
+
+    def __init__(self, quota_tracker: QuotaTracker | None = None) -> None:
+        del quota_tracker
 
     def select(
         self,

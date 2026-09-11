@@ -26,6 +26,7 @@ from maistro.capabilities.invocation import (
 from maistro.capabilities.slots.approval import ApprovalRequest
 from maistro.events.envelope import EventEnvelope, EventStore
 from maistro.policy.types import Decision, PolicyVerdict
+from maistro.quota.invocation import QuotaAmount
 
 
 @dataclass(frozen=True)
@@ -73,9 +74,9 @@ class GovernedInvocationExecutionService:
     REQUIRE_APPROVAL is keyed to the logical effect so a later Attempt reuses
     the same durable human decision rather than manufacturing another request.
 
-    Unreached in production, like the service it wraps: no policy verdict
-    recorded here has ever gated a live provider call, and no approval this
-    would key has ever been requested of a human (#55).
+    The composition root supplies this wrapper to governed effect consumers;
+    policy and quota evidence are recorded before physical provider dispatch
+    rather than being optional router/Agent checks (#55).
     """
 
     def __init__(
@@ -120,6 +121,8 @@ class GovernedInvocationExecutionService:
         resolver: ProviderResolver,
         executor: ProviderExecutor,
         usage_from: UsageExtractor | None = None,
+        principal_id: str = "",
+        quota_estimate: QuotaAmount | None = None,
     ) -> Invocation:
         context = InvocationPolicyContext(
             run_id=run_id,
@@ -167,6 +170,8 @@ class GovernedInvocationExecutionService:
                 resolver=resolver,
                 executor=executor,
                 usage_from=usage_from,
+                principal_id=principal_id,
+                quota_estimate=quota_estimate,
             )
         except asyncio.CancelledError:
             await self._append_latest_terminal_event(
@@ -489,6 +494,8 @@ class GovernedInvocationExecutionService:
                     "provider_name": invocation.binding.provider_name,
                     "status": invocation.status.value,
                     "error": invocation.error,
+                    "usage": invocation.usage.model_dump(mode="json") if invocation.usage else None,
+                    "quota": invocation.quota.model_dump(mode="json") if invocation.quota else None,
                 },
             )
         )

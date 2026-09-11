@@ -44,6 +44,7 @@ from maistro.providers.types import (
     RoutingTask,
     compute_cost_cents,
 )
+from maistro.quota.invocation import QuotaAmount
 
 if TYPE_CHECKING:
     from maistro.capabilities.effect_context import CapabilityEffectContext
@@ -152,6 +153,7 @@ class ModelChatEgress:
         attempt_id: str,
         effect_key: str,
         request: ModelChatRequest,
+        principal_id: str = "",
     ) -> ModelCallResult:
         resolver = resolve_model_chat_provider(self._registry, self._router, alias=request.model)
         selected: list[LlmGatewayProvider] = []
@@ -180,6 +182,8 @@ class ModelChatEgress:
             resolver=tracked_resolve,
             executor=execute,
             usage_from=usage_from,
+            quota_estimate=QuotaAmount(output_tokens=request.max_tokens or 0),
+            principal_id=principal_id,
         )
         body = invocation.result if isinstance(invocation.result, dict) else {}
         return ModelCallResult(

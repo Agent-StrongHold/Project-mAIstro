@@ -208,7 +208,9 @@ class Agent:
         self._sentinel = sentinel
         self._outcome_store = outcome_store
         self._session_store = session_store
-        self._quota_tracker = quota_tracker
+        # Legacy DI still supplies this argument, but Invocation is the sole
+        # quota authority for physical provider effects.
+        del quota_tracker
         self._coin_ledger = coin_ledger
         self._tool_executor = tool_executor
         self._tool_registry = tool_registry

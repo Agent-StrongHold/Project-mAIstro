@@ -27,6 +27,7 @@ from maistro.capabilities.invocation import (
     InMemoryInvocationStore,
     Invocation,
     InvocationExecutionService,
+    InvocationQuotaEvidence,
     InvocationStatus,
     UnsafeEffectRetry,
 )
@@ -90,6 +91,7 @@ __all__ = [
     "InvocationDenied",
     "InvocationExecutionService",
     "InvocationPolicyContext",
+    "InvocationQuotaEvidence",
     "InvocationStatus",
     "OpencodeHarnessRunner",
     "ProviderHealth",
