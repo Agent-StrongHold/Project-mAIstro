@@ -21,6 +21,7 @@ foreign one is refused rather than filed.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -134,6 +135,27 @@ class TestDelegationFilesAChildRun:
             )
             is not None
         )
+
+    async def test_concurrent_workers_atomically_claim_one_child_and_task(self) -> None:
+        """Lease-loss overlap cannot admit two canonical children."""
+        store, _projects, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+        delegator = _delegator()
+        node = AgentDelegateRemoteNode(a2a_delegator=delegator, run_store=store)
+        inputs = {"from_agent": "planner", "task": "research X", "to_agent": "researcher"}
+
+        results = await asyncio.gather(
+            node.run(inputs, _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id)),
+            node.run(inputs, _ctx(run_id=parent.run_id, node_run_id="lease-loss-retry")),
+        )
+
+        assert [result.status for result in results] == ["paused", "paused"]
+        children = [run for run in store._runs.values() if run.parent_run_id == parent.run_id]  # type: ignore[attr-defined]
+        assert len(children) == 1
+        assert len(delegator._tasks) == 1
 
     async def test_the_child_run_provenance_names_the_task_the_mode_and_both_agents(
         self,
