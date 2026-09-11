@@ -2272,6 +2272,7 @@ def _di_node(
 
     from maistro.graph.nodes.agent_delegate_remote import AgentDelegateRemoteNode
     from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
+    from maistro.graph.nodes.agent_synth_dag import AgentSynthDagNode
     from maistro.graph.nodes.llm_summarize import LlmSummarizeNode
     from maistro.graph.nodes.rsi_quota_pace_trigger import RsiQuotaPaceTriggerNode
 
@@ -2297,6 +2298,28 @@ def _di_node(
         # delegated work as a canonical child Run.
         return AgentDelegateRemoteNode(
             a2a_delegator=a2a_delegator, guest_peers=guest_peers, run_store=run_store
+        )
+    if kind == "agent.synth_dag":
+        # Same omission shape as delegate_remote above, one level out: the
+        # synth catalog explicitly offers `llm.summarize`, so a bare parent
+        # hands its child graphs a resolver that builds `llm.summarize` with
+        # a fresh empty effect context, registry and router (#1079) -- the
+        # child then refuses Bindings the deployment configured, and unpinned
+        # selection routes over an empty registry. The child resolver carries
+        # this same wiring down (child delegate nodes included). Child-run
+        # filing keeps the bare node's store behavior: this node takes a
+        # DurableRunStore, which `run_store` here is not.
+        return AgentSynthDagNode(
+            node_resolver=build_node_resolver(
+                harness_adapters=harness_adapters,
+                usage_log=usage_log,
+                a2a_delegator=a2a_delegator,
+                guest_peers=guest_peers,
+                run_store=run_store,
+                effect_context=effect_context,
+                provider_registry=provider_registry,
+                llm_router=llm_router,
+            ),
         )
     return None
 
