@@ -17,9 +17,10 @@ separately: the migration lands with the wiring, in #55.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from typing import TYPE_CHECKING
 
-from maistro.capabilities.invocation import Invocation
+from maistro.capabilities.invocation import Invocation, InvocationStatus, UnsafeEffectRetry
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -43,6 +44,9 @@ CREATE INDEX IF NOT EXISTS idx_capability_invocation_effect
     );
 CREATE INDEX IF NOT EXISTS idx_capability_invocation_attempt
     ON capability_invocations (attempt_id, created_at, invocation_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_capability_invocation_active_effect
+    ON capability_invocations (run_id, node_run_id, binding_id, effect_key)
+    WHERE status IN ('created', 'running', 'unknown');
 """
 
 
@@ -59,6 +63,25 @@ class SqliteInvocationStore:
 
     async def create(self, invocation: Invocation) -> Invocation:
         async with self._lock:
+            cursor = await self._conn.execute(
+                """SELECT 1 FROM capability_invocations
+                   WHERE run_id = ? AND node_run_id = ? AND binding_id = ?
+                     AND effect_key = ? AND status IN (?, ?, ?)
+                   LIMIT 1""",
+                (
+                    invocation.run_id,
+                    invocation.node_run_id,
+                    invocation.binding.binding_id,
+                    invocation.effect_key,
+                    InvocationStatus.CREATED.value,
+                    InvocationStatus.RUNNING.value,
+                    InvocationStatus.UNKNOWN.value,
+                ),
+            )
+            if await cursor.fetchone() is not None:
+                raise UnsafeEffectRetry(
+                    f"effect {invocation.effect_key!r} already has an active Invocation"
+                )
             await self._conn.execute(
                 """INSERT INTO capability_invocations (
                     invocation_id, run_id, node_run_id, attempt_id, binding_id,
@@ -118,6 +141,29 @@ class SqliteInvocationStore:
         )
         rows = await cursor.fetchall()
         return [Invocation.model_validate_json(str(row[0])) for row in rows]
+
+    async def list_ambiguous(self, *, stale_before: datetime) -> list[Invocation]:
+        cursor = await self._conn.execute(
+            """SELECT payload_json FROM capability_invocations
+               WHERE status IN (?, ?, ?)
+               ORDER BY created_at ASC, invocation_id ASC""",
+            (
+                InvocationStatus.CREATED.value,
+                InvocationStatus.RUNNING.value,
+                InvocationStatus.UNKNOWN.value,
+            ),
+        )
+        rows = await cursor.fetchall()
+        items = [Invocation.model_validate_json(str(row[0])) for row in rows]
+        return [
+            item
+            for item in items
+            if item.status is InvocationStatus.UNKNOWN
+            or (
+                item.status in {InvocationStatus.CREATED, InvocationStatus.RUNNING}
+                and (item.started_at or item.created_at) <= stale_before
+            )
+        ]
 
     @staticmethod
     def _row_values(invocation: Invocation) -> tuple[object, ...]:

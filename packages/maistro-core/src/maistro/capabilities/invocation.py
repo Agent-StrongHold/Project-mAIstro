@@ -55,6 +55,14 @@ class InvocationStatus(StrEnum):
     UNKNOWN = "unknown"
 
 
+class ReconciliationDisposition(StrEnum):
+    """Evidence-backed disposition for an ambiguous provider call."""
+
+    APPLIED = "applied"
+    NOT_APPLIED = "not_applied"
+    INDETERMINATE = "indeterminate"
+
+
 TERMINAL_INVOCATION_STATUSES = frozenset(
     {
         InvocationStatus.COMPLETED,
@@ -95,6 +103,61 @@ class InvocationUsage(BaseModel):
         return self
 
 
+class InvocationReconciliation(BaseModel):
+    """Durable audit evidence for one attempted ambiguity resolution."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    disposition: ReconciliationDisposition
+    source: str
+    actor: str
+    reason: str
+    evidence: Any | None = None
+    result: Any | None = None
+    workspace_id: str
+    project_id: str
+    run_id: str
+    node_run_id: str
+    attempt_id: str
+    invocation_id: str
+    observed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @model_validator(mode="after")
+    def _validate_reconciliation(self) -> InvocationReconciliation:
+        for field in (
+            "source",
+            "actor",
+            "reason",
+            "workspace_id",
+            "project_id",
+            "run_id",
+            "node_run_id",
+            "attempt_id",
+            "invocation_id",
+        ):
+            _require(getattr(self, field), field)
+        return self
+
+
+class InvocationReconciliationEvidence(BaseModel):
+    """Provider-adapter report, before the lifecycle service applies it."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    disposition: ReconciliationDisposition
+    source: str
+    actor: str
+    reason: str
+    evidence: Any | None = None
+    result: Any | None = None
+
+    @model_validator(mode="after")
+    def _validate_evidence(self) -> InvocationReconciliationEvidence:
+        for field in ("source", "actor", "reason"):
+            _require(getattr(self, field), field)
+        return self
+
+
 class Invocation(BaseModel):
     """One actual provider call beneath one physical Attempt."""
 
@@ -104,6 +167,8 @@ class Invocation(BaseModel):
     run_id: str
     node_run_id: str
     attempt_id: str
+    workspace_id: str = ""
+    project_id: str = ""
     binding: ResolvedBinding
     effect_key: str
     status: InvocationStatus = InvocationStatus.CREATED
@@ -111,6 +176,7 @@ class Invocation(BaseModel):
     result: Any | None = None
     usage: InvocationUsage | None = None
     error: str | None = None
+    reconciliation_history: tuple[InvocationReconciliation, ...] = ()
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     started_at: datetime | None = None
     finished_at: datetime | None = None
@@ -155,6 +221,8 @@ class InvocationStore(Protocol):
         effect_key: str,
     ) -> list[Invocation]: ...
 
+    async def list_ambiguous(self, *, stale_before: datetime) -> list[Invocation]: ...
+
 
 class InMemoryInvocationStore:
     """Concurrency-safe in-memory InvocationStore for tests/local execution."""
@@ -167,6 +235,19 @@ class InMemoryInvocationStore:
         async with self._lock:
             if invocation.invocation_id in self._items:
                 raise ValueError(f"Invocation {invocation.invocation_id!r} already exists")
+            if any(
+                item.effect_identity == invocation.effect_identity
+                and item.status
+                in {
+                    InvocationStatus.CREATED,
+                    InvocationStatus.RUNNING,
+                    InvocationStatus.UNKNOWN,
+                }
+                for item in self._items.values()
+            ):
+                raise UnsafeEffectRetry(
+                    f"effect {invocation.effect_key!r} already has an active Invocation"
+                )
             persisted = invocation.model_copy(deep=True)
             self._items[persisted.invocation_id] = persisted
             return persisted.model_copy(deep=True)
@@ -198,6 +279,17 @@ class InMemoryInvocationStore:
             if item.effect_identity == identity
         ]
 
+    async def list_ambiguous(self, *, stale_before: datetime) -> list[Invocation]:
+        return [
+            item.model_copy(deep=True)
+            for item in sorted(self._items.values(), key=lambda candidate: candidate.created_at)
+            if item.status is InvocationStatus.UNKNOWN
+            or (
+                item.status in {InvocationStatus.CREATED, InvocationStatus.RUNNING}
+                and (item.started_at or item.created_at) <= stale_before
+            )
+        ]
+
 
 class EffectNotApplied(RuntimeError):
     """Provider proves the requested external effect definitely did not occur."""
@@ -217,6 +309,13 @@ ProviderResolver = Callable[
 ]
 ProviderExecutor = Callable[[ResolvedCapabilityProvider, Any], Awaitable[Any]]
 UsageExtractor = Callable[[Any], "InvocationUsage | None"]
+
+
+@runtime_checkable
+class ProviderReconciliationAdapter(Protocol):
+    """Provider-specific evidence seam; it cannot mutate Invocation state."""
+
+    async def reconcile(self, invocation: Invocation) -> InvocationReconciliationEvidence: ...
 
 
 class InvocationExecutionService:
@@ -303,6 +402,8 @@ class InvocationExecutionService:
                     run_id=run_id,
                     node_run_id=node_run_id,
                     attempt_id=attempt_id,
+                    workspace_id=binding.workspace_id,
+                    project_id=binding.project_id,
                     binding=resolved,
                     effect_key=effect_key,
                     request=request,
@@ -351,6 +452,162 @@ class InvocationExecutionService:
             usage=usage,
         )
 
+    async def discover_ambiguous(self, *, stale_before: datetime) -> list[Invocation]:
+        """List evidence-requiring effects without changing their state."""
+
+        return await self._store.list_ambiguous(stale_before=stale_before)
+
+    async def reconcile(
+        self,
+        invocation_id: str,
+        *,
+        disposition: ReconciliationDisposition,
+        source: str,
+        actor: str,
+        reason: str,
+        evidence: Any | None,
+        workspace_id: str,
+        project_id: str,
+        result: Any | None = None,
+    ) -> Invocation:
+        """Apply operator/provider evidence through the Invocation authority.
+
+        ``NOT_APPLIED`` deliberately becomes the same ``FAILED`` state produced
+        by :class:`EffectNotApplied`; the normal effect lock then gates the next
+        physical retry. No stale ``RUNNING`` row is changed merely because it is
+        old, and absent evidence can only record another blocked state.
+        """
+
+        disposition = ReconciliationDisposition(disposition)
+        async with self._effect_lock:
+            invocation = await self._store.get(invocation_id)
+            if invocation is None:
+                raise KeyError(f"Invocation {invocation_id!r} does not exist")
+            if invocation.status is InvocationStatus.COMPLETED:
+                return invocation
+            if invocation.status is InvocationStatus.FAILED:
+                return invocation
+            if invocation.status not in {
+                InvocationStatus.CREATED,
+                InvocationStatus.RUNNING,
+                InvocationStatus.UNKNOWN,
+            }:
+                raise UnsafeEffectRetry(
+                    f"Invocation {invocation_id!r} is not reconciliation-eligible"
+                )
+            return await self._reconcile_values_locked(
+                invocation,
+                disposition=disposition,
+                source=source,
+                actor=actor,
+                reason=reason,
+                evidence=evidence,
+                workspace_id=workspace_id,
+                project_id=project_id,
+                result=result,
+            )
+
+    async def reconcile_with_provider(
+        self,
+        invocation_id: str,
+        adapter: ProviderReconciliationAdapter,
+    ) -> Invocation:
+        """Ask a provider adapter for evidence, retaining lifecycle authority here."""
+
+        async with self._effect_lock:
+            invocation = await self._store.get(invocation_id)
+            if invocation is None:
+                raise KeyError(f"Invocation {invocation_id!r} does not exist")
+            try:
+                report = await adapter.reconcile(invocation)
+            except Exception as exc:
+                report = InvocationReconciliationEvidence(
+                    disposition=ReconciliationDisposition.INDETERMINATE,
+                    source="provider-adapter",
+                    actor="system",
+                    reason=f"reconciliation adapter failed: {type(exc).__name__}",
+                )
+            return await self._reconcile_locked(invocation, report)
+
+    async def _reconcile_locked(
+        self,
+        invocation: Invocation,
+        report: InvocationReconciliationEvidence,
+    ) -> Invocation:
+        """Apply an adapter report while the effect lock is held."""
+
+        if invocation.status in {InvocationStatus.COMPLETED, InvocationStatus.FAILED}:
+            return invocation
+        return await self._reconcile_values_locked(
+            invocation,
+            disposition=report.disposition,
+            source=report.source,
+            actor=report.actor,
+            reason=report.reason,
+            evidence=report.evidence,
+            workspace_id=invocation.workspace_id or invocation.binding.workspace_id,
+            project_id=invocation.project_id or invocation.binding.project_id,
+            result=report.result,
+        )
+
+    async def _reconcile_values_locked(
+        self,
+        invocation: Invocation,
+        *,
+        disposition: ReconciliationDisposition,
+        source: str,
+        actor: str,
+        reason: str,
+        evidence: Any | None,
+        workspace_id: str,
+        project_id: str,
+        result: Any | None,
+    ) -> Invocation:
+        """Shared implementation for provider reports and operator resolutions."""
+
+        # Re-entering through reconcile would deadlock; keep the guarded state
+        # transition in one helper so adapters cannot become lifecycle owners.
+        disposition = ReconciliationDisposition(disposition)
+        if disposition is not ReconciliationDisposition.INDETERMINATE and evidence is None:
+            raise ValueError("applied/not_applied reconciliation requires evidence")
+        expected_workspace = invocation.workspace_id or invocation.binding.workspace_id
+        expected_project = invocation.project_id or invocation.binding.project_id
+        if workspace_id != expected_workspace or project_id != expected_project:
+            raise ValueError("reconciliation scope does not match the Invocation")
+        audit = InvocationReconciliation(
+            disposition=disposition,
+            source=source,
+            actor=actor,
+            reason=reason,
+            evidence=evidence,
+            result=result,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            run_id=invocation.run_id,
+            node_run_id=invocation.node_run_id,
+            attempt_id=invocation.attempt_id,
+            invocation_id=invocation.invocation_id,
+        )
+        update: dict[str, Any] = {
+            "reconciliation_history": (*invocation.reconciliation_history, audit)
+        }
+        if disposition is ReconciliationDisposition.APPLIED:
+            update.update(
+                status=InvocationStatus.COMPLETED,
+                result=result,
+                error=None,
+                finished_at=datetime.now(UTC),
+            )
+        elif disposition is ReconciliationDisposition.NOT_APPLIED:
+            update.update(
+                status=InvocationStatus.FAILED,
+                error=reason,
+                finished_at=datetime.now(UTC),
+            )
+        else:
+            update["error"] = reason
+        return await self._store.save(invocation.model_copy(update=update))
+
     async def _terminalize(
         self,
         invocation: Invocation,
@@ -378,11 +635,15 @@ __all__ = [
     "InMemoryInvocationStore",
     "Invocation",
     "InvocationExecutionService",
+    "InvocationReconciliation",
+    "InvocationReconciliationEvidence",
     "InvocationStatus",
     "InvocationStore",
     "InvocationUsage",
     "ProviderExecutor",
+    "ProviderReconciliationAdapter",
     "ProviderResolver",
+    "ReconciliationDisposition",
     "UnsafeEffectRetry",
     "UsageExtractor",
 ]
