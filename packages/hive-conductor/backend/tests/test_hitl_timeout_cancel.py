@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 import pytest
+from services.workspace_authority import create_workspace
 
 from maistro.graph.definitions import Graph, Node
 from maistro.graph.durable_runs import InMemoryDurableRunStore
@@ -31,11 +32,16 @@ def _paused_node_run(run_id: str) -> NodeRun:
     return transition_node_run(node_run, RunStatus.PAUSED)
 
 
-def _paused_record(run_id: str, *, deadline: datetime) -> Any:
+def _paused_record(
+    run_id: str,
+    *,
+    deadline: datetime,
+    workspace_id: str = "ws-hitl-settlement",
+) -> Any:
     from maistro.graph.durable_runs.types import DurableRunRecord
 
     graph = Graph(
-        workspace_id="ws-hitl-settlement",
+        workspace_id=workspace_id,
         project_id="project-hitl-settlement",
         name="approval",
         nodes=[Node(node_id="ask", node_type="human.ask_question")],
@@ -82,7 +88,15 @@ def seeded(admin_client: Any) -> Iterator[_Seeded]:
     created: list[str] = []
 
     async def _seed(run_id: str, *, deadline: datetime) -> None:
-        await store.create(_paused_record(run_id, deadline=deadline))
+        workspace = await create_workspace(
+            creator_user_id="admin",
+            name=f"HITL timeout {run_id}",
+            persona_template_id="default",
+            checklist=[],
+            theme_id="default",
+            voice_tone_override=None,
+        )
+        await store.create(_paused_record(run_id, deadline=deadline, workspace_id=workspace.id))
         created.append(run_id)
 
     yield admin_client, store, _seed

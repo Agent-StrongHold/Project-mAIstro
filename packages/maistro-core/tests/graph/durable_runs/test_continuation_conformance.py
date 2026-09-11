@@ -15,6 +15,7 @@ refuse, not merely to accept.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -139,6 +140,34 @@ async def test_a_version_that_did_not_advance_is_refused(
     read = await store.get("run-1")
     assert read is not None
     assert read.version == 1
+
+
+async def test_sqlite_stale_writers_have_one_winner(tmp_path: Any) -> None:
+    """Separate process-like connections cannot both settle one continuation."""
+    db = tmp_path / "continuations-race.db"
+    async with aiosqlite.connect(db) as first_conn, aiosqlite.connect(db) as second_conn:
+        first = SqliteGraphContinuationStore(first_conn)
+        second = SqliteGraphContinuationStore(second_conn)
+        await first.ensure_schema()
+        await second.ensure_schema()
+        await first.create(_continuation("run-race"))
+        first_view = await first.get("run-race")
+        second_view = await second.get("run-race")
+        assert first_view is not None and second_view is not None
+
+        results = await asyncio.gather(
+            first.update(first_view.model_copy(update={"version": 2, "status": RunStatus.PAUSED})),
+            second.update(
+                second_view.model_copy(update={"version": 2, "status": RunStatus.WAITING})
+            ),
+            return_exceptions=True,
+        )
+
+        assert sum(not isinstance(result, BaseException) for result in results) == 1
+        assert sum(isinstance(result, ValueError) for result in results) == 1
+        persisted = await first.get("run-race")
+        assert persisted is not None
+        assert persisted.version == 2
 
 
 async def test_the_listings_agree_across_backends(store: GraphContinuationStore) -> None:

@@ -218,7 +218,14 @@ class SqliteGraphContinuationStore:
                 raise ValueError(
                     f"version regression: stored={existing.version} incoming={continuation.version}"
                 )
-            await self._write(continuation, insert=False)
+            if not await self._write(
+                continuation,
+                insert=False,
+                expected_version=existing.version,
+            ):
+                raise ValueError(
+                    f"version regression: stored={existing.version} incoming={continuation.version}"
+                )
             return _clone(continuation)
 
     async def delete(self, run_id: str) -> bool:
@@ -288,7 +295,13 @@ class SqliteGraphContinuationStore:
             return None
         return GraphContinuation.model_validate_json(row[0])
 
-    async def _write(self, continuation: GraphContinuation, *, insert: bool) -> None:
+    async def _write(
+        self,
+        continuation: GraphContinuation,
+        *,
+        insert: bool,
+        expected_version: int | None = None,
+    ) -> bool:
         values = (
             continuation.status.value,
             continuation.project_id,
@@ -306,14 +319,17 @@ class SqliteGraphContinuationStore:
                 (*values, continuation.run_id),
             )
         else:
-            await self._conn.execute(
+            cursor = await self._conn.execute(
                 """UPDATE graph_continuations
                       SET status = ?, project_id = ?, created_at = ?, resume_at = ?,
                           version = ?, continuation_json = ?
-                    WHERE run_id = ?""",
-                (*values, continuation.run_id),
+                    WHERE run_id = ? AND version = ?""",
+                (*values, continuation.run_id, expected_version),
             )
+            await self._conn.commit()
+            return cursor.rowcount == 1
         await self._conn.commit()
+        return True
 
 
 __all__ = [

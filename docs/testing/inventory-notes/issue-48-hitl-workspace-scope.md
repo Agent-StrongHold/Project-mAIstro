@@ -1,6 +1,7 @@
 ---
 inventory-delta:
   packages/hive-conductor/backend/tests: +1
+  packages/maistro-core/tests: +2
 ---
 # issue-48-hitl-workspace-scope
 
