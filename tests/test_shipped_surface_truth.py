@@ -31,6 +31,7 @@ def _matrix() -> dict:
         "schema_version": 2,
         "backend_roots": ["backend"],
         "cli_roots": [],
+        "cli_project_roots": [],
         "frontend_roots": ["frontend"],
         "backend_surfaces": [],
         "cli_surfaces": [],
@@ -117,6 +118,42 @@ sub.add_parser("run")
         ("rotate", "rotate_key"),
         ("run", "main"),
     ]
+
+
+def test_published_cli_entrypoint_is_discovered_and_requires_disposition(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "pyproject.toml",
+        """
+[project]
+name = "fixture"
+version = "0.0.0"
+[project.scripts]
+fixture-autorun = "cli.autorun:main"
+""",
+    )
+    _write(
+        tmp_path / "cli/autorun.py",
+        """
+import argparse
+
+def main(argv=None):
+    parser = argparse.ArgumentParser()
+    parser.parse_args(argv)
+    return 0
+""",
+    )
+    surfaces = discover_cli_surfaces(tmp_path, ["cli"], ["pyproject.toml"])
+    assert [(item.route, item.handler) for item in surfaces] == [("fixture-autorun", "main")]
+
+    (tmp_path / "backend").mkdir()
+    (tmp_path / "frontend").mkdir()
+    matrix = _matrix()
+    matrix["cli_roots"] = ["cli"]
+    matrix["cli_project_roots"] = ["pyproject.toml"]
+    errors = validate_matrix(tmp_path, matrix)
+    assert any(
+        "unclassified CLI surface" in error and "fixture-autorun" in error for error in errors
+    )
 
 
 def test_missing_cli_surface_disposition_fails_closed(tmp_path: Path) -> None:

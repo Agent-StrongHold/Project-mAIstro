@@ -1,5 +1,5 @@
 {
-  "_comment": "Truthful shipped-surface matrix (#465). Generated classification is reviewed content: every discovered mutating/WebSocket backend route, configured CLI command, and frontend execution signal must carry an exact disposition; scripts/check-shipped-surface-truth.py fails closed on drift. Facades stay visible as unresolved/disabled with owning issues rather than being hidden.",
+  "_comment": "Truthful shipped-surface matrix (#465). Generated classification is reviewed content: every discovered mutating/WebSocket backend route, configured CLI command or published project script, and frontend execution signal must carry an exact disposition; scripts/check-shipped-surface-truth.py fails closed on drift. Facades stay visible as unresolved/disabled with owning issues rather than being hidden.",
   "schema_version": 2,
   "backend_roots": [
     "packages"
@@ -2349,6 +2349,26 @@
       "truth_contract": "resolves or applies local installation artifacts; it does not create a user Run"
     },
     {
+      "source": "packages/maistro-bootstrap/src/maistro_bootstrap/cli.py",
+      "method": "CLI",
+      "route": "maistro-install",
+      "handler": "run",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "published installer entrypoint owns local bootstrap artifacts, not canonical user-work execution",
+      "truth_contract": "resolves or applies local installation artifacts; it does not create a user Run"
+    },
+    {
+      "source": "packages/maistro-core/src/maistro/cli/__init__.py",
+      "method": "CLI",
+      "route": "maistro",
+      "handler": "main",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "published maistro entrypoint dispatches the canonical operator command surface",
+      "effect_owner": "maistro-core operator command implementation"
+    },
+    {
       "source": "packages/maistro-core/src/maistro/cli/_approvals.py",
       "method": "CLI",
       "route": "approve",
@@ -2511,6 +2531,16 @@
     {
       "source": "packages/maistro-registry/src/maistro_registry/cli.py",
       "method": "CLI",
+      "route": "maistro-registry",
+      "handler": "main",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "published governance entrypoint is deliberately local to the operator checkout",
+      "truth_contract": "operator-side ADR/spec registry validation or artifact generation; it does not run user work"
+    },
+    {
+      "source": "packages/maistro-registry/src/maistro_registry/cli.py",
+      "method": "CLI",
       "route": "validate",
       "handler": "main",
       "disposition": "local-only",
@@ -2599,6 +2629,26 @@
       "effect_owner": "maistro-rsi self-improvement cycle and promotion gate"
     },
     {
+      "source": "packages/maistro-rsi/src/maistro_rsi/autorun.py",
+      "method": "CLI",
+      "route": "maistro-rsi-autorun",
+      "handler": "main",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "published RSI autorun entrypoint delegates to the explicit autonomous experimentation and promotion lifecycle",
+      "effect_owner": "maistro-rsi autonomous cycle and promotion gate"
+    },
+    {
+      "source": "packages/maistro-rsi/src/maistro_rsi/cli.py",
+      "method": "CLI",
+      "route": "maistro-rsi",
+      "handler": "main",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "published RSI entrypoint delegates to the RSI cycle and its explicit promotion gate",
+      "effect_owner": "maistro-rsi self-improvement cycle and promotion gate"
+    },
+    {
       "source": "packages/maistro-rsi/src/maistro_rsi/cli.py",
       "method": "CLI",
       "route": "run",
@@ -2608,5 +2658,11 @@
       "reason": "shipped RSI command delegates to the RSI cycle and its explicit promotion gate",
       "effect_owner": "maistro-rsi self-improvement cycle and promotion gate"
     }
+  ],
+  "cli_project_roots": [
+    "packages/maistro-core/pyproject.toml",
+    "packages/maistro-rsi/pyproject.toml",
+    "packages/maistro-bootstrap/pyproject.toml",
+    "packages/maistro-registry/pyproject.toml"
   ]
 }

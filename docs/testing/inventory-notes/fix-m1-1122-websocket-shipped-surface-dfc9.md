@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +4
+  tests/: +5
 ---
 # fix-m1-1122-websocket-shipped-surface-dfc9
 
@@ -14,6 +14,9 @@ Four new tests in `test_shipped_surface_truth.py` for #1122:
   an unclassified backend surface, the same as an undisposed mutating HTTP
   route already does.
 - A Typer command and argparse subcommand are discovered as `CLI` surfaces.
+- A published PEP 621 `project.scripts` entrypoint is discovered even when its
+  module has only a standalone argparse parser, and an undisposed entrypoint
+  fails closed as an unclassified CLI surface.
 - An undisposed CLI command fails closed as an unclassified CLI surface.
 
 No tests removed or renamed.

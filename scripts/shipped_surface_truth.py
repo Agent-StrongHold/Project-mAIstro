@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import json
 import re
+import tomllib
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -275,10 +276,63 @@ def _cli_command_surfaces(path: Path, repo_root: Path) -> list[BackendSurface]:
     return sorted(surfaces)
 
 
-def discover_cli_surfaces(repo_root: Path, roots: list[str]) -> list[BackendSurface]:
+def _module_source(project_file: Path, module: str) -> Path | None:
+    """Resolve a PEP 621 script target without importing the package."""
+    module_path = Path(*module.split("."))
+    package_root = project_file.parent
+    for source_root in (package_root / "src", package_root):
+        candidate = source_root / f"{module_path}.py"
+        if candidate.is_file():
+            return candidate
+        candidate = source_root / module_path / "__init__.py"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _cli_project_script_surfaces(path: Path, repo_root: Path) -> list[BackendSurface]:
+    try:
+        document = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
+        raise ValueError(f"cannot read CLI project metadata: {path}") from exc
+    project = document.get("project", {})
+    if not isinstance(project, dict):
+        raise ValueError(f"invalid project metadata in {path}")
+    scripts = project.get("scripts", {})
+    if not isinstance(scripts, dict):
+        raise ValueError(f"invalid project.scripts metadata in {path}")
+    surfaces: list[BackendSurface] = []
+    for command, target in scripts.items():
+        if not isinstance(command, str) or not isinstance(target, str):
+            raise ValueError(f"invalid CLI project script in {path}: {command!r}")
+        module, separator, handler = target.partition(":")
+        if not separator or not module or not handler:
+            raise ValueError(f"invalid CLI project script target in {path}: {target!r}")
+        source_path = _module_source(path, module)
+        if source_path is None:
+            raise ValueError(f"CLI project script target does not exist in {path}: {target!r}")
+        surfaces.append(
+            BackendSurface(
+                source=source_path.relative_to(repo_root).as_posix(),
+                method=CLI_METHOD,
+                route=command,
+                handler=handler,
+            )
+        )
+    return surfaces
+
+
+def discover_cli_surfaces(
+    repo_root: Path, roots: list[str], project_roots: list[str] | None = None
+) -> list[BackendSurface]:
     surfaces: list[BackendSurface] = []
     for path in _iter_source_files(repo_root, roots, (".py",)):
         surfaces.extend(_cli_command_surfaces(path, repo_root))
+    for project_root in project_roots or []:
+        project_file = repo_root / project_root
+        if not project_file.is_file():
+            raise ValueError(f"CLI project root does not exist: {project_root}")
+        surfaces.extend(_cli_project_script_surfaces(project_file, repo_root))
     return sorted(set(surfaces))
 
 
@@ -452,7 +506,11 @@ def _frontend_entry_errors(
 
 def validate_matrix(repo_root: Path, matrix: dict[str, Any], *, strict: bool = False) -> list[str]:
     backend = discover_backend_surfaces(repo_root, list(matrix.get("backend_roots", [])))
-    cli = discover_cli_surfaces(repo_root, list(matrix.get("cli_roots", [])))
+    cli = discover_cli_surfaces(
+        repo_root,
+        list(matrix.get("cli_roots", [])),
+        list(matrix.get("cli_project_roots", [])),
+    )
     frontend = discover_frontend_surfaces(repo_root, list(matrix.get("frontend_roots", [])))
     backend_entries, duplicate_backend = _index_entries(
         list(matrix.get("backend_surfaces", [])), _backend_entry_key, "backend"
@@ -516,7 +574,11 @@ def discovered_inventory(
         ],
         "cli_surfaces": [
             surface.__dict__
-            for surface in discover_cli_surfaces(repo_root, list(matrix.get("cli_roots", [])))
+            for surface in discover_cli_surfaces(
+                repo_root,
+                list(matrix.get("cli_roots", [])),
+                list(matrix.get("cli_project_roots", [])),
+            )
         ],
         "frontend_surfaces": [
             surface.__dict__
