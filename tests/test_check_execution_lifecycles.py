@@ -134,6 +134,29 @@ RunStatus = _RunStates | Literal[
     }
 
 
+def test_literal_field_annotations_are_discovered_without_broad_literal_noise(gate) -> None:
+    source = """
+import typing as t
+from typing_extensions import Literal as L
+
+_HelperStates = L["queued", "running", "failed"]
+
+class Mission:
+    status: t.Literal[
+        "pending",
+        "running",
+        "completed",
+        "failed",
+    ]
+    execution_status: _HelperStates
+    kind: L["queued", "running", "failed"]
+"""
+    assert gate.work_state_literals(source, "pkg.jobs") == {
+        "pkg.jobs::Mission.status": {"PENDING", "RUNNING", "COMPLETED", "FAILED"},
+        "pkg.jobs::Mission.execution_status": {"QUEUED", "RUNNING", "FAILED"},
+    }
+
+
 def test_the_real_rsi_literal_is_discovered(gate) -> None:
     found = gate.discover()
     assert found["services.rsi::RunStatus"] == {
@@ -142,6 +165,25 @@ def test_the_real_rsi_literal_is_discovered(gate) -> None:
         "COMPLETED",
         "ERRORED",
         "STOPPED",
+    }
+    assert found["models.schemas::Mission.status"] == {
+        "PENDING",
+        "RUNNING",
+        "COMPLETED",
+        "FAILED",
+        "PAUSED",
+    }
+    assert found["models.schemas::MissionStep.status"] == {
+        "PENDING",
+        "RUNNING",
+        "COMPLETED",
+        "FAILED",
+        "SKIPPED",
+    }
+    assert found["maistro.orchestrator.waves.types::WaveHandle.status"] == {
+        "RUNNING",
+        "SUCCEEDED",
+        "FAILED",
     }
 
 
