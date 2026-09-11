@@ -10,9 +10,9 @@ a provider merely because one happens to be registered elsewhere.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from functools import lru_cache
 from typing import Any
 
+from maistro.capabilities.approval_store import ApprovalStore, InMemoryApprovalStore
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.binding_store import BindingStore, InMemoryBindingStore
 from maistro.capabilities.credential_routing import CredentialRouting
@@ -60,6 +60,7 @@ class CapabilityEffectContext:
     invocations: GovernedInvocationExecutionService
     invocation_store: InvocationStore
     event_store: EventStore
+    approval_store: ApprovalStore | None = None
     credentials: CredentialRouter = field(default_factory=CredentialRouter)
 
     def credential_routing(self) -> CredentialRouting:
@@ -73,6 +74,33 @@ class CapabilityEffectContext:
         """
 
         return CredentialRouting(self.credentials)
+
+
+def build_effect_context(
+    *,
+    bindings: BindingStore,
+    invocation_store: InvocationStore,
+    event_store: EventStore,
+    approval_store: ApprovalStore | None = None,
+    policy_evaluator: PolicyEvaluator | None = None,
+    credentials: CredentialRouter | None = None,
+) -> CapabilityEffectContext:
+    """Compose one effect context from backend-selected stores."""
+    invocation_service = InvocationExecutionService(store=invocation_store)
+    governed = GovernedInvocationExecutionService(
+        invocation_service=invocation_service,
+        event_store=event_store,
+        policy_evaluator=policy_evaluator or _m1_binding_authorized_policy,
+        approval_store=approval_store,
+    )
+    return CapabilityEffectContext(
+        bindings=bindings,
+        invocations=governed,
+        invocation_store=invocation_store,
+        event_store=event_store,
+        approval_store=approval_store,
+        credentials=credentials or CredentialRouter(),
+    )
 
 
 def new_in_memory_effect_context(
@@ -90,22 +118,25 @@ def new_in_memory_effect_context(
     binding_store = InMemoryBindingStore()
     invocation_store = InMemoryInvocationStore()
     event_store = InMemoryEventStore()
-    invocation_service = InvocationExecutionService(store=invocation_store)
-    governed = GovernedInvocationExecutionService(
-        invocation_service=invocation_service,
-        event_store=event_store,
-        policy_evaluator=policy_evaluator or _m1_binding_authorized_policy,
-    )
-    return CapabilityEffectContext(
+    return build_effect_context(
         bindings=binding_store,
-        invocations=governed,
         invocation_store=invocation_store,
         event_store=event_store,
-        credentials=credentials or CredentialRouter(),
+        approval_store=InMemoryApprovalStore(),
+        policy_evaluator=policy_evaluator,
+        credentials=credentials,
     )
 
 
-@lru_cache(maxsize=1)
+_process_effect_context: CapabilityEffectContext | None = None
+
+
+def configure_default_effect_context(context: CapabilityEffectContext) -> None:
+    """Publish the Container-owned context to registry-constructed nodes."""
+    global _process_effect_context
+    _process_effect_context = context
+
+
 def default_effect_context() -> CapabilityEffectContext:
     """Process-wide canonical context used by registry-constructed effect nodes.
 
@@ -114,11 +145,15 @@ def default_effect_context() -> CapabilityEffectContext:
     ledger. No default Binding is created here; absence remains a hard refusal.
     """
 
-    return new_in_memory_effect_context()
+    if _process_effect_context is None:
+        return new_in_memory_effect_context()
+    return _process_effect_context
 
 
 __all__ = [
     "CapabilityEffectContext",
+    "build_effect_context",
+    "configure_default_effect_context",
     "default_effect_context",
     "new_in_memory_effect_context",
 ]

@@ -9,18 +9,11 @@ than retryable failure: an exception can arrive after the remote system has
 already committed the side effect. A provider/adapter may raise
 :class:`EffectNotApplied` only when it can prove no external effect occurred.
 
-**Nothing in this repository constructs an Invocation outside tests.** Neither
-:class:`InvocationExecutionService` nor its governed wrapper is instantiated by
-the container, a route, or a node; the one caller of the seam,
-``HarnessSessionManager.send_invocation``, is itself unreached. This layer is the
-boundary #55 is going to route provider calls through, and it is written and
-tested ahead of that. Read it as a specification with a conformance suite, not
-as a description of what runs today: an id here does not appear in a log line,
-and no stored Invocation row exists in any deployment.
-
-Stating that is the point of the paragraph. A reader who finds a persisted
-effect-key ledger reasonably assumes retries are already deduplicated by it,
-and would then be wrong about how the running system recovers.
+The Container composes this service for the shipped effect path. In particular,
+``agent.spawn_harness`` and the scheduled-attempt executor resolve Bindings and
+call the governed service through ``CapabilityEffectContext``. Durable stores
+are selected by the Container backend; direct in-memory construction remains
+available for tests and explicitly ephemeral deployments.
 """
 
 from __future__ import annotations
@@ -142,6 +135,8 @@ class InvocationStore(Protocol):
 
     async def create(self, invocation: Invocation) -> Invocation: ...
 
+    async def reopen_failed(self, existing: Invocation, replacement: Invocation) -> Invocation: ...
+
     async def get(self, invocation_id: str) -> Invocation | None: ...
 
     async def save(self, invocation: Invocation) -> Invocation: ...
@@ -170,6 +165,18 @@ class InMemoryInvocationStore:
             persisted = invocation.model_copy(deep=True)
             self._items[persisted.invocation_id] = persisted
             return persisted.model_copy(deep=True)
+
+    async def reopen_failed(self, existing: Invocation, replacement: Invocation) -> Invocation:
+        async with self._lock:
+            current = self._items.get(existing.invocation_id)
+            if current is None or current.status is not InvocationStatus.FAILED:
+                raise UnsafeEffectRetry(
+                    f"effect {replacement.effect_key!r} is no longer eligible for retry"
+                )
+            # In-memory keeps physical retry history for diagnostics; durable
+            # stores replace the single logical-effect row under their unique key.
+            self._items[replacement.invocation_id] = replacement.model_copy(deep=True)
+            return replacement.model_copy(deep=True)
 
     async def get(self, invocation_id: str) -> Invocation | None:
         item = self._items.get(invocation_id)
@@ -222,8 +229,8 @@ UsageExtractor = Callable[[Any], "InvocationUsage | None"]
 class InvocationExecutionService:
     """Resolve one Binding, persist one provider call, and guard effect retries.
 
-    Unreached in production: nothing constructs this outside tests, and the
-    effect-retry guard below therefore protects no live call yet (#55).
+    The Container constructs this service for governed capability effects; the
+    in-memory store remains the explicit local/test composition.
     """
 
     def __init__(self, *, store: InvocationStore) -> None:
@@ -264,7 +271,9 @@ class InvocationExecutionService:
         """Execute one effect, deduplicating or blocking unsafe recovery.
 
         A completed prior Invocation for the same logical effect is returned
-        without another provider call. ``CREATED``, ``RUNNING``, or ``UNKNOWN``
+        without another provider call. Durable stores also enforce the logical
+        identity at insert time, so racing replicas cannot both create rows.
+        ``CREATED``, ``RUNNING``, or ``UNKNOWN``
         history blocks repetition because the remote outcome cannot be proven
         absent. Only a prior ``FAILED`` record, produced by ``EffectNotApplied``,
         is eligible for a new physical Invocation under a later Attempt.
@@ -278,11 +287,14 @@ class InvocationExecutionService:
                 binding_id=binding.binding_id,
                 effect_key=effect_key,
             )
+            failed_effect: Invocation | None = None
             if history:
                 latest = history[-1]
                 if latest.status is InvocationStatus.COMPLETED:
                     return latest
-                if latest.status in {
+                if latest.status is InvocationStatus.FAILED:
+                    failed_effect = latest
+                elif latest.status in {
                     InvocationStatus.CREATED,
                     InvocationStatus.RUNNING,
                     InvocationStatus.UNKNOWN,
@@ -298,15 +310,18 @@ class InvocationExecutionService:
                     f"capability {binding.capability!r} unavailable: {provider.reason}"
                 )
             resolved = ResolvedBinding.from_provider(binding, provider)
-            invocation = await self._store.create(
-                Invocation(
-                    run_id=run_id,
-                    node_run_id=node_run_id,
-                    attempt_id=attempt_id,
-                    binding=resolved,
-                    effect_key=effect_key,
-                    request=request,
-                )
+            candidate = Invocation(
+                run_id=run_id,
+                node_run_id=node_run_id,
+                attempt_id=attempt_id,
+                binding=resolved,
+                effect_key=effect_key,
+                request=request,
+            )
+            invocation = (
+                await self._store.reopen_failed(failed_effect, candidate)
+                if failed_effect is not None
+                else await self._store.create(candidate)
             )
             running = invocation.model_copy(
                 update={
