@@ -49,6 +49,32 @@ class DurableRunStore(Protocol):
         """Attach an answer and queue the paused canonical Run for resume."""
         ...
 
+    async def complete_remote_delegation(
+        self,
+        run_id: str,
+        node_id: str,
+        *,
+        task_id: str,
+        child_run_id: str,
+        status: str,
+        result: str | None = None,
+        error: str | None = None,
+        at: datetime | None = None,
+    ) -> DurableRunRecord:
+        """Correlate one remote result and queue its parked parent Run."""
+        ...
+
+    async def complete_parked_wait(
+        self,
+        run_id: str,
+        node_id: str,
+        answer: dict[str, Any],
+        *,
+        at: datetime | None = None,
+    ) -> DurableRunRecord:
+        """Attach a provider completion to a non-human answer-gated pause."""
+        ...
+
     async def timeout_hitl(
         self,
         run_id: str,

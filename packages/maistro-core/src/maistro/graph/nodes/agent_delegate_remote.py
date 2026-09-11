@@ -22,6 +22,7 @@ only path that already defines one) rather than a new one.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
@@ -173,25 +174,33 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         answers = (ctx.metadata or {}).get("hitl_answers") or {}
         resumed = answers.get(ctx.node_id)
         if resumed is not None:
-            return await self._resume(resumed)
+            return await self._resume(resumed, parent_run_id=ctx.run_id)
 
         if inputs.peer_name is not None:
             return await self._dispatch_cross_instance(inputs, ctx)
         return await self._dispatch_in_process(inputs, ctx)
 
-    async def _resume(self, resumed: dict[str, Any]) -> DelegateRemoteOut:
+    async def _resume(self, resumed: dict[str, Any], *, parent_run_id: str) -> DelegateRemoteOut:
         """Settle the child Run, then report what the delegate answered.
 
-        The Run id comes from `resumed["_pause"]`, which the store stamps from
-        the pause *this node* wrote, never from the submitted answer. The
+        The child Run id comes from `resumed["_pause"]["metadata"]`, which the
+        store stamps from the pause *this node* wrote, never from the submitted
+        answer. The
         responder is the party being waited on; letting it name the execution
         identity it is answering for would let any caller redirect the outcome
-        onto someone else's Run. The submitted `run_id`, if there is one, is
-        ignored rather than compared -- there is nothing to gain from a
-        mismatch except a second way to be wrong.
+        onto someone else's Run. The legacy direct-node shape is accepted only
+        after the child is checked against this parent; production completions
+        always use the server-stamped nested entry.
         """
         pause = resumed.get("_pause")
-        run_id = str(pause.get("run_id") or "") if isinstance(pause, dict) else ""
+        pause_metadata = pause.get("metadata") if isinstance(pause, Mapping) else None
+        # The canonical completion API always stamps a full pause entry. Keep
+        # the old direct-node test shape as a compatibility path, but bind it
+        # to this parent before touching any child Run.
+        if isinstance(pause_metadata, Mapping):
+            run_id = str(pause_metadata.get("run_id") or "")
+        else:
+            run_id = str(pause.get("run_id") or "") if isinstance(pause, Mapping) else ""
         raw_status = str(resumed.get("status", "completed"))
         status = _coerce_status(raw_status)
         error = resumed.get("error")
@@ -209,10 +218,12 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             error=error,
             timed_out=bool(resumed.get("timed_out", False)),
         )
-        await self._terminalize_child(run_id, out)
+        await self._terminalize_child(run_id, out, parent_run_id=parent_run_id)
         return out
 
-    async def _terminalize_child(self, run_id: str, out: DelegateRemoteOut) -> None:
+    async def _terminalize_child(
+        self, run_id: str, out: DelegateRemoteOut, *, parent_run_id: str
+    ) -> None:
         """Walk the child Run from `created` to the outcome the delegate reported.
 
         Without this the child is persisted `created` and stays there forever:
@@ -240,6 +251,12 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             # A store that forgot the child, or a duplicate resume. Neither is
             # this node's to repair, and neither should sink a delegation whose
             # answer is already in hand.
+            return
+
+        if child.parent_run_id != parent_run_id:
+            # A compatibility-shaped answer may not redirect a child from a
+            # different parent. Canonical completions are checked even earlier
+            # by complete_remote_delegation against the persisted pause.
             return
 
         target_name, via_running = _CHILD_OUTCOME[out.status]

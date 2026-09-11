@@ -313,6 +313,22 @@ TIMER_RESUMABLE_PAUSE_REASONS = frozenset(
     if condition == RESUME_ON_ELAPSED
 )
 
+#: The authoritative production seam that can satisfy each resumable condition.
+#:
+#: This is deliberately a path, not another scheduler. Event/answer producers
+#: call the canonical durable store, while the recovery tick owns elapsed
+#: deadlines. The architecture test keeps a newly registered pause from being
+#: classified as resumable without naming the caller that can wake it.
+PAUSE_PRODUCTION_WAKERS: dict[str, str] = {
+    PAUSE_AWAITING_HUMAN_ANSWER: "DurableRunStore.submit_hitl_answer",
+    PAUSE_AWAITING_HUMAN_APPROVAL: "DurableRunStore.submit_hitl_answer",
+    PAUSE_AWAITING_HUMAN_REVIEW: "DurableRunStore.submit_hitl_answer",
+    PAUSE_AWAITING_ROLE_DELEGATE: "DurableRunStore.submit_hitl_answer",
+    PAUSE_AWAITING_REMOTE_DELEGATION: "DurableRunStore.complete_remote_delegation",
+    PAUSE_AWAITING_HARNESS: "DurableRunStore.complete_parked_wait",
+    PAUSE_WAITING_ON_JIRA_SUBTASKS: "resume_due_graph_runs(timer)",
+}
+
 #: Where a resumed execution finds what its own previous pause recorded.
 #:
 #: A node that pauses to poll needs its first-reach timestamp back, or its

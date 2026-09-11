@@ -100,7 +100,7 @@ def test_elapsed_timer_wait_still_redispatches() -> None:
 
 
 @pytest.mark.asyncio
-async def test_answer_deadline_is_persisted_as_pause_evidence_but_not_timer_due() -> None:
+async def test_remote_deadline_is_indexed_for_its_timeout_waker() -> None:
     record = _record(status=RunStatus.RUNNING)
     store = InMemoryDurableRunStore()
     await store.create(record)
@@ -124,7 +124,7 @@ async def test_answer_deadline_is_persisted_as_pause_evidence_but_not_timer_due(
     )
 
     assert checkpointed.run.status is RunStatus.WAITING
-    assert checkpointed.resume_at is None
+    assert checkpointed.resume_at == deadline
     assert checkpointed.graph_state.metadata["pauses"]["wait-step"]["resume_at"] == (
         deadline.isoformat()
     )

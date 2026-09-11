@@ -22,7 +22,12 @@ from maistro.runs.store import RunIntegrityError, RunStore
 
 from .continuation import GraphContinuation, GraphContinuationStore
 from .spine import mirror_lifecycle
-from .stores import answer_record, settle_hitl_record
+from .stores import (
+    _parked_wait_answer_record,
+    _remote_completion_record,
+    answer_record,
+    settle_hitl_record,
+)
 from .types import DurableRunRecord
 
 _RECOVERY_VISIBLE_STATUSES = frozenset({RunStatus.WAITING, RunStatus.PAUSED, RunStatus.RUNNING})
@@ -192,6 +197,88 @@ class CanonicalDurableRunStore:
             run_id,
             lambda current: answer_record(current, node_id, answer, at=at),
         )
+
+    async def complete_remote_delegation(
+        self,
+        run_id: str,
+        node_id: str,
+        *,
+        task_id: str,
+        child_run_id: str,
+        status: str,
+        result: str | None = None,
+        error: str | None = None,
+        at: datetime | None = None,
+    ) -> DurableRunRecord:
+        async with self._lock:
+            current = await self.get(run_id)
+            if current is None:
+                raise KeyError(f"no such run: {run_id!r}")
+            existing = current.hitl_answers.get(node_id)
+            if (
+                existing is not None
+                and existing.get("task_id") == task_id
+                and existing.get("child_run_id") == child_run_id
+                and existing.get("status") == status
+            ):
+                return current
+            node_run_id = next(
+                (
+                    node.node_run_id
+                    for node in reversed(current.node_runs)
+                    if node.node_id == node_id and node.status is RunStatus.WAITING
+                ),
+                None,
+            )
+            if node_run_id is None:
+                raise ValueError(f"run {run_id!r} has no waiting NodeRun for node {node_id!r}")
+            child = await self._run_store.get_run(child_run_id)
+            if child is None:
+                raise ValueError(
+                    f"remote completion child_run_id names unknown child Run {child_run_id!r}"
+                )
+            if child.parent_run_id != run_id or child.parent_node_run_id != node_run_id:
+                raise ValueError("remote completion child Run is not owned by the parked NodeRun")
+            updated = _remote_completion_record(
+                current,
+                node_id,
+                task_id=task_id,
+                child_run_id=child_run_id,
+                status=status,
+                result=result,
+                error=error,
+                at=at,
+            )
+            await self._continuations.update(GraphContinuation.of(updated))
+            await mirror_lifecycle(updated, run_store=self._run_store)
+            return await self._require(run_id)
+
+    async def complete_parked_wait(
+        self,
+        run_id: str,
+        node_id: str,
+        answer: dict[str, Any],
+        *,
+        at: datetime | None = None,
+    ) -> DurableRunRecord:
+        return await self._mutate_wait(
+            run_id,
+            lambda current: _parked_wait_answer_record(current, node_id, answer, at=at),
+        )
+
+    async def _mutate_wait(
+        self,
+        run_id: str,
+        mutate: Callable[[DurableRunRecord], DurableRunRecord],
+    ) -> DurableRunRecord:
+        async with self._lock:
+            current = await self.get(run_id)
+            if current is None:
+                raise KeyError(f"no such run: {run_id!r}")
+            updated = mutate(current)
+            await self._continuations.update(GraphContinuation.of(updated))
+            await mirror_lifecycle(updated, run_store=self._run_store)
+            return await self._require(run_id)
 
     async def timeout_hitl(
         self,

@@ -741,7 +741,11 @@ async def _checkpoint_paused_frontier(
         record.run,
         RunStatus.PAUSED if human else RunStatus.WAITING,
     )
-    resume_at = _earliest_resume(_timer_resume_at(item.result) for item in paused)
+    # Every deadline is indexed for the production timeout owner, even when
+    # re-entering the node is unsafe. The recovery tick classifies the reason
+    # before executing; answer-gated waits are completed or timed out through
+    # their waker instead of dispatched again.
+    resume_at = _earliest_resume(item.result.resume_at for item in paused)
     return await _checkpoint(
         record,
         store=store,

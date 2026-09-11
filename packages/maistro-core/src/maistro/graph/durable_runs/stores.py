@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 from collections.abc import Callable, Mapping
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
 from maistro.graph.execution_state import GraphExecutionState, thaw_json_value
+from maistro.graph.nodes.base import PAUSE_AWAITING_REMOTE_DELEGATION
 from maistro.runs.lifecycle import settle_open_node_run, transition_node_run, transition_run
 from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
 
@@ -69,6 +70,182 @@ def _pause_metadata_after_answer(
     )
     metadata["pause"] = pauses[first_node_id]
     return metadata
+
+
+def _pause_entry(record: DurableRunRecord, node_id: str) -> Mapping[str, Any]:
+    pauses = record.graph_state.metadata.get("pauses", {})
+    pause = pauses.get(node_id) if isinstance(pauses, Mapping) else None
+    if not isinstance(pause, Mapping):
+        raise ValueError(f"run {record.run_id!r} has no persisted pause for node {node_id!r}")
+    return pause
+
+
+def _remaining_wait_deadline(record: DurableRunRecord, node_ids: set[str]) -> datetime | None:
+    deadlines: list[datetime] = []
+    for node_id in node_ids:
+        pause = _pause_entry(record, node_id)
+        raw = pause.get("resume_at")
+        if not isinstance(raw, str):
+            continue
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except ValueError:
+            continue
+        deadlines.append(parsed)
+    return min(deadlines) if deadlines else None
+
+
+def _remote_completion_record(  # noqa: C901
+    record: DurableRunRecord,
+    node_id: str,
+    *,
+    task_id: str,
+    child_run_id: str,
+    status: str,
+    result: str | None,
+    error: str | None,
+    at: datetime | None,
+) -> DurableRunRecord:
+    """Record one authenticated A2A completion against its parked frontier."""
+    if not task_id or not child_run_id:
+        raise ValueError("remote completion requires task_id and child_run_id")
+    if status not in {"completed", "failed", "rejected", "timed_out"}:
+        raise ValueError(f"unsupported remote delegation status {status!r}")
+    existing = record.hitl_answers.get(node_id)
+    if existing is not None:
+        same = (
+            existing.get("task_id") == task_id
+            and existing.get("child_run_id") == child_run_id
+            and existing.get("status") == status
+        )
+        if same:
+            return record
+        raise ValueError(f"run {record.run_id!r} already has a different remote completion")
+    if record.run.status is not RunStatus.WAITING:
+        raise ValueError(
+            f"run {record.run_id!r} is not waiting on remote delegation "
+            f"(status={record.run.status})"
+        )
+    if node_id not in record.graph_state.active_node_ids:
+        raise ValueError(f"run {record.run_id!r} is not waiting on node {node_id!r}")
+    node_runs = list(record.node_runs)
+    paused_index = next(
+        (
+            index
+            for index in range(len(node_runs) - 1, -1, -1)
+            if node_runs[index].node_id == node_id and node_runs[index].status is RunStatus.WAITING
+        ),
+        None,
+    )
+    if paused_index is None:
+        raise ValueError(f"run {record.run_id!r} has no waiting NodeRun for node {node_id!r}")
+
+    pause = _pause_entry(record, node_id)
+    metadata = pause.get("metadata")
+    if (
+        not isinstance(metadata, Mapping)
+        or metadata.get("paused_reason") != PAUSE_AWAITING_REMOTE_DELEGATION
+    ):
+        raise ValueError(f"run {record.run_id!r} is not waiting on remote delegation")
+    if metadata.get("task_id") != task_id:
+        raise ValueError("remote completion task_id does not match the parked delegation")
+    if metadata.get("run_id") != child_run_id:
+        raise ValueError("remote completion child_run_id does not match the parked delegation")
+
+    moment = at if at is not None else datetime.now(UTC)
+    if moment.tzinfo is None:
+        raise ValueError("remote completion time must include a timezone")
+    moment = moment.astimezone(UTC)
+    answered: dict[str, object] = {
+        "task_id": task_id,
+        "child_run_id": child_run_id,
+        "status": status,
+        "result": result,
+        "error": error,
+        "timed_out": status == "timed_out",
+        "answered_at": moment.isoformat(),
+        # The node consumes the server-authored identity after the pause entry
+        # is removed. Never accept this value from the completion producer.
+        "_pause": dict(pause),
+    }
+    answers = dict(record.hitl_answers)
+    answers[node_id] = answered
+    state_metadata: dict[str, Any] = dict(record.graph_state.metadata)
+    state_metadata["hitl_answers"] = answers
+    state_metadata = _pause_metadata_after_answer(record, state_metadata, node_id)
+    node_runs[paused_index] = transition_node_run(
+        node_runs[paused_index], RunStatus.QUEUED, at=moment
+    )
+    remaining = {
+        node.node_id
+        for node in node_runs
+        if node.status in {RunStatus.WAITING, RunStatus.PAUSED} and node.node_id != node_id
+    }
+    run = record.run
+    if not remaining:
+        run = transition_run(run, RunStatus.QUEUED, at=moment)
+        resume_at = None
+    else:
+        resume_at = _remaining_wait_deadline(record, remaining)
+    return _replace_record(
+        record,
+        run=run,
+        graph_state=_replace_state(record.graph_state, metadata=state_metadata),
+        node_runs=tuple(node_runs),
+        resume_at=resume_at,
+        version=record.version + 1,
+    )
+
+
+def _parked_wait_answer_record(
+    record: DurableRunRecord,
+    node_id: str,
+    answer: dict[str, Any],
+    *,
+    at: datetime | None = None,
+) -> DurableRunRecord:
+    """Wake a machine wait without allowing the node to be re-dispatched."""
+    if record.run.status is not RunStatus.WAITING:
+        raise ValueError(f"run {record.run_id!r} is not waiting on a provider")
+    if node_id not in record.graph_state.active_node_ids:
+        raise ValueError(f"run {record.run_id!r} is not waiting on node {node_id!r}")
+    pause = _pause_entry(record, node_id)
+    if pause.get("kind") != "wait":
+        raise ValueError(f"run {record.run_id!r} is not a machine wait")
+    node_runs = list(record.node_runs)
+    paused_index = next(
+        (
+            index
+            for index in range(len(node_runs) - 1, -1, -1)
+            if node_runs[index].node_id == node_id and node_runs[index].status is RunStatus.WAITING
+        ),
+        None,
+    )
+    if paused_index is None:
+        raise ValueError(f"run {record.run_id!r} has no waiting NodeRun for node {node_id!r}")
+    moment = at if at is not None else datetime.now(UTC)
+    if moment.tzinfo is None:
+        raise ValueError("provider completion time must include a timezone")
+    moment = moment.astimezone(UTC)
+    answered = {**answer, "answered_at": moment.isoformat(), "_pause": dict(pause)}
+    answers = dict(record.hitl_answers)
+    answers[node_id] = answered
+    metadata = dict(record.graph_state.metadata)
+    metadata["hitl_answers"] = answers
+    metadata = _pause_metadata_after_answer(record, metadata, node_id)
+    node_runs[paused_index] = transition_node_run(
+        node_runs[paused_index], RunStatus.QUEUED, at=moment
+    )
+    remaining = any(node.status in {RunStatus.WAITING, RunStatus.PAUSED} for node in node_runs)
+    run = record.run if remaining else transition_run(record.run, RunStatus.QUEUED, at=moment)
+    return _replace_record(
+        record,
+        run=run,
+        graph_state=_replace_state(record.graph_state, metadata=metadata),
+        node_runs=tuple(node_runs),
+        resume_at=None if not remaining else record.resume_at,
+        version=record.version + 1,
+    )
 
 
 def answer_record(
@@ -290,6 +467,51 @@ class InMemoryDurableRunStore:
             self._rows[run_id] = updated
             return _clone(updated)
 
+    async def complete_remote_delegation(
+        self,
+        run_id: str,
+        node_id: str,
+        *,
+        task_id: str,
+        child_run_id: str,
+        status: str,
+        result: str | None = None,
+        error: str | None = None,
+        at: datetime | None = None,
+    ) -> DurableRunRecord:
+        async with self._lock:
+            record = self._rows.get(run_id)
+            if record is None:
+                raise KeyError(f"no such run: {run_id!r}")
+            updated = _remote_completion_record(
+                record,
+                node_id,
+                task_id=task_id,
+                child_run_id=child_run_id,
+                status=status,
+                result=result,
+                error=error,
+                at=at,
+            )
+            self._rows[run_id] = updated
+            return _clone(updated)
+
+    async def complete_parked_wait(
+        self,
+        run_id: str,
+        node_id: str,
+        answer: dict[str, Any],
+        *,
+        at: datetime | None = None,
+    ) -> DurableRunRecord:
+        async with self._lock:
+            record = self._rows.get(run_id)
+            if record is None:
+                raise KeyError(f"no such run: {run_id!r}")
+            updated = _parked_wait_answer_record(record, node_id, answer, at=at)
+            self._rows[run_id] = updated
+            return _clone(updated)
+
     async def timeout_hitl(
         self,
         run_id: str,
@@ -457,6 +679,51 @@ class SqliteDurableRunStore:
                 self,
                 run_id,
                 lambda current: answer_record(current, node_id, answer, at=at),
+            )
+
+    async def complete_remote_delegation(
+        self,
+        run_id: str,
+        node_id: str,
+        *,
+        task_id: str,
+        child_run_id: str,
+        status: str,
+        result: str | None = None,
+        error: str | None = None,
+        at: datetime | None = None,
+    ) -> DurableRunRecord:
+        async with self._lock:
+            return await asyncio.to_thread(
+                _mutate_hitl_sync,
+                self,
+                run_id,
+                lambda current: _remote_completion_record(
+                    current,
+                    node_id,
+                    task_id=task_id,
+                    child_run_id=child_run_id,
+                    status=status,
+                    result=result,
+                    error=error,
+                    at=at,
+                ),
+            )
+
+    async def complete_parked_wait(
+        self,
+        run_id: str,
+        node_id: str,
+        answer: dict[str, Any],
+        *,
+        at: datetime | None = None,
+    ) -> DurableRunRecord:
+        async with self._lock:
+            return await asyncio.to_thread(
+                _mutate_hitl_sync,
+                self,
+                run_id,
+                lambda current: _parked_wait_answer_record(current, node_id, answer, at=at),
             )
 
     async def timeout_hitl(

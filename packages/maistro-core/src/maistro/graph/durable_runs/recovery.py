@@ -8,11 +8,12 @@ boundary in :mod:`attempt_executor`.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
 from maistro.graph.execution_state import GraphExecutionState
+from maistro.graph.nodes.base import PAUSE_RESUME_CONDITIONS, RESUME_ON_ELAPSED
 from maistro.runs.model import Run, RunStatus
 from maistro.runs.recovery_events import RecoveryEventSink
 from maistro.runs.store import RunStore
@@ -20,6 +21,7 @@ from maistro.runtime import ExecutionRuntime
 
 from . import executor as traversal
 from .attempt_executor import LiveAttemptOwned, NodeResolver, resume_durable_graph
+from .hitl import expire_remote_delegations
 from .launch import launch_state_from_run
 from .protocol import DurableRunStore
 from .types import DurableRunRecord
@@ -42,10 +44,25 @@ _RESUME_ELIGIBLE_STATUSES = frozenset({RunStatus.WAITING, RunStatus.RUNNING})
 
 
 def _is_resume_due(record: DurableRunRecord, moment: datetime) -> bool:
-    """Report whether `record` is in a resumable status with an elapsed wait."""
+    """Report whether a persisted wait is safe for elapsed re-entry."""
     if record.run.status not in _RESUME_ELIGIBLE_STATUSES:
         return False
-    return record.resume_at is not None and record.resume_at <= moment
+    if record.resume_at is None or record.resume_at > moment:
+        return False
+    graph_state = getattr(record, "graph_state", None)
+    if graph_state is None:
+        # Compatibility for pre-taxonomy recovery projections; real durable
+        # records always carry graph_state and are classified below.
+        return True
+    pauses = graph_state.metadata.get("pauses", {})
+    if not isinstance(pauses, Mapping):
+        return False
+    return any(
+        PAUSE_RESUME_CONDITIONS.get(str((pause.get("metadata") or {}).get("paused_reason") or ""))
+        == RESUME_ON_ELAPSED
+        for pause in pauses.values()
+        if isinstance(pause, Mapping)
+    )
 
 
 async def _is_still_resume_due(
@@ -58,7 +75,7 @@ async def _is_still_resume_due(
     return current is not None and _is_resume_due(current, moment)
 
 
-async def resume_due_graph_runs(
+async def resume_due_graph_runs(  # noqa: C901
     *,
     store: DurableRunStore,
     run_store: RunStore,
@@ -95,8 +112,34 @@ async def resume_due_graph_runs(
 
     await _reconcile_if_supported(store, limit=limit)
     moment = now if now is not None else datetime.now(UTC)
+    # Answer-gated remote waits own their deadline here, rather than being
+    # re-entered by the elapsed timer path and dispatching a second child.
+    expired = await expire_remote_delegations(store, now=moment, limit=limit, eligible=eligible)
     candidates = await store.list_due(now=moment, limit=limit)
     resumed = 0
+
+    # Expiry already has the answer needed to continue the exact NodeRun, so
+    # finish that same tick instead of requiring a second queued-run sweep.
+    for candidate in expired:
+        if candidate.run.status is not RunStatus.QUEUED:
+            continue
+        try:
+            await resume_durable_graph(
+                candidate.run_id,
+                store=store,
+                node_resolver=resolver_for(candidate.run),
+                runtime=runtime,
+                run_store=run_store,
+                events=events,
+            )
+        except LiveAttemptOwned:
+            continue
+        except (KeyError, ValueError):
+            latest = await store.get(candidate.run_id)
+            if latest is not None and latest.run.status is RunStatus.QUEUED:
+                raise
+            continue
+        resumed += 1
 
     for candidate in candidates:
         if not _is_resume_due(candidate, moment):

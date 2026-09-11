@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from maistro.graph.nodes.base import PAUSE_AWAITING_REMOTE_DELEGATION
 from maistro.runs.model import RunStatus
 
 if TYPE_CHECKING:
@@ -84,6 +85,69 @@ def settlement_time(at: datetime | None = None) -> datetime:
     return moment.astimezone(UTC)
 
 
+async def expire_remote_delegations(  # noqa: C901
+    store: DurableRunStore,
+    *,
+    now: datetime | None = None,
+    limit: int = 100,
+    eligible: Callable[[Any], bool] | None = None,
+) -> list[DurableRunRecord]:
+    """Convert elapsed remote waits into one durable timed-out completion.
+
+    The deadline is the dispatch node's persisted ``resume_at``. This tick is
+    the timer waker for answer-gated machine waits; it never re-enters the
+    dispatch node, so a missing peer response cannot create a second child.
+    """
+    if limit <= 0:
+        return []
+    moment = settlement_time(now)
+    settled: list[DurableRunRecord] = []
+    for record in await store.list_due(now=moment, limit=limit):
+        if record.run.status is not RunStatus.WAITING:
+            continue
+        if eligible is not None and not eligible(record.run):
+            continue
+        graph_state = getattr(record, "graph_state", None)
+        if graph_state is None:
+            continue
+        pauses = graph_state.metadata.get("pauses", {})
+        if not isinstance(pauses, Mapping):
+            continue
+        for node_id in record.graph_state.active_node_ids:
+            pause = pauses.get(node_id)
+            metadata = pause.get("metadata") if isinstance(pause, Mapping) else None
+            if not isinstance(metadata, Mapping):
+                continue
+            if metadata.get("paused_reason") != PAUSE_AWAITING_REMOTE_DELEGATION:
+                continue
+            deadline = pause.get("resume_at") if isinstance(pause, Mapping) else None
+            if not isinstance(deadline, str):
+                continue
+            try:
+                due = datetime.fromisoformat(deadline)
+            except ValueError:
+                continue
+            if due.tzinfo is None or due.astimezone(UTC) > moment:
+                continue
+            try:
+                settled.append(
+                    await store.complete_remote_delegation(
+                        record.run_id,
+                        node_id,
+                        task_id=str(metadata.get("task_id") or ""),
+                        child_run_id=str(metadata.get("run_id") or ""),
+                        status="timed_out",
+                        error="remote delegation deadline elapsed",
+                        at=moment,
+                    )
+                )
+            except ValueError:
+                # A completion or another expiry won after the bounded read.
+                continue
+            break
+    return settled
+
+
 async def expire_hitl_pauses(
     store: DurableRunStore,
     *,
@@ -128,6 +192,7 @@ __all__ = [
     "HitlDeadlinePending",
     "HitlSettlementError",
     "expire_hitl_pauses",
+    "expire_remote_delegations",
     "hitl_deadline",
     "hitl_pause",
     "settlement_time",
