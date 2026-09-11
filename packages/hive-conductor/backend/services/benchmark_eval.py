@@ -9,8 +9,11 @@ The evaluator:
 3. Scores on a rubric: correctness, completeness, test coverage, style
 4. Returns a 0-1 score that feeds the optimizer
 
-For now: LLM-as-judge with a strict rubric.
-Future: actual test execution in a sandbox.
+Every evaluation is a canonical operation: it mints a one-node child Run of the
+evaluated Run (which must exist on the canonical spine) and records its judge
+call as an Invocation beneath that child's NodeRun/Attempt (#1088). No model
+HTTP happens outside the governed egress, and an evaluation without canonical
+records to correlate to refuses instead of inventing identifiers.
 """
 
 from __future__ import annotations
@@ -25,12 +28,15 @@ from maistro.capabilities.governed_invocation import (
     InvocationDenied,
 )
 from maistro.capabilities.providers.llm_gateway import ModelChatRequest
+from maistro.runs.store import RunIntegrityError
 from services.governed_model import (
     _runtime,
     complete,
     control_plane_binding,
     ensure_binding,
+    mint_operation_identity,
     resolve_binding,
+    settle_operation_identity,
 )
 
 logger = logging.getLogger("hive.benchmark")
@@ -75,20 +81,39 @@ async def evaluate_code_output(
     model: str = "gemini-3.5-flash",
     *,
     run_id: str = "",
-    node_run_id: str = "",
-    attempt_id: str = "",
     workspace_id: str = "",
     project_id: str = "",
 ) -> dict[str, Any]:
     """Score a coding pipeline's output through the canonical model egress.
 
-    The evaluator is an operation on the already-admitted canonical Run. Its
-    stable operation identifiers correlate the resulting Invocation without
-    inventing a second execution lifecycle for the optimizer.
+    ``run_id`` names the canonical Run whose output is being judged; the
+    evaluation mints a real child Run/NodeRun/Attempt beneath it and correlates
+    the judge Invocation to those records. Unknown runs, missing scope, or a
+    missing canonical spine are authorization failures — never fabricated
+    identifiers (#1088).
     """
-    if not all((run_id, node_run_id, attempt_id, workspace_id, project_id)):
+    if not all((run_id, workspace_id, project_id)):
         return {
-            "error": "evaluation requires canonical Run/NodeRun/Attempt and scope",
+            "error": "evaluation requires the canonical Run and its Workspace/Project scope",
+            "error_kind": "authorization",
+            "total": 0,
+            "pass": False,
+        }
+
+    try:
+        runtime = _runtime()
+        identity = await mint_operation_identity(
+            runtime,
+            operation="benchmark-evaluation",
+            workspace_id=workspace_id,
+            project_id=project_id,
+            parent_run_id=run_id,
+            provenance={"evaluated_run_id": run_id, "evaluator": "benchmark_eval"},
+        )
+    except (LookupError, RunIntegrityError, RuntimeError) as exc:
+        logger.warning("benchmark_eval_scope_refused: %s", exc)
+        return {
+            "error": str(exc),
             "error_kind": "authorization",
             "total": 0,
             "pass": False,
@@ -102,7 +127,6 @@ async def evaluate_code_output(
         },
     ]
     try:
-        runtime = _runtime()
         binding = control_plane_binding(
             binding_id=f"benchmark-evaluation:{run_id}",
             workspace_id=workspace_id,
@@ -113,9 +137,9 @@ async def evaluate_code_output(
         result = await complete(
             runtime=runtime,
             binding=binding,
-            run_id=run_id,
-            node_run_id=node_run_id,
-            attempt_id=attempt_id,
+            run_id=identity.run_id,
+            node_run_id=identity.node_run_id,
+            attempt_id=identity.attempt_id,
             effect_key="benchmark.evaluation:judge",
             request=ModelChatRequest(
                 model=model,
@@ -129,11 +153,20 @@ async def evaluate_code_output(
         score = json.loads(content)
         score["invocation_id"] = result.invocation_id
         score["usage"] = result.usage.model_dump(mode="json") if result.usage else None
+        score["evaluation_run_id"] = identity.run_id
+        await settle_operation_identity(
+            runtime,
+            identity,
+            outcome="completed",
+            result={"total": score.get("total"), "invocation_id": result.invocation_id},
+        )
         return score
     except (BindingResolutionError, InvocationDenied, InvocationApprovalRequired) as exc:
+        await settle_operation_identity(runtime, identity, outcome="cancelled", error=str(exc))
         logger.warning("benchmark_eval_authorization_failed: %s", exc)
         return {"error": str(exc), "error_kind": "authorization", "total": 0, "pass": False}
     except Exception as exc:
+        await settle_operation_identity(runtime, identity, outcome="failed", error=str(exc))
         logger.warning("benchmark_eval_failed: %s", exc)
         return {"error": str(exc), "error_kind": "evaluation", "total": 0, "pass": False}
 
@@ -161,8 +194,6 @@ async def evaluate_dag_run(run_result: dict[str, Any], task: str) -> dict[str, A
         code,
         review,
         run_id=str(run_result.get("run_id") or ""),
-        node_run_id=f"benchmark-evaluation-node:{run_result.get('run_id') or ''}",
-        attempt_id=f"benchmark-evaluation-attempt:{run_result.get('run_id') or ''}",
         workspace_id=str(run_result.get("workspace_id") or ""),
         project_id=str(run_result.get("project_id") or ""),
     )

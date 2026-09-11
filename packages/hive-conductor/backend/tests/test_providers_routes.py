@@ -6,6 +6,7 @@ registers models with LiteLLM and runs a one-token test completion.
 
 from __future__ import annotations
 
+import asyncio
 import pathlib
 import shutil
 import sys
@@ -34,8 +35,10 @@ async def test_activate_route_delegates_to_governed_health_operation(
     from maistro.capabilities.effect_context import new_in_memory_effect_context
     from maistro.capabilities.model_chat import ModelCallResult
     from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
+    from maistro.projects.scope_store import InMemoryProjectScopeStore
     from maistro.providers.registry import InMemoryProviderRegistry
     from maistro.providers.router import CostAwareRouter
+    from maistro.runs.store import InMemoryRunStore
 
     class _Vault:
         def has(self, name: str) -> bool:
@@ -49,10 +52,9 @@ async def test_activate_route_delegates_to_governed_health_operation(
     class _Root:
         project_id = "root-project"
 
-    class _ProjectScope:
-        async def root_for_workspace(self, workspace_id: str) -> _Root:
-            assert workspace_id == "default"
-            return _Root()
+    scope = InMemoryProjectScopeStore()
+    root = await scope.create_root("default")
+    run_store = InMemoryRunStore(project_store=scope)
 
     registry = InMemoryProviderRegistry()
     runtime = governed_model.GovernedModelRuntime(
@@ -60,7 +62,8 @@ async def test_activate_route_delegates_to_governed_health_operation(
         registry=registry,
         router=CostAwareRouter(registry),
         endpoint=GatewayEndpoint(base_url="http://gateway"),
-        project_scope_store=_ProjectScope(),
+        project_scope_store=scope,
+        run_store=run_store,
     )
     calls: list[dict[str, Any]] = []
 
@@ -81,8 +84,17 @@ async def test_activate_route_delegates_to_governed_health_operation(
     response = await providers_mod.activate_provider("mistral")
 
     assert response["first_model_call"]["invocation_id"] == "inv-1"
-    assert calls[0]["binding"].project_id == "root-project"
+    assert calls[0]["binding"].project_id == root.project_id
     assert calls[0]["api_key"] == "provider-secret"
+    # The activation correlates to a real canonical operation record.
+    operation_run = await run_store.get_run(calls[0]["run_id"])
+    assert operation_run is not None
+    assert operation_run.parent_run_id is None
+    assert operation_run.provenance["provider"] == "mistral"
+    assert (await run_store.get_node_run(calls[0]["node_run_id"])) is not None
+    assert (await run_store.get_attempt(calls[0]["attempt_id"])) is not None
+    completed = await run_store.get_run(calls[0]["run_id"])
+    assert completed is not None and completed.status.value == "completed"
 
 
 class TestAuthz:
@@ -158,9 +170,12 @@ class TestKeyAndActivate:
         from maistro.capabilities.effect_context import new_in_memory_effect_context
         from maistro.capabilities.providers import llm_gateway
         from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
+        from maistro.projects.scope_store import InMemoryProjectScopeStore
         from maistro.providers.registry import InMemoryProviderRegistry
         from maistro.providers.router import CostAwareRouter
         from maistro.providers.types import ModelMetadata
+        from maistro.runs.model import RunStatus
+        from maistro.runs.store import InMemoryRunStore
 
         class _Resp:
             status_code = 200
@@ -201,20 +216,20 @@ class TestKeyAndActivate:
             ]
         )
 
-        class _Root:
-            project_id = "root-project"
+        async def _wire_scope() -> tuple[InMemoryProjectScopeStore, InMemoryRunStore]:
+            scope = InMemoryProjectScopeStore()
+            await scope.create_root("default")
+            return scope, InMemoryRunStore(project_store=scope)
 
-        class _ProjectScope:
-            async def root_for_workspace(self, workspace_id: str) -> _Root:
-                assert workspace_id == "default"
-                return _Root()
+        scope, run_store = asyncio.run(_wire_scope())
 
         runtime = GovernedModelRuntime(
             effects=new_in_memory_effect_context(),
             registry=registry,
             router=CostAwareRouter(registry),
             endpoint=GatewayEndpoint(base_url="http://litellm.test", api_key="master"),
-            project_scope_store=_ProjectScope(),
+            project_scope_store=scope,
+            run_store=run_store,
         )
         monkeypatch.setattr(governed_model, "_runtime", lambda: runtime)
         monkeypatch.setattr(llm_gateway, "shared_client", _shared_client)
@@ -231,3 +246,17 @@ class TestKeyAndActivate:
         # The vault key travels into the LiteLLM registration, never the response.
         assert calls[0][1]["litellm_params"]["api_key"] == "sk-mistral"
         assert "sk-mistral" not in r.text
+
+        # The activation's canonical operation terminalized as completed.
+        async def _verify_operation() -> None:
+            operations = await run_store.list_by_status(RunStatus.COMPLETED, limit=10)
+            activation = [
+                run
+                for run in operations
+                if run.provenance.get("operation") == "provider-activation:mistral"
+            ]
+            assert len(activation) == 1
+            node_runs = await run_store.list_node_runs(activation[0].run_id)
+            assert node_runs[0].status is RunStatus.COMPLETED
+
+        asyncio.run(_verify_operation())

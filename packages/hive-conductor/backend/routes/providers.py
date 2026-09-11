@@ -191,8 +191,10 @@ async def activate_provider(name: str) -> dict[str, Any]:
         _runtime,
         control_plane_binding,
         ensure_binding,
+        mint_operation_identity,
         register_and_health_check,
         resolve_binding,
+        settle_operation_identity,
     )
 
     from maistro.capabilities.binding_store import BindingResolutionError
@@ -212,7 +214,18 @@ async def activate_provider(name: str) -> dict[str, Any]:
         )
         binding = await ensure_binding(runtime, binding)
         binding = await resolve_binding(runtime, binding)
-    except BindingResolutionError as exc:
+        # Each activation is its own canonical operation: a fresh child Run,
+        # NodeRun and Attempt correlate the health Invocation to real records
+        # (#1088), and a re-activation genuinely re-tests instead of replaying
+        # a previous activation's completed effect.
+        identity = await mint_operation_identity(
+            runtime,
+            operation=f"provider-activation:{name}",
+            workspace_id=workspace_id,
+            project_id=root_project.project_id,
+            provenance={"activation_source": "routes.providers", "provider": name},
+        )
+    except (BindingResolutionError, LookupError) as exc:
         raise HTTPException(
             status_code=403, detail=f"Provider health authorization failed: {exc}"
         ) from exc
@@ -228,9 +241,9 @@ async def activate_provider(name: str) -> dict[str, Any]:
             lambda api_key: register_and_health_check(
                 runtime=runtime,
                 binding=binding,
-                run_id=f"provider-activation:{name}",
-                node_run_id=f"provider-health:{name}",
-                attempt_id=f"provider-health-attempt:{name}",
+                run_id=identity.run_id,
+                node_run_id=identity.node_run_id,
+                attempt_id=identity.attempt_id,
                 provider_name=p["test_model"],
                 models=tuple(p["models"]),
                 api_key=api_key,
@@ -238,19 +251,32 @@ async def activate_provider(name: str) -> dict[str, Any]:
         )
         result = await result
     except SecretMissingError:
+        await settle_operation_identity(
+            runtime, identity, outcome="cancelled", error="secret missing"
+        )
         raise HTTPException(
             status_code=409,
             detail=f"No key stored for '{name}' — PUT /v1/providers/{name}/key first.",
         ) from None
     except ProviderActivationError as exc:
+        await settle_operation_identity(runtime, identity, outcome="failed", error=str(exc))
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except ProviderAuthorizationError as exc:
+        await settle_operation_identity(runtime, identity, outcome="cancelled", error=str(exc))
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ProviderHealthError as exc:
+        await settle_operation_identity(runtime, identity, outcome="failed", error=str(exc))
         raise HTTPException(
             status_code=502,
             detail=f"Provider health check failed for {name}: {exc}",
         ) from exc
+
+    await settle_operation_identity(
+        runtime,
+        identity,
+        outcome="completed",
+        result={"invocation_id": result.invocation_id, "model": result.model},
+    )
 
     _record_activation(name)
     logger.info("provider activated (governed health check OK): %s", name)
