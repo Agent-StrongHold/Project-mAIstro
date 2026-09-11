@@ -11,14 +11,10 @@ Each node is an LLM call that can be hill-climbed:
 from __future__ import annotations
 
 import json
-import logging
-import os
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Protocol
 
-from maistro.http import shared_client
-
-logger = logging.getLogger("hive.canvas_dag")
+from maistro.capabilities.model_chat import ModelChatRequest
 
 CANVAS_DAG = {
     "id": "canvas_davinci",
@@ -82,13 +78,30 @@ CANVAS_DAG = {
 }
 
 
-async def visual_quality_eval(output: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-    """LLM-as-judge eval for visual quality scoring."""
+class VisualQualityEgress(Protocol):
+    async def complete(
+        self,
+        *,
+        context: dict[str, str],
+        request: ModelChatRequest,
+    ) -> Any: ...
 
-    base = os.environ.get("LITELLM_API_BASE", "").rstrip("/")
-    if not base.endswith("/v1"):
-        base += "/v1"
-    key = os.environ.get("LITELLM_API_KEY", "")
+
+async def visual_quality_eval(
+    output: str,
+    context: dict[str, Any] | None = None,
+    *,
+    egress: VisualQualityEgress | None = None,
+) -> dict[str, Any]:
+    """Score a Canvas output through an injected governed model egress.
+
+    Prompt construction and response parsing stay Canvas behavior. A missing
+    egress or execution context is an unavailable evaluation, never a score.
+    """
+    if egress is None:
+        raise RuntimeError("Canvas visual evaluation has no governed model egress")
+    if context is None:
+        raise RuntimeError("Canvas visual evaluation requires canonical execution context")
 
     judge_prompt = (
         "You are a visual quality judge. Score this image description on a 0-100 scale.\n"
@@ -99,36 +112,40 @@ async def visual_quality_eval(output: str, context: dict[str, Any] | None = None
         "- Detail richness (25 pts): Are textures, lighting, and depth well-described?\n\n"
         'Reply with JSON only: {"score": int, "composition": int, "color": int, "style": int, "detail": int, "rationale": str}'
     )
-
-    try:
-        async with shared_client(timeout=30.0) as client:
-            r = await client.post(
-                f"{base}/chat/completions",
-                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                json={
-                    "model": "claude-opus-4-6",
-                    "messages": [
-                        {"role": "system", "content": judge_prompt},
-                        {
-                            "role": "user",
-                            "content": f"Image description to judge:\n\n{output[:3000]}",
-                        },
-                    ],
-                    "response_format": {"type": "json_object"},
+    result = await egress.complete(
+        context={key: str(value) for key, value in context.items()},
+        request=ModelChatRequest(
+            model="claude-opus-4-6",
+            messages=[
+                {"role": "system", "content": judge_prompt},
+                {
+                    "role": "user",
+                    "content": f"Image description to judge:\n\n{output[:3000]}",
                 },
-            )
-            r.raise_for_status()
-            result = r.json()["choices"][0]["message"]["content"]
-            return json.loads(result)
-    except Exception as e:
-        logger.error(f"Visual quality eval failed: {e}")
-        return {"score": 0, "error": str(e)}
+            ],
+            temperature=0.0,
+        ),
+    )
+    body = getattr(result, "body", None)
+    if not isinstance(body, dict):
+        raise ValueError("visual quality provider returned no response body")
+    try:
+        content = body["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise ValueError("visual quality provider returned no message content") from exc
+    if not isinstance(content, str):
+        raise ValueError("visual quality provider returned non-text message content")
+    parsed = json.loads(content)
+    if not isinstance(parsed, dict):
+        raise ValueError("visual quality response must be a JSON object")
+    return parsed
 
 
 class CanvasHillClimber:
     """Hill-climb the Canvas DAG by mutating style interpreter prompts and generator model."""
 
-    def __init__(self):
+    def __init__(self, *, egress: VisualQualityEgress | None = None):
+        self._egress = egress
         self.best_score = 0
         self.best_config: dict[str, Any] = {}
         self.history: list[dict[str, Any]] = []
@@ -137,6 +154,7 @@ class CanvasHillClimber:
         self,
         input_text: str,
         run_dag: Callable[[dict, str], Awaitable[dict[str, Any]]],
+        context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Run one optimization pass: execute DAG, eval, propose mutation."""
         dag = CANVAS_DAG.copy()
@@ -144,7 +162,11 @@ class CanvasHillClimber:
 
         # Get the final output (refiner node)
         final_output = result.get("node_results", {}).get("refiner", {}).get("output", "")
-        eval_result = await visual_quality_eval(final_output)
+        eval_result = await visual_quality_eval(
+            final_output,
+            context=context,
+            egress=self._egress,
+        )
         score = eval_result.get("score", 0)
 
         pass_record = {
