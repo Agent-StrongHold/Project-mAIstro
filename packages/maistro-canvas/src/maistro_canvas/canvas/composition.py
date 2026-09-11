@@ -8,6 +8,8 @@ Run -> NodeRun -> Attempt adapter.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import importlib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, cast
@@ -127,9 +129,9 @@ def build_canvas_router(
     """Build the HTTP boundary from the canonical Canvas runtime.
 
     This is the production assembly point: callers cannot provide an executor
-    independently of the scope-bound ``RunStore`` adapter. Applications that
-    also run the worker retain a ``CanvasRuntime`` from
-    :func:`build_canvas_runtime` and start its runner in their lifecycle.
+    independently of the scope-bound ``RunStore`` adapter. The returned router
+    owns the runtime worker lifecycle and starts it with the FastAPI
+    application, so admitted receipts do not remain pending indefinitely.
     """
     runtime = build_canvas_runtime(
         store=store,
@@ -149,11 +151,42 @@ def build_canvas_router(
     return make_canvas_router(runtime=runtime, compositor=compositor)
 
 
+def bind_canvas_runner_lifecycle(*, router: APIRouter, runtime: CanvasRuntime) -> None:
+    """Tie one Canvas worker to the FastAPI application's lifecycle.
+
+    ``APIRouter`` copies startup/shutdown handlers when mounted, keeping the
+    worker on the same production boundary as canonical Run admission. This
+    binds lifecycle ownership only; queue claims and execution authority stay
+    with ``CanvasJobRunner`` and the canonical Run adapter.
+    """
+
+    task: asyncio.Task[None] | None = None
+
+    async def start_runner() -> None:
+        nonlocal task
+        if task is not None and not task.done():
+            return
+        task = asyncio.create_task(runtime.runner.start(), name="canvas-job-runner")
+
+    async def stop_runner() -> None:
+        nonlocal task
+        runtime.runner.stop()
+        if task is None:
+            return
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        task = None
+
+    router.add_event_handler("startup", start_runner)
+    router.add_event_handler("shutdown", stop_runner)
+
+
 __all__ = [
     "CanvasModelRegistry",
     "CanvasRunner",
     "CanvasRuntime",
     "CanvasWarden",
+    "bind_canvas_runner_lifecycle",
     "build_canvas_router",
     "build_canvas_runtime",
 ]

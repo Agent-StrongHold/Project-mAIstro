@@ -342,11 +342,17 @@ def make_canvas_router(*, runtime: CanvasRuntime, compositor: CompositorService)
     owns the scope-bound ``CanvasCanonicalExecution`` and its worker together,
     so every generation admission through this boundary is canonical.
     """
-    return _make_canvas_router(
+    router = _make_canvas_router(
         store=runtime.store,
         executor=runtime.executor,
         compositor=compositor,
     )
+    # The router is the production ownership boundary: mounting it also
+    # mounts the worker lifecycle, so admitted jobs have a reachable consumer.
+    from maistro_canvas.canvas.composition import bind_canvas_runner_lifecycle
+
+    bind_canvas_runner_lifecycle(router=router, runtime=runtime)
+    return router
 
 
 def _register_canvas_routes(

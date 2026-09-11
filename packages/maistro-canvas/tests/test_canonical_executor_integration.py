@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -175,7 +176,7 @@ class _FailingRunnerExecutor:
         return "Generation failed: provider service temporarily unavailable."
 
 
-async def test_production_router_factory_admits_canonical_generation(
+async def test_production_router_factory_admits_and_runs_canonical_generation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The mounted production factory cannot bypass the canonical adapter."""
@@ -195,6 +196,7 @@ async def test_production_router_factory_admits_canonical_generation(
         workspace_id="workspace-1",
         project_id=root.project_id,
         compositor=object(),  # type: ignore[arg-type]
+        poll_interval=0.001,
     )
     app = FastAPI()
     app.include_router(router, prefix="/api/canvas")
@@ -208,9 +210,16 @@ async def test_production_router_factory_admits_canonical_generation(
             "/api/canvas/canvas-1/layers/layer-1/generate",
             json={"prompt": "a safe landscape"},
         )
+        assert response.status_code == 202, response.text
+        job_id = response.json()["job_id"]
+        for _ in range(500):
+            job = await store.get_job(job_id, org_id=_CanvasStore.ORG)
+            if job is not None and job.status == JobStatus.DONE:
+                break
+            await asyncio.sleep(0.001)
+        assert job is not None
+        assert job.status == JobStatus.DONE
 
-    assert response.status_code == 202, response.text
-    job_id = response.json()["job_id"]
     job = await store.get_job(job_id, org_id=_CanvasStore.ORG)
     assert job is not None
     run_id = canonical_run_id(job.params)
@@ -218,6 +227,15 @@ async def test_production_router_factory_admits_canonical_generation(
     admitted = await runs.get_run(run_id)
     assert admitted is not None
     assert admitted.actor_principal_id == "default"
+
+    assert job is not None
+    assert job.status == JobStatus.DONE
+    assert job.result_paths == ["image://generated"]
+    node_runs = await runs.list_node_runs(run_id)
+    assert len(node_runs) == 1
+    attempts = await runs.list_attempts(node_runs[0].node_run_id)
+    assert len(attempts) == 1
+    assert attempts[0].status is AttemptStatus.COMPLETED
 
 
 async def test_generation_request_and_runner_are_visible_on_canonical_spine() -> None:

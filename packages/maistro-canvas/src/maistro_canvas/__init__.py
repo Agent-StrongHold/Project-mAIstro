@@ -16,6 +16,7 @@ except importlib.metadata.PackageNotFoundError:  # pragma: no cover - editable/u
 
 from maistro_canvas.canvas.composition import (
     CanvasRuntime,
+    bind_canvas_runner_lifecycle,
     build_canvas_router,
     build_canvas_runtime,
 )
@@ -149,6 +150,7 @@ __all__ = [
     "WorldStyleConflictError",
     "WorldStylePartial",
     "__version__",
+    "bind_canvas_runner_lifecycle",
     "build_canvas_router",
     "build_canvas_runtime",
     "export_html",
