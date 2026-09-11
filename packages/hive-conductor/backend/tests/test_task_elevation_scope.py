@@ -11,8 +11,8 @@ the repaired contract:
   (`X-Elevated-Task`), and only while it is unexpired;
 - an expired grant stops answering immediately, is pruned from the session,
   and a legacy grant with no recorded bound reads as expired (fail closed);
-- task ids are syntax-validated at elevation time, so a client cannot mint
-  grants under ids shaped to escape the revocation and header paths;
+- task ids are syntax-validated and resolved to a caller-owned active task at
+  elevation time, so a client cannot mint grants under unknown or terminal ids;
 - the TTL comes from `elevation_grant_ttl_seconds` (ADR-028 time-boxed
   delegation, ADR-068 §D short-TTL elevation grant).
 
@@ -41,10 +41,15 @@ def preserved_sessions():
     import stores
 
     snapshot = copy.deepcopy(dict(stores.sessions.items()))
+    mission_snapshot = copy.deepcopy(dict(stores.missions.items()))
     yield
     stores.sessions.clear()
     for key, value in snapshot.items():
         stores.sessions[key] = value
+    for key in list(stores.missions.keys()):
+        stores.missions.pop(key)
+    for key, value in mission_snapshot.items():
+        stores.missions[key] = value
 
 
 def _member_client(permissions: list[str], uid: str, password: str = "pw") -> TestClient:
@@ -69,7 +74,30 @@ def _member_client(permissions: list[str], uid: str, password: str = "pw") -> Te
     return c
 
 
+def _seed_owned_task(c: TestClient, task_id: str, *, status: str = "pending") -> None:
+    """Create the authoritative task prerequisite for an elevation test."""
+    import stores
+    from models.schemas import Mission
+
+    session_id = c.cookies.get("hive_session")
+    assert session_id
+    user_id = stores.sessions[session_id]["user_id"]
+    now = datetime.now(UTC)
+    stores.missions[task_id] = Mission(
+        id=task_id,
+        user_id=user_id,
+        name=task_id,
+        description=task_id,
+        status=status,  # type: ignore[arg-type]
+        priority="medium",
+        created_at=now,
+        updated_at=now,
+    )
+
+
 def _elevate(c: TestClient, password: str, permissions: list[str], task_id: str) -> dict[str, Any]:
+    # Elevation is only valid for a real caller-owned active task (#1239).
+    _seed_owned_task(c, task_id)
     r = c.post(
         "/v1/auth/elevate",
         json={"password": password, "permissions": permissions, "task_id": task_id},
@@ -227,6 +255,67 @@ class TestGrantDoesNotOutliveItsBound:
         ahead = (recorded - datetime.now(UTC)).total_seconds()
         assert 119 <= ahead <= 121, f"expected ~120s bound, recorded {ahead:.1f}s"
 
+    def test_configured_ttl_cannot_exceed_one_hour(self) -> None:
+        from config import Settings
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            Settings(elevation_grant_ttl_seconds=3601)
+
+    def test_runtime_ttl_guard_caps_a_bypassed_settings_object(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from config import get_settings
+
+        real = get_settings()
+
+        class _UnsafeTtl:
+            elevation_grant_ttl_seconds = 86400
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(real, name)
+
+        monkeypatch.setattr(auth_routes, "get_settings", lambda: _UnsafeTtl())
+        c = _member_client(["config.write"], "tscope-ttl-cap")
+        data = _elevate(c, "pw", ["config.write"], "ttl-cap-task")
+        ahead = (datetime.fromisoformat(data["expires_at"]) - datetime.now(UTC)).total_seconds()
+        assert 3598 <= ahead <= 3600
+
+    def test_unknown_task_cannot_receive_a_grant(self) -> None:
+        c = _member_client(["config.write"], "tscope-unknown")
+        r = c.post(
+            "/v1/auth/elevate",
+            json={"password": "pw", "permissions": ["config.write"], "task_id": "not-a-task"},
+        )
+        assert r.status_code == 403
+
+    def test_foreign_and_terminal_tasks_cannot_receive_a_grant(self) -> None:
+        import stores
+
+        c = _member_client(["config.write"], "tscope-lifecycle")
+        _seed_owned_task(c, "finished-task", status="completed")
+        r = c.post(
+            "/v1/auth/elevate",
+            json={"password": "pw", "permissions": ["config.write"], "task_id": "finished-task"},
+        )
+        assert r.status_code == 403
+
+        stores.missions["other-users-task"] = stores.missions._model_class(
+            id="other-users-task",
+            user_id="someone-else",
+            name="other-users-task",
+            description="other-users-task",
+            status="running",
+            priority="medium",
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+        r = c.post(
+            "/v1/auth/elevate",
+            json={"password": "pw", "permissions": ["config.write"], "task_id": "other-users-task"},
+        )
+        assert r.status_code == 403
+
 
 @pytest.mark.usefixtures("preserved_sessions")
 class TestTaskIdValidation:
@@ -259,8 +348,9 @@ class TestTaskIdValidation:
         "good_id",
         ["t-1", "settings-edit-temperature-1760000000", "a" * 128, "mission_42:x.y", "TASK-9"],
     )
-    def test_well_formed_task_ids_are_accepted(self, good_id: str) -> None:
+    def test_well_formed_owned_task_ids_are_accepted(self, good_id: str) -> None:
         c = _member_client([], "tscope-j")
+        _seed_owned_task(c, good_id)
         r = c.post(
             "/v1/auth/elevate",
             json={"password": "pw", "permissions": [], "task_id": good_id},

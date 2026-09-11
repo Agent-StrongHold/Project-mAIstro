@@ -284,7 +284,7 @@ class Settings(BaseSettings):
     # still fires first; this only bounds what revocation does not reach.
     # 3600 is the generous end of ADR-028's stated range so a long harness
     # session does not demand re-auth mid-task.
-    elevation_grant_ttl_seconds: int = 3600
+    elevation_grant_ttl_seconds: int = Field(default=3600, ge=1, le=3600)
 
     # Explicit human-login front-door policy. `hybrid` is the compatibility
     # default for the generic OAuth feature that already shipped: with no OAuth

@@ -1,16 +1,15 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +27
+  packages/hive-conductor/backend/tests: +29
 ---
 # 1239-task-scoped-elevation
 
-**+27 `packages/hive-conductor/backend/tests`** — one new file,
-`test_task_elevation_scope.py`, pinning the repaired task-scoped elevation
-contract (#1239). The audit finding: `routes/auth.py` merged every task's
-elevation grant into one session-wide `elevated_permissions` union, and
-`/v1/auth/elevate` accepted any string as a task id — so one elevation covered
-every later request for the session's whole lifetime, under an id nothing
-would ever revoke.
+**+29 `packages/hive-conductor/backend/tests`** — `test_task_elevation_scope.py`
+pins the repaired task-scoped elevation contract (#1239). The audit finding:
+`routes/auth.py` merged every task's elevation grant into one session-wide
+`elevated_permissions` union, and `/v1/auth/elevate` accepted any string as a
+task id — so one elevation covered every later request for the session's whole
+lifetime, under an id nothing would ever revoke.
 
 The new cases pin each half of the failure mode against the real
 `main:app` + `AuthMiddleware` stack:
@@ -25,13 +24,16 @@ The new cases pin each half of the failure mode against the real
   as expired (fail closed); the recorded bound follows the
   `elevation_grant_ttl_seconds` setting (ADR-028 time-boxed delegation,
   ADR-068 §D short-TTL elevation grant).
-- **Task-id validation**: malformed ids (empty, overlong, whitespace, control
-  characters, off-charset) are 422; well-formed ones bind the grant under
-  exactly that id. Persisted malformed keys are also ignored, and HTTP/WS
-  request bindings use the same grammar.
+- **Task binding**: malformed ids (empty, overlong, whitespace, control
+  characters, off-charset) are 422; a grant also requires a real caller-owned
+  active task, so unknown, foreign, paused, and terminal tasks are refused.
+  Persisted malformed keys are ignored, and HTTP/WS request bindings use the
+  same grammar and live-task check.
 - **WebSocket parity**: the dag-run socket closes with 1008 without a named
   task or under another task's grant, and reaches the handler only for its
   own task (`?elevated_task=`).
+- **TTL ceiling**: the settings model rejects values above one hour and the
+  runtime guard caps even a bypassed settings object at that ceiling.
 
 Existing elevation tests were updated to the stronger contract, not relaxed:
 every helper that elevates now sends `X-Elevated-Task` on its gated calls,

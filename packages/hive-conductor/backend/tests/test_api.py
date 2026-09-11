@@ -14,6 +14,27 @@ def _login(username: str = "testuser", password: str = "testpass") -> TestClient
     return c
 
 
+def _seed_owned_task(client: TestClient, task_id: str, *, status: str = "pending") -> None:
+    from datetime import UTC, datetime
+
+    import stores
+
+    session_id = client.cookies.get("hive_session")
+    assert session_id
+    user_id = stores.sessions[session_id]["user_id"]
+    now = datetime.now(UTC)
+    stores.missions[task_id] = stores.missions._model_class(
+        id=task_id,
+        user_id=user_id,
+        name=task_id,
+        description=task_id,
+        status=status,
+        priority="medium",
+        created_at=now,
+        updated_at=now,
+    )
+
+
 @pytest.mark.ac("SPEC-176/AC-1")
 def test_health() -> None:
     r = client.get("/health")
@@ -319,7 +340,7 @@ def test_mission_create_dispatches_task() -> None:
     # (#158) -- the route passes it rather than omitting it, so the default is
     # named at every submission instead of being inferred downstream.
     mock_engine.submit_task.assert_called_once_with(
-        "Write hello world", "Write hello world", workspace_id=None
+        "Write hello world", "Write hello world", user_id="user", workspace_id=None
     )
 
 
@@ -358,6 +379,7 @@ def test_websocket_streams_task_events() -> None:
 
 def test_elevate_flow() -> None:
     c = _login()
+    _seed_owned_task(c, "t-1")
     r = c.post(
         "/v1/auth/elevate", json={"password": "testpass", "permissions": [], "task_id": "t-1"}
     )
@@ -407,6 +429,7 @@ def test_elevation_only_activates_granted_permissions() -> None:
     )
     try:
         c = _login("frank", "frankpass")
+        _seed_owned_task(c, "frank-task-1")
 
         r = c.put("/v1/settings", json={"temperature": 0.5})
         assert r.status_code == 403, "should be blocked without elevation"
@@ -462,6 +485,7 @@ def test_elevate_rejects_unassigned_permissions() -> None:
     )
     try:
         c = _login("frank", "frankpass")
+        _seed_owned_task(c, "t-bad")
         r = c.post(
             "/v1/auth/elevate",
             json={
@@ -495,6 +519,7 @@ def test_elevation_revoked_on_task_completion() -> None:
     )
     try:
         c = _login("frank", "frankpass")
+        _seed_owned_task(c, "m-1")
 
         c.post(
             "/v1/auth/elevate",

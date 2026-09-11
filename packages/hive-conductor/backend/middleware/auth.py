@@ -264,12 +264,16 @@ def principal_has_permission(user: dict[str, Any], perm: str, task_id: str | Non
         # a grant, so answering from the union would reintroduce the
         # session-wide set this check exists to prevent.
         return False
+    if not auth_routes.is_active_task_for_user(task_id, str(user.get("id") or "")):
+        return False
     grants = user.get("elevated_grants") or {}
     if not isinstance(grants, dict):
         return False
     grant = grants.get(task_id)
     if not isinstance(grant, dict):
         return False
+    # The grant itself is the action association: only the exact permission
+    # requested by this protected operation may be exercised under this task.
     return perm in grant.get("permissions", [])
 
 

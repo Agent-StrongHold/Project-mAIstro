@@ -128,6 +128,13 @@ _SESSION_COOKIE = "hive_session"
 _COOKIE_MAX_AGE = 60 * 60 * 24 * 7
 _USERNAME_RE = re.compile(r"^[a-zA-Z0-9_-]{3,32}$")
 _TASK_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+# ADR-028 names 15 minutes and one hour as the available time-boxes. Keep the
+# upper bound at the generous end of that range even if a deployment supplies
+# an otherwise-valid but unsafe setting (#1239).
+ELEVATION_GRANT_MAX_TTL_SECONDS = 60 * 60
+_ACTIVE_TASK_STATUSES = frozenset(
+    {"pending", "running", "planning", "coding", "reviewing", "testing"}
+)
 _OAUTH_CODE_MAX_LENGTH = 4096
 _OAUTH_FAILURE_DETAIL = "OAuth authentication failed"
 _OAUTH_LINK_COOKIE_PREFIX = "__Host-hive_oauth_link_"
@@ -275,12 +282,70 @@ def _normalize_grant(grant: Any) -> dict[str, Any] | None:
     return None
 
 
-def _active_grants(sess: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def _task_owner(task: Any) -> str | None:
+    """Return the owner recorded by the canonical task/mission record."""
+    owner = getattr(task, "user_id", None)
+    if owner is not None:
+        return str(owner)
+    raw = getattr(task, "raw", None)
+    raw_owner = getattr(raw, "user_id", None)
+    return str(raw_owner) if raw_owner is not None else None
+
+
+def _task_status(task: Any) -> str:
+    status = getattr(task, "mission_status", None)
+    if status is None:
+        status = getattr(task, "status", "")
+    return str(getattr(status, "value", status))
+
+
+def is_active_task_for_user(task_id: str, user_id: str) -> bool:
+    """Resolve a real, caller-owned, non-terminal task.
+
+    The task id is only an identifier supplied by the caller. Authority comes
+    from the canonical Engine task backend (or the existing Hive mission
+    projection when running without that backend), never from the header or
+    elevation payload itself. Unknown, foreign, paused, and terminal tasks all
+    fail closed as one indistinguishable answer.
+    """
+    if not user_id or not is_valid_task_id(task_id):
+        return False
+
+    try:
+        from services.engine import get_engine
+
+        engine = get_engine()
+        backend_available = bool(engine.is_configured or engine._backend is not None)
+        record = engine.get_task(task_id, user_id=user_id)
+    except Exception:
+        # A configured canonical backend failing is not permission to consult
+        # the legacy projection; fail closed rather than switching authorities.
+        return False
+    if backend_available:
+        return (
+            record is not None
+            and _task_owner(record) == user_id
+            and _task_status(record) in _ACTIVE_TASK_STATUSES
+        )
+
+    # Demo/stub mode retains Hive's task projection. It is still authoritative
+    # only when it has an explicit owner; ownerless historical rows are not
+    # silently adopted by the current caller.
+    mission = stores.missions.get(task_id)
+    if mission is None:
+        return False
+    return _task_owner(mission) == user_id and _task_status(mission) in _ACTIVE_TASK_STATUSES
+
+
+def _active_grants(
+    sess: dict[str, Any], *, user_id: str | None = None
+) -> dict[str, dict[str, Any]]:
     """The session's still-valid grants: task id -> {permissions, expires_at}.
 
     Expired (or malformed, or legacy unbounded) entries are dropped, so a
-    grant dies at its expiry even if nothing revokes it — and a grant that
-    was recorded before the TTL existed reads as expired, not eternal.
+    grant dies at its expiry even if nothing revokes it. When ``user_id`` is
+    supplied, the task is also resolved against the canonical task owner and
+    lifecycle; a completed or foreign task cannot remain an active grant.
     """
     grants = sess.get("elevated_grants", {})
     if not isinstance(grants, dict):
@@ -293,6 +358,8 @@ def _active_grants(sess: dict[str, Any]) -> dict[str, dict[str, Any]]:
         # merely because a caller can repeat that string in a header.
         if not isinstance(task_id, str) or not is_valid_task_id(task_id):
             continue
+        if user_id is not None and not is_active_task_for_user(task_id, user_id):
+            continue
         normalized = _normalize_grant(grant)
         if normalized is None:
             continue
@@ -304,7 +371,9 @@ def _active_grants(sess: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return active
 
 
-def _prune_expired_grants(session_id: str, sess: dict[str, Any]) -> dict[str, Any]:
+def _prune_expired_grants(
+    session_id: str, sess: dict[str, Any], *, user_id: str | None = None
+) -> dict[str, Any]:
     """Write back the session without its dead grants, and return it.
 
     Pruning matters beyond hygiene: an expired grant left in the store is one
@@ -315,7 +384,7 @@ def _prune_expired_grants(session_id: str, sess: dict[str, Any]) -> dict[str, An
     grants = sess.get("elevated_grants", {})
     if not isinstance(grants, dict):
         return sess
-    active = _active_grants(sess)
+    active = _active_grants(sess, user_id=user_id)
     if len(active) == len(grants):
         return sess
     pruned = {**sess, "elevated_grants": active}
@@ -332,7 +401,9 @@ def get_current_user(session_id: str | None) -> dict[str, Any] | None:
     user = stores.users.get(sess["user_id"])
     if user is None or not user.is_active:
         return None
-    grants = _active_grants(_prune_expired_grants(session_id, sess))
+    grants = _active_grants(
+        _prune_expired_grants(session_id, sess, user_id=user.id), user_id=user.id
+    )
     all_elevated: list[str] = []
     for perms in grants.values():
         for p in perms.get("permissions", []):
@@ -956,6 +1027,12 @@ def elevate(
         raise HTTPException(status_code=401, detail="Invalid password")
     _ELEVATE_THROTTLE.record_success(client_key=_client_key(request), account=hive_session)
 
+    # Syntax is not a binding. Require a live task owned by this principal
+    # before recording any grant; otherwise a caller can mint a grant under an
+    # id that no lifecycle event can ever revoke (#1239).
+    if not is_active_task_for_user(body.task_id, str(user.id)):
+        raise HTTPException(status_code=403, detail="Task is not available for elevation")
+
     requested = body.permissions if body.permissions else list(user.permissions)
     granted = [p for p in requested if user.has_permission(p)]
     if body.permissions and not granted:
@@ -970,9 +1047,11 @@ def elevate(
     # Task-scoped AND time-boxed (ADR-028 "15 min, 1 hour — auto-revokes";
     # ADR-068 §D "short-TTL elevation grant"). Task completion revokes first;
     # the TTL is the backstop for ids nothing will ever revoke (#1239).
-    expires_at = datetime.now(UTC) + timedelta(
-        seconds=max(1, get_settings().elevation_grant_ttl_seconds)
+    ttl_seconds = min(
+        ELEVATION_GRANT_MAX_TTL_SECONDS,
+        max(1, int(get_settings().elevation_grant_ttl_seconds)),
     )
+    expires_at = datetime.now(UTC) + timedelta(seconds=ttl_seconds)
     grants[body.task_id] = {
         "permissions": granted,
         "expires_at": expires_at.isoformat(),

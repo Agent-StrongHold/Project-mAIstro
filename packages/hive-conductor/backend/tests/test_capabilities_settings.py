@@ -32,6 +32,17 @@ def _config_writer(task_id: str) -> TestClient:
     c = TestClient(app)
     r = c.post("/v1/auth/login", json={"username": uid, "password": "pw"})
     assert r.status_code == 200, r.text
+    now = datetime.now(UTC)
+    stores.missions[task_id] = stores.missions._model_class(
+        id=task_id,
+        user_id=uid,
+        name=task_id,
+        description=task_id,
+        status="pending",
+        priority="medium",
+        created_at=now,
+        updated_at=now,
+    )
     e = c.post(
         "/v1/auth/elevate",
         json={"password": "pw", "permissions": ["config.write"], "task_id": task_id},

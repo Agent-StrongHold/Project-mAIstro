@@ -23,20 +23,27 @@ async function elevateDagWrites(
 ): Promise<{ "X-Elevated-Task": string }> {
   // DAG creation/runs and optimizer mutations are protected operations. The
   // setup-created daily user is assigned dags.write but must prove possession
-  // of its password for a task-scoped elevation before exercising that power.
+  // of its password for a caller-owned active task. The server, not this
+  // workflow, supplies the binding id (#1239).
+  const taskResponse = await page.request.post("/v1/tasks", {
+    data: { name: taskId, description: taskId },
+  });
+  expect(taskResponse.status()).toBe(200);
+  const task = await taskResponse.json() as { id: string };
+  expect(task.id).toBeTruthy();
   const response = await page.request.post("/v1/auth/elevate", {
     data: {
       password: PM_PASS,
       permissions: ["dags.write"],
-      task_id: taskId,
+      task_id: task.id,
     },
   });
   expect(response.status()).toBe(200);
   const body = await response.json();
   expect(body.elevated_permissions).toContain("dags.write");
-  // HTTP elevation is bound to the task named by every gated request. Keep
-  // the API calls in this workflow under the same binding (#1239).
-  return { "X-Elevated-Task": taskId };
+  // HTTP elevation is bound to the server-issued task named by every gated
+  // request. Keep the API calls in this workflow under the same binding (#1239).
+  return { "X-Elevated-Task": task.id };
 }
 
 test.describe("PM Workflow — Full UI Walkthrough", () => {

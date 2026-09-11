@@ -18,6 +18,19 @@ class TestPermissionAssignment:
         assert r.status_code == 200
         assert r.json()["permissions"] == ["rsi.execute"]
         assert stores.users["user"].permissions == ["rsi.execute"]
+        from datetime import UTC, datetime
+
+        now = datetime.now(UTC)
+        stores.missions["t1"] = stores.missions._model_class(
+            id="t1",
+            user_id="user",
+            name="t1",
+            description="t1",
+            status="pending",
+            priority="medium",
+            created_at=now,
+            updated_at=now,
+        )
 
         # The assigned-but-not-elevated state must NOT satisfy the middleware
         # check (elevation is task-scoped by design)...
@@ -29,6 +42,7 @@ class TestPermissionAssignment:
         # satisfy it (#1239 contract: the check consumes `elevated_grants`
         # against the named task, never a session-wide union).
         elevated = {
+            "id": "user",
             "role": "user",
             "permissions": ["rsi.execute"],
             "elevated_permissions": ["rsi.execute"],

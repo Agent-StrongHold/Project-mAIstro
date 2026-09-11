@@ -129,7 +129,10 @@ async def create_mission(
     if engine.is_configured or engine._backend is not None:
         try:
             rec = await engine.submit_task(
-                body.name, body.description or body.name, workspace_id=workspace_id
+                body.name,
+                body.description or body.name,
+                user_id=_user_id(request),
+                workspace_id=workspace_id,
             )
         except WorkspaceNotRoutable as exc:
             logger.warning("workspace_not_routable %s", exc)
@@ -141,6 +144,7 @@ async def create_mission(
     t = _now()
     m = Mission(
         id=mid,
+        user_id=_user_id(request),
         name=body.name,
         description=body.description or body.name,
         status="pending",

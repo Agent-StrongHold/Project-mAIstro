@@ -48,6 +48,11 @@ class TaskRecord:
         return self._task.task_id
 
     @property
+    def user_id(self) -> str:
+        """Canonical task owner used by task-scoped authorization (#1239)."""
+        return str(getattr(self._task, "user_id", ""))
+
+    @property
     def run_id(self) -> str | None:
         """Canonical execution identity (#41), or None where none was admitted."""
         return getattr(self._task, "run_id", None)
