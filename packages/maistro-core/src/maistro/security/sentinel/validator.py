@@ -172,7 +172,7 @@ def validate_and_repair(
             was_repaired = True
 
     has_errors = any(v.severity == "error" for v in violations)
-    if has_errors and not was_repaired:
+    if has_errors:
         return SentinelVerdict(
             allowed=False,
             violations=tuple(violations),
