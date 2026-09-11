@@ -616,7 +616,12 @@ def _list_by_status_sync(
         query += " AND project_id = ?"
         params.append(project_id)
     if workspace_id is not None:
-        query += " AND workspace_id = ?"
+        # Workspace scope is Run scope (#1240): it lives on the canonical
+        # record, not in a column, so it is read from `record_json`. Filtering
+        # on a bare column would 500 every scoped listing on this backend —
+        # `no such column: workspace_id` — and the regression test pins both
+        # the boundary and the restart-safe schema.
+        query += " AND json_extract(record_json, '$.run.workspace_id') = ?"
         params.append(workspace_id)
     query += " ORDER BY created_at DESC LIMIT ?"
     params.append(limit)
