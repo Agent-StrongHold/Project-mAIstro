@@ -186,7 +186,13 @@ class TestGrantDoesNotOutliveItsBound:
         assert session_id
         stores.sessions[session_id] = {
             **stores.sessions[session_id],
-            "elevated_grants": {"old-task": ["config.write"]},
+            "elevated_grants": {
+                "old-task": ["config.write"],
+                "malformed task": {
+                    "permissions": ["config.write"],
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                },
+            },
         }
 
         sess = stores.sessions[session_id]

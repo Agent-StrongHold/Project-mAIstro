@@ -27,7 +27,8 @@ The new cases pin each half of the failure mode against the real
   ADR-068 §D short-TTL elevation grant).
 - **Task-id validation**: malformed ids (empty, overlong, whitespace, control
   characters, off-charset) are 422; well-formed ones bind the grant under
-  exactly that id.
+  exactly that id. Persisted malformed keys are also ignored, and HTTP/WS
+  request bindings use the same grammar.
 - **WebSocket parity**: the dag-run socket closes with 1008 without a named
   task or under another task's grant, and reaches the handler only for its
   own task (`?elevated_task=`).

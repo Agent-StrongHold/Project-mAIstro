@@ -127,6 +127,7 @@ def _enforce(throttle: AuthThrottle, request: Request, account: str, action: str
 _SESSION_COOKIE = "hive_session"
 _COOKIE_MAX_AGE = 60 * 60 * 24 * 7
 _USERNAME_RE = re.compile(r"^[a-zA-Z0-9_-]{3,32}$")
+_TASK_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 _OAUTH_CODE_MAX_LENGTH = 4096
 _OAUTH_FAILURE_DETAIL = "OAuth authentication failed"
 _OAUTH_LINK_COOKIE_PREFIX = "__Host-hive_oauth_link_"
@@ -183,6 +184,11 @@ class RegisterBody(BaseModel):
         return self
 
 
+def is_valid_task_id(value: str) -> bool:
+    """Return whether a task id is safe to use as a grant binding key."""
+    return bool(_TASK_ID_RE.fullmatch(value))
+
+
 class ElevateBody(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -202,7 +208,7 @@ class ElevateBody(BaseModel):
         no whitespace or control characters, no header or log injection.
         """
         tid = value.strip()
-        if not tid or len(tid) > 128 or not re.fullmatch(r"[A-Za-z0-9._:-]+", tid):
+        if not is_valid_task_id(tid):
             raise ValueError(
                 "task_id must be 1-128 characters of letters, digits, '.', '_', ':' or '-'"
             )
@@ -282,6 +288,11 @@ def _active_grants(sess: dict[str, Any]) -> dict[str, dict[str, Any]]:
     now = datetime.now(UTC)
     active: dict[str, dict[str, Any]] = {}
     for task_id, grant in grants.items():
+        # Validate persisted keys as well as new elevation requests. A
+        # malformed legacy/injected key must never become an addressable grant
+        # merely because a caller can repeat that string in a header.
+        if not isinstance(task_id, str) or not is_valid_task_id(task_id):
+            continue
         normalized = _normalize_grant(grant)
         if normalized is None:
             continue

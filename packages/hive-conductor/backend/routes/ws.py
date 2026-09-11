@@ -9,6 +9,8 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from middleware.auth import origin_allowed, principal_has_permission, resolve_principal
 from services.dag_execution_scope import DagWorkspaceSelectionError, authorize_hive_dag_workspace
 
+from routes.auth import is_valid_task_id
+
 router = APIRouter(tags=["websocket"])
 
 logger = logging.getLogger("hive.routes.ws")
@@ -49,7 +51,9 @@ async def _authenticate(websocket: WebSocket, permission: str | None = None) -> 
             websocket.query_params.get("elevated_task")
             or websocket.headers.get("x-elevated-task")
             or ""
-        ).strip() or None
+        ).strip()
+        if not is_valid_task_id(task_id):
+            task_id = None
         if not principal_has_permission(user, permission, task_id):
             await websocket.close(
                 code=_POLICY_VIOLATION, reason=f"Permission '{permission}' required"

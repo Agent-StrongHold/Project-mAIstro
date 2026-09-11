@@ -234,6 +234,11 @@ def _requested_task(request: Request) -> str | None:
     value = request.headers.get(_ELEVATED_TASK_HEADER, "").strip()
     if not value or len(value) > _ELEVATED_TASK_MAX:
         return None
+    # Keep request-side bindings on the same grammar as elevation and stored
+    # grants. Length alone would still permit a malformed persisted key to be
+    # addressed if it ever entered the session store.
+    if not auth_routes.is_valid_task_id(value):
+        return None
     return value
 
 
