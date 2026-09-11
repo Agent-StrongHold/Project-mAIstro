@@ -386,6 +386,8 @@ async def test_build_llm_call_uses_canonical_egress_and_correlates_invocation(
                 "usage": {"prompt_tokens": 2, "completion_tokens": 3},
             }
 
+    posted: list[dict[str, Any]] = []
+
     class _Client:
         def __init__(self, *a: Any, **kw: Any) -> None: ...
 
@@ -395,6 +397,7 @@ async def test_build_llm_call_uses_canonical_egress_and_correlates_invocation(
         async def __aexit__(self, *a: Any) -> None: ...
 
         async def post(self, *a: Any, **kw: Any) -> _Resp:
+            posted.append(kw["json"])
             return _Resp()
 
     monkeypatch.setattr(httpx, "AsyncClient", _Client)
@@ -411,7 +414,24 @@ async def test_build_llm_call_uses_canonical_egress_and_correlates_invocation(
             project_id="project-evolve",
         )
     )
-    assert await contextual([{"role": "user", "content": "hi"}]) == "the answer"
+    assert (
+        await contextual(
+            [{"role": "user", "content": "hi"}],
+            model="selected-model",
+            temperature=0.7,
+            max_tokens=123,
+        )
+        == "the answer"
+    )
+    assert posted == [
+        {
+            "model": "model",
+            "messages": [{"role": "user", "content": "hi"}],
+            "temperature": 0.7,
+            "stream": False,
+            "max_tokens": 123,
+        }
+    ]
 
     invocations = list(effects.invocation_store._items.values())
     assert len(invocations) == 1
@@ -420,6 +440,7 @@ async def test_build_llm_call_uses_canonical_egress_and_correlates_invocation(
     assert invocation.node_run_id == "node-evaluate-1"
     assert invocation.attempt_id == "attempt-evaluate-1"
     assert invocation.binding.binding_id == "evolve-model"
+    assert invocation.request.model == "selected-model"
     binding = await effects.bindings.get("evolve-model")
     assert binding is not None
     assert binding.workspace_id == "ws-evolve"
