@@ -207,10 +207,8 @@ async def test_jira_poll_server_flavor_uses_bearer_pat(fake_jira_server: dict[st
     Node = get_node("jira.poll")
     out = await Node().run(
         {
-            "base_url": "https://jira.example.com",
+            "binding_id": "test-jira-binding",
             "jql": "updated >= -24h AND assignee = currentUser()",
-            "pat": "secret-pat-value",
-            "flavor": "server",
         },
         _ctx(),
     )
@@ -221,7 +219,7 @@ async def test_jira_poll_server_flavor_uses_bearer_pat(fake_jira_server: dict[st
     assert out.output.issues[0].issuetype == "Epic"
     assert out.output.issues[0].url == "https://jira.example.com/browse/P-100"
     # Server flavor must use Authorization: Bearer; no basic-auth tuple
-    assert fake_jira_server["headers_seen"]["Authorization"] == "Bearer secret-pat-value"
+    assert fake_jira_server["headers_seen"]["Authorization"] == "Bearer test-jira-secret"
     assert fake_jira_server["auth_seen"] is None
     # API path is REST v2 for Server
     assert "/rest/api/2/search" in fake_jira_server["url"]
@@ -265,16 +263,13 @@ async def test_jira_poll_cloud_with_email_uses_basic_auth(
     Node = get_node("jira.poll")
     out = await Node().run(
         {
-            "base_url": "https://acme.atlassian.net",
+            "binding_id": "test-jira-cloud-binding",
             "jql": "assignee=currentUser()",
-            "pat": "cloud-token",
-            "flavor": "cloud",
-            "email": "alice@example.com",
         },
         _ctx(),
     )
     assert out.success
-    assert seen["auth"] == ("alice@example.com", "cloud-token")
+    assert seen["auth"] == ("alice@example.com", "test-jira-secret")
     # No Authorization header when using Basic auth
     assert "Authorization" not in seen["headers"]
     assert "/rest/api/3/search" in seen["url"]
@@ -304,10 +299,8 @@ async def test_jira_poll_401_surfaces_permission_error(monkeypatch: pytest.Monke
     Node = get_node("jira.poll")
     out = await Node().run(
         {
-            "base_url": "https://jira.example.com",
+            "binding_id": "test-jira-binding",
             "jql": "x",
-            "pat": "bad-pat",
-            "flavor": "server",
         },
         _ctx(),
     )
@@ -368,7 +361,7 @@ async def test_airtable_poll_uses_filter_formula_for_since_iso(
     Node = get_node("airtable.poll")
     out = await Node().run(
         {
-            "pat": "pat-token",
+            "binding_id": "test-airtable-binding",
             "base_id": "appXYZ",
             "table": "Initiatives",
             "since_iso": "2026-05-21T00:00:00Z",
@@ -377,7 +370,7 @@ async def test_airtable_poll_uses_filter_formula_for_since_iso(
     )
     assert out.success
     assert out.output.count == 1
-    assert seen["headers"]["Authorization"] == "Bearer pat-token"
+    assert seen["headers"]["Authorization"] == "Bearer test-airtable-secret"
     assert "IS_AFTER(LAST_MODIFIED_TIME()" in seen["params"]["filterByFormula"]
 
 
@@ -573,23 +566,24 @@ async def test_daily_report_flow_e2e_no_llm(monkeypatch: pytest.MonkeyPatch) -> 
 
     from maistro.graph.types import GraphBlackboard
 
-    bb = GraphBlackboard(task_objective="Daily Status", workspace="")
+    bb = GraphBlackboard(task_objective="Daily Status", workspace="w1")
     ctx = NodeContext(
         run_id="r1",
         dag_id="daily-status",
         node_id="entry",
         user_id="u1",
+        workspace_id="w1",
         project_id="p1",
+        node_run_id="node-run-1",
+        attempt_id="attempt-1",
         blackboard=bb,
     )
 
     # 1. jira.poll
     jp = await get_node("jira.poll")().run(
         {
-            "base_url": "https://jira.example.com",
+            "binding_id": "test-jira-binding",
             "jql": "updated >= -24h AND assignee = currentUser()",
-            "pat": "test-pat",
-            "flavor": "server",
         },
         ctx,
     )

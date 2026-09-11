@@ -2318,9 +2318,18 @@ def _di_node(
 
     from maistro.graph.nodes.agent_delegate_remote import AgentDelegateRemoteNode
     from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
+    from maistro.graph.nodes.airtable_poll import AirtablePollNode
+    from maistro.graph.nodes.jira_poll import JiraPollNode
+    from maistro.graph.nodes.jira_wait_for_subtasks import JiraWaitForSubtasksNode
     from maistro.graph.nodes.llm_summarize import LlmSummarizeNode
     from maistro.graph.nodes.rsi_quota_pace_trigger import RsiQuotaPaceTriggerNode
 
+    if kind == "airtable.poll":
+        return AirtablePollNode(effect_context=effect_context)
+    if kind == "jira.poll":
+        return JiraPollNode(effect_context=effect_context)
+    if kind == "jira.wait_for_subtasks":
+        return JiraWaitForSubtasksNode(effect_context=effect_context)
     if kind == "agent.spawn_harness":
         return AgentSpawnHarnessNode(adapters=harness_adapters, effect_context=effect_context)
     if kind == "llm.summarize":
