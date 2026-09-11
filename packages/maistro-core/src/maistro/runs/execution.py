@@ -414,13 +414,14 @@ class AttemptExecutionService:
                 )
                 result = await runtime_task
             except ExecutionYielded as exc:
-                terminal = await self._terminalize_if_open(
+                terminal, settled = await self._terminalize_if_open(
                     attempt.attempt_id,
                     AttemptStatus.YIELDED,
                     fencing_token=token,
                     result=exc.as_result(),
                 )
-                await self._reconcile(terminal)
+                if settled:
+                    await self._reconcile(terminal)
                 return terminal
             except (asyncio.CancelledError, RuntimeDeadlineExceeded, Exception) as exc:
                 if runtime_task is not None and not runtime_task.done():
@@ -428,46 +429,65 @@ class AttemptExecutionService:
                     with contextlib.suppress(asyncio.CancelledError, Exception):
                         await runtime_task
                 status, cause, error = _failure_disposition(exc)
-                terminal = await self._terminalize_if_open(
+                terminal, settled = await self._terminalize_if_open(
                     attempt.attempt_id,
                     status,
                     fencing_token=token,
                     result=attempt_evidence_of(exc),
                     error=error,
                 )
-                await self._reconcile(terminal, cancellation=cause)
+                if settled:
+                    await self._reconcile(terminal, cancellation=cause)
                 raise
             else:
-                current_node = await self._store.get_node_run(attempt.node_run_id)
-                current_run = (
-                    await self._store.get_run(current_node.run_id)
-                    if current_node is not None
-                    else None
-                )
-                if current_run is not None and current_run.status is RunStatus.CANCELLED:
-                    # The durable Run transition is the cancellation fence. A
-                    # provider that won the local task race cannot publish a
-                    # stale successful Attempt after that fence.
-                    terminal = await self._terminalize_if_open(
-                        attempt.attempt_id,
-                        AttemptStatus.CANCELLED,
-                        fencing_token=token,
-                        error="execution cancelled by Run fence",
-                    )
-                    await self._reconcile(terminal, cancellation=CancellationCause.REQUESTED)
-                    raise asyncio.CancelledError
-                terminal = await self._terminalize_if_open(
-                    attempt.attempt_id,
-                    AttemptStatus.COMPLETED,
+                return await self._settle_provider_success(
+                    attempt,
                     fencing_token=token,
                     result=result,
+                    reconcile_logical=reconcile_logical,
                 )
-                if reconcile_logical:
-                    await self._reconcile(terminal)
-                return terminal
             finally:
                 await self._stop_heartbeat(heartbeat)
                 self._active_services.pop(attempt.attempt_id, None)
+
+    async def _settle_provider_success(
+        self,
+        attempt: Attempt,
+        *,
+        fencing_token: str,
+        result: Any,
+        reconcile_logical: bool,
+    ) -> Attempt:
+        """Publish a provider success — unless the durable Run fence forbids it.
+
+        The durable Run transition is the cancellation fence. A provider that
+        won the local task race cannot publish a stale successful Attempt
+        after that fence: its success is converted to a cancelled Attempt
+        instead, and the executor unwinds as cancelled.
+        """
+        current_node = await self._store.get_node_run(attempt.node_run_id)
+        current_run = (
+            await self._store.get_run(current_node.run_id) if current_node is not None else None
+        )
+        if current_run is not None and current_run.status is RunStatus.CANCELLED:
+            terminal, settled = await self._terminalize_if_open(
+                attempt.attempt_id,
+                AttemptStatus.CANCELLED,
+                fencing_token=fencing_token,
+                error="execution cancelled by Run fence",
+            )
+            if settled:
+                await self._reconcile(terminal, cancellation=CancellationCause.REQUESTED)
+            raise asyncio.CancelledError
+        terminal, settled = await self._terminalize_if_open(
+            attempt.attempt_id,
+            AttemptStatus.COMPLETED,
+            fencing_token=fencing_token,
+            result=result,
+        )
+        if settled and reconcile_logical:
+            await self._reconcile(terminal)
+        return terminal
 
     async def _launch_claimed(
         self,
@@ -652,18 +672,33 @@ class AttemptExecutionService:
         fencing_token: str,
         result: object | None = None,
         error: str | None = None,
-    ) -> Attempt:
+    ) -> tuple[Attempt, bool]:
+        """Transition an open Attempt; report whether THIS call settled it.
+
+        ``True`` means this call wrote the terminal status and therefore owns
+        the reconciliation that follows it. ``False`` means the Attempt was
+        already terminal: another authority — crash reclamation, a run-level
+        cancel, the pre-launch fence — settled the durable record and applied
+        its own disposition. Reconciling that record again here would override
+        the settled answer with this task's view of why the work stopped: a
+        reclaimed Attempt's NodeRun would turn wrongly terminal instead of
+        staying parked for the policy that owns the retry decision
+        (ADR-082526-b36a).
+        """
         current = await self._store.get_attempt(attempt_id)
         if current is None:
             raise RunIntegrityError(f"Attempt {attempt_id!r} disappeared during execution")
         if current.status in TERMINAL_ATTEMPT_STATUSES:
-            return current
-        return await self._terminalize(
-            attempt_id,
-            status,
-            fencing_token=fencing_token,
-            result=result,
-            error=error,
+            return current, False
+        return (
+            await self._terminalize(
+                attempt_id,
+                status,
+                fencing_token=fencing_token,
+                result=result,
+                error=error,
+            ),
+            True,
         )
 
     async def _terminalize(
