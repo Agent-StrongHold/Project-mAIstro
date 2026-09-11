@@ -19,17 +19,52 @@ logger = logging.getLogger(__name__)
 _service: _EvolutionService | None = None
 
 
+class EvolutionServiceNotStarted(RuntimeError):
+    """The Evolve service has not been installed by application lifespan."""
+
+
+class EvolutionUnavailableError(RuntimeError):
+    """Evolve domain state exists, but canonical execution cannot admit work."""
+
+    def __init__(self, message: str, *, availability: str) -> None:
+        super().__init__(message)
+        self.availability = availability
+
+
+class CanonicalEvolutionRunError(RuntimeError):
+    """A canonical Evolve Run reached a terminal non-success state."""
+
+    def __init__(self, *, run_id: str, status: RunStatus, diagnostic: str) -> None:
+        self.run_id = run_id
+        self.status = status
+        self.diagnostic = diagnostic
+        super().__init__(f"Evolution cycle canonical Run {run_id} did not complete: {diagnostic}")
+
+    def as_detail(self) -> dict[str, str]:
+        return {
+            "code": "canonical_run_failed",
+            "run_id": self.run_id,
+            "status": self.status.value,
+            "diagnostic": self.diagnostic,
+            "message": str(self),
+        }
+
+
 def get_evolution_service() -> _EvolutionService:
     if _service is None:
-        raise RuntimeError("EvolutionService not started")
+        raise EvolutionServiceNotStarted("EvolutionService not started")
     return _service
 
 
 async def start_evolution() -> None:
     global _service
     _service = _EvolutionService()
-    # Keep a reference to the background task so it isn't garbage-collected mid-flight.
-    _service.task = asyncio.ensure_future(_service.run_loop())
+    _service.initialize_domain_state()
+    # A degraded/stub engine retains Evolve's domain projection for inspection,
+    # but must not start a cadence that is guaranteed to fail admission.
+    if _service.execution_available:
+        # Keep a reference to the background task so it isn't garbage-collected mid-flight.
+        _service.task = asyncio.ensure_future(_service.run_loop())
 
 
 async def stop_evolution() -> None:
@@ -46,8 +81,48 @@ class _EvolutionService:
         self._cycle_count = 0
         self._last_cycle_error: str | None = None
         self._last_run_id: str | None = None
+        self._last_run_status: RunStatus | None = None
         self.task: asyncio.Task[None] | None = None
         self._tournament: Any = None
+        self._execution_available = False
+        self._availability = "unavailable"
+        self._availability_reason: str | None = "canonical engine execution has not been checked"
+        self._refresh_execution_availability()
+
+    @property
+    def execution_available(self) -> bool:
+        return self._execution_available
+
+    def _refresh_execution_availability(self) -> None:
+        from services.evolution_graph import (
+            CanonicalExecutionUnavailable,
+            canonical_execution_owner,
+        )
+
+        try:
+            canonical_execution_owner()
+        except CanonicalExecutionUnavailable as exc:
+            self._execution_available = False
+            self._availability = exc.availability
+            self._availability_reason = str(exc)
+        else:
+            self._execution_available = True
+            self._availability = "executable"
+            self._availability_reason = None
+
+    def initialize_domain_state(self) -> None:
+        """Initialize inspectable Evolve state without claiming execution is live."""
+        if self._population is not None and self._tournament is not None:
+            return
+        try:
+            from maistro_evolve.population import PopulationStore
+            from maistro_evolve.tournament import EloTournament
+
+            self._population = PopulationStore()
+            self._tournament = EloTournament()
+        except Exception as exc:
+            self._last_cycle_error = str(exc)
+            logger.warning("Evolution population init failed: %s", exc)
 
     def stop(self) -> None:
         self._running = False
@@ -69,19 +144,20 @@ class _EvolutionService:
         return self._last_run_id
 
     async def run_loop(self) -> None:
-        try:
-            from maistro_evolve.population import PopulationStore
-            from maistro_evolve.tournament import EloTournament
-
-            self._population = PopulationStore()
-            self._tournament = EloTournament()
-        except Exception as exc:
-            logger.warning("Evolution population init failed: %s", exc)
+        self.initialize_domain_state()
+        if self._population is None or self._tournament is None:
+            return
+        self._refresh_execution_availability()
+        if not self._execution_available:
             return
 
         while self._running:
             await asyncio.sleep(300)
             if not self._running:
+                break
+            self._refresh_execution_availability()
+            if not self._execution_available:
+                logger.warning("Evolution cadence stopped: %s", self._availability_reason)
                 break
             try:
                 await self._run_one_cycle()
@@ -92,8 +168,25 @@ class _EvolutionService:
     async def _run_one_cycle(self, *, actor_principal_id: str | None = None) -> str:
         from maistro_evolve.cycle import EvolutionConfig
         from maistro_evolve.harness import EvalHarness
-        from services.evolution_graph import run_canonical_evolution_cycle
+        from services.evolution_graph import (
+            CanonicalExecutionUnavailable,
+            canonical_execution_owner,
+            run_canonical_evolution_cycle,
+        )
 
+        try:
+            canonical_execution_owner()
+        except CanonicalExecutionUnavailable as exc:
+            self._execution_available = False
+            self._availability = exc.availability
+            self._availability_reason = str(exc)
+            raise EvolutionUnavailableError(
+                self._availability_reason,
+                availability=self._availability,
+            ) from exc
+        self._execution_available = True
+        self._availability = "executable"
+        self._availability_reason = None
         if self._population is None or self._tournament is None:
             raise RuntimeError("Evolution population is not initialized")
 
@@ -112,11 +205,16 @@ class _EvolutionService:
             cycle_number=self._cycle_count + 1,
         )
         self._last_run_id = record.run_id
+        self._last_run_status = record.run.status
         if record.run.status is not RunStatus.COMPLETED:
             detail = record.run.error or f"canonical Run ended {record.run.status.value}"
-            raise RuntimeError(
-                f"Evolution cycle canonical Run {record.run_id} did not complete: {detail}"
+            failure = CanonicalEvolutionRunError(
+                run_id=record.run_id,
+                status=record.run.status,
+                diagnostic=detail,
             )
+            self._last_cycle_error = str(failure)
+            raise failure
 
         self._cycle_count += 1
         self._last_cycle_error = None
@@ -163,12 +261,21 @@ class _EvolutionService:
             return None
 
     def status(self) -> dict:
-        tournament_stats = self._tournament.get_stats() if self._tournament else {}
+        self._refresh_execution_availability()
+        get_stats = getattr(self._tournament, "get_stats", None)
+        tournament_stats = get_stats() if callable(get_stats) else {}
         return {
-            "running": self._running,
+            # `running` is deliberately executable availability, not merely the
+            # lifetime of this projection service.
+            "running": self._running and self._execution_available,
+            "execution_available": self._execution_available,
+            "availability": self._availability,
+            "availability_reason": self._availability_reason,
+            "domain_state_only": not self._execution_available,
             "cycle_count": self._cycle_count,
             "population_size": len(self._population.list_all()) if self._population else 0,
             "last_error": self._last_cycle_error,
             "last_run_id": self._last_run_id,
+            "last_run_status": self._last_run_status.value if self._last_run_status else None,
             "tournament": tournament_stats,
         }

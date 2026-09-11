@@ -65,6 +65,9 @@ def test_start_then_get_returns_instance(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(evo.asyncio, "ensure_future", _capture)
     asyncio.run(evo.start_evolution())
     assert evo._service is not None
+    assert started == []
+    assert evo._service.status()["availability"] == "degraded"
+    assert evo._service.status()["running"] is False
     inst = evo.get_evolution_service()
     assert inst is evo._service
 
@@ -107,6 +110,7 @@ def test_service_properties_initial_state() -> None:
     assert s.tournament is None
     assert s.last_run_id is None
     assert s._running is True
+    assert s.execution_available is False
     s.stop()
     assert s._running is False
 
@@ -205,6 +209,14 @@ def test_run_loop_captures_cycle_exception(
         self_.stop()
         return "run-2"
 
+    import services.evolution_graph as evolution_graph
+
+    owner = SimpleNamespace(
+        run_store=object(), graph_run_store=object(), project_scope_store=object()
+    )
+    monkeypatch.setattr(
+        evolution_graph, "canonical_execution_owner", lambda *_args, **_kwargs: owner
+    )
     monkeypatch.setattr(_EvolutionService, "_run_one_cycle", _flaky_cycle)
 
     async def _no_sleep(_: float) -> None:
@@ -246,6 +258,13 @@ def test_run_one_cycle_dispatches_canonical_graph(
 
     monkeypatch.setattr(evolution_graph, "run_canonical_evolution_cycle", _canonical)
 
+    owner = SimpleNamespace(
+        run_store=object(), graph_run_store=object(), project_scope_store=object()
+    )
+    monkeypatch.setattr(
+        evolution_graph, "canonical_execution_owner", lambda *_args, **_kwargs: owner
+    )
+
     s = _EvolutionService()
     s._population = _StubPop()
     s._tournament = _StubTour()
@@ -283,6 +302,13 @@ def test_run_one_cycle_does_not_count_failed_canonical_run(
 
     monkeypatch.setattr(evolution_graph, "run_canonical_evolution_cycle", _canonical)
 
+    owner = SimpleNamespace(
+        run_store=object(), graph_run_store=object(), project_scope_store=object()
+    )
+    monkeypatch.setattr(
+        evolution_graph, "canonical_execution_owner", lambda *_args, **_kwargs: owner
+    )
+
     s = _EvolutionService()
     s._population = _StubPop()
     s._tournament = _StubTour()
@@ -292,6 +318,7 @@ def test_run_one_cycle_does_not_count_failed_canonical_run(
 
     assert s.cycle_count == 0
     assert s.last_run_id == "failed-evolve-run"
+    assert s.status()["last_run_status"] == "failed"
 
 
 # --- _build_llm_call ----------------------------------------------------
@@ -388,11 +415,15 @@ def test_status_reports_zero_state_when_nothing_running() -> None:
 
     s = _EvolutionService()
     out = s.status()
-    assert out["running"] is True
+    assert out["running"] is False
+    assert out["execution_available"] is False
+    assert out["availability"] == "degraded"
+    assert out["domain_state_only"] is True
     assert out["cycle_count"] == 0
     assert out["population_size"] == 0
     assert out["last_error"] is None
     assert out["last_run_id"] is None
+    assert out["last_run_status"] is None
     assert out["tournament"] == {}
 
 
