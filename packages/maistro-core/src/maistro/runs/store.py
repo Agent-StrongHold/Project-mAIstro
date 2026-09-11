@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime, timedelta
 from itertools import islice
 from typing import Any, Protocol, runtime_checkable
@@ -332,6 +332,22 @@ class RunStore(Protocol):
 
     async def get_run(self, run_id: str) -> Run | None: ...
 
+    async def find_occurrence_run(
+        self,
+        provenance: Mapping[str, Any] | None,
+    ) -> Run | None:
+        """The Run that already claims this provenance's occurrence, if any.
+
+        The read half of the occurrence claim (#220, #1120). A duplicate
+        admission is refused by `create_run`, but the refusal does not name the
+        Run that won — and the loser of a manual-fire race owes its caller the
+        same receipt the winner produced, which means resolving that Run. None
+        means nobody holds the claim (the common case: nothing was admitted
+        twice), not that the occurrence is free to double-fire — admission
+        still owns that decision.
+        """
+        ...
+
     async def transition_run(
         self,
         run_id: str,
@@ -584,6 +600,19 @@ class InMemoryRunStore:
         self._runs[run.run_id] = run
         self._prune_terminal_runs()
         return run.model_copy(deep=True)
+
+    async def find_occurrence_run(
+        self,
+        provenance: Mapping[str, Any] | None,
+    ) -> Run | None:
+        occurrence = occurrence_key(dict(provenance or {}))
+        if occurrence is None:
+            return None
+        run_id = self._occurrences.get(occurrence)
+        if run_id is None:
+            return None
+        run = self._runs.get(run_id)
+        return run.model_copy(deep=True) if run is not None else None
 
     def _referenced_by_children(self) -> tuple[set[str], set[str]]:
         """The Run and NodeRun ids some other Run names as its parent."""

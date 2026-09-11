@@ -45,8 +45,12 @@ from maistro.runs.reconciliation import (
 from maistro.runs.sources import (
     ADMISSION_SOURCE,
     SCHEDULE_CATCHUP_KEY,
+    SCHEDULE_FIRE_ID_KEY,
     SCHEDULE_ID_KEY,
     SCHEDULE_SOURCE,
+    SCHEDULE_TRIGGER_KEY,
+    SCHEDULE_TRIGGER_MANUAL,
+    SCHEDULE_TRIGGER_RECURRING,
     SCHEDULED_FOR_KEY,
 )
 from maistro.runs.store import (
@@ -1157,6 +1161,104 @@ async def test_half_an_occurrence_key_claims_nothing(spine: Any) -> None:
     second = await store.create_run(_graph(workspace, project_id), provenance=dict(partial))
 
     assert first.run_id != second.run_id
+
+
+# ── a manual fire is its own occurrence (#1120) ───────────────────
+#
+# `(schedule_id, scheduled_for)` names a *nominal* occurrence. A manual fire
+# has no cron time: stamping `datetime.now()` per request gave every retry of
+# the same logical request a fresh identity, so a double submit became two
+# Runs. A manual fire instead carries `schedule_fire_id`, an opaque token the
+# caller keeps stable across retries, and claims
+# `(schedule_id, "manual:" + fire_id)` — disjoint from, and never consuming,
+# the nominal identity space.
+
+
+def _manual_fire(
+    schedule_id: str = "sched-1",
+    fire_id: str = "retry-token-1",
+    when: str = "2026-08-24T12:00:01+00:00",
+) -> dict:
+    return {
+        ADMISSION_SOURCE: SCHEDULE_SOURCE,
+        SCHEDULE_ID_KEY: schedule_id,
+        SCHEDULE_FIRE_ID_KEY: fire_id,
+        SCHEDULE_TRIGGER_KEY: SCHEDULE_TRIGGER_MANUAL,
+        SCHEDULED_FOR_KEY: when,
+    }
+
+
+async def test_a_retried_manual_fire_is_one_occurrence(spine: Any) -> None:
+    """The retry carries the same token but a later wall clock. The instant is
+    observability, not identity — exactly the property that makes a double
+    submit one logical firing instead of two."""
+    store, workspace, project_id = spine
+    await store.create_run(_graph(workspace, project_id), provenance=_manual_fire())
+
+    with pytest.raises(DuplicateOccurrence) as caught:
+        await store.create_run(
+            _graph(workspace, project_id),
+            provenance=_manual_fire(when="2026-08-24T12:04:00+00:00"),
+        )
+
+    assert caught.value.schedule_id == "sched-1"
+
+
+async def test_a_manual_token_never_consumes_a_nominal_occurrence(spine: Any) -> None:
+    """The two identity spaces are disjoint by the `manual:` prefix. Without
+    it, a hand fire whose caller pasted a cron instant as its token would
+    silently consume — and thereby suppress — the nominal occurrence still owed
+    at that instant."""
+    store, workspace, project_id = spine
+    when = "2026-08-24T12:00:00+00:00"
+    nominal = await store.create_run(
+        _graph(workspace, project_id), provenance=_occurrence(when=when)
+    )
+
+    manual = await store.create_run(
+        _graph(workspace, project_id), provenance=_manual_fire(fire_id=when, when=when)
+    )
+
+    assert nominal.run_id != manual.run_id
+
+
+async def test_a_loser_of_a_manual_race_finds_the_winner(spine: Any) -> None:
+    """`create_run` refuses the duplicate but does not name the Run that won,
+    and the loser of a manual-fire race owes its caller the same receipt the
+    winner produced. `find_occurrence_run` is that read half — over the same
+    claim the unique index enforces, so it works across processes and
+    restarts, not just within one caller's memory."""
+    store, workspace, project_id = spine
+    winner = await store.create_run(_graph(workspace, project_id), provenance=_manual_fire())
+
+    with pytest.raises(DuplicateOccurrence):
+        await store.create_run(_graph(workspace, project_id), provenance=_manual_fire())
+
+    found = await store.find_occurrence_run(_manual_fire())
+    assert found is not None
+    assert found.run_id == winner.run_id
+
+
+async def test_an_unclaimed_manual_fire_has_no_run_to_reconcile(spine: Any) -> None:
+    store, _workspace, _project_id = spine
+
+    assert await store.find_occurrence_run(_manual_fire()) is None
+
+
+async def test_occurrence_lookup_matches_the_nominal_token_too(spine: Any) -> None:
+    """The same read half must resolve nominal claims — a retried *recurring*
+    admission that lost the race resolves its receipt the same way."""
+    store, workspace, project_id = spine
+    provenance = {
+        **_occurrence(),
+        SCHEDULE_TRIGGER_KEY: SCHEDULE_TRIGGER_RECURRING,
+    }
+    winner = await store.create_run(_graph(workspace, project_id), provenance=provenance)
+
+    found = await store.find_occurrence_run(provenance)
+
+    assert found is not None
+    assert found.run_id == winner.run_id
 
 
 async def test_only_one_of_many_concurrent_tickers_admits_an_occurrence(spine: Any) -> None:

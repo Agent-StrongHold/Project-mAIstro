@@ -2,9 +2,12 @@
 
 Recurrence and fire semantics live in ``maistro.scheduling``.  A configured
 Hive process delegates the complete evaluate -> occurrence claim -> Run admit
--> cursor advance transaction to ``ScheduleRunAdmitter``.  The historical
-in-process path remains only as a compatibility fallback for standalone/demo
-contexts that have no core Container; it is not the production authority.
+-> cursor advance transaction to ``ScheduleRunAdmitter`` — for recurring ticks
+*and* for the manual ``fire_now`` surface (#1120), which admits a first-class
+manual occurrence through the same Run store the admitter claims nominal
+occurrences with.  The historical in-process path remains only as a
+compatibility fallback for standalone/demo contexts that have no core
+Container; it is not the production authority.
 """
 
 from __future__ import annotations
@@ -45,12 +48,30 @@ class ScheduleNotFireable(Exception):
     """A fire was asked for and could not happen. The reason is the message."""
 
 
-async def fire_now(sid: str) -> str:
-    """Fire a schedule on demand through the compatibility execution path.
+async def fire_now(sid: str, *, fire_id: str | None = None) -> str:
+    """Fire a schedule on demand through the canonical schedule execution spine.
 
-    The recurring production loop is owned by ``ScheduleRunAdmitter``.  Manual
-    fire keeps the existing immediate semantics until the product exposes a
-    first-class manual occurrence on the canonical scheduling API.
+    A manual fire is a first-class manual occurrence (#1120), not a cron tick
+    with a fabricated timestamp: its identity is ``(schedule_id, fire_id)``,
+    claimed through the same Run store uniqueness the recurring admitter claims
+    ``(schedule_id, scheduled_for)`` with.  A retried or concurrent call
+    carrying the same ``fire_id`` therefore resolves to the Run the first call
+    created — the documented reconciliation — instead of minting a second Run
+    behind a fresh ``datetime.now()``.  The claim is durable canonical state, so
+    the reconciliation survives a process restart.  A caller that sends no
+    ``fire_id`` gets a server-minted one: each such request is its own
+    deliberate firing.
+
+    What a manual fire deliberately does *not* do is move the recurring
+    enumeration cursor (``last_fired_at``/``next_due_at``): advancing it would
+    suppress nominal occurrences still owed inside the catch-up window, which
+    is recurrence semantics a hand fire must not rewrite.  It does count as a
+    fire (``runs_so_far``, ``max_runs``) and its Run becomes the schedule's
+    ``last_run_id``.
+
+    Standalone/demo contexts with no core Container keep the historical
+    immediate execution path, selected by exactly the same gate the recurring
+    loop uses; a configured production instance never reaches it.
     """
     import stores
 
@@ -59,6 +80,16 @@ async def fire_now(sid: str) -> str:
         raise ScheduleNotFireable(f"schedule {sid} does not exist")
 
     runner = _runner or _ScheduleRunner()
+    container = runner._canonical_container()
+    if runner._canonical_admitter(container) is not None:
+        assert container is not None  # for the type checker; the gate proved it
+        return await runner._fire_now_canonical(sid, schedule, container, fire_id=fire_id)
+
+    # Standalone/demo compatibility path.  Production must never reach this:
+    # the gate above is the same ``_canonical_admitter`` predicate the recurring
+    # loop uses, so an instance that recurses canonically also fires manually
+    # canonically.  It exists so a scheduler unit can still be exercised
+    # without constructing the entire Container.
     store = runner._canonical_store()
     definition = await runner._definition_for(sid, schedule, store=store)
     if definition is None:
@@ -370,6 +401,232 @@ class _ScheduleRunner:
                 },
             )
 
+    async def _fire_now_canonical(
+        self,
+        sid: str,
+        schedule: Any,
+        container: Any,
+        *,
+        fire_id: str | None = None,
+    ) -> str:
+        """Admit a manual fire as a first-class occurrence of the canonical spine.
+
+        Same authority as a recurring tick — the canonical Run store's
+        occurrence claim, a QUEUED admission, the Container consumer for
+        execution — and the same scope and template resolution.  Different
+        identity (a ``fire_id`` token, not a cron instant) and different cursor
+        semantics (``runs_so_far``/``last_run_id`` move; the enumeration cursor
+        does not), which is what makes it a *manual* occurrence rather than a
+        fake cron one (#1120).
+        """
+        from uuid import uuid4
+
+        from routes.audit import log_audit
+
+        from maistro.graph.templates import require_template
+        from maistro.runs.model import RunStatus
+        from maistro.runs.sources import (
+            ADMISSION_SOURCE,
+            SCHEDULE_FIRE_ID_KEY,
+            SCHEDULE_ID_KEY,
+            SCHEDULE_INPUTS_KEY,
+            SCHEDULE_SOURCE,
+            SCHEDULE_TRIGGER_KEY,
+            SCHEDULE_TRIGGER_MANUAL,
+            SCHEDULED_FOR_KEY,
+        )
+        from maistro.runs.store import DuplicateOccurrence
+
+        scope = await self._canonical_scope(schedule, container)
+        definition = await self._definition_for(
+            sid, schedule, store=container.schedule_store, scope=scope
+        )
+        if definition is None:
+            raise ScheduleNotFireable(
+                f"schedule {sid} names no mission template, so there is nothing to run"
+            )
+        if definition.exhausted:
+            raise ScheduleNotFireable(
+                f"schedule {sid} has used all {definition.max_runs} of its runs"
+            )
+
+        await self._prime_template(definition, container)
+        try:
+            template = await require_template(
+                container.template_store,
+                definition.graph_template_id,
+                version=definition.template_version,
+            )
+        except Exception as exc:
+            # Nothing claimed, nothing recorded: the fire that could not be
+            # admitted never existed, so there is no receipt to hand back.
+            raise ScheduleNotFireable(
+                f"schedule {sid} cannot resolve its mission template: {exc}"
+            ) from exc
+
+        token = fire_id or uuid4().hex
+        requested_at = datetime.now(UTC)
+        graph = template.instantiate(project_id=definition.project_id, name=schedule.name or None)
+        provenance: dict[str, Any] = {
+            ADMISSION_SOURCE: SCHEDULE_SOURCE,
+            SCHEDULE_ID_KEY: sid,
+            # The identity. Opaque and stable across retries of the same
+            # logical request — never a wall-clock instant, which is how a
+            # double submit used to become two Runs.
+            SCHEDULE_FIRE_ID_KEY: token,
+            SCHEDULE_TRIGGER_KEY: SCHEDULE_TRIGGER_MANUAL,
+            # Observability, not identity: the instant the fire was asked for.
+            SCHEDULED_FOR_KEY: requested_at.isoformat(),
+        }
+        if definition.inputs:
+            provenance[SCHEDULE_INPUTS_KEY] = definition.inputs
+
+        try:
+            run = await container.run_store.create_run(
+                graph,
+                persona_id=definition.persona_id,
+                actor_principal_id=definition.actor_principal_id,
+                provenance=provenance,
+                # QUEUED in the same insert, exactly like `_admit_one`: the
+                # admission is the submission, and the consumer tick owns
+                # execution from there.
+                initial_status=RunStatus.QUEUED,
+            )
+        except DuplicateOccurrence:
+            # Same logical request, already fired. The documented
+            # reconciliation is the first call's receipt — no second Run, no
+            # second count against max_runs. `find_occurrence_run` reads the
+            # claim the winner holds, so this works across processes and
+            # restarts, not just within one caller's memory.
+            existing = await container.run_store.find_occurrence_run(provenance)
+            if existing is None:  # pragma: no cover - claim without a Run
+                raise ScheduleNotFireable(
+                    f"schedule {sid} manual fire {token!r} was already admitted "
+                    "but its Run is not resolvable"
+                ) from None
+            logger.info(
+                "Schedule %s manual fire %s reconciled to existing Run %s",
+                sid,
+                token,
+                existing.run_id,
+            )
+            self._project_manual_receipt(sid, requested_at, existing.run_id, exhausted=False)
+            await self._consume_promptly(container)
+            # ``str()`` because the store is ``Any`` here: the bridge is
+            # duck-typed by design, and the receipt crossing back into typed
+            # Hive code should be re-asserted at the boundary, not trusted as
+            # ``Any``.
+            return str(existing.run_id)
+
+        # A manual fire counts (runs_so_far, max_runs) but does not advance the
+        # recurring enumeration cursor: `ScheduleStore.record_fire` stamps
+        # `last_fired_at` unconditionally, and moving it would make the next
+        # tick resume enumeration after this hand fire — silently dropping
+        # nominal occurrences still owed inside the catch-up window. So the
+        # receipt is written as a definition update instead. Re-read first to
+        # shrink (not close; the store is last-writer-wins) the window against
+        # a concurrent recurring tick's own cursor write.
+        exhausted = (
+            definition.max_runs is not None and definition.runs_so_far + 1 >= definition.max_runs
+        )
+        recorded = await container.schedule_store.get(sid) or definition
+        await container.schedule_store.put(
+            recorded.model_copy(
+                update={
+                    "last_run_id": run.run_id,
+                    "runs_so_far": recorded.runs_so_far + 1,
+                    "next_due_at": None if exhausted else recorded.next_due_at,
+                    "enabled": False if exhausted else recorded.enabled,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+        )
+
+        log_audit(
+            "schedule_fire",
+            "system",
+            target=sid,
+            detail={
+                "name": schedule.name,
+                "scheduled_for": requested_at.isoformat(),
+                "trigger": SCHEDULE_TRIGGER_MANUAL,
+            },
+        )
+        log_audit(
+            "schedule_run",
+            "system",
+            target=sid,
+            detail={
+                "dag_id": str(schedule.mission_template_id),
+                "run_id": run.run_id,
+                "status": str(run.status.value),
+                "template_version": template.version,
+                "trigger": SCHEDULE_TRIGGER_MANUAL,
+            },
+        )
+        if exhausted:
+            logger.info(
+                "Schedule %s reached max_runs (%s) with a manual fire and is now disabled",
+                sid,
+                definition.max_runs,
+            )
+        self._project_manual_receipt(sid, requested_at, run.run_id, exhausted=exhausted)
+        await self._consume_promptly(container)
+        return str(run.run_id)
+
+    def _project_manual_receipt(
+        self,
+        sid: str,
+        requested_at: datetime,
+        run_id: str,
+        *,
+        exhausted: bool,
+    ) -> None:
+        """Mirror a manual fire's receipt onto the legacy Hive response row.
+
+        Same projection `_record_fire` performs, minus the cursor fields a
+        manual fire does not own (`next_run` reflects the cron, not the hand
+        fire, unless exhaustion just cleared it).
+        """
+        import stores
+
+        current = stores.schedules.get(sid)
+        if current is None:
+            return
+        update: dict[str, Any] = {
+            "last_run": requested_at,
+            "last_run_id": run_id,
+            "updated_at": datetime.now(UTC),
+        }
+        if exhausted:
+            update["enabled"] = False
+            update["next_run"] = None
+        stores.schedules[sid] = current.model_copy(update=update)
+
+    @staticmethod
+    async def _consume_promptly(container: Any) -> None:
+        """Nudge the canonical consumer so the admitted Run starts now.
+
+        The immediate UX a manual fire promises is kept by prompt *consumption*
+        of the admitted Run, never by bypassing admission (#1120).
+        `execute_admitted_runs` is the same operator-scheduled tick (ADR-019)
+        that consumes recurring admissions; a hand fire merely asks it to run
+        once, now.  Best-effort by design: if consumption cannot proceed (no
+        claim capability wired, executor construction failure), the Run stays
+        QUEUED — durable, visible, recoverable canonical state, the same
+        posture a recurring admission has between ticks — and the caller still
+        holds its receipt.
+        """
+        tick = getattr(container, "execute_admitted_runs", None)
+        if tick is None:
+            return
+        try:
+            await tick()
+        except Exception as exc:
+            logger.warning(
+                "Schedule manual fire's prompt consumption deferred to the next tick: %s", exc
+            )
+
     async def _evaluate_canonical(
         self,
         sid: str,
@@ -520,7 +777,16 @@ class _ScheduleRunner:
         scheduled_for: datetime | None = None,
         catchup: bool = False,
     ) -> str | None:
-        """Compatibility immediate execution path used by manual fire/tests."""
+        """Standalone/demo immediate execution path — never a configured one.
+
+        Selected only when there is no core Container bridge (the same gate the
+        recurring loop's fallback uses), so a configured production instance
+        cannot reach this; `fire_now` and `_evaluate_canonical` own the
+        canonical admission spine in that case.  It fabricates the historical
+        ``hive:schedule:{sid}`` execution scope and executes through the
+        in-process registry, both of which are exactly what the canonical path
+        replaces.
+        """
         t = datetime.now(UTC)
 
         template_id = schedule.mission_template_id
