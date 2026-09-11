@@ -17,8 +17,10 @@ from typing import Any
 import pytest
 
 from maistro.a2a.delegate import A2ADelegator
+from maistro.a2a.guest_peers import DelegationResult, GuestPeerManager
 from maistro.graph import Graph, Node
 from maistro.graph.nodes import NodeContext
+from maistro.graph.nodes import agent_delegate_remote as delegate_module
 from maistro.graph.nodes.agent_delegate_remote import AgentDelegateRemoteNode
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore, RunIntegrityError, RunStatus
@@ -56,6 +58,20 @@ def _delegator() -> A2ADelegator:
     delegator = A2ADelegator()
     delegator.register_agent_capability("planner", ["researcher"])
     return delegator
+
+
+class _ReceiptFailingStore(InMemoryRunStore):
+    """Inject the crash window between transport acceptance and receipt attach."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.fail_receipt_once = True
+
+    async def attach_delegation_receipt(self, run_id: str, task_id: str, *, target_agent=None):
+        if self.fail_receipt_once:
+            self.fail_receipt_once = False
+            raise RuntimeError("injected receipt persistence failure")
+        return await super().attach_delegation_receipt(run_id, task_id, target_agent=target_agent)
 
 
 class _RecordingDelegator(A2ADelegator):
@@ -252,6 +268,67 @@ class TestTheRunIdIsNotSourcedFromTheResponder:
 # --------------------------------------------------------------------------
 
 
+class TestAdmissionAndTransportConverge:
+    async def test_receipt_attach_failure_retries_same_child_and_same_task(self) -> None:
+        """A crash after acceptance must not create a second logical task."""
+        project_store = InMemoryProjectScopeStore()
+        root = await project_store.create_root("workspace-1")
+        project = await project_store.create(
+            workspace_id="workspace-1", parent_project_id=root.project_id, name="Project"
+        )
+        store = _ReceiptFailingStore(project_store=project_store)
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+        delegator = _recording_delegator()
+        node = AgentDelegateRemoteNode(a2a_delegator=delegator, run_store=store)
+        inputs = {"from_agent": "planner", "task": "x", "to_agent": "researcher"}
+        ctx = _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id)
+
+        first = await node.run(inputs, ctx)
+        assert first.status == "failed"
+        assert len(delegator._tasks) == 1  # transport accepted exactly once
+        child = await store.find_delegation_run(
+            node._delegation_key(  # type: ignore[attr-defined]
+                node.input_schema.model_validate(inputs), ctx
+            )
+        )
+        assert child is not None
+        assert child.provenance.get("a2a_task_id") in (None, "")
+
+        second = await node.run(inputs, ctx)
+        assert second.status == "paused"
+        assert len(delegator._tasks) == 1
+        assert (await store.get_run(second.metadata["run_id"])).provenance["a2a_task_id"]
+
+    async def test_pause_persistence_failure_reuses_attached_receipt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+        delegator = _recording_delegator()
+        node = AgentDelegateRemoteNode(a2a_delegator=delegator, run_store=store)
+        inputs = {"from_agent": "planner", "task": "x", "to_agent": "researcher"}
+        ctx = _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id)
+        original_pause = delegate_module.pause_until
+
+        def fail_pause(*args: Any, **kwargs: Any) -> None:
+            raise RuntimeError("injected parent pause persistence failure")
+
+        monkeypatch.setattr(delegate_module, "pause_until", fail_pause)
+        first = await node.run(inputs, ctx)
+        assert first.status == "failed"
+        monkeypatch.setattr(delegate_module, "pause_until", original_pause)
+
+        second = await node.run(inputs, ctx)
+        assert second.status == "paused"
+        assert len(delegator._tasks) == 1
+
+
 class TestScopeIsCheckedBeforeDispatch:
     """`create_run` ran *after* the transport call, so a delegation naming a
     foreign Workspace was refused only once the work had already been handed
@@ -393,3 +470,43 @@ class TestWhatTheChildRecords:
         assert [node.node_type for node in graph.nodes] == ["llm.summarize"]
         assert graph.workspace_id == parent.workspace_id
         assert graph.project_id == parent.project_id
+
+
+class _RecoveringGuestPeers(GuestPeerManager):
+    def __init__(self) -> None:
+        super().__init__()
+        self.delegate_calls = 0
+        self.reconcile_calls = 0
+
+    async def delegate(self, *args: Any, **kwargs: Any) -> DelegationResult:
+        self.delegate_calls += 1
+        return DelegationResult("remote-1", "hub", "submitted")
+
+    async def reconcile(self, peer_name: str, idempotency_key: str) -> DelegationResult:
+        self.reconcile_calls += 1
+        return DelegationResult("remote-1", peer_name, "submitted")
+
+
+async def test_guest_peer_recovery_reconciles_without_a_second_post() -> None:
+    project_store = InMemoryProjectScopeStore()
+    root = await project_store.create_root("workspace-1")
+    project = await project_store.create(
+        workspace_id="workspace-1", parent_project_id=root.project_id, name="Project"
+    )
+    store = _ReceiptFailingStore(project_store=project_store)
+    parent = await store.create_run(
+        _graph(workspace_id="workspace-1", project_id=project.project_id)
+    )
+    node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+    peers = _RecoveringGuestPeers()
+    node = AgentDelegateRemoteNode(guest_peers=peers, run_store=store)
+    inputs = {"from_agent": "planner", "task": "x", "peer_name": "hub"}
+    ctx = _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id)
+
+    first = await node.run(inputs, ctx)
+    assert first.status == "failed"
+    second = await node.run(inputs, ctx)
+    assert second.status == "paused"
+    assert peers.delegate_calls == 1
+    assert peers.reconcile_calls == 1
+    assert (await store.get_run(second.metadata["run_id"])).provenance["a2a_task_id"] == "remote-1"

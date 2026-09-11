@@ -464,6 +464,31 @@ class PgRunStore:
         )
         return Run.model_validate(payload) if payload is not None else None
 
+    async def find_delegation_run(self, delegation_key: str) -> Run | None:
+        async with self._pool.acquire() as conn:
+            payload = await conn.fetchval(
+                """SELECT payload FROM canonical_runs
+                   WHERE payload->'provenance'->>'delegation_key' = $1""",
+                delegation_key,
+            )
+        return Run.model_validate(payload) if payload is not None else None
+
+    async def attach_delegation_receipt(
+        self, run_id: str, task_id: str, *, target_agent: str | None = None
+    ) -> Run:
+        async with self._pool.acquire() as conn, conn.transaction():
+            run = Run.model_validate(await self._locked(conn, "canonical_runs", "run_id", run_id))
+            existing = str(run.provenance.get("a2a_task_id") or "")
+            if existing and existing != task_id:
+                raise RunIntegrityError("delegation receipt conflicts with canonical receipt")
+            provenance = dict(run.provenance)
+            provenance["a2a_task_id"] = task_id
+            if target_agent:
+                provenance["target_agent"] = target_agent
+            updated = run.model_copy(update={"provenance": provenance})
+            await self._write(conn, "canonical_runs", "run_id", run_id, updated)
+        return updated
+
     async def list_by_status(
         self,
         status: RunStatus,
