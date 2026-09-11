@@ -139,3 +139,31 @@ def test_canvas_route_refuses_missing_execution_context(
 
     assert response.status_code == 503
     assert "score" not in response.json()
+
+
+def test_canvas_route_refuses_missing_binding(
+    canvas_egress: tuple[CanvasModelEgress, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(app.state, "canvas_model_egress", canvas_egress[0], raising=False)
+    client = TestClient(app)
+    login = client.post("/v1/auth/login", json={"username": "testuser", "password": "testpass"})
+    assert login.status_code == 200
+
+    response = client.post(
+        "/v1/canvas/eval",
+        json={
+            "description": "A blue city at dusk",
+            "context": {
+                "binding_id": "not-authorized",
+                "workspace_id": "ws-canvas",
+                "project_id": "project-canvas",
+                "run_id": "run-canvas",
+                "node_run_id": "node-run-canvas",
+                "attempt_id": "attempt-canvas",
+            },
+        },
+    )
+
+    assert response.status_code == 503
+    assert "score" not in response.json()
