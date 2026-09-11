@@ -16,6 +16,25 @@ import httpx
 import pytest
 
 from maistro.graph.nodes import NodeContext, get_node
+from maistro.graph.nodes.llm_summarize import LlmSummarizeNode
+from maistro.providers.registry import InMemoryProviderRegistry
+from maistro.providers.router import CostAwareRouter
+from maistro.providers.types import ModelMetadata
+
+
+def _llm_node() -> LlmSummarizeNode:
+    registry = InMemoryProviderRegistry(
+        models=[
+            ModelMetadata(
+                name="gemini-3.1-flash-lite",
+                provider="test-gateway",
+                cost_per_1k_input=0.1,
+                cost_per_1k_output=0.2,
+                latency_p50_ms=100,
+            )
+        ]
+    )
+    return LlmSummarizeNode(registry=registry, router=CostAwareRouter(registry))
 
 
 def _ctx(**o: Any) -> NodeContext:
@@ -146,7 +165,7 @@ async def test_llm_summarize_missing_base_url_raises(monkeypatch: pytest.MonkeyP
     """Covers line 89: `if not base_url: raise RuntimeError`."""
     for k in ("MAISTRO_LLM_BASE_URL", "LITELLM_URL", "LITELLM_API_BASE"):
         monkeypatch.delenv(k, raising=False)
-    node = get_node("llm.summarize")()
+    node = _llm_node()
     out = await node.run({"text": "hello"}, _ctx())
     assert out.success is False
     assert out.error_code == "RuntimeError"
@@ -183,7 +202,7 @@ async def test_llm_summarize_extra_system_prompt_appended(
             return _Resp()
 
     monkeypatch.setattr(httpx, "AsyncClient", _Client)
-    node = get_node("llm.summarize")()
+    node = _llm_node()
     out = await node.run(
         {
             "text": "x",
@@ -237,7 +256,7 @@ async def test_llm_summarize_unknown_style_falls_back_to_bullet(
             return _R()
 
     monkeypatch.setattr(httpx, "AsyncClient", _C)
-    node = get_node("llm.summarize")()
+    node = _llm_node()
     out = await node.run(
         {"text": "x", "style": "nonsense-style", "binding_id": llm_binding_id},
         _ctx(node_run_id="nr-style"),
@@ -254,7 +273,7 @@ async def test_llm_summarize_401_raises_permission(
     """Line 114: 401 → PermissionError."""
     monkeypatch.setenv("MAISTRO_LLM_BASE_URL", "http://fake")
     _patch_httpx(monkeypatch, payload={}, status_code=401, verb="post")
-    node = get_node("llm.summarize")()
+    node = _llm_node()
     out = await node.run(
         {"text": "x", "binding_id": llm_binding_id},
         _ctx(node_run_id="nr-401"),
@@ -270,7 +289,7 @@ async def test_llm_summarize_429_raises_runtime(
     """Line 116: 429 → RuntimeError."""
     monkeypatch.setenv("MAISTRO_LLM_BASE_URL", "http://fake")
     _patch_httpx(monkeypatch, payload={}, status_code=429, verb="post")
-    node = get_node("llm.summarize")()
+    node = _llm_node()
     out = await node.run(
         {"text": "x", "binding_id": llm_binding_id},
         _ctx(node_run_id="nr-429"),
@@ -286,7 +305,7 @@ async def test_llm_summarize_500_raises_runtime(
     """Line 118: generic ≥400 → RuntimeError."""
     monkeypatch.setenv("MAISTRO_LLM_BASE_URL", "http://fake")
     _patch_httpx(monkeypatch, payload={}, status_code=500, verb="post")
-    node = get_node("llm.summarize")()
+    node = _llm_node()
     out = await node.run(
         {"text": "x", "binding_id": llm_binding_id},
         _ctx(node_run_id="nr-500"),
@@ -323,7 +342,7 @@ async def test_llm_summarize_blank_binding_id_raises_binding_not_found(
             raise AssertionError("no HTTP may happen without a binding")
 
     monkeypatch.setattr(httpx, "AsyncClient", _Client)
-    node = get_node("llm.summarize")()
+    node = _llm_node()
     out = await node.run({"text": "x", "binding_id": binding_id}, _ctx())
     assert out.success is False
     assert out.error_code == "BindingNotFound"
