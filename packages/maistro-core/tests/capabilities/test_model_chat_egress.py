@@ -26,13 +26,16 @@ from maistro.capabilities.invocation import (
 )
 from maistro.capabilities.model_chat import (
     MODEL_CHAT_CAPABILITY,
+    GovernedModelChatClient,
     ModelChatEgress,
     ModelChatRequest,
     _gateway_usage,
+    build_model_chat_client,
     resolve_model_chat_provider,
 )
 from maistro.capabilities.providers.llm_gateway import GatewayEndpoint, LlmGatewayProvider
 from maistro.capabilities.types import Unavailable
+from maistro.observability.correlation import bind_execution_context
 from maistro.providers.errors import NoEligibleModelError
 from maistro.providers.registry import InMemoryProviderRegistry
 from maistro.providers.router import CostAwareRouter
@@ -142,6 +145,86 @@ async def test_governed_call_creates_invocation_with_usage_metadata(
     assert stored.binding.capability == MODEL_CHAT_CAPABILITY
     assert stored.binding.provider_name == "fast-model"
     assert stored.usage == result.usage
+
+
+async def test_compatibility_client_records_the_call_on_the_canonical_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LLM compatibility callers cannot reach a model without an Invocation."""
+    effects = new_in_memory_effect_context()
+    registry = _registry()
+    _patch_gateway(monkeypatch, _OK_BODY)
+    client = build_model_chat_client(
+        endpoint=GatewayEndpoint(base_url="http://gw"),
+        workspace_id="ws-client",
+        project_id="project-client",
+        effects=effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+    )
+
+    assert isinstance(client, GovernedModelChatClient)
+    body = await client.complete(
+        [{"role": "user", "content": "hello"}],
+        "fast-model",
+        metadata={
+            "run_id": "run-client",
+            "node_run_id": "node-client",
+            "attempt_id": "attempt-client",
+            "effect_key": "client:model",
+        },
+    )
+
+    assert body["choices"][0]["message"]["content"] == "hi"
+    history = await effects.invocation_store.list_effect(
+        run_id="run-client",
+        node_run_id="node-client",
+        binding_id=client._binding.binding_id,
+        effect_key="client:model",
+    )
+    assert len(history) == 1
+    assert history[0].binding.provider_name == "fast-model"
+
+
+async def test_compatibility_client_inherits_canonical_execution_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Agent/Run callers retain ambient Workspace and Attempt correlation."""
+    effects = new_in_memory_effect_context()
+    registry = _registry()
+    _patch_gateway(monkeypatch, _OK_BODY)
+    client = build_model_chat_client(
+        endpoint=GatewayEndpoint(base_url="http://gw"),
+        workspace_id="ws-client",
+        project_id="project-client",
+        effects=effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+    )
+
+    with bind_execution_context(
+        workspace_id="ws-run",
+        project_id="project-run",
+        run_id="run-context",
+        node_run_id="node-context",
+        attempt_id="attempt-context",
+    ):
+        await client.complete(
+            [{"role": "user", "content": "hello"}],
+            "fast-model",
+            metadata={"effect_key": "context:model"},
+        )
+
+    binding_id = "model-chat:ws-run:project-run"
+    history = await effects.invocation_store.list_effect(
+        run_id="run-context",
+        node_run_id="node-context",
+        binding_id=binding_id,
+        effect_key="context:model",
+    )
+    assert len(history) == 1
+    assert history[0].attempt_id == "attempt-context"
+    assert history[0].binding.provider_name == "fast-model"
 
 
 async def test_unpinned_unaliased_request_uses_router_selection(

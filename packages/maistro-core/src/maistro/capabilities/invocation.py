@@ -12,7 +12,8 @@ already committed the side effect. A provider/adapter may raise
 The Container composes this service for governed model egress. The in-memory
 store remains the explicit default for ephemeral deployments; configured SQLite
 and PostgreSQL deployments select durable capability stores so effect history
-and its execution correlation survive process restart.
+and its execution correlation survive process restart. Other approved effect
+consumers use the same service and effect-key ledger.
 """
 
 from __future__ import annotations
@@ -224,7 +225,12 @@ UsageExtractor = Callable[[Any], "InvocationUsage | None"]
 
 
 class InvocationExecutionService:
-    """Resolve one Binding, persist one provider call, and guard effect retries."""
+    """Resolve one Binding, persist one provider call, and guard effect retries.
+
+    Production model and capability consumers reach this service through their
+    composed effect context; the retry guard is the single authority for those
+    live calls.
+    """
 
     def __init__(self, *, store: InvocationStore) -> None:
         self._store = store

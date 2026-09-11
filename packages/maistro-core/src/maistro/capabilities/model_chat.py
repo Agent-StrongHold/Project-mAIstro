@@ -19,7 +19,11 @@ registry metadata, then attached to the persisted canonical Invocation.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict
 
@@ -48,6 +52,25 @@ from maistro.providers.types import (
 if TYPE_CHECKING:
     from maistro.capabilities.effect_context import CapabilityEffectContext
     from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
+
+
+_DEFAULT_PROJECT_ID = "default"
+_MODEL_EXECUTION_CONTEXT: ContextVar[dict[str, str] | None] = ContextVar(
+    "model_execution_context", default=None
+)
+
+
+@contextmanager
+def model_execution_context(**values: str) -> Iterator[None]:
+    """Expose the active canonical Run scope to compatibility LLM clients."""
+
+    token = _MODEL_EXECUTION_CONTEXT.set(
+        {key: value for key, value in values.items() if isinstance(value, str) and value}
+    )
+    try:
+        yield
+    finally:
+        _MODEL_EXECUTION_CONTEXT.reset(token)
 
 
 def _gateway_usage(provider: LlmGatewayProvider, body: Any) -> InvocationUsage | None:
@@ -193,9 +216,193 @@ class ModelChatEgress:
         )
 
 
+class GovernedModelChatClient:
+    """Compatibility LLM client backed exclusively by :class:`ModelChatEgress`.
+
+    Domain adapters can keep their existing LLM interfaces while this client
+    supplies the execution correlation and active Binding required by the
+    canonical boundary. It intentionally exposes no transport or provider
+    objects to callers.
+    """
+
+    def __init__(
+        self,
+        egress: ModelChatEgress,
+        binding: Binding,
+        *,
+        protocol: str = "chat_completions",
+    ) -> None:
+        self._egress = egress
+        self._binding = binding
+        self._protocol = protocol
+
+    async def _call(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        response_format: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        stream: bool = False,
+        tool_choice: str | None = None,
+    ) -> ModelCallResult:
+        from maistro.observability.correlation import current_execution_context
+
+        metadata = {
+            **current_execution_context().as_log_fields(),
+            **(_MODEL_EXECUTION_CONTEXT.get() or {}),
+            **(metadata or {}),
+        }
+        request = ModelChatRequest(
+            model=model,
+            messages=messages,
+            tools=tools,
+            max_tokens=max_tokens,
+            temperature=temperature if temperature is not None else 0.7,
+            response_format=response_format,
+            protocol=("chat_completions" if tools else self._protocol),
+            stream=stream,
+            tool_choice=tool_choice,
+        )
+        workspace_id = str(metadata.get("workspace_id") or self._binding.workspace_id)
+        project_id = str(metadata.get("project_id") or self._binding.project_id)
+        binding = self._binding
+        if workspace_id != binding.workspace_id or project_id != binding.project_id:
+            binding = binding.model_copy(
+                update={
+                    "binding_id": f"model-chat:{workspace_id}:{project_id}",
+                    "workspace_id": workspace_id,
+                    "project_id": project_id,
+                }
+            )
+        # Registration is idempotent and keeps compatibility callers on the
+        # same active Binding authority as graph/effect consumers.
+        await self._egress._effects.bindings.put(binding)
+        correlation = str(metadata.get("correlation_id") or uuid4().hex)
+        return await self._egress.complete(
+            binding=binding,
+            run_id=str(metadata.get("run_id") or correlation),
+            node_run_id=str(metadata.get("node_run_id") or f"llm:{correlation}"),
+            attempt_id=str(metadata.get("attempt_id") or f"attempt:{correlation}"),
+            effect_key=str(metadata.get("effect_key") or f"llm:{correlation}"),
+            request=request,
+        )
+
+    async def complete(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
+        stream: bool = False,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        response_format: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        result = await self._call(
+            messages,
+            model,
+            tools=tools,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            response_format=response_format,
+            metadata=metadata,
+            stream=stream,
+            tool_choice=tool_choice,
+        )
+        return result.body
+
+    async def stream_chunks(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        metadata: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        response_format: dict[str, Any] | None = None,
+        tool_choice: str | None = None,
+    ) -> Any:
+        result = await self._call(
+            messages,
+            model,
+            tools=tools,
+            metadata=metadata,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            response_format=response_format,
+            tool_choice=tool_choice,
+            stream=True,
+        )
+        chunks = result.body.get("_stream_chunks")
+        if isinstance(chunks, list):
+            for chunk in chunks:
+                if isinstance(chunk, dict):
+                    yield chunk
+            return
+        content = ""
+        with suppress(KeyError, IndexError, TypeError):
+            content = str(result.body["choices"][0]["message"].get("content") or "")
+        yield {"choices": [{"delta": {"content": content}, "finish_reason": "stop"}]}
+
+    async def stream(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        **kwargs: Any,
+    ) -> Any:
+        async for chunk in self.stream_chunks(messages, model, **kwargs):
+            delta = chunk.get("choices", [{}])[0].get("delta", {})
+            if isinstance(delta, dict) and delta.get("content"):
+                yield str(delta["content"])
+
+
+def build_model_chat_client(
+    *,
+    endpoint: GatewayEndpoint,
+    workspace_id: str = "default",
+    project_id: str = _DEFAULT_PROJECT_ID,
+    effects: CapabilityEffectContext | None = None,
+    registry: LLMProviderRegistry | None = None,
+    router: LLMRouter | None = None,
+    protocol: str = "chat_completions",
+    binding: Binding | None = None,
+) -> GovernedModelChatClient:
+    """Compose the canonical compatibility client for an app boundary."""
+
+    if effects is None:
+        from maistro.capabilities.effect_context import default_effect_context
+
+        effects = default_effect_context()
+    if registry is None:
+        from maistro.providers.registry import InMemoryProviderRegistry
+
+        registry = InMemoryProviderRegistry()
+    if router is None:
+        from maistro.providers.router import CostAwareRouter
+
+        router = CostAwareRouter(registry)
+    active_binding = binding or Binding(
+        workspace_id=workspace_id,
+        project_id=project_id,
+        capability=MODEL_CHAT_CAPABILITY,
+    )
+    egress = ModelChatEgress(effects, registry=registry, router=router, endpoint=endpoint)
+    return GovernedModelChatClient(egress, active_binding, protocol=protocol)
+
+
 __all__ = [
     "MODEL_CHAT_CAPABILITY",
+    "GovernedModelChatClient",
     "ModelCallResult",
     "ModelChatEgress",
+    "build_model_chat_client",
+    "model_execution_context",
     "resolve_model_chat_provider",
 ]

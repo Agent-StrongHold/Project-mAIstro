@@ -74,7 +74,9 @@ class GovernedInvocationExecutionService:
     the same durable human decision rather than manufacturing another request.
 
     The Container composes this wrapper for governed model egress; policy
-    events use the same canonical EventStore as the capability context.
+    events use the same canonical EventStore as the capability context. The
+    default M1 policy path is intentionally replaceable by stronger policy and
+    durable approval stores without introducing a second execution authority.
     """
 
     def __init__(

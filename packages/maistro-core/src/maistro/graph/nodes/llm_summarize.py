@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 
 from maistro.capabilities.binding_store import BindingNotFound
 from maistro.capabilities.effect_context import CapabilityEffectContext, default_effect_context
+from maistro.capabilities.invocation import EffectNotApplied
 from maistro.capabilities.model_chat import (
     MODEL_CHAT_CAPABILITY,
     ModelChatEgress,
@@ -162,14 +163,23 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
                 base_url=base_url, api_key=api_key, timeout_s=inputs.timeout_s
             ),
         )
-        result = await egress.complete(
-            binding=binding,
-            run_id=ctx.run_id,
-            node_run_id=ctx.node_run_id,
-            attempt_id=ctx.attempt_id,
-            effect_key=f"llm.summarize.complete:{inputs.model}",
-            request=request,
-        )
+        try:
+            result = await egress.complete(
+                binding=binding,
+                run_id=ctx.run_id,
+                node_run_id=ctx.node_run_id,
+                attempt_id=ctx.attempt_id,
+                effect_key=f"llm.summarize.complete:{inputs.model}",
+                request=request,
+            )
+        except EffectNotApplied as exc:
+            # Keep this node's historical error taxonomy while the canonical
+            # Invocation retains the truthful failed outcome for retry policy.
+            if "status=401" in str(exc):
+                raise PermissionError(str(exc)) from exc
+            if "status=" in str(exc):
+                raise RuntimeError(str(exc)) from exc
+            raise
 
         data: dict[str, Any] = result.body
         text = (data.get("choices", [{}])[0].get("message", {}) or {}).get("content", "") or ""

@@ -16,6 +16,7 @@ reached, so no external effect occurred and the Invocation may fail retryably.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import httpx
@@ -45,17 +46,22 @@ class GatewayEndpoint(BaseModel):
     base_url: str
     api_key: str = ""
     timeout_s: float = 120.0
+    append_v1: bool = True
 
     @property
     def _base(self) -> str:
         base = self.base_url.rstrip("/")
-        return base if base.endswith("/v1") else base + "/v1"
+        return base if not self.append_v1 or base.endswith("/v1") else base + "/v1"
 
     def authorization_header(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
+
+
+class GatewayAuthError(EffectNotApplied, PermissionError):
+    """Authentication failed before a model completion was accepted."""
 
 
 class LlmGatewayProvider:
@@ -88,7 +94,12 @@ class LlmGatewayProvider:
 
 
 class ModelChatRequest(BaseModel):
-    """Provider-neutral chat request shape crossing the Invocation boundary."""
+    """Provider-neutral chat request shape crossing the Invocation boundary.
+
+    ``protocol`` and ``stream`` are provider protocol details, not alternate
+    egress authorities. They let compatibility/domain adapters retain their
+    response shape while this Provider remains the only model HTTP owner.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -97,6 +108,10 @@ class ModelChatRequest(BaseModel):
     temperature: float = 0.7
     max_tokens: int | None = None
     tools: list[dict[str, object]] | None = None
+    tool_choice: str | None = None
+    response_format: dict[str, object] | None = None
+    protocol: str = "chat_completions"
+    stream: bool = False
 
 
 def _chat_payload(provider: LlmGatewayProvider, request: ModelChatRequest) -> dict[str, object]:
@@ -106,31 +121,86 @@ def _chat_payload(provider: LlmGatewayProvider, request: ModelChatRequest) -> di
         "model": provider.name,
         "messages": [dict(message) for message in request.messages],
         "temperature": request.temperature,
-        "stream": False,
+        "stream": request.stream,
     }
     if request.max_tokens is not None:
         payload["max_tokens"] = request.max_tokens
     if request.tools:
         payload["tools"] = [dict(tool) for tool in request.tools]
+    if request.tool_choice is not None:
+        payload["tool_choice"] = request.tool_choice
+    if request.response_format is not None:
+        payload["response_format"] = dict(request.response_format)
     return payload
 
 
+def _responses_payload(
+    provider: LlmGatewayProvider, request: ModelChatRequest
+) -> dict[str, object]:
+    """Build the OpenAI Responses protocol payload inside the Provider."""
+
+    return {
+        "model": provider.name,
+        "input": [dict(message) for message in request.messages],
+        "stream": request.stream,
+    }
+
+
+def _responses_event_to_chunk(event: dict[str, object]) -> dict[str, object] | None:
+    event_type = event.get("type", "")
+    delta = event.get("delta")
+    if event_type == "response.output_text.delta" and delta:
+        return {"choices": [{"delta": {"content": delta}, "finish_reason": None}]}
+    if (
+        event_type in {"response.reasoning_summary_text.delta", "response.reasoning_text.delta"}
+        and delta
+    ):
+        return {"choices": [{"delta": {"reasoning_content": delta}, "finish_reason": None}]}
+    if event_type in {"response.completed", "response.output_text.done"}:
+        return {"choices": [{"delta": {}, "finish_reason": "stop"}]}
+    return None
+
+
+async def _stream_body(response: httpx.Response, *, responses: bool) -> dict[str, object]:
+    """Buffer a stream so Invocation can terminalize after the Provider call."""
+
+    chunks: list[dict[str, object]] = []
+    async for line in response.aiter_lines():
+        if not line or not line.startswith("data:"):
+            continue
+        data = line[len("data:") :].strip()
+        if data == "[DONE]":
+            break
+        try:
+            event = json.loads(data)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(event, dict):
+            chunk = _responses_event_to_chunk(event) if responses else event
+            if chunk is not None:
+                chunks.append(chunk)
+    return {
+        "choices": [{"message": {"role": "assistant", "content": ""}}],
+        "_stream_chunks": chunks,
+    }
+
+
 def _checked_body(response: Any) -> dict[str, object]:
-    """Map gateway statuses to the error shapes the shipped model paths raise."""
+    """Map gateway statuses to retryable, truthful Invocation failures."""
 
     if response.status_code == 401:
-        raise PermissionError("llm_auth_failed status=401 (check gateway credentials)")
+        raise GatewayAuthError("llm_auth_failed status=401 (check gateway credentials)")
     if response.status_code == 429:
-        raise RuntimeError("llm_rate_limited status=429")
+        raise EffectNotApplied("llm_rate_limited status=429")
     if response.status_code >= 400:
-        raise RuntimeError(f"llm_http_error status={response.status_code}")
+        raise EffectNotApplied(f"llm_http_error status={response.status_code}")
     body = response.json()
     if not isinstance(body, dict):
         raise RuntimeError("model gateway returned a non-object response body")
     return body
 
 
-async def execute_model_chat(
+async def execute_model_chat(  # noqa: C901 - protocol fallback stays below one Provider
     provider: ResolvedCapabilityProvider,
     request: object,
     *,
@@ -147,17 +217,50 @@ async def execute_model_chat(
     if not isinstance(request, ModelChatRequest):
         raise TypeError(f"model-chat Invocation received a foreign request: {type(request)!r}")
 
+    protocol = request.protocol
+    if protocol not in {"chat_completions", "responses", "auto"}:
+        raise ValueError(f"unsupported model gateway protocol: {protocol!r}")
+
+    async def _post(client: httpx.AsyncClient, selected: str) -> dict[str, object]:
+        responses = selected == "responses"
+        url = f"{endpoint._base}/responses" if responses else f"{endpoint._base}/chat/completions"
+        payload = (
+            _responses_payload(provider, request) if responses else _chat_payload(provider, request)
+        )
+        if request.stream:
+            async with client.stream(
+                "POST",
+                url,
+                headers=endpoint.authorization_header(),
+                json=payload,
+            ) as streamed:
+                if not streamed.is_success:
+                    await streamed.aread()
+                    _checked_body(streamed)
+                body = await _stream_body(streamed, responses=responses)
+                body["_provider_response_headers"] = dict(streamed.headers)
+                return body
+        response = await client.post(
+            url,
+            headers=endpoint.authorization_header(),
+            json=payload,
+        )
+        body = _checked_body(response)
+        body["_provider_response_headers"] = dict(getattr(response, "headers", {}))
+        return body
+
     try:
         async with shared_client(timeout=endpoint.timeout_s) as client:
-            response = await client.post(
-                f"{endpoint._base}/chat/completions",
-                headers=endpoint.authorization_header(),
-                json=_chat_payload(provider, request),
-            )
+            if protocol == "auto" and not request.tools:
+                try:
+                    return await _post(client, "responses")
+                except EffectNotApplied as exc:
+                    if "status=401" in str(exc):
+                        raise
+                    return await _post(client, "chat_completions")
+            return await _post(client, protocol)
     except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
         raise EffectNotApplied(f"model gateway unreachable, no effect occurred: {exc}") from exc
-
-    return _checked_body(response)
 
 
 __all__ = [

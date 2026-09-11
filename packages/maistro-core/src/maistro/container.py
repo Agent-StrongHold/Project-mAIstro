@@ -294,6 +294,10 @@ class Container:
     # LLM provider registry + cost-aware router (SPEC-070226-cb8d).
     provider_registry: LLMProviderRegistry = None  # type: ignore[assignment]
     llm_router: LLMRouter = None  # type: ignore[assignment]
+    # Compatibility adapters all cross this one canonical model boundary.
+    model_chat_binding: Any = None
+    model_chat_egress: Any = None
+    model_chat_client: Any = None
     # Observability record/replay + PII tier routing (ADR-055).
     record_store: RecordStore = None  # type: ignore[assignment]
     pii_detector: PIIDetector = None  # type: ignore[assignment]
@@ -1494,6 +1498,8 @@ async def create_container(
 
     event_bus.subscribe(_persist_bus_event)
 
+    capability_effects = new_in_memory_effect_context()
+
     # --- LLM provider registry + cost-aware router (SPEC-070226-cb8d) ----
     from maistro.providers.config import load_provider_registry
     from maistro.providers.registry import InMemoryProviderRegistry
@@ -1505,6 +1511,27 @@ async def create_container(
         else InMemoryProviderRegistry()
     )
     llm_router = CostAwareRouter(provider_registry)
+
+    # One active model Binding per container. Compatibility callers may derive
+    # a scoped copy, but they register it in this same BindingStore before the
+    # Invocation starts; no app-specific registry or effect authority exists.
+    from maistro.capabilities.binding import Binding
+    from maistro.capabilities.model_chat import GovernedModelChatClient, ModelChatEgress
+    from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
+
+    model_chat_binding = Binding(
+        workspace_id=config.workspace_id,
+        project_id="default",
+        capability="model.chat",
+    )
+    await capability_effects.bindings.put(model_chat_binding)
+    model_chat_egress = ModelChatEgress(
+        capability_effects,
+        registry=provider_registry,
+        router=llm_router,
+        endpoint=GatewayEndpoint(base_url=config.litellm_url, api_key=config.litellm_key),
+    )
+    model_chat_client = GovernedModelChatClient(model_chat_egress, model_chat_binding)
 
     # --- Observability record/replay + PII tiers (ADR-055) ---------------
     from maistro.observability.replay import InMemoryRecordStore
@@ -1612,6 +1639,9 @@ async def create_container(
         handler_caller=handler_caller,
         provider_registry=provider_registry,
         llm_router=llm_router,
+        model_chat_binding=model_chat_binding,
+        model_chat_egress=model_chat_egress,
+        model_chat_client=model_chat_client,
         record_store=record_store,
         pii_detector=pii_detector,
         identity_store=identity_store,

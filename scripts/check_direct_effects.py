@@ -97,6 +97,16 @@ _PATH_CALLS: dict[tuple[str, str, str], tuple[str, str]] = {
         "safe.stop",
     ): ("HARNESS_EFFECT", "harness.stop"),
     (
+        "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py",
+        "execute_model_chat._post",
+        "client.post",
+    ): ("MODEL_EFFECT", "openai-compatible-http"),
+    (
+        "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py",
+        "execute_model_chat._post",
+        "client.stream",
+    ): ("MODEL_EFFECT", "openai-compatible-http"),
+    (
         "packages/maistro-canvas/frontend/server/mcp/image_provider.py",
         "_generate_cloudflare",
         "httpx.post",
