@@ -31,7 +31,10 @@ TEMPLATE_ID = "hourly-report"
 
 
 async def _dead_ticker_left_a_run(
-    store: Any, workspace: str, project_id: str
+    store: Any,
+    workspace: str,
+    project_id: str,
+    policy: OverlapPolicy = OverlapPolicy.SKIP,
 ) -> tuple[str, InMemoryGraphTemplateStore, InMemoryScheduleStore, Schedule]:
     """Ticker A's half: the Run for NOON exists, the cursor was never stamped."""
     templates = InMemoryGraphTemplateStore()
@@ -52,7 +55,7 @@ async def _dead_ticker_left_a_run(
             name="hourly",
             cron="0 * * * *",
             graph_template_id=TEMPLATE_ID,
-            overlap_policy=OverlapPolicy.SKIP,
+            overlap_policy=policy,
             created_at=NOON - timedelta(days=30),
             last_fired_at=NOON - timedelta(hours=1),
         )
@@ -82,25 +85,39 @@ async def test_a_restarted_ticker_links_the_run_a_dead_ticker_created(schedule_s
     assert linked.status is RunStatus.QUEUED
 
 
-async def test_the_next_occurrence_is_judged_against_the_winning_run(schedule_spine: Any) -> None:
-    """No overlap-policy weakening after the crash: the linked Run is live, so
-    a SKIP schedule drops the next occurrence instead of running two at once."""
+@pytest.mark.parametrize(
+    "policy", (OverlapPolicy.SKIP, OverlapPolicy.BUFFER_ONE, OverlapPolicy.CANCEL_OTHER)
+)
+async def test_the_next_occurrence_is_judged_against_the_winning_run(
+    schedule_spine: Any, policy: OverlapPolicy
+) -> None:
+    """All non-overlapping policies see the actual winning Run after recovery."""
     store, workspace, project_id, reopen = schedule_spine
-    _winner, templates, schedules, schedule = await _dead_ticker_left_a_run(
-        store, workspace, project_id
+    winner, templates, schedules, schedule = await _dead_ticker_left_a_run(
+        store, workspace, project_id, policy
     )
     restarted = await reopen()
     ticker_b = ScheduleRunAdmitter(restarted, templates, schedules)
     await ticker_b.admit_due(schedule, now=NOON)
     linked = await schedules.get(schedule.schedule_id)
-    assert linked is not None and linked.last_run_id is not None
+    assert linked is not None and linked.last_run_id == winner
     in_flight = await restarted.get_run(linked.last_run_id)
     assert in_flight is not None
     active = in_flight.status not in TERMINAL_RUN_STATUSES
 
     later = await ticker_b.admit_due(linked, now=NOON + timedelta(hours=1), active_run=active)
 
+    if policy is OverlapPolicy.CANCEL_OTHER:
+        # Execution, not admission, acts on this cancellation decision.
+        assert later.cancel_active_run is True
+        assert len(later.run_ids) == 1 and later.run_ids[0] != winner
+        return
+
     assert later.run_ids == ()
-    assert [skip.reason for skip in later.skipped] == [SkipReason.OVERLAP]
+    reason = SkipReason.BUFFERED if policy is OverlapPolicy.BUFFER_ONE else SkipReason.OVERLAP
+    assert [skip.reason for skip in later.skipped] == [reason]
+    if policy is OverlapPolicy.BUFFER_ONE:
+        buffered = await schedules.get(schedule.schedule_id)
+        assert buffered is not None and buffered.last_fired_at == NOON
     queued = await restarted.list_by_status(RunStatus.QUEUED, project_id=project_id)
     assert [run.run_id for run in queued] == [linked.last_run_id]
