@@ -15,6 +15,7 @@ in-memory ledger. No request, result, error string, or credential is copied here
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import math
 import sqlite3
@@ -129,10 +130,8 @@ class SqliteInvocationQuota:
                 cancelled = True
         if cancelled:
             # Consume any transaction exception; cancellation remains observable.
-            try:
+            with contextlib.suppress(Exception):
                 worker.result()
-            except Exception:
-                pass
             raise asyncio.CancelledError
         return worker.result()
 
@@ -140,6 +139,7 @@ class SqliteInvocationQuota:
         def create(conn: sqlite3.Connection) -> None:
             for sql in _SCHEMA:
                 conn.execute(sql)
+
         await self._run(create)
 
     async def register_budget(self, budget: QuotaBudget) -> None:
@@ -165,6 +165,7 @@ class SqliteInvocationQuota:
                 "INSERT INTO invocation_quota_budgets VALUES (?, ?)",
                 (budget.budget_id, definition),
             )
+
         await self._run(register)
 
     @staticmethod
@@ -189,9 +190,12 @@ class SqliteInvocationQuota:
             if row is None:
                 raise KeyError(budget_id)
             return self._balance(conn, QuotaBudget(**json.loads(row["definition"])))
+
         return await self._run(read)
 
-    async def reserve(self, invocation: Invocation, binding: Binding) -> None:
+    async def reserve(  # noqa: C901 - transaction policy covers all matching budgets
+        self, invocation: Invocation, binding: Binding
+    ) -> None:
         estimate = await self._estimate(invocation, binding)
         if not isinstance(estimate, QuotaEstimate):
             raise TypeError("trusted estimate resolver must return QuotaEstimate")
@@ -200,19 +204,21 @@ class SqliteInvocationQuota:
             or binding.capability != invocation.binding.capability
         ):
             raise QuotaEvidenceConflict("Binding does not match Invocation")
-        identity = _json({
-            "workspace_id": binding.workspace_id,
-            "principal_id": estimate.principal_id,
-            "provider_name": invocation.binding.provider_name,
-            "capability": invocation.binding.capability,
-            "run_id": invocation.run_id,
-            "node_run_id": invocation.node_run_id,
-            "attempt_id": invocation.attempt_id,
-            "binding_id": binding.binding_id,
-            "effect_key": invocation.effect_key,
-            "tokens": estimate.tokens,
-            "micro_usd": estimate.micro_usd,
-        })
+        identity = _json(
+            {
+                "workspace_id": binding.workspace_id,
+                "principal_id": estimate.principal_id,
+                "provider_name": invocation.binding.provider_name,
+                "capability": invocation.binding.capability,
+                "run_id": invocation.run_id,
+                "node_run_id": invocation.node_run_id,
+                "attempt_id": invocation.attempt_id,
+                "binding_id": binding.binding_id,
+                "effect_key": invocation.effect_key,
+                "tokens": estimate.tokens,
+                "micro_usd": estimate.micro_usd,
+            }
+        )
 
         def admit(conn: sqlite3.Connection) -> str:
             old = conn.execute(
@@ -236,13 +242,20 @@ class SqliteInvocationQuota:
                 QuotaBudget(**json.loads(row["definition"]))
                 for row in conn.execute("SELECT definition FROM invocation_quota_budgets")
             ]
-            applicable = [b for b in budgets if (
-                b.period_start <= now < b.period_end
-                and (b.provider_name is None or b.provider_name == invocation.binding.provider_name)
-                and (b.workspace_id is None or b.workspace_id == binding.workspace_id)
-                and (b.principal_id is None or b.principal_id == estimate.principal_id)
-                and (b.capability is None or b.capability == binding.capability)
-            )]
+            applicable = [
+                b
+                for b in budgets
+                if (
+                    b.period_start <= now < b.period_end
+                    and (
+                        b.provider_name is None
+                        or b.provider_name == invocation.binding.provider_name
+                    )
+                    and (b.workspace_id is None or b.workspace_id == binding.workspace_id)
+                    and (b.principal_id is None or b.principal_id == estimate.principal_id)
+                    and (b.capability is None or b.capability == binding.capability)
+                )
+            ]
             reason = "missing applicable quota policy" if not applicable else ""
             allocations: list[tuple[str, str, int, int]] = []
             for budget in applicable:
@@ -277,8 +290,11 @@ class SqliteInvocationQuota:
         if invocation.status in {InvocationStatus.CREATED, InvocationStatus.RUNNING}:
             return
         outcome: Outcome = (
-            "not_applied" if invocation.status is InvocationStatus.FAILED else
-            "completed" if invocation.status is InvocationStatus.COMPLETED else "unknown"
+            "not_applied"
+            if invocation.status is InvocationStatus.FAILED
+            else "completed"
+            if invocation.status is InvocationStatus.COMPLETED
+            else "unknown"
         )
         tokens: int | None = None
         micro_usd: int | None = None
@@ -320,10 +336,12 @@ class SqliteInvocationQuota:
             raise ValueError("revision zero is reserved for canonical terminal evidence")
         await self._apply(observation, missing_ok=False)
 
-    async def _apply(self, observation: QuotaObservation, *, missing_ok: bool) -> None:
+    async def _apply(  # noqa: C901 - settlement is one atomic evidence fold
+        self, observation: QuotaObservation, *, missing_ok: bool
+    ) -> None:
         payload = _json(observation.payload())
 
-        def apply(conn: sqlite3.Connection) -> None:
+        def apply(conn: sqlite3.Connection) -> None:  # noqa: C901 - atomic settlement fold
             reservation = conn.execute(
                 "SELECT * FROM invocation_quota_reservations WHERE invocation_id = ?",
                 (observation.invocation_id,),
@@ -357,7 +375,9 @@ class SqliteInvocationQuota:
             if observation.revision < reservation["revision"]:
                 return  # Keep stale evidence, but never roll accounting backwards.
             if observation.outcome == "unknown" and reservation["state"] in {
-                "settled", "released", "pending_usage",
+                "settled",
+                "released",
+                "pending_usage",
             }:
                 raise QuotaEvidenceConflict("unknown cannot replace a confirmed provider outcome")
             rows = conn.execute(
@@ -390,13 +410,18 @@ class SqliteInvocationQuota:
                     (actual, observation.invocation_id, row["budget_id"]),
                 )
             state = (
-                "released" if observation.outcome == "not_applied" else
-                "unknown" if observation.outcome == "unknown" else
-                "pending_usage" if pending else "settled"
+                "released"
+                if observation.outcome == "not_applied"
+                else "unknown"
+                if observation.outcome == "unknown"
+                else "pending_usage"
+                if pending
+                else "settled"
             )
             conn.execute(
                 "UPDATE invocation_quota_reservations SET state = ?, revision = ? "
                 "WHERE invocation_id = ?",
                 (state, observation.revision, observation.invocation_id),
             )
+
         await self._run(apply)

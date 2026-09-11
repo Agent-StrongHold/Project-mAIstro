@@ -63,16 +63,16 @@ def invocation(number: str = "one", *, workspace: str = "workspace-a") -> Invoca
 
 
 def budget(name: str = "tokens", **kwargs: Any) -> QuotaBudget:
-    fields: dict[str, Any] = dict(
-        budget_id=name,
-        unit="tokens",
-        limit=100,
-        period_start=0,
-        period_end=1000,
-        provider_name="provider-a",
-        opening_spend=0,
-        coverage_ref="operator-attested-fresh-period",
-    )
+    fields: dict[str, Any] = {
+        "budget_id": name,
+        "unit": "tokens",
+        "limit": 100,
+        "period_start": 0,
+        "period_end": 1000,
+        "provider_name": "provider-a",
+        "opening_spend": 0,
+        "coverage_ref": "operator-attested-fresh-period",
+    }
     fields.update(kwargs)
     return QuotaBudget(**fields)
 
@@ -140,12 +140,16 @@ def observed(
     )
 
 
-def terminal(inv: Invocation, status: InvocationStatus, usage: InvocationUsage | None = None) -> Invocation:
-    return inv.model_copy(update={
-        "status": status,
-        "usage": usage,
-        "finished_at": datetime.now(UTC),
-    })
+def terminal(
+    inv: Invocation, status: InvocationStatus, usage: InvocationUsage | None = None
+) -> Invocation:
+    return inv.model_copy(
+        update={
+            "status": status,
+            "usage": usage,
+            "finished_at": datetime.now(UTC),
+        }
+    )
 
 
 @pytest.mark.asyncio
@@ -163,7 +167,9 @@ async def test_completed_invocation_settles_all_units_once_and_replay_does_not_d
         assert (await quota.balance("tokens")).held == 60
         return "done"
 
-    use = lambda _: InvocationUsage(input_units=10, output_units=20, cost_cents=0.125)
+    def use(_: object) -> InvocationUsage:
+        return InvocationUsage(input_units=10, output_units=20, cost_cents=0.125)
+
     first = await execute(service, executor=provider, usage_from=use)
     second = await execute(service, executor=provider, usage_from=use)
     assert first.invocation_id == second.invocation_id
@@ -207,10 +213,15 @@ async def test_absent_policy_denies_before_physical_dispatch_and_records_refusal
     with pytest.raises(InvocationQuotaDenied, match="missing applicable"):
         await execute(service, executor=provider)
     assert calls == 0
-    latest = await service.latest_effect(binding=binding(), run_id="run-one", node_run_id="node-one", effect_key="call")
+    latest = await service.latest_effect(
+        binding=binding(), run_id="run-one", node_run_id="node-one", effect_key="call"
+    )
     assert latest.status is InvocationStatus.FAILED
     with sqlite3.connect(quota._path) as conn:
-        assert conn.execute("SELECT state FROM invocation_quota_reservations").fetchone()[0] == "denied"
+        assert (
+            conn.execute("SELECT state FROM invocation_quota_reservations").fetchone()[0]
+            == "denied"
+        )
         assert conn.execute("SELECT COUNT(*) FROM invocation_quota_allocations").fetchone()[0] == 0
 
 
@@ -281,7 +292,9 @@ async def test_known_not_applied_releases_and_later_attempt_can_reserve(quota):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("exception", [RuntimeError("remote response lost"), asyncio.CancelledError()])
+@pytest.mark.parametrize(
+    "exception", [RuntimeError("remote response lost"), asyncio.CancelledError()]
+)
 async def test_unknown_provider_outcome_keeps_hold_and_blocks_retry(quota, exception):
     await quota.register_budget(budget())
     service = InvocationExecutionService(store=InMemoryInvocationStore(), quota=quota)
@@ -296,7 +309,9 @@ async def test_unknown_provider_outcome_keeps_hold_and_blocks_retry(quota, excep
         await execute(service)
     with pytest.raises(InvocationQuotaDenied):
         await execute(service, run="a-different-run")
-    old = await service.latest_effect(binding=binding(), run_id="run-one", node_run_id="node-one", effect_key="call")
+    old = await service.latest_effect(
+        binding=binding(), run_id="run-one", node_run_id="node-one", effect_key="call"
+    )
     await quota.reconcile(observed(old, outcome="not_applied", tokens=None))
     assert (await quota.balance("tokens")).held == 0
     # Reconciliation of accounting alone does not grant effect replay authority.
@@ -433,7 +448,9 @@ async def test_settlement_write_failure_repaired_on_cached_replay_without_dispat
         calls += 1
         return "done"
 
-    use = lambda _: InvocationUsage(input_units=10, output_units=5)
+    def use(_: object) -> InvocationUsage:
+        return InvocationUsage(input_units=10, output_units=5)
+
     with pytest.raises(OSError):
         await execute(service, executor=provider, usage_from=use)
     assert (await quota.balance("tokens")).held == 60
@@ -484,7 +501,9 @@ async def test_separate_service_instances_and_alternate_strategy_share_admission
         with pytest.raises(InvocationQuotaDenied):
             await execute(other_service, run="alternative-strategy", executor=slow_provider)
         with pytest.raises(InvocationQuotaDenied, match="missing applicable"):
-            await execute(other_service, run="alternative-provider", provider=Provider(name="other"))
+            await execute(
+                other_service, run="alternative-provider", provider=Provider(name="other")
+            )
     finally:
         finish.set()
         await task
@@ -501,6 +520,7 @@ def _process_reserve(path: str, barrier: Any, queue: Any, number: str) -> None:
         except InvocationQuotaDenied:
             queue.put("denied")
         barrier.wait(timeout=15)
+
     asyncio.run(run())
 
 
@@ -556,7 +576,9 @@ async def test_repeated_cancellation_waits_for_reservation_commit_then_releases(
     with pytest.raises(asyncio.CancelledError):
         await task
     assert (await quota.balance("tokens")).held == 0
-    latest = await service.latest_effect(binding=binding(), run_id="run-one", node_run_id="node-one", effect_key="call")
+    latest = await service.latest_effect(
+        binding=binding(), run_id="run-one", node_run_id="node-one", effect_key="call"
+    )
     assert latest.status is InvocationStatus.FAILED
 
 
@@ -564,10 +586,12 @@ async def test_repeated_cancellation_waits_for_reservation_commit_then_releases(
 async def test_credentials_request_and_result_are_not_copied_into_quota_database(quota):
     await quota.register_budget(budget())
     service = InvocationExecutionService(store=InMemoryInvocationStore(), quota=quota)
-    bound = binding().model_copy(update={
-        "config": {"sensitive": "do-not-copy-configuration"},
-        "credential_refs": ("do-not-copy-credential-reference",),
-    })
+    bound = binding().model_copy(
+        update={
+            "config": {"sensitive": "do-not-copy-configuration"},
+            "credential_refs": ("do-not-copy-credential-reference",),
+        }
+    )
     await execute(service, bound=bound, request={"secret": "do-not-copy-request"})
     with sqlite3.connect(quota._path) as conn:
         dump = "\n".join(conn.iterdump())
@@ -581,7 +605,10 @@ async def test_unknown_units_do_not_become_tokens_and_cost_rounds_up(quota):
     await quota.register_budget(budget())
     await quota.register_budget(budget("cost", unit="micro_usd", limit=100_000))
     service = InvocationExecutionService(store=InMemoryInvocationStore(), quota=quota)
-    await execute(service, usage_from=lambda _: InvocationUsage(units="images", input_units=1, cost_cents=0.00001))
+    await execute(
+        service,
+        usage_from=lambda _: InvocationUsage(units="images", input_units=1, cost_cents=0.00001),
+    )
     assert (await quota.balance("tokens")).held == 60
     assert (await quota.balance("cost")).spent == 1
 
@@ -611,7 +638,9 @@ def test_invalid_quota_amounts_fail_closed(invalid):
         observed(invocation(), tokens=invalid)
 
 
-@pytest.mark.parametrize("changes", [{"reserve": 101}, {"period_end": 0}, {"coverage_ref": ""}, {"unit": "dollars"}])
+@pytest.mark.parametrize(
+    "changes", [{"reserve": 101}, {"period_end": 0}, {"coverage_ref": ""}, {"unit": "dollars"}]
+)
 def test_invalid_budget_definition_rejected(changes):
     with pytest.raises(ValueError):
         budget(**changes)
@@ -697,7 +726,9 @@ async def test_concurrent_duplicate_settlement_does_not_double_charge(quota):
     inv = invocation()
     await quota.reserve(inv, binding())
     peer = SqliteInvocationQuota(quota._path, estimate=estimate, clock=lambda: 100)
-    done = terminal(inv, InvocationStatus.COMPLETED, InvocationUsage(input_units=10, output_units=20))
+    done = terminal(
+        inv, InvocationStatus.COMPLETED, InvocationUsage(input_units=10, output_units=20)
+    )
     await asyncio.gather(quota.observe(done), peer.observe(done))
     assert (await quota.balance("tokens")).spent == 30
     assert (await quota.balance("tokens")).held == 0
