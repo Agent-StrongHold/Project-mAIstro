@@ -68,7 +68,7 @@ def _inputs(kind: str, values: dict[str, Any]) -> dict[str, Any]:
 @pytest.mark.ac("ADR-090726-9a4e/AC-3")
 @pytest.mark.ac("ADR-090726-9a4e/AC-4")
 @pytest.mark.parametrize(("kind", "values"), _CASES)
-@pytest.mark.parametrize("answer", [{"verdict": "   "}, {"verdict": None}, {"verdict": 1}])
+@pytest.mark.parametrize("answer", [{}, {"verdict": "   "}, {"verdict": None}, {"verdict": 1}])
 async def test_repeated_malformed_answers_preserve_deadline_after_restart(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -106,16 +106,18 @@ async def test_repeated_malformed_answers_preserve_deadline_after_restart(
             answer,
             at=clock.value,
         )
-        assert answered.status is RunStatus.QUEUED
+        assert answered.status is RunStatus.PAUSED
+        assert answered.graph_state.metadata["pauses"]["step"]["resume_at"] == deadline.isoformat()
+        assert answered.hitl_answers["step"]["_pause"]["resume_at"] == deadline.isoformat()
+        paused = answered
 
+        # A malformed answer is audited but never makes the paused Run
+        # runnable, so a restart cannot turn it into a queued timeout orphan.
         restarted_store = SqliteDurableRunStore(database)
-        paused = await resume_durable_graph(
-            paused.run_id,
-            store=restarted_store,
-            node_resolver=_resolve,
-        )
-        assert paused.status is RunStatus.PAUSED
-        assert paused.graph_state.metadata["pauses"]["step"]["resume_at"] == deadline.isoformat()
+        persisted = await restarted_store.get(paused.run_id)
+        assert persisted is not None
+        assert persisted.status is RunStatus.PAUSED
+        assert persisted.graph_state.metadata["pauses"]["step"]["resume_at"] == deadline.isoformat()
 
     expired = await expire_hitl_pauses(
         SqliteDurableRunStore(database),
@@ -147,11 +149,19 @@ async def test_valid_answer_before_deadline_still_settles(
         inputs=_inputs(kind, values),
     )
 
+    malformed = await store.submit_hitl_answer(
+        paused.run_id,
+        "step",
+        {"verdict": "   "},
+        at=_T0 + timedelta(seconds=1),
+    )
+    assert malformed.status is RunStatus.PAUSED
+
     answered = await store.submit_hitl_answer(
         paused.run_id,
         "step",
         {"verdict": "approved"},
-        at=_T0 + timedelta(seconds=1),
+        at=_T0 + timedelta(seconds=2),
     )
     settled = await resume_durable_graph(
         paused.run_id,
