@@ -26,6 +26,7 @@ and would then be wrong about how the running system recovers.
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -90,8 +91,10 @@ class InvocationUsage(BaseModel):
             raise ValueError("units must be a non-empty string")
         if self.input_units < 0 or self.output_units < 0:
             raise ValueError("usage units cannot be negative")
-        if self.cost_cents is not None and self.cost_cents < 0:
-            raise ValueError("cost_cents cannot be negative")
+        if self.cost_cents is not None and (
+            not math.isfinite(self.cost_cents) or self.cost_cents < 0
+        ):
+            raise ValueError("cost_cents must be finite and nonnegative")
         return self
 
 
@@ -219,6 +222,19 @@ ProviderExecutor = Callable[[ResolvedCapabilityProvider, Any], Awaitable[Any]]
 UsageExtractor = Callable[[Any], "InvocationUsage | None"]
 
 
+class InvocationQuota(Protocol):
+    """Accounting collaborator at the sole physical Invocation boundary.
+
+    A reservation must commit before dispatch. Observation is idempotent and
+    preserves holds for missing usage/unknown outcomes. Implementations must
+    finish an in-flight reservation transaction before propagating cancellation.
+    """
+
+    async def reserve(self, invocation: Invocation, binding: Binding) -> None: ...
+
+    async def observe(self, invocation: Invocation) -> None: ...
+
+
 class InvocationExecutionService:
     """Resolve one Binding, persist one provider call, and guard effect retries.
 
@@ -226,8 +242,13 @@ class InvocationExecutionService:
     effect-retry guard below therefore protects no live call yet (#55).
     """
 
-    def __init__(self, *, store: InvocationStore) -> None:
+    def __init__(
+        self, *, store: InvocationStore, quota: InvocationQuota | None = None
+    ) -> None:
         self._store = store
+        # Opt-in until canonical backend composition is migrated. No per-call
+        # quota override: alternative Agent/router strategies share this hook.
+        self._quota = quota
         self._effect_lock = asyncio.Lock()
 
     async def latest_effect(
@@ -266,8 +287,8 @@ class InvocationExecutionService:
         A completed prior Invocation for the same logical effect is returned
         without another provider call. ``CREATED``, ``RUNNING``, or ``UNKNOWN``
         history blocks repetition because the remote outcome cannot be proven
-        absent. Only a prior ``FAILED`` record, produced by ``EffectNotApplied``,
-        is eligible for a new physical Invocation under a later Attempt.
+        absent. Only a prior ``FAILED`` record, produced by ``EffectNotApplied``
+        or proof that provider dispatch never started, permits another attempt.
         """
 
         _require(effect_key, "effect_key")
@@ -280,6 +301,11 @@ class InvocationExecutionService:
             )
             if history:
                 latest = history[-1]
+                if latest.status in {InvocationStatus.COMPLETED, InvocationStatus.FAILED}:
+                    # Repair the terminal-save/accounting-write crash window.
+                    # This is an absolute observation, not another usage charge.
+                    if self._quota is not None:
+                        await self._quota.observe(latest)
                 if latest.status is InvocationStatus.COMPLETED:
                     return latest
                 if latest.status in {
@@ -308,13 +334,25 @@ class InvocationExecutionService:
                     request=request,
                 )
             )
-            running = invocation.model_copy(
-                update={
-                    "status": InvocationStatus.RUNNING,
-                    "started_at": datetime.now(UTC),
-                }
-            )
-            invocation = await self._store.save(running)
+            try:
+                if self._quota is not None:
+                    await self._quota.reserve(invocation, binding)
+                running = invocation.model_copy(
+                    update={
+                        "status": InvocationStatus.RUNNING,
+                        "started_at": datetime.now(UTC),
+                    }
+                )
+                invocation = await self._store.save(running)
+            except (Exception, asyncio.CancelledError):
+                # The physical executor has not been entered. Persist proof of
+                # non-dispatch before releasing any quota reservation.
+                await self._terminalize(
+                    invocation,
+                    InvocationStatus.FAILED,
+                    error="provider dispatch did not start",
+                )
+                raise
 
         try:
             result = await executor(provider, request)
@@ -342,7 +380,20 @@ class InvocationExecutionService:
             )
             raise
 
-        usage = usage_from(result) if usage_from is not None else None
+        try:
+            usage = usage_from(result) if usage_from is not None else None
+            if usage is not None and not isinstance(usage, InvocationUsage):
+                raise TypeError("usage extractor must return InvocationUsage or None")
+        except (Exception, asyncio.CancelledError):
+            # A broken usage parser cannot make a completed physical effect
+            # retryable. Preserve the result; unmeasured quota stays held.
+            await self._terminalize(
+                invocation,
+                InvocationStatus.COMPLETED,
+                result=result,
+                error="provider completed but usage extraction failed",
+            )
+            raise
 
         return await self._terminalize(
             invocation,
@@ -369,7 +420,10 @@ class InvocationExecutionService:
                 "finished_at": datetime.now(UTC),
             }
         )
-        return await self._store.save(terminal)
+        persisted = await self._store.save(terminal)
+        if self._quota is not None:
+            await self._quota.observe(persisted)
+        return persisted
 
 
 __all__ = [
@@ -378,6 +432,7 @@ __all__ = [
     "InMemoryInvocationStore",
     "Invocation",
     "InvocationExecutionService",
+    "InvocationQuota",
     "InvocationStatus",
     "InvocationStore",
     "InvocationUsage",
