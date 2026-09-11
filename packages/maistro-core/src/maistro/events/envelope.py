@@ -21,6 +21,69 @@ from maistro.observability.correlation import current_execution_context
 if TYPE_CHECKING:
     import aiosqlite
 
+#: Canonical structural bound for `payload`/`provenance` (#1164). Enforced once,
+#: here, in the constructor every backend (memory, SQLite, PostgreSQL, outbox)
+#: must go through -- so every backend inherits the same ceiling by construction
+#: rather than needing its own copy of this check. Deliberately not a
+#: database-column maximum chosen after the fact: a resource-abuse floor chosen
+#: before any backend needs to care, sized well above today's small emitters
+#: while still bounding a future caller that has not yet been imagined.
+MAX_EVENT_FIELD_BYTES = 262_144
+MAX_EVENT_FIELD_DEPTH = 32
+
+
+class EventPayloadTooLarge(ValueError):
+    """A canonical Event field failed its structural resource bound (#1164)."""
+
+    def __init__(self, message: str, *, field: str) -> None:
+        super().__init__(message)
+        self.field = field
+
+
+def _structural_depth(value: object, *, stop_after: int) -> int:
+    """Return container nesting depth, stopping as soon as ``stop_after`` is exceeded.
+
+    Iterative rather than recursive so a maliciously deep payload cannot exhaust
+    the Python call stack before this check has a chance to reject it.
+    """
+    max_seen = 0
+    stack: list[tuple[object, int]] = [(value, 1)]
+    while stack:
+        current, depth = stack.pop()
+        if not isinstance(current, (dict, list)):
+            continue
+        max_seen = max(max_seen, depth)
+        if depth > stop_after:
+            return depth
+        children = current.values() if isinstance(current, dict) else current
+        stack.extend((child, depth + 1) for child in children if isinstance(child, (dict, list)))
+    return max_seen
+
+
+def _check_field_bounds(field_name: str, value: dict[str, Any]) -> None:
+    """Reject an oversized or unencodable Event field before any backend sees it."""
+    depth = _structural_depth(value, stop_after=MAX_EVENT_FIELD_DEPTH)
+    if depth > MAX_EVENT_FIELD_DEPTH:
+        raise EventPayloadTooLarge(
+            f"{field_name} nests {depth} levels deep, exceeding the canonical "
+            f"Event limit of {MAX_EVENT_FIELD_DEPTH}",
+            field=field_name,
+        )
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise EventPayloadTooLarge(
+            f"{field_name} is not JSON-encodable: {exc}",
+            field=field_name,
+        ) from exc
+    size = len(encoded.encode("utf-8"))
+    if size > MAX_EVENT_FIELD_BYTES:
+        raise EventPayloadTooLarge(
+            f"{field_name} serialized to {size} bytes, exceeding the canonical "
+            f"Event limit of {MAX_EVENT_FIELD_BYTES} bytes",
+            field=field_name,
+        )
+
 
 @dataclass(frozen=True)
 class EventEnvelope:
@@ -62,6 +125,8 @@ class EventEnvelope:
             raise ValueError("Workspace events must not define a competing stream_scope")
         if self.sequence is not None and self.sequence < 1:
             raise ValueError("sequence must be positive when present")
+        _check_field_bounds("payload", self.payload)
+        _check_field_bounds("provenance", self.provenance)
         object.__setattr__(self, "payload", copy.deepcopy(self.payload))
         object.__setattr__(self, "provenance", copy.deepcopy(self.provenance))
 

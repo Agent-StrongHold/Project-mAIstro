@@ -18,7 +18,10 @@ from maistro.events.durable_log import (
     append_from_bus_event,
 )
 from maistro.events.envelope import (
+    MAX_EVENT_FIELD_BYTES,
+    MAX_EVENT_FIELD_DEPTH,
     EventEnvelope,
+    EventPayloadTooLarge,
     EventStore,
     InMemoryEventStore,
     SqliteEventStore,
@@ -65,12 +68,15 @@ _OUTBOX_OPERATIONS = (
 __all__ = [
     "HANDLER_FAILED_EVENT",
     "MAX_ATTEMPTS",
+    "MAX_EVENT_FIELD_BYTES",
+    "MAX_EVENT_FIELD_DEPTH",
     "ActionHandler",
     "Event",
     "EventBus",
     "EventCategory",
     "EventEnvelope",
     "EventLogStore",
+    "EventPayloadTooLarge",
     "EventStore",
     "HTTPHandlerCaller",
     "HandlerCallError",
