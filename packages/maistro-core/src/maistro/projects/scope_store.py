@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
@@ -20,6 +21,10 @@ from maistro.projects.scope import (
 @runtime_checkable
 class ProjectScopeStore(Protocol):
     """Persistence boundary for the canonical Workspace Project tree."""
+
+    def workspace_transaction(self) -> AbstractAsyncContextManager[Any]:
+        """Share one transaction with Workspace root provisioning."""
+        ...
 
     async def create_root(self, workspace_id: str) -> Project:
         """Create or return the Workspace's single Root Project."""
@@ -171,6 +176,11 @@ class InMemoryProjectScopeStore:
     def set_run_owner(self, owns_runs: Callable[[str], Awaitable[bool]]) -> None:
         """Register the predicate `delete()` consults for Run ownership."""
         self._owns_runs = owns_runs
+
+    @asynccontextmanager
+    async def workspace_transaction(self) -> AsyncIterator[None]:
+        """Reference transaction seam; in-memory writes are synchronous."""
+        yield None
 
     async def create_root(self, workspace_id: str) -> Project:
         """Create or return the Workspace's single Root Project."""

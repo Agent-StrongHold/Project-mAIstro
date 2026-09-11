@@ -18,6 +18,9 @@ codec (`maistro.persistence._register_json_codecs`). That is why this reads
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -46,6 +49,19 @@ class PgProjectScopeStore:
 
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
+        self._transaction_connection: ContextVar[Any | None] = ContextVar(
+            "pg_project_transaction_connection", default=None
+        )
+
+    @asynccontextmanager
+    async def workspace_transaction(self) -> AsyncIterator[Any]:
+        """Expose one connection for Workspace and Root Project provisioning."""
+        async with self._pool.acquire() as connection, connection.transaction():
+            token = self._transaction_connection.set(connection)
+            try:
+                yield connection
+            finally:
+                self._transaction_connection.reset(token)
 
     async def purge_workspace(self, workspace_id: str) -> None:
         """Tear down every Project row this Workspace owns.
@@ -98,6 +114,9 @@ class PgProjectScopeStore:
         callers both find no root and both try to create one — the loser gets a
         unique violation rather than the root that now exists.
         """
+        active_connection = self._transaction_connection.get()
+        if active_connection is not None:
+            return await self.create_root_in_transaction(workspace_id, active_connection)
         if not workspace_id.strip():
             raise ValueError("workspace_id must be a non-empty string")
         root = Project(
@@ -106,7 +125,7 @@ class PgProjectScopeStore:
             parent_project_id=None,
             is_root=True,
         )
-        async with self._pool.acquire() as conn:
+        async with self.workspace_transaction() as conn:
             await conn.execute(
                 """INSERT INTO canonical_projects
                    (project_id, workspace_id, parent_project_id, is_root, payload)
@@ -117,6 +136,31 @@ class PgProjectScopeStore:
                 json_of(root),
             )
         return await self.root_for_workspace(workspace_id)
+
+    async def create_root_in_transaction(self, workspace_id: str, connection: Any) -> Project:
+        """Provision a Root Project without committing the caller's transaction."""
+        if not workspace_id.strip():
+            raise ValueError("workspace_id must be a non-empty string")
+        root = Project(
+            workspace_id=workspace_id,
+            name="Root",
+            parent_project_id=None,
+            is_root=True,
+        )
+        await connection.execute(
+            """INSERT INTO canonical_projects
+               (project_id, workspace_id, parent_project_id, is_root, payload)
+               VALUES ($1, $2, NULL, TRUE, $3::text::jsonb)
+               ON CONFLICT DO NOTHING""",
+            root.project_id,
+            root.workspace_id,
+            json_of(root),
+        )
+        payload = await connection.fetchval(
+            "SELECT payload FROM canonical_projects WHERE workspace_id = $1 AND is_root",
+            workspace_id,
+        )
+        return model_of(Project, payload)
 
     async def root_for_workspace(self, workspace_id: str) -> Project:
         root = await self._root_or_none(workspace_id)
