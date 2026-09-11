@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import Any
 
 from maistro.http import shared_client
@@ -73,8 +74,30 @@ class _EvolutionService:
             from maistro_evolve.population import PopulationStore
             from maistro_evolve.tournament import EloTournament
 
-            self._population = PopulationStore()
-            self._tournament = EloTournament()
+            try:
+                from config import get_settings
+
+                data_dir = Path(get_settings().conductor_data_dir).expanduser() / "evolve"
+                population_path = data_dir / "population.sqlite3"
+                tournament_path = data_dir / "tournament.json"
+                data_dir.mkdir(parents=True, exist_ok=True)
+                try:
+                    self._population = PopulationStore(db_path=population_path)
+                except TypeError:  # lightweight test doubles retain the old seam
+                    self._population = PopulationStore()
+                try:
+                    self._tournament = EloTournament(state_path=str(tournament_path))
+                except TypeError:
+                    self._tournament = EloTournament()
+                latest_cycle_count = getattr(self._population, "latest_cycle_count", None)
+                if callable(latest_cycle_count):
+                    self._cycle_count = int(latest_cycle_count())
+            except Exception:
+                # Standalone/unit configurations may not expose Conductor
+                # settings; keep the library fallback, but canonical recovery
+                # will correctly block runs without durable references.
+                self._population = PopulationStore()
+                self._tournament = EloTournament()
         except Exception as exc:
             logger.warning("Evolution population init failed: %s", exc)
             return

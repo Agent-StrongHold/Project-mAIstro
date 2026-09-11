@@ -60,6 +60,21 @@ def test_add_and_get_roundtrip(store: PopulationStore) -> None:
     assert store.get("g1") == genome
 
 
+def test_finalization_publication_journal_survives_reopen(tmp_path: Path) -> None:
+    path = tmp_path / "pop.db"
+    store = PopulationStore(path)
+    genome = _genome("g1", fitness_score=0.5)
+    store.commit_publication("run:finalize", [genome], {"output": {"population_size": 1}})
+
+    reopened = PopulationStore(path)
+    assert reopened.get("g1") == genome
+    assert reopened.get_publication("run:finalize") == {
+        "metadata": {"output": {"population_size": 1}}
+    }
+    reopened.commit_publication("run:finalize", [], {"output": {"population_size": 0}})
+    assert [item.id for item in reopened.list_all()] == ["g1"]
+
+
 def test_get_missing_returns_none(store: PopulationStore) -> None:
     assert store.get("missing") is None
 

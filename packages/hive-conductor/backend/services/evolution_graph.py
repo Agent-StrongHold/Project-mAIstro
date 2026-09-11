@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import logging
 import random
+from collections.abc import Callable, Mapping
 from copy import deepcopy
 from itertools import pairwise
+from pathlib import Path
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -33,6 +35,11 @@ _EVALUATE_KIND = "evolve.evaluate_genome"
 _PAIR_KIND = "evolve.plan_tournament_pairs"
 _BATTLE_KIND = "evolve.tournament_pair"
 _FINALIZE_KIND = "evolve.finalize_cycle"
+_RECOVERY_SOURCE = "evolve"
+
+
+class EvolveRecoveryBlocked(RuntimeError):
+    """The durable Run cannot be resumed without its Evolve domain state."""
 
 
 class _EvaluateInput(BaseModel):
@@ -84,6 +91,7 @@ class _BattleOutput(BaseModel):
 class _FinalizeOutput(BaseModel):
     population_size: int
     new_genome_ids: list[str] = Field(default_factory=list)
+    publication_id: str = ""
 
 
 def _append_execution_ref(genome: Any, ctx: NodeContext) -> None:
@@ -233,7 +241,7 @@ class _TournamentWork:
             has_battles=bool(pairs),
         )
 
-    def run_pair(self, inputs: _BattleInput) -> _BattleOutput:
+    def run_pair(self, inputs: _BattleInput, ctx: NodeContext | None = None) -> _BattleOutput:
         if inputs.pair_index < 0 or inputs.pair_index >= len(inputs.pairs):
             raise RuntimeError(
                 "tournament graph requested a battle outside its persisted pair plan"
@@ -247,13 +255,19 @@ class _TournamentWork:
 
         common = sorted(set(genome_a.eval_scores) & set(genome_b.eval_scores))
         for benchmark in common:
-            self._cycle.tournament.record_battle(
-                benchmark=benchmark,
-                genome_a_id=genome_a.id,
-                genome_b_id=genome_b.id,
-                score_a=genome_a.eval_scores[benchmark],
-                score_b=genome_b.eval_scores[benchmark],
-            )
+            publication_id = None
+            if ctx is not None:
+                publication_id = f"{ctx.run_id}:{ctx.node_run_id}:{benchmark}"
+            battle_kwargs = {
+                "benchmark": benchmark,
+                "genome_a_id": genome_a.id,
+                "genome_b_id": genome_b.id,
+                "score_a": genome_a.eval_scores[benchmark],
+                "score_b": genome_b.eval_scores[benchmark],
+            }
+            if publication_id is not None:
+                battle_kwargs["publication_id"] = publication_id
+            self._cycle.tournament.record_battle(**battle_kwargs)
 
         next_index = inputs.pair_index + 1
         return _BattleOutput(
@@ -291,7 +305,7 @@ class _BattleNode(BaseNode[_BattleInput, _BattleOutput]):
         self._tournament_work = tournament_work
 
     async def _execute(self, inputs: _BattleInput, ctx: NodeContext) -> _BattleOutput:
-        return self._tournament_work.run_pair(inputs)
+        return self._tournament_work.run_pair(inputs, ctx)
 
 
 def _source_evaluation_refs(population: Any, genome: Any) -> list[dict[str, str]]:
@@ -334,13 +348,13 @@ def _publish_tournament_elos(cycle: Any, population: Any) -> None:
             population.add(genome)
 
 
-async def _finalize_cycle(
+async def _finalize_cycle_once(
     cycle: Any,
     population: Any,
     config: Any,
     llm_call: Any,
 ) -> _FinalizeOutput:
-    """Run post-tournament domain semantics without creating another lifecycle."""
+    """Run post-tournament semantics on an uncommitted domain snapshot."""
     from maistro_evolve.population import IslandPopulation, migrate_islands
 
     before = {genome.id for genome in population.list_all()}
@@ -384,6 +398,104 @@ async def _finalize_cycle(
     )
 
 
+def _island_snapshot(island_pop: Any) -> dict[str, Any]:
+    if island_pop is None:
+        return {}
+    return {
+        "island_count": island_pop.island_count,
+        "islands": deepcopy(getattr(island_pop, "_islands", {})),
+        "primary": deepcopy(getattr(island_pop, "_primary", {})),
+        "rr": int(getattr(island_pop, "_rr", 0)),
+    }
+
+
+def _restore_island_snapshot(cycle: Any, snapshot: dict[str, Any]) -> None:
+    if not snapshot:
+        return
+    from maistro_evolve.population import IslandPopulation
+
+    island_pop = IslandPopulation(int(snapshot["island_count"]))
+    island_pop._islands = {int(k): list(v) for k, v in snapshot["islands"].items()}
+    island_pop._primary = {str(k): int(v) for k, v in snapshot["primary"].items()}
+    island_pop._rr = int(snapshot["rr"])
+    cycle._island_pop = island_pop
+
+
+def _publication_entry(population: Any, publication_id: str) -> dict[str, Any] | None:
+    getter = getattr(population, "get_publication", None)
+    if callable(getter):
+        entry = getter(publication_id)
+        return entry if isinstance(entry, dict) else None
+    raw = deepcopy(getattr(population, "_evolve_publications", {}).get(publication_id))
+    return raw if isinstance(raw, dict) else None
+
+
+async def _finalize_cycle(  # noqa: C901
+    cycle: Any,
+    population: Any,
+    config: Any,
+    llm_call: Any,
+    *,
+    publication_id: str | None = None,
+) -> _FinalizeOutput:
+    """Publish finalization once, from a staged snapshot and durable journal."""
+    if not publication_id:
+        return await _finalize_cycle_once(cycle, population, config, llm_call)
+
+    prior = _publication_entry(population, publication_id)
+    if prior is not None:
+        metadata = prior.get("metadata", prior)
+        cycle._cycle_count = int(metadata.get("cycle_count", cycle._cycle_count))
+        _restore_island_snapshot(cycle, metadata.get("island", {}))
+        return _FinalizeOutput.model_validate(metadata["output"])
+
+    # Use an in-memory PopulationStore for staging so a failed LLM/breeding
+    # operation cannot persist a partial cull or lineage mutation.
+    from maistro_evolve.population import PopulationStore
+
+    if hasattr(population, "commit_publication"):
+        staged_population = PopulationStore()
+        for genome in population.list_all():
+            staged_population.add(deepcopy(genome))
+    else:
+        staged_population = deepcopy(population)
+    staged_cycle = deepcopy(cycle)
+    staged_cycle._cycle_count = cycle._cycle_count
+    staged_cycle.tournament = cycle.tournament
+    output = await _finalize_cycle_once(staged_cycle, staged_population, config, llm_call)
+    output = output.model_copy(update={"publication_id": publication_id})
+    metadata = {
+        "cycle_count": staged_cycle._cycle_count,
+        "island": _island_snapshot(staged_cycle._island_pop),
+        "output": output.model_dump(),
+    }
+
+    committer = getattr(population, "commit_publication", None)
+    if callable(committer):
+        committer(publication_id, staged_population.list_all(), metadata)
+    else:
+        publications = getattr(population, "_evolve_publications", None)
+        if publications is None:
+            publications = {}
+            population._evolve_publications = publications
+        if publication_id not in publications:
+            if hasattr(population, "_items") and hasattr(staged_population, "_items"):
+                population._items = {
+                    genome_id: deepcopy(genome)
+                    for genome_id, genome in staged_population._items.items()
+                }
+            else:
+                for genome in list(population.list_all()):
+                    population.remove(genome.id)
+                for genome in staged_population.list_all():
+                    population.add(deepcopy(genome))
+            publications[publication_id] = {"metadata": deepcopy(metadata)}
+
+    cycle._cycle_count = staged_cycle._cycle_count
+    cycle._island_pop = staged_cycle._island_pop
+    return output
+
+
 class _FinalizeNode(BaseNode[_IgnoreInput, _FinalizeOutput]):
     kind: ClassVar[str] = _FINALIZE_KIND
     input_schema: ClassVar[type[BaseModel]] = _IgnoreInput
@@ -410,6 +522,7 @@ class _FinalizeNode(BaseNode[_IgnoreInput, _FinalizeOutput]):
             self._population,
             self._config,
             self._llm_call,
+            publication_id=f"{ctx.run_id}:{ctx.node_run_id}",
         )
 
 
@@ -533,7 +646,9 @@ def _build_graph(
     )
 
 
-def _resolver(*, cycle: Any, population: Any, config: Any, llm_call: Any):
+def _resolver(
+    *, cycle: Any, population: Any, config: Any, llm_call: Any
+) -> Callable[[str, Graph], BaseNode[Any, Any]]:
     tournament_work = _TournamentWork(cycle=cycle, population=population)
     evaluate = _EvaluateNode(
         cycle=cycle,
@@ -565,6 +680,49 @@ def _resolver(*, cycle: Any, population: Any, config: Any, llm_call: Any):
         raise KeyError(f"unsupported evolution node type {spec.node_type!r}")
 
     return resolve
+
+
+def _recovery_resolver(run: Any) -> Callable[[str, Graph], BaseNode[Any, Any]]:
+    """Rebuild Evolve collaborators from the immutable Run provenance."""
+    domain = run.provenance.get("evolve_domain")
+    if not isinstance(domain, Mapping):
+        raise EvolveRecoveryBlocked(f"Evolve Run {run.run_id!r} has no durable domain references")
+    population_ref = str(domain.get("population_ref") or "")
+    tournament_ref = str(domain.get("tournament_ref") or "")
+    config_data = domain.get("config")
+    if not population_ref or not tournament_ref or not isinstance(config_data, Mapping):
+        raise EvolveRecoveryBlocked(
+            f"Evolve Run {run.run_id!r} has incomplete durable domain references"
+        )
+    population_path = Path(population_ref).expanduser()
+    tournament_path = Path(tournament_ref).expanduser()
+    if not population_path.is_file() or not tournament_path.is_file():
+        raise EvolveRecoveryBlocked(
+            f"Evolve Run {run.run_id!r} domain prerequisites are unavailable"
+        )
+
+    from maistro_evolve.cycle import EvolutionConfig, EvolutionCycle
+    from maistro_evolve.harness import EvalHarness
+    from maistro_evolve.population import PopulationStore
+    from maistro_evolve.tournament import EloTournament
+
+    population = PopulationStore(population_path)
+    tournament = EloTournament(state_path=str(tournament_path))
+    config = EvolutionConfig.model_validate(dict(config_data))
+    cycle = EvolutionCycle(harness=EvalHarness(benchmark_fidelity="proxy"), tournament=tournament)
+    cycle._cycle_count = max(0, int(domain.get("cycle_number") or 1) - 1)
+    try:
+        from services.evolution import get_evolution_service
+
+        llm_call = get_evolution_service()._build_llm_call()
+    except Exception:
+        llm_call = None
+    return _resolver(
+        cycle=cycle,
+        population=population,
+        config=config,
+        llm_call=llm_call,
+    )
 
 
 def _engine_container() -> Any:
@@ -615,10 +773,17 @@ async def run_canonical_evolution_cycle(
         population=population,
         config=config,
     )
+    population_ref = str(getattr(population, "_db_path", "") or "")
+    tournament_ref = str(getattr(tournament, "_state_path", "") or "")
     provenance = {
         "admission_source": _ADMISSION_SOURCE,
         "product": "evolve",
         "cycle_number": cycle_number,
+        "evolve_domain": {
+            "population_ref": population_ref,
+            "tournament_ref": tournament_ref,
+            "config": config.model_dump() if hasattr(config, "model_dump") else vars(config),
+        },
     }
     admitted = await owner.run_store.create_run(
         graph,
@@ -642,4 +807,75 @@ async def run_canonical_evolution_cycle(
     )
 
 
-__all__ = ["run_canonical_evolution_cycle"]
+async def recover_evolution_runs(*, limit: int = 100) -> int:
+    """Resume or terminalize admitted Evolve Runs using durable Run facts."""
+    from datetime import UTC, datetime
+
+    from maistro.graph.durable_runs import recover_queued_graph_runs, resume_durable_graph
+    from maistro.graph.durable_runs.attempt_executor import _persist_cancelled_run
+
+    owner = _engine_container()
+    if owner.graph_run_store is None or owner.run_store is None:
+        return 0
+    candidates = await owner.run_store.list_by_status(RunStatus.QUEUED, limit=limit)
+    recovered = 0
+    for run in candidates:
+        if run.provenance.get("admission_source") != _RECOVERY_SOURCE:
+            continue
+        try:
+            recovered += await recover_queued_graph_runs(
+                store=owner.graph_run_store,
+                run_store=owner.run_store,
+                node_resolver_factory=_recovery_resolver,
+                eligible=lambda candidate, run_id=run.run_id: candidate.run_id == run_id,
+                limit=1,
+            )
+        except EvolveRecoveryBlocked as exc:
+            # A missing domain prerequisite is a visible terminal disposition,
+            # never a QUEUED record that every restart will retry forever.
+            await owner.run_store.transition_run(
+                run.run_id,
+                RunStatus.CANCELLED,
+                error=f"evolve_recovery_blocked: {exc}",
+            )
+
+    # A process can die after checkpoint 1, leaving a timed recovery claim.
+    # Reuse the canonical resume seam; it fences live owners and creates a
+    # fresh Attempt for an expired claim.
+    due = await owner.graph_run_store.list_due(
+        now=datetime.now(UTC),
+        limit=limit,
+    )
+    for record in due:
+        if record.run.provenance.get("admission_source") != _RECOVERY_SOURCE:
+            continue
+        try:
+            await resume_durable_graph(
+                record.run_id,
+                store=owner.graph_run_store,
+                node_resolver=_recovery_resolver(record.run),
+                run_store=owner.run_store,
+            )
+            recovered += 1
+        except EvolveRecoveryBlocked as exc:
+            if record.run.status is RunStatus.RUNNING:
+                cancelled = await _persist_cancelled_run(
+                    record.run_id,
+                    store=owner.graph_run_store,
+                    run_store=owner.run_store,
+                )
+                logger.error(
+                    "evolve_recovery_blocked run_id=%s status=%s reason=%s",
+                    record.run_id,
+                    cancelled.run.status.value,
+                    exc,
+                )
+    return recovered
+
+
+__all__ = [
+    "EvolveRecoveryBlocked",
+    "_recovery_resolver",
+    "recover_evolution_runs",
+    "run_canonical_evolution_cycle",
+]

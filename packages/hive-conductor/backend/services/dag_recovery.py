@@ -1,11 +1,11 @@
 """System recovery cadence for stranded and due canonical Hive DAG Runs (#835/#837, #62).
 
 This is not a scheduler and owns no execution lifecycle. It periodically asks
-the canonical recovery seam to reconcile only Runs admitted by the legacy Hive
-DAG adapter: bootstrap recovery for QUEUED admissions stranded around
-checkpoint 1, and timed wakeup for continuations whose persisted ``resume_at``
-has elapsed. The canonical Run, continuation, Attempt lease, and fence remain
-the sole authorities for whether physical work may start.
+the canonical recovery seam to reconcile Hive legacy-DAG and Evolve Runs:
+bootstrap recovery for QUEUED admissions stranded around checkpoint 1, and
+timed wakeup for continuations whose persisted ``resume_at`` has elapsed. The
+canonical Run, continuation, Attempt lease, and fence remain the sole
+authorities for whether physical work may start.
 """
 
 from __future__ import annotations
@@ -16,12 +16,20 @@ import logging
 
 from services.canonical_dag_runner import recover_stranded_dag_runs, wake_due_dag_runs
 
+
+async def _recover_evolve() -> int:
+    """Use Evolve's durable resolver without making it a second scheduler."""
+    from services.evolution_graph import recover_evolution_runs
+
+    return await recover_evolution_runs()
+
+
 logger = logging.getLogger("hive.dag_recovery")
 _INTERVAL_S = 10.0
 _task: asyncio.Task[None] | None = None
 
 
-async def _run() -> None:
+async def _run() -> None:  # noqa: C901
     while True:
         try:
             recovered = await recover_stranded_dag_runs()
@@ -46,6 +54,14 @@ async def _run() -> None:
             # silence the tick or the other half. The canonical seam re-raises
             # only for a record still due after failing; the next tick retries.
             logger.exception("legacy_dag_wakeup_tick_failed")
+        try:
+            evolved = await _recover_evolve()
+            if evolved:
+                logger.info("evolve_recovery recovered=%d", evolved)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("evolve_recovery_tick_failed")
         await asyncio.sleep(_INTERVAL_S)
 
 
