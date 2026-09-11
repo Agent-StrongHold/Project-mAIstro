@@ -29,6 +29,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from middleware.auth import resolve_principal
 from pydantic import BaseModel, ConfigDict, Field
+from services.workspace_authority import is_member, list_views_for_user
 
 from maistro.graph.durable_runs import expire_hitl_pauses
 from maistro.runs.model import RunStatus
@@ -74,6 +75,22 @@ def _store() -> Any:
     from services.dag_agents import get_run_store
 
     return get_run_store()
+
+
+def _request_user_id(request: Request) -> str:
+    user = getattr(request.state, "user", None) or {}
+    user_id = str(user.get("id") or user.get("username") or "")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return user_id
+
+
+async def _require_workspace_access(request: Request, workspace_id: str) -> None:
+    if not await is_member(_request_user_id(request), workspace_id):
+        raise HTTPException(
+            status_code=403,
+            detail="access denied: run is outside the user's workspaces",
+        )
 
 
 def _session_principal(request: Request) -> str:
@@ -129,7 +146,7 @@ def _pending_items(record: Any) -> list[PendingHumanWork]:
 
 @router.get("/pending")
 async def list_pending_human_work(
-    limit: int = 50, project_id: str | None = None
+    request: Request, limit: int = 50, project_id: str | None = None
 ) -> list[PendingHumanWork]:
     """Everything waiting on a person, without knowing a run_id in advance.
 
@@ -137,11 +154,28 @@ async def list_pending_human_work(
     answers "what is this Run doing", and answers nothing for a person who
     does not yet know which Run is blocked on them.
     """
+    user_id = _request_user_id(request)
+
+    # Workspace membership is the canonical visibility boundary for Run data,
+    # not the coarse `dags.write` route permission. Resolve every Workspace the
+    # principal may see; selecting one default Workspace would hide legitimate
+    # work, while omitting this filter leaks every tenant's paused payload.
+    allowed_workspace_ids = {workspace.id for workspace in await list_views_for_user(user_id)}
+    if not allowed_workspace_ids:
+        return []
+
     store = _store()
     records = await store.list_by_status(
-        RunStatus.PAUSED, limit=max(1, min(limit, 200)), project_id=project_id
+        RunStatus.PAUSED,
+        limit=max(1, min(limit, 200)),
+        project_id=project_id,
     )
-    return [item for record in records for item in _pending_items(record)]
+    return [
+        item
+        for record in records
+        if record.run.workspace_id in allowed_workspace_ids
+        for item in _pending_items(record)
+    ]
 
 
 @router.post("/expire")
@@ -158,6 +192,10 @@ async def expire_human_work(limit: int = 100) -> dict[str, Any]:
 async def cancel_human_work(run_id: str, node_id: str, request: Request) -> dict[str, Any]:
     """Request canonical cancellation of one durable human pause."""
     store = _store()
+    record = await store.get(run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    await _require_workspace_access(request, record.run.workspace_id)
     try:
         updated = await store.cancel_hitl(run_id, node_id)
     except KeyError as exc:
@@ -200,6 +238,7 @@ async def answer_human_work(
     record = await store.get(run_id)
     if record is None:
         raise HTTPException(status_code=404, detail="run not found")
+    await _require_workspace_access(request, record.run.workspace_id)
     if record.run.status is not RunStatus.PAUSED:
         raise HTTPException(
             status_code=409, detail=f"run is {record.run.status.value}, not paused on human input"
