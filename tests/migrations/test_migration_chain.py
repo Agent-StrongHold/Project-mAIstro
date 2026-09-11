@@ -76,6 +76,15 @@ EXPECTED_TABLES = frozenset(
         # until migration 019 gave the Workspace a table of its own.
         "canonical_workspaces",
         "canonical_workspace_memberships",
+        # The capability and Workspace lifecycle tables are provisioned by the
+        # shared deployment foundation alongside this migration chain. The
+        # live-catalog assertion must account for them or report a false drift
+        # after a clean CI database is upgraded.
+        "canonical_workspace_lifecycle",
+        "capability_approvals",
+        "capability_bindings",
+        "capability_invocation_effects",
+        "capability_invocations",
         "child_profiles",
         "design_outputs",
         "design_projects",
@@ -353,6 +362,31 @@ class TestTheChainSurvivesRuntimeSelfProvisioning:
                 )
             }
             assert pks == {"scope_key"}, f"primary key missing or wrong: {pks}"
+        finally:
+            _execute("drop table task_idempotency")
+
+    def test_upgrade_refuses_incompatible_column_definitions(self, empty_database) -> None:
+        """Column names alone do not prove the runtime can use the table."""
+        _alembic("upgrade", "033")
+        _execute(
+            "create table task_idempotency ("
+            "scope_key text primary key,"
+            "claim_token text not null,"
+            "fingerprint text not null,"
+            "request text not null,"
+            "task_id text,"
+            "run_id text,"
+            "completed_at text not null default '0',"
+            "created_at bigint not null,"
+            "expires_at bigint not null,"
+            "lease_expires_at bigint not null"
+            ")"
+        )
+        try:
+            result = _alembic("upgrade", "head")
+            assert result.returncode != 0
+            assert "incompatible" in result.stderr
+            assert _query("select version_num from alembic_version") == [("033",)]
         finally:
             _execute("drop table task_idempotency")
 

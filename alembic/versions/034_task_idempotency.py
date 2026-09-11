@@ -119,14 +119,7 @@ def _reconcile_runtime_provisioned(inspector: sa.Inspector) -> None:
     shape the store cannot use, and upgrading over it would leave
     ``alembic_version`` claiming a schema nobody checked.
     """
-    columns = {col["name"] for col in inspector.get_columns("task_idempotency")}
-    missing = {col.name for col in CLAIM_COLUMNS} - columns
-    if missing:
-        raise RuntimeError(
-            "task_idempotency already exists without the columns migration 034 "
-            f"owns (missing: {sorted(missing)}); it is not the runtime-"
-            "provisioned claim table, and the migration will not stamp over it"
-        )
+    _validate_claim_columns(inspector)
     # The claim protocol's insert-replay and takeover guard rest on a unique
     # constraint on scope_key (INSERT ... ON CONFLICT, the UPDATE ... WHERE
     # scope_key = ...). An earlier runtime provisioning that predates the
@@ -136,15 +129,58 @@ def _reconcile_runtime_provisioned(inspector: sa.Inspector) -> None:
     # CREATE exactly as it should, loudly, rather than letting the chain
     # pretend the table is usable when it is not.
     pk = inspector.get_pk_constraint("task_idempotency")
-    pk_columns = set(pk.get("constrained_columns", []))
-    if "scope_key" not in pk_columns:
+    pk_columns = pk.get("constrained_columns", [])
+    if pk_columns != ["scope_key"]:
         if pk.get("name"):
             op.drop_constraint(pk["name"], "task_idempotency", type_="primary")
         op.create_primary_key("pk_task_idempotency", "task_idempotency", ["scope_key"])
-    index_names = {ix["name"] for ix in inspector.get_indexes("task_idempotency")}
-    if "ix_task_idempotency_expires" not in index_names:
+    _validate_expiry_index(inspector)
+
+
+def _validate_claim_columns(inspector: sa.Inspector) -> None:
+    actual_columns = {col["name"]: col for col in inspector.get_columns("task_idempotency")}
+    missing = {col.name for col in CLAIM_COLUMNS} - actual_columns.keys()
+    if missing:
+        raise RuntimeError(
+            "task_idempotency already exists without the columns migration 034 "
+            f"owns (missing: {sorted(missing)}); it is not the runtime-"
+            "provisioned claim table, and the migration will not stamp over it"
+        )
+    malformed = []
+    for expected in CLAIM_COLUMNS:
+        actual = actual_columns[expected.name]
+        if type(actual["type"]) is not type(expected.type):
+            malformed.append(
+                f"{expected.name} has type {actual['type']!s}, expected {expected.type!s}"
+            )
+        if actual["nullable"] is not expected.nullable:
+            malformed.append(
+                f"{expected.name} nullable={actual['nullable']!r}, expected {expected.nullable!r}"
+            )
+    completed_default = actual_columns["completed_at"].get("default")
+    default_text = (
+        str(completed_default).lower().replace("'", "").replace("::bigint", "").strip("() ")
+    )
+    if default_text != "0":
+        malformed.append("completed_at has no zero default required by the claim protocol")
+    if malformed:
+        raise RuntimeError(
+            "task_idempotency exists with an incompatible migration 034 shape: "
+            + "; ".join(malformed)
+        )
+
+
+def _validate_expiry_index(inspector: sa.Inspector) -> None:
+    indexes = {ix["name"]: ix for ix in inspector.get_indexes("task_idempotency")}
+    expires_index = indexes.get("ix_task_idempotency_expires")
+    if expires_index is None:
         # The purge query's scan bound — same reason as on the create path.
         op.create_index("ix_task_idempotency_expires", "task_idempotency", ["expires_at"])
+    elif expires_index.get("column_names") != ["expires_at"] or expires_index.get("unique", False):
+        raise RuntimeError(
+            "task_idempotency has an incompatible ix_task_idempotency_expires "
+            f"definition: {expires_index!r}"
+        )
 
 
 def downgrade() -> None:
