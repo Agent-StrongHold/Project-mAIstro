@@ -220,7 +220,7 @@ SUCCESS write atomic.
 ## Acceptance criteria
 
 ```gherkin
-Feature: Durable event log with idempotent replay
+Feature: Durable event log with truthful at-least-once replay
 
   @AC-1
   Scenario Outline: Every emitted event is persisted before any handler sees it

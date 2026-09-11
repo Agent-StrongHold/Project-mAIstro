@@ -81,8 +81,9 @@ handler-owned idempotency contract.
       on a pattern match.
 - [ ] Events are appended to a durable event log before handling; a crash mid-handling replays from
       the log on restart rather than dropping the event.
-- [ ] Scheduled tasks (ADR-046) and proactive producers are expressed as triggers and inherit the
-      delivery / idempotency / replay guarantees.
+- [ ] Scheduled tasks (ADR-046) and proactive producers are expressed as triggers and inherit
+      at-least-once delivery; effect idempotency/replay safety is conditional on the handler
+      contract.
 
 ## Consequences
 
