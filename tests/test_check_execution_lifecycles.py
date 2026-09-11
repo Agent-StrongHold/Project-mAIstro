@@ -151,5 +151,7 @@ def test_a_missing_rationale_fails(gate) -> None:
     assert "pkg.jobs::JobStatus: needs a rationale" in failures
 
 
-def test_the_shipped_ledger_matches_the_shipped_code(gate) -> None:
+def test_the_shipped_ledger_matches_the_shipped_code(
+    gate, real_repository_ratchet_base: None
+) -> None:
     assert gate.main() == 0

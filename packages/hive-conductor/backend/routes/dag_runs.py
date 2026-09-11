@@ -9,6 +9,13 @@ page) consumes:
 SSE is the live-update path. Frontend opens the stream when the user
 clicks "View live run" on the Fleet pulse page; updates the react-flow
 node states in real time.
+
+Every response is scoped (#1174): the routes read through
+`services.dag_run_inspection`, which authorizes at the caller's canonical
+Workspace boundary — the same authority the workspace/agents routes use —
+before any metadata, event, existence signal, or stream is served. A run
+outside that boundary is indistinguishable from a run that does not exist.
+Authentication happens in AuthMiddleware; it is not authorization.
 """
 
 from __future__ import annotations
@@ -19,15 +26,30 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from services.dag_run_inspection import can_inspect_run, list_visible_runs, visible_run_detail
 from services.dag_run_store import get_dag_run_store
 
 router = APIRouter(tags=["dag-runs"])
 
 
+def _user_id(request: Request) -> str:
+    """Principal for this request — set by AuthMiddleware on every /v1/ path.
+
+    The explicit refusal mirrors routes/feedback.py: a handler that cannot
+    name its principal must fail closed rather than guess, because every
+    response below is scoped to that principal's Workspace universe (#1174).
+    """
+    user = getattr(request.state, "user", None) or {}
+    uid = str(user.get("id") or user.get("username") or "")
+    if not uid:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return uid
+
+
 @router.get("")
-def list_runs(limit: int = 25) -> list[dict[str, Any]]:
-    store = get_dag_run_store()
-    return store.list_runs(limit=max(1, min(limit, 100)))
+async def list_runs(request: Request, limit: int = 25) -> list[dict[str, Any]]:
+    uid = _user_id(request)
+    return await list_visible_runs(uid, limit=max(1, min(limit, 100)))
 
 
 @router.get("/retention")
@@ -45,6 +67,10 @@ def retention() -> dict[str, Any]:
     Declared before `/{run_id}`: FastAPI matches in definition order, so the
     parameterised route would otherwise swallow this path and answer
     "run not found" for it.
+
+    Deployment-level constants, not run data: no principal is read and no
+    per-run scoping applies, exactly as before (#1174 scoped the run-bearing
+    routes, not this description of the store's bounds).
     """
     from services.dag_run_store import MAX_EVENTS_PER_RUN, MAX_RUNS
 
@@ -57,10 +83,12 @@ def retention() -> dict[str, Any]:
 
 
 @router.get("/{run_id}")
-def get_run(run_id: str) -> dict[str, Any]:
-    store = get_dag_run_store()
-    detail = store.get_run(run_id)
+async def get_run(run_id: str, request: Request) -> dict[str, Any]:
+    uid = _user_id(request)
+    detail = await visible_run_detail(uid, run_id)
     if detail is None:
+        # Same answer for "no such run" and "not in your Workspace universe":
+        # a scoped refusal must not confirm that an out-of-scope run exists.
         raise HTTPException(status_code=404, detail="run not found")
     return detail
 
@@ -70,10 +98,14 @@ async def stream_run_events(run_id: str, request: Request) -> StreamingResponse:
     """SSE stream of pm_node_* events for one run. Cancels when the client
     disconnects. Replays any already-buffered events first so late
     subscribers see the full run state."""
-    store = get_dag_run_store()
-    if store.get_run(run_id) is None:
+    uid = _user_id(request)
+    # Scope authorization happens HERE, before the subscription queue exists
+    # and before anything is streamed or replayed into it (#1174). An
+    # out-of-scope id gets the same 404 a missing run gets.
+    if not await can_inspect_run(uid, run_id):
         raise HTTPException(status_code=404, detail="run not found")
 
+    store = get_dag_run_store()
     q = store.subscribe(run_id)
 
     async def event_gen():
