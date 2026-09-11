@@ -138,7 +138,41 @@ class _UnclassifiedPauseNode(BaseNode[_PauseIn, _PauseOut]):
         return _PauseOut(text="unreachable")
 
 
-for _cls in (_PollingPauseNode, _DispatchingPauseNode, _UnclassifiedPauseNode, _FailingNode):
+class _HardCrash(BaseException):
+    """Simulate process death without letting the Attempt terminalize."""
+
+
+class _LeaseResumeNode(BaseNode[_PauseIn, _PauseOut]):
+    """Pause once, then exercise a resumed Attempt's lease."""
+
+    kind: ClassVar[str] = "test.resume.lease"
+    kind_category: ClassVar = "wait"
+    input_schema: ClassVar[type[BaseModel]] = _PauseIn
+    output_schema: ClassVar[type[BaseModel]] = _PauseOut
+    reaches: ClassVar[int] = 0
+    mode: ClassVar[str] = "complete"
+
+    async def _execute(self, inputs: _PauseIn, ctx: NodeContext) -> _PauseOut:
+        type(self).reaches += 1
+        if type(self).reaches == 1:
+            pause_until(
+                PAUSE_WAITING_ON_JIRA_SUBTASKS,
+                resume_at=datetime.now(UTC) - timedelta(seconds=1),
+            )
+        if type(self).mode == "slow":
+            await asyncio.sleep(0.2)
+        elif type(self).mode == "crash":
+            raise _HardCrash()
+        return _PauseOut(text=f"resumed:{inputs.marker}")
+
+
+for _cls in (
+    _PollingPauseNode,
+    _DispatchingPauseNode,
+    _UnclassifiedPauseNode,
+    _FailingNode,
+    _LeaseResumeNode,
+):
     with contextlib.suppress(ValueError):
         register_node(_cls)
 
@@ -247,6 +281,93 @@ class TestAnElapsedPollResumes:
 
         assert _PollingPauseNode.carried.get("first_seen")
         assert _PollingPauseNode.carried["paused_reason"] == PAUSE_WAITING_ON_JIRA_SUBTASKS
+
+
+class TestResumedAttemptLeases:
+    async def _parked_lease_run(self, container: Container) -> tuple[Any, Any, Any]:
+        _LeaseResumeNode.reaches = 0
+        _LeaseResumeNode.mode = "complete"
+        run_id = await _parked_run(container, _LeaseResumeNode.kind, workspace="resume-lease-ws")
+        run = await container.run_store.get_run(run_id)
+        assert run is not None
+        (node_run,) = await container.run_store.list_node_runs(run_id)
+        attempts = await container.run_store.list_attempts(node_run.node_run_id)
+        assert len(attempts) == 1
+        from maistro.runs.consumption import resumable_pause
+
+        pause = resumable_pause(node_run, attempts, now=datetime.now(UTC))
+        assert pause is not None
+        return run, node_run, pause
+
+    @pytest.mark.ac("ADR-082526-b36a/AC-8")
+    async def test_a_healthy_resumed_attempt_renews_its_lease(self) -> None:
+        """A resumed Attempt survives work longer than its configured TTL."""
+        from maistro.runs.consumption import ScheduleAttemptExecutor
+        from maistro.runtime import PythonExecutionRuntime
+
+        container = await _container()
+        run, _node_run, pause = await self._parked_lease_run(container)
+        _LeaseResumeNode.mode = "slow"
+        executor = ScheduleAttemptExecutor(
+            container.run_store,
+            runtime=PythonExecutionRuntime(),
+            lease_ttl=timedelta(seconds=0.06),
+        )
+
+        resumed = await executor.resume(run, pause)
+
+        assert resumed.status is RunStatus.COMPLETED
+        (node_run,) = await container.run_store.list_node_runs(run.run_id)
+        attempts = await container.run_store.list_attempts(node_run.node_run_id)
+        assert attempts[-1].status is AttemptStatus.COMPLETED
+        assert attempts[-1].execution_lease is not None
+        assert _LeaseResumeNode.reaches == 2
+
+    @pytest.mark.ac("ADR-082526-b36a/AC-1")
+    @pytest.mark.ac("ADR-082526-b36a/AC-3")
+    @pytest.mark.ac("ADR-082526-b36a/AC-7")
+    async def test_a_restarted_resume_attempt_is_reclaimed_and_can_retry(self) -> None:
+        """A fresh executor preserves recovery across a resumed Attempt crash."""
+        from maistro.runs.consumption import ScheduleAttemptExecutor
+        from maistro.runtime import PythonExecutionRuntime
+
+        container = await _container()
+        run, node_run, pause = await self._parked_lease_run(container)
+        _LeaseResumeNode.mode = "crash"
+        ttl = timedelta(seconds=0.06)
+        restarted_executor = ScheduleAttemptExecutor(
+            container.run_store,
+            runtime=PythonExecutionRuntime(),
+            lease_ttl=ttl,
+        )
+
+        with pytest.raises(_HardCrash):
+            await restarted_executor.resume(run, pause)
+
+        attempts = await container.run_store.list_attempts(node_run.node_run_id)
+        resumed_attempt = attempts[-1]
+        assert resumed_attempt.status is AttemptStatus.RUNNING
+        lease = resumed_attempt.execution_lease
+        assert lease is not None and lease.expires_at is not None
+
+        assert (
+            await container.recover_abandoned_attempts(
+                now=lease.expires_at + timedelta(microseconds=1)
+            )
+            == 1
+        )
+        recovered = await container.run_store.get_attempt(resumed_attempt.attempt_id)
+        assert recovered is not None and recovered.status is AttemptStatus.CANCELLED
+
+        _LeaseResumeNode.mode = "complete"
+        after_recovery = await container.run_store.get_run(run.run_id)
+        assert after_recovery is not None and after_recovery.status is RunStatus.WAITING
+        completed = await restarted_executor.resume(after_recovery, pause)
+
+        assert completed.status is RunStatus.COMPLETED
+        attempts = await container.run_store.list_attempts(node_run.node_run_id)
+        assert attempts[-1].status is AttemptStatus.COMPLETED
+        assert len(attempts) == 3
 
 
 class TestAnAnswerGatedPauseIsLeftAlone:
