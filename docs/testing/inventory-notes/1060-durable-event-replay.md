@@ -1,7 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests/events/test_processing.py: +4
-  packages/maistro-core/tests/events/test_trigger_store.py: +1
+  packages/maistro-core/tests: +5
 ---
 
 # Issue #1060 durable event replay
