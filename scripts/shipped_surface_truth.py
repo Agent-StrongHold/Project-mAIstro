@@ -51,6 +51,7 @@ EXCLUDED_PARTS = {
     "build",
     "__pycache__",
 }
+LAB_ROOT_NAMES = {"lab", "labs"}
 _FRONTEND_STATUS_RE = re.compile(
     r"\b(?:complete|completed|success|succeeded|building|running|started|done|progress)\b",
     re.IGNORECASE,
@@ -208,6 +209,38 @@ def discover_backend_surfaces(repo_root: Path, roots: list[str]) -> list[Backend
     for path in _iter_source_files(repo_root, roots, (".py",)):
         surfaces.extend(_source_surfaces(path, repo_root))
     return sorted(set(surfaces))
+
+
+def _lab_roots(repo_root: Path) -> list[Path]:
+    """Return lab directories that need an explicit inventory declaration."""
+    roots: list[Path] = []
+    for path in repo_root.rglob("*"):
+        if not path.is_dir() or path.name.lower() not in LAB_ROOT_NAMES:
+            continue
+        relative_parts = path.relative_to(repo_root).parts
+        if any(part in EXCLUDED_PARTS for part in relative_parts):
+            continue
+        roots.append(path)
+    return sorted(roots)
+
+
+def _lab_root_errors(repo_root: Path, matrix: dict[str, Any]) -> list[str]:
+    configured = {(repo_root / str(root)).resolve() for root in matrix.get("lab_roots", [])}
+    return [
+        f"unconfigured lab surface root: {path.relative_to(repo_root).as_posix()}"
+        for path in _lab_roots(repo_root)
+        if path.resolve() not in configured
+    ]
+
+
+def _discovery_roots(matrix: dict[str, Any], key: str) -> list[str]:
+    roots = [str(root) for root in matrix.get(key, [])]
+    # Lab roots are a separate declaration so a new lab cannot be hidden by
+    # the broad packages root or by a CLI-only root. Both backend and CLI
+    # forms are inventoried whenever a lab root is declared.
+    if key in {"backend_roots", "cli_roots"}:
+        roots.extend(str(root) for root in matrix.get("lab_roots", []))
+    return roots
 
 
 def _cli_decorator_surface(
@@ -553,10 +586,10 @@ def _frontend_entry_errors(
 
 
 def validate_matrix(repo_root: Path, matrix: dict[str, Any], *, strict: bool = False) -> list[str]:
-    backend = discover_backend_surfaces(repo_root, list(matrix.get("backend_roots", [])))
+    backend = discover_backend_surfaces(repo_root, _discovery_roots(matrix, "backend_roots"))
     cli = discover_cli_surfaces(
         repo_root,
-        list(matrix.get("cli_roots", [])),
+        _discovery_roots(matrix, "cli_roots"),
         list(matrix.get("cli_project_roots", [])),
     )
     frontend = discover_frontend_surfaces(repo_root, list(matrix.get("frontend_roots", [])))
@@ -579,6 +612,7 @@ def validate_matrix(repo_root: Path, matrix: dict[str, Any], *, strict: bool = F
     }
 
     errors = [*duplicate_backend, *duplicate_frontend, *duplicate_cli]
+    errors.extend(_lab_root_errors(repo_root, matrix))
     errors.extend(
         _coverage_errors(
             set(discovered_backend),
@@ -617,14 +651,14 @@ def discovered_inventory(
         "backend_surfaces": [
             surface.__dict__
             for surface in discover_backend_surfaces(
-                repo_root, list(matrix.get("backend_roots", []))
+                repo_root, _discovery_roots(matrix, "backend_roots")
             )
         ],
         "cli_surfaces": [
             surface.__dict__
             for surface in discover_cli_surfaces(
                 repo_root,
-                list(matrix.get("cli_roots", [])),
+                _discovery_roots(matrix, "cli_roots"),
                 list(matrix.get("cli_project_roots", [])),
             )
         ],

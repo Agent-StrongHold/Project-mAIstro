@@ -2331,11 +2331,13 @@
       "effect_owner": "server.js /api/handoff/redeem (handoff code -> session token)"
     }
   ],
+  "lab_roots": [],
   "cli_roots": [
     "packages/maistro-core/src/maistro/cli",
     "packages/maistro-rsi/src/maistro_rsi",
     "packages/maistro-bootstrap/src/maistro_bootstrap",
-    "packages/maistro-registry/src/maistro_registry"
+    "packages/maistro-registry/src/maistro_registry",
+    "packages/maistro-server/src/maistro_server"
   ],
   "cli_surfaces": [
     {
@@ -2537,6 +2539,16 @@
       "production_enabled": true,
       "reason": "direct governance module invocation is deliberately local to the operator checkout",
       "truth_contract": "operator-side ADR/spec registry validation or artifact generation; it does not run user work"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/entrypoint.py",
+      "method": "CLI",
+      "route": "entrypoint",
+      "handler": "main",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "container module entrypoint serializes schema migration before starting the canonical API",
+      "truth_contract": "boots the server process and migration lock; it does not create a user Run"
     },
     {
       "source": "packages/maistro-registry/src/maistro_registry/cli.py",

@@ -32,6 +32,7 @@ def _matrix() -> dict:
         "backend_roots": ["backend"],
         "cli_roots": [],
         "cli_project_roots": [],
+        "lab_roots": [],
         "frontend_roots": ["frontend"],
         "backend_surfaces": [],
         "cli_surfaces": [],
@@ -200,6 +201,49 @@ if __name__ == "__main__":
     matrix["cli_roots"] = ["cli"]
     errors = validate_matrix(tmp_path, matrix)
     assert any("unclassified CLI surface" in error and "free_router" in error for error in errors)
+
+
+def test_unconfigured_lab_root_fails_closed(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "labs/demo.py",
+        """
+def main():
+    return 0
+
+if __name__ == "__main__":
+    main()
+""",
+    )
+    (tmp_path / "backend").mkdir()
+    (tmp_path / "frontend").mkdir()
+    errors = validate_matrix(tmp_path, _matrix())
+    assert any("unconfigured lab surface root: labs" in error for error in errors)
+
+
+def test_declared_lab_root_is_scanned_for_cli_and_backend_surfaces(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "labs/demo.py",
+        """
+from fastapi import APIRouter
+router = APIRouter()
+@router.websocket("/events")
+async def events(websocket):
+    pass
+
+def main():
+    return 0
+
+if __name__ == "__main__":
+    main()
+""",
+    )
+    _write(tmp_path / "frontend/.keep", "")
+    (tmp_path / "backend").mkdir()
+    matrix = _matrix()
+    matrix["lab_roots"] = ["labs"]
+    errors = validate_matrix(tmp_path, matrix)
+    assert any("unclassified backend surface" in error and "WEBSOCKET" in error for error in errors)
+    assert any("unclassified CLI surface" in error and "demo" in error for error in errors)
 
 
 def test_missing_cli_surface_disposition_fails_closed(tmp_path: Path) -> None:
@@ -372,6 +416,21 @@ def test_disabled_surface_requires_owner_and_is_not_production_enabled(tmp_path:
     errors = validate_matrix(tmp_path, matrix)
     assert any("must name owner_issue" in error for error in errors)
     assert any("cannot be production_enabled" in error for error in errors)
+
+
+def test_server_container_entrypoint_is_in_the_cli_discovery_roots() -> None:
+    matrix = load_matrix(MATRIX)
+    surfaces = discover_cli_surfaces(
+        ROOT,
+        matrix["cli_roots"],
+        matrix["cli_project_roots"],
+    )
+    assert any(
+        surface.source == "packages/maistro-server/src/maistro_server/entrypoint.py"
+        and surface.route == "entrypoint"
+        and surface.handler == "main"
+        for surface in surfaces
+    )
 
 
 def test_repository_surface_matrix_is_complete() -> None:

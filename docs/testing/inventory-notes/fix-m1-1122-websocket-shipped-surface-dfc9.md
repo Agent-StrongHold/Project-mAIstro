@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  tests/: +7
+  tests/: +10
 ---
 # fix-m1-1122-websocket-shipped-surface-dfc9
 
-Seven new tests in `test_shipped_surface_truth.py` for #1122:
+Ten new tests in `test_shipped_surface_truth.py` for #1122:
 
 - `discover_backend_surfaces` finds a `@router.websocket(...)` route and
   reports it with the synthetic method `WEBSOCKET`, alongside an ordinary
@@ -22,5 +22,9 @@ Seven new tests in `test_shipped_surface_truth.py` for #1122:
 - A direct Python module entrypoint (including the RSI launcher modules) is
   discovered and fails closed when it lacks a CLI disposition.
 - An undisposed CLI command fails closed as an unclassified CLI surface.
+- An unconfigured `labs` root fails closed, while a declared lab root is scanned
+  for both WebSocket and direct CLI surfaces.
+- The shipped server container entrypoint is asserted to be in the configured
+  CLI discovery roots.
 
 No tests removed or renamed.
