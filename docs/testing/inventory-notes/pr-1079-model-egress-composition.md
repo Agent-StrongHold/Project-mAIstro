@@ -13,8 +13,9 @@ lane adds three collected tests in
 - an empty declaration set authorizes no model Binding and fails closed;
 - a Container-resolved `llm.summarize` receives the exact effect context,
   Provider registry, and router owned by the Container, then crosses the real
-  Binding -> Invocation path with registry-derived cost and Run/NodeRun/Attempt
-  correlation before refusing a wrong-Workspace request without dispatch.
+  Binding -> Invocation path with both pinned and unpinned registry selection,
+  registry-derived cost, and Run/NodeRun/Attempt correlation before refusing a
+  wrong-Workspace request without dispatch.
 
 The transport is replaced only at the final physical model seam; the test does
 not write directly to the Binding store.
