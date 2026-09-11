@@ -15,6 +15,7 @@ from maistro_canvas.canvas.canonical_execution import (
     canonical_run_id,
     correlate_run,
 )
+from maistro_canvas.canvas.composition import build_canvas_runtime
 from maistro_canvas.canvas.executor import CanvasExecutor
 from maistro_canvas.canvas.runner import CanvasJobRunner
 from maistro_canvas.protocols import ImageData
@@ -176,19 +177,17 @@ async def test_generation_request_and_runner_are_visible_on_canonical_spine() ->
     projects = InMemoryProjectScopeStore()
     root = await projects.create_root("workspace-1")
     runs = InMemoryRunStore(project_store=projects)
-    canonical = CanvasCanonicalExecution(
-        runs,
+    store = _CanvasStore()
+    runtime = build_canvas_runtime(
+        store=store,
+        image_client=_ImageClient(),
+        model_registry=_Registry(),
+        warden=_Warden(),
+        run_store=runs,
         workspace_id="workspace-1",
         project_id=root.project_id,
     )
-    store = _CanvasStore()
-    executor = CanvasExecutor(
-        store=store,  # type: ignore[arg-type]
-        image_client=_ImageClient(),  # type: ignore[arg-type]
-        model_registry=_Registry(),
-        warden=_Warden(),
-        canonical_execution=canonical,
-    )
+    executor = runtime.executor
 
     job = await executor.start_job(
         org_id=_CanvasStore.ORG,
@@ -205,7 +204,7 @@ async def test_generation_request_and_runner_are_visible_on_canonical_spine() ->
     assert admitted.status is RunStatus.QUEUED
     assert admitted.actor_principal_id == "user-1"
 
-    runner = CanvasJobRunner(store=store, executor=executor)
+    runner = runtime.runner
     assert await runner.tick_once() is True
 
     receipt = await store.get_job(job.id, org_id=_CanvasStore.ORG)

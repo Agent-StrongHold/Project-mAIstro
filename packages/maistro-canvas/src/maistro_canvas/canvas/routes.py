@@ -555,6 +555,7 @@ def _register_job_routes(  # noqa: C901  route-registration closure: independent
                 negative_prompt=str(body.get("negative_prompt", "")),
                 region=str(body.get("region", "full")),
                 strength=float(body.get("strength", 0.6)),
+                actor_principal_id=auth.user_id,
             )
         except (
             TextLayerNoGenError,
