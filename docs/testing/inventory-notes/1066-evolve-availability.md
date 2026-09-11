@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +8
+  packages/hive-conductor/backend/tests: +13
 ---
 
 # Issue #1066 Evolve availability and failure projection coverage
