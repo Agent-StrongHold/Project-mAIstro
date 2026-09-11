@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +4
+  packages/maistro-core/tests: +6
 ---
 # Issue 1195 governed PM polling
 
