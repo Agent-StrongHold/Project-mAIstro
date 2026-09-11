@@ -9,8 +9,7 @@ substrate:
   - maistro-engine#ADR-065
 implements:
   - maistro-engine#ADR-065
-related:
-  - maistro-engine#1154
+related: []
 supersedes: []
 superseded-by: []
 blocks: []
