@@ -217,6 +217,11 @@ async def test_hitl_routes_are_scoped_to_the_callers_workspaces(scoped_client) -
     mine_id = "hitl-scope-mine"
     mine_second_id = "hitl-scope-mine-second"
     other_id = "hitl-scope-other"
+    # Fill the default page with foreign pauses first. A post-query filter
+    # would return no authorized work here because the global limit is 50.
+    foreign_ids = [f"hitl-scope-foreign-{index}" for index in range(50)]
+    for index, foreign_id in enumerate(foreign_ids):
+        await store.create(_paused_record(foreign_id, workspace_id=f"foreign-{index}"))
     await store.create(_paused_record(mine_id, workspace_id=mine.id))
     await store.create(_paused_record(mine_second_id, workspace_id=mine_second.id))
     await store.create(_paused_record(other_id, workspace_id=other.id))
@@ -237,9 +242,8 @@ async def test_hitl_routes_are_scoped_to_the_callers_workspaces(scoped_client) -
         assert record is not None
         assert record.run.status is RunStatus.PAUSED
     finally:
-        store._rows.pop(mine_id, None)
-        store._rows.pop(mine_second_id, None)
-        store._rows.pop(other_id, None)
+        for run_id in [*foreign_ids, mine_id, mine_second_id, other_id]:
+            store._rows.pop(run_id, None)
 
 
 @pytest.mark.ac("ADR-090726-9a4e/AC-5")

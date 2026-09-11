@@ -165,17 +165,24 @@ async def list_pending_human_work(
         return []
 
     store = _store()
-    records = await store.list_by_status(
-        RunStatus.PAUSED,
-        limit=max(1, min(limit, 200)),
-        project_id=project_id,
-    )
-    return [
-        item
-        for record in records
-        if record.run.workspace_id in allowed_workspace_ids
-        for item in _pending_items(record)
-    ]
+    bounded_limit = max(1, min(limit, 200))
+    records: list[Any] = []
+    # Ask the durable store to apply Workspace scope before its page limit.
+    # Filtering a globally limited page would let another tenant's backlog
+    # hide this caller's pending work indefinitely.
+    for workspace_id in sorted(allowed_workspace_ids):
+        remaining = bounded_limit - len(records)
+        if remaining <= 0:
+            break
+        records.extend(
+            await store.list_by_status(
+                RunStatus.PAUSED,
+                limit=remaining,
+                project_id=project_id,
+                workspace_id=workspace_id,
+            )
+        )
+    return [item for record in records for item in _pending_items(record)]
 
 
 @router.post("/expire")
