@@ -44,9 +44,13 @@ or placeholder-only section.
   `EventPayloadTooLarge` rather than failing later inside a store's own
   serialization call. Current emitters are all well under the ceiling, so this
   changes no observed behavior today; it bounds a future caller that isn't
-  written yet. Routing an oversize artifact through the canonical object store
-  by reference, and scrubbing secrets from payloads before persistence
-  (#1159), remain open follow-up work this issue explicitly does not claim.
+  written yet. A row persisted before this ceiling existed stays readable —
+  `SqliteEventStore`/`PgEventStore` reconstruct stored rows without
+  re-imposing the new size/depth bound, so upgrading does not turn a
+  previously valid event into a read-time crash. Routing an oversize artifact
+  through the canonical object store by reference, and scrubbing secrets from
+  payloads before persistence (#1159), remain open follow-up work this issue
+  explicitly does not claim.
 ### Added
 
 - **Browser sessions are governed at the Playwright boundary (#855).** Every

@@ -25,6 +25,7 @@ from maistro.events.envelope import (
     EventStore,
     InMemoryEventStore,
     SqliteEventStore,
+    reconstruct_persisted_event,
 )
 from maistro.events.invocations import (
     MAX_ATTEMPTS,
@@ -103,4 +104,5 @@ __all__ = [
     "get_event_bus",
     "pattern_matches",
     "process_events",
+    "reconstruct_persisted_event",
 ]
