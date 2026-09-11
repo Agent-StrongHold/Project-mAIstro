@@ -47,6 +47,16 @@ Run counts for itself.
 fires are recorded", which is only true if all of them were. Partial failure
 recomputes it from the count that survived, so a schedule is never disabled for
 reaching a limit it did not reach.
+
+**A manual fire is the same authority, one occurrence wide (#1119).**
+`admit_manual` exists because a product "run this schedule now" request is not
+an occurrence the cron enumerated — `evaluate()` has nothing to say about it —
+but everything *after* that decision is the recurring path's: the durable
+template resolution, `_admit_one`'s Run with its provenance, the occurrence
+claim, and `record_fire`'s advance-and-disable. A manual fire counts against
+`max_runs` and names the schedule in Run provenance exactly as an enumerated
+one does, so the product cannot grow a second set of firing semantics by
+asking for a fire by hand.
 """
 
 from __future__ import annotations
@@ -67,13 +77,13 @@ from maistro.runs.sources import (
     SCHEDULED_FOR_KEY,
 )
 from maistro.runs.store import DuplicateOccurrence
-from maistro.scheduling.engine import SkipReason, evaluate
+from maistro.scheduling.engine import FireDecision, SkipReason, evaluate
 
 if TYPE_CHECKING:
     from maistro.graph.definitions import GraphTemplate
     from maistro.graph.templates import GraphTemplateStore
     from maistro.runs.store import RunStore
-    from maistro.scheduling.engine import FireDecision, ScheduleEvaluation, SkippedFire
+    from maistro.scheduling.engine import ScheduleEvaluation, SkippedFire
     from maistro.scheduling.model import Schedule
     from maistro.scheduling.store import ScheduleStore
 
@@ -87,6 +97,19 @@ logger = logging.getLogger("maistro.scheduling.admission")
 #: on it "would otherwise lose the occurrence with no record of it". Every other
 #: reason is a decision not to run that occurrence at all.
 _UNCONSUMED_SKIPS: Final = frozenset({SkipReason.BUFFERED, SkipReason.TRUNCATED})
+
+
+class ManualFireRefused(Exception):
+    """A manually requested occurrence was refused before anything happened.
+
+    `admit_due` reports refusals in a `failures` tuple because one bad
+    occurrence must not discard the sibling occurrences sharing its batch. A
+    manual fire is one occurrence — there are no siblings, and the caller owes
+    whoever pressed "run now" a direct answer rather than a log line — so this
+    raises instead. Nothing has been created or recorded when it does: the
+    schedule's cursor, `runs_so_far`, and enabled flag are all exactly as they
+    were.
+    """
 
 
 @dataclass(frozen=True)
@@ -274,6 +297,77 @@ class ScheduleRunAdmitter:
             failures=tuple(failures),
         )
 
+    async def admit_manual(
+        self,
+        schedule: Schedule,
+        *,
+        now: datetime,
+    ) -> ScheduleAdmission:
+        """Admit the one occurrence the caller asked for *now*, off the cron.
+
+        The returned `ScheduleAdmission` holds exactly one entry: `run_ids` of
+        length one on success, or `already_fired` naming the moment when the
+        occurrence-claim found a Run already standing for it (#220). Cursor and
+        exhaustion semantics are `admit_due`'s, applied to a single fire —
+        `record_fire` advances only after the Run exists, and reaching
+        `max_runs` disables in the same write.
+
+        Refusals raise rather than fill `failures`: `ManualFireRefused` for a
+        schedule already at `max_runs`, the template store's own error for an
+        unresolvable target, and the run store's for a Run that could not be
+        created. In every case the schedule is left exactly as it was.
+
+        Overlap policy is deliberately not consulted. It exists to keep an
+        automatic recurrence from stacking on its own in-flight Run; a manual
+        fire is a person explicitly asking for another Run *now*, and silently
+        doing nothing would turn their explicit request into the exact
+        receipt-for-work-that-never-started this module exists to prevent.
+        """
+        if schedule.exhausted:
+            raise ManualFireRefused(
+                f"schedule {schedule.schedule_id} has used all {schedule.max_runs} of its runs"
+            )
+        try:
+            template = await require_template(
+                self._templates,
+                schedule.graph_template_id,
+                version=schedule.template_version,
+            )
+        except Exception as exc:
+            logger.warning(
+                "schedule %s cannot resolve template %s for its manual fire: %s",
+                schedule.schedule_id,
+                schedule.graph_template_id,
+                exc,
+            )
+            raise
+
+        fire = FireDecision(scheduled_for=now, catchup=False)
+        try:
+            run_id = await self._admit_one(schedule, template, fire)
+        except DuplicateOccurrence:
+            logger.info(
+                "schedule %s manual occurrence %s was already admitted elsewhere",
+                schedule.schedule_id,
+                now.isoformat(),
+            )
+            # The firing happened — some other admitter claimed this exact
+            # moment — so there is nothing to create and nothing to advance.
+            # The caller sees `already_fired`, not a Run of ours.
+            return ScheduleAdmission(already_fired=(now,))
+
+        disable = self._exhausted_after(schedule, fires=1)
+        next_due_at = schedule.next_fire_after(now)
+        await self._schedules.record_fire(
+            schedule.schedule_id,
+            fired_at=now,
+            run_id=run_id,
+            next_due_at=next_due_at,
+            fires=1,
+            disable=disable,
+        )
+        return ScheduleAdmission(run_ids=(run_id,), next_due_at=next_due_at, disabled=disable)
+
     async def _consume_without_firing(
         self, schedule: Schedule, decision: ScheduleEvaluation
     ) -> ScheduleAdmission:
@@ -359,4 +453,4 @@ class ScheduleRunAdmitter:
         return run.run_id
 
 
-__all__ = ["ScheduleAdmission", "ScheduleRunAdmitter"]
+__all__ = ["ManualFireRefused", "ScheduleAdmission", "ScheduleRunAdmitter"]
