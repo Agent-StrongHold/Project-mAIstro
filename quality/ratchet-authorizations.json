@@ -61,6 +61,11 @@
     }
   },
   "vulture": {
+    "packages/maistro-core/src/maistro/container.py::unused method 'recover_stranded_chat_admissions'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#338",
+      "reason": "Container.recover_stranded_chat_admissions is a new bounded, idempotent, operator-scheduled recovery tick (#338) compensating a chat Run left RUNNING with no NodeRun after a process crash between admission and the turn's first physical Attempt. It has no in-repo caller by design, the same shape as its three already-banked siblings recover_abandoned_attempts, execute_admitted_runs, and resume_parked_runs directly above and below it in this same file: each is invoked by an operator's own scheduler outside this repository, not by other in-package code. Exercised directly by packages/maistro-core/tests/test_container_chat_runs.py."
+    },
     "packages/maistro-core/src/maistro/agents/factory.py::unused function 'instantiate_agent'": {
       "owner": "@BlakeMatthews-dev",
       "issue": "#840",
