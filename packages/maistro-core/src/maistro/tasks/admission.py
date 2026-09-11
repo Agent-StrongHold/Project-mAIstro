@@ -100,6 +100,10 @@ class TaskAdmitter(Protocol):
         """Advance the Run to match a task transition. False if it refused."""
         ...
 
+    async def cancel_run(self, run_id: str) -> bool:
+        """Cancel the canonical Run and signal its physical Attempt owner."""
+        ...
+
 
 class TaskRunAdmitter:
     """Admit queued tasks as canonical Runs in one bound Workspace/Project."""
@@ -198,6 +202,20 @@ class TaskRunAdmitter:
                 await self._runs.transition_run(run.run_id, RunStatus.CANCELLED)
             raise
         return run.run_id
+
+    async def cancel_run(self, run_id: str) -> bool:
+        """Cancel through the canonical Run/Attempt execution service."""
+        from maistro.runs.service import RunExecutionService
+        from maistro.runtime import PythonExecutionRuntime
+
+        try:
+            updated = await RunExecutionService(
+                store=self._runs,
+                runtime=PythonExecutionRuntime(),
+            ).cancel_run(run_id)
+        except ValueError:
+            return False
+        return updated.status is RunStatus.CANCELLED
 
     async def record_transition(
         self,
@@ -332,6 +350,20 @@ class WorkspaceRoutingAdmitter:
         """Admit one task into the Workspace the submission named."""
         admitter = await self.admitter_for(workspace_id)
         return await admitter.admit(task)
+
+    async def cancel_run(self, run_id: str) -> bool:
+        """Cancel a Run without creating a product-local status authority."""
+        from maistro.runs.service import RunExecutionService
+        from maistro.runtime import PythonExecutionRuntime
+
+        try:
+            updated = await RunExecutionService(
+                store=self._runs,
+                runtime=PythonExecutionRuntime(),
+            ).cancel_run(run_id)
+        except ValueError:
+            return False
+        return updated.status is RunStatus.CANCELLED
 
     async def record_transition(
         self,

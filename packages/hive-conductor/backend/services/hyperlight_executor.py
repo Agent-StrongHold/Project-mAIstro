@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 import os
@@ -365,15 +366,18 @@ with Sandbox(sc) as sb:
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_s)
         except asyncio.CancelledError:
-            process.kill()
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
             await process.wait()
             raise
         except TimeoutError:
-            process.kill()
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
             await process.wait()
             return {"output": "", "error": "timeout", "success": False}
         except Exception as exc:
-            process.kill()
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
             await process.wait()
             return {"output": "", "error": str(exc)[:200], "success": False}
         return {
