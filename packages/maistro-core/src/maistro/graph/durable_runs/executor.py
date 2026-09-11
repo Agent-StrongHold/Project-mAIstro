@@ -76,6 +76,7 @@ class _FrontierItem:
     ctx: NodeContext
     result: NodeResult
     replay_semantics: ReplaySemantics = ReplaySemantics.NON_RETRYABLE
+    effect_key: str | None = None
 
 
 def _replace_state(
@@ -592,11 +593,10 @@ def _may_revisit_after(prior_state: GraphExecutionState, item: _FrontierItem) ->
     """
     if not item.replay_semantics.retryable:
         return False
-    # EFFECT_KEY is a contract, not a descriptive label: the node must have a
-    # logical Node/Run identity available for its effect key to be meaningful.
-    if item.replay_semantics is ReplaySemantics.EFFECT_KEY and not (
-        item.ctx.run_id and item.ctx.node_id
-    ):
+    # EFFECT_KEY is a contract, not a descriptive label: the node must have
+    # supplied a concrete logical key at execution time. Missing keys fail
+    # closed because the executor cannot prove replay safety on its own.
+    if item.replay_semantics is ReplaySemantics.EFFECT_KEY and not item.effect_key:
         return False
     visits = prior_state.visit_counts.get(item.node_id, 0)
     return visits < _visit_budget(item.spec)

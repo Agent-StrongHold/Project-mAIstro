@@ -181,6 +181,9 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             return await self._dispatch_cross_instance(inputs, ctx)
         return await self._dispatch_in_process(inputs, ctx)
 
+    def logical_effect_key(self, inputs: DelegateRemoteIn, ctx: NodeContext) -> str:
+        return self._effect_key(inputs, ctx)
+
     @staticmethod
     def _effect_key(inputs: DelegateRemoteIn, ctx: NodeContext) -> str:
         return replay_effect_key(ctx, "agent.delegate_remote", inputs.model_dump(mode="json"))

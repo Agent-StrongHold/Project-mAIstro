@@ -43,6 +43,7 @@ class InvocationPolicyContext:
     node_run_id: str
     attempt_id: str
     effect_key: str
+    effect_scope: str | None = None
     approved: bool = False
 
 
@@ -98,6 +99,7 @@ class GovernedInvocationExecutionService:
         run_id: str,
         node_run_id: str,
         effect_key: str,
+        effect_scope: str | None = None,
     ) -> Invocation | None:
         """Expose canonical effect history without bypassing governed execution."""
 
@@ -106,6 +108,7 @@ class GovernedInvocationExecutionService:
             run_id=run_id,
             node_run_id=node_run_id,
             effect_key=effect_key,
+            effect_scope=effect_scope,
         )
 
     async def invoke(
@@ -117,6 +120,7 @@ class GovernedInvocationExecutionService:
         attempt_id: str,
         effect_key: str,
         request: Any,
+        effect_scope: str | None = None,
         resolver: ProviderResolver,
         executor: ProviderExecutor,
         usage_from: UsageExtractor | None = None,
@@ -126,6 +130,7 @@ class GovernedInvocationExecutionService:
             node_run_id=node_run_id,
             attempt_id=attempt_id,
             effect_key=effect_key,
+            effect_scope=effect_scope,
         )
         verdict = await self._policy(binding, request, context)
         policy_event = await self._append_policy_event(
@@ -142,6 +147,7 @@ class GovernedInvocationExecutionService:
             run_id=run_id,
             node_run_id=node_run_id,
             effect_key=effect_key,
+            effect_scope=effect_scope,
         )
         if existing_approval is not None or verdict.decision is Decision.REQUIRE_APPROVAL:
             policy_event = await self._enforce_approval(
@@ -150,6 +156,7 @@ class GovernedInvocationExecutionService:
                 node_run_id=node_run_id,
                 attempt_id=attempt_id,
                 effect_key=effect_key,
+                effect_scope=effect_scope,
                 request=request,
                 verdict=verdict,
                 policy_event=policy_event,
@@ -163,6 +170,7 @@ class GovernedInvocationExecutionService:
                 node_run_id=node_run_id,
                 attempt_id=attempt_id,
                 effect_key=effect_key,
+                effect_scope=effect_scope,
                 request=request,
                 resolver=resolver,
                 executor=executor,
@@ -239,6 +247,7 @@ class GovernedInvocationExecutionService:
         run_id: str,
         node_run_id: str,
         effect_key: str,
+        effect_scope: str | None = None,
     ) -> DurableApproval | None:
         if self._approvals is None:
             return None
@@ -247,6 +256,7 @@ class GovernedInvocationExecutionService:
             node_run_id=node_run_id,
             binding_id=binding.binding_id,
             effect_key=effect_key,
+            effect_scope=effect_scope,
         )
 
     async def _enforce_approval(
@@ -257,6 +267,7 @@ class GovernedInvocationExecutionService:
         node_run_id: str,
         attempt_id: str,
         effect_key: str,
+        effect_scope: str | None = None,
         request: Any,
         verdict: PolicyVerdict,
         policy_event: EventEnvelope,
@@ -274,6 +285,7 @@ class GovernedInvocationExecutionService:
                 node_run_id=node_run_id,
                 binding_id=binding.binding_id,
                 effect_key=effect_key,
+                effect_scope=effect_scope,
             )
         if existing is not None:
             if existing.request_digest != request_digest:
@@ -287,6 +299,7 @@ class GovernedInvocationExecutionService:
                     node_run_id=node_run_id,
                     attempt_id=attempt_id,
                     effect_key=effect_key,
+                    effect_scope=effect_scope,
                     request=request,
                     policy_event=policy_event,
                     approval=existing,
@@ -327,6 +340,7 @@ class GovernedInvocationExecutionService:
                 attempt_id=attempt_id,
                 binding_id=binding.binding_id,
                 effect_key=effect_key,
+                effect_scope=effect_scope or node_run_id,
                 request_digest=request_digest,
             )
         )
@@ -350,6 +364,7 @@ class GovernedInvocationExecutionService:
         node_run_id: str,
         attempt_id: str,
         effect_key: str,
+        effect_scope: str | None = None,
         request: Any,
         policy_event: EventEnvelope,
         approval: DurableApproval,
@@ -365,6 +380,7 @@ class GovernedInvocationExecutionService:
             node_run_id=node_run_id,
             attempt_id=attempt_id,
             effect_key=effect_key,
+            effect_scope=effect_scope,
             approved=True,
         )
         approved_verdict = await self._policy(binding, request, approved_context)

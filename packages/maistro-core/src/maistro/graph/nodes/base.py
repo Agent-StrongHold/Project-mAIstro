@@ -158,6 +158,8 @@ class Node(Protocol):
 
     async def run(self, inputs: BaseModel, ctx: NodeContext) -> NodeResult: ...
 
+    def logical_effect_key(self, inputs: BaseModel, ctx: NodeContext) -> str | None: ...
+
 
 class BaseNode(Generic[InputT, OutputT]):
     """Concrete base class for node kinds — handles the boilerplate of
@@ -225,6 +227,15 @@ class BaseNode(Generic[InputT, OutputT]):
                 error_code=type(exc).__name__,
                 error_message=str(exc)[:512],
             )
+
+    def logical_effect_key(self, inputs: InputT, ctx: NodeContext) -> str | None:
+        """Return the stable key that makes an EFFECT_KEY replay safe.
+
+        Nodes that do not expose a key fail closed in the graph retry fold;
+        merely labeling a node retryable must not authorize a second effect.
+        """
+        del inputs, ctx
+        return None
 
     async def _execute(self, inputs: InputT, ctx: NodeContext) -> OutputT:
         """Subclasses implement this. Return the typed output (or raise)."""

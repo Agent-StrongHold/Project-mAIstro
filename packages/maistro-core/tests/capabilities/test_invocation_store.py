@@ -43,6 +43,7 @@ async def test_sqlite_store_preserves_effect_and_resolved_provider_across_reopen
             node_run_id="node-run-1",
             attempt_id="attempt-1",
             effect_key="write:alpha",
+            effect_scope="run-1:node:write:alpha",
             request={"value": 1},
             resolver=_resolver,
             executor=execute,
@@ -54,9 +55,10 @@ async def test_sqlite_store_preserves_effect_and_resolved_provider_across_reopen
         await reopened.ensure_schema()
         history = await reopened.list_effect(
             run_id="run-1",
-            node_run_id="node-run-1",
+            node_run_id="node-run-2",
             binding_id="binding-1",
             effect_key="write:alpha",
+            effect_scope="run-1:node:write:alpha",
         )
 
     assert len(history) == 1

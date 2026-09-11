@@ -104,7 +104,9 @@ class _NeverRetry(BaseNode[_Empty, _Seed]):
     kind_category: ClassVar[str] = "sync.transform"
     input_schema: ClassVar[type[BaseModel]] = _Empty
     output_schema: ClassVar[type[BaseModel]] = _Seed
-    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.NON_RETRYABLE
+    # A label without a concrete key must fail closed rather than retrying an
+    # ambiguous external effect.
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.EFFECT_KEY
     calls: ClassVar[int] = 0
 
     async def _execute(self, inputs: _Empty, ctx: NodeContext) -> _Seed:
@@ -284,7 +286,7 @@ async def test_public_durable_executor_routes_each_node_run_through_attempt_runt
 
 
 @pytest.mark.asyncio
-async def test_non_retryable_contract_overrides_a_graph_retry_budget() -> None:
+async def test_unkeyed_effect_contract_overrides_a_graph_retry_budget() -> None:
     _NeverRetry.calls = 0
     store = InMemoryDurableRunStore()
 

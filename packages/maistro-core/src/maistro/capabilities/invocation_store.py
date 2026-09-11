@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS capability_invocations (
     attempt_id TEXT NOT NULL,
     binding_id TEXT NOT NULL,
     effect_key TEXT NOT NULL,
+    effect_scope TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL,
     created_at REAL NOT NULL,
     payload_json TEXT NOT NULL
@@ -55,6 +56,12 @@ class SqliteInvocationStore:
 
     async def ensure_schema(self) -> None:
         await self._conn.executescript(_SCHEMA)
+        cursor = await self._conn.execute("PRAGMA table_info(capability_invocations)")
+        columns = {str(row[1]) for row in await cursor.fetchall()}
+        if "effect_scope" not in columns:
+            await self._conn.execute(
+                "ALTER TABLE capability_invocations ADD COLUMN effect_scope TEXT NOT NULL DEFAULT ''"
+            )
         await self._conn.commit()
 
     async def create(self, invocation: Invocation) -> Invocation:
@@ -62,8 +69,8 @@ class SqliteInvocationStore:
             await self._conn.execute(
                 """INSERT INTO capability_invocations (
                     invocation_id, run_id, node_run_id, attempt_id, binding_id,
-                    effect_key, status, created_at, payload_json
-                ) VALUES (?,?,?,?,?,?,?,?,?)""",
+                    effect_key, effect_scope, status, created_at, payload_json
+                ) VALUES (?,?,?,?,?,?,?,?,?,?)""",
                 self._row_values(invocation),
             )
             await self._conn.commit()
@@ -82,7 +89,7 @@ class SqliteInvocationStore:
             cursor = await self._conn.execute(
                 """UPDATE capability_invocations SET
                     run_id = ?, node_run_id = ?, attempt_id = ?, binding_id = ?,
-                    effect_key = ?, status = ?, created_at = ?, payload_json = ?
+                    effect_key = ?, effect_scope = ?, status = ?, created_at = ?, payload_json = ?
                    WHERE invocation_id = ?""",
                 (
                     invocation.run_id,
@@ -90,6 +97,7 @@ class SqliteInvocationStore:
                     invocation.attempt_id,
                     invocation.binding.binding_id,
                     invocation.effect_key,
+                    invocation.effect_scope,
                     invocation.status.value,
                     invocation.created_at.timestamp(),
                     invocation.model_dump_json(),
@@ -109,13 +117,19 @@ class SqliteInvocationStore:
         node_run_id: str,
         binding_id: str,
         effect_key: str,
+        effect_scope: str | None = None,
     ) -> list[Invocation]:
-        cursor = await self._conn.execute(
-            """SELECT payload_json FROM capability_invocations
+        if effect_scope is None:
+            query = """SELECT payload_json FROM capability_invocations
                WHERE run_id = ? AND node_run_id = ? AND binding_id = ? AND effect_key = ?
-               ORDER BY created_at ASC, invocation_id ASC""",
-            (run_id, node_run_id, binding_id, effect_key),
-        )
+               ORDER BY created_at ASC, invocation_id ASC"""
+            params = (run_id, node_run_id, binding_id, effect_key)
+        else:
+            query = """SELECT payload_json FROM capability_invocations
+               WHERE run_id = ? AND effect_scope = ? AND binding_id = ? AND effect_key = ?
+               ORDER BY created_at ASC, invocation_id ASC"""
+            params = (run_id, effect_scope, binding_id, effect_key)
+        cursor = await self._conn.execute(query, params)
         rows = await cursor.fetchall()
         return [Invocation.model_validate_json(str(row[0])) for row in rows]
 
@@ -128,6 +142,7 @@ class SqliteInvocationStore:
             invocation.attempt_id,
             invocation.binding.binding_id,
             invocation.effect_key,
+            invocation.effect_scope,
             invocation.status.value,
             invocation.created_at.timestamp(),
             invocation.model_dump_json(),
