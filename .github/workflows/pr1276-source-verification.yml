@@ -12,17 +12,16 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
       - name: Prepare locked test dependencies for isolated local verification
         run: |
           python3 - <<'PY'
           import pathlib, tomllib
           lock = tomllib.loads(pathlib.Path('uv.lock').read_text())
-          needed = {'structlog', 'aiosqlite', 'hypothesis', 'ruff', 'asyncpg', 'pgvector', 'croniter', 'fastmcp', 'tenacity', 'bip-utils', 'pynacl', 'pytest-timeout', 'mypy', 'vulture', 'types-pyyaml', 'types-regex'}
+          needed = {'structlog', 'aiosqlite', 'hypothesis', 'ruff', 'asyncpg', 'pgvector', 'fastmcp', 'pynacl', 'pytest-timeout', 'mypy', 'vulture', 'types-pyyaml', 'types-regex'}
           selected = {p['name']: p['version'] for p in lock['package'] if p['name'].lower() in needed}
           pathlib.Path('verification-requirements.txt').write_text(''.join(f'{name}=={version}\n' for name,version in sorted(selected.items())))
-          print(pathlib.Path('verification-requirements.txt').read_text())
           PY
           python3 -m pip download -r verification-requirements.txt --dest verification-wheels --only-binary=:all: --python-version 3.13 --implementation cp --abi cp313 --platform manylinux_2_28_x86_64 --platform manylinux2014_x86_64 --platform linux_x86_64
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
