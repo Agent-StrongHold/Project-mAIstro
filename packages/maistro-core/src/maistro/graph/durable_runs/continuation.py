@@ -27,7 +27,7 @@ from maistro.graph.execution_state import GraphExecutionState
 from maistro.graph.traversal_commit import TraversalCheckpoint, TraversalCommit
 from maistro.runs.model import RunStatus
 
-from .hitl import earliest_hitl_deadline
+from .hitl import earliest_hitl_deadline, earliest_hitl_deadline_from_state
 from .types import DurableRunRecord
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -227,7 +227,29 @@ class SqliteGraphContinuationStore:
             "CREATE INDEX IF NOT EXISTS idx_graph_continuations_hitl_deadline "
             "ON graph_continuations (status, hitl_deadline_at)"
         )
+        await self._backfill_hitl_deadlines()
         await self._conn.commit()
+
+    async def _backfill_hitl_deadlines(self) -> None:
+        """Restore the lookup projection for continuations written pre-033."""
+        cursor = await self._conn.execute(
+            """SELECT run_id, continuation_json FROM graph_continuations
+                WHERE status = ? AND hitl_deadline_at IS NULL""",
+            (RunStatus.PAUSED.value,),
+        )
+        rows = await cursor.fetchall()
+        for run_id, payload in rows:
+            continuation = GraphContinuation.model_validate_json(payload)
+            deadline = earliest_hitl_deadline_from_state(
+                continuation.graph_state.active_node_ids,
+                continuation.graph_state.metadata,
+                run_id=str(run_id),
+            )
+            if deadline is not None:
+                await self._conn.execute(
+                    "UPDATE graph_continuations SET hitl_deadline_at = ? WHERE run_id = ?",
+                    (deadline.isoformat(), run_id),
+                )
 
     async def create(self, continuation: GraphContinuation) -> GraphContinuation:
         async with self._lock:

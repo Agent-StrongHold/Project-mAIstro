@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import ClassVar
@@ -243,6 +244,52 @@ async def test_deadline_survives_restart_and_timeout_preserves_attempt(tmp_path:
 
 @pytest.mark.ac("SPEC-083026-73c1/AC-2")
 @pytest.mark.ac("SPEC-083026-73c1/AC-5")
+async def test_pre_index_sqlite_pause_is_backfilled_and_expires_after_restart(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "pre-index-hitl.db"
+    original = _paused_record("pre-index-timeout")
+    row = SqliteDurableRunStore._to_row(original)
+    with sqlite3.connect(db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE durable_graph_runs (
+                run_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                active_node_id TEXT,
+                project_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                resume_at TEXT,
+                version INTEGER NOT NULL DEFAULT 0,
+                record_json TEXT NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            """INSERT INTO durable_graph_runs
+               (run_id, status, active_node_id, project_id, created_at,
+                resume_at, version, record_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                row["run_id"],
+                row["status"],
+                row["active_node_id"],
+                row["project_id"],
+                row["created_at"],
+                row["resume_at"],
+                row["version"],
+                row["record_json"],
+            ),
+        )
+        conn.commit()
+
+    store = SqliteDurableRunStore(db)
+    expired = await expire_hitl_pauses(store, now=_AFTER, limit=1)
+
+    assert [record.run_id for record in expired] == ["pre-index-timeout"]
+    assert expired[0].status is RunStatus.TIMED_OUT
+
+
 async def test_cancel_survives_restart_without_fabricating_an_answer(tmp_path: Path) -> None:
     db = tmp_path / "hitl-cancel.db"
     store = SqliteDurableRunStore(db)
