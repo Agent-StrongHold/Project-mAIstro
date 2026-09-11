@@ -17,6 +17,11 @@ from routes.audit import log_audit
 router = APIRouter(tags=["dags"])
 logger = logging.getLogger("hive.dags")
 
+# The editable Hive DAG format historically stored agent roles rather than
+# canonical node kinds. Keep those records runnable while the UI migrates to
+# the registered-node palette: this pure transform is a safe no-op default.
+_DEFAULT_REGISTERED_NODE_KIND = "transform.alias_keys"
+
 
 class DAGNode(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -24,6 +29,7 @@ class DAGNode(BaseModel):
     id: str
     role: str
     name: str
+    kind: str = _DEFAULT_REGISTERED_NODE_KIND
     agent_id: str | None = None
     model: str | None = None
     strategy: Literal["react", "plan_execute", "direct", "delegate"] = "react"
@@ -109,6 +115,25 @@ async def _resolve_run_scope(
     )
 
 
+def _registered_dag_snapshot(dag_data: Mapping[str, Any]) -> dict[str, Any]:
+    """Make legacy role-only snapshots valid registered-DAG descriptors.
+
+    Older saved DAGs predate the canonical node catalog and have no ``kind``.
+    Registration must still validate the snapshot before ``run_registered_dag``
+    admits a Run, so project the missing field to the same no-op kind used by
+    newly created editor nodes without changing the stored UI definition.
+    """
+    snapshot = dict(dag_data)
+    nodes: list[dict[str, Any]] = []
+    for raw in snapshot.get("nodes", []):
+        node = dict(raw)
+        if not str(node.get("kind") or "").strip():
+            node["kind"] = str(node.get("node_type") or _DEFAULT_REGISTERED_NODE_KIND)
+        nodes.append(node)
+    snapshot["nodes"] = nodes
+    return snapshot
+
+
 def _value_mapping(value: Any) -> dict[str, Any]:
     if isinstance(value, Mapping):
         return dict(value)
@@ -128,7 +153,8 @@ def _registered_run_result(graph: Any, record: Any) -> dict[str, Any]:
     node_results: dict[str, dict[str, Any]] = {}
     for node_run in getattr(record, "node_runs", ()):
         node = graph_nodes.get(node_run.node_id)
-        raw = _value_mapping(getattr(node, "metadata", {}).get("legacy_node"))
+        metadata = _value_mapping(getattr(node, "metadata", {}))
+        raw = _value_mapping(metadata.get("legacy_node")) or metadata
         output = _value_mapping(getattr(node_run, "result", None))
         response = output.get("response")
         if response is None and output:
@@ -338,6 +364,7 @@ class AddNodeBody(BaseModel):
 
     role: str
     name: str
+    kind: str = _DEFAULT_REGISTERED_NODE_KIND
     agent_id: str | None = None
     model: str | None = None
     strategy: Literal["react", "plan_execute", "direct", "delegate"] = "react"
@@ -354,6 +381,7 @@ def add_node(dag_id: str, body: AddNodeBody) -> dict:
         id=str(uuid4()),
         role=body.role,
         name=body.name,
+        kind=body.kind,
         agent_id=body.agent_id,
         model=body.model,
         strategy=body.strategy,
@@ -442,7 +470,7 @@ async def run_dag(
         # The saved DAG is the product's editable definition. Registering its
         # snapshot first makes this route use the same descriptor -> template
         # projection as schedules and other registered-DAG producers.
-        get_registry().register(dict(dag_data))
+        get_registry().register(_registered_dag_snapshot(dag_data))
         graph, record = await run_registered_dag(
             dag_id,
             workspace_id=resolved_workspace,
