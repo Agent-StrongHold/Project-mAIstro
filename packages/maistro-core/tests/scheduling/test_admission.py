@@ -763,3 +763,180 @@ class TestADuplicateClaimLinksTheWinningRun:
         assert stored is not None
         assert stored.last_run_id == "an-earlier-run"
         assert stored.last_fired_at == NOON
+
+
+class TestRecoverySeesTheRunStoreBeforeThePolicy:
+    """The #1059 review's findings on the linkage change.
+
+    A crashed winner is a Run with no pointer to it. The overlap policy used
+    to be applied from the caller's stale `active_run`, so under CANCEL_OTHER
+    the crashed occurrence fell into `skipped` — never reaching the duplicate
+    handler — while the newer occurrence was admitted beside its live Run with
+    no cancellation asked for, and the crashed firing was never counted.
+    """
+
+    async def test_cancel_other_finds_the_crashed_winner_and_asks_for_its_cancellation(
+        self, harness
+    ) -> None:
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(
+            schedules,
+            project_id,
+            overlap_policy=OverlapPolicy.CANCEL_OTHER,
+            # Wide enough that the crashed occurrence is still enumerated an
+            # hour later, beside the next one.
+            catchup_window_seconds=4 * 3600.0,
+        )
+        winner = await _crashed_before_record_fire(harness, schedule, NOON)
+        assert (await schedules.get(schedule.schedule_id)).last_run_id is None
+
+        later = await admitter.admit_due(schedule, now=NOON + timedelta(hours=1), active_run=False)
+
+        assert len(later.run_ids) == 1
+        assert later.already_fired == (NOON,)
+        assert later.skipped == ()
+        assert later.cancel_active_run is True, "the live crashed winner is the in-flight Run"
+        assert later.active_run_id == winner
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        assert stored.last_run_id == later.run_ids[0], "the pointer follows the newest occurrence"
+        assert stored.last_fired_at == NOON + timedelta(hours=1)
+        assert stored.runs_so_far == 2, "the crashed winner and the new fire both count"
+        assert await runs.get_run(winner) is not None
+
+    async def test_skip_defers_to_the_crashed_winner_the_pointer_never_named(self, harness) -> None:
+        """`active_run=False` from a stale pointer must not let SKIP run the
+        next occurrence beside the crashed one."""
+        admitter, _runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(
+            schedules,
+            project_id,
+            overlap_policy=OverlapPolicy.SKIP,
+            catchup_window_seconds=4 * 3600.0,
+        )
+        winner = await _crashed_before_record_fire(harness, schedule, NOON)
+
+        later = await admitter.admit_due(schedule, now=NOON + timedelta(hours=1), active_run=False)
+
+        assert later.run_ids == ()
+        assert later.already_fired == (NOON,)
+        assert [skip.reason for skip in later.skipped] == [SkipReason.OVERLAP]
+        assert later.active_run_id == winner
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        assert stored.last_run_id == winner
+        assert stored.last_fired_at == NOON + timedelta(hours=1), "the overlap skip is consumed"
+        assert stored.runs_so_far == 1
+
+    async def test_a_crash_recovered_winner_is_counted_and_can_exhaust_the_schedule(
+        self, harness
+    ) -> None:
+        """`max_runs=1`: the winner's ticker died before counting its fire.
+        Recovery must count it — once — or the schedule fires a second time."""
+        admitter, _runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, max_runs=1)
+        await _crashed_before_record_fire(harness, schedule, NOON)
+
+        result = await admitter.admit_due(schedule, now=NOON)
+
+        stored = await schedules.get(schedule.schedule_id)
+        assert result.already_fired == (NOON,)
+        assert result.disabled is True
+        assert stored is not None
+        assert stored.runs_so_far == 1
+        assert stored.enabled is False
+        again = await admitter.admit_due(stored, now=NOON + timedelta(hours=1))
+        assert again.run_ids == ()
+
+    async def test_two_tickers_consuming_one_occurrence_count_it_once(self, harness) -> None:
+        """The counting is idempotent at the cursor, so the refused ticker and
+        the winning ticker both pass the occurrence to the store and it is
+        counted by whichever writes first."""
+        admitter, runs, templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, max_runs=2)
+        rival = ScheduleRunAdmitter(runs, templates, schedules)
+
+        await asyncio.gather(
+            admitter.admit_due(schedule, now=NOON), rival.admit_due(schedule, now=NOON)
+        )
+
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        assert stored.runs_so_far == 1
+        assert stored.enabled is True
+
+    async def test_an_unresolvable_newest_winner_yields_the_pointer_to_our_newest_run(
+        self, harness
+    ) -> None:
+        """Under ALLOW, ours for T-2h and T-1h; a rival's for T whose Run is
+        gone (only ever a finished one). The pointer is the next newest known
+        Run — ours for T-1h, which may still be live — not the one from before
+        the batch, and not nothing."""
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(
+            schedules,
+            project_id,
+            last_fired_at=NOON - timedelta(hours=3),
+            catchup_window_seconds=6 * 3600.0,
+            overlap_policy=OverlapPolicy.ALLOW,
+            last_run_id="an-earlier-run",
+        )
+        rival = await _crashed_before_record_fire(harness, schedule, NOON)
+        await runs.transition_run(rival, RunStatus.CANCELLED, error="operator")
+        real_lookup = runs.get_run_for_occurrence
+
+        async def _gone_for_noon(schedule_id: str, scheduled_for: str):
+            if scheduled_for == NOON.isoformat():
+                return None
+            return await real_lookup(schedule_id, scheduled_for)
+
+        runs.get_run_for_occurrence = _gone_for_noon  # type: ignore[method-assign]
+
+        result = await admitter.admit_due(schedule, now=NOON)
+
+        stored = await schedules.get(schedule.schedule_id)
+        assert len(result.run_ids) == 2
+        assert result.already_fired == (NOON,)
+        assert stored is not None
+        assert stored.last_run_id == result.run_ids[-1]
+        assert stored.last_fired_at == NOON
+        assert stored.runs_so_far == 3, "the rival's firing still counts"
+
+    async def test_a_delayed_ticker_cannot_move_the_cursor_backward(self, harness) -> None:
+        """Two ALLOW tickers with different horizons: the one that evaluated
+        only T-1h stalls after creating its Run; another records through T;
+        the stalled one then records T-1h. The cursor and pointer stay on T."""
+        admitter, runs, templates, schedules, project_id = harness
+        schedule = await _schedule(
+            schedules,
+            project_id,
+            last_fired_at=NOON - timedelta(hours=2),
+            overlap_policy=OverlapPolicy.ALLOW,
+        )
+        rival = ScheduleRunAdmitter(runs, templates, schedules)
+        stalled = await rival.admit_due(schedule, now=NOON - timedelta(hours=1))
+        assert stalled.run_ids and (await schedules.get(schedule.schedule_id)).last_fired_at == (
+            NOON - timedelta(hours=1)
+        )
+        # The other ticker evaluated the same snapshot but a later horizon.
+        ahead = await admitter.admit_due(schedule, now=NOON)
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None and stored.last_fired_at == NOON
+        assert stored.last_run_id == ahead.run_ids[-1]
+
+        # The stalled ticker's write arrives last, carrying its older cursor.
+        await schedules.record_fire(
+            schedule.schedule_id,
+            fired_at=NOON - timedelta(hours=1),
+            run_id=stalled.run_ids[0],
+            next_due_at=NOON,
+            fires=0,
+            fired=[NOON - timedelta(hours=1)],
+        )
+
+        final = await schedules.get(schedule.schedule_id)
+        assert final is not None
+        assert final.last_fired_at == NOON
+        assert final.last_run_id == ahead.run_ids[-1]
+        assert final.next_due_at == stored.next_due_at
+        assert final.runs_so_far == 2

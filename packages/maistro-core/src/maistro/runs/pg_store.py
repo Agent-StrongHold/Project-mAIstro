@@ -184,11 +184,13 @@ class PgRunStore:
         run = admit_in_state(run, initial_status)
         async with self._pool.acquire() as conn:
             try:
+                schedule_id, scheduled_for = _occurrence_columns(run)
                 await conn.execute(
                     """INSERT INTO canonical_runs
                    (run_id, workspace_id, project_id, parent_run_id,
-                    parent_node_run_id, status, payload, retention_expires_at)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7::text::jsonb, $8)""",
+                    parent_node_run_id, status, payload, retention_expires_at,
+                    schedule_id, scheduled_for)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7::text::jsonb, $8, $9, $10)""",
                     run.run_id,
                     run.workspace_id,
                     run.project_id,
@@ -200,6 +202,14 @@ class PgRunStore:
                     # an index (migration 012). Written once at creation and never
                     # transitioned, so the two cannot drift the way `status` could.
                     run.retention_expires_at,
+                    # The occurrence claim, promoted out of the payload for the
+                    # same reason and one more (migration 034): the archive tier
+                    # sets `payload` to NULL, and a claim that lived only in the
+                    # payload was released the moment its winner went cold, so a
+                    # late recovery could fire the occurrence again. Columns
+                    # outlive the payload; the unique index is over them.
+                    schedule_id,
+                    scheduled_for,
                 )
             except _integrity_errors() as exc:
                 conflict = _occurrence_conflict(exc, run)
@@ -465,13 +475,13 @@ class PgRunStore:
         return Run.model_validate(payload) if payload is not None else None
 
     async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
-        # Spelled exactly as migration 015 spells the indexed expressions, so
-        # the planner can serve this from `ix_canonical_runs_occurrence`
-        # rather than reading every Run's provenance.
+        # The promoted claim columns (migration 034), which are what
+        # `ix_canonical_runs_occurrence` is over: an index probe, never a
+        # provenance scan — and an archived winner, whose payload is NULL, still
+        # answers, because the claim was never in the payload alone.
         payload = await self._payload(
             """SELECT run_id, payload, archive_key FROM canonical_runs
-                WHERE (payload -> 'provenance' ->> 'schedule_id') = $1
-                  AND (payload -> 'provenance' ->> 'scheduled_for') = $2""",
+                WHERE schedule_id = $1 AND scheduled_for = $2""",
             schedule_id,
             scheduled_for,
         )
@@ -1133,11 +1143,18 @@ def _integrity_errors() -> tuple[type[Exception], ...]:
     return (asyncpg.exceptions.IntegrityConstraintViolationError,)
 
 
+def _occurrence_columns(run: Run) -> tuple[str | None, str | None]:
+    """The promoted claim columns for `run`: its occurrence key, or two NULLs."""
+    occurrence = occurrence_key(run.provenance)
+    return occurrence if occurrence is not None else (None, None)
+
+
 def _occurrence_conflict(exc: Exception, run: Run) -> DuplicateOccurrence | None:
     """The duplicate-firing this violation means, or None if it means something else.
 
-    The occurrence claim (migration 015). Two tickers evaluating the same due
-    window both reach the insert; the index refuses the second, and the caller's
+    The occurrence claim (migration 015, re-homed onto promoted columns by
+    migration 034 so archiving cannot release it). Two tickers evaluating the
+    same due window both reach the insert; the index refuses the second, and the caller's
     correct response is to treat that firing as already fired rather than to
     retry it or abandon the batch (#220).
 

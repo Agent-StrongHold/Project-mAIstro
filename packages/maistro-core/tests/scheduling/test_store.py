@@ -266,3 +266,79 @@ def test_every_implementation_satisfies_the_protocol() -> None:
 
     assert isinstance(InMemoryScheduleStore(), ScheduleStore)
     assert isinstance(PgScheduleStore(None), ScheduleStore)  # type: ignore[arg-type]
+
+
+# --- monotonic, idempotent advance (#1059 review) -------------------------------
+
+
+async def test_a_stale_write_cannot_move_the_cursor_backward(store: ScheduleStore) -> None:
+    """A delayed ticker's `record_fire` for an older occurrence arrives after a
+    rival recorded a newer one. The row lock orders the writes; `_advance`
+    decides the late one moves nothing backward."""
+    schedule = await store.put(_schedule())
+    await store.record_fire(
+        schedule.schedule_id,
+        fired_at=NOON + timedelta(hours=1),
+        run_id="run-newer",
+        next_due_at=NOON + timedelta(hours=2),
+        fires=0,
+        fired=[NOON + timedelta(hours=1)],
+    )
+
+    late = await store.record_fire(
+        schedule.schedule_id,
+        fired_at=NOON,
+        run_id="run-older",
+        next_due_at=NOON + timedelta(hours=1),
+        fires=0,
+        fired=[NOON],
+    )
+
+    assert late is not None
+    assert late.last_fired_at == NOON + timedelta(hours=1)
+    assert late.last_run_id == "run-newer"
+    assert late.next_due_at == NOON + timedelta(hours=2)
+    # An occurrence the cursor has passed is one the writer that passed it
+    # consumed and counted, so the late writer's copy of it counts nothing.
+    assert late.runs_so_far == 1
+
+
+async def test_an_occurrence_is_counted_once_however_many_writers_record_it(
+    store: ScheduleStore,
+) -> None:
+    """The ticker that won the claim and the ticker it refused both record the
+    same occurrence; the count moves once."""
+    schedule = await store.put(_schedule(max_runs=3))
+    for _ in range(3):
+        await store.record_fire(
+            schedule.schedule_id,
+            fired_at=NOON,
+            run_id="run-1",
+            next_due_at=NOON + timedelta(hours=1),
+            fires=0,
+            fired=[NOON],
+        )
+
+    reloaded = await store.get(schedule.schedule_id)
+    assert reloaded is not None
+    assert reloaded.runs_so_far == 1
+    assert reloaded.enabled is True
+
+
+async def test_reaching_max_runs_disables_without_being_asked(store: ScheduleStore) -> None:
+    """Exhaustion is the store's decision, made against the count it settled."""
+    schedule = await store.put(_schedule(max_runs=2, runs_so_far=1))
+
+    advanced = await store.record_fire(
+        schedule.schedule_id,
+        fired_at=NOON,
+        run_id="run-2",
+        next_due_at=NOON + timedelta(hours=1),
+        fires=0,
+        fired=[NOON],
+    )
+
+    assert advanced is not None
+    assert advanced.runs_so_far == 2
+    assert advanced.enabled is False and advanced.next_due_at is None
+    assert await store.due(now=NOON + timedelta(days=1)) == []

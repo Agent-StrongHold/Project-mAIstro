@@ -408,6 +408,16 @@ class _ScheduleRunner:
                 sid,
                 occurred.isoformat(),
             )
+        if admission.active_run_id is not None:
+            # A live Run the pointer did not name -- a winner whose ticker died
+            # before recording it (#1059). The admitter judged overlap against
+            # it and, under CANCEL_OTHER, this is the Run it asked to cancel.
+            logger.info(
+                "Schedule %s has a live Run %s the cursor did not name (cancel requested: %s)",
+                sid,
+                admission.active_run_id,
+                admission.cancel_active_run,
+            )
         for exc in admission.failures:
             logger.warning("Schedule %s admission failed: %s", sid, exc)
 

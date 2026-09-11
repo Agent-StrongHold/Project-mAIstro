@@ -99,7 +99,22 @@ or placeholder-only section.
   `RunStore.get_run_for_occurrence()` — served from the same unique index that
   enforces the claim on every backend, never a provenance scan — and
   `last_run_id` follows the newest consumed occurrence whichever ticker
-  admitted it.
+  admitted it. The admitter reads those claims *before* applying the overlap
+  policy, so a crashed winner the caller's pointer never named is what
+  `CANCEL_OTHER`, `SKIP` and `BUFFER_ONE` see as in flight (reported as
+  `ScheduleAdmission.active_run_id`) rather than an occurrence to drop, and
+  every consumed occurrence with a Run is counted toward `max_runs` — once:
+  `ScheduleStore.record_fire` now takes the fired occurrences and counts each
+  against the stored cursor under its lock, so two tickers consuming one
+  occurrence cannot count it twice and a winner that died before recording is
+  still counted. The advance is monotonic as well: a delayed ticker's write
+  for an older occurrence can no longer move `last_fired_at`, `last_run_id` or
+  `next_due_at` backward over a rival's newer one, and reaching `max_runs`
+  disables the schedule in the store whether or not the caller asked. On
+  PostgreSQL the occurrence claim is promoted out of the payload into
+  `schedule_id`/`scheduled_for` columns (migration `034`), so archiving a cold
+  winner — which sets its payload to NULL — no longer releases the claim on
+  the occurrence it ran.
 - **Project membership is one canonical row per `(project, principal)`, and
   is now explicitly revocable (#1148).** `ProjectScopeStore.set_membership`
   used to mint a fresh `membership_id` on every call, so a re-grant, role

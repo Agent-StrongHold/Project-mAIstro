@@ -10,11 +10,22 @@ There is deliberately no execution table here. Fires are recorded as a
 cursor on the schedule (`last_fired_at`, `last_run_id`, `runs_so_far`) and
 the execution itself lives in Run history, so this store never becomes a
 second place that believes it knows what is running.
+
+The cursor advance is monotonic and counts idempotently (#1059 review). Two
+tickers can evaluate overlapping windows and both reach `record_fire`; the
+PostgreSQL row lock and the SQLite serialization order the writes, and
+`_advance` decides *under that order* what each write may change: a write for
+an occurrence the cursor has already passed moves nothing backward, and an
+occurrence passed as `fired` counts toward `max_runs` only if the cursor had
+not reached it yet — so a ticker refused by the occurrence claim and the
+ticker that won it cannot count one firing twice, while a winner that died
+before recording its fire is still counted once, by whoever records it.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -62,9 +73,20 @@ class ScheduleStore(Protocol):
         run_id: str | None,
         next_due_at: datetime | None,
         fires: int = 1,
+        fired: Sequence[datetime] = (),
         disable: bool = False,
     ) -> Schedule | None:
-        """Advance the cursor after firing, and disable on exhaustion."""
+        """Advance the cursor after firing, and disable on exhaustion.
+
+        Monotonic: `fired_at`, `run_id` and `next_due_at` are applied only when
+        `fired_at` is newer than the stored cursor, so a delayed writer cannot
+        move the cursor or the pointer backward over a rival that already
+        recorded a later occurrence. `fires` counts unconditionally; `fired`
+        names occurrences that count once each, judged against the stored
+        cursor under the write, which is what makes counting idempotent across
+        tickers that consumed the same occurrence (#1059 review). Reaching
+        `max_runs` disables the schedule whether or not `disable` asked for it.
+        """
         ...
 
 
@@ -76,18 +98,47 @@ def _advance(
     next_due_at: datetime | None,
     fires: int,
     disable: bool,
+    fired: Sequence[datetime] = (),
 ) -> Schedule:
-    """The cursor advance, shared by every implementation so they cannot drift."""
-    return schedule.model_copy(
-        update={
-            "last_fired_at": fired_at,
-            "last_run_id": run_id if run_id is not None else schedule.last_run_id,
-            "runs_so_far": schedule.runs_so_far + fires,
-            "next_due_at": None if disable else next_due_at,
-            "enabled": False if disable else schedule.enabled,
-            "updated_at": datetime.now(UTC),
-        }
-    )
+    """The cursor advance, shared by every implementation so they cannot drift.
+
+    Called with the row already locked (PostgreSQL) or the write serialized
+    (SQLite, in-memory), so `schedule` is the current stored state and the
+    comparisons below are what make the advance monotonic and the count
+    idempotent (#1059 review):
+
+    - a write whose `fired_at` is not newer than the stored cursor is a
+      delayed one — a rival already recorded a later occurrence — and moves
+      neither the cursor, nor the pointer, nor the due time backward;
+    - each occurrence in `fired` counts once: only if the stored cursor had
+      not yet passed it. Two tickers that both consumed the same occurrence
+      (one won the claim, one was refused) both pass it here, and the second
+      write finds the cursor already on it.
+
+    `max_runs` reached is exhaustion whether the caller asked to disable or
+    not; the count is settled here, so the decision belongs here too.
+    """
+    cursor = schedule.last_fired_at
+    runs_so_far = schedule.runs_so_far + fires + _uncounted(cursor, fired)
+    update: dict[str, object] = {"runs_so_far": runs_so_far, "updated_at": datetime.now(UTC)}
+    if cursor is None or fired_at > cursor:
+        update["last_fired_at"] = fired_at
+        update["next_due_at"] = next_due_at
+        if run_id is not None and run_id != schedule.last_run_id:
+            update["last_run_id"] = run_id
+    if disable or _reached(schedule.max_runs, runs_so_far):
+        update["next_due_at"] = None
+        update["enabled"] = False
+    return schedule.model_copy(update=update)
+
+
+def _uncounted(cursor: datetime | None, fired: Sequence[datetime]) -> int:
+    """How many of `fired` the stored cursor had not yet passed."""
+    return sum(1 for moment in fired if cursor is None or moment > cursor)
+
+
+def _reached(max_runs: int | None, runs_so_far: int) -> bool:
+    return max_runs is not None and runs_so_far >= max_runs
 
 
 def _is_due(schedule: Schedule, *, now: datetime) -> bool:
@@ -128,6 +179,7 @@ class InMemoryScheduleStore:
         run_id: str | None,
         next_due_at: datetime | None,
         fires: int = 1,
+        fired: Sequence[datetime] = (),
         disable: bool = False,
     ) -> Schedule | None:
         schedule = self._schedules.get(schedule_id)
@@ -139,6 +191,7 @@ class InMemoryScheduleStore:
             run_id=run_id,
             next_due_at=next_due_at,
             fires=fires,
+            fired=fired,
             disable=disable,
         )
         self._schedules[schedule_id] = advanced
@@ -245,6 +298,7 @@ class SqliteScheduleStore:
         run_id: str | None,
         next_due_at: datetime | None,
         fires: int = 1,
+        fired: Sequence[datetime] = (),
         disable: bool = False,
     ) -> Schedule | None:
         schedule = await self.get(schedule_id)
@@ -257,6 +311,7 @@ class SqliteScheduleStore:
                 run_id=run_id,
                 next_due_at=next_due_at,
                 fires=fires,
+                fired=fired,
                 disable=disable,
             )
         )

@@ -17,6 +17,7 @@ other implementation so the three backends cannot drift on what "fired" means.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -114,6 +115,7 @@ class PgScheduleStore:
         run_id: str | None,
         next_due_at: datetime | None,
         fires: int = 1,
+        fired: Sequence[datetime] = (),
         disable: bool = False,
     ) -> Schedule | None:
         """Advance the cursor under a row lock, so a concurrent tick cannot lose it."""
@@ -130,6 +132,7 @@ class PgScheduleStore:
                 run_id=run_id,
                 next_due_at=next_due_at,
                 fires=fires,
+                fired=fired,
                 disable=disable,
             )
             await conn.execute(
