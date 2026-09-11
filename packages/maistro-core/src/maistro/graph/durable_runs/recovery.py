@@ -22,7 +22,7 @@ from maistro.runtime import ExecutionRuntime
 
 from . import executor as traversal
 from .attempt_executor import LiveAttemptOwned, NodeResolver, resume_durable_graph
-from .fair_scan import fair_page_scan
+from .fair_scan import ScanContinuation, fair_page_scan
 from .launch import launch_state_from_run
 from .protocol import DurableRunStore
 from .types import DurableRunRecord
@@ -74,6 +74,7 @@ async def resume_due_graph_runs(
     limit: int = 100,
     eligible: QueuedRunPredicate | None = None,
     events: RecoveryEventSink | None = None,
+    scan: ScanContinuation[tuple[str, str]] | None = None,
 ) -> int:
     """Resume elapsed durable Graph waits or expired recovery claims.
 
@@ -96,6 +97,13 @@ async def resume_due_graph_runs(
     advancing keyset cursor and filtering eligibility as each page is read, so
     an arbitrarily large run of continuations owned by another consumer ahead
     of an eligible one cannot hide it forever behind a fixed-size query.
+
+    ``scan`` is the continuation a repeated tick must hold across calls: the
+    walk is bounded per call, so without one a prefix longer than the bound
+    is never crossed, however many ticks run. With one, each tick resumes
+    where the last stopped and restarts from the top only after walking off
+    the end, so every due continuation is reached within a bounded number of
+    ticks. One per (this seam, this store).
 
     A candidate whose resume raises an unexpected, candidate-local failure
     (anything but ``LiveAttemptOwned`` or a settled-race ``KeyError``/
@@ -130,6 +138,7 @@ async def resume_due_graph_runs(
         cursor_of=_due_cursor_key,
         eligible=_combined_eligible,
         limit=limit,
+        continuation=scan,
     )
     resumed = 0
 
@@ -287,6 +296,7 @@ async def recover_queued_graph_runs(
     runtime: ExecutionRuntime | None = None,
     limit: int = 100,
     events: RecoveryEventSink | None = None,
+    scan: ScanContinuation[tuple[str, str]] | None = None,
 ) -> int:
     """Recover admitted durable Graph Runs around checkpoint 1.
 
@@ -302,6 +312,12 @@ async def recover_queued_graph_runs(
     keyset cursor and applying ``eligible`` as each page is read, so an
     arbitrarily large run of foreign-owned QUEUED Runs ahead of an eligible
     one cannot hide it forever behind a fixed-size query.
+
+    ``scan`` is the continuation a repeated tick must hold across calls, for
+    the reason ``resume_due_graph_runs`` gives: the per-call walk is bounded,
+    and a foreign-owned prefix longer than the bound is crossed only by a
+    tick that resumes where the last one stopped. One per (this seam, this
+    Run store).
 
     A candidate whose resume raises an unexpected, candidate-local failure is
     isolated rather than allowed to abort the whole tick: the failure is
@@ -323,6 +339,7 @@ async def recover_queued_graph_runs(
         cursor_of=run_cursor_key,
         eligible=eligible,
         limit=limit,
+        continuation=scan,
     )
     recovered = 0
     for run in candidates:

@@ -29,6 +29,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from middleware.auth import resolve_principal
 from pydantic import BaseModel, ConfigDict, Field
+from services.scan_continuations import scan_continuation
 
 from maistro.graph.durable_runs import expire_hitl_pauses
 from maistro.runs.model import RunStatus
@@ -186,7 +187,14 @@ async def list_pending_human_work(
 @router.post("/expire")
 async def expire_human_work(limit: int = 100) -> dict[str, Any]:
     """Run one bounded expiry tick against durable HITL deadlines."""
-    expired = await expire_hitl_pauses(_store(), limit=max(1, min(limit, 200)))
+    store = _store()
+    expired = await expire_hitl_pauses(
+        store,
+        limit=max(1, min(limit, 200)),
+        # Held across ticks, so a run of non-HITL pauses longer than one
+        # tick's inspection bound is crossed rather than re-read forever.
+        scan=scan_continuation("expire_hitl_pauses", store),
+    )
     run_ids = [record.run_id for record in expired]
     if run_ids:
         log_audit("hitl_expire", "system", detail={"run_ids": run_ids})

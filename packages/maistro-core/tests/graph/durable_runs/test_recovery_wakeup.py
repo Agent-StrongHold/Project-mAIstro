@@ -271,6 +271,59 @@ async def test_queued_run_without_continuation_is_claimed_then_resumed(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_queued_recovery_crosses_a_foreign_prefix_longer_than_one_ticks_bound(
+    monkeypatch,
+) -> None:
+    """The review finding on the first cut, at the production seam: more
+    foreign-owned QUEUED Runs than one tick may inspect, and the one owned
+    Run ordered behind all of them. A tick that restarted from the top every
+    time never reached it; a tick that resumes where the last one stopped
+    reaches it on the second call, and never touches a foreign Run."""
+    from maistro.graph.durable_runs.fair_scan import DEFAULT_MAX_INSPECTED, ScanContinuation
+
+    base = datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
+    foreign = [
+        _queued_run(f"foreign-{i:04d}", source="some_other_consumer").model_copy(
+            update={"created_at": base + timedelta(seconds=i)}
+        )
+        for i in range(DEFAULT_MAX_INSPECTED)
+    ]
+    owned = _queued_run("owned-behind-the-prefix").model_copy(
+        update={"created_at": base + timedelta(seconds=DEFAULT_MAX_INSPECTED)}
+    )
+    run_store = _RunStore(*foreign, owned)
+    store = _BootstrapStore()
+    calls: list[str] = []
+
+    async def _resume(run_id: str, **kwargs) -> None:
+        del kwargs
+        calls.append(run_id)
+
+    monkeypatch.setattr(recovery, "resume_durable_graph", _resume)
+    scan: ScanContinuation[tuple[str, str]] = ScanContinuation()
+
+    def _tick():
+        return recovery.recover_queued_graph_runs(
+            store=store,
+            run_store=run_store,
+            eligible=lambda candidate: candidate.provenance.get("admission_source") == "owned",
+            node_resolver_factory=lambda _run: lambda _node_id, _graph: None,
+            limit=1,
+            scan=scan,
+        )
+
+    assert await _tick() == 0
+    assert scan.resume_after is not None, "the first tick stopped at its bound mid-store"
+
+    assert await _tick() == 1
+
+    assert calls == [owned.run_id]
+    assert await store.get(owned.run_id) is not None
+    for run in foreign[:5]:
+        assert await store.get(run.run_id) is None
+
+
+@pytest.mark.asyncio
 async def test_queued_recovery_never_steals_an_unowned_admission_source(monkeypatch) -> None:
     run = _queued_run(source="some_other_consumer")
     store = _BootstrapStore()

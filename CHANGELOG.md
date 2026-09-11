@@ -109,9 +109,16 @@ or placeholder-only section.
   was durably correct and its deadline had passed. All four now page the
   underlying store with an advancing keyset cursor and filter as they walk,
   bounded by a fixed inspection ceiling per call so one pathological prefix
-  cannot turn a single tick into an unbounded scan. `DurableRunStore` and
-  `GraphContinuationStore` (memory, SQLite, PostgreSQL) gained an `after`
-  keyset-cursor parameter on their status/due listings to support this.
+  cannot turn a single tick into an unbounded scan — and the three recovery
+  ticks (`recover_queued_graph_runs`, `resume_due_graph_runs`,
+  `expire_hitl_pauses`) take a `ScanContinuation` the caller holds across
+  ticks, so each tick resumes after the last row the previous one inspected
+  and restarts from the top only once it has walked off the end: a prefix
+  longer than the per-tick ceiling is crossed within a bounded number of
+  ticks instead of never. Hive's recovery runner and HITL expiry route hold
+  one per (seam, store). `DurableRunStore` and `GraphContinuationStore`
+  (memory, SQLite, PostgreSQL) gained an `after` keyset-cursor parameter on
+  their status/due listings to support this.
 
 - **A candidate-local failure during Graph recovery no longer aborts the
   whole tick (#1143).** `recover_queued_graph_runs` and

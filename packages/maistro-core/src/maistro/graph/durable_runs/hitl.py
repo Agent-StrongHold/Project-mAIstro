@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from maistro.runs.model import RunStatus
 
-from .fair_scan import fair_page_scan
+from .fair_scan import ScanContinuation, fair_page_scan
 
 if TYPE_CHECKING:
     from .protocol import DurableRunStore
@@ -109,6 +109,7 @@ async def expire_hitl_pauses(
     *,
     now: datetime | None = None,
     limit: int = 100,
+    scan: ScanContinuation[tuple[str, str]] | None = None,
 ) -> list[DurableRunRecord]:
     """Settle at most ``limit`` paused Runs whose persisted deadline elapsed.
 
@@ -122,6 +123,11 @@ async def expire_hitl_pauses(
     cursor and testing each page for an elapsed deadline, so an arbitrarily
     large run of non-HITL or not-yet-due PAUSED Runs ahead of an expired one
     cannot hide it forever behind a fixed-size query.
+
+    ``scan`` is the continuation a repeated tick holds across calls: the walk
+    is bounded per call, and a prefix longer than the bound is crossed only by
+    a tick that resumes where the last one stopped (#1127). One per (this
+    seam, this store).
     """
     if limit <= 0:
         return []
@@ -133,6 +139,7 @@ async def expire_hitl_pauses(
         cursor_of=_paused_cursor_key,
         eligible=lambda record: _expired_hitl_node_id(record, moment) is not None,
         limit=limit,
+        continuation=scan,
     )
     settled: list[DurableRunRecord] = []
     for record in candidates:

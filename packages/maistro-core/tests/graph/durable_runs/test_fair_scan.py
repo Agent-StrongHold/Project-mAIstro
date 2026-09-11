@@ -9,7 +9,11 @@ from __future__ import annotations
 
 import pytest
 
-from maistro.graph.durable_runs.fair_scan import fair_page_scan
+from maistro.graph.durable_runs.fair_scan import (
+    DEFAULT_MAX_INSPECTED,
+    ScanContinuation,
+    fair_page_scan,
+)
 
 pytestmark = [pytest.mark.contract("behavioral")]
 
@@ -145,6 +149,158 @@ async def test_cursor_advances_across_calls_are_not_required_for_one_scan_to_fin
     # Both calls started from cursor=None -- no state carried between them.
     assert calls[0][0] is None
     assert calls[len(calls) // 2][0] is None
+
+
+class TestAContinuationCrossesAPrefixLongerThanTheBound:
+    """The review finding on the first cut: a bounded scan that restarts from
+    the top every tick is the starvation defect one size up. With ordered
+    rows 0..2000, only row 2000 eligible, `limit=1` and the default 2,000-row
+    ceiling, three successive calls returned `[[], [], []]` — each restarted
+    at `None` and fetched the identical twenty pages. A continuation held
+    across ticks is what turns the ceiling into a pace.
+    """
+
+    async def test_a_row_behind_the_ceiling_is_reached_on_the_next_tick(self) -> None:
+        values = list(range(DEFAULT_MAX_INSPECTED + 1))  # 0..2000
+        fetch_page, calls = _int_store(values)
+        scan: ScanContinuation[int] = ScanContinuation()
+
+        def _tick():
+            return fair_page_scan(
+                fetch_page=fetch_page,
+                cursor_of=lambda item: item,
+                eligible=lambda item: item == DEFAULT_MAX_INSPECTED,
+                limit=1,
+                continuation=scan,
+            )
+
+        first = await _tick()
+        assert first == []
+        assert scan.resume_after == DEFAULT_MAX_INSPECTED - 1, (
+            "the tick stopped at the ceiling and must resume after the last row it inspected"
+        )
+        resumed_from = len(calls)
+
+        second = await _tick()
+
+        assert second == [DEFAULT_MAX_INSPECTED]
+        assert calls[resumed_from][0] == DEFAULT_MAX_INSPECTED - 1, (
+            "the second tick must start where the first stopped, not at the top"
+        )
+
+    async def test_the_control_row_just_inside_the_ceiling_is_reached_in_one_tick(self) -> None:
+        values = list(range(DEFAULT_MAX_INSPECTED + 1))
+        fetch_page, _calls = _int_store(values)
+        scan: ScanContinuation[int] = ScanContinuation()
+
+        found = await fair_page_scan(
+            fetch_page=fetch_page,
+            cursor_of=lambda item: item,
+            eligible=lambda item: item == DEFAULT_MAX_INSPECTED - 1,
+            limit=1,
+            continuation=scan,
+        )
+
+        assert found == [DEFAULT_MAX_INSPECTED - 1]
+
+    async def test_a_stop_at_the_limit_resumes_after_the_last_inspected_row_not_the_page(
+        self,
+    ) -> None:
+        """Resuming after the *page* would skip the rest of the page the limit
+        was reached in — a second starvation, page-sized. The cursor advances
+        per row."""
+        values = list(range(10))
+        fetch_page, calls = _int_store(values)
+        scan: ScanContinuation[int] = ScanContinuation()
+
+        first = await fair_page_scan(
+            fetch_page=fetch_page,
+            cursor_of=lambda item: item,
+            eligible=lambda item: item % 2 == 0,
+            limit=1,
+            page_size=10,
+            continuation=scan,
+        )
+        second = await fair_page_scan(
+            fetch_page=fetch_page,
+            cursor_of=lambda item: item,
+            eligible=lambda item: item % 2 == 0,
+            limit=1,
+            page_size=10,
+            continuation=scan,
+        )
+
+        assert (first, second) == ([0], [2])
+        assert calls[1][0] == 0
+
+    async def test_walking_off_the_end_restarts_from_the_top(self) -> None:
+        """The one restart the scan performs itself: once it has seen the end
+        of the store, the rows before this tick's starting point are owed a
+        turn, so the next tick starts at the top."""
+        values = [1, 2, 3, 4]
+        fetch_page, calls = _int_store(values)
+        scan: ScanContinuation[int] = ScanContinuation(resume_after=2)
+
+        found = await fair_page_scan(
+            fetch_page=fetch_page,
+            cursor_of=lambda item: item,
+            eligible=lambda item: item == 1,
+            limit=1,
+            continuation=scan,
+        )
+
+        assert found == []
+        assert scan.resume_after is None
+        assert calls[0][0] == 2
+
+        again = await fair_page_scan(
+            fetch_page=fetch_page,
+            cursor_of=lambda item: item,
+            eligible=lambda item: item == 1,
+            limit=1,
+            continuation=scan,
+        )
+
+        assert again == [1]
+
+    async def test_a_position_past_the_end_costs_one_empty_tick_then_restarts(self) -> None:
+        """A stale position — the store shrank, or the ordering moved — is
+        harmless: keyset paging reads strictly after it, finds nothing, and the
+        scan resets itself."""
+        values = [1, 2, 3]
+        fetch_page, _calls = _int_store(values)
+        scan: ScanContinuation[int] = ScanContinuation(resume_after=999)
+
+        assert (
+            await fair_page_scan(
+                fetch_page=fetch_page,
+                cursor_of=lambda item: item,
+                eligible=lambda item: True,
+                limit=1,
+                continuation=scan,
+            )
+            == []
+        )
+        assert scan.resume_after is None
+
+    async def test_a_fetch_failure_leaves_the_continuation_where_it_was(self) -> None:
+        """The tick aborts (#1143's infrastructure-wide class); the position
+        it had reached before the failure is still the right place to resume."""
+        scan: ScanContinuation[int] = ScanContinuation(resume_after=7)
+
+        async def fetch_page(_cursor, _page_size):
+            raise ConnectionError("database connection lost")
+
+        with pytest.raises(ConnectionError):
+            await fair_page_scan(
+                fetch_page=fetch_page,
+                cursor_of=lambda item: item,
+                eligible=lambda _item: True,
+                limit=1,
+                continuation=scan,
+            )
+
+        assert scan.resume_after == 7
 
 
 async def test_a_non_positive_limit_is_a_noop_and_never_fetches() -> None:
