@@ -53,6 +53,11 @@ history:
 
 # SPEC-208: Foreign harness adapter
 
+> **Retirement note (#1154):** The historical `NodeRun` executor seam described
+> below is not a supported standalone Graph execution path. `NodeExecutor` is
+> provider-level plumbing only; the canonical durable Graph executor owns the
+> Run/NodeRun/Attempt lifecycle around any capability turn.
+
 **Implements:** ADR-061526-f383. ADR-061526-f383 decides *that* maistro wraps foreign agent harnesses behind a
 `harness_runner` slot, can be wrapped the same way by other orchestrators, and adopts an
 import-wide/export-narrow posture for agent and skill formats. This spec defines *how*: the slot
@@ -202,12 +207,10 @@ harness instead of the LLM. This needs an *execution* seam, not a strategy: ADR-
 `HarnessNodeStrategy.execute()` did not match that interface and was **not** built as such. The
 as-built design instead adds a distinct seam:
 
-- **`NodeExecutor` protocol** (`graph/node.py`) — a non-LLM execution backend. When a `NodeRun`
-  carries an `executor`, `execute()` dispatches to `_execute_via_executor()`, which **reuses** the
-  existing circuit-breaker, `IterationBudget`, retry, and success/failure/telemetry plumbing but
-  replaces "call `llm_call`, parse text" with "call the executor, get a parsed output." The shared
-  per-attempt guard (cancel/circuit/budget) is factored into `_preflight_stop()`, used by both the
-  LLM and executor paths.
+- **`NodeExecutor` protocol** (`graph/node.py`) — a provider-level seam for a typed capability
+  result. It does not own a node lifecycle or dispatch a Graph by itself; when wired into a
+  durable node, the canonical executor owns the surrounding Run/NodeRun/Attempt records and
+  Attempt-scoped retry/failure evidence.
 - **`HarnessStrategy`** (`graph/strategy.py`) — the shaper half: role `AgentRole.HARNESS`, output
   type `HarnessOutput`, registered in `STRATEGY_REGISTRY` so a DAG can schedule a harness node by
   role.

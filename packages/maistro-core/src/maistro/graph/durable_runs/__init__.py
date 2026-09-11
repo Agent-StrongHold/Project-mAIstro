@@ -8,6 +8,8 @@ canonical NodeRuns and Attempts so execution can resume after process loss.
 The public durable execution entrypoints cross the canonical physical boundary
 through ``Attempt -> AttemptExecutionService -> ExecutionRuntime``. Traversal
 semantics live beside that durable executor and never create a second lifecycle.
+The provider adapters in ``maistro.graph.node`` are only invoked inside this
+Attempt-owned path; they are not standalone Graph execution APIs.
 """
 
 from __future__ import annotations

@@ -12,6 +12,9 @@ def test_pre_durable_executor_is_not_a_graph_public_surface() -> None:
     assert not hasattr(graph, "run_graph")
     assert not hasattr(graph, "GraphRun")
 
+    node = importlib.import_module("maistro.graph.node")
+    assert not hasattr(node, "NodeRun")
+
     executor = importlib.import_module("maistro.graph.executor")
     assert "run_graph" not in vars(executor)
     assert "GraphRun" not in vars(executor)

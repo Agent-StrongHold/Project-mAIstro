@@ -1,17 +1,13 @@
-"""Harness-backed graph-node executor (SPEC-208 §5 outbound).
+"""Harness capability adapter (SPEC-208 §5 outbound).
 
-Bridges the graph's per-node ``NodeExecutor`` seam (``graph.node``) to the
-capability-framework :class:`~maistro.capabilities.HarnessSessionManager`, so a
-graph node can be driven by a *foreign coding harness* instead of the LLM:
-
-    node.execute() → HarnessNodeExecutor.run()
-                       → manager.start()  (resolve harness_runner slot)
-                       → manager.send()   (Warden-scanned, policy-gated turn)
-                       → HarnessOutput
-                       → manager.stop()
+Bridges the graph's provider-level ``NodeExecutor`` protocol to the
+capability-framework :class:`~maistro.capabilities.HarnessSessionManager`.
+The canonical durable Graph executor owns the Attempt around this adapter;
+this class only drives one already-admitted capability turn and never creates
+or advances Run, NodeRun, or Attempt lifecycle.
 
 The manager already wraps the raw harness in Warden + policy gating, so this
-executor only has to (a) map the graph role onto an ``AgentSpec`` and (b)
+adapter only has to (a) map the graph role onto an ``AgentSpec`` and (b)
 normalize the response envelope — OpenAI ``choices`` shape *or* a flat
 ``{content, actions}`` shape — into :class:`~maistro.graph.types.HarnessOutput`.
 """
@@ -71,11 +67,11 @@ def _extract_actions(envelope: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 class HarnessNodeExecutor:
-    """``NodeExecutor`` that drives a foreign harness for one graph node.
+    """Provider adapter for one foreign-harness capability turn.
 
     Structurally satisfies :class:`maistro.graph.node.NodeExecutor`. One
-    executor instance may back many nodes; each :meth:`run` starts and stops its
-    own harness session so nodes never share turn state.
+    adapter instance may back many durable node Attempts; each :meth:`run`
+    starts and stops its own harness session so nodes never share turn state.
     """
 
     def __init__(self, manager: HarnessSessionManager, *, workdir: str = ".") -> None:
