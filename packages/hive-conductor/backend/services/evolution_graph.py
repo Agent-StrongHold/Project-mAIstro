@@ -271,14 +271,25 @@ class _TournamentWork:
         common = sorted(set(genome_a.eval_scores) & set(genome_b.eval_scores))
         completion_key = f"{ctx.node_run_id if ctx is not None else 'legacy'}:{inputs.pair_index}"
         if completion_key not in self._completed_pairs:
+            record_once = getattr(self._cycle.tournament, "record_battle_once", None)
             for benchmark in common:
-                self._cycle.tournament.record_battle(
-                    benchmark=benchmark,
-                    genome_a_id=genome_a.id,
-                    genome_b_id=genome_b.id,
-                    score_a=genome_a.eval_scores[benchmark],
-                    score_b=genome_b.eval_scores[benchmark],
-                )
+                if record_once is not None and ctx is not None:
+                    record_once(
+                        operation_key=f"{completion_key}:{benchmark}",
+                        benchmark=benchmark,
+                        genome_a_id=genome_a.id,
+                        genome_b_id=genome_b.id,
+                        score_a=genome_a.eval_scores[benchmark],
+                        score_b=genome_b.eval_scores[benchmark],
+                    )
+                else:
+                    self._cycle.tournament.record_battle(
+                        benchmark=benchmark,
+                        genome_a_id=genome_a.id,
+                        genome_b_id=genome_b.id,
+                        score_a=genome_a.eval_scores[benchmark],
+                        score_b=genome_b.eval_scores[benchmark],
+                    )
             self._completed_pairs.add(completion_key)
 
         next_index = inputs.pair_index + 1
@@ -360,7 +371,7 @@ def _publish_tournament_elos(cycle: Any, population: Any) -> None:
             population.add(genome)
 
 
-async def _finalize_cycle(
+async def _finalize_cycle(  # noqa: C901
     cycle: Any,
     population: Any,
     config: Any,
@@ -372,6 +383,12 @@ async def _finalize_cycle(
 
     completed = getattr(population, "_evolve_completed_finalizations", {})
     population._evolve_completed_finalizations = completed
+    operation_key = f"finalize:{node_run_id}"
+    get_operation = getattr(population, "get_operation", None)
+    record_operation = getattr(population, "record_operation", None)
+    persisted = get_operation(operation_key) if get_operation is not None else None
+    if persisted is not None:
+        return _FinalizeOutput.model_validate(persisted)
     if node_run_id in completed:
         return _FinalizeOutput.model_validate(completed[node_run_id])
 
@@ -414,7 +431,10 @@ async def _finalize_cycle(
         population_size=len(population.list_all()),
         new_genome_ids=new_ids,
     )
-    completed[node_run_id] = output.model_dump(mode="json")
+    output_data = output.model_dump(mode="json")
+    completed[node_run_id] = output_data
+    if record_operation is not None:
+        record_operation(operation_key, output_data)
     return output
 
 

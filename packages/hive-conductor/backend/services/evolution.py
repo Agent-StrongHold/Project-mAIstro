@@ -140,6 +140,13 @@ def get_evolution_service() -> _EvolutionService:
     return _service
 
 
+async def recover_evolution_runs(*, limit: int = 100) -> int:
+    """Recovery cadence entry point; Evolve never owns the recovery loop."""
+    if _service is None:
+        return 0
+    return await _service.recover_canonical_runs(limit=limit)
+
+
 async def start_evolution() -> None:
     global _service
     _service = _EvolutionService()
@@ -185,11 +192,18 @@ class _EvolutionService:
 
     async def run_loop(self) -> None:
         try:
+            from pathlib import Path
+
+            from config import get_settings
+
             from maistro_evolve.population import PopulationStore
             from maistro_evolve.tournament import EloTournament
 
-            self._population = PopulationStore()
-            self._tournament = EloTournament()
+            data_dir = Path(get_settings().conductor_data_dir).expanduser()
+            data_dir.mkdir(parents=True, exist_ok=True)
+            db_path = data_dir / "evolution.db"
+            self._population = PopulationStore(db_path=db_path)
+            self._tournament = EloTournament(db_path=db_path)
         except Exception as exc:
             logger.warning("Evolution population init failed: %s", exc)
             return
@@ -243,6 +257,52 @@ class _EvolutionService:
             pop_size,
         )
         return record.run_id
+
+    async def recover_canonical_runs(self, *, limit: int = 100) -> int:
+        """Rebuild Evolve's domain adapter and resume only canonical Evolve Runs."""
+        from maistro.graph.durable_runs import recover_queued_graph_runs, resume_due_graph_runs
+        from maistro_evolve.cycle import EvolutionConfig, EvolutionCycle
+        from maistro_evolve.harness import EvalHarness
+        from services.evolution_graph import _engine_container, _resolver
+
+        if self._population is None or self._tournament is None:
+            return 0
+        owner = _engine_container()
+        if owner.graph_run_store is None:
+            return 0
+        config = EvolutionConfig(self_improve=True, self_improve_top_n=3)
+        harness = EvalHarness(benchmark_fidelity="proxy")
+        llm_call = self._build_llm_call()
+
+        def resolver_factory(_run: Any) -> Any:
+            cycle = EvolutionCycle(harness=harness, tournament=self._tournament)
+            return _resolver(
+                cycle=cycle,
+                population=self._population,
+                config=config,
+                llm_call=llm_call,
+            )
+
+        def eligible(run: Any) -> bool:
+            return run.provenance.get("admission_source") == "evolve"
+
+        recovered = await recover_queued_graph_runs(
+            store=owner.graph_run_store,
+            run_store=owner.run_store,
+            node_resolver_factory=resolver_factory,
+            eligible=eligible,
+            events=owner.event_bus,
+            limit=limit,
+        )
+        resumed = await resume_due_graph_runs(
+            store=owner.graph_run_store,
+            run_store=owner.run_store,
+            node_resolver_factory=resolver_factory,
+            eligible=eligible,
+            events=owner.event_bus,
+            limit=limit,
+        )
+        return recovered + resumed
 
     def _build_llm_call(self):
         """Build the Evolve adapter over the container's governed model egress."""

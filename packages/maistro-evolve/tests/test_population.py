@@ -54,6 +54,18 @@ def store(request: pytest.FixtureRequest, tmp_path: Path) -> PopulationStore:
     return PopulationStore(tmp_path / "pop.db")
 
 
+def test_domain_operation_markers_survive_reopen(tmp_path: Path) -> None:
+    db_path = tmp_path / "population.db"
+    first = PopulationStore(db_path=db_path)
+    first.record_operation("finalize:node-1", {"population_size": 3})
+
+    reopened = PopulationStore(db_path=db_path)
+
+    assert reopened.get_operation("finalize:node-1") == {"population_size": 3}
+    reopened.record_operation("finalize:node-1", {"population_size": 99})
+    assert reopened.get_operation("finalize:node-1") == {"population_size": 3}
+
+
 def test_add_and_get_roundtrip(store: PopulationStore) -> None:
     genome = _genome("g1", fitness_score=0.5)
     store.add(genome)
