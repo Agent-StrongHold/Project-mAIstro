@@ -14,19 +14,23 @@ jobs:
         with:
           fetch-depth: 1
           persist-credentials: false
-      - name: Prepare locked test dependencies for isolated local verification
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build locked identity and test dependency wheels
         run: |
-          python3 - <<'PY'
+          python - <<'PY'
           import pathlib, tomllib
           lock = tomllib.loads(pathlib.Path('uv.lock').read_text())
-          needed = {'structlog', 'aiosqlite', 'hypothesis', 'ruff', 'asyncpg', 'pgvector', 'fastmcp', 'pynacl', 'pytest-timeout', 'mypy', 'vulture', 'types-pyyaml', 'types-regex'}
-          selected = {p['name']: p['version'] for p in lock['package'] if p['name'].lower() in needed}
-          pathlib.Path('verification-requirements.txt').write_text(''.join(f'{name}=={version}\n' for name,version in sorted(selected.items())))
+          needed = {'bip-utils', 'fastapi', 'pytest', 'pytest-asyncio'}
+          registry = {p['name']: p['version'] for p in lock['package'] if 'registry' in p.get('source', {})}
+          pathlib.Path('verification-requirements.txt').write_text(''.join(f'{n}=={v}\n' for n,v in sorted(registry.items()) if n in needed))
+          pathlib.Path('verification-constraints.txt').write_text(''.join(f'{n}=={v}\n' for n,v in sorted(registry.items())))
           PY
-          python3 -m pip download -r verification-requirements.txt --dest verification-wheels --only-binary=:all: --python-version 3.13 --implementation cp --abi cp313 --platform manylinux_2_28_x86_64 --platform manylinux2014_x86_64 --platform linux_x86_64
+          python -m pip wheel -r verification-requirements.txt -c verification-constraints.txt --wheel-dir verification-wheels
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: pr1276-test-dependencies
+          name: pr1276-identity-dependencies
           path: |
             verification-wheels
             verification-requirements.txt
