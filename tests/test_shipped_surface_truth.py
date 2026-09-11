@@ -156,6 +156,52 @@ def main(argv=None):
     )
 
 
+def test_workspace_project_script_resolves_member_source(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "pyproject.toml",
+        """
+[project]
+name = "workspace"
+version = "0.0.0"
+[project.scripts]
+workspace-cli = "member.cli:main"
+""",
+    )
+    _write(
+        tmp_path / "packages/member/src/member/cli.py",
+        """
+def main():
+    return 0
+""",
+    )
+    surfaces = discover_cli_surfaces(tmp_path, [], ["pyproject.toml"])
+    assert [(item.source, item.route, item.handler) for item in surfaces] == [
+        ("packages/member/src/member/cli.py", "workspace-cli", "main")
+    ]
+
+
+def test_direct_python_module_entrypoint_is_discovered(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "cli/free_router.py",
+        """
+def main():
+    return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+""",
+    )
+    surfaces = discover_cli_surfaces(tmp_path, ["cli"])
+    assert [(item.route, item.handler) for item in surfaces] == [("free_router", "main")]
+
+    (tmp_path / "backend").mkdir()
+    (tmp_path / "frontend").mkdir()
+    matrix = _matrix()
+    matrix["cli_roots"] = ["cli"]
+    errors = validate_matrix(tmp_path, matrix)
+    assert any("unclassified CLI surface" in error and "free_router" in error for error in errors)
+
+
 def test_missing_cli_surface_disposition_fails_closed(tmp_path: Path) -> None:
     _write(
         tmp_path / "cli/app.py",

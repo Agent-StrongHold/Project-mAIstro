@@ -250,8 +250,45 @@ def _cli_call_surface(node: ast.Call, source: str) -> BackendSurface | None:
     return None
 
 
+def _is_main_guard(node: ast.If) -> bool:
+    test = node.test
+    if not isinstance(test, ast.Compare) or len(test.comparators) != 1:
+        return False
+    left, right = test.left, test.comparators[0]
+    return (
+        isinstance(left, ast.Name)
+        and left.id == "__name__"
+        and isinstance(right, ast.Constant)
+        and right.value == "__main__"
+    ) or (
+        isinstance(right, ast.Name)
+        and right.id == "__name__"
+        and isinstance(left, ast.Constant)
+        and left.value == "__main__"
+    )
+
+
+def _cli_direct_surface(tree: ast.Module, path: Path, source: str) -> BackendSurface | None:
+    """Find a module executable directly by Python's ``__main__`` protocol.
+
+    A PEP 621 script is not the only way a shipped package is run: the RSI
+    launcher invokes two modules by file path, and ``python -m`` uses a package
+    ``__main__.py``. Keep those execution forms in the same disposition gate
+    without importing arbitrary production modules.
+    """
+    if not any(isinstance(node, ast.If) and _is_main_guard(node) for node in tree.body):
+        return None
+    has_main = any(
+        isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)) and node.name == "main"
+        for node in ast.walk(tree)
+    )
+    route = path.parent.name if path.stem == "__main__" else path.stem
+    handler = "main" if has_main else "__main__"
+    return BackendSurface(source, CLI_METHOD, route, handler)
+
+
 def _cli_command_surfaces(path: Path, repo_root: Path) -> list[BackendSurface]:
-    """Find declared commands in shipped Typer and argparse entrypoints.
+    """Find declared commands and direct module entrypoints.
 
     This is intentionally syntax-level discovery: importing a CLI can execute
     configuration or prompt for input. A command declaration is still a stable
@@ -264,6 +301,9 @@ def _cli_command_surfaces(path: Path, repo_root: Path) -> list[BackendSurface]:
         return []
     source = path.relative_to(repo_root).as_posix()
     surfaces: set[BackendSurface] = set()
+    direct_surface = _cli_direct_surface(tree, path, source)
+    if direct_surface is not None:
+        surfaces.add(direct_surface)
     for node in ast.walk(tree):
         if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
             surface = _cli_decorator_surface(node, source)
@@ -276,11 +316,19 @@ def _cli_command_surfaces(path: Path, repo_root: Path) -> list[BackendSurface]:
     return sorted(surfaces)
 
 
-def _module_source(project_file: Path, module: str) -> Path | None:
+def _module_source(project_file: Path, module: str, repo_root: Path) -> Path | None:
     """Resolve a PEP 621 script target without importing the package."""
     module_path = Path(*module.split("."))
     package_root = project_file.parent
-    for source_root in (package_root / "src", package_root):
+    source_roots = [package_root / "src", package_root]
+    # The workspace metadata publishes package scripts too. Its target is
+    # supplied by a workspace member rather than a root-level ``src`` tree.
+    packages_root = repo_root / "packages"
+    if project_file == repo_root / "pyproject.toml" and packages_root.is_dir():
+        source_roots.extend(
+            package / "src" for package in sorted(packages_root.iterdir()) if package.is_dir()
+        )
+    for source_root in source_roots:
         candidate = source_root / f"{module_path}.py"
         if candidate.is_file():
             return candidate
@@ -308,7 +356,7 @@ def _cli_project_script_surfaces(path: Path, repo_root: Path) -> list[BackendSur
         module, separator, handler = target.partition(":")
         if not separator or not module or not handler:
             raise ValueError(f"invalid CLI project script target in {path}: {target!r}")
-        source_path = _module_source(path, module)
+        source_path = _module_source(path, module, repo_root)
         if source_path is None:
             raise ValueError(f"CLI project script target does not exist in {path}: {target!r}")
         surfaces.append(

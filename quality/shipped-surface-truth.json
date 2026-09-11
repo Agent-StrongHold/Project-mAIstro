@@ -1,5 +1,5 @@
 {
-  "_comment": "Truthful shipped-surface matrix (#465). Generated classification is reviewed content: every discovered mutating/WebSocket backend route, configured CLI command or published project script, and frontend execution signal must carry an exact disposition; scripts/check-shipped-surface-truth.py fails closed on drift. Facades stay visible as unresolved/disabled with owning issues rather than being hidden.",
+  "_comment": "Truthful shipped-surface matrix (#465). Generated classification is reviewed content: every discovered mutating/WebSocket backend route, configured CLI command or direct module, published project script, and frontend execution signal must carry an exact disposition; scripts/check-shipped-surface-truth.py fails closed on drift. Facades stay visible as unresolved/disabled with owning issues rather than being hidden.",
   "schema_version": 2,
   "backend_roots": [
     "packages"
@@ -2339,6 +2339,26 @@
   ],
   "cli_surfaces": [
     {
+      "source": "packages/maistro-bootstrap/src/maistro_bootstrap/builders/model_selector.py",
+      "method": "CLI",
+      "route": "model_selector",
+      "handler": "__main__",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "standalone bootstrap model benchmark and cache utility is local operator tooling",
+      "truth_contract": "selects and caches local builder-model metadata; it does not create a user Run"
+    },
+    {
+      "source": "packages/maistro-bootstrap/src/maistro_bootstrap/cli.py",
+      "method": "CLI",
+      "route": "cli",
+      "handler": "main",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "direct installer module invocation owns local bootstrap artifacts",
+      "truth_contract": "resolves or applies local installation artifacts; it does not create a user Run"
+    },
+    {
       "source": "packages/maistro-bootstrap/src/maistro_bootstrap/cli.py",
       "method": "CLI",
       "route": "main",
@@ -2511,6 +2531,16 @@
     {
       "source": "packages/maistro-registry/src/maistro_registry/cli.py",
       "method": "CLI",
+      "route": "cli",
+      "handler": "main",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "direct governance module invocation is deliberately local to the operator checkout",
+      "truth_contract": "operator-side ADR/spec registry validation or artifact generation; it does not run user work"
+    },
+    {
+      "source": "packages/maistro-registry/src/maistro_registry/cli.py",
+      "method": "CLI",
       "route": "generate",
       "handler": "main",
       "disposition": "local-only",
@@ -2611,6 +2641,16 @@
     {
       "source": "packages/maistro-rsi/src/maistro_rsi/__main__.py",
       "method": "CLI",
+      "route": "maistro_rsi",
+      "handler": "main",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "python -m RSI entrypoint delegates to the explicit self-improvement and promotion lifecycle",
+      "effect_owner": "maistro-rsi self-improvement cycle and promotion gate"
+    },
+    {
+      "source": "packages/maistro-rsi/src/maistro_rsi/__main__.py",
+      "method": "CLI",
       "route": "review",
       "handler": "main",
       "disposition": "canonical",
@@ -2641,6 +2681,16 @@
     {
       "source": "packages/maistro-rsi/src/maistro_rsi/cli.py",
       "method": "CLI",
+      "route": "cli",
+      "handler": "main",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "direct RSI CLI module invocation delegates to the explicit self-improvement lifecycle",
+      "effect_owner": "maistro-rsi self-improvement cycle and promotion gate"
+    },
+    {
+      "source": "packages/maistro-rsi/src/maistro_rsi/cli.py",
+      "method": "CLI",
       "route": "maistro-rsi",
       "handler": "main",
       "disposition": "canonical",
@@ -2657,12 +2707,33 @@
       "production_enabled": true,
       "reason": "shipped RSI command delegates to the RSI cycle and its explicit promotion gate",
       "effect_owner": "maistro-rsi self-improvement cycle and promotion gate"
+    },
+    {
+      "source": "packages/maistro-rsi/src/maistro_rsi/free_router.py",
+      "method": "CLI",
+      "route": "free_router",
+      "handler": "main",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "launcher helper resolves and registers concrete free-model aliases for RSI execution",
+      "effect_owner": "maistro-rsi free-router selection and gateway registration"
+    },
+    {
+      "source": "packages/maistro-rsi/src/maistro_rsi/model_identifiers.py",
+      "method": "CLI",
+      "route": "model_identifiers",
+      "handler": "main",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "launcher security boundary validates model identifiers before credentials are mounted",
+      "truth_contract": "canonicalizes or refuses a model roster; it does not create a user Run"
     }
   ],
   "cli_project_roots": [
     "packages/maistro-core/pyproject.toml",
     "packages/maistro-rsi/pyproject.toml",
     "packages/maistro-bootstrap/pyproject.toml",
-    "packages/maistro-registry/pyproject.toml"
+    "packages/maistro-registry/pyproject.toml",
+    "pyproject.toml"
   ]
 }

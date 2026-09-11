@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  tests/: +5
+  tests/: +7
 ---
 # fix-m1-1122-websocket-shipped-surface-dfc9
 
-Four new tests in `test_shipped_surface_truth.py` for #1122:
+Seven new tests in `test_shipped_surface_truth.py` for #1122:
 
 - `discover_backend_surfaces` finds a `@router.websocket(...)` route and
   reports it with the synthetic method `WEBSOCKET`, alongside an ordinary
@@ -17,6 +17,10 @@ Four new tests in `test_shipped_surface_truth.py` for #1122:
 - A published PEP 621 `project.scripts` entrypoint is discovered even when its
   module has only a standalone argparse parser, and an undisposed entrypoint
   fails closed as an unclassified CLI surface.
+- A workspace-level PEP 621 script resolves its member package source without
+  importing the package.
+- A direct Python module entrypoint (including the RSI launcher modules) is
+  discovered and fails closed when it lacks a CLI disposition.
 - An undisposed CLI command fails closed as an unclassified CLI surface.
 
 No tests removed or renamed.
