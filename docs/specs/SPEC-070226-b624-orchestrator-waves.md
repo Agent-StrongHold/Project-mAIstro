@@ -38,6 +38,11 @@ history:
 
 # SPEC-070226-b624: General task planner & orchestration — SuperPlanner waves as Repertoire ensemble
 
+> **Retirement note (#1154):** The historical `GraphRun` examples in this spec
+> predate canonical durable execution. Implementations must lower wave work to
+> durable Graph Nodes and execute through `maistro.graph.durable_runs`, where
+> Run/NodeRun/Attempt evidence is authoritative.
+
 ## Context
 
 ADR-071 specifies SuperPlanner as a general-purpose task planner that orchestrates agent waves

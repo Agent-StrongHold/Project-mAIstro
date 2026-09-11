@@ -6,8 +6,8 @@ traversal facts. This package persists the two together with chronological
 canonical NodeRuns and Attempts so execution can resume after process loss.
 
 The public durable execution entrypoints cross the canonical physical boundary
-through ``Attempt -> AttemptExecutionService -> ExecutionRuntime`` while the
-legacy traversal module remains the implementation home for Graph semantics.
+through ``Attempt -> AttemptExecutionService -> ExecutionRuntime``. Traversal
+semantics live beside that durable executor and never create a second lifecycle.
 """
 
 from __future__ import annotations

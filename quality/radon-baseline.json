@@ -333,16 +333,6 @@
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
-      "key": "packages/maistro-core/src/maistro/graph/run.py::GraphRun._execute",
-      "path": "packages/maistro-core/src/maistro/graph/run.py",
-      "line": 276,
-      "name": "_execute",
-      "classname": "GraphRun",
-      "rank": "C",
-      "complexity": 20,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
       "key": "packages/maistro-core/src/maistro/integrations/ntfy.py::NtfyClient.send",
       "path": "packages/maistro-core/src/maistro/integrations/ntfy.py",
       "line": 49,

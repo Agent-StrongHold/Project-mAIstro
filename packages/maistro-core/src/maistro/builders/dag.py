@@ -10,11 +10,10 @@ layers that already exist:
   loop-back targets) and lowers that description onto the existing
   :class:`~maistro.builders.graph.PipelineGraph` +
   :class:`~maistro.builders.graph_executor.GraphPipelineExecutor`.
-- :mod:`maistro.graph` — the ADR-062 graph execution protocol.
+- :mod:`maistro.graph` — the graph-domain description protocol.
   :func:`builders_dag_to_graph` converts a :class:`BuildersDAG` into the
-  ADR-062 graph description (``GraphConfig``, exposed here under the SPEC's
-  ``GraphSpec`` name) so the same pipeline can run as a
-  :class:`~maistro.graph.run.GraphRun`.
+  legacy role-level description used by migration tooling; physical execution
+  belongs to the canonical durable Graph entrypoint.
 
 Loop-back control flow
 ----------------------
@@ -326,13 +325,13 @@ def _lower_edges(dag: BuildersDAG, role_of: dict[str, AgentRole]) -> tuple[list[
 
 
 def builders_dag_to_graph(dag: BuildersDAG) -> GraphSpec:
-    """Convert a :class:`BuildersDAG` into an ADR-062 ``GraphSpec``.
+    """Convert a :class:`BuildersDAG` into an ADR-062-compatible role graph.
 
-    The ADR-062 executor (:class:`~maistro.graph.run.GraphRun`) dispatches
-    by :class:`AgentRole` strategy, so stages sharing a role are merged into
-    one node (e.g. test/implement/revise all lower onto CODER). Loop-back
-    edges are emitted for gates that declare a ``graph_condition``; the
-    bounded-iteration property maps onto ``max_cycles``.
+    Stages sharing a role are merged into one node (e.g. test/implement/revise
+    all lower onto CODER). Loop-back edges are emitted for gates that declare a
+    ``graph_condition``; the bounded-iteration property maps onto
+    ``max_cycles``. This description is not an execution authority; canonical
+    durable Graph execution owns Run evidence.
     """
     roles: list[AgentRole] = []
     role_of: dict[str, AgentRole] = {}
