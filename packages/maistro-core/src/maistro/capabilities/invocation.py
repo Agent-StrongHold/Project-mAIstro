@@ -241,12 +241,13 @@ class InMemoryInvocationStore:
                 in {
                     InvocationStatus.CREATED,
                     InvocationStatus.RUNNING,
+                    InvocationStatus.COMPLETED,
                     InvocationStatus.UNKNOWN,
                 }
                 for item in self._items.values()
             ):
                 raise UnsafeEffectRetry(
-                    f"effect {invocation.effect_key!r} already has an active Invocation"
+                    f"effect {invocation.effect_key!r} already has an active or completed Invocation"
                 )
             persisted = invocation.model_copy(deep=True)
             self._items[persisted.invocation_id] = persisted
@@ -397,18 +398,33 @@ class InvocationExecutionService:
                     f"capability {binding.capability!r} unavailable: {provider.reason}"
                 )
             resolved = ResolvedBinding.from_provider(binding, provider)
-            invocation = await self._store.create(
-                Invocation(
+            try:
+                invocation = await self._store.create(
+                    Invocation(
+                        run_id=run_id,
+                        node_run_id=node_run_id,
+                        attempt_id=attempt_id,
+                        workspace_id=binding.workspace_id,
+                        project_id=binding.project_id,
+                        binding=resolved,
+                        effect_key=effect_key,
+                        request=request,
+                    )
+                )
+            except UnsafeEffectRetry:
+                # Another worker may have completed the effect after our
+                # initial history read. Re-read the canonical row so a stale
+                # admission returns the accepted result instead of dispatching
+                # or surfacing a misleading race error.
+                latest = await self._store.list_effect(
                     run_id=run_id,
                     node_run_id=node_run_id,
-                    attempt_id=attempt_id,
-                    workspace_id=binding.workspace_id,
-                    project_id=binding.project_id,
-                    binding=resolved,
+                    binding_id=binding.binding_id,
                     effect_key=effect_key,
-                    request=request,
                 )
-            )
+                if latest and latest[-1].status is InvocationStatus.COMPLETED:
+                    return latest[-1]
+                raise
             running = invocation.model_copy(
                 update={
                     "status": InvocationStatus.RUNNING,

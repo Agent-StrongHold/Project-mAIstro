@@ -17,6 +17,7 @@ separately: the migration lands with the wiring, in #55.
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -63,33 +64,51 @@ class SqliteInvocationStore:
 
     async def create(self, invocation: Invocation) -> Invocation:
         async with self._lock:
-            cursor = await self._conn.execute(
-                """SELECT 1 FROM capability_invocations
-                   WHERE run_id = ? AND node_run_id = ? AND binding_id = ?
-                     AND effect_key = ? AND status IN (?, ?, ?)
-                   LIMIT 1""",
-                (
-                    invocation.run_id,
-                    invocation.node_run_id,
-                    invocation.binding.binding_id,
-                    invocation.effect_key,
-                    InvocationStatus.CREATED.value,
-                    InvocationStatus.RUNNING.value,
-                    InvocationStatus.UNKNOWN.value,
-                ),
-            )
-            if await cursor.fetchone() is not None:
-                raise UnsafeEffectRetry(
-                    f"effect {invocation.effect_key!r} already has an active Invocation"
+            # Serialize the active-effect check with the insert across all
+            # connections. The partial unique index is the final guard, but a
+            # failed loser must be reported as an unsafe retry and must not
+            # leave its connection holding a transaction lock.
+            try:
+                await self._conn.execute("BEGIN IMMEDIATE")
+                cursor = await self._conn.execute(
+                    """SELECT 1 FROM capability_invocations
+                       WHERE run_id = ? AND node_run_id = ? AND binding_id = ?
+                         AND effect_key = ? AND status IN (?, ?, ?, ?)
+                       LIMIT 1""",
+                    (
+                        invocation.run_id,
+                        invocation.node_run_id,
+                        invocation.binding.binding_id,
+                        invocation.effect_key,
+                        InvocationStatus.CREATED.value,
+                        InvocationStatus.RUNNING.value,
+                        InvocationStatus.COMPLETED.value,
+                        InvocationStatus.UNKNOWN.value,
+                    ),
                 )
-            await self._conn.execute(
-                """INSERT INTO capability_invocations (
-                    invocation_id, run_id, node_run_id, attempt_id, binding_id,
-                    effect_key, status, created_at, payload_json
-                ) VALUES (?,?,?,?,?,?,?,?,?)""",
-                self._row_values(invocation),
-            )
-            await self._conn.commit()
+                if await cursor.fetchone() is not None:
+                    await self._conn.rollback()
+                    raise UnsafeEffectRetry(
+                        f"effect {invocation.effect_key!r} already has an active or completed Invocation"
+                    )
+                await self._conn.execute(
+                    """INSERT INTO capability_invocations (
+                        invocation_id, run_id, node_run_id, attempt_id, binding_id,
+                        effect_key, status, created_at, payload_json
+                    ) VALUES (?,?,?,?,?,?,?,?,?)""",
+                    self._row_values(invocation),
+                )
+                await self._conn.commit()
+            except UnsafeEffectRetry:
+                raise
+            except sqlite3.IntegrityError as exc:
+                await self._conn.rollback()
+                raise UnsafeEffectRetry(
+                    f"effect {invocation.effect_key!r} already has an active or completed Invocation"
+                ) from exc
+            except BaseException:
+                await self._conn.rollback()
+                raise
         return invocation.model_copy(deep=True)
 
     async def get(self, invocation_id: str) -> Invocation | None:
