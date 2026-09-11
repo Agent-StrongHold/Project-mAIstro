@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -125,6 +126,49 @@ async def test_repeated_malformed_answers_preserve_deadline_after_restart(
     )
     assert [record.run_id for record in expired] == [paused.run_id]
     assert expired[0].status is RunStatus.TIMED_OUT
+
+
+@pytest.mark.ac("ADR-090726-9a4e/AC-2")
+@pytest.mark.ac("ADR-090726-9a4e/AC-3")
+@pytest.mark.ac("ADR-090726-9a4e/AC-4")
+async def test_malformed_answer_cannot_beat_timeout_at_deadline(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The durable deadline wins a malformed-answer race for every verdict node."""
+    clock = _Clock(_T0)
+    import maistro.graph.nodes.base as node_base
+
+    monkeypatch.setattr(node_base, "now_utc", clock)
+    for kind, values in _CASES:
+        workspace_id, project_id = await _project()
+        graph = _graph(workspace_id, project_id, kind)
+        database = tmp_path / f"race_{kind.replace('.', '_')}.db"
+        paused = await run_durable_graph(
+            graph,
+            store=SqliteDurableRunStore(database),
+            node_resolver=_resolve,
+            inputs=_inputs(kind, values),
+        )
+        run_id = paused.run_id
+        malformed_store = SqliteDurableRunStore(database)
+        timeout_store = SqliteDurableRunStore(database)
+        results = await asyncio.gather(
+            malformed_store.submit_hitl_answer(run_id, "step", {}, at=_T0 + timedelta(seconds=10)),
+            timeout_store.timeout_hitl(run_id, "step", at=_T0 + timedelta(seconds=10)),
+            return_exceptions=True,
+        )
+
+        assert sum(not isinstance(result, BaseException) for result in results) == 1
+        settled = await SqliteDurableRunStore(database).get(run_id)
+        assert settled is not None
+        assert settled.status is RunStatus.TIMED_OUT
+        with pytest.raises(ValueError, match="not paused"):
+            await malformed_store.submit_hitl_answer(
+                run_id,
+                "step",
+                {"verdict": "approved"},
+                at=_T0 + timedelta(seconds=11),
+            )
 
 
 @pytest.mark.ac("ADR-090726-9a4e/AC-2")
