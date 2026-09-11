@@ -248,3 +248,59 @@ async def test_wait_poll_assigns_a_new_effect_key_to_each_resume(monkeypatch: An
         effect_key="jira.wait_for_subtasks.status:P-1:1",
     )
     assert len(history) == 1
+
+
+async def test_binding_without_endpoint_config_fails_before_http(monkeypatch: Any) -> None:
+    effects = await _effects("jira.search", config={}, provider="jira")
+    called = False
+
+    class Client:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            nonlocal called
+            called = True
+
+    monkeypatch.setattr(httpx, "AsyncClient", Client)
+    result = await JiraPollNode(effect_context=effects).run(
+        {"binding_id": "jira-binding", "jql": "status = Open"},
+        _ctx(),
+    )
+
+    assert result.success is False
+    assert result.error_code == "CapabilityUnavailable"
+    assert called is False
+
+
+async def test_unknown_http_outcome_blocks_a_repeated_poll(monkeypatch: Any) -> None:
+    effects = await _effects("airtable.records", config={}, provider="airtable")
+    calls = 0
+
+    class Response:
+        status_code = 500
+
+        def json(self) -> dict[str, Any]:
+            return {}
+
+    class Client:
+        is_closed = False
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None: ...
+
+        async def __aenter__(self) -> Client:
+            return self
+
+        async def __aexit__(self, *args: Any) -> None: ...
+
+        async def get(self, *args: Any, **kwargs: Any) -> Response:
+            nonlocal calls
+            calls += 1
+            return Response()
+
+    monkeypatch.setattr(httpx, "AsyncClient", Client)
+    node = AirtablePollNode(effect_context=effects)
+    inputs = {"binding_id": "airtable-binding", "base_id": "app-1", "table": "Work"}
+    first = await node.run(inputs, _ctx(run_id="unknown-poll"))
+    second = await node.run(inputs, _ctx(run_id="unknown-poll", attempt_id="attempt-2"))
+
+    assert first.error_code == "PollingHttpError"
+    assert second.error_code == "UnsafeEffectRetry"
+    assert calls == 1

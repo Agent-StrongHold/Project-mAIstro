@@ -191,7 +191,11 @@ async def governed_pm_bindings() -> None:
         (
             "test-jira-cloud-binding",
             "jira.search",
-            {"base_url": "https://acme.atlassian.net", "flavor": "cloud", "email": "alice@example.com"},
+            {
+                "base_url": "https://acme.atlassian.net",
+                "flavor": "cloud",
+                "email": "alice@example.com",
+            },
             "jira",
         ),
         (
@@ -203,7 +207,11 @@ async def governed_pm_bindings() -> None:
         (
             "test-jira-cloud-subtasks-binding",
             "jira.subtasks",
-            {"base_url": "https://acme.atlassian.net", "flavor": "cloud", "email": "alice@example.com"},
+            {
+                "base_url": "https://acme.atlassian.net",
+                "flavor": "cloud",
+                "email": "alice@example.com",
+            },
             "jira",
         ),
         (
