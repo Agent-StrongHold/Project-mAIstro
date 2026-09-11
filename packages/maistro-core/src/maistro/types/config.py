@@ -5,6 +5,8 @@ Pydantic-validated config loaded from YAML.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -160,6 +162,13 @@ class ModelBindingConfig(BaseModel):
         if any(not ref.strip() for ref in value):
             raise ValueError("model Binding refs cannot contain empty values")
         return value
+
+
+if TYPE_CHECKING:
+    # Pydantic discovers these validators through decorators; keep that
+    # reflection-owned public surface visible to production-only Vulture scans.
+    _ = ModelBindingConfig._require_scope_identity
+    _ = ModelBindingConfig._reject_empty_refs
 
 
 class AgentConfig(BaseModel):
