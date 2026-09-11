@@ -54,7 +54,11 @@ async def test_a_sqlite_project_store_yields_the_sqlite_store_with_its_schema(tm
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'canonical_workspace%'"
         ) as cursor:
             tables = {row[0] for row in await cursor.fetchall()}
-        assert tables == {"canonical_workspaces", "canonical_workspace_memberships"}
+        assert tables == {
+            "canonical_workspaces",
+            "canonical_workspace_lifecycle",
+            "canonical_workspace_memberships",
+        }
     finally:
         await conn.close()
 

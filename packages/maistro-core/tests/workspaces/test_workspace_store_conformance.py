@@ -26,6 +26,7 @@ from uuid import uuid4
 
 import pytest
 
+from maistro.projects.scope import ProjectNotFound
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.testing.postgres import postgres_dsn
 from maistro.workspaces.model import (
@@ -42,6 +43,7 @@ class _MemoryBackend:
     true."""
 
     supports_concurrent_writers = False
+    supports_lifecycle_recovery = False
 
     def __init__(self) -> None:
         from maistro.workspaces.store import InMemoryWorkspaceStore
@@ -59,6 +61,7 @@ class _SqliteBackend:
     """A file on disk; each `store()` opens its own connection to it."""
 
     supports_concurrent_writers = False
+    supports_lifecycle_recovery = True
 
     def __init__(self, tmp_path) -> None:
         self._path = tmp_path / "workspaces.db"
@@ -87,6 +90,7 @@ class _PostgresBackend:
     """A migrated database; each `store()` is a new object on the same pool."""
 
     supports_concurrent_writers = True
+    supports_lifecycle_recovery = True
 
     def __init__(self, pool) -> None:
         self._pool = pool
@@ -95,7 +99,9 @@ class _PostgresBackend:
         from maistro.projects.pg_scope_store import PgProjectScopeStore
         from maistro.workspaces.pg_store import PgWorkspaceStore
 
-        return PgWorkspaceStore(self._pool, project_store=PgProjectScopeStore(self._pool))
+        store = PgWorkspaceStore(self._pool, project_store=PgProjectScopeStore(self._pool))
+        await store.recover()
+        return store
 
     async def close(self) -> None:
         return None
@@ -267,6 +273,88 @@ class TestIdentityAndMembershipSurviveTheObjectThatWroteThem:
         # question is whether anything can still reach them.
         assert await second.project_store.get(child.project_id) is None
         assert await second.project_store.get(root.project_id) is None
+
+
+class TestWorkspaceLifecycleRecovery:
+    async def test_restart_completes_creation_after_the_workspace_boundary(self, backend) -> None:
+        """A committed `creating` row is not visible until recovery has a Root."""
+        if not backend.supports_lifecycle_recovery:
+            pytest.skip("the in-memory reference has no durable restart boundary")
+
+        from maistro.workspaces.model import Workspace, WorkspaceMembership
+
+        store = await backend.store()
+        workspace = Workspace(name="Interrupted create")
+        owner = WorkspaceMembership(
+            workspace_id=workspace.workspace_id,
+            user_id=_user("creator-"),
+            role=WorkspaceRole.OWNER,
+            added_at=workspace.created_at,
+        )
+        # This is the durable commit boundary in create(); stopping here is the
+        # failure a process crash creates before the Root Project write.
+        await store._stage_workspace_create(workspace, owner)
+        assert await store.get(workspace.workspace_id) is None
+        with pytest.raises(ProjectNotFound):
+            await store.project_store.root_for_workspace(workspace.workspace_id)
+
+        recovered = await backend.store()
+        assert await recovered.get(workspace.workspace_id) is not None
+        root = await recovered.project_store.root_for_workspace(workspace.workspace_id)
+        assert root.workspace_id == workspace.workspace_id
+        assert root.is_root
+
+    async def test_restart_finishes_delete_when_project_purge_failed_before_it(
+        self, backend
+    ) -> None:
+        if not backend.supports_lifecycle_recovery:
+            pytest.skip("the in-memory reference has no durable restart boundary")
+
+        store = await backend.store()
+        workspace = await store.create(creator_user_id=_user("creator-"), name="Interrupted delete")
+        original = store.project_store.purge_workspace
+
+        async def fail_purge(workspace_id: str) -> None:
+            raise RuntimeError(f"purge failed for {workspace_id}")
+
+        store.project_store.purge_workspace = fail_purge  # type: ignore[method-assign]
+        try:
+            with pytest.raises(RuntimeError, match="purge failed"):
+                await store.delete(workspace.workspace_id)
+        finally:
+            store.project_store.purge_workspace = original  # type: ignore[method-assign]
+
+        assert await store.get(workspace.workspace_id) is None
+        recovered = await backend.store()
+        assert await recovered.get(workspace.workspace_id) is None
+        with pytest.raises(ProjectNotFound):
+            await recovered.project_store.root_for_workspace(workspace.workspace_id)
+
+    async def test_restart_finishes_delete_after_project_purge_before_workspace_delete(
+        self, backend
+    ) -> None:
+        if not backend.supports_lifecycle_recovery:
+            pytest.skip("the in-memory reference has no durable restart boundary")
+
+        store = await backend.store()
+        workspace = await store.create(creator_user_id=_user("creator-"), name="Interrupted delete")
+        original = store._delete_workspace
+
+        async def fail_finalize(workspace_id: str, state: str) -> None:
+            raise RuntimeError(f"finalize failed for {workspace_id}")
+
+        store._delete_workspace = fail_finalize  # type: ignore[method-assign]
+        try:
+            with pytest.raises(RuntimeError, match="finalize failed"):
+                await store.delete(workspace.workspace_id)
+        finally:
+            store._delete_workspace = original  # type: ignore[method-assign]
+
+        assert await store.get(workspace.workspace_id) is None
+        recovered = await backend.store()
+        assert await recovered.get(workspace.workspace_id) is None
+        with pytest.raises(ProjectNotFound):
+            await recovered.project_store.root_for_workspace(workspace.workspace_id)
 
 
 class TestTheRosterOrderingsTheProtocolPromises:
@@ -483,10 +571,12 @@ class TestAnAbsentWorkspaceIsRefusedTheSameWayEverywhere:
 
 class TestARootProjectFailureLeavesNoWorkspaceBehind:
     async def test_create_rolls_back_when_the_root_project_cannot_be_made(self, backend) -> None:
-        """The Root Project is another store's write and cannot join the
-        Workspace's transaction, so `create` compensates. A Workspace without
-        one is a Workspace whose Runs can never be filed, which is worse than
-        no Workspace at all."""
+        """A normal Root Project failure rolls back the staged lifecycle.
+
+        A process crash skips that compensator; the durable lifecycle tests
+        above cover the restart path that completes the staged state instead.
+        A Workspace without a Root is one whose Runs can never be filed.
+        """
         store = await backend.store()
         original = store.project_store.create_root
         seen: list[str] = []

@@ -38,6 +38,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final, NotRequired, TypedDict
 
+from maistro.projects.scope import ProjectNotFound
 from maistro.runs.evidence_json import json_of, model_of
 from maistro.workspaces.model import (
     Workspace,
@@ -62,7 +63,17 @@ class _WorkspaceCreateKwargs(TypedDict):
 
 
 class PgWorkspaceStore:
-    """Durable Workspace identity and membership store."""
+    """Durable Workspace identity and membership store.
+
+    Workspace identity and its Root Project use a durable lifecycle journal.
+    ``creating`` and ``deleting`` rows are hidden from canonical reads and
+    retried by ``recover`` at startup, so a process boundary cannot expose
+    either half as a usable Workspace.
+    """
+
+    _ACTIVE = "active"
+    _CREATING = "creating"
+    _DELETING = "deleting"
 
     def __init__(self, pool: asyncpg.Pool, *, project_store: ProjectScopeStore) -> None:
         self._pool = pool
@@ -98,6 +109,64 @@ class PgWorkspaceStore:
             role=WorkspaceRole.OWNER,
             added_at=workspace.created_at,
         )
+        await self._stage_workspace_create(workspace, owner)
+        try:
+            await self.project_store.create_root(workspace.workspace_id)
+            await self._set_state(workspace.workspace_id, self._ACTIVE)
+        except BaseException:
+            # A normal exception still gets the old all-or-neither behaviour.
+            # A host crash skips this compensator; the durable `creating` row
+            # is then completed by `recover` on the next startup.
+            try:
+                await self.project_store.purge_workspace(workspace.workspace_id)
+                await self._delete_workspace(workspace.workspace_id, self._CREATING)
+            except BaseException:
+                pass
+            raise
+        return workspace
+
+    async def recover(self) -> None:
+        """Complete or roll back lifecycle rows left by an interrupted process."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT workspace_id, state
+                     FROM canonical_workspace_lifecycle
+                    WHERE state <> $1
+                    ORDER BY workspace_id""",
+                self._ACTIVE,
+            )
+            active_rows = await conn.fetch(
+                """SELECT w.workspace_id
+                     FROM canonical_workspaces AS w
+                     JOIN canonical_workspace_lifecycle AS l USING (workspace_id)
+                    WHERE l.state = $1
+                    ORDER BY w.workspace_id""",
+                self._ACTIVE,
+            )
+        for row in rows:
+            workspace_id = row["workspace_id"]
+            if row["state"] == self._CREATING:
+                await self.project_store.create_root(workspace_id)
+                await self._set_state(workspace_id, self._ACTIVE)
+            elif row["state"] == self._DELETING:
+                await self.project_store.purge_workspace(workspace_id)
+                await self._delete_workspace(workspace_id, self._DELETING)
+
+        # Rows written before the journal migration are active by default. Do
+        # not invent a replacement Root Project for one that is missing: roll
+        # the orphaned Workspace back to neither identity instead.
+        for row in active_rows:
+            workspace_id = row["workspace_id"]
+            try:
+                await self.project_store.root_for_workspace(workspace_id)
+            except ProjectNotFound:
+                await self._set_state(workspace_id, self._DELETING)
+                await self.project_store.purge_workspace(workspace_id)
+                await self._delete_workspace(workspace_id, self._DELETING)
+
+    async def _stage_workspace_create(
+        self, workspace: Workspace, owner: WorkspaceMembership
+    ) -> None:
         async with self._pool.acquire() as conn, conn.transaction():
             await conn.execute(
                 """INSERT INTO canonical_workspaces
@@ -109,21 +178,49 @@ class PgWorkspaceStore:
                 workspace.updated_at,
                 json_of(workspace),
             )
+            await conn.execute(
+                """INSERT INTO canonical_workspace_lifecycle
+                       (workspace_id, state)
+                   VALUES ($1, $2)""",
+                workspace.workspace_id,
+                self._CREATING,
+            )
             await self._insert_membership(conn, owner)
 
-        try:
-            await self.project_store.create_root(workspace.workspace_id)
-        except BaseException:
-            await self._purge(workspace.workspace_id)
-            raise
-        return workspace
+    async def _set_state(self, workspace_id: str, state: str) -> None:
+        async with self._pool.acquire() as conn, conn.transaction():
+            status = await conn.execute(
+                """UPDATE canonical_workspace_lifecycle
+                      SET state = $2, updated_at = CURRENT_TIMESTAMP
+                    WHERE workspace_id = $1""",
+                workspace_id,
+                state,
+            )
+        if status.endswith(" 0"):
+            raise WorkspaceNotFound(workspace_id)
+
+    async def _delete_workspace(self, workspace_id: str, state: str) -> None:
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                """DELETE FROM canonical_workspaces AS w
+                    USING canonical_workspace_lifecycle AS l
+                   WHERE w.workspace_id = $1
+                     AND l.workspace_id = w.workspace_id
+                     AND l.state = $2""",
+                workspace_id,
+                state,
+            )
 
     async def get(self, workspace_id: str) -> Workspace | None:
         """Return the Workspace, or ``None`` when no record has that id."""
         async with self._pool.acquire() as conn:
             payload = await conn.fetchval(
-                "SELECT payload FROM canonical_workspaces WHERE workspace_id = $1",
+                """SELECT w.payload
+                     FROM canonical_workspaces AS w
+                     JOIN canonical_workspace_lifecycle AS l USING (workspace_id)
+                    WHERE w.workspace_id = $1 AND l.state = $2""",
                 workspace_id,
+                self._ACTIVE,
             )
         return model_of(Workspace, payload) if payload is not None else None
 
@@ -134,26 +231,40 @@ class PgWorkspaceStore:
             status = await conn.execute(
                 """UPDATE canonical_workspaces
                       SET name = $2, updated_at = $3, payload = $4::text::jsonb
-                    WHERE workspace_id = $1""",
+                    WHERE workspace_id = $1
+                      AND EXISTS (
+                          SELECT 1 FROM canonical_workspace_lifecycle
+                           WHERE workspace_id = $1 AND state = $5
+                      )""",
                 updated.workspace_id,
                 updated.name,
                 updated.updated_at,
                 json_of(updated),
+                self._ACTIVE,
             )
         if status.endswith(" 0"):
             raise WorkspaceNotFound(workspace.workspace_id)
         return updated
 
     async def delete(self, workspace_id: str) -> None:
-        """Remove the Workspace, its memberships, and its Projects."""
-        async with self._pool.acquire() as conn:
+        """Journal deletion before purging Projects, then remove both halves."""
+        await self._set_state_if_active(workspace_id, self._DELETING)
+        await self.project_store.purge_workspace(workspace_id)
+        await self._delete_workspace(workspace_id, self._DELETING)
+
+    async def _set_state_if_active(self, workspace_id: str, state: str) -> None:
+        async with self._pool.acquire() as conn, conn.transaction():
+            await self._lock_workspace(conn, workspace_id)
             status = await conn.execute(
-                "DELETE FROM canonical_workspaces WHERE workspace_id = $1",
+                """UPDATE canonical_workspace_lifecycle
+                      SET state = $2, updated_at = CURRENT_TIMESTAMP
+                    WHERE workspace_id = $1 AND state = $3""",
                 workspace_id,
+                state,
+                self._ACTIVE,
             )
         if status.endswith(" 0"):
             raise WorkspaceNotFound(workspace_id)
-        await self.project_store.purge_workspace(workspace_id)
 
     async def list_for_user(self, user_id: str) -> list[Workspace]:
         """Workspaces the user is a member of, newest first."""
@@ -163,9 +274,12 @@ class PgWorkspaceStore:
                      FROM canonical_workspaces w
                      JOIN canonical_workspace_memberships m
                        ON m.workspace_id = w.workspace_id
-                    WHERE m.user_id = $1
+                     JOIN canonical_workspace_lifecycle l
+                       ON l.workspace_id = w.workspace_id
+                    WHERE m.user_id = $1 AND l.state = $2
                     ORDER BY w.created_at DESC""",
                 user_id,
+                self._ACTIVE,
             )
         return [model_of(Workspace, row["payload"]) for row in rows]
 
@@ -290,16 +404,25 @@ class PgWorkspaceStore:
     async def _lock_workspace(self, conn: Any, workspace_id: str) -> None:
         """Serialise membership writes for one Workspace, or refuse."""
         locked = await conn.fetchval(
-            "SELECT workspace_id FROM canonical_workspaces WHERE workspace_id = $1 FOR UPDATE",
+            """SELECT w.workspace_id
+                 FROM canonical_workspaces AS w
+                 JOIN canonical_workspace_lifecycle AS l USING (workspace_id)
+                WHERE w.workspace_id = $1 AND l.state = $2
+                FOR UPDATE OF w""",
             workspace_id,
+            self._ACTIVE,
         )
         if locked is None:
             raise WorkspaceNotFound(workspace_id)
 
     async def _require_workspace(self, conn: Any, workspace_id: str) -> None:
         exists = await conn.fetchval(
-            "SELECT 1 FROM canonical_workspaces WHERE workspace_id = $1",
+            """SELECT 1
+                 FROM canonical_workspaces AS w
+                 JOIN canonical_workspace_lifecycle AS l USING (workspace_id)
+                WHERE w.workspace_id = $1 AND l.state = $2""",
             workspace_id,
+            self._ACTIVE,
         )
         if exists is None:
             raise WorkspaceNotFound(workspace_id)
@@ -317,14 +440,6 @@ class PgWorkspaceStore:
         )
         if other_owner is None:
             raise WorkspaceAccessDenied("a Workspace must retain at least one owner")
-
-    async def _purge(self, workspace_id: str) -> None:
-        """Undo `create`'s rows after the Root Project failed."""
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                "DELETE FROM canonical_workspaces WHERE workspace_id = $1",
-                workspace_id,
-            )
 
 
 __all__ = ["PgWorkspaceStore"]

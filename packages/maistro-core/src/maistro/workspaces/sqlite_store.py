@@ -26,6 +26,7 @@ import asyncio
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, NotRequired, TypedDict
 
+from maistro.projects.scope import ProjectNotFound
 from maistro.workspaces.model import (
     Workspace,
     WorkspaceAccessDenied,
@@ -62,6 +63,13 @@ CREATE TABLE IF NOT EXISTS canonical_workspaces (
 CREATE INDEX IF NOT EXISTS idx_canonical_workspaces_created
     ON canonical_workspaces(created_at);
 
+CREATE TABLE IF NOT EXISTS canonical_workspace_lifecycle (
+    workspace_id TEXT PRIMARY KEY,
+    state TEXT NOT NULL CHECK (state IN ('creating', 'active', 'deleting')),
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (workspace_id) REFERENCES canonical_workspaces(workspace_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS canonical_workspace_memberships (
     workspace_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
@@ -81,7 +89,11 @@ CREATE INDEX IF NOT EXISTS idx_canonical_workspace_memberships_owner
 
 
 class SqliteWorkspaceStore:
-    """Durable Workspace identity and membership store for a single instance."""
+    """Durable Workspace store with a crash-recoverable lifecycle journal."""
+
+    _ACTIVE = "active"
+    _CREATING = "creating"
+    _DELETING = "deleting"
 
     def __init__(self, conn: aiosqlite.Connection, *, project_store: ProjectScopeStore) -> None:
         self._conn = conn
@@ -89,9 +101,14 @@ class SqliteWorkspaceStore:
         self._write_lock = asyncio.Lock()
 
     async def ensure_schema(self) -> None:
-        """Create the Workspace tables and their indexes."""
+        """Create the Workspace tables and reconcile interrupted lifecycles."""
         await self._conn.executescript(_SCHEMA)
+        await self._conn.execute(
+            """INSERT OR IGNORE INTO canonical_workspace_lifecycle (workspace_id, state)
+               SELECT workspace_id, 'active' FROM canonical_workspaces"""
+        )
         await self._conn.commit()
+        await self.recover()
 
     async def create(
         self,
@@ -117,37 +134,129 @@ class SqliteWorkspaceStore:
             role=WorkspaceRole.OWNER,
             added_at=workspace.created_at,
         )
-        await self._conn.execute(
-            """INSERT INTO canonical_workspaces
-                   (workspace_id, name, created_at, updated_at, payload)
-               VALUES (?, ?, ?, ?, ?)""",
-            (
-                workspace.workspace_id,
-                workspace.name,
-                _iso(workspace.created_at),
-                _iso(workspace.updated_at),
-                workspace.model_dump_json(),
-            ),
-        )
-        await self._write_membership(owner)
-        await self._conn.commit()
-
+        await self._stage_workspace_create(workspace, owner)
         try:
             await self.project_store.create_root(workspace.workspace_id)
+            await self._set_state(workspace.workspace_id, self._ACTIVE)
         except BaseException:
-            await self._conn.execute(
-                "DELETE FROM canonical_workspaces WHERE workspace_id = ?",
-                (workspace.workspace_id,),
-            )
-            await self._conn.commit()
+            # A host crash skips this compensator; the durable `creating` row
+            # is completed by `recover` on the next startup.
+            try:
+                await self.project_store.purge_workspace(workspace.workspace_id)
+                await self._delete_workspace(workspace.workspace_id, self._CREATING)
+            except BaseException:
+                pass
             raise
         return workspace
+
+    async def recover(self) -> None:
+        """Complete or roll back lifecycle rows left by an interrupted process."""
+        async with self._conn.execute(
+            """SELECT workspace_id, state FROM canonical_workspace_lifecycle
+                WHERE state <> ? ORDER BY workspace_id""",
+            (self._ACTIVE,),
+        ) as cursor:
+            pending = await cursor.fetchall()
+        async with self._conn.execute(
+            """SELECT w.workspace_id
+                 FROM canonical_workspaces AS w
+                 JOIN canonical_workspace_lifecycle AS l USING (workspace_id)
+                WHERE l.state = ? ORDER BY w.workspace_id""",
+            (self._ACTIVE,),
+        ) as cursor:
+            active = await cursor.fetchall()
+
+        for workspace_id, state in pending:
+            if state == self._CREATING:
+                await self.project_store.create_root(workspace_id)
+                await self._set_state(workspace_id, self._ACTIVE)
+            elif state == self._DELETING:
+                await self.project_store.purge_workspace(workspace_id)
+                await self._delete_workspace(workspace_id, self._DELETING)
+
+        # Never silently mint a new Root Project for an already-visible orphan.
+        # A pre-journal orphan is deterministically rolled back instead.
+        for (workspace_id,) in active:
+            try:
+                await self.project_store.root_for_workspace(workspace_id)
+            except ProjectNotFound:
+                await self._set_state(workspace_id, self._DELETING)
+                await self.project_store.purge_workspace(workspace_id)
+                await self._delete_workspace(workspace_id, self._DELETING)
+
+    async def _stage_workspace_create(
+        self, workspace: Workspace, owner: WorkspaceMembership
+    ) -> None:
+        async with self._write_lock:
+            await self._begin_immediate()
+            try:
+                await self._conn.execute(
+                    """INSERT INTO canonical_workspaces
+                           (workspace_id, name, created_at, updated_at, payload)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (
+                        workspace.workspace_id,
+                        workspace.name,
+                        _iso(workspace.created_at),
+                        _iso(workspace.updated_at),
+                        workspace.model_dump_json(),
+                    ),
+                )
+                await self._conn.execute(
+                    """INSERT INTO canonical_workspace_lifecycle (workspace_id, state)
+                       VALUES (?, ?)""",
+                    (workspace.workspace_id, self._CREATING),
+                )
+                await self._write_membership(owner)
+            except BaseException:
+                await self._conn.rollback()
+                raise
+            await self._conn.commit()
+
+    async def _set_state(self, workspace_id: str, state: str) -> None:
+        async with self._write_lock:
+            await self._begin_immediate()
+            try:
+                cursor = await self._conn.execute(
+                    """UPDATE canonical_workspace_lifecycle
+                          SET state = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE workspace_id = ?""",
+                    (state, workspace_id),
+                )
+                if cursor.rowcount == 0:
+                    await self._conn.rollback()
+                    raise WorkspaceNotFound(workspace_id)
+            except BaseException:
+                await self._conn.rollback()
+                raise
+            await self._conn.commit()
+
+    async def _delete_workspace(self, workspace_id: str, state: str) -> None:
+        async with self._write_lock:
+            await self._begin_immediate()
+            try:
+                await self._conn.execute(
+                    """DELETE FROM canonical_workspaces
+                        WHERE workspace_id = ?
+                          AND workspace_id IN (
+                              SELECT workspace_id FROM canonical_workspace_lifecycle
+                               WHERE workspace_id = ? AND state = ?
+                          )""",
+                    (workspace_id, workspace_id, state),
+                )
+            except BaseException:
+                await self._conn.rollback()
+                raise
+            await self._conn.commit()
 
     async def get(self, workspace_id: str) -> Workspace | None:
         """Return the Workspace, or ``None`` when no record has that id."""
         async with self._conn.execute(
-            "SELECT payload FROM canonical_workspaces WHERE workspace_id = ?",
-            (workspace_id,),
+            """SELECT w.payload
+                 FROM canonical_workspaces AS w
+                 JOIN canonical_workspace_lifecycle AS l USING (workspace_id)
+                WHERE w.workspace_id = ? AND l.state = ?""",
+            (workspace_id, self._ACTIVE),
         ) as cursor:
             row = await cursor.fetchone()
         return Workspace.model_validate_json(row[0]) if row is not None else None
@@ -155,34 +264,59 @@ class SqliteWorkspaceStore:
     async def update(self, workspace: Workspace) -> Workspace:
         """Persist a changed Workspace and stamp ``updated_at``."""
         updated = workspace.model_copy(update={"updated_at": datetime.now(UTC)})
-        cursor = await self._conn.execute(
-            """UPDATE canonical_workspaces
-                  SET name = ?, updated_at = ?, payload = ?
-                WHERE workspace_id = ?""",
-            (
-                updated.name,
-                _iso(updated.updated_at),
-                updated.model_dump_json(),
-                updated.workspace_id,
-            ),
-        )
-        if cursor.rowcount == 0:
-            await self._conn.rollback()
-            raise WorkspaceNotFound(workspace.workspace_id)
-        await self._conn.commit()
-        return updated
+        async with self._write_lock:
+            await self._begin_immediate()
+            try:
+                cursor = await self._conn.execute(
+                    """UPDATE canonical_workspaces
+                          SET name = ?, updated_at = ?, payload = ?
+                        WHERE workspace_id = ?
+                          AND workspace_id IN (
+                              SELECT workspace_id FROM canonical_workspace_lifecycle
+                               WHERE workspace_id = ? AND state = ?
+                          )""",
+                    (
+                        updated.name,
+                        _iso(updated.updated_at),
+                        updated.model_dump_json(),
+                        updated.workspace_id,
+                        updated.workspace_id,
+                        self._ACTIVE,
+                    ),
+                )
+                if cursor.rowcount == 0:
+                    await self._conn.rollback()
+                    raise WorkspaceNotFound(workspace.workspace_id)
+            except BaseException:
+                await self._conn.rollback()
+                raise
+            await self._conn.commit()
+            return updated
 
     async def delete(self, workspace_id: str) -> None:
-        """Remove the Workspace, its memberships, and its Projects."""
-        cursor = await self._conn.execute(
-            "DELETE FROM canonical_workspaces WHERE workspace_id = ?",
-            (workspace_id,),
-        )
-        if cursor.rowcount == 0:
-            await self._conn.rollback()
-            raise WorkspaceNotFound(workspace_id)
-        await self._conn.commit()
+        """Journal deletion before purging Projects, then remove both halves."""
+        await self._set_state_if_active(workspace_id, self._DELETING)
         await self.project_store.purge_workspace(workspace_id)
+        await self._delete_workspace(workspace_id, self._DELETING)
+
+    async def _set_state_if_active(self, workspace_id: str, state: str) -> None:
+        async with self._write_lock:
+            await self._begin_immediate()
+            try:
+                await self._require_workspace(workspace_id)
+                cursor = await self._conn.execute(
+                    """UPDATE canonical_workspace_lifecycle
+                          SET state = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE workspace_id = ? AND state = ?""",
+                    (state, workspace_id, self._ACTIVE),
+                )
+                if cursor.rowcount == 0:
+                    await self._conn.rollback()
+                    raise WorkspaceNotFound(workspace_id)
+            except BaseException:
+                await self._conn.rollback()
+                raise
+            await self._conn.commit()
 
     async def list_for_user(self, user_id: str) -> list[Workspace]:
         """Workspaces the user is a member of, newest first."""
@@ -191,9 +325,11 @@ class SqliteWorkspaceStore:
                  FROM canonical_workspaces w
                  JOIN canonical_workspace_memberships m
                    ON m.workspace_id = w.workspace_id
-                WHERE m.user_id = ?
+                JOIN canonical_workspace_lifecycle l
+                   ON l.workspace_id = w.workspace_id
+                WHERE m.user_id = ? AND l.state = ?
                 ORDER BY w.created_at DESC""",
-            (user_id,),
+            (user_id, self._ACTIVE),
         ) as cursor:
             rows = await cursor.fetchall()
         return [Workspace.model_validate_json(row[0]) for row in rows]
@@ -314,8 +450,11 @@ class SqliteWorkspaceStore:
 
     async def _require_workspace(self, workspace_id: str) -> None:
         async with self._conn.execute(
-            "SELECT 1 FROM canonical_workspaces WHERE workspace_id = ?",
-            (workspace_id,),
+            """SELECT 1
+                 FROM canonical_workspaces AS w
+                 JOIN canonical_workspace_lifecycle AS l USING (workspace_id)
+                WHERE w.workspace_id = ? AND l.state = ?""",
+            (workspace_id, self._ACTIVE),
         ) as cursor:
             row = await cursor.fetchone()
         if row is None:
