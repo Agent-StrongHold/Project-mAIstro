@@ -54,6 +54,10 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 #: `executor_id` recorded on every Attempt the task runner drives.
 TASK_EXECUTOR_ID = "task_runner"
+#: Task workers participate in the canonical crash-recovery contract by default.
+#: Passing ``None`` remains an explicit escape hatch for embedders that do not
+#: run the recovery tick.
+DEFAULT_TASK_LEASE_TTL = timedelta(seconds=30)
 
 
 class TaskExecutionFailed(Exception):
@@ -108,7 +112,7 @@ class TaskAttemptExecutor:
         *,
         runtime: ExecutionRuntime | None = None,
         timeout_s: float | None = None,
-        lease_ttl: timedelta | None = None,
+        lease_ttl: timedelta | None = DEFAULT_TASK_LEASE_TTL,
     ) -> None:
         if timeout_s is not None and timeout_s <= 0:
             # Rejected here rather than by `AttemptExecutionService`, which
@@ -122,13 +126,10 @@ class TaskAttemptExecutor:
             runtime=runtime or PythonExecutionRuntime(),
             lease_ttl=lease_ttl,
         )
-        # Explicitly None by default, for the same reason `timeout_s` is. A TTL
-        # is a promise this process will keep renewing, and a deployment that
-        # has no sweeper running would be making a promise nobody collects on:
-        # every Attempt would carry an expiry that nothing acts upon. Opting in
-        # means running `Container.recover_abandoned_attempts` on a timer, which
-        # is an operational decision this constructor cannot make
-        # (ADR-082526-b36a).
+        # A task worker has a real liveness signal by default. The heartbeat
+        # proves ownership while work runs; `Container.recover_abandoned_attempts`
+        # reclaims it after a process disappears. Embedders without that tick
+        # can explicitly pass None rather than silently leaving work unleaseable.
         self._lease_ttl = lease_ttl
         # Explicitly None by default. `TaskCreate` carries no deadline, so there
         # is no per-task number to pass, and inventing a global one here would
@@ -240,6 +241,7 @@ class TaskAttemptExecutor:
 
 
 __all__ = [
+    "DEFAULT_TASK_LEASE_TTL",
     "TASK_EXECUTOR_ID",
     "TaskAttemptExecutor",
     "TaskExecutionFailed",

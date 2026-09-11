@@ -9,6 +9,8 @@ reads exactly as it did before.
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 
 from maistro.agents.types import CodeOutput, ConductorOutput
@@ -17,7 +19,12 @@ from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.store import InMemoryRunStore, RunIntegrityError
 from maistro.tasks.admission import TaskRunAdmitter
-from maistro.tasks.execution import TASK_EXECUTOR_ID, TaskAttemptExecutor, TaskExecutionFailed
+from maistro.tasks.execution import (
+    DEFAULT_TASK_LEASE_TTL,
+    TASK_EXECUTOR_ID,
+    TaskAttemptExecutor,
+    TaskExecutionFailed,
+)
 from maistro.tasks.models import TaskCreate, TaskStatus
 from maistro.tasks.queue import TaskQueue
 from maistro.tasks.runner import TaskRunner
@@ -458,15 +465,12 @@ async def test_cancelling_a_multi_node_run_is_refused() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_task_worker_can_opt_its_attempts_into_a_lease(wired) -> None:
-    """`TaskAttemptExecutor` threads the TTL to the Attempt, so a task worker's
-    death is recoverable (ADR-082526-b36a)."""
-    from datetime import timedelta
-
+async def test_a_task_worker_attempts_are_leased_by_default(wired) -> None:
+    """The production task seam gives recovery a liveness signal by default."""
     queue, runs = wired
     task = await queue.submit(TaskCreate(description="Fix the parser"))
     await runs.transition_run(task.run_id or "", RunStatus.RUNNING)
-    seam = TaskAttemptExecutor(runs, lease_ttl=timedelta(seconds=30))
+    seam = TaskAttemptExecutor(runs)
 
     await seam.execute(
         task.run_id or "", TaskCreate(description="Fix the parser"), _Executor(_ok([]))
@@ -481,15 +485,16 @@ async def test_a_task_worker_can_opt_its_attempts_into_a_lease(wired) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_task_worker_without_a_ttl_is_unchanged(wired) -> None:
-    """The default. #143's original behaviour is preserved exactly: no TTL, no
-    heartbeat, no reclamation — opting in is a deployment's decision because it
-    is a promise to keep renewing, and a deployment with no sweeper running
-    would be making a promise nobody collects on."""
+async def test_a_task_worker_can_explicitly_disable_its_lease(wired) -> None:
+    """An embedder can opt out when it does not run the recovery tick.
+
+    Production task workers use ``DEFAULT_TASK_LEASE_TTL``; ``None`` remains an
+    explicit compatibility escape hatch rather than an accidental default.
+    """
     queue, runs = wired
     task = await queue.submit(TaskCreate(description="Fix the parser"))
     await runs.transition_run(task.run_id or "", RunStatus.RUNNING)
-    seam = TaskAttemptExecutor(runs)
+    seam = TaskAttemptExecutor(runs, lease_ttl=None)
 
     await seam.execute(
         task.run_id or "", TaskCreate(description="Fix the parser"), _Executor(_ok([]))
@@ -499,4 +504,5 @@ async def test_a_task_worker_without_a_ttl_is_unchanged(wired) -> None:
     attempts = await runs.list_attempts(node_runs[0].node_run_id)
     assert attempts[0].execution_lease is not None
     assert attempts[0].execution_lease.expires_at is None
+    assert timedelta(0) < DEFAULT_TASK_LEASE_TTL
     assert await runs.reclaim_expired_attempts() == []
