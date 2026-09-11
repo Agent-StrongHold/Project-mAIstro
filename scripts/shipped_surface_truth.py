@@ -23,6 +23,7 @@ VALID_DISPOSITIONS = {
     "unresolved",
 }
 SUCCESS_STATUS = {
+    "ok",
     "success",
     "succeeded",
     "complete",
@@ -32,6 +33,8 @@ SUCCESS_STATUS = {
     "running",
     "started",
 }
+DYNAMIC_ROUTE = "<dynamic>"
+UNRESOLVED_METHOD = "UNRESOLVED"
 EXCLUDED_PARTS = {
     ".git",
     ".venv",
@@ -58,8 +61,15 @@ _TIMER_CALLBACK_RE = re.compile(
     re.DOTALL,
 )
 _FETCH_RE = re.compile(
-    r"fetch\s*\(\s*(?P<quote>['\"`])(?P<route>[^'\"`]+)(?P=quote)\s*,\s*\{(?P<opts>.*?)\}\s*\)",
+    r"\b(?P<callee>fetch|request|apiRequest|httpRequest)\s*\(\s*"
+    r"(?P<quote>['\"`])(?P<route>[^'\"`]+)(?P=quote)\s*,\s*\{(?P<opts>.*?)\}\s*\)",
     re.DOTALL,
+)
+_CLIENT_METHOD_RE = re.compile(
+    r"\b(?P<client>api|apiClient|client|http|httpClient)\s*\.\s*"
+    r"(?P<method>POST|PUT|PATCH|DELETE)\s*\(\s*"
+    r"(?P<quote>['\"`])(?P<route>[^'\"`]+)(?P=quote)",
+    re.I,
 )
 _METHOD_RE = re.compile(r"\bmethod\s*:\s*['\"](?P<method>POST|PUT|PATCH|DELETE)['\"]", re.I)
 
@@ -106,59 +116,314 @@ def _excluded(path: Path, root: Path) -> bool:
     )
 
 
-def _literal_methods(call: ast.Call) -> list[str]:
-    for keyword in call.keywords:
-        if keyword.arg != "methods":
+def _static_value(  # noqa: C901
+    node: ast.AST, bindings: dict[str, ast.AST], resolving: set[str] | None = None
+) -> Any:
+    """Evaluate the small constant subset used by route declarations.
+
+    This intentionally does not execute application code.  A declaration that
+    falls outside this subset becomes an explicit dynamic inventory item rather
+    than disappearing from the gate.
+    """
+    resolving = set() if resolving is None else resolving
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name) and node.id in bindings and node.id not in resolving:
+        return _static_value(
+            node=bindings[node.id], bindings=bindings, resolving={*resolving, node.id}
+        )
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _static_value(node.left, bindings, resolving)
+        right = _static_value(node.right, bindings, resolving)
+        if isinstance(left, str) and isinstance(right, str):
+            return left + right
+        return None
+    if isinstance(node, ast.JoinedStr):
+        parts: list[str] = []
+        for value in node.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                parts.append(value.value)
+                continue
+            if isinstance(value, ast.FormattedValue):
+                resolved = _static_value(value.value, bindings, resolving)
+                if not isinstance(resolved, str):
+                    return None
+                parts.append(resolved)
+                continue
+            return None
+        return "".join(parts)
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        values: list[Any] = []
+        for item in node.elts:
+            if isinstance(item, ast.Starred):
+                expanded = _static_value(item.value, bindings, resolving)
+                if not isinstance(expanded, (list, tuple, set)):
+                    return None
+                values.extend(expanded)
+                continue
+            resolved = _static_value(item, bindings, resolving)
+            if not isinstance(resolved, str):
+                return None
+            values.append(resolved)
+        return values
+    return None
+
+
+def _module_bindings(tree: ast.Module) -> dict[str, ast.AST]:
+    bindings: dict[str, ast.AST] = {}
+    for statement in tree.body:
+        targets: list[ast.expr] = []
+        value: ast.AST | None = None
+        if isinstance(statement, ast.Assign):
+            targets = statement.targets
+            value = statement.value
+        elif isinstance(statement, ast.AnnAssign) and statement.value is not None:
+            targets = [statement.target]
+            value = statement.value
+        if value is None:
             continue
-        value = keyword.value
-        if not isinstance(value, (ast.List, ast.Tuple, ast.Set)):
-            return []
-        methods: list[str] = []
-        for item in value.elts:
-            if isinstance(item, ast.Constant) and isinstance(item.value, str):
-                methods.append(item.value.upper())
-        return [method for method in methods if method in MUTATING_METHODS]
+        for target in targets:
+            if isinstance(target, ast.Name):
+                bindings[target.id] = value
+    return bindings
+
+
+def _static_string(node: ast.AST, bindings: dict[str, ast.AST]) -> str | None:
+    value = _static_value(node, bindings)
+    return value if isinstance(value, str) else None
+
+
+def _static_methods(call: ast.Call, bindings: dict[str, ast.AST]) -> list[str] | None:
+    for keyword in call.keywords:
+        if keyword.arg == "methods":
+            value = _static_value(keyword.value, bindings)
+            if not isinstance(value, list):
+                return None
+            return [method.upper() for method in value if method.upper() in MUTATING_METHODS]
     return []
 
 
-def _decorated_routes(node: ast.AsyncFunctionDef | ast.FunctionDef) -> list[tuple[str, str]]:
+def _literal_methods(call: ast.Call) -> list[str]:
+    """Keep the old helper useful for callers while accepting constants too."""
+    return _static_methods(call, {}) or []
+
+
+def _module_aliases(tree: ast.Module, bindings: dict[str, ast.AST]) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for statement in tree.body:
+        if not isinstance(statement, ast.Assign) or not isinstance(statement.value, ast.AST):
+            continue
+        value = statement.value
+        alias: str | None = None
+        if isinstance(value, ast.Attribute):
+            alias = value.attr.lower()
+        elif (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "getattr"
+            and len(value.args) >= 2
+        ):
+            alias = _static_string(value.args[1], bindings)
+            alias = alias.lower() if alias is not None else None
+        if alias is None:
+            continue
+        for target in statement.targets:
+            if isinstance(target, ast.Name):
+                aliases[target.id] = alias
+    return aliases
+
+
+def _route_decorator_name(decorator: ast.expr, aliases: dict[str, str]) -> str | None:
+    if isinstance(decorator, ast.Attribute):
+        return decorator.attr.lower()
+    if isinstance(decorator, ast.Name):
+        return aliases.get(decorator.id)
+    return None
+
+
+def _decorated_routes(
+    node: ast.AsyncFunctionDef | ast.FunctionDef,
+    bindings: dict[str, ast.AST] | None = None,
+    aliases: dict[str, str] | None = None,
+) -> list[tuple[str, str]]:
+    bindings = {} if bindings is None else bindings
+    aliases = {} if aliases is None else aliases
     routes: list[tuple[str, str]] = []
     for decorator in node.decorator_list:
-        if not isinstance(decorator, ast.Call) or not isinstance(decorator.func, ast.Attribute):
+        if not isinstance(decorator, ast.Call):
             continue
-        if not decorator.args:
+        name = _route_decorator_name(decorator.func, aliases)
+        if name not in {
+            "post",
+            "put",
+            "patch",
+            "delete",
+            "api_route",
+            "websocket",
+        }:
             continue
-        path = decorator.args[0]
-        if not isinstance(path, ast.Constant) or not isinstance(path.value, str):
-            continue
-        name = decorator.func.attr.lower()
-        methods = [name.upper()] if name.upper() in MUTATING_METHODS else []
-        if name == "api_route":
-            methods = _literal_methods(decorator)
-        elif name == "websocket":
-            # Every WebSocket route is a shipped execution/control surface
-            # regardless of "mutating": it bypasses HTTP-method semantics
-            # entirely and, per this repo's own `AuthMiddleware`, bypasses
-            # ordinary HTTP middleware too (#1122).
+        path_node = (
+            decorator.args[0]
+            if decorator.args
+            else next(
+                (keyword.value for keyword in decorator.keywords if keyword.arg == "path"), None
+            )
+        )
+        path = _static_string(path_node, bindings) if path_node is not None else None
+        route = path if path is not None else DYNAMIC_ROUTE
+        if name == "websocket":
             methods = [WEBSOCKET_METHOD]
-        routes.extend((method, path.value) for method in methods)
+        elif name == "api_route":
+            declared = _static_methods(decorator, bindings)
+            # FastAPI defaults api_route to GET. An unresolved methods value
+            # must remain visible because it may contain a mutating verb.
+            methods = [UNRESOLVED_METHOD] if declared is None else declared
+        else:
+            methods = [name.upper()]
+        routes.extend((method, route) for method in methods)
     return routes
 
 
-def _returned_status(node: ast.AsyncFunctionDef | ast.FunctionDef) -> str | None:
-    # Deliberately conservative: a production handler is only called an obvious
-    # fake when its entire body is a literal success-shaped return. More complex
-    # handlers must be classified from evidence in the matrix, not guessed here.
-    if len(node.body) != 1 or not isinstance(node.body[0], ast.Return):
-        return None
-    value = node.body[0].value
-    if not isinstance(value, ast.Dict):
-        return None
-    for key, item in zip(value.keys, value.values, strict=True):
-        if not isinstance(key, ast.Constant) or key.value != "status":
-            continue
-        if isinstance(item, ast.Constant) and isinstance(item.value, str):
-            return item.value.lower()
+def _registration_endpoint(call: ast.Call) -> str:
+    endpoint: ast.AST | None = None
+    if len(call.args) >= 2:
+        endpoint = call.args[1]
+    for keyword in call.keywords:
+        if keyword.arg == "endpoint":
+            endpoint = keyword.value
+            break
+    if isinstance(endpoint, ast.Name):
+        return endpoint.id
+    if isinstance(endpoint, ast.Attribute):
+        return endpoint.attr
+    if isinstance(endpoint, ast.Lambda):
+        return "<lambda>"
+    return "<dynamic>"
+
+
+def _registered_routes(
+    call: ast.Call, bindings: dict[str, ast.AST], aliases: dict[str, str] | None = None
+) -> list[tuple[str, str, str]]:
+    aliases = {} if aliases is None else aliases
+    if isinstance(call.func, ast.Attribute):
+        name = call.func.attr.lower()
+    elif isinstance(call.func, ast.Name):
+        name = aliases.get(call.func.id, "")
+    else:
+        return []
+    if name not in {"add_api_route", "add_route", "add_api_websocket_route", "add_websocket_route"}:
+        return []
+    path_node = (
+        call.args[0]
+        if call.args
+        else next(
+            (keyword.value for keyword in call.keywords if keyword.arg in {"path", "route"}), None
+        )
+    )
+    route = _static_string(path_node, bindings) if path_node is not None else None
+    route = route if route is not None else DYNAMIC_ROUTE
+    handler = _registration_endpoint(call)
+    if name in {"add_api_websocket_route", "add_websocket_route"}:
+        return [(WEBSOCKET_METHOD, route, handler)]
+    declared = _static_methods(call, bindings)
+    # Both FastAPI and Starlette default a route registration without methods
+    # to GET. An unresolved methods expression is fail-closed instead.
+    methods = [UNRESOLVED_METHOD] if declared is None else declared
+    return [(method, route, handler) for method in methods]
+
+
+def _handler_has_effect_evidence(node: ast.AsyncFunctionDef | ast.FunctionDef) -> bool:
+    """Treat domain/execution calls as evidence, but not observability calls."""
+    observability = {
+        "count",
+        "debug",
+        "error",
+        "exception",
+        "gauge",
+        "histogram",
+        "increment",
+        "info",
+        "log",
+        "metric",
+        "observe",
+        "record",
+        "time",
+        "timing",
+        "track",
+        "warning",
+    }
+
+    class EffectVisitor(ast.NodeVisitor):
+        found = False
+
+        def visit_Call(self, call: ast.Call) -> None:
+            if isinstance(call.func, ast.Attribute):
+                name = call.func.attr
+            elif isinstance(call.func, ast.Name):
+                name = call.func.id
+            else:
+                name = ""
+            if name.lower() not in observability:
+                self.found = True
+            self.generic_visit(call)
+
+        def visit_FunctionDef(self, _node: ast.FunctionDef) -> None:
+            return
+
+        def visit_AsyncFunctionDef(self, _node: ast.AsyncFunctionDef) -> None:
+            return
+
+        def visit_Lambda(self, _node: ast.Lambda) -> None:
+            return
+
+    visitor = EffectVisitor()
+    for statement in node.body:
+        visitor.visit(statement)
+        if visitor.found:
+            return True
+    return False
+
+
+def _returned_status(  # noqa: C901
+    node: ast.AsyncFunctionDef | ast.FunctionDef,
+) -> str | None:
+    """Return a success-shaped status found on any path in this handler."""
+
+    class ReturnVisitor(ast.NodeVisitor):
+        status: str | None = None
+
+        def visit_Return(self, return_node: ast.Return) -> None:
+            value = return_node.value
+            if not isinstance(value, ast.Dict):
+                return
+            for key, item in zip(value.keys, value.values, strict=True):
+                if (
+                    isinstance(key, ast.Constant)
+                    and key.value == "status"
+                    and isinstance(item, ast.Constant)
+                    and isinstance(item.value, str)
+                    and item.value.lower() in SUCCESS_STATUS
+                ):
+                    self.status = item.value.lower()
+                    return
+
+        def visit_FunctionDef(self, _node: ast.FunctionDef) -> None:
+            # A nested function's return is not a return path of this handler.
+            return
+
+        def visit_AsyncFunctionDef(self, _node: ast.AsyncFunctionDef) -> None:
+            return
+
+        def visit_Lambda(self, _node: ast.Lambda) -> None:
+            return
+
+    visitor = ReturnVisitor()
+    for statement in node.body:
+        visitor.visit(statement)
+        if visitor.status is not None:
+            break
+    if visitor.status is not None and not _handler_has_effect_evidence(node):
+        return visitor.status
     return None
 
 
@@ -168,13 +433,15 @@ def _source_surfaces(path: Path, repo_root: Path) -> list[BackendSurface]:
     except (SyntaxError, UnicodeDecodeError):
         return []
     source = path.relative_to(repo_root).as_posix()
+    bindings = _module_bindings(tree)
+    aliases = _module_aliases(tree, bindings)
     surfaces: list[BackendSurface] = []
     for node in ast.walk(tree):
         if not isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
             continue
         status = _returned_status(node)
-        obvious_fake = status in SUCCESS_STATUS if status is not None else False
-        for method, route in _decorated_routes(node):
+        obvious_fake = status is not None
+        for method, route in _decorated_routes(node, bindings, aliases):
             surfaces.append(
                 BackendSurface(
                     source=source,
@@ -182,6 +449,29 @@ def _source_surfaces(path: Path, repo_root: Path) -> list[BackendSurface]:
                     route=route,
                     handler=node.name,
                     obvious_fake_success=obvious_fake,
+                )
+            )
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        for method, route, handler in _registered_routes(node, bindings, aliases):
+            function = next(
+                (
+                    candidate
+                    for candidate in ast.walk(tree)
+                    if isinstance(candidate, (ast.AsyncFunctionDef, ast.FunctionDef))
+                    and candidate.name == handler
+                ),
+                None,
+            )
+            status = _returned_status(function) if function is not None else None
+            surfaces.append(
+                BackendSurface(
+                    source=source,
+                    method=method,
+                    route=route,
+                    handler=handler,
+                    obvious_fake_success=status is not None,
                 )
             )
     return surfaces
@@ -220,6 +510,8 @@ def _mutating_fetches(text: str) -> set[tuple[str, str]]:
         method_match = _METHOD_RE.search(match.group("opts"))
         if method_match:
             found.add((method_match.group("method").upper(), match.group("route")))
+    for match in _CLIENT_METHOD_RE.finditer(text):
+        found.add((match.group("method").upper(), match.group("route")))
     return found
 
 

@@ -103,6 +103,117 @@ def test_repo_wide_backend_discovery_excludes_tests_and_examples(tmp_path: Path)
     assert [s.route for s in discover_backend_surfaces(tmp_path, ["backend"])] == ["/run"]
 
 
+def test_multistatement_fake_success_with_logging_is_rejected(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "backend/routes.py",
+        """
+from fastapi import APIRouter
+router = APIRouter()
+@router.post("/build")
+def build():
+    logger.info("building")
+    return {"status": "ok"}
+""",
+    )
+    (tmp_path / "frontend").mkdir()
+    matrix = _matrix()
+    matrix["backend_surfaces"] = [
+        {
+            "source": "backend/routes.py",
+            "method": "POST",
+            "route": "/build",
+            "handler": "build",
+            "disposition": "canonical",
+            "production_enabled": True,
+            "effect_owner": "fake.fixture",
+            "reason": "deliberately planted fake-success fixture",
+        }
+    ]
+    errors = validate_matrix(tmp_path, matrix)
+    assert any("production success-shaped no-op" in error for error in errors)
+
+
+def test_fake_success_is_found_on_control_flow_return_paths(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "backend/routes.py",
+        """
+from fastapi import APIRouter
+router = APIRouter()
+@router.post("/build")
+def build(enabled: bool):
+    if enabled:
+        return {"status": "ok"}
+    return {"status": "completed"}
+""",
+    )
+    [surface] = discover_backend_surfaces(tmp_path, ["backend"])
+    assert surface.obvious_fake_success
+
+
+def test_discovers_static_alias_decorators_and_add_api_route(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "backend/routes.py",
+        """
+from fastapi import APIRouter
+router = APIRouter()
+BASE = "/v1"
+METHODS = ("GET", "POST")
+route = router.api_route
+post = getattr(router, "post")
+@route(BASE + "/decorated", methods=METHODS)
+def decorated(): return create()
+@post(f"{BASE}/assembled")
+def assembled(): return create()
+
+def registered(): return create()
+router.add_api_route(f"{BASE}/registered", registered, methods=METHODS)
+""",
+    )
+    surfaces = discover_backend_surfaces(tmp_path, ["backend"])
+    assert [(item.method, item.route, item.handler) for item in surfaces] == [
+        ("POST", "/v1/assembled", "assembled"),
+        ("POST", "/v1/decorated", "decorated"),
+        ("POST", "/v1/registered", "registered"),
+    ]
+
+
+def test_unresolved_registration_is_explicitly_inventoryable(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "backend/routes.py",
+        """
+from fastapi import APIRouter
+router = APIRouter()
+def methods_from_config(): return ["POST"]
+def registered(): return create()
+router.add_api_route("/registered", registered, methods=methods_from_config())
+""",
+    )
+    (tmp_path / "frontend").mkdir()
+    [surface] = discover_backend_surfaces(tmp_path, ["backend"])
+    assert (surface.method, surface.route, surface.handler) == (
+        "UNRESOLVED",
+        "/registered",
+        "registered",
+    )
+    assert any(
+        "unclassified backend surface" in error for error in validate_matrix(tmp_path, _matrix())
+    )
+    matrix = _matrix()
+    matrix["backend_surfaces"] = [
+        {
+            "source": "backend/routes.py",
+            "method": "UNRESOLVED",
+            "route": "/registered",
+            "handler": "registered",
+            "disposition": "unresolved",
+            "production_enabled": True,
+            "owner_issue": 1144,
+            "reason": "route methods require reviewed dynamic declaration",
+        }
+    ]
+    assert validate_matrix(tmp_path, matrix) == []
+
+
 def test_deliberately_planted_production_fake_success_is_rejected(tmp_path: Path) -> None:
     _write(
         tmp_path / "backend/routes.py",
@@ -166,6 +277,18 @@ def test_discovers_literal_mutating_frontend_api_call(tmp_path: Path) -> None:
         "POST",
         "/v1/runs",
     )
+
+
+def test_discovers_common_client_wrapper_mutations(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "frontend/Page.tsx",
+        'await api.post("/v1/runs", payload);\nawait request("/v1/runs", { method: "PATCH" });\n',
+    )
+    surfaces = discover_frontend_surfaces(tmp_path, ["frontend"])
+    assert [(surface.method, surface.route) for surface in surfaces] == [
+        ("PATCH", "/v1/runs"),
+        ("POST", "/v1/runs"),
+    ]
 
 
 def test_missing_new_route_disposition_fails_closed(tmp_path: Path) -> None:
