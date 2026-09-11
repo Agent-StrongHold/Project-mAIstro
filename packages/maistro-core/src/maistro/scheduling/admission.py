@@ -89,6 +89,11 @@ logger = logging.getLogger("maistro.scheduling.admission")
 _UNCONSUMED_SKIPS: Final = frozenset({SkipReason.BUFFERED, SkipReason.TRUNCATED})
 
 
+def _owes(decision: ScheduleEvaluation) -> bool:
+    """Whether an evaluation left an occurrence due for a later tick."""
+    return any(skip.reason in _UNCONSUMED_SKIPS for skip in decision.skipped)
+
+
 @dataclass(frozen=True)
 class ScheduleAdmission:
     """What one evaluation of one schedule produced."""
@@ -240,10 +245,10 @@ class ScheduleRunAdmitter:
             )
 
         disable = self._exhausted_after(schedule, fires=len(admitted))
-        # `next_due_at` is recomputed only when the whole batch landed. A
-        # partial batch leaves occurrences owed, and `evaluate()`'s answer
-        # assumed all of them fired.
-        complete = len(consumed) == len(decision.fires)
+        # `next_due_at` is recomputed only when the whole batch landed and no
+        # occurrence was held back. A partial batch or buffered occurrence
+        # leaves work owed, so advancing the due cursor would hide it.
+        complete = len(consumed) == len(decision.fires) and not _owes(decision)
         await self._schedules.record_fire(
             schedule.schedule_id,
             # The newest occurrence *admitted*, not `now`. This value becomes
@@ -294,6 +299,9 @@ class ScheduleRunAdmitter:
         decision not to run that occurrence at all.
         """
         consumable = [skip for skip in decision.skipped if skip.reason not in _UNCONSUMED_SKIPS]
+        # A buffered occurrence remains owed. Keep the due cursor at its prior
+        # value so the next tick can discover it after the active Run ends.
+        next_due_at = schedule.next_due_at if _owes(decision) else decision.next_due_at
         if consumable:
             newest = max(skip.scheduled_for for skip in consumable)
             await self._schedules.record_fire(
@@ -304,16 +312,14 @@ class ScheduleRunAdmitter:
                 # None, which is what makes "the last Run this schedule
                 # produced" survive an occurrence that produced none.
                 run_id=None,
-                next_due_at=decision.next_due_at,
+                next_due_at=next_due_at,
                 fires=0,
             )
-        elif not decision.skipped and decision.next_due_at != schedule.next_due_at:
+        elif next_due_at != schedule.next_due_at:
             # A fresh future schedule is returned by due() because its cursor
             # is unknown. Persisting the computed cursor makes that one-time
             # initialization durable instead of selecting it on every tick.
-            await self._schedules.record_evaluation(
-                schedule.schedule_id, next_due_at=decision.next_due_at
-            )
+            await self._schedules.record_evaluation(schedule.schedule_id, next_due_at=next_due_at)
         return ScheduleAdmission(
             skipped=decision.skipped,
             next_due_at=decision.next_due_at,

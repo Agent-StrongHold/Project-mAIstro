@@ -275,6 +275,27 @@ class TestOverlap:
 
         assert result.cancel_active_run is True
 
+    async def test_buffered_occurrence_keeps_the_due_cursor(self, harness) -> None:
+        """A buffered occurrence must remain discoverable after one sibling fires."""
+        admitter, _runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(
+            schedules,
+            project_id,
+            overlap_policy=OverlapPolicy.BUFFER_ONE,
+            catchup_window_seconds=4 * 3600,
+            last_fired_at=NOON - timedelta(hours=2),
+            next_due_at=NOON - timedelta(hours=1),
+        )
+
+        result = await admitter.admit_due(schedule, now=NOON)
+
+        stored = await schedules.get(schedule.schedule_id)
+        assert len(result.run_ids) == 1
+        assert stored is not None
+        assert stored.last_fired_at == NOON - timedelta(hours=1)
+        assert stored.next_due_at == NOON - timedelta(hours=1)
+        assert stored.runs_so_far == 1
+
 
 class TestDisabled:
     async def test_a_disabled_schedule_admits_nothing(self, harness) -> None:

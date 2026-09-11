@@ -233,6 +233,36 @@ async def test_sqlite_record_fire_serializes_overlapping_callers(tmp_path) -> No
     assert recorded.next_due_at == NOON + timedelta(hours=1)
 
 
+async def test_sqlite_record_fire_serializes_two_connections(tmp_path) -> None:
+    """The file lock preserves cursor state across two scheduler processes."""
+    path = tmp_path / "two-connections.db"
+    async with aiosqlite.connect(path) as first, aiosqlite.connect(path) as second:
+        store_a = SqliteScheduleStore(first)
+        await store_a.ensure_schema()
+        store_b = SqliteScheduleStore(second)
+        schedule = await store_a.put(_schedule(name="shared"))
+
+        await asyncio.gather(
+            *(
+                (store_a if index % 2 else store_b).record_fire(
+                    schedule.schedule_id,
+                    fired_at=NOON + timedelta(minutes=index),
+                    run_id=f"run-{index}",
+                    next_due_at=NOON + timedelta(hours=index + 1),
+                )
+                for index in range(6)
+            )
+        )
+
+        recorded = await store_a.get(schedule.schedule_id)
+    assert recorded is not None
+    assert recorded.runs_so_far == 6
+    assert recorded.last_run_id is not None
+    winner = int(recorded.last_run_id.removeprefix("run-"))
+    assert recorded.last_fired_at == NOON + timedelta(minutes=winner)
+    assert recorded.next_due_at == NOON + timedelta(hours=winner + 1)
+
+
 async def test_postgres_schedules_are_visible_to_a_second_store(pg_pool: Any) -> None:
     """The property SQLite cannot have: two store handles, one schedule.
 
