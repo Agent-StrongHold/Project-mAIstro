@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from maistro.container import Container, create_container
+from maistro.graph import Graph, Node
 from maistro.runs.chat_execution import (
     ATTEMPT_AGENT_KEY,
     CHAT_EXECUTOR_ID,
@@ -424,6 +425,59 @@ class TestTheAttemptResult:
         response = {"choices": [{"message": {"content": "hi"}}], "agent": 7}
 
         assert ATTEMPT_AGENT_KEY not in attempt_result(response)
+
+
+class TestChatAttemptStoreConformance:
+    """The chat adapter must persist the same physical record in every store.
+
+    The endpoint tests use the in-memory container because they exercise the
+    request wiring. This fixture drives the adapter against the shared spine
+    fixture so SQLite and PostgreSQL cannot quietly lose chat evidence that the
+    reference store retains.
+    """
+
+    async def test_a_successful_turn_round_trips_its_attempt(self, spine: Any) -> None:
+        store, workspace_id, project_id = spine
+        graph = Graph(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            name="chat conformance",
+            nodes=[Node(node_id="chat-node", node_type="agent")],
+        )
+        run = await store.create_run(graph)
+        await store.transition_run(run.run_id, RunStatus.QUEUED)
+        await store.transition_run(run.run_id, RunStatus.RUNNING)
+
+        async def dispatch() -> dict[str, Any]:
+            return {
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": "stored answer"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "agent": "researcher",
+            }
+
+        response = await ChatAttemptExecutor(store, lease_ttl=None).execute(
+            run.run_id,
+            MESSAGES,
+            dispatch,
+        )
+
+        assert response["choices"][0]["message"]["content"] == "stored answer"
+        node_runs = await store.list_node_runs(run.run_id)
+        assert len(node_runs) == 1
+        attempts = await store.list_attempts(node_runs[0].node_run_id)
+        assert len(attempts) == 1
+        assert attempts[0].status is AttemptStatus.COMPLETED
+        assert attempts[0].executor_id == CHAT_EXECUTOR_ID
+        assert attempts[0].result == {
+            "finish_reason": "stop",
+            "answer": "stored answer",
+            "answer_truncated": False,
+            ATTEMPT_AGENT_KEY: "researcher",
+        }
 
 
 class TestTheKeysAgree:
