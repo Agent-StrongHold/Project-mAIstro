@@ -507,6 +507,28 @@
       "owner": "#56",
       "rationale": "The approved Provider implementation itself: the one module #56 authorizes to hold an HTTP client for a model endpoint. The call executes beneath a resolved canonical Binding and a governed Invocation, so this site IS the governed egress, not a bypass."
     },
+    "packages/maistro-core/src/maistro/capabilities/providers/pm_polling.py::execute_airtable::CANONICAL_INVOCATION:airtable-polling-http-provider#1": {
+      "path": "packages/maistro-core/src/maistro/capabilities/providers/pm_polling.py",
+      "qualname": "execute_airtable",
+      "line": 218,
+      "category": "CANONICAL_INVOCATION",
+      "entry_point": "airtable-polling-http-provider",
+      "callee": "client.get",
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
+      "owner": "#1195",
+      "rationale": "Approved Airtable Provider HTTP is executed only after the canonical Binding and governed Invocation path resolves and claims this effect."
+    },
+    "packages/maistro-core/src/maistro/capabilities/providers/pm_polling.py::execute_jira::CANONICAL_INVOCATION:jira-polling-http-provider#1": {
+      "path": "packages/maistro-core/src/maistro/capabilities/providers/pm_polling.py",
+      "qualname": "execute_jira",
+      "line": 188,
+      "category": "CANONICAL_INVOCATION",
+      "entry_point": "jira-polling-http-provider",
+      "callee": "client.get",
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
+      "owner": "#1195",
+      "rationale": "Approved Jira Provider HTTP is executed only after the canonical Binding and governed Invocation path resolves and claims this effect."
+    },
     "packages/maistro-core/src/maistro/events/handlers.py::conductor_chat_action::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-core/src/maistro/events/handlers.py",
       "qualname": "conductor_chat_action",

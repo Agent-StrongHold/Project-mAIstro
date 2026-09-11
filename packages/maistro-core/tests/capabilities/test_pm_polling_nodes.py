@@ -6,12 +6,14 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
+import aiosqlite
 import httpx
 
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.effect_context import (
     CapabilityEffectContext,
     new_in_memory_effect_context,
+    new_sqlite_effect_context,
 )
 from maistro.credentials.types import CredentialRecord
 from maistro.graph.nodes import NodeContext
@@ -110,6 +112,8 @@ async def test_jira_poll_crosses_binding_and_invocation_without_secret_in_payloa
     )
     assert len(history) == 1
     assert history[0].binding.provider_name == "jira"
+    assert history[0].workspace_id == "ws-1"
+    assert history[0].project_id == "project-1"
     assert "secret-jira" not in json.dumps(history[0].model_dump(mode="json"), default=str)
     assert "secret-jira" not in json.dumps(
         [vars(event) for event in effects.event_store._events_by_id.values()], default=str
@@ -250,6 +254,38 @@ async def test_wait_poll_assigns_a_new_effect_key_to_each_resume(monkeypatch: An
     assert len(history) == 1
 
 
+async def test_disabled_binding_fails_before_http(monkeypatch: Any) -> None:
+    effects = new_in_memory_effect_context()
+    await effects.bindings.put(
+        Binding(
+            binding_id="disabled-airtable-binding",
+            workspace_id="ws-1",
+            project_id="project-1",
+            node_id="n1",
+            capability="airtable.records",
+            provider_name="airtable",
+            enabled=False,
+        )
+    )
+
+    called = False
+
+    class Client:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            nonlocal called
+            called = True
+
+    monkeypatch.setattr(httpx, "AsyncClient", Client)
+    result = await AirtablePollNode(effect_context=effects).run(
+        {"binding_id": "disabled-airtable-binding", "base_id": "app-1", "table": "Work"},
+        _ctx(),
+    )
+
+    assert result.success is False
+    assert result.error_code == "BindingDisabled"
+    assert called is False
+
+
 async def test_binding_without_endpoint_config_fails_before_http(monkeypatch: Any) -> None:
     effects = await _effects("jira.search", config={}, provider="jira")
     called = False
@@ -268,6 +304,69 @@ async def test_binding_without_endpoint_config_fails_before_http(monkeypatch: An
     assert result.success is False
     assert result.error_code == "CapabilityUnavailable"
     assert called is False
+
+
+async def test_sqlite_effect_authority_deduplicates_across_fresh_contexts(
+    monkeypatch: Any, tmp_path: Any
+) -> None:
+    db_path = tmp_path / "effects.db"
+    db = await aiosqlite.connect(db_path)
+    first = await new_sqlite_effect_context(db)
+    binding = Binding(
+        binding_id="durable-airtable-binding",
+        workspace_id="ws-1",
+        project_id="project-1",
+        node_id="n1",
+        capability="airtable.records",
+        provider_name="airtable",
+        credential_refs=("airtable-key",),
+    )
+    await first.bindings.put(binding)
+    first.credentials.add(
+        workspace_id="ws-1",
+        project_id="project-1",
+        record=CredentialRecord(key_id="airtable-key", provider="airtable", api_key="secret"),
+    )
+    db_second = await aiosqlite.connect(db_path)
+    second = await new_sqlite_effect_context(db_second)
+    second.credentials.add(
+        workspace_id="ws-1",
+        project_id="project-1",
+        record=CredentialRecord(key_id="airtable-key", provider="airtable", api_key="secret"),
+    )
+    calls = 0
+
+    class Response:
+        status_code = 200
+
+        def json(self) -> dict[str, Any]:
+            return {"records": []}
+
+    class Client:
+        def __init__(self, *args: Any, **kwargs: Any) -> None: ...
+
+        async def __aenter__(self) -> Client:
+            return self
+
+        async def __aexit__(self, *args: Any) -> None: ...
+
+        async def get(self, *args: Any, **kwargs: Any) -> Response:
+            nonlocal calls
+            calls += 1
+            return Response()
+
+    monkeypatch.setattr(httpx, "AsyncClient", Client)
+    inputs = {"binding_id": "durable-airtable-binding", "base_id": "app-1", "table": "Work"}
+    first_result = await AirtablePollNode(effect_context=first).run(inputs, _ctx())
+    second_result = await AirtablePollNode(effect_context=second).run(
+        inputs, _ctx(attempt_id="attempt-2")
+    )
+    await db.close()
+    await db_second.close()
+
+    assert first_result.success is True
+    assert second_result.success is True
+    assert calls == 1
 
 
 async def test_unknown_http_outcome_blocks_a_repeated_poll(monkeypatch: Any) -> None:
