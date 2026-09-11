@@ -324,3 +324,8 @@ def test_canvas_route_refuses_missing_binding(
 
     assert response.status_code == 503
     assert "score" not in response.json()
+    import asyncio
+
+    attempt = asyncio.run(canvas_egress[3].run_store.get_attempt(context["attempt_id"]))
+    assert attempt is not None
+    assert attempt.status.value == "failed"
