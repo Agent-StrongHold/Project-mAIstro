@@ -109,17 +109,39 @@ async def stream_run_events(run_id: str, request: Request) -> StreamingResponse:
     q = store.subscribe(run_id)
 
     async def event_gen():
-        # Helpful preamble + keepalive comment so corp proxies don't kill idle SSE.
-        yield ": connected\n\n"
         try:
+            # Authorization is intentionally checked again when the stream
+            # starts. The response may have been created after the route's
+            # admission check but before this generator is first resumed.
+            if not await can_inspect_run(uid, run_id):
+                return
+
+            # Helpful preamble + keepalive comment so corp proxies don't kill
+            # idle SSE. It contains no run data, but is emitted only while the
+            # subscription is still authorized.
+            yield ": connected\n\n"
             while True:
                 if await request.is_disconnected():
+                    break
+                # Membership can be revoked while q.get() is waiting. Check
+                # before waiting so a queued event is not exposed after the
+                # last successful authorization check.
+                if not await can_inspect_run(uid, run_id):
                     break
                 try:
                     ev = await asyncio.wait_for(q.get(), timeout=15.0)
                 except TimeoutError:
+                    # Poll the canonical Workspace boundary even when the run
+                    # is idle; otherwise revocation leaves an open stream
+                    # authorized until the next event arrives.
+                    if not await can_inspect_run(uid, run_id):
+                        break
                     yield ": keepalive\n\n"  # SSE comment line; ignored by clients
                     continue
+                # Do not yield an event that was queued before membership was
+                # revoked while this connection was waiting for it.
+                if not await can_inspect_run(uid, run_id):
+                    break
                 payload = {
                     "event_type": ev.event_type,
                     "role": ev.role,

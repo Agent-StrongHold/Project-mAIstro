@@ -219,6 +219,46 @@ async def test_sse_streams_and_replays_inside_the_callers_workspace(
     assert "pm_node_started" in event_frame
 
 
+async def test_live_sse_stops_after_workspace_membership_is_revoked(
+    authed_client: Any, admin_client: Any
+) -> None:
+    """A stream admitted before revocation must not deliver later events.
+
+    This drives the generator directly because the stream is intentionally
+    long-lived. The event is appended after the canonical membership grant is
+    removed; the route must re-check that grant before yielding it.
+    """
+    ws = _workspace(admin_client, "Revocable live stream")
+    added = admin_client.post(
+        f"/v1/workspaces/{ws}/members",
+        json={"user_id": _AUTHED_USER_ID, "role": "viewer"},
+    )
+    assert added.status_code == 200, added.text
+    await _seed_run_async("r-live-revoked", workspace_id=ws)
+
+    from routes.dag_runs import stream_run_events
+    from services.dag_run_store import get_dag_run_store
+
+    response = await stream_run_events("r-live-revoked", _ScopedRequest(_AUTHED_USER_ID))
+    iterator = response.body_iterator
+    assert ": connected" in await anext(iterator)
+    assert "pm_node_started" in await anext(iterator)
+
+    revoked = admin_client.delete(f"/v1/workspaces/{ws}/members/{_AUTHED_USER_ID}")
+    assert revoked.status_code == 200, revoked.text
+    await get_dag_run_store().append_event(
+        "r-live-revoked",
+        event_type="pm_node_completed",
+        role="intake",
+        capability="create_initiative",
+        payload={"source": "after-revocation"},
+    )
+
+    with pytest.raises(StopAsyncIteration):
+        await anext(iterator)
+    await iterator.aclose()
+
+
 # ─── authentication vs authorization ─────────────────────────────────────────
 
 
