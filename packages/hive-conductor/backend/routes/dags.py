@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import uuid4
@@ -18,9 +18,9 @@ router = APIRouter(tags=["dags"])
 logger = logging.getLogger("hive.dags")
 
 # The editable Hive DAG format historically stored agent roles rather than
-# canonical node kinds. Keep those records runnable while the UI migrates to
-# the registered-node palette: this pure transform is a safe no-op default.
-_DEFAULT_REGISTERED_NODE_KIND = "transform.alias_keys"
+# canonical node kinds. Keep those records on the legacy node adapter while the
+# UI migrates to the registered-node palette.
+_DEFAULT_REGISTERED_NODE_KIND = "hive.legacy_node"
 
 
 class DAGNode(BaseModel):
@@ -120,8 +120,8 @@ def _registered_dag_snapshot(dag_data: Mapping[str, Any]) -> dict[str, Any]:
 
     Older saved DAGs predate the canonical node catalog and have no ``kind``.
     Registration must still validate the snapshot before ``run_registered_dag``
-    admits a Run, so project the missing field to the same no-op kind used by
-    newly created editor nodes without changing the stored UI definition.
+    admits a Run, so project the missing field to the legacy compatibility node
+    without changing the stored UI definition.
     """
     snapshot = dict(dag_data)
     nodes: list[dict[str, Any]] = []
@@ -132,6 +132,60 @@ def _registered_dag_snapshot(dag_data: Mapping[str, Any]) -> dict[str, Any]:
         nodes.append(node)
     snapshot["nodes"] = nodes
     return snapshot
+
+
+def _route_node_resolver(
+    dag_data: Mapping[str, Any], user_id: str
+) -> Callable[[str, Any], Any] | None:
+    """Keep legacy role nodes on their adapter inside canonical traversal.
+
+    ``run_registered_dag`` owns admission and traversal. The resolver is only
+    the node implementation seam: canonical catalog nodes use the normal
+    container-wired resolver, while old role-shaped nodes retain their
+    ``LegacyConductorNode`` behavior instead of becoming a no-op transform.
+    """
+    snapshot = _registered_dag_snapshot(dag_data)
+    raw_by_id = {
+        str(raw["id"]): dict(raw)
+        for raw in snapshot.get("nodes", [])
+        if str(raw.get("kind") or "") == _DEFAULT_REGISTERED_NODE_KIND
+    }
+    if not raw_by_id:
+        return None
+
+    from services.canonical_dag_runner import _node_env
+    from services.dag_agents import get_node_resolver
+    from services.legacy_dag_node import LegacyConductorNode, _build_llm_call
+
+    from maistro.graph.nodes import get_node, register_node
+
+    # DagRegistry validates kinds through the core catalog. The adapter is
+    # product-owned, so register its existing implementation at the product
+    # boundary rather than substituting a second node implementation.
+    try:
+        get_node(_DEFAULT_REGISTERED_NODE_KIND)
+    except KeyError:
+        register_node(LegacyConductorNode)
+
+    fallback = get_node_resolver()
+    legacy_resolver = {
+        node_id: LegacyConductorNode(
+            raw_node=raw,
+            task_desc=str(snapshot.get("description") or snapshot.get("name") or ""),
+            node_env=_node_env(snapshot, user_id=user_id, user_credentials=None),
+            execution_mode="interactive",
+            on_response=None,
+            llm_builder=_build_llm_call,
+        )
+        for node_id, raw in raw_by_id.items()
+    }
+
+    def resolve(node_id: str, graph: Any) -> Any:
+        if node_id in legacy_resolver:
+            return legacy_resolver[node_id]
+        return fallback(node_id, graph)
+
+    return resolve
 
 
 def _value_mapping(value: Any) -> dict[str, Any]:
@@ -470,12 +524,15 @@ async def run_dag(
         # The saved DAG is the product's editable definition. Registering its
         # snapshot first makes this route use the same descriptor -> template
         # projection as schedules and other registered-DAG producers.
-        get_registry().register(_registered_dag_snapshot(dag_data))
+        snapshot = _registered_dag_snapshot(dag_data)
+        node_resolver = _route_node_resolver(dag_data, actor)
+        get_registry().register(snapshot)
         graph, record = await run_registered_dag(
             dag_id,
             workspace_id=resolved_workspace,
             project_id=resolved_project,
             user_id=actor,
+            node_resolver=node_resolver,
             provenance={"admission_source": "hive_dag_route", "execution_mode": "interactive"},
         )
     except HTTPException:

@@ -207,12 +207,12 @@ def test_created_dag_run_uses_one_canonical_run_for_history_projection(
     _install_route_workspace(workspace_id, "admin")
     dag_id = _seed(admin_client)
     saved = stores.dags[dag_id]
-    assert all(node["kind"] == "transform.alias_keys" for node in saved["nodes"])
+    assert all(node["kind"] == "hive.legacy_node" for node in saved["nodes"])
 
     response = admin_client.post(f"/v1/dags/{dag_id}/run?workspace_id={workspace_id}")
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "completed"
+    assert body["status"] == "failed"
 
     run_id = body["run_id"]
     canonical = asyncio.run(container.run_store.get_run(run_id))
@@ -222,7 +222,7 @@ def test_created_dag_run_uses_one_canonical_run_for_history_projection(
     assert projection["canonical_run_id"] == canonical.run_id == run_id
     assert projection["status"] == canonical.status.value
     assert [
-        run.run_id for run in asyncio.run(container.run_store.list_by_status(RunStatus.COMPLETED))
+        run.run_id for run in asyncio.run(container.run_store.list_by_status(RunStatus.FAILED))
     ] == [run_id]
 
 
@@ -244,7 +244,9 @@ def test_run_dag_uses_one_canonical_run_for_history_projection(
         raise AssertionError("the DAG route must not call graph_runner.execute_dag")
 
     monkeypatch.setattr(graph_runner, "execute_dag", legacy_path_must_not_run)
-    response = admin_client.post(f"/v1/dags/{dag_id}/run?workspace_id={workspace_id}")
+    # This DAG carries the authorized Workspace itself, matching the shipped
+    # no-query UI button.
+    response = admin_client.post(f"/v1/dags/{dag_id}/run")
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "completed"
@@ -254,9 +256,11 @@ def test_run_dag_uses_one_canonical_run_for_history_projection(
     projection = get_dag_run_store().get_run(run_id)
     assert canonical is not None
     assert canonical.run_id == run_id
+    assert canonical.workspace_id == workspace_id
     assert canonical.status.value == "completed"
     assert projection is not None
     assert projection["canonical_run_id"] == canonical.run_id
+    assert projection["workspace_id"] == workspace_id
     assert projection["status"] == canonical.status.value
     assert projection["event_count"] == 1
 
@@ -324,6 +328,7 @@ async def test_projection_preserves_a_waiting_canonical_run(
     projection = store.get_run("run-waiting")
     assert projection is not None
     assert projection["status"] == "waiting"
+    assert projection["finished_at"] is None
     assert projection["node_states"]["worker.n1"] == "running"
 
 
