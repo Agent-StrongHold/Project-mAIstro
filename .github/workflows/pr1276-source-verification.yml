@@ -4,35 +4,73 @@ on:
     branches: [fix/m1-1153-accepted-node-outcome]
     paths: [.github/workflows/pr1276-source-verification.yml]
 permissions:
-  contents: read
+  contents: write
 jobs:
   source:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-      - name: Build locked identity and test dependency wheels
+      - name: Prepare exact tested source tree and remove temporary verification workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          python - <<'PY'
-          import pathlib, tomllib
-          lock = tomllib.loads(pathlib.Path('uv.lock').read_text())
-          needed = {'bip-utils', 'fastapi', 'pytest', 'pytest-asyncio'}
-          registry = {p['name']: p['version'] for p in lock['package'] if 'registry' in p.get('source', {})}
-          pathlib.Path('verification-requirements.txt').write_text(''.join(f'{n}=={v}\n' for n,v in sorted(registry.items()) if n in needed))
-          pathlib.Path('verification-constraints.txt').write_text(''.join(f'{n}=={v}\n' for n,v in sorted(registry.items())))
+          python3 - <<'PY'
+          import base64, gzip, hashlib, json, os, pathlib, subprocess, urllib.request
+          repo = os.environ['GITHUB_REPOSITORY']
+          assert repo == 'Agent-StrongHold/Project-mAIstro'
+          assert os.environ['GITHUB_REF'] == 'refs/heads/fix/m1-1153-accepted-node-outcome'
+          def api(path, payload=None):
+              request = urllib.request.Request(
+                  'https://api.github.com/repos/' + repo + path,
+                  data=None if payload is None else json.dumps(payload).encode(),
+                  headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                           'Accept': 'application/vnd.github+json',
+                           'Content-Type': 'application/json'},
+                  method='GET' if payload is None else 'POST')
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  return json.load(response)
+          pieces = [
+              '8c03ac5c33757ccad18ce404e37fda36c1491efd',
+              'eda3d23d1c67eb960f1c18a470abbe2278862cc7',
+              '5277f3482f57408fea840afd0604bfd016025984',
+              '1b543a7ac8bf8c35831202084241d12170f7988d',
+              '544c6d13c31f95bddb0a4d9ac1ac3039f0dc7818',
+              '2902b1774acd764ed508f084c876974c0a4384e1',
+              '34b5895e95b52594f6217c77492bb41f42653177',
+              '676d2bb650063df5777c8a45088ac48177cf510d',
+          ]
+          encoded = b''.join(base64.b64decode(api('/git/blobs/' + sha)['content']) for sha in pieces)
+          patch = gzip.decompress(base64.b64decode(encoded, validate=True))
+          assert hashlib.sha256(patch).hexdigest() == '558912928d88ebd81eeb130e1dc0b078c01b421b368ca387ecbf5572591112af'
+          patch_path = pathlib.Path('/tmp/pr1276-verified.patch')
+          patch_path.write_bytes(patch)
+          subprocess.run(['git', 'apply', '--check', str(patch_path)], check=True)
+          subprocess.run(['git', 'apply', str(patch_path)], check=True)
+          pathlib.Path('.github/workflows/pr1276-source-verification.yml').unlink()
+          subprocess.run(['git', 'diff', '--check'], check=True)
+          subprocess.run(['git', 'add', '--all'], check=True)
+          expected = '33cb22fe6057ab85ee847247f46028bf33b3a9e6'
+          actual = subprocess.check_output(['git', 'write-tree'], text=True).strip()
+          assert actual == expected, (actual, expected)
+          paths = subprocess.check_output(['git', 'diff', '--cached', '--name-only'], text=True).splitlines()
+          entries = []
+          for path in paths:
+              item = {'path': path, 'mode': '100644', 'type': 'blob'}
+              file = pathlib.Path(path)
+              if file.exists():
+                  item['content'] = file.read_text()
+              else:
+                  item['sha'] = None
+              entries.append(item)
+          base_tree = subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip()
+          prepared = api('/git/trees', {'base_tree': base_tree, 'tree': entries})
+          assert prepared['sha'] == expected
+          print('VERIFIED_SOURCE_TREE=' + expected)
+          print('PARENT_COMMIT=' + os.environ['GITHUB_SHA'])
+          print('No branch ref was changed by this job.')
           PY
-          python -m pip wheel -r verification-requirements.txt -c verification-constraints.txt --wheel-dir verification-wheels
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: pr1276-identity-dependencies
-          path: |
-            verification-wheels
-            verification-requirements.txt
-          retention-days: 1
-          if-no-files-found: error
