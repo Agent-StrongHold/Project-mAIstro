@@ -286,6 +286,8 @@ async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_d
     The store fixture covers memory, SQLite, and PostgreSQL when configured. A
     separate container invokes the ordinary recovery tick against that store,
     which models a restarted worker without introducing schedule-owned repair.
+    The final explicit retry proves recovery leaves the canonical spine usable
+    by the policy that owns retry decisions.
     """
     from maistro.runs.consumption import ScheduleAttemptExecutor, resumable_pause
 
@@ -329,13 +331,24 @@ async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_d
             "a schedule resume must opt into the same finite lease as first reach"
         )
         assert lease.expires_at - lease.issued_at == ttl
-        await asyncio.sleep(ttl.total_seconds() * 1.5)
+        # Poll for a renewal instead of sleeping a fixed multiple of the TTL:
+        # PostgreSQL round trips can consume most of a short test window, while
+        # the explicit recovery clock below makes expiry itself deterministic.
+        loop = asyncio.get_running_loop()
         live = await store.get_attempt(resumed.attempt_id)
-        assert live is not None and live.execution_lease is not None
+        renewal_deadline = loop.time() + 5.0
+        while (
+            live is None
+            or live.execution_lease is None
+            or live.execution_lease.expires_at is None
+            or live.execution_lease.expires_at <= lease.expires_at
+        ):
+            if loop.time() >= renewal_deadline:
+                pytest.fail("a live resumed Attempt was not renewed by the heartbeat")
+            await asyncio.sleep(0.05)
+            live = await store.get_attempt(resumed.attempt_id)
         live_lease = live.execution_lease
-        assert live_lease.expires_at is not None and live_lease.expires_at > lease.expires_at, (
-            "a live resumed Attempt must be renewed by the canonical heartbeat"
-        )
+        assert live_lease is not None and live_lease.expires_at is not None
 
         async def _dead(*_args: Any, **_kwargs: Any) -> Any:
             raise ConnectionError("resumed worker is gone")
@@ -361,6 +374,36 @@ async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_d
         assert recovered is not None and recovered.status is AttemptStatus.CANCELLED
         assert recovered_node is not None and recovered_node.status is RunStatus.WAITING
         assert recovered_run is not None and recovered_run.status is RunStatus.WAITING
+
+        # Recovery parks the logical work; it does not invent a schedule retry.
+        # Prove the canonical retry seam can make the next physical Attempt
+        # when an owning policy explicitly chooses to continue.
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+        from maistro.runs.service import RunExecutionService
+        from maistro.runtime import PythonExecutionRuntime
+
+        retry_service = RunExecutionService(
+            store=store,
+            runtime=PythonExecutionRuntime(),
+            lease_ttl=ttl,
+        )
+
+        async def _retry(_work_item: Any, _context: Any) -> dict[str, bool]:
+            return {"recovered": True}
+
+        retried = await retry_service.retry_node(
+            node_run.node_run_id,
+            {"marker": "m"},
+            None,
+            executor=_retry,
+            executor_id="schedule-consumer",
+        )
+        assert retried.status is AttemptStatus.COMPLETED
+        completed_node = await store.get_node_run(node_run.node_run_id)
+        completed_run = await store.get_run(run.run_id)
+        assert completed_node is not None and completed_node.status is RunStatus.COMPLETED
+        assert completed_run is not None and completed_run.status is RunStatus.COMPLETED
     finally:
         worker.cancel()
         await asyncio.gather(worker, return_exceptions=True)
