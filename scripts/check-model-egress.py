@@ -21,10 +21,36 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
-import check_direct_effects
-
 ROOT = Path(__file__).resolve().parents[1]
 INVENTORY = ROOT / "quality" / "model-egress.json"
+_DIRECT_EFFECTS_SOURCE = ROOT / "scripts" / "check_direct_effects.py"
+
+
+def _load_direct_effects() -> ModuleType:
+    """Load the sibling gate when this script is imported by a test runner.
+
+    Direct execution puts ``scripts`` on ``sys.path``; importlib-based loading
+    (used by the root gate tests) does not. Keep the dependency explicit
+    without relying on process-global path mutations.
+    """
+    name = "_maistro_check_direct_effects"
+    cached = sys.modules.get(name)
+    if cached is not None:
+        return cached
+    spec = importlib.util.spec_from_file_location(name, _DIRECT_EFFECTS_SOURCE)
+    if spec is None or spec.loader is None:  # pragma: no cover - packaging accident
+        raise RuntimeError(f"cannot load {_DIRECT_EFFECTS_SOURCE}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules[name]
+        raise
+    return module
+
+
+check_direct_effects = _load_direct_effects()
 REACHABILITY = ROOT / "scripts" / "check-reachability.py"
 _PROVENANCE_SOURCE = ROOT / "scripts" / "ratchet_provenance.py"
 RATCHET = "model-egress"
