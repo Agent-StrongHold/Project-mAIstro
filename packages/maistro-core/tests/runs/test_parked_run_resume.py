@@ -330,6 +330,13 @@ async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_d
         assert lease is not None and lease.expires_at is not None, (
             "a schedule resume must opt into the same finite lease as first reach"
         )
+        await asyncio.sleep(ttl.total_seconds() * 1.5)
+        live = await store.get_attempt(resumed.attempt_id)
+        assert live is not None and live.execution_lease is not None
+        live_lease = live.execution_lease
+        assert live_lease.expires_at is not None and live_lease.expires_at > lease.expires_at, (
+            "a live resumed Attempt must be renewed by the canonical heartbeat"
+        )
 
         async def _dead(*_args: Any, **_kwargs: Any) -> Any:
             raise ConnectionError("resumed worker is gone")
@@ -342,7 +349,7 @@ async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_d
         recovery_container.run_store = store
         assert (
             await recovery_container.recover_abandoned_attempts(
-                now=lease.expires_at + timedelta(microseconds=1)
+                now=live_lease.expires_at + timedelta(microseconds=1)
             )
             == 1
         )
