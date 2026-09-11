@@ -127,6 +127,16 @@ const designSystems = {
   bundled_count: 1,
 };
 
+const designProjects = [
+  {
+    id: "project-1",
+    name: "Durable Run lineage infographic",
+    skill_slug: "infographic",
+    design_system_slug: "default",
+    output_count: 1,
+  },
+];
+
 test.beforeAll(async ({ browser }) => {
   context = await browser.newContext({ baseURL: test.info().project.use.baseURL });
 
@@ -148,6 +158,9 @@ test.beforeAll(async ({ browser }) => {
   });
   await page.route("**/v1/design/systems", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(designSystems) });
+  });
+  await page.route("**/v1/design/projects", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(designProjects) });
   });
 });
 
@@ -180,6 +193,9 @@ test("Design Studio is the parent surface and never enables fake visual executio
   }
 
   await expect(page.getByText(/10 design skills and 1 design system available/)).toBeVisible();
+  await expect(page.getByText("Persisted Design projects", { exact: true })).toBeVisible();
+  await expect(page.getByText("Durable Run lineage infographic", { exact: true })).toBeVisible();
+  await expect(page.getByText("1 stored output", { exact: true })).toBeVisible();
   const availableSkills = page.getByLabel("Available design skills");
   await expect(availableSkills.getByText("Hero Image", { exact: true })).toBeVisible();
   await expect(availableSkills.getByText("Social Card", { exact: true })).toBeVisible();
