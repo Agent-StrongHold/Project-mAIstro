@@ -311,6 +311,9 @@ async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_d
     assert parked.status in {RunStatus.WAITING, RunStatus.PAUSED}
     (node_run,) = await store.list_node_runs(run.run_id)
     attempts = await store.list_attempts(node_run.node_run_id)
+    first_lease = attempts[0].execution_lease
+    assert first_lease is not None and first_lease.expires_at is not None
+    assert first_lease.expires_at - first_lease.issued_at == ttl
     pause = resumable_pause(node_run, attempts, now=datetime.now(UTC))
     assert pause is not None
 
@@ -325,6 +328,7 @@ async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_d
         assert lease is not None and lease.expires_at is not None, (
             "a schedule resume must opt into the same finite lease as first reach"
         )
+        assert lease.expires_at - lease.issued_at == ttl
         await asyncio.sleep(ttl.total_seconds() * 1.5)
         live = await store.get_attempt(resumed.attempt_id)
         assert live is not None and live.execution_lease is not None
