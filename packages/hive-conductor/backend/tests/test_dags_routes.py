@@ -200,6 +200,8 @@ def test_created_dag_run_uses_one_canonical_run_for_history_projection(
     import stores
     from services.dag_run_store import get_dag_run_store
 
+    from maistro.runs import RunStatus
+
     workspace_id = "route-workspace"
     container = _canonical_container(monkeypatch, workspace_id)
     _install_route_workspace(workspace_id, "admin")
@@ -219,6 +221,9 @@ def test_created_dag_run_uses_one_canonical_run_for_history_projection(
     assert projection is not None
     assert projection["canonical_run_id"] == canonical.run_id == run_id
     assert projection["status"] == canonical.status.value
+    assert [
+        run.run_id for run in asyncio.run(container.run_store.list_by_status(RunStatus.COMPLETED))
+    ] == [run_id]
 
 
 def test_run_dag_uses_one_canonical_run_for_history_projection(
