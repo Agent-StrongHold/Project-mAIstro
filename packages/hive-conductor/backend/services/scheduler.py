@@ -2,9 +2,10 @@
 
 Recurrence and fire semantics live in ``maistro.scheduling``.  A configured
 Hive process delegates the complete evaluate -> occurrence claim -> Run admit
--> cursor advance transaction to ``ScheduleRunAdmitter``.  The historical
-in-process path remains only as a compatibility fallback for standalone/demo
-contexts that have no core Container; it is not the production authority.
+-> cursor advance transaction to ``ScheduleRunAdmitter``, then ticks the
+canonical consumer for the admitted Runs. The historical in-process path
+remains only as a compatibility fallback for standalone/demo contexts that
+have no core Container; it is not the production authority.
 """
 
 from __future__ import annotations
@@ -141,6 +142,18 @@ class _ScheduleRunner:
                 await self._evaluate_schedule(sid, schedule, now=now)
             except Exception as exc:
                 logger.warning("Failed to evaluate schedule %s: %s", sid, exc)
+
+        # Admission is the submission for schedule work. The same configured
+        # process owns the bounded canonical consumer tick, so a Run admitted
+        # above cannot remain QUEUED merely because no task receipt exists.
+        container = self._canonical_container()
+        if container is not None:
+            try:
+                executed = await container.execute_admitted_runs()
+                if executed:
+                    logger.info("Consumed %d admitted canonical Run(s)", executed)
+            except Exception as exc:
+                logger.warning("Failed to consume admitted canonical Runs: %s", exc)
 
         self._last_check = now
 

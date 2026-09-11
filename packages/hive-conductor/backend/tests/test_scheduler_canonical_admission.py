@@ -152,6 +152,39 @@ def test_two_live_runners_claim_one_occurrence(monkeypatch: pytest.MonkeyPatch) 
     asyncio.run(scenario())
 
 
+def test_scheduler_tick_drives_the_canonical_consumer_after_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The live scheduler tick does not leave canonical schedule Runs queued."""
+    from services.scheduler import _ScheduleRunner
+
+    async def scenario() -> None:
+        container, row, _root = await _fixture()
+        consumed: list[str] = []
+
+        async def _consume() -> int:
+            consumed.append("consumer-tick")
+            return 1
+
+        container.execute_admitted_runs = _consume
+        _install_row(row)
+        monkeypatch.setattr(
+            _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
+        )
+        try:
+            await _ScheduleRunner()._tick()
+            recorded = await container.schedule_store.get("s-1")
+            assert recorded is not None and recorded.last_run_id
+            admitted = await container.run_store.get_run(recorded.last_run_id)
+            assert admitted is not None
+            assert admitted.status.value == "queued"
+            assert consumed == ["consumer-tick"]
+        finally:
+            _remove_row(row)
+
+    asyncio.run(scenario())
+
+
 def test_persisted_template_survives_empty_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     from services.scheduler import _ScheduleRunner
 

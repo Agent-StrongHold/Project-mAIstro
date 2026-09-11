@@ -142,6 +142,7 @@ to the durable Graph execution path, and bridging a canonically admitted
 
 ### Neutral
 
-- Product wiring (which process runs the tick, on what cadence) is the
-  product's decision, tracked by #231 for Hive; this ADR fixes only what the
-  tick does when run.
+- The configured Hive scheduler is one product wiring of the tick: after its
+  admission loop, `_ScheduleRunner._tick` calls
+  `Container.execute_admitted_runs`. Other products choose their own operator
+  cadence; this ADR fixes what the tick does when run.
