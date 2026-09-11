@@ -15,6 +15,7 @@ outranks it.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
@@ -80,6 +81,10 @@ _STYLE_PROMPTS = {
 @register_node
 class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
     kind: ClassVar[str] = "llm.summarize"
+    # The shipped model path crosses the governed model egress (#56): the
+    # Container's effect context is what makes Bindings resolve; the bare
+    # default authorizes nothing, which is a refusal rather than a no-op.
+    optional_authorities: ClassVar[Mapping[str, str]] = {"effect_context": "effect_context"}
     kind_category: ClassVar = "sync.llm"
     input_schema: ClassVar[type[BaseModel]] = LlmSummarizeIn
     output_schema: ClassVar[type[BaseModel]] = LlmSummarizeOut

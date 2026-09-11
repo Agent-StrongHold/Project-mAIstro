@@ -3,6 +3,8 @@
 Public surface:
   - :func:`register_node(cls)` — decorator + plain registration for node kinds
   - :func:`get_node(kind)` — fetch a node class by its `kind` identifier
+  - :func:`compose_node(kind, authorities)` — construct a node from the
+    authorities it declares, refusing when a required one is missing (#1193)
   - :func:`list_kinds()` — enumerate all registered kinds
   - :func:`catalog_json()` — serialize the catalog for the frontend palette
   - :func:`invoke_capability_effect()` — map governed capability approval into
@@ -17,12 +19,15 @@ is available without callers having to discover modules manually.
 
 from __future__ import annotations
 
-from typing import Any, TypeVar
+import inspect
+from collections.abc import Mapping
+from typing import Any, Final, TypeVar
 
 from .base import (
     BaseNode,
     KindCategory,
     Node,
+    NodeCompositionError,
     NodeContext,
     NodeResult,
     now_utc,
@@ -31,6 +36,24 @@ from .base import (
 from .capability_effect import invoke_capability_effect
 
 _REGISTRY: dict[str, type[BaseNode[Any, Any]]] = {}
+
+#: The authorities a production resolver can hand to a node, by name. A node
+#: declares which of these it needs (`BaseNode.required_authorities`) or uses
+#: (`BaseNode.optional_authorities`); `register_node` refuses a declaration
+#: naming anything else, so a typo cannot become a silently-missing
+#: dependency (#1193, #1082).
+AUTHORITY_NAMES: Final[frozenset[str]] = frozenset(
+    {
+        "harness_adapters",
+        "usage_log",
+        "a2a_delegator",
+        "guest_peers",
+        "run_store",
+        "graph_run_store",
+        "effect_context",
+        "node_resolver",
+    }
+)
 
 #: Bound to the *class object*, so a decorated subclass keeps its own
 #: constructor signature instead of collapsing to the base class's.
@@ -64,8 +87,61 @@ def register_node(node_cls: NodeClassT) -> NodeClassT:
             f"Node kind collision: {kind!r} already registered to "
             f"{_REGISTRY[kind].__name__}, refusing to overwrite with {node_cls.__name__}"
         )
+    _validate_authority_declaration(node_cls)
     _REGISTRY[kind] = node_cls
     return node_cls
+
+
+def _validate_authority_declaration(node_cls: type[BaseNode[Any, Any]]) -> None:
+    """Refuse a dependency declaration the resolver could not honour.
+
+    Checked at registration rather than at resolution so a wrong declaration
+    fails the import that made it, not the first production Run that reaches
+    the node.
+    """
+    parameters = inspect.signature(node_cls.__init__).parameters
+    for label, declared in (
+        ("required_authorities", node_cls.required_authorities),
+        ("optional_authorities", node_cls.optional_authorities),
+    ):
+        for keyword, authority in declared.items():
+            if authority not in AUTHORITY_NAMES:
+                raise ValueError(
+                    f"{node_cls.__name__}.{label} names unknown authority {authority!r}; "
+                    f"known: {sorted(AUTHORITY_NAMES)}"
+                )
+            if keyword not in parameters:
+                raise ValueError(
+                    f"{node_cls.__name__}.{label} maps {keyword!r} to {authority!r}, "
+                    f"but __init__ accepts no parameter named {keyword!r}"
+                )
+
+
+def compose_node(kind: str, authorities: Mapping[str, Any]) -> BaseNode[Any, Any]:
+    """Construct a node kind from the authorities it declares (#1193).
+
+    `authorities` maps `AUTHORITY_NAMES` entries to the Container-owned
+    instances a resolver holds; `None` means "not wired". A required authority
+    that is `None` raises `NodeCompositionError` before anything is
+    constructed, so generic fallback construction — the constructor's own
+    permissive default filling in for a missing Run store — is not reachable
+    for a node that declared the store as required. Optional authorities are
+    passed when present and left to the constructor's default otherwise.
+    """
+    node_cls = get_node(kind)
+    missing = sorted(
+        {name for name in node_cls.required_authorities.values() if authorities.get(name) is None}
+    )
+    if missing:
+        raise NodeCompositionError(kind, missing=missing)
+    kwargs: dict[str, Any] = {
+        keyword: authorities[name] for keyword, name in node_cls.required_authorities.items()
+    }
+    for keyword, name in node_cls.optional_authorities.items():
+        supplied = authorities.get(name)
+        if supplied is not None:
+            kwargs[keyword] = supplied
+    return node_cls(**kwargs)
 
 
 def get_node(kind: str) -> type[BaseNode[Any, Any]]:
@@ -177,12 +253,15 @@ def _import_node_modules() -> None:
 _import_node_modules()
 
 __all__ = [
+    "AUTHORITY_NAMES",
     "BaseNode",
     "KindCategory",
     "Node",
+    "NodeCompositionError",
     "NodeContext",
     "NodeResult",
     "catalog_json",
+    "compose_node",
     "get_node",
     "invoke_capability_effect",
     "list_kinds",

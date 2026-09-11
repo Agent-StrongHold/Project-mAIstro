@@ -88,6 +88,28 @@ or placeholder-only section.
 
 ### Fixed
 
+- **`agent.synth_dag` can no longer report success for a sub-graph nothing
+  ran, and node dependencies are declared on the class (#1193).** The
+  production node resolver fell through to generic registry construction for
+  `agent.synth_dag`, handing it `run_store=None`, and the node then completed
+  with `success=True` and "execution skipped" — the third node found built
+  without an authority it required (after `llm.summarize`, #1079, and
+  `agent.delegate_remote`, #147). A node now declares the Container-owned
+  authorities it needs (`BaseNode.required_authorities`) or uses
+  (`optional_authorities`); `register_node` refuses a declaration the
+  resolver could not honour, and `compose_node` refuses to construct a kind
+  whose required authority is missing (`NodeCompositionError`) instead of
+  filling it in from the constructor's permissive default. `build_node_resolver`
+  builds every kind from those declarations rather than a hand-maintained
+  branch list, takes the durable `graph_run_store`, and hands itself on so a
+  synthesized child graph is built with the same wiring; the Container
+  exposes the one production resolver as `Container.node_resolver()`, and
+  Hive's registered-DAG path passes the graph store through. On the
+  Container's canonical graph store the node now admits its child Run on the
+  spine (parent Run and NodeRun, launch metadata) before the first checkpoint,
+  the way `agent.delegate_remote` files its child. A node constructed
+  directly without a store fails its NodeResult with `NodeCompositionError`
+  naming the missing authority rather than completing.
 - **Project membership is one canonical row per `(project, principal)`, and
   is now explicitly revocable (#1148).** `ProjectScopeStore.set_membership`
   used to mint a fresh `membership_id` on every call, so a re-grant, role
