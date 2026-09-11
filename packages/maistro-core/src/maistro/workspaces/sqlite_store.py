@@ -37,6 +37,7 @@ from maistro.workspaces.model import (
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import aiosqlite
 
+    from maistro.personas.store import PersonaStore
     from maistro.projects.scope_store import ProjectScopeStore
 
 
@@ -83,9 +84,16 @@ CREATE INDEX IF NOT EXISTS idx_canonical_workspace_memberships_owner
 class SqliteWorkspaceStore:
     """Durable Workspace identity and membership store for a single instance."""
 
-    def __init__(self, conn: aiosqlite.Connection, *, project_store: ProjectScopeStore) -> None:
+    def __init__(
+        self,
+        conn: aiosqlite.Connection,
+        *,
+        project_store: ProjectScopeStore,
+        persona_store: PersonaStore | None = None,
+    ) -> None:
         self._conn = conn
         self.project_store: ProjectScopeStore = project_store
+        self.persona_store = persona_store
         self._write_lock = asyncio.Lock()
 
     async def ensure_schema(self) -> None:
@@ -182,6 +190,8 @@ class SqliteWorkspaceStore:
             await self._conn.rollback()
             raise WorkspaceNotFound(workspace_id)
         await self._conn.commit()
+        if self.persona_store is not None:
+            await self.persona_store.delete_for_workspace(workspace_id)
         await self.project_store.purge_workspace(workspace_id)
 
     async def list_for_user(self, user_id: str) -> list[Workspace]:

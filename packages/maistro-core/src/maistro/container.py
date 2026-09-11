@@ -36,6 +36,7 @@ from maistro.memory.episodic.store import InMemoryEpisodicStore
 from maistro.memory.learnings.extractor import ToolCorrectionExtractor
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.outcomes import InMemoryOutcomeStore
+from maistro.personas.wiring import PERSONA_PG_TABLES, wire_persona_store
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.projects.store import InMemoryProjectStore
 from maistro.quota.tracker import InMemoryQuotaTracker
@@ -105,6 +106,7 @@ if TYPE_CHECKING:
     from maistro.observability.tiers import PIIDetector
     from maistro.orchestrator.hierarchy import HarnessRegistry, HierarchicalOrchestrator
     from maistro.personas.golden import GoldenRecordStore
+    from maistro.personas.store import PersonaStore
     from maistro.projects.store import ProjectStore
     from maistro.protocols.embeddings import EmbeddingClient
     from maistro.protocols.memory import (
@@ -175,6 +177,9 @@ class Container:
     #: backend since #132 while the thing its `workspace_id` names had none,
     #: so the only Workspaces that survived a restart were the Conductor's own.
     workspace_store: WorkspaceStore = None  # type: ignore[assignment]
+    #: The live Persona is a Workspace product context, stored beside the
+    #: Project tree rather than in a second product-specific ownership store.
+    persona_store: PersonaStore = None  # type: ignore[assignment]
     run_store: RunStore = None  # type: ignore[assignment]
     # Routing rather than bound: one Conductor process serves every Workspace
     # its users belong to, so the Workspace is chosen per submission (#158).
@@ -1345,9 +1350,15 @@ async def create_container(
     # The same `project_scope_store` object the spine just selected, not a
     # second resolution of the same question: a Workspace whose Root Project is
     # filed in another database is a Workspace whose Runs cannot be filed.
+    persona_store = await wire_persona_store(
+        db_pool,
+        project_store=project_scope_store,
+        pg_pool=pg_pool,
+    )
     workspace_store = await wire_workspace_store(
         db_pool,
         project_store=project_scope_store,
+        persona_store=persona_store,
         pg_pool=pg_pool,
     )
     node_template_store = await wire_node_template_store(db_pool, pg_pool=pg_pool)
@@ -1564,6 +1575,7 @@ async def create_container(
         project_store=project_store,
         project_scope_store=project_scope_store,
         workspace_store=workspace_store,
+        persona_store=persona_store,
         run_store=run_store,
         task_admitter=task_admitter,
         chat_admitter=chat_admitter,
@@ -1838,6 +1850,10 @@ _REQUIRED_PG_TABLES: Final = (
     # `postgresql://` deployment that skipped `alembic upgrade head` should hear
     # about it once, at startup, naming every table it lacks.
     *WORKSPACE_PG_TABLES,
+    # The live Persona is the Workspace's product context. It is listed here so
+    # an unmigrated PostgreSQL deployment fails before serving a Workspace that
+    # cannot reload its Persona after restart.
+    *PERSONA_PG_TABLES,
 )
 
 

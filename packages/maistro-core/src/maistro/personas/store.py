@@ -39,6 +39,8 @@ class PersonaStore(Protocol):
 
     async def delete(self, persona_id: str) -> None: ...
 
+    async def delete_for_workspace(self, workspace_id: str) -> None: ...
+
 
 class InMemoryPersonaStore:
     """Reference Persona store with a uniqueness index on ``workspace_id``."""
@@ -92,6 +94,11 @@ class InMemoryPersonaStore:
         if persona is None:
             raise PersonaNotFound(persona_id)
         self._persona_id_by_workspace.pop(persona.workspace_id, None)
+
+    async def delete_for_workspace(self, workspace_id: str) -> None:
+        persona_id = self._persona_id_by_workspace.pop(workspace_id, None)
+        if persona_id is not None:
+            self._by_id.pop(persona_id, None)
 
 
 __all__ = [

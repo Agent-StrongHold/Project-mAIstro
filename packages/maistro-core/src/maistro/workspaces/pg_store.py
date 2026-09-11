@@ -50,6 +50,7 @@ from maistro.workspaces.model import (
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import asyncpg
 
+    from maistro.personas.store import PersonaStore
     from maistro.projects.scope_store import ProjectScopeStore
 
 
@@ -64,9 +65,16 @@ class _WorkspaceCreateKwargs(TypedDict):
 class PgWorkspaceStore:
     """Durable Workspace identity and membership store."""
 
-    def __init__(self, pool: asyncpg.Pool, *, project_store: ProjectScopeStore) -> None:
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        *,
+        project_store: ProjectScopeStore,
+        persona_store: PersonaStore | None = None,
+    ) -> None:
         self._pool = pool
         self.project_store: ProjectScopeStore = project_store
+        self.persona_store = persona_store
 
     async def create(
         self,
@@ -153,6 +161,8 @@ class PgWorkspaceStore:
             )
         if status.endswith(" 0"):
             raise WorkspaceNotFound(workspace_id)
+        if self.persona_store is not None:
+            await self.persona_store.delete_for_workspace(workspace_id)
         await self.project_store.purge_workspace(workspace_id)
 
     async def list_for_user(self, user_id: str) -> list[Workspace]:

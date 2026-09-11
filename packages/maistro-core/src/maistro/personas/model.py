@@ -11,7 +11,13 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+def _naive_as_utc(value: datetime) -> datetime:
+    """Interpret legacy naive Persona timestamps as UTC, never host local time."""
+
+    return value if value.utcoffset() is not None else value.replace(tzinfo=UTC)
 
 
 class PersonaSurface(StrEnum):
@@ -72,6 +78,12 @@ class Persona(BaseModel):
         if any(not value.strip() for value in values):
             raise ValueError("surface names must be non-empty strings")
         return values
+
+    @model_validator(mode="after")
+    def _normalize_timestamps(self) -> Persona:
+        object.__setattr__(self, "created_at", _naive_as_utc(self.created_at))
+        object.__setattr__(self, "updated_at", _naive_as_utc(self.updated_at))
+        return self
 
     def exposes_surface(self, surface: str | PersonaSurface) -> bool:
         """Return whether this Persona configures a named product surface."""

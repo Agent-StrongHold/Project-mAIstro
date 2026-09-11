@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import NotRequired, Protocol, TypedDict, runtime_checkable
+from typing import TYPE_CHECKING, NotRequired, Protocol, TypedDict, runtime_checkable
 
 from maistro.projects.scope_store import InMemoryProjectScopeStore, ProjectScopeStore
 from maistro.workspaces.model import (
@@ -11,6 +11,9 @@ from maistro.workspaces.model import (
     WorkspaceNotFound,
     WorkspaceRole,
 )
+
+if TYPE_CHECKING:
+    from maistro.personas.store import PersonaStore
 
 
 class _WorkspaceCreateKwargs(TypedDict):
@@ -67,10 +70,16 @@ class WorkspaceStore(Protocol):
 class InMemoryWorkspaceStore:
     """Reference Workspace store that atomically provisions the Root Project."""
 
-    def __init__(self, *, project_store: ProjectScopeStore | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        project_store: ProjectScopeStore | None = None,
+        persona_store: PersonaStore | None = None,
+    ) -> None:
         self._workspaces: dict[str, Workspace] = {}
         self._memberships: dict[tuple[str, str], WorkspaceMembership] = {}
         self.project_store: ProjectScopeStore = project_store or InMemoryProjectScopeStore()
+        self.persona_store = persona_store
 
     async def create(
         self,
@@ -133,10 +142,10 @@ class InMemoryWorkspaceStore:
         for key in [key for key in self._memberships if key[0] == workspace_id]:
             del self._memberships[key]
 
-        # A direct call, not `getattr(store, "purge_workspace", None)`. The
-        # optional form meant the Projects were purged in tests, where the
-        # store was the in-memory reference, and left orphaned on every durable
-        # deployment, where no implementation defined it (Codex, #516).
+        # These stores are separate ownership boundaries, so remove the live
+        # Persona through its canonical store as well as purging Project state.
+        if self.persona_store is not None:
+            await self.persona_store.delete_for_workspace(workspace_id)
         await self.project_store.purge_workspace(workspace_id)
 
     async def list_for_user(self, user_id: str) -> list[Workspace]:
