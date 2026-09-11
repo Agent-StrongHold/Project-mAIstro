@@ -342,6 +342,15 @@ class Settings(BaseSettings):
     # exactly like the bug this closes.
     memory_decay_interval_s: int = 3600
 
+    # Canonical schedule-Run consumer cadence (#1243, ADR-082826-b601). The
+    # scheduler producer admits each due occurrence QUEUED — "a schedule Run's
+    # admission IS its submission" — and the ADR deliberately leaves the tick
+    # cadence to the product. <=0 disables the cadence, which is a *loud*
+    # degraded mode (startup warning): the producer keeps admitting QUEUED Runs
+    # that nothing will execute, so silence would look exactly like the loop
+    # this closes.
+    schedule_consumer_interval_s: int = 10
+
     @field_validator("oauth_providers")
     @classmethod
     def validate_oauth_provider_names(
