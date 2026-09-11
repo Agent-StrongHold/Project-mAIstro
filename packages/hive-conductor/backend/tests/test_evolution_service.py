@@ -144,13 +144,16 @@ def test_run_loop_initializes_and_stops_cleanly(
     from services.evolution import _EvolutionService
 
     class _StubPop:
-        def __init__(self) -> None:
+        def __init__(self, **_: Any) -> None:
             pass
 
         def list_all(self) -> list[Any]:
             return []
 
     class _StubTour:
+        def __init__(self, **_: Any) -> None:
+            pass
+
         def get_stats(self) -> dict[str, Any]:
             return {"n": 0}
 
@@ -182,11 +185,15 @@ def test_run_loop_captures_cycle_exception(
     from services.evolution import _EvolutionService
 
     class _Pop:
+        def __init__(self, **_: Any) -> None:
+            pass
+
         def list_all(self) -> list[Any]:
             return []
 
     class _Tour:
-        pass
+        def __init__(self, **_: Any) -> None:
+            pass
 
     pop_mod = types.ModuleType("maistro_evolve.population")
     pop_mod.PopulationStore = _Pop  # type: ignore[attr-defined]
@@ -586,6 +593,51 @@ async def test_run_one_cycle_shipped_path_records_governed_invocation(  # noqa: 
     assert invocation.binding.binding_id == "service-model"
     await graph_owner.aclose()
     await effects_owner.aclose()
+
+
+@pytest.mark.asyncio
+async def test_evolve_recovery_uses_canonical_resolver_seams(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recovery reconstructs Evolve nodes instead of replaying live objects."""
+    import services.evolution as evolution
+    import services.evolution_graph as evolution_graph
+
+    import maistro.graph.durable_runs as durable_runs
+
+    service = evolution._EvolutionService()
+    service._population = object()
+    service._tournament = object()
+    owner = SimpleNamespace(graph_run_store=object(), run_store=object(), event_bus=object())
+    monkeypatch.setattr(evolution_graph, "_engine_container", lambda: owner)
+    monkeypatch.setattr(service, "_build_llm_call", lambda: None)
+    resolver_calls: list[Any] = []
+    monkeypatch.setattr(
+        evolution_graph,
+        "_resolver",
+        lambda **kwargs: resolver_calls.append(kwargs) or "resolver",
+    )
+
+    captured: dict[str, Any] = {}
+
+    async def _recover(**kwargs: Any) -> int:
+        captured["recover"] = kwargs
+        assert kwargs["eligible"](SimpleNamespace(provenance={"admission_source": "evolve"}))
+        assert kwargs["node_resolver_factory"](SimpleNamespace()) == "resolver"
+        return 1
+
+    async def _resume(**kwargs: Any) -> int:
+        captured["resume"] = kwargs
+        assert not kwargs["eligible"](SimpleNamespace(provenance={"admission_source": "other"}))
+        return 2
+
+    monkeypatch.setattr(durable_runs, "recover_queued_graph_runs", _recover)
+    monkeypatch.setattr(durable_runs, "resume_due_graph_runs", _resume)
+
+    assert await service.recover_canonical_runs() == 3
+    assert captured["recover"]["store"] is owner.graph_run_store
+    assert captured["resume"]["run_store"] is owner.run_store
+    assert len(resolver_calls) == 1
 
 
 # --- status -------------------------------------------------------------
