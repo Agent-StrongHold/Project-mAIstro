@@ -463,3 +463,130 @@ async def test_a_failed_sqlite_write_rolls_back_and_frees_the_critical_section(
             next_due_at=NOON + timedelta(hours=1),
         )
         assert advanced is not None and advanced.runs_so_far == 1
+
+
+# --- put keeps the recorded cursors (Codex, #1199) ---------------------------
+
+
+async def test_put_keeps_the_cursors_record_fire_wrote(store: ScheduleStore) -> None:
+    """A definition refresh is read-then-put with an await between the halves.
+    A fire that lands in that gap must survive the stale copy being written:
+    `put` keeps the row's cursors and returns the row as stored."""
+    schedule = await store.put(_schedule(name="before"))
+    await store.record_fire(
+        schedule.schedule_id, fired_at=NOON, run_id="run-1", next_due_at=NOON + timedelta(hours=1)
+    )
+
+    stale = schedule.model_copy(update={"name": "after"})
+    returned = await store.put(stale)
+
+    loaded = await store.get(schedule.schedule_id)
+    assert loaded is not None and loaded.name == "after", "the definition is the caller's"
+    assert loaded.runs_so_far == 1, "the fire count is the store's"
+    assert loaded.last_fired_at == NOON
+    assert loaded.last_run_id == "run-1"
+    assert loaded.next_due_at == NOON + timedelta(hours=1)
+    assert loaded.created_at == schedule.created_at
+    assert returned == loaded, "put returns the row as stored, cursors included"
+
+
+async def test_put_with_a_new_recurrence_clears_the_due_cursor(store: ScheduleStore) -> None:
+    """The recorded due moment was computed under the old rule; `due()` reads
+    an empty cursor as "evaluate now", and the enumeration cursor still
+    bounds what that evaluation may fire."""
+    schedule = await store.put(_schedule(name="hourly"))
+    await store.record_fire(
+        schedule.schedule_id, fired_at=NOON, run_id="run-1", next_due_at=NOON + timedelta(hours=1)
+    )
+
+    rescheduled = await store.put(schedule.model_copy(update={"cron": "*/5 * * * *"}))
+
+    assert rescheduled.next_due_at is None
+    assert rescheduled.last_fired_at == NOON and rescheduled.runs_so_far == 1
+    assert [s.schedule_id for s in await store.due(now=NOON)] == [schedule.schedule_id]
+
+
+async def test_put_on_a_new_row_stores_the_supplied_cursors(store: ScheduleStore) -> None:
+    """Only an existing row has cursors to keep; an imported schedule keeps
+    its history."""
+    imported = await store.put(
+        _schedule(runs_so_far=4, last_run_id="run-4", last_fired_at=NOON, next_due_at=None)
+    )
+    loaded = await store.get(imported.schedule_id)
+    assert loaded is not None
+    assert (loaded.runs_so_far, loaded.last_run_id, loaded.last_fired_at) == (4, "run-4", NOON)
+
+
+async def test_a_due_cursor_write_counts_no_fire_by_default(store: ScheduleStore) -> None:
+    """`fires` follows `fired_at` when omitted: nothing consumed, nothing
+    counted, so a caller recording only the due cursor cannot spend a
+    bounded schedule's run."""
+    schedule = await store.put(_schedule(max_runs=1))
+    recorded = await store.record_fire(
+        schedule.schedule_id, fired_at=None, run_id=None, next_due_at=NOON + timedelta(hours=1)
+    )
+    assert recorded is not None and recorded.runs_so_far == 0 and recorded.enabled is True
+    assert recorded.next_due_at == NOON + timedelta(hours=1)
+
+    fired = await store.record_fire(
+        schedule.schedule_id, fired_at=NOON, run_id="run-1", next_due_at=None
+    )
+    assert fired is not None and fired.runs_so_far == 1, "a consumed occurrence is one fire"
+
+
+async def test_sqlite_schedule_store_on_its_own_connection_waits_for_a_sibling_writer(
+    tmp_path,
+) -> None:
+    """Production gives the schedule store its own connection (#1199), so a
+    sibling store paused between DML and commit on the spine connection is a
+    writer to wait for, not a transaction to collide with or roll back."""
+    path = tmp_path / "own-connection.db"
+    async with aiosqlite.connect(path) as spine, aiosqlite.connect(path) as own:
+        store = SqliteScheduleStore(own)
+        await store.ensure_schema()
+        schedule = await store.put(_schedule(name="hourly"))
+        await spine.execute("CREATE TABLE sibling (k TEXT PRIMARY KEY)")
+        await spine.commit()
+
+        # The sibling: DML issued, commit not yet — the window a
+        # `SqliteRunStore.create_run` leaves open across its await.
+        await spine.execute("BEGIN IMMEDIATE")
+        await spine.execute("INSERT INTO sibling (k) VALUES ('run-1')")
+
+        fire = asyncio.ensure_future(
+            store.record_fire(
+                schedule.schedule_id,
+                fired_at=NOON,
+                run_id="run-1",
+                next_due_at=NOON + timedelta(hours=1),
+            )
+        )
+        await asyncio.sleep(0.05)
+        assert not fire.done(), "held at SQLite's write lock, not failed"
+        await spine.commit()
+
+        advanced = await fire
+        assert advanced is not None and advanced.runs_so_far == 1
+        async with spine.execute("SELECT k FROM sibling") as cursor:
+            assert await cursor.fetchall() == [("run-1",)], "the sibling's write survived"
+
+
+async def test_sqlite_schedule_store_sharing_a_sibling_connection_collides(tmp_path) -> None:
+    """The contrast, and why the container opens the extra connection: on the
+    sibling's own connection the schedule store's `BEGIN IMMEDIATE` fails
+    inside that sibling's transaction, and its rollback would be the
+    sibling's. The failure is loud and the sibling's row is not rolled back
+    by the schedule store, because the store never began."""
+    async with aiosqlite.connect(tmp_path / "shared.db") as conn:
+        store = SqliteScheduleStore(conn)
+        await store.ensure_schema()
+        schedule = await store.put(_schedule(name="hourly"))
+        await conn.execute("CREATE TABLE sibling (k TEXT PRIMARY KEY)")
+        await conn.commit()
+
+        await conn.execute("BEGIN IMMEDIATE")
+        await conn.execute("INSERT INTO sibling (k) VALUES ('run-1')")
+        with pytest.raises(aiosqlite.OperationalError, match="within a transaction"):
+            await store.record_fire(
+                schedule.schedule_id, fired_at=NOON, run_id="run-1", next_due_at=None
+            )

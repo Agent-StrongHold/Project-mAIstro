@@ -21,11 +21,24 @@ whose first occurrence is next week must not be re-evaluated every tick until
 then because its first evaluation left `next_due_at` empty. Passing
 `fired_at=None` records the due cursor alone.
 
-The SQLite store serializes `record_fire` the way the PostgreSQL store's row
+`put` writes the definition and only the definition. On a row that already
+exists it keeps the cursors `record_fire` has recorded, whatever the supplied
+Schedule carries: a definition refresh is read-then-put with an await between
+the halves, and a `record_fire` that lands in that gap must not be written
+back over by the stale copy (Codex, #1199). A changed recurrence (`cron` or
+`timezone`) is the one thing that clears `next_due_at`, because the recorded
+due moment was computed under the old rule and `due()` reads an empty cursor
+as "evaluate now".
+
+The SQLite store serializes every writer the way the PostgreSQL store's row
 lock does: the read and the write happen inside one `BEGIN IMMEDIATE`
 critical section, so a tick and a manual fire advancing the same schedule
 cannot both read `runs_so_far = 4` and both write `5`, and cannot lose each
-other's `last_run_id` or `next_due_at`.
+other's `last_run_id` or `next_due_at`. That section is a property of the
+*connection*, so the store must be the only writer on its connection (the
+container opens it one, `Container.schedule_conn`): on a connection shared
+with another store, `BEGIN IMMEDIATE` collides with that store's open
+transaction, and a rollback here would discard that store's uncommitted work.
 """
 
 from __future__ import annotations
@@ -55,7 +68,14 @@ class ScheduleStore(Protocol):
     """Durable home for Schedule definitions and their fire cursors."""
 
     async def put(self, schedule: Schedule) -> Schedule:
-        """Insert or replace a schedule."""
+        """Insert the schedule, or replace an existing row's definition.
+
+        The fire cursors (`last_fired_at`, `last_run_id`, `runs_so_far`,
+        `next_due_at`) and `created_at` of an existing row are kept -- the
+        supplied values are what the caller last *read*, and `record_fire`
+        may have moved them since. A new recurrence clears `next_due_at`.
+        Returns the row as stored, which is the copy a caller should keep.
+        """
         ...
 
     async def get(self, schedule_id: str) -> Schedule | None: ...
@@ -81,7 +101,7 @@ class ScheduleStore(Protocol):
         fired_at: datetime | None,
         run_id: str | None,
         next_due_at: datetime | None,
-        fires: int = 1,
+        fires: int | None = None,
         disable: bool = False,
     ) -> Schedule | None:
         """Advance the cursors after an evaluation, and disable on exhaustion.
@@ -89,8 +109,11 @@ class ScheduleStore(Protocol):
         `fired_at` is the newest occurrence consumed and becomes the
         enumeration cursor; `None` says no occurrence was consumed, so that
         cursor stays where it is and only `next_due_at` (the due cursor) is
-        recorded (#1199). Implementations serialize the read-then-write so two
-        callers advancing one schedule cannot lose each other's update.
+        recorded (#1199). `fires` follows it when omitted: one fire for a
+        consumed occurrence, none when nothing was consumed, so a due-cursor
+        write can never spend a bounded schedule's run. Implementations
+        serialize the read-then-write so two callers advancing one schedule
+        cannot lose each other's update.
         """
         ...
 
@@ -101,10 +124,12 @@ def _advance(
     fired_at: datetime | None,
     run_id: str | None,
     next_due_at: datetime | None,
-    fires: int,
+    fires: int | None,
     disable: bool,
 ) -> Schedule:
     """The cursor advance, shared by every implementation so they cannot drift."""
+    if fires is None:
+        fires = 0 if fired_at is None else 1
     return schedule.model_copy(
         update={
             "last_fired_at": fired_at if fired_at is not None else schedule.last_fired_at,
@@ -113,6 +138,27 @@ def _advance(
             "next_due_at": None if disable else next_due_at,
             "enabled": False if disable else schedule.enabled,
             "updated_at": datetime.now(UTC),
+        }
+    )
+
+
+def _merged(stored: Schedule | None, definition: Schedule) -> Schedule:
+    """The row `put` writes: the new definition over the recorded cursors.
+
+    Shared by every implementation for the same reason as `_advance`. A row
+    that does not exist yet is stored as given, cursors included, so a caller
+    importing a schedule with history keeps it.
+    """
+    if stored is None:
+        return definition
+    recurrence_changed = (definition.cron, definition.timezone) != (stored.cron, stored.timezone)
+    return definition.model_copy(
+        update={
+            "last_fired_at": stored.last_fired_at,
+            "last_run_id": stored.last_run_id,
+            "runs_so_far": stored.runs_so_far,
+            "next_due_at": None if recurrence_changed else stored.next_due_at,
+            "created_at": stored.created_at,
         }
     )
 
@@ -128,8 +174,9 @@ class InMemoryScheduleStore:
         self._schedules: dict[str, Schedule] = {}
 
     async def put(self, schedule: Schedule) -> Schedule:
-        self._schedules[schedule.schedule_id] = schedule
-        return schedule
+        stored = _merged(self._schedules.get(schedule.schedule_id), schedule)
+        self._schedules[schedule.schedule_id] = stored
+        return stored
 
     async def get(self, schedule_id: str) -> Schedule | None:
         return self._schedules.get(schedule_id)
@@ -154,7 +201,7 @@ class InMemoryScheduleStore:
         fired_at: datetime | None,
         run_id: str | None,
         next_due_at: datetime | None,
-        fires: int = 1,
+        fires: int | None = None,
         disable: bool = False,
     ) -> Schedule | None:
         schedule = self._schedules.get(schedule_id)
@@ -202,6 +249,12 @@ class SqliteScheduleStore:
         # writer left mid-statement would make a locked one's `BEGIN
         # IMMEDIATE` raise "cannot start a transaction within a transaction"
         # the moment their awaits interleaved.
+        #
+        # The lock is this store's, so the connection must be too: a sibling
+        # store paused between its DML and its commit on a shared connection
+        # is exactly that unlocked writer, and the rollback below would then
+        # discard *its* work (Codex, #1199). The container therefore opens
+        # this store its own connection, as it does the session store's.
         self._write_lock = asyncio.Lock()
 
     @asynccontextmanager
@@ -216,15 +269,50 @@ class SqliteScheduleStore:
         """
         async with self._write_lock:
             try:
-                # BEGIN may reach SQLite before its await is cancelled, and
-                # COMMIT may fail too. Both belong inside the rollback fence,
-                # before the next writer can acquire this connection's lock.
+                # BEGIN may reach SQLite before its await is cancelled. It
+                # belongs inside the rollback fence, before the next writer
+                # can acquire this connection's lock.
                 await self._conn.execute("BEGIN IMMEDIATE")
                 yield
-                await self._conn.commit()
             except BaseException:
                 await self._conn.rollback()
                 raise
+            await self._resolved_commit()
+
+    async def _resolved_commit(self) -> None:
+        """Commit, and learn the commit's outcome before classifying the exit.
+
+        aiosqlite queues `commit()` on its worker thread; cancelling the
+        awaiting task does not retract a queued COMMIT. A rollback issued on
+        that cancellation would queue *behind* the commit, do nothing, and
+        leave the caller believing its write was discarded when it had
+        landed (Codex, #1199). So the commit is shielded and waited out:
+        cancellation is honoured only once the outcome is known, and a
+        rollback is issued only for a commit that actually failed.
+        """
+        commit = asyncio.ensure_future(self._conn.commit())
+        interrupted: asyncio.CancelledError | None = None
+        while not commit.done():
+            try:
+                await asyncio.shield(commit)
+            except asyncio.CancelledError as exc:
+                interrupted = exc
+            except BaseException:
+                break  # the commit's own failure; classified below
+        try:
+            commit.result()
+        except BaseException as failure:
+            await self._conn.rollback()
+            if interrupted is not None:
+                # A cancelled task ends in CancelledError, whatever else went
+                # wrong on the way out; the commit failure rides along as
+                # its cause.
+                raise interrupted from failure
+            raise
+        if interrupted is not None:
+            # Committed, then cancelled: the write is durable and the caller
+            # still sees the cancellation, as any cancelled task must.
+            raise interrupted
 
     async def ensure_schema(self) -> None:
         await self._conn.execute(_SCHEMA)
@@ -244,8 +332,11 @@ class SqliteScheduleStore:
 
     async def put(self, schedule: Schedule) -> Schedule:
         async with self._serialized_write():
-            await self._upsert(schedule)
-        return schedule
+            # Read and merge inside the critical section: the cursors kept
+            # are the ones on disk *now*, not the ones the caller read.
+            stored = _merged(await self.get(schedule.schedule_id), schedule)
+            await self._upsert(stored)
+        return stored
 
     async def _upsert(self, schedule: Schedule) -> None:
         """The one write, issued only inside `_serialized_write`."""
@@ -306,7 +397,7 @@ class SqliteScheduleStore:
         fired_at: datetime | None,
         run_id: str | None,
         next_due_at: datetime | None,
-        fires: int = 1,
+        fires: int | None = None,
         disable: bool = False,
     ) -> Schedule | None:
         """Advance the cursors inside one write-critical section (#1199).

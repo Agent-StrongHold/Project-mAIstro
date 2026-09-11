@@ -165,6 +165,7 @@ async def wire_execution_spine(
     pg_pool: Any = None,
     archive_store: ArchiveStore | None = None,
     prime: bool = True,
+    schedule_conn: Any = None,
 ) -> tuple[
     ProjectScopeStore,
     RunStore,
@@ -202,6 +203,17 @@ async def wire_execution_spine(
     requires. `SqliteRunStore` does not take it: the homelab twin has no
     archive columns, and `ColdRunArchiver` is a capability protocol precisely so
     a store may decline the tier instead of stubbing it.
+
+    `schedule_conn` is the SQLite connection the schedule store writes on,
+    when the deployment opened it one (`Container.schedule_conn`, #1199).
+    `SqliteScheduleStore` holds a `BEGIN IMMEDIATE` transaction across a read
+    and a write, and a transaction belongs to its connection: on `conn`,
+    shared with the Run, Project, template and continuation stores, its
+    BEGIN collides with a sibling paused between DML and commit, and its
+    rollback would discard that sibling's work -- the reason the session
+    store has its own connection (#327). None falls back to `conn`, which is
+    only sound for a caller that never writes schedules while another store
+    writes, such as the read-only repair CLI.
     """
     project_scope_store: ProjectScopeStore
     run_store: RunStore
@@ -237,7 +249,9 @@ async def wire_execution_spine(
         await sqlite_run_store.ensure_schema()
         sqlite_template_store = SqliteGraphTemplateStore(conn)
         await sqlite_template_store.ensure_schema()
-        sqlite_schedule_store = SqliteScheduleStore(conn)
+        sqlite_schedule_store = SqliteScheduleStore(
+            schedule_conn if schedule_conn is not None else conn
+        )
         await sqlite_schedule_store.ensure_schema()
         sqlite_continuation_store = SqliteGraphContinuationStore(conn)
         await sqlite_continuation_store.ensure_schema()

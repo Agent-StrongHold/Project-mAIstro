@@ -103,9 +103,21 @@ or placeholder-only section.
   could both read `runs_so_far = n` and both write `n + 1`, losing each
   other's `last_run_id` and `next_due_at` with it; every SQLite writer now
   goes through one `BEGIN IMMEDIATE` critical section, matching the
-  PostgreSQL store's `FOR UPDATE`. The live Hive tick still enumerates its
-  own schedule rows; moving it onto `ScheduleStore.due()` is #1199's
-  remaining scope.
+  PostgreSQL store's `FOR UPDATE`. That section is the connection's, so the
+  container now opens the schedule store its own SQLite connection
+  (`Container.schedule_conn`, on the session store's terms) rather than
+  sharing the spine's, where its BEGIN collided with a sibling store's open
+  transaction and its rollback discarded that sibling's work; a cancelled
+  writer waits the queued COMMIT out before deciding whether a rollback is
+  real. `ScheduleStore.put` keeps an existing row's recorded cursors
+  (`last_fired_at`, `last_run_id`, `runs_so_far`, `next_due_at`) instead of
+  writing back the copy the caller read, so the Hive tick's per-tick
+  definition refresh can no longer undo a fire that landed between its read
+  and its write; a changed recurrence clears `next_due_at` for re-evaluation.
+  `record_fire`'s `fires` now follows `fired_at` when omitted (none for a
+  due-cursor-only write), so a bounded schedule cannot be spent by one. The
+  live Hive tick still enumerates its own schedule rows; moving it onto
+  `ScheduleStore.due()` is #1199's remaining scope.
 - **Project membership is one canonical row per `(project, principal)`, and
   is now explicitly revocable (#1148).** `ProjectScopeStore.set_membership`
   used to mint a fresh `membership_id` on every call, so a re-grant, role
