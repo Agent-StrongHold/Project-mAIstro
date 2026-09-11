@@ -235,6 +235,37 @@ def test_run_creation_failure_keeps_occurrence_owed(monkeypatch: pytest.MonkeyPa
     asyncio.run(scenario())
 
 
+def test_half_wired_container_fails_closed_for_recurring_fire(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A configured Container must never make a tick use the compatibility path."""
+    from services.scheduler import ScheduleAdmissionUnavailable, _ScheduleRunner
+
+    async def scenario() -> None:
+        container, row, _root = await _fixture()
+        container.template_store = None
+        _install_row(row)
+        monkeypatch.setattr(
+            _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
+        )
+
+        async def _compatibility_path(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("configured recurring fire reached compatibility execution")
+
+        monkeypatch.setattr(_ScheduleRunner, "_fire_schedule", _compatibility_path)
+        try:
+            with pytest.raises(ScheduleAdmissionUnavailable):
+                await _ScheduleRunner()._evaluate_schedule(
+                    "s-1", row, now=datetime(2026, 8, 21, 12, 5, tzinfo=UTC)
+                )
+            assert len(container.run_store._runs) == 0  # type: ignore[attr-defined]
+            assert row.last_run_id is None
+        finally:
+            _remove_row(row)
+
+    asyncio.run(scenario())
+
+
 def test_max_runs_disables_canonical_and_product_projection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

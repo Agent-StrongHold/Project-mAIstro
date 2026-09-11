@@ -228,9 +228,9 @@ class _ScheduleRunner:
         """
         if container is None:
             return None
-        run_store = container.run_store
-        template_store = container.template_store
-        schedule_store = container.schedule_store
+        run_store = getattr(container, "run_store", None)
+        template_store = getattr(container, "template_store", None)
+        schedule_store = getattr(container, "schedule_store", None)
         if run_store is None or template_store is None or schedule_store is None:
             return None
         return ScheduleRunAdmitter(run_store, template_store, schedule_store)
@@ -536,7 +536,12 @@ class _ScheduleRunner:
     async def _evaluate_schedule(self, sid: str, schedule: Any, *, now: datetime) -> None:
         container = self._canonical_container()
         admitter = self._canonical_admitter(container)
-        if admitter is not None:
+        if container is not None:
+            if admitter is None:
+                raise ScheduleAdmissionUnavailable(
+                    "configured Container is missing its run/template/schedule store wiring; "
+                    "canonical schedule admission is unavailable"
+                )
             await self._evaluate_canonical(
                 sid,
                 schedule,

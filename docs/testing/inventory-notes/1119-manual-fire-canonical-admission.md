@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +8
+  packages/hive-conductor/backend/tests: +9
   packages/maistro-core/tests: +6
 ---
 # 1119-manual-fire-canonical-admission
@@ -19,7 +19,7 @@ for byte unchanged, a failed Run creation leaving no cursor movement, and a
 duplicate claim (two fires racing on one instant) reported as `already_fired`
 rather than recreated.
 
-`packages/hive-conductor/backend/tests` (+8):
+`packages/hive-conductor/backend/tests` (+9):
 
 - `test_scheduler.py` (+5) — with a Container present, `fire_now` enters
   `ScheduleRunAdmitter.admit_manual` through the real scope resolution (real
@@ -31,6 +31,9 @@ rather than recreated.
   canonical cursor with the disable reaching both definitions. The no-Container
   compatibility tests are unchanged and still pass — the fallback now exists
   only where no Container exists at all.
+- `test_scheduler_canonical_admission.py` (+1) — a recurring tick on a configured
+  but half-wired Container fails closed before `_fire_schedule` can reach the
+  synthetic-scope compatibility executor.
 - `test_schedule_manual_fire_canonical.py` (+3, new file) — the E2E leg the
   acceptance requires: the HTTP route driven over `TestClient` with a real
   `create_container` Container swapped onto the engine port. Asserts the Run
