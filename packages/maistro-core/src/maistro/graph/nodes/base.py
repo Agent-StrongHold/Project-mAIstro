@@ -357,7 +357,7 @@ def now_utc() -> datetime:
     return datetime.now(UTC)
 
 
-def preserved_hitl_deadline(resumed: dict[str, Any], *, timeout_seconds: int) -> datetime:
+def preserved_hitl_deadline(resumed: dict[str, Any] | None, *, timeout_seconds: int) -> datetime:
     """The durable deadline a malformed HITL re-pause must not silently reset (#1097).
 
     `DurableRunStore.answer_record` stamps a node's own previous pause
@@ -375,7 +375,7 @@ def preserved_hitl_deadline(resumed: dict[str, Any], *, timeout_seconds: int) ->
     evidence is present at all, which means there is no earlier admitted
     deadline to preserve -- the node's very first pause.
     """
-    pause = resumed.get("_pause")
+    pause = (resumed or {}).get("_pause")
     # `Mapping`, not `dict`: `GraphExecutionState` freezes its metadata, so a
     # value read back through `NodeContext.metadata` is an immutable mapping
     # rather than the plain dict `answer_record` wrote it as.

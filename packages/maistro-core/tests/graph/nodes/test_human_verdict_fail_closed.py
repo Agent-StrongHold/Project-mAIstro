@@ -285,6 +285,30 @@ async def test_approve_draft_first_pause_has_no_preserved_deadline_to_read() -> 
 
 
 @pytest.mark.ac("ADR-090726-9a4e/AC-2")
+async def test_approve_draft_pause_evidence_without_a_string_resume_at_falls_back() -> None:
+    """`_pause` evidence is present but its `resume_at` is missing or not a
+    string (a record from before this preservation existed, or corrupted
+    evidence) -- there is no admitted deadline to read back, so this falls
+    back to `now + timeout_seconds` exactly like the no-evidence-at-all
+    case, rather than raising."""
+    node = get_node("human.approve_draft")()
+    before = datetime.now(UTC)
+
+    result = await node.run(
+        {"draft": {"ticket": "PROJ-1"}, "timeout_seconds": 100},
+        _ctx("n", _malformed_answer_with_pause() | {"_pause": {"kind": "hitl", "metadata": {}}}),
+    )
+
+    assert result.status == "paused"
+    assert result.resume_at is not None
+    assert (
+        before + timedelta(seconds=99)
+        <= result.resume_at
+        <= datetime.now(UTC) + timedelta(seconds=101)
+    )
+
+
+@pytest.mark.ac("ADR-090726-9a4e/AC-2")
 async def test_approve_draft_repeated_malformed_answers_do_not_extend_the_deadline() -> None:
     """Repeated bad answers, as if arriving right up against the deadline,
     must all resolve to the same preserved deadline -- not one push back per
