@@ -24,6 +24,7 @@ from maistro.capabilities.governed_invocation import (
 from maistro.capabilities.invocation import (
     InMemoryInvocationStore,
     InvocationExecutionService,
+    InvocationQuota,
     InvocationStore,
 )
 from maistro.credentials.router import CredentialRouter
@@ -36,13 +37,7 @@ async def _m1_binding_authorized_policy(
     request: Any,
     context: InvocationPolicyContext,
 ) -> PolicyVerdict:
-    """M1 baseline after canonical Binding scope resolution has succeeded.
-
-    Binding authorization is evaluated by ``BindingStore.resolve`` before this
-    policy boundary. M2 may inject stronger policy semantics here; M1 does not
-    manufacture a second permission system just to make governed Invocation
-    reachable.
-    """
+    """M1 baseline after canonical Binding scope resolution has succeeded."""
 
     del binding, request, context
     return PolicyVerdict(
@@ -63,14 +58,7 @@ class CapabilityEffectContext:
     credentials: CredentialRouter = field(default_factory=CredentialRouter)
 
     def credential_routing(self) -> CredentialRouting:
-        """Credential routing for this context's Provider selection seam (#58).
-
-        Consumers wrap their slot-specific resolver/executor pair with this, so
-        credential selection is scoped by the resolved Binding and rotation
-        reacts to real Invocation outcomes. The default router starts empty —
-        absence of an authorized credential is a hard refusal, never a silent
-        fallback to some other scope's key.
-        """
+        """Credential routing for this context's Provider selection seam (#58)."""
 
         return CredentialRouting(self.credentials)
 
@@ -79,18 +67,19 @@ def new_in_memory_effect_context(
     *,
     policy_evaluator: PolicyEvaluator | None = None,
     credentials: CredentialRouter | None = None,
+    quota: InvocationQuota | None = None,
 ) -> CapabilityEffectContext:
-    """Build an isolated canonical effect context for local/runtime composition.
+    """Build an isolated canonical effect context for tests and explicit ephemeral use.
 
-    ``credentials`` supplies the scoped credential pool for Provider selection
-    (#58); omitted, the router exists but holds no credentials, so routed
-    acquisitions fail closed until one is registered in the requesting scope.
+    Production composition passes its canonical quota collaborator here. Keeping
+    quota on the context, rather than on an Agent/router call, makes every effect
+    consumer crossing this context share one admission/accounting authority.
     """
 
     binding_store = InMemoryBindingStore()
     invocation_store = InMemoryInvocationStore()
     event_store = InMemoryEventStore()
-    invocation_service = InvocationExecutionService(store=invocation_store)
+    invocation_service = InvocationExecutionService(store=invocation_store, quota=quota)
     governed = GovernedInvocationExecutionService(
         invocation_service=invocation_service,
         event_store=event_store,
@@ -107,11 +96,10 @@ def new_in_memory_effect_context(
 
 @lru_cache(maxsize=1)
 def default_effect_context() -> CapabilityEffectContext:
-    """Process-wide canonical context used by registry-constructed effect nodes.
+    """Ephemeral process default for callers that deliberately have no quota policy.
 
-    The shared instance matters: a Node must resolve the same Binding authority
-    an application populated, and retries must consult the same Invocation
-    ledger. No default Binding is created here; absence remains a hard refusal.
+    Production Container wiring does not use this default. It constructs the
+    context explicitly with the backend-selected quota authority.
     """
 
     return new_in_memory_effect_context()
