@@ -61,6 +61,8 @@ async def test_sqlite_backend_wires_sqlite_durable_event_stores() -> None:
     assert type(container.durable_event_log).__name__ == "SqliteEventLog"
     assert type(container.trigger_store).__name__ == "SqliteTriggerStore"
     assert type(container.invocation_store).__name__ == "SqliteInvocationStore"
+    assert type(container.capability_effects.invocation_store).__name__ == "SqliteInvocationStore"
+    assert type(container.capability_effects.event_store).__name__ == "SqliteEventStore"
     event = await container.durable_event_log.append("task.created", source="test")
     assert (await container.durable_event_log.get(event.id)) is not None
 

@@ -5,7 +5,7 @@ import pytest
 
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.invocation import InvocationExecutionService, InvocationStatus
-from maistro.capabilities.invocation_store import SqliteInvocationStore
+from maistro.capabilities.invocation_store import PgInvocationStore, SqliteInvocationStore
 
 
 class _Provider:
@@ -66,3 +66,46 @@ async def test_sqlite_store_preserves_effect_and_resolved_provider_across_reopen
     assert persisted.binding.provider_trust_tier == "trusted"
     assert persisted.binding.config == {"region": "us"}
     assert persisted.result == {"written": {"value": 1}}
+
+
+@pytest.mark.asyncio
+async def test_postgres_store_preserves_capability_invocation(pg_pool) -> None:
+    if pg_pool is None:
+        pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+
+    binding = Binding(
+        binding_id="pg-binding-1",
+        workspace_id="ws-1",
+        project_id="project-1",
+        capability="external_write",
+        config={"region": "us"},
+    )
+    store = PgInvocationStore(pg_pool)
+    await store.ensure_schema()
+    service = InvocationExecutionService(store=store)
+
+    async def execute(_provider: _Provider, request: object) -> object:
+        return {"written": request}
+
+    invocation = await service.invoke(
+        binding=binding,
+        run_id="pg-run-1",
+        node_run_id="pg-node-run-1",
+        attempt_id="pg-attempt-1",
+        effect_key="write:pg-alpha",
+        request={"value": 2},
+        resolver=_resolver,
+        executor=execute,
+    )
+
+    stored = await store.get(invocation.invocation_id)
+    history = await store.list_effect(
+        run_id="pg-run-1",
+        node_run_id="pg-node-run-1",
+        binding_id="pg-binding-1",
+        effect_key="write:pg-alpha",
+    )
+    assert stored is not None
+    assert stored.status is InvocationStatus.COMPLETED
+    assert stored.result == {"written": {"value": 2}}
+    assert [item.invocation_id for item in history] == [invocation.invocation_id]

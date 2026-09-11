@@ -133,6 +133,7 @@ _PG_SCRATCH_TABLES = (
     # read a previous run's row. A regression that stopped `put` writing would
     # have been masked by data the fixture never cleared.
     "node_templates",
+    "capability_invocations",
 )
 
 

@@ -138,13 +138,11 @@ class PgInvocationStore:
         run_id TEXT NOT NULL,
         node_run_id TEXT NOT NULL,
         attempt_id TEXT NOT NULL,
-        workspace_id TEXT NOT NULL,
-        project_id TEXT NOT NULL,
         binding_id TEXT NOT NULL,
         effect_key TEXT NOT NULL,
         status TEXT NOT NULL,
         created_at DOUBLE PRECISION NOT NULL,
-        payload_json JSONB NOT NULL
+        payload JSONB NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_capability_invocation_effect
         ON capability_invocations (run_id, node_run_id, binding_id, effect_key, created_at, invocation_id);
@@ -165,31 +163,37 @@ class PgInvocationStore:
     async def create(self, invocation: Invocation) -> Invocation:
         await self._pool.execute(
             """INSERT INTO capability_invocations (
-                invocation_id, run_id, node_run_id, attempt_id, workspace_id, project_id,
-                binding_id, effect_key, status, created_at, payload_json
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)""",
-            *self._row_values(invocation),
+                invocation_id, run_id, node_run_id, attempt_id, binding_id,
+                effect_key, status, created_at, payload
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)""",
+            invocation.invocation_id,
+            invocation.run_id,
+            invocation.node_run_id,
+            invocation.attempt_id,
+            invocation.binding.binding_id,
+            invocation.effect_key,
+            invocation.status.value,
+            invocation.created_at.timestamp(),
+            invocation.model_dump_json(),
         )
         return invocation.model_copy(deep=True)
 
     async def get(self, invocation_id: str) -> Invocation | None:
         row = await self._pool.fetchrow(
-            "SELECT payload_json FROM capability_invocations WHERE invocation_id = $1",
+            "SELECT payload FROM capability_invocations WHERE invocation_id = $1",
             invocation_id,
         )
-        return self._from_payload(row["payload_json"]) if row is not None else None
+        return self._from_payload(row["payload"]) if row is not None else None
 
     async def save(self, invocation: Invocation) -> Invocation:
         result = await self._pool.execute(
             """UPDATE capability_invocations SET
-                run_id=$1, node_run_id=$2, attempt_id=$3, workspace_id=$4, project_id=$5,
-                binding_id=$6, effect_key=$7, status=$8, created_at=$9, payload_json=$10::jsonb
-               WHERE invocation_id=$11""",
+                run_id=$1, node_run_id=$2, attempt_id=$3, binding_id=$4,
+                effect_key=$5, status=$6, created_at=$7, payload=$8::jsonb
+               WHERE invocation_id=$9""",
             invocation.run_id,
             invocation.node_run_id,
             invocation.attempt_id,
-            invocation.workspace_id,
-            invocation.project_id,
             invocation.binding.binding_id,
             invocation.effect_key,
             invocation.status.value,
@@ -210,7 +214,7 @@ class PgInvocationStore:
         effect_key: str,
     ) -> list[Invocation]:
         rows = await self._pool.fetch(
-            """SELECT payload_json FROM capability_invocations
+            """SELECT payload FROM capability_invocations
                WHERE run_id=$1 AND node_run_id=$2 AND binding_id=$3 AND effect_key=$4
                ORDER BY created_at ASC, invocation_id ASC""",
             run_id,
@@ -218,7 +222,7 @@ class PgInvocationStore:
             binding_id,
             effect_key,
         )
-        return [self._from_payload(row["payload_json"]) for row in rows]
+        return [self._from_payload(row["payload"]) for row in rows]
 
     @staticmethod
     def _row_values(invocation: Invocation) -> tuple[object, ...]:

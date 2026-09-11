@@ -2260,6 +2260,49 @@ async def _wire_capability_effects(
     )
 
 
+async def _wire_capability_effects(
+    *,
+    db_pool: Any,
+    pg_pool: Any,
+) -> CapabilityEffectContext:
+    """Wire governed capability evidence to the Container's durable backend.
+
+    The capability Invocation ledger is distinct from the legacy handler
+    delivery ledger. Control-plane model calls must survive a restart beside
+    the canonical Run spine, otherwise an evaluator can report success with no
+    durable evidence to correlate later.
+    """
+    from maistro.capabilities.effect_context import new_in_memory_effect_context
+
+    invocation_store: Any
+    event_store: Any
+    if pg_pool is not None:
+        from maistro.capabilities.invocation_store import PgInvocationStore
+        from maistro.events.pg_envelope import PgEventStore
+
+        invocation_store = PgInvocationStore(pg_pool)
+        event_store = PgEventStore(pg_pool)
+        await invocation_store.ensure_schema()
+        await event_store.ensure_schema()
+        return new_in_memory_effect_context(
+            invocation_store=invocation_store,
+            event_store=event_store,
+        )
+    if db_pool is not None:
+        from maistro.capabilities.invocation_store import SqliteInvocationStore
+        from maistro.events.envelope import SqliteEventStore
+
+        invocation_store = SqliteInvocationStore(db_pool)
+        event_store = SqliteEventStore(db_pool)
+        await invocation_store.ensure_schema()
+        await event_store.ensure_schema()
+        return new_in_memory_effect_context(
+            invocation_store=invocation_store,
+            event_store=event_store,
+        )
+    return new_in_memory_effect_context()
+
+
 async def _wire_sqlite_durable_events(
     conn: Any,
 ) -> tuple[EventLogStore, TriggerStore, InvocationStore]:

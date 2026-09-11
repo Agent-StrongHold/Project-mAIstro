@@ -26,12 +26,16 @@ spine (`InMemoryRunStore` + `InMemoryProjectScopeStore`):
 3. **Minted identities end-to-end** — the full route-shaped flow (mint →
    governed health → settle) completes the canonical operation records.
 
-## maistro-core (`test_model_chat_egress.py`)
+## maistro-core (`test_model_chat_egress.py`, `test_container_wiring.py`, `capabilities/test_invocation_layer_states_its_reach.py`)
 
 Two seam-level ordering proofs for the new Invocation `setup` hook: the hook
 runs after policy authorization and before any model HTTP, and a denied
 policy refuses before the hook executes at all — the property that keeps
-credential-bearing Provider preparation from leaking past authorization.
+credential-bearing Provider preparation from leaking past authorization. The
+container wiring assertion now proves SQLite capability Invocations and
+canonical events use the same durable backend as the Run spine. The
+reachability contract records migration `034_capability_invocations.py`
+instead of asserting that the live store is intentionally unwired.
 
 ## maistro-bootstrap (`test_model_selector.py`)
 
