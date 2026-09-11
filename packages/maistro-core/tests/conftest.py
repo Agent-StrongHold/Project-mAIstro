@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
+from datetime import UTC, datetime
 
 import pytest
 
@@ -145,8 +146,8 @@ async def pg_pool():
     PostgreSQL parametrization. Skipping here would take the whole suite with it.
 
     Built directly rather than through `maistro.persistence.get_pool`, which is a
-    process singleton: one test's pool would outlive it and be handed to the
-    next, along with whatever event loop it was created on.
+    process singleton: one test's pool would outlive it and be handed to the next,
+    along with whatever event loop it was created on.
     """
     from maistro.testing.postgres import postgres_dsn
 
@@ -169,3 +170,88 @@ async def pg_pool():
         yield pool
     finally:
         await pool.close()
+
+
+@pytest.fixture(autouse=True)
+async def governed_pm_bindings() -> None:
+    """Supply explicit test Bindings for retained PM polling node tests."""
+    from maistro.capabilities.binding import Binding
+    from maistro.capabilities.effect_context import default_effect_context
+    from maistro.credentials.types import CredentialRecord
+
+    default_effect_context.cache_clear()
+    effects = default_effect_context()
+    definitions = (
+        (
+            "test-jira-binding",
+            "jira.search",
+            {"base_url": "https://jira.example.com", "flavor": "server"},
+            "jira",
+        ),
+        (
+            "test-jira-cloud-binding",
+            "jira.search",
+            {"base_url": "https://acme.atlassian.net", "flavor": "cloud", "email": "alice@example.com"},
+            "jira",
+        ),
+        (
+            "test-jira-subtasks-binding",
+            "jira.subtasks",
+            {"base_url": "https://jira.example.com", "flavor": "server"},
+            "jira",
+        ),
+        (
+            "test-jira-cloud-subtasks-binding",
+            "jira.subtasks",
+            {"base_url": "https://acme.atlassian.net", "flavor": "cloud", "email": "alice@example.com"},
+            "jira",
+        ),
+        (
+            "test-jira-cloud-no-email-subtasks-binding",
+            "jira.subtasks",
+            {"base_url": "https://acme.atlassian.net", "flavor": "cloud"},
+            "jira",
+        ),
+        ("test-airtable-binding", "airtable.records", {}, "airtable"),
+        (
+            "test-seed-jira-binding",
+            "jira.search",
+            {"base_url": "https://jira.example.com", "flavor": "server"},
+            "jira",
+        ),
+        (
+            "test-seed-jira-binding-2",
+            "jira.search",
+            {"base_url": "https://jira.example.com", "flavor": "server"},
+            "jira",
+        ),
+    )
+    for binding_id, capability, config, provider in definitions:
+        workspace_id = "test-workspace" if binding_id.startswith("test-seed-jira-binding") else "w1"
+        project_id = (
+            "pm-proj-2"
+            if binding_id == "test-seed-jira-binding-2"
+            else "pm-proj-1"
+            if binding_id == "test-seed-jira-binding"
+            else "p1"
+        )
+        await effects.bindings.put(
+            Binding(
+                binding_id=binding_id,
+                workspace_id=workspace_id,
+                project_id=project_id,
+                capability=capability,
+                config=config,
+                credential_refs=(f"{provider}-test-key",),
+                created_at=datetime(2026, 9, 1, tzinfo=UTC),
+            )
+        )
+        effects.credentials.add(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            record=CredentialRecord(
+                key_id=f"{provider}-test-key",
+                provider=provider,
+                api_key=f"test-{provider}-secret",
+            ),
+        )

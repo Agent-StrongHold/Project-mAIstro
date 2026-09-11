@@ -510,6 +510,10 @@ class TestThePollDeadlineCanNowBeReached:
             run_id="r",
             dag_id="d",
             node_id="n1",
+            workspace_id="w1",
+            project_id="p1",
+            node_run_id="nr1",
+            attempt_id="a1",
             metadata={RESUMED_PAUSE_KEY: {"first_seen": long_ago}},
         )
 
@@ -521,9 +525,8 @@ class TestThePollDeadlineCanNowBeReached:
         monkeypatch.setattr(jira_module, "_fetch_subtask_statuses", _statuses)
         result = await node.run(
             {
-                "base_url": "https://jira.example.com",
+                "binding_id": "test-jira-subtasks-binding",
                 "parent_key": "PROJ-100",
-                "pat": "x",
                 "timeout_seconds": 60,
             },
             ctx,
