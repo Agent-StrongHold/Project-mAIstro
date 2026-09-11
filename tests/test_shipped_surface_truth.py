@@ -150,6 +150,42 @@ def build(enabled: bool):
     assert surface.obvious_fake_success
 
 
+def test_conditional_effect_does_not_hide_effect_free_success_path(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "backend/routes.py",
+        """
+from fastapi import APIRouter
+router = APIRouter()
+@router.post("/build")
+def build():
+    if feature_enabled():
+        launch_job()
+    return {"status": "ok"}
+""",
+    )
+    [surface] = discover_backend_surfaces(tmp_path, ["backend"])
+    assert surface.obvious_fake_success
+
+
+def test_effect_on_every_branch_justifies_shared_success_return(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "backend/routes.py",
+        """
+from fastapi import APIRouter
+router = APIRouter()
+@router.post("/build")
+def build(enabled: bool):
+    if enabled:
+        launch_job()
+    else:
+        queue_job()
+    return {"status": "ok"}
+""",
+    )
+    [surface] = discover_backend_surfaces(tmp_path, ["backend"])
+    assert not surface.obvious_fake_success
+
+
 def test_discovers_static_alias_decorators_and_add_api_route(tmp_path: Path) -> None:
     _write(
         tmp_path / "backend/routes.py",
@@ -198,6 +234,27 @@ def escaped(): return create()
     )
     assert any(
         "unclassified backend surface" in error for error in validate_matrix(tmp_path, _matrix())
+    )
+
+
+def test_discovers_positional_starlette_add_route(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "backend/routes.py",
+        """
+from starlette.applications import Starlette
+app = Starlette()
+def run(): return execute()
+app.add_route("/positional", run, ["POST"])
+""",
+    )
+    surfaces = discover_backend_surfaces(tmp_path, ["backend"])
+    assert [(surface.method, surface.route, surface.handler) for surface in surfaces] == [
+        ("POST", "/positional", "run")
+    ]
+    (tmp_path / "frontend").mkdir()
+    assert any(
+        "unclassified backend surface" in error
+        for error in validate_matrix(tmp_path, _matrix(), strict=True)
     )
 
 
@@ -358,6 +415,21 @@ def test_discovers_common_client_wrapper_mutations(tmp_path: Path) -> None:
         ("PATCH", "/v1/runs"),
         ("POST", "/v1/runs"),
     ]
+
+
+def test_discovers_static_mutating_gateway_wrapper(tmp_path: Path) -> None:
+    _write(tmp_path / "frontend/Page.tsx", 'await gateway.post("/v1/escaped", payload);\n')
+    [surface] = discover_frontend_surfaces(tmp_path, ["frontend"])
+    assert (surface.signal, surface.method, surface.route) == (
+        "mutating-api-call",
+        "POST",
+        "/v1/escaped",
+    )
+    (tmp_path / "backend").mkdir()
+    assert any(
+        "unclassified frontend execution surface" in error
+        for error in validate_matrix(tmp_path, _matrix())
+    )
 
 
 def test_missing_new_route_disposition_fails_closed(tmp_path: Path) -> None:

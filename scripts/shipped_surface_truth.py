@@ -66,7 +66,9 @@ _FETCH_RE = re.compile(
     re.DOTALL,
 )
 _CLIENT_METHOD_RE = re.compile(
-    r"\b(?P<client>api|apiClient|client|http|httpClient)\s*\.\s*"
+    # A statically visible mutating method on a client/helper object is an
+    # execution surface even when the object is named gateway or transport.
+    r"\b(?P<client>api|apiClient|client|gateway|http|httpClient)\s*\.\s*"
     r"(?P<method>POST|PUT|PATCH|DELETE)\s*\(\s*"
     r"(?P<quote>['\"`])(?P<route>[^'\"`]+)(?P=quote)",
     re.I,
@@ -193,14 +195,20 @@ def _static_string(node: ast.AST, bindings: dict[str, ast.AST]) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def _static_methods(call: ast.Call, bindings: dict[str, ast.AST]) -> list[str] | None:
-    for keyword in call.keywords:
-        if keyword.arg == "methods":
-            value = _static_value(keyword.value, bindings)
-            if not isinstance(value, list):
-                return None
-            return [method.upper() for method in value if method.upper() in MUTATING_METHODS]
-    return []
+def _static_methods(
+    call: ast.Call, bindings: dict[str, ast.AST], *, positional_index: int | None = None
+) -> list[str] | None:
+    methods_node: ast.AST | None = next(
+        (keyword.value for keyword in call.keywords if keyword.arg == "methods"), None
+    )
+    if methods_node is None and positional_index is not None and len(call.args) > positional_index:
+        methods_node = call.args[positional_index]
+    if methods_node is None:
+        return []
+    value = _static_value(methods_node, bindings)
+    if not isinstance(value, list):
+        return None
+    return [method.upper() for method in value if method.upper() in MUTATING_METHODS]
 
 
 def _literal_methods(call: ast.Call) -> list[str]:
@@ -389,47 +397,58 @@ def _registered_routes(
         return [(WEBSOCKET_METHOD, route, handler)]
     if name == UNRESOLVED_METHOD:
         return [(UNRESOLVED_METHOD, route, handler)]
-    declared = _static_methods(call, bindings)
+    declared = _static_methods(
+        call,
+        bindings,
+        # Starlette's add_route(path, endpoint, methods) accepts methods as
+        # the third positional argument; keyword methods is handled for both
+        # Starlette and FastAPI registrations.
+        positional_index=2 if name == "add_route" else None,
+    )
     # Both FastAPI and Starlette default a route registration without methods
     # to GET. An unresolved methods expression is fail-closed instead.
     methods = [UNRESOLVED_METHOD] if declared is None else declared
     return [(method, route, handler) for method in methods]
 
 
-def _handler_has_effect_evidence(  # noqa: C901
-    node: ast.AsyncFunctionDef | ast.FunctionDef | ast.Lambda,
-) -> bool:
-    """Treat domain/execution calls as evidence, but not observability calls."""
-    observability = {
-        "count",
-        "debug",
-        "error",
-        "exception",
-        "gauge",
-        "histogram",
-        "increment",
-        "info",
-        "log",
-        "metric",
-        "observe",
-        "record",
-        "time",
-        "timing",
-        "track",
-        "warning",
-    }
+_OBSERVABILITY_CALLS = {
+    "count",
+    "debug",
+    "error",
+    "exception",
+    "gauge",
+    "histogram",
+    "increment",
+    "info",
+    "log",
+    "metric",
+    "observe",
+    "record",
+    "time",
+    "timing",
+    "track",
+    "warning",
+}
+
+
+def _call_name(call: ast.Call) -> str:
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr.lower()
+    if isinstance(call.func, ast.Name):
+        return call.func.id.lower()
+    return ""
+
+
+def _expression_has_effect(node: ast.AST | None) -> bool:
+    """Find a non-observability call in an executed expression."""
+    if node is None:
+        return False
 
     class EffectVisitor(ast.NodeVisitor):
         found = False
 
         def visit_Call(self, call: ast.Call) -> None:
-            if isinstance(call.func, ast.Attribute):
-                name = call.func.attr
-            elif isinstance(call.func, ast.Name):
-                name = call.func.id
-            else:
-                name = ""
-            if name.lower() not in observability:
+            if _call_name(call) not in _OBSERVABILITY_CALLS:
                 self.found = True
             self.generic_visit(call)
 
@@ -443,64 +462,143 @@ def _handler_has_effect_evidence(  # noqa: C901
             return
 
     visitor = EffectVisitor()
-    if isinstance(node, ast.Lambda):
-        visitor.visit(node.body)
-        return visitor.found
-    for statement in node.body:
-        visitor.visit(statement)
-        if visitor.found:
-            return True
+    visitor.visit(node)
+    return visitor.found
+
+
+def _success_status(value: ast.AST | None) -> str | None:
+    if not isinstance(value, ast.Dict):
+        return None
+    for key, item in zip(value.keys, value.values, strict=True):
+        if (
+            isinstance(key, ast.Constant)
+            and key.value == "status"
+            and isinstance(item, ast.Constant)
+            and isinstance(item.value, str)
+            and item.value.lower() in SUCCESS_STATUS
+        ):
+            return item.value.lower()
+    return None
+
+
+def _simple_statement_has_effect(statement: ast.stmt) -> bool:
+    """Check executed statements without treating branch predicates as effects."""
+    if isinstance(
+        statement,
+        (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Expr, ast.NamedExpr),
+    ):
+        return _expression_has_effect(statement)
     return False
 
 
-def _returned_status(  # noqa: C901
+def _flow_block(statements: list[ast.stmt], incoming: set[bool]) -> tuple[set[bool], str | None]:
+    """Return states reaching the next statement and the first fake return.
+
+    The boolean state records whether every path considered so far has seen an
+    effect call.  Branch predicates are deliberately not effects: a call such
+    as ``feature_enabled()`` does not justify a success response on the path
+    where the feature is disabled.
+    """
+    states = incoming
+    for statement in statements:
+        if not states:
+            break
+        states, status = _flow_statement(statement, states)
+        if status is not None:
+            return states, status
+    return states, None
+
+
+def _flow_statement(statement: ast.stmt, incoming: set[bool]) -> tuple[set[bool], str | None]:  # noqa: C901
+    if isinstance(statement, ast.Return):
+        status = _success_status(statement.value)
+        if (
+            status is not None
+            and any(not effect for effect in incoming)
+            and not _expression_has_effect(statement.value)
+        ):
+            return set(), status
+        return set(), None
+    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return incoming, None
+    if isinstance(statement, (ast.Raise, ast.Break, ast.Continue)):
+        return set(), None
+    if isinstance(statement, ast.If):
+        body_states, body_status = _flow_block(statement.body, incoming)
+        if body_status is not None:
+            return set(), body_status
+        if statement.orelse:
+            else_states, else_status = _flow_block(statement.orelse, incoming)
+        else:
+            else_states, else_status = incoming, None
+        if else_status is not None:
+            return set(), else_status
+        return body_states | else_states, None
+    if isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
+        # A loop may execute zero times, but returns inside the body still
+        # need inspection and a domain operation in the body justifies the
+        # shared response after the loop.
+        body_states, body_status = _flow_block(statement.body, incoming)
+        if body_status is not None:
+            return set(), body_status
+        # A loop body is the domain operation even when the collection is
+        # empty; retain that evidence for the shared return after the loop.
+        loop_states = {True} if True in body_states else incoming | body_states
+        if statement.orelse:
+            loop_states, else_status = _flow_block(statement.orelse, loop_states)
+            if else_status is not None:
+                return set(), else_status
+        return loop_states, None
+    if isinstance(statement, (ast.With, ast.AsyncWith)):
+        context_effect = any(_expression_has_effect(item.context_expr) for item in statement.items)
+        body_states, status = _flow_block(
+            statement.body,
+            {True} if context_effect else incoming,
+        )
+        return body_states, status
+    if isinstance(statement, ast.Match):
+        states = incoming
+        for case in statement.cases:
+            case_states, status = _flow_block(case.body, incoming)
+            if status is not None:
+                return set(), status
+            states |= case_states
+        return states, None
+    if isinstance(statement, ast.Try):
+        body_states, status = _flow_block(statement.body, incoming)
+        if status is not None:
+            return set(), status
+        states = body_states
+        if statement.orelse:
+            states, status = _flow_block(statement.orelse, states)
+            if status is not None:
+                return set(), status
+        for handler in statement.handlers:
+            handler_states, status = _flow_block(handler.body, incoming)
+            if status is not None:
+                return set(), status
+            states |= handler_states
+        if statement.finalbody:
+            states, status = _flow_block(statement.finalbody, states)
+            if status is not None:
+                return set(), status
+        return states, None
+    if _simple_statement_has_effect(statement):
+        return {True}, None
+    return incoming, None
+
+
+def _returned_status(
     node: ast.AsyncFunctionDef | ast.FunctionDef | ast.Lambda | None,
 ) -> str | None:
-    """Return a success-shaped status found on any path in this handler."""
+    """Return a success-shaped status reachable without an effect on its path."""
     if node is None:
         return None
-
-    class ReturnVisitor(ast.NodeVisitor):
-        status: str | None = None
-
-        def inspect_value(self, value: ast.AST | None) -> None:
-            if not isinstance(value, ast.Dict):
-                return
-            for key, item in zip(value.keys, value.values, strict=True):
-                if (
-                    isinstance(key, ast.Constant)
-                    and key.value == "status"
-                    and isinstance(item, ast.Constant)
-                    and isinstance(item.value, str)
-                    and item.value.lower() in SUCCESS_STATUS
-                ):
-                    self.status = item.value.lower()
-                    return
-
-        def visit_Return(self, return_node: ast.Return) -> None:
-            self.inspect_value(return_node.value)
-
-        def visit_FunctionDef(self, _node: ast.FunctionDef) -> None:
-            # A nested function's return is not a return path of this handler.
-            return
-
-        def visit_AsyncFunctionDef(self, _node: ast.AsyncFunctionDef) -> None:
-            return
-
-        def visit_Lambda(self, _node: ast.Lambda) -> None:
-            return
-
-    visitor = ReturnVisitor()
     if isinstance(node, ast.Lambda):
-        visitor.inspect_value(node.body)
-    else:
-        for statement in node.body:
-            visitor.visit(statement)
-            if visitor.status is not None:
-                break
-    if visitor.status is not None and not _handler_has_effect_evidence(node):
-        return visitor.status
-    return None
+        status = _success_status(node.body)
+        return status if status is not None and not _expression_has_effect(node.body) else None
+    _flow_states, status = _flow_block(node.body, {False})
+    return status
 
 
 def _source_surfaces(path: Path, repo_root: Path) -> list[BackendSurface]:
