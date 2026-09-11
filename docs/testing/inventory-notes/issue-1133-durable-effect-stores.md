@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +27
+  packages/maistro-core/tests: +28
 ---
 # Issue 1133 Durable Effect Stores
 
@@ -31,3 +31,5 @@ Net **+27** for `packages/maistro-core/tests`, from five compensating movements:
   and blank approval actors rejected by both in-memory and SQLite stores.
 - **+2** — SQLite replica races prove only one provider dispatch occurs for a logical
   Invocation and duplicate logical approvals reconcile to one persisted request.
+- **+1** — Container shutdown unpublishes its closed durable effect context so later
+  registry-constructed nodes cannot inherit a dead SQLite connection.

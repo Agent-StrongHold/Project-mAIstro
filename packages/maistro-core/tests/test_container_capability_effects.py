@@ -77,6 +77,7 @@ async def test_sqlite_container_uses_one_durable_effect_event_store(tmp_path) ->
         )
     finally:
         await first.aclose()
+    assert default_effect_context() is not first.capability_effects
 
     second = await create_container(config)
     try:

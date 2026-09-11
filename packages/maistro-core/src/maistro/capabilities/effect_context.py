@@ -120,6 +120,13 @@ def configure_default_effect_context(context: CapabilityEffectContext) -> None:
     _process_effect_context = context
 
 
+def clear_default_effect_context(context: CapabilityEffectContext) -> None:
+    """Unpublish a Container context after its owned stores are closed."""
+    global _process_effect_context
+    if _process_effect_context is context:
+        _process_effect_context = None
+
+
 def default_effect_context() -> CapabilityEffectContext:
     """Ephemeral default; production Container constructs its context explicitly."""
 
@@ -135,6 +142,7 @@ def default_effect_context() -> CapabilityEffectContext:
 __all__ = [
     "CapabilityEffectContext",
     "build_effect_context",
+    "clear_default_effect_context",
     "configure_default_effect_context",
     "default_effect_context",
     "new_in_memory_effect_context",

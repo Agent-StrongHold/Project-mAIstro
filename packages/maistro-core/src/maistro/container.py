@@ -25,6 +25,7 @@ from maistro.archive.wiring import build_archive_store
 from maistro.capabilities.effect_context import (
     CapabilityEffectContext,
     build_effect_context,
+    clear_default_effect_context,
     configure_default_effect_context,
 )
 from maistro.classifier.engine import ClassifierEngine
@@ -400,6 +401,7 @@ class Container:
             self.db_pool = None
             self.session_conn = None
             self.holds_db_pool = False
+        clear_default_effect_context(self.capability_effects)
 
     async def route_request(
         self,
