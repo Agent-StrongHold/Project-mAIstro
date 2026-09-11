@@ -11,7 +11,6 @@ they're posted).
 
 from __future__ import annotations
 
-from datetime import timedelta
 from typing import Any, ClassVar, Literal, cast
 
 from pydantic import BaseModel, Field
@@ -21,8 +20,8 @@ from .base import (
     PAUSE_AWAITING_HUMAN_APPROVAL,
     BaseNode,
     NodeContext,
-    now_utc,
     pause_until,
+    preserved_hitl_deadline,
 )
 
 
@@ -82,7 +81,7 @@ class HumanApproveDraftNode(BaseNode[ApproveDraftIn, ApproveDraftOut]):
                     timed_out=bool(resumed.get("timed_out", False)),
                 )
 
-        resume_at = now_utc() + timedelta(seconds=inputs.timeout_seconds)
+        resume_at = preserved_hitl_deadline(resumed, timeout_seconds=inputs.timeout_seconds)
         pause_until(
             PAUSE_AWAITING_HUMAN_APPROVAL,
             resume_at=resume_at,
