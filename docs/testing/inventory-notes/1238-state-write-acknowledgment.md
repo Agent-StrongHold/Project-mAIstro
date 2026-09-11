@@ -42,3 +42,20 @@ disappeared after restart, or a "deleted" record resurrected.
   persisted double whose writes raise, `ModelStore`/`JsonStore` `__setitem__`
   leave memory unchanged and `pop` leaves the record addressable — the
   in-memory half of the acknowledgment contract.
+
+## Verification (aud2 repair, head 2adf39df)
+
+- Red-on-base: running this file against pre-fix `state.py` (base 1e52dc17)
+  fails 7/9 — the commit-failure cases `DID NOT RAISE` (the swallowed
+  outcome #1238 reports) and the `submit_sync` cases hit `AttributeError`
+  (the acknowledgment API did not exist); the 2 passing tests are
+  environment-independent contracts (durable write visible after reopen,
+  fire-and-forget `submit` never raises).
+- The 21 `packages/maistro-core/tests/sandbox/` failures seen in the full
+  core suite on the aud2 workstation are pre-existing and environmental, not
+  caused by this change: bwrap cannot create a user namespace on that host
+  (`bwrap: Creating new namespace failed: Resource temporarily unavailable` —
+  the sandbox's default `RLIMIT_NPROC=128` is below the kernel-wide process
+  count for the uid under WSL), and the same tests fail identically on base
+  1e52dc17 (19 conformance + 2 `test_real_backend`). None of the failing
+  tests import `maistro.state` or `model_store`.
