@@ -452,6 +452,11 @@ class RunStore(Protocol):
     async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
         """Resolve the canonical Run claiming one scheduled occurrence."""
         ...
+    async def find_delegation_run(self, delegation_key: str) -> Run | None: ...
+
+    async def attach_delegation_receipt(
+        self, run_id: str, task_id: str, *, target_agent: str | None = None
+    ) -> Run: ...
 
     async def transition_run(
         self,
@@ -526,7 +531,7 @@ class RunStore(Protocol):
 
     async def repair_attempt_result(self, attempt_id: str, *, result: object) -> Attempt: ...
 
-    async def delete_run(self, run_id: str) -> bool: ...
+    async def delete_run(self, run_id: str, *, force: bool = False) -> bool: ...
 
 
 #: Retention bound for the in-memory store. Not a tuning knob so much as an
@@ -964,6 +969,26 @@ class InMemoryRunStore:
         """Resolve an occurrence through its claim index, never by scanning Runs."""
         run_id = self._occurrences.get((schedule_id, scheduled_for))
         return await self.get_run(run_id) if run_id is not None else None
+    async def find_delegation_run(self, delegation_key: str) -> Run | None:
+        for run in self._runs.values():
+            if run.provenance.get("delegation_key") == delegation_key:
+                return run.model_copy(deep=True)
+        return None
+
+    async def attach_delegation_receipt(
+        self, run_id: str, task_id: str, *, target_agent: str | None = None
+    ) -> Run:
+        run = self._require_run(run_id)
+        existing = str(run.provenance.get("a2a_task_id") or "")
+        if existing and existing != task_id:
+            raise RunIntegrityError("delegation receipt conflicts with canonical receipt")
+        provenance = dict(run.provenance)
+        provenance["a2a_task_id"] = task_id
+        if target_agent:
+            provenance["target_agent"] = target_agent
+        updated = run.model_copy(update={"provenance": provenance})
+        self._runs[run_id] = updated
+        return updated.model_copy(deep=True)
 
     async def transition_run(
         self,

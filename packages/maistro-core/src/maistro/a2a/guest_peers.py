@@ -25,6 +25,9 @@ class PeerTrust:
     auth_credential: str = ""
     allowed_agents: tuple[str, ...] = ()
     active: bool = True
+    # A peer must explicitly promise durable idempotent admission before a
+    # recovery worker may safely retry an uncertain POST.
+    supports_idempotency: bool = False
 
 
 @dataclass
@@ -77,6 +80,10 @@ class GuestPeerManager:
     def __init__(self, audit: AuditLogger | None = None) -> None:
         self._peers: dict[str, PeerTrust] = {}
         self._audit = audit or InMemoryAuditLogger()
+        # This is a process-local receipt cache only. The key is still sent to
+        # the peer so a peer that supports idempotent admission remains safe
+        # across replicas; a cache must never be mistaken for remote truth.
+        self._idempotent_receipts: dict[tuple[str, str], DelegationResult] = {}
 
     def register_peer(self, peer: PeerTrust) -> None:
         self._peers[peer.peer_name] = peer
@@ -90,13 +97,45 @@ class GuestPeerManager:
     def list_peers(self) -> list[PeerTrust]:
         return [p for p in self._peers.values() if p.active]
 
+    async def reconcile(self, peer_name: str, idempotency_key: str) -> DelegationResult:
+        """Recover a receipt without re-submitting uncertain remote work."""
+        cached = self._idempotent_receipts.get((peer_name, idempotency_key))
+        if cached is not None:
+            return cached
+        peer = self.get_peer(peer_name)
+        if peer is None or not peer.active:
+            return DelegationResult("", peer_name, "uncertain", error="peer cannot reconcile")
+        if not peer.supports_idempotency:
+            return DelegationResult(
+                "", peer_name, "uncertain", error="peer does not support idempotent reconciliation"
+            )
+        try:
+            async with shared_client(timeout=30.0) as client:
+                response = await client.get(
+                    f"{peer.peer_url.rstrip('/')}/a2a/tasks/by-idempotency-key/{idempotency_key}"
+                )
+                if response.status_code == 404:
+                    return DelegationResult("", peer_name, "not_found")
+                response.raise_for_status()
+                task_id = response.json().get("task_id", "")
+            return DelegationResult(task_id=task_id, peer_name=peer_name, status="submitted")
+        except Exception as exc:
+            return DelegationResult("", peer_name, "uncertain", error=str(exc))
+
     async def delegate(
         self,
         peer_name: str,
         agent_id: str,
         messages: list[dict[str, str]],
+        *,
+        idempotency_key: str | None = None,
     ) -> DelegationResult:
         """Delegate a task to an external A2A peer."""
+        if idempotency_key is not None:
+            cached = self._idempotent_receipts.get((peer_name, idempotency_key))
+            if cached is not None:
+                return cached
+
         peer = self.get_peer(peer_name)
         if not peer:
             await self._audit.log_delegation(
@@ -138,6 +177,8 @@ class GuestPeerManager:
             )
 
         headers: dict[str, str] = {"Content-Type": "application/json"}
+        if idempotency_key:
+            headers["Idempotency-Key"] = idempotency_key
         if peer.auth_method == "api_token" and peer.auth_credential:
             headers["Authorization"] = f"Bearer {peer.auth_credential}"
 
@@ -145,7 +186,11 @@ class GuestPeerManager:
             async with shared_client(timeout=30.0) as client:
                 resp = await client.post(
                     f"{peer.peer_url.rstrip('/')}/a2a/tasks/create",
-                    json={"agent_id": agent_id, "messages": messages},
+                    json={
+                        "agent_id": agent_id,
+                        "messages": messages,
+                        "delegation_key": idempotency_key,
+                    },
                     headers=headers,
                 )
                 resp.raise_for_status()
@@ -156,11 +201,14 @@ class GuestPeerManager:
                 agent_id,
                 f"task_id={data.get('task_id', '')}",
             )
-            return DelegationResult(
+            submitted = DelegationResult(
                 task_id=data.get("task_id", ""),
                 peer_name=peer_name,
                 status="submitted",
             )
+            if idempotency_key:
+                self._idempotent_receipts[(peer_name, idempotency_key)] = submitted
+            return submitted
         except Exception as exc:
             await self._audit.log_delegation(
                 peer_name,
