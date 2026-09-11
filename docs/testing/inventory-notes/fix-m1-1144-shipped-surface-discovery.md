@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/test_shipped_surface_truth.py: +8
+  tests/: +8
 ---
 # fix-m1-1144-shipped-surface-discovery
 

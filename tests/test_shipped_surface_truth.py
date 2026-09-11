@@ -76,6 +76,31 @@ def status(): return {}
     ]
 
 
+def test_discovers_starlette_route_decorators_and_route_objects(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "backend/routes.py",
+        """
+from starlette.applications import Starlette
+from starlette.routing import Route, WebSocketRoute
+
+def constructed(request): return create()
+
+async def socket(websocket): pass
+
+app = Starlette(routes=[Route("/constructed", constructed, methods=["POST"]), WebSocketRoute("/socket", socket)])
+
+@app.route("/decorated", methods=["POST"])
+def decorated(request): return create()
+""",
+    )
+    surfaces = discover_backend_surfaces(tmp_path, ["backend"])
+    assert [(surface.method, surface.route, surface.handler) for surface in surfaces] == [
+        ("POST", "/constructed", "constructed"),
+        ("POST", "/decorated", "decorated"),
+        ("WEBSOCKET", "/socket", "socket"),
+    ]
+
+
 def test_missing_websocket_route_disposition_fails_closed(tmp_path: Path) -> None:
     """A discriminatory fixture: an undisposed `@router.websocket(...)` route
     must be just as unable to escape the inventory as an undisposed mutating
@@ -131,6 +156,39 @@ def build():
     ]
     errors = validate_matrix(tmp_path, matrix)
     assert any("production success-shaped no-op" in error for error in errors)
+
+
+def test_logger_builder_chain_does_not_justify_fake_success(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "backend/routes.py",
+        """
+from fastapi import APIRouter
+router = APIRouter()
+@router.post("/build")
+def build():
+    logger.bind(component="build").info("building")
+    return {"status": "ok"}
+""",
+    )
+    [surface] = discover_backend_surfaces(tmp_path, ["backend"])
+    assert surface.obvious_fake_success
+
+
+def test_fake_success_is_found_after_a_zero_iteration_loop(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "backend/routes.py",
+        """
+from fastapi import APIRouter
+router = APIRouter()
+@router.post("/build")
+def build(items):
+    for item in items:
+        pass
+    return {"status": "ok"}
+""",
+    )
+    [surface] = discover_backend_surfaces(tmp_path, ["backend"])
+    assert surface.obvious_fake_success
 
 
 def test_fake_success_is_found_on_control_flow_return_paths(tmp_path: Path) -> None:

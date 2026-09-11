@@ -295,7 +295,9 @@ def _decorated_routes(
             "patch",
             "delete",
             "api_route",
+            "route",
             "websocket",
+            "websocket_route",
             UNRESOLVED_METHOD,
         }:
             continue
@@ -308,12 +310,13 @@ def _decorated_routes(
         )
         path = _static_string(path_node, bindings) if path_node is not None else None
         route = path if path is not None else DYNAMIC_ROUTE
-        if name == "websocket":
+        if name in {"websocket", "websocket_route"}:
             methods = [WEBSOCKET_METHOD]
-        elif name == "api_route":
+        elif name in {"api_route", "route"}:
             declared = _static_methods(decorator, bindings)
-            # FastAPI defaults api_route to GET. An unresolved methods value
-            # must remain visible because it may contain a mutating verb.
+            # FastAPI and Starlette default these decorators to GET. An
+            # unresolved methods value must remain visible because it may
+            # contain a mutating verb.
             methods = [UNRESOLVED_METHOD] if declared is None else declared
         elif name == UNRESOLVED_METHOD:
             # A dynamic router method may be mutating; retain it as an owned
@@ -411,6 +414,29 @@ def _registered_routes(
     return [(method, route, handler) for method in methods]
 
 
+def _registered_route_constructor(
+    call: ast.Call, bindings: dict[str, ast.AST]
+) -> list[tuple[str, str, str]]:
+    """Discover Starlette ``Route`` objects passed through an app constructor."""
+    if isinstance(call.func, ast.Name):
+        name = call.func.id
+    elif isinstance(call.func, ast.Attribute):
+        name = call.func.attr
+    else:
+        return []
+    if name not in {"Route", "WebSocketRoute"}:
+        return []
+    path_node = call.args[0] if call.args else None
+    route = _static_string(path_node, bindings) if path_node is not None else None
+    route = route if route is not None else DYNAMIC_ROUTE
+    handler = _registration_endpoint(call)
+    if name == "WebSocketRoute":
+        return [(WEBSOCKET_METHOD, route, handler)]
+    declared = _static_methods(call, bindings)
+    methods = [UNRESOLVED_METHOD] if declared is None else declared
+    return [(method, route, handler) for method in methods]
+
+
 _OBSERVABILITY_CALLS = {
     "count",
     "debug",
@@ -429,6 +455,7 @@ _OBSERVABILITY_CALLS = {
     "track",
     "warning",
 }
+_OBSERVABILITY_BUILDERS = {"bind", "labels", "new", "opt", "with_labels"}
 
 
 def _call_name(call: ast.Call) -> str:
@@ -448,8 +475,27 @@ def _expression_has_effect(node: ast.AST | None) -> bool:
         found = False
 
         def visit_Call(self, call: ast.Call) -> None:
-            if _call_name(call) not in _OBSERVABILITY_CALLS:
+            name = _call_name(call)
+            if name not in _OBSERVABILITY_CALLS:
                 self.found = True
+            # Do not mistake a logger/metrics builder in a chained call such
+            # as ``logger.bind(...).info(...)`` for domain work. Arguments
+            # still need visiting because they may contain a real operation.
+            if (
+                name in _OBSERVABILITY_CALLS
+                and isinstance(call.func, ast.Attribute)
+                and isinstance(call.func.value, ast.Call)
+                and _call_name(call.func.value) in _OBSERVABILITY_BUILDERS
+            ):
+                builder = call.func.value
+                for argument in (
+                    *call.args,
+                    *(keyword.value for keyword in call.keywords),
+                    *builder.args,
+                    *(keyword.value for keyword in builder.keywords),
+                ):
+                    self.visit(argument)
+                return
             self.generic_visit(call)
 
         def visit_FunctionDef(self, _node: ast.FunctionDef) -> None:
@@ -633,7 +679,11 @@ def _source_surfaces(path: Path, repo_root: Path) -> list[BackendSurface]:
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        for method, route, handler in _registered_routes(node, bindings, aliases):
+        registrations = [
+            *_registered_routes(node, bindings, aliases),
+            *_registered_route_constructor(node, bindings),
+        ]
+        for method, route, handler in registrations:
             endpoint = _registration_endpoint_node(node)
             if isinstance(endpoint, ast.Lambda):
                 function: ast.AsyncFunctionDef | ast.FunctionDef | ast.Lambda | None = endpoint
