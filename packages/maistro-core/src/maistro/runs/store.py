@@ -808,13 +808,13 @@ class InMemoryRunStore:
 
         return PurgeOutcome(
             scope=scope,
-            runs=result['runs'],
-            node_runs=result['node_runs'],
-            attempts=result['attempts'],
-            continuations=result['continuations'],
+            runs=result["runs"],
+            node_runs=result["node_runs"],
+            attempts=result["attempts"],
+            continuations=result["continuations"],
             event_references_retained=0,  # This store owns no Event log — canonical Events live in their own store.
-            schedule_claims_released=result['schedule_claims_released'],
-            schedule_pointers_released=result['schedule_pointers_released'],
+            schedule_claims_released=result["schedule_claims_released"],
+            schedule_pointers_released=result["schedule_pointers_released"],
             backlog_remaining=backlog_remaining,
         )
 
@@ -856,6 +856,14 @@ class InMemoryRunStore:
     async def _delete_runs_with_dependents(self, run_ids: Collection[str]) -> dict[str, int]:
         """Delete the given run_ids and their dependents, returning counts.
 
+        Each Run stands alone: its dependents are released first, and a Run
+        whose dependent release fails is skipped whole — no spine row goes
+        while a continuation or Schedule cursor it owns survives it. The
+        in-memory store has no transaction to offer its collaborators, so
+        that all-or-nothing-per-Run order *is* its atomicity, and
+        `CanonicalDurableRunStore.reconcile_persistence` remains the crash
+        backstop on the durable legs (#1175).
+
         Returns a dictionary with keys:
             'runs': number of runs deleted
             'node_runs': number of node_runs deleted
@@ -864,83 +872,75 @@ class InMemoryRunStore:
             'schedule_pointers_released': number of schedule pointers released
             'schedule_claims_released': number of schedule claims released
         """
-        # We'll process each run_id independently.
-        runs_to_delete = set()
-        node_runs_to_delete = set()
-        attempts_to_delete = set()
+        runs_to_delete: set[str] = set()
+        node_runs_to_delete: set[str] = set()
+        attempts_to_delete: set[str] = set()
         continuations_deleted = 0
         schedule_pointers_released = 0
         schedule_claims_released = 0
 
         for run_id in run_ids:
-            # Get the Run to check if it exists and to get its NodeRuns and Attempts.
             run = self._runs.get(run_id)
             if run is None:
                 continue
-            # Collect NodeRuns and Attempts for this Run.
-            node_run_ids = {nr.node_run_id for nr in self._node_runs.values() if nr.run_id == run_id}
-            attempt_ids = {a.attempt_id for a in self._attempts.values() if a.node_run_id in node_run_ids}
-
-            # Try to clean up dependents.
+            node_run_ids, attempt_ids = self._spine_dependent_ids(run_id)
             try:
-                if self._continuation_store is not None:
-                    if await self._continuation_store.delete(run_id):
-                        continuations_deleted += 1
-                if self._schedule_store is not None:
-                    released = await self._schedule_store.release_run_pointers({run_id})
-                    schedule_pointers_released += released
-                    # Check for schedule claim.
-                    from maistro.runs.sources import occurrence_key
-                    if occurrence_key(run.provenance) is not None:
-                        schedule_claims_released += 1
+                released = await self._release_run_dependents(run)
             except Exception:
-                # If dependent cleanup fails, skip this Run.
+                # If dependent cleanup fails, skip this Run whole.
                 continue
-
-            # If we reach here, we can delete this Run and its spine dependents.
+            continuations, pointers, claims = released
+            continuations_deleted += continuations
+            schedule_pointers_released += pointers
+            schedule_claims_released += claims
+            # Dependents are accounted for: the spine may go.
             runs_to_delete.add(run_id)
             node_runs_to_delete.update(node_run_ids)
             attempts_to_delete.update(attempt_ids)
 
-        # Now, delete the Runs and their spine dependents.
         for run_id in runs_to_delete:
             self._forget_run(run_id)
 
         return {
-            'runs': len(runs_to_delete),
-            'node_runs': len(node_runs_to_delete),
-            'attempts': len(attempts_to_delete),
-            'continuations': continuations_deleted,
-            'schedule_pointers_released': schedule_pointers_released,
-            'schedule_claims_released': schedule_claims_released,
+            "runs": len(runs_to_delete),
+            "node_runs": len(node_runs_to_delete),
+            "attempts": len(attempts_to_delete),
+            "continuations": continuations_deleted,
+            "schedule_pointers_released": schedule_pointers_released,
+            "schedule_claims_released": schedule_claims_released,
         }
 
-    async def _release_schedule_pointers(self, run_ids: set[str]) -> int:
-        """Repoint the Schedule cursors that named the given Runs, if wired.
+    def _spine_dependent_ids(self, run_id: str) -> tuple[set[str], set[str]]:
+        """The NodeRun and Attempt ids filed directly under one Run."""
+        node_run_ids = {nr.node_run_id for nr in self._node_runs.values() if nr.run_id == run_id}
+        attempt_ids = {
+            a.attempt_id for a in self._attempts.values() if a.node_run_id in node_run_ids
+        }
+        return node_run_ids, attempt_ids
 
-        None schedule store — the default — leaves the cursors to their own
-        lifecycle; a wired one has every `last_run_id` naming a purged Run
-        released here, the in-memory counterpart of what the durable backends
-        do inside their purge transaction (#1175).
+    async def _release_run_dependents(self, run: Run) -> tuple[int, int, int]:
+        """Reclaim one Run's execution identity beyond the spine.
+
+        Returns ``(continuations, schedule_pointers, schedule_claims)`` — the
+        same three counts the outcome reports. The Graph continuation goes
+        (traversal state is execution identity, not audit); the Schedule fire
+        cursor is repointed to absent; and the Run's own provenance occurrence
+        claim dies with the Run row (retention_scope's inventory), counted so
+        the release is a reported fact. Raises on collaborator failure so the
+        caller can skip the Run whole rather than orphan its dependents.
         """
-        if self._schedule_store is None:
-            return 0
-        return await self._schedule_store.release_run_pointers(run_ids)
-
-    async def _reclaim_continuations(self, run_ids: set[str]) -> int:
-        """Delete the Graph continuation state of the given Runs, if wired.
-
-        None continuation store — the default — leaves the cleanup to
-        `reconcile_persistence`, which is correct but later; a wired store is
-        reclaimed here so the sweep is referentially complete in one call.
-        """
-        if self._continuation_store is None:
-            return 0
         continuations = 0
-        for run_id in run_ids:
-            if await self._continuation_store.delete(run_id):
-                continuations += 1
-        return continuations
+        if self._continuation_store is not None:
+            gone = await self._continuation_store.delete(run.run_id)
+            if gone:
+                continuations = 1
+        pointers = 0
+        claims = 0
+        if self._schedule_store is not None:
+            pointers = await self._schedule_store.release_run_pointers({run.run_id})
+            if occurrence_key(run.provenance) is not None:
+                claims = 1
+        return continuations, pointers, claims
 
     async def non_terminal_run_stats(self) -> tuple[int, datetime | None]:
         """How many Runs are non-terminal, and when the oldest one was created.
