@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 from services.workspace_authority import create_workspace
 
 from maistro.graph.definitions import Graph, Node
@@ -187,6 +188,8 @@ async def test_hitl_routes_are_scoped_to_the_callers_workspaces(scoped_client) -
     from services.dag_agents import get_run_store
 
     store = get_run_store()
+    assert scoped_client.get("/v1/hitl/pending").json() == []
+
     mine = await create_workspace(
         creator_user_id="scope-user",
         name="HITL scope mine",
@@ -300,6 +303,9 @@ def test_an_answer_with_no_verified_principal_is_never_recorded_as_system(
         headers={"authorization": None},
     )
     assert hitl_routes._session_principal(request) == "unauthenticated"
+    with pytest.raises(HTTPException) as exc_info:
+        hitl_routes._request_user_id(request)
+    assert exc_info.value.status_code == 401
 
 
 async def test_an_unknown_run_is_404(seeded) -> None:
