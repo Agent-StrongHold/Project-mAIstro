@@ -1,13 +1,13 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +7
+  packages/hive-conductor/backend/tests: +8
 ---
 
 # Issue #1066 Evolve availability and failure projection coverage
 
 Adds coverage for stub/no-router-key and bridge-degraded availability, suppression of
-an impossible background cadence, explicit unavailable cycle responses, and
-projection of evaluation, battle, and finalization terminal Run failures with the
+an impossible background cadence, an explicit unavailable cycle response from a
+stub AgentPort, and projection of evaluation, battle, and finalization terminal Run failures with the
 canonical run identity, status, and diagnostic. The canonical graph suite now
 exercises battle and finalization failures through durable NodeRun/Attempt records.
 

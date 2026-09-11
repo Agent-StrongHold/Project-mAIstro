@@ -93,6 +93,27 @@ def test_run_one_cycle_rejects_half_initialized_domain_state(
         asyncio.run(service._run_one_cycle())
 
 
+def test_stub_cycle_route_returns_explicit_availability_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.engine as engine_module
+    import services.evolution as evolution_service
+    from adapters.maistro_core import StubAgentPort
+
+    degraded_engine = SimpleNamespace(agent_port=StubAgentPort())
+    monkeypatch.setattr(engine_module, "get_engine", lambda: degraded_engine)
+    service = _EvolutionService()
+    monkeypatch.setattr(evolution_service, "get_evolution_service", lambda: service)
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(trigger_cycle(SimpleNamespace(state=SimpleNamespace())))
+
+    assert caught.value.status_code == 503
+    assert caught.value.detail["code"] == "evolution_unavailable"
+    assert caught.value.detail["availability"] == "degraded"
+    assert "no Container" in caught.value.detail["message"]
+
+
 def test_unavailable_cycle_is_distinguishable_from_execution_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
