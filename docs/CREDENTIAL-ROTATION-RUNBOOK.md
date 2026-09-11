@@ -235,24 +235,42 @@ from maistro.privilege import UsersStore, UsersTamperError
 #    current secret raises UsersTamperError and the rotation must not proceed.
 verified = UsersStore(data_dir=data_dir, trusted_signing_key=current_key)
 verified_admin = verified.admin()
-# This expected identity is pinned in deployment inventory outside users.toml.
-verified_user = verified.user_by_public_key(expected_user_public_key)
+# Derive the roster shape from the authenticated artifact, never from the
+# file's own metadata: a single-user roster (created with
+# allow_single_user=True) contains no secondary user, so a
+# user_by_public_key lookup for one would fail there.
+single_user_roster = len(verified.users()) == 1
 
 # 2. Move the authenticated artifact aside as a rollback backup, then
-#    re-sign the verified roster under the NEW external secret (use the
-#    same allow_single_user setting, if any). Constructing the new store
-#    while the old file is still in place would verify the stale artifact
-#    against the new key and fail closed with UsersTamperError.
+#    re-sign the verified roster under the NEW external secret, preserving
+#    the derived roster shape. Constructing the new store while the old file
+#    is still in place would verify the stale artifact against the new key
+#    and fail closed with UsersTamperError.
 shutil.move(
     os.path.join(data_dir, "users.toml"),
     os.path.join(data_dir, "users.toml.pre-rotation"),
 )
-UsersStore(data_dir=data_dir, trusted_signing_key=new_key).initialize(
-    admin_name=verified_admin.name,
-    admin_public_key=verified_admin.public_key,
-    user_name=verified_user.name,
-    user_public_key=verified_user.public_key,
+replacement = UsersStore(
+    data_dir=data_dir,
+    trusted_signing_key=new_key,
+    allow_single_user=single_user_roster,
 )
+if single_user_roster:
+    replacement.initialize(
+        admin_name=verified_admin.name,
+        admin_public_key=verified_admin.public_key,
+    )
+else:
+    # This expected identity is pinned in deployment inventory outside
+    # users.toml. Its absence from a two-user roster is a deployment
+    # mismatch, not a migration input: abort the rotation.
+    verified_user = verified.user_by_public_key(expected_user_public_key)
+    replacement.initialize(
+        admin_name=verified_admin.name,
+        admin_public_key=verified_admin.public_key,
+        user_name=verified_user.name,
+        user_public_key=verified_user.public_key,
+    )
 ```
 
 After the re-signed file is in place, update the host secret file, keychain, or

@@ -252,6 +252,17 @@ class UsersStore:
                 return u
         raise LookupError(f"No user with public key: {public_key}")
 
+    def users(self) -> tuple[UserInfo, ...]:
+        """Return the authenticated roster as a read-only tuple.
+
+        The documented trust-root rotation derives the roster shape from this
+        already-authenticated data (a single-user roster created with
+        ``allow_single_user=True`` contains no secondary user) rather than
+        from any roster description carried by ``users.toml`` itself.
+        """
+        self._load()
+        return tuple(self._users)
+
 
 class PrivilegeGuard:
     """Enforces admin/user privilege separation with elevation and policy VCs."""

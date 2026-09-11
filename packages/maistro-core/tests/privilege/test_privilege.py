@@ -217,8 +217,79 @@ permissions = "*"
         # No migration/rotation entry point exists on the public surface: the
         # only mutating API is initialize(), which takes its trust root from
         # the host-supplied constructor argument, never from the file.
+        # users() is a read-only view over already-authenticated data.
         public_api = {name for name in vars(UsersStore) if not name.startswith("_")}
-        assert public_api == {"initialize", "admin", "user_by_public_key"}
+        assert public_api == {"initialize", "admin", "user_by_public_key", "users"}
+
+    def test_single_user_roster_rotation_follows_documented_path(self, tmp_path: Path) -> None:
+        """The documented rotation also works for single-user rosters.
+
+        A valid ``UsersStore(..., allow_single_user=True)`` roster contains
+        no secondary user, so the naive two-user sample step
+        ``verified.user_by_public_key(expected_user_public_key)`` fails there
+        (LookupError), and re-initializing single-user mode without the
+        ``allow_single_user=True`` constructor flag fails closed
+        (InsufficientUsersError) instead of silently rewriting the roster.
+        The documented procedure therefore derives the roster shape from the
+        authenticated artifact via ``users()`` before re-signing.
+        """
+        from maistro.privilege import InsufficientUsersError, UsersStore, UsersTamperError
+
+        store = UsersStore(
+            data_dir=str(tmp_path),
+            trusted_signing_key=_TRUSTED_SIGNING_KEY,
+            allow_single_user=True,
+        )
+        store.initialize("solo-admin", "pk_admin_solo")
+
+        # Step 1: authenticate the artifact under the CURRENT root and
+        # derive the roster shape from authenticated data: exactly one user.
+        verified = UsersStore(
+            data_dir=str(tmp_path),
+            trusted_signing_key=_TRUSTED_SIGNING_KEY,
+            allow_single_user=True,
+        )
+        assert verified.users() == (verified.admin(),)
+        single_user_roster = len(verified.users()) == 1
+        assert single_user_roster
+        verified_admin = verified.admin()
+        assert verified_admin.name == "solo-admin"
+        # The naive two-user migration step cannot work on this roster: no
+        # secondary user exists to look up.
+        with pytest.raises(LookupError):
+            verified.user_by_public_key("pk_secondary")
+
+        # Step 2: move the authenticated artifact aside, then re-sign under
+        # the NEW root. Forgetting the allow_single_user flag fails closed
+        # without writing anything rather than silently upgrading the roster.
+        (tmp_path / "users.toml").rename(tmp_path / "users.toml.pre-rotation")
+        with pytest.raises(InsufficientUsersError):
+            UsersStore(
+                data_dir=str(tmp_path),
+                trusted_signing_key="host-owned-users-integrity-key-v2",
+            ).initialize(verified_admin.name, verified_admin.public_key)
+        assert not (tmp_path / "users.toml").exists()
+
+        replacement = UsersStore(
+            data_dir=str(tmp_path),
+            trusted_signing_key="host-owned-users-integrity-key-v2",
+            allow_single_user=True,
+        )
+        replacement.initialize(verified_admin.name, verified_admin.public_key)
+
+        # Only the new external root is authoritative afterwards, and the
+        # single-user shape plus admin identity survived the rotation.
+        with pytest.raises(UsersTamperError):
+            UsersStore(data_dir=str(tmp_path), trusted_signing_key=_TRUSTED_SIGNING_KEY)
+        reloaded = UsersStore(
+            data_dir=str(tmp_path),
+            trusted_signing_key="host-owned-users-integrity-key-v2",
+        )
+        assert reloaded.admin().name == "solo-admin"
+        assert len(reloaded.users()) == 1
+        on_disk = (tmp_path / "users.toml").read_text()
+        assert _TRUSTED_SIGNING_KEY not in on_disk
+        assert "host-owned-users-integrity-key-v2" not in on_disk
 
     def test_unsigned_single_line_fails_closed(self, tmp_path: Path) -> None:
         from maistro.privilege import UsersStore, UsersTamperError
