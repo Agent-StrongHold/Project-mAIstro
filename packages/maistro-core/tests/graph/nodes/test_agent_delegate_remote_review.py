@@ -378,10 +378,8 @@ class TestWhatTheChildRecords:
         assert "agent.delegate_remote" not in kinds
         assert kinds == ["agent.remote_work"]
 
-    async def test_an_inline_subgraph_is_snapshotted_as_the_work(self) -> None:
-        """When the delegation carries the work, that is what the child records
-        — rescoped into the child's Workspace and Project, because a Graph must
-        agree with the Run that holds it."""
+    async def test_an_inline_subgraph_is_recorded_as_untransmitted_request_context(self) -> None:
+        """The child must not claim work the A2A transport never received."""
         store, project = await _spine()
         parent = await store.create_run(
             _graph(workspace_id="workspace-1", project_id=project.project_id)
@@ -406,6 +404,12 @@ class TestWhatTheChildRecords:
         child = await store.get_run(result.metadata["run_id"])
         assert child is not None
         graph = child.graph.materialize()
-        assert [node.node_type for node in graph.nodes] == ["llm.summarize"]
+        assert [node.node_type for node in graph.nodes] == ["agent.remote_work"]
         assert graph.workspace_id == parent.workspace_id
         assert graph.project_id == parent.project_id
+        assert graph.nodes[0].inputs["requested_subgraph"] == {
+            "workspace_id": "somewhere-else",
+            "project_id": "some-other-project",
+            "name": "Research pipeline",
+            "nodes": [{"node_id": "summarise", "node_type": "llm.summarize"}],
+        }

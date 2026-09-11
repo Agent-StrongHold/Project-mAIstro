@@ -551,34 +551,21 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         return child.run_id
 
     def _child_graph(self, inputs: DelegateRemoteIn, *, parent: Run, target: str) -> Graph:
-        """The Graph snapshot the child Run carries: the work, not the dispatch.
+        """Snapshot the delegated request without inventing executable work.
 
-        The first version filed every child with a single `agent.delegate_remote`
-        node. Inspecting the canonical child then described *another* dispatch
-        instead of the work that was admitted, and executing or replaying that
-        snapshot would have delegated a second task.
-
-        When the delegation carries an inline `subgraph`, that is the work, and
-        it is snapshotted as given -- rescoped into the child's Workspace and
-        Project, since a Graph must agree with the Run that holds it. Otherwise
-        the shape is genuinely unknown to this instance (the peer holds it), and
-        the child records one opaque node naming the delegated task rather than
-        a plausible-looking graph nobody can replay.
+        The A2A transports in this node accept only the text task (and the
+        cross-instance transport sends only its message list). An inline
+        ``subgraph`` therefore cannot be treated as work that the peer ran:
+        doing so would make the child Run claim evidence for a graph that was
+        never sent. Preserve the request as opaque node inputs instead; a
+        transport that later supports graph payloads can add a distinct
+        admission path without changing this record's meaning.
         """
         from maistro.graph.definitions import Graph, Node
 
         workspace_id = inputs.to_workspace_id or parent.workspace_id
         project_id = inputs.to_project_id or parent.project_id
         name = f"delegation:{inputs.from_agent or 'unknown'}->{target or 'unknown'}"
-
-        if inputs.subgraph:
-            payload = {
-                **inputs.subgraph,
-                "workspace_id": workspace_id,
-                "project_id": project_id,
-                "name": inputs.subgraph.get("name") or name,
-            }
-            return Graph.model_validate(payload)
 
         return Graph(
             workspace_id=workspace_id,
@@ -593,6 +580,9 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
                         "from_agent": inputs.from_agent,
                         "to_agent": target,
                         "peer_name": inputs.peer_name,
+                        # Retain an untransmitted subgraph as request context,
+                        # never as executable child topology.
+                        "requested_subgraph": inputs.subgraph,
                     },
                 )
             ],
