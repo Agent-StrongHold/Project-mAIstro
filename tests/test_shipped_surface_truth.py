@@ -159,10 +159,11 @@ router = APIRouter()
 BASE = "/v1"
 METHODS = ("GET", "POST")
 route = router.api_route
-post = getattr(router, "post")
+post = router.post
+registered = post
 @route(BASE + "/decorated", methods=METHODS)
 def decorated(): return create()
-@post(f"{BASE}/assembled")
+@registered(f"{BASE}/assembled")
 def assembled(): return create()
 
 def registered(): return create()
@@ -175,6 +176,29 @@ router.add_api_route(f"{BASE}/registered", registered, methods=METHODS)
         ("POST", "/v1/decorated", "decorated"),
         ("POST", "/v1/registered", "registered"),
     ]
+
+
+def test_unresolved_decorator_is_explicitly_inventoryable(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "backend/routes.py",
+        """
+from fastapi import APIRouter
+router = APIRouter()
+def configured_method(): return "post"
+@getattr(router, configured_method())("/escaped")
+def escaped(): return create()
+""",
+    )
+    (tmp_path / "frontend").mkdir()
+    [surface] = discover_backend_surfaces(tmp_path, ["backend"])
+    assert (surface.method, surface.route, surface.handler) == (
+        "UNRESOLVED",
+        "/escaped",
+        "escaped",
+    )
+    assert any(
+        "unclassified backend surface" in error for error in validate_matrix(tmp_path, _matrix())
+    )
 
 
 def test_unresolved_registration_is_explicitly_inventoryable(tmp_path: Path) -> None:
@@ -212,6 +236,51 @@ router.add_api_route("/registered", registered, methods=methods_from_config())
         }
     ]
     assert validate_matrix(tmp_path, matrix) == []
+
+
+def test_inline_lambda_fake_success_is_rejected(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "backend/routes.py",
+        """
+from fastapi import APIRouter
+router = APIRouter()
+router.add_api_route("/lambda", lambda: {"status": "ok"}, methods=["POST"])
+""",
+    )
+    (tmp_path / "frontend").mkdir()
+    matrix = _matrix()
+    matrix["backend_surfaces"] = [
+        {
+            "source": "backend/routes.py",
+            "method": "POST",
+            "route": "/lambda",
+            "handler": "<lambda>",
+            "disposition": "canonical",
+            "production_enabled": True,
+            "effect_owner": "fake.fixture",
+            "reason": "deliberately planted fake-success fixture",
+        }
+    ]
+    surfaces = discover_backend_surfaces(tmp_path, ["backend"])
+    assert surfaces[0].obvious_fake_success
+    assert any(
+        "production success-shaped no-op" in error for error in validate_matrix(tmp_path, matrix)
+    )
+
+
+def test_non_decorator_mutating_registration_requires_gate_d_disposition(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "backend/routes.py",
+        """
+from fastapi import APIRouter
+router = APIRouter()
+def run(): return execute()
+router.add_api_route("/run", run, methods=["POST"])
+""",
+    )
+    (tmp_path / "frontend").mkdir()
+    errors = validate_matrix(tmp_path, _matrix(), strict=True)
+    assert any("unclassified backend surface" in error for error in errors)
 
 
 def test_deliberately_planted_production_fake_success_is_rejected(tmp_path: Path) -> None:

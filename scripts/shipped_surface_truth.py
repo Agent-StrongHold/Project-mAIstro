@@ -208,36 +208,64 @@ def _literal_methods(call: ast.Call) -> list[str]:
     return _static_methods(call, {}) or []
 
 
-def _module_aliases(tree: ast.Module, bindings: dict[str, ast.AST]) -> dict[str, str]:
-    aliases: dict[str, str] = {}
+def _module_aliases(  # noqa: C901
+    tree: ast.Module, bindings: dict[str, ast.AST]
+) -> dict[str, str]:
+    raw_aliases: dict[str, ast.AST] = {}
     for statement in tree.body:
-        if not isinstance(statement, ast.Assign) or not isinstance(statement.value, ast.AST):
+        targets: list[ast.expr] = []
+        value: ast.AST | None = None
+        if isinstance(statement, ast.Assign):
+            targets = statement.targets
+            value = statement.value
+        elif isinstance(statement, ast.AnnAssign) and statement.value is not None:
+            targets = [statement.target]
+            value = statement.value
+        if value is None:
             continue
-        value = statement.value
-        alias: str | None = None
-        if isinstance(value, ast.Attribute):
-            alias = value.attr.lower()
-        elif (
-            isinstance(value, ast.Call)
-            and isinstance(value.func, ast.Name)
-            and value.func.id == "getattr"
-            and len(value.args) >= 2
-        ):
-            alias = _static_string(value.args[1], bindings)
-            alias = alias.lower() if alias is not None else None
-        if alias is None:
-            continue
-        for target in statement.targets:
+        for target in targets:
             if isinstance(target, ast.Name):
-                aliases[target.id] = alias
-    return aliases
+                raw_aliases[target.id] = value
+
+    def resolve(name: str, resolving: set[str] | None = None) -> str | None:
+        resolving = set() if resolving is None else resolving
+        if name in resolving or name not in raw_aliases:
+            return None
+        return resolve_expression(raw_aliases[name], {*resolving, name})
+
+    def resolve_expression(node: ast.AST, resolving: set[str]) -> str | None:
+        if isinstance(node, ast.Attribute):
+            return node.attr.lower()
+        if isinstance(node, ast.Name):
+            return resolve(node.id, resolving)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+        ):
+            static_name = _static_string(node.args[1], bindings)
+            return static_name.lower() if static_name is not None else UNRESOLVED_METHOD
+        return None
+
+    return {name: resolved for name in raw_aliases if (resolved := resolve(name)) is not None}
 
 
-def _route_decorator_name(decorator: ast.expr, aliases: dict[str, str]) -> str | None:
+def _route_decorator_name(
+    decorator: ast.expr, aliases: dict[str, str], bindings: dict[str, ast.AST]
+) -> str | None:
     if isinstance(decorator, ast.Attribute):
         return decorator.attr.lower()
     if isinstance(decorator, ast.Name):
         return aliases.get(decorator.id)
+    if (
+        isinstance(decorator, ast.Call)
+        and isinstance(decorator.func, ast.Name)
+        and decorator.func.id == "getattr"
+        and len(decorator.args) >= 2
+    ):
+        static_name = _static_string(decorator.args[1], bindings)
+        return static_name.lower() if static_name is not None else UNRESOLVED_METHOD
     return None
 
 
@@ -252,7 +280,7 @@ def _decorated_routes(
     for decorator in node.decorator_list:
         if not isinstance(decorator, ast.Call):
             continue
-        name = _route_decorator_name(decorator.func, aliases)
+        name = _route_decorator_name(decorator.func, aliases, bindings)
         if name not in {
             "post",
             "put",
@@ -260,6 +288,7 @@ def _decorated_routes(
             "delete",
             "api_route",
             "websocket",
+            UNRESOLVED_METHOD,
         }:
             continue
         path_node = (
@@ -278,20 +307,27 @@ def _decorated_routes(
             # FastAPI defaults api_route to GET. An unresolved methods value
             # must remain visible because it may contain a mutating verb.
             methods = [UNRESOLVED_METHOD] if declared is None else declared
+        elif name == UNRESOLVED_METHOD:
+            # A dynamic router method may be mutating; retain it as an owned
+            # declaration instead of silently dropping the decorated handler.
+            methods = [UNRESOLVED_METHOD]
         else:
             methods = [name.upper()]
         routes.extend((method, route) for method in methods)
     return routes
 
 
-def _registration_endpoint(call: ast.Call) -> str:
-    endpoint: ast.AST | None = None
-    if len(call.args) >= 2:
-        endpoint = call.args[1]
+def _registration_endpoint_node(call: ast.Call) -> ast.AST | None:
+    endpoint: ast.AST | None = call.args[1] if len(call.args) >= 2 else None
     for keyword in call.keywords:
         if keyword.arg == "endpoint":
             endpoint = keyword.value
             break
+    return endpoint
+
+
+def _registration_endpoint(call: ast.Call) -> str:
+    endpoint = _registration_endpoint_node(call)
     if isinstance(endpoint, ast.Name):
         return endpoint.id
     if isinstance(endpoint, ast.Attribute):
@@ -301,17 +337,43 @@ def _registration_endpoint(call: ast.Call) -> str:
     return "<dynamic>"
 
 
+def _registration_name(
+    func: ast.expr, bindings: dict[str, ast.AST], aliases: dict[str, str]
+) -> str:
+    if isinstance(func, ast.Attribute):
+        return func.attr.lower()
+    if isinstance(func, ast.Name):
+        return aliases.get(func.id, "")
+    if (
+        isinstance(func, ast.Call)
+        and isinstance(func.func, ast.Name)
+        and func.func.id == "getattr"
+        and len(func.args) >= 2
+    ):
+        static_name = _static_string(func.args[1], bindings)
+        return static_name.lower() if static_name is not None else UNRESOLVED_METHOD
+    return ""
+
+
 def _registered_routes(
     call: ast.Call, bindings: dict[str, ast.AST], aliases: dict[str, str] | None = None
 ) -> list[tuple[str, str, str]]:
     aliases = {} if aliases is None else aliases
-    if isinstance(call.func, ast.Attribute):
-        name = call.func.attr.lower()
-    elif isinstance(call.func, ast.Name):
-        name = aliases.get(call.func.id, "")
-    else:
+    name = _registration_name(call.func, bindings, aliases)
+    if name not in {
+        "add_api_route",
+        "add_route",
+        "add_api_websocket_route",
+        "add_websocket_route",
+        UNRESOLVED_METHOD,
+    }:
         return []
-    if name not in {"add_api_route", "add_route", "add_api_websocket_route", "add_websocket_route"}:
+    if name == UNRESOLVED_METHOD and not (
+        len(call.args) >= 2
+        or any(keyword.arg in {"endpoint", "methods"} for keyword in call.keywords)
+    ):
+        # A dynamic router method used as a decorator has only its path
+        # argument; it is handled by _decorated_routes instead.
         return []
     path_node = (
         call.args[0]
@@ -325,6 +387,8 @@ def _registered_routes(
     handler = _registration_endpoint(call)
     if name in {"add_api_websocket_route", "add_websocket_route"}:
         return [(WEBSOCKET_METHOD, route, handler)]
+    if name == UNRESOLVED_METHOD:
+        return [(UNRESOLVED_METHOD, route, handler)]
     declared = _static_methods(call, bindings)
     # Both FastAPI and Starlette default a route registration without methods
     # to GET. An unresolved methods expression is fail-closed instead.
@@ -332,7 +396,9 @@ def _registered_routes(
     return [(method, route, handler) for method in methods]
 
 
-def _handler_has_effect_evidence(node: ast.AsyncFunctionDef | ast.FunctionDef) -> bool:
+def _handler_has_effect_evidence(  # noqa: C901
+    node: ast.AsyncFunctionDef | ast.FunctionDef | ast.Lambda,
+) -> bool:
     """Treat domain/execution calls as evidence, but not observability calls."""
     observability = {
         "count",
@@ -377,6 +443,9 @@ def _handler_has_effect_evidence(node: ast.AsyncFunctionDef | ast.FunctionDef) -
             return
 
     visitor = EffectVisitor()
+    if isinstance(node, ast.Lambda):
+        visitor.visit(node.body)
+        return visitor.found
     for statement in node.body:
         visitor.visit(statement)
         if visitor.found:
@@ -385,15 +454,16 @@ def _handler_has_effect_evidence(node: ast.AsyncFunctionDef | ast.FunctionDef) -
 
 
 def _returned_status(  # noqa: C901
-    node: ast.AsyncFunctionDef | ast.FunctionDef,
+    node: ast.AsyncFunctionDef | ast.FunctionDef | ast.Lambda | None,
 ) -> str | None:
     """Return a success-shaped status found on any path in this handler."""
+    if node is None:
+        return None
 
     class ReturnVisitor(ast.NodeVisitor):
         status: str | None = None
 
-        def visit_Return(self, return_node: ast.Return) -> None:
-            value = return_node.value
+        def inspect_value(self, value: ast.AST | None) -> None:
             if not isinstance(value, ast.Dict):
                 return
             for key, item in zip(value.keys, value.values, strict=True):
@@ -407,6 +477,9 @@ def _returned_status(  # noqa: C901
                     self.status = item.value.lower()
                     return
 
+        def visit_Return(self, return_node: ast.Return) -> None:
+            self.inspect_value(return_node.value)
+
         def visit_FunctionDef(self, _node: ast.FunctionDef) -> None:
             # A nested function's return is not a return path of this handler.
             return
@@ -418,10 +491,13 @@ def _returned_status(  # noqa: C901
             return
 
     visitor = ReturnVisitor()
-    for statement in node.body:
-        visitor.visit(statement)
-        if visitor.status is not None:
-            break
+    if isinstance(node, ast.Lambda):
+        visitor.inspect_value(node.body)
+    else:
+        for statement in node.body:
+            visitor.visit(statement)
+            if visitor.status is not None:
+                break
     if visitor.status is not None and not _handler_has_effect_evidence(node):
         return visitor.status
     return None
@@ -435,6 +511,11 @@ def _source_surfaces(path: Path, repo_root: Path) -> list[BackendSurface]:
     source = path.relative_to(repo_root).as_posix()
     bindings = _module_bindings(tree)
     aliases = _module_aliases(tree, bindings)
+    functions = {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
+    }
     surfaces: list[BackendSurface] = []
     for node in ast.walk(tree):
         if not isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
@@ -455,16 +536,15 @@ def _source_surfaces(path: Path, repo_root: Path) -> list[BackendSurface]:
         if not isinstance(node, ast.Call):
             continue
         for method, route, handler in _registered_routes(node, bindings, aliases):
-            function = next(
-                (
-                    candidate
-                    for candidate in ast.walk(tree)
-                    if isinstance(candidate, (ast.AsyncFunctionDef, ast.FunctionDef))
-                    and candidate.name == handler
-                ),
-                None,
-            )
-            status = _returned_status(function) if function is not None else None
+            endpoint = _registration_endpoint_node(node)
+            if isinstance(endpoint, ast.Lambda):
+                function: ast.AsyncFunctionDef | ast.FunctionDef | ast.Lambda | None = endpoint
+            elif isinstance(endpoint, ast.Name):
+                bound = bindings.get(endpoint.id)
+                function = bound if isinstance(bound, ast.Lambda) else functions.get(endpoint.id)
+            else:
+                function = functions.get(handler)
+            status = _returned_status(function)
             surfaces.append(
                 BackendSurface(
                     source=source,
