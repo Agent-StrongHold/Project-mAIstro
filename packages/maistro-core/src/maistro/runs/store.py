@@ -914,10 +914,10 @@ class InMemoryRunStore:
         diverging on query surface. Oldest-first, so a bounded tick drains a
         backlog fairly instead of starving what arrived first.
 
-        A caller that needs to see *every* row eventually, rather than only the
-        oldest page, passes ``offset`` and walks it: the resume tick does, because
-        its filter is applied after the query and a standing prefix of ineligible
-        rows would otherwise hide everything behind it forever (#666 review).
+        ``admission_source`` is an indexed ownership filter applied before
+        ``limit``. A caller using a broader compatibility predicate can walk
+        every row with the exclusive ``after`` cursor, so an ineligible prefix
+        cannot hide eligible work forever (#666 review).
         """
         if limit <= 0:
             raise ValueError("limit must be positive")
