@@ -13,6 +13,20 @@ from maistro.runs.model import GraphSnapshot, NodeRun, Run
 from maistro.runtime import PythonExecutionRuntime
 
 
+class _FailOnceOnCompletion(InMemoryDurableRunStore):
+    """Inject one post-runtime completion persistence failure."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.failures = 1
+
+    async def update(self, record: DurableRunRecord) -> DurableRunRecord:
+        if self.failures and record.attempts[-1].status is AttemptStatus.COMPLETED:
+            self.failures -= 1
+            raise RuntimeError("injected Attempt completion write failure")
+        return await super().update(record)
+
+
 async def _durable_running_node() -> tuple[InMemoryDurableRunStore, DurableRunRecord, str]:
     graph = Graph(
         workspace_id="ws-1",
@@ -72,6 +86,38 @@ async def test_attempt_service_persists_physical_try_in_same_durable_record() ->
         "context": {"node": "node-1"},
     }
     assert persisted.node_runs[0].status is RunStatus.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_completion_write_is_retried_without_losing_physical_result() -> None:
+    store, record, node_run_id = await _durable_running_node()
+    failing_store = _FailOnceOnCompletion()
+    initial = await store.get(record.run_id)
+    assert initial is not None
+    await failing_store.create(initial)
+    execution_store = DurableRunExecutionStore(failing_store, run_id=record.run_id)
+    service = AttemptExecutionService(
+        store=execution_store,
+        runtime=PythonExecutionRuntime(),
+    )
+
+    attempt = await service.execute(
+        node_run_id,
+        None,
+        None,
+        executor=lambda _work, _context: _result(),
+        reconcile_logical=False,
+    )
+
+    assert attempt.status is AttemptStatus.COMPLETED
+    persisted = await failing_store.get(record.run_id)
+    assert persisted is not None
+    assert persisted.attempts[0].status is AttemptStatus.COMPLETED
+    assert persisted.attempts[0].result == {"answer": "durable"}
+
+
+async def _result() -> dict[str, str]:
+    return {"answer": "durable"}
 
 
 @pytest.mark.asyncio

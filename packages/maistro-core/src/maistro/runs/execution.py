@@ -479,13 +479,36 @@ class AttemptExecutionService:
         result: object | None = None,
         error: str | None = None,
     ) -> Attempt:
-        return await self._store.transition_attempt(
-            attempt_id,
-            status,
-            result=result,
-            error=error,
-            fencing_token=fencing_token,
-        )
+        """Persist terminal evidence, retrying a crash-shaped write once.
+
+        Runtime execution has already happened when this method runs. A single
+        transient persistence failure must not turn that evidence into a graph
+        failure or cause an immediate duplicate physical try. If the first
+        write actually committed before reporting an error, the read-back also
+        makes this retry idempotent.
+        """
+        try:
+            return await self._store.transition_attempt(
+                attempt_id,
+                status,
+                result=result,
+                error=error,
+                fencing_token=fencing_token,
+            )
+        except Exception as first_error:
+            current = await self._store.get_attempt(attempt_id)
+            if current is not None and current.status is status:
+                return current
+            try:
+                return await self._store.transition_attempt(
+                    attempt_id,
+                    status,
+                    result=result,
+                    error=error,
+                    fencing_token=fencing_token,
+                )
+            except Exception:
+                raise first_error from None
 
     async def _reconcile(
         self,

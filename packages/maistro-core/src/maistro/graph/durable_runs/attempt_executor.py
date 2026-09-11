@@ -357,6 +357,12 @@ async def _walk_until_settled(
         await mirror_lifecycle(record, run_store=spine)
         if record.run.status is not RunStatus.RUNNING:
             return record
+        # A physical terminal write can fail after runtime execution returned.
+        # Do not immediately redispatch or mark the graph failed while the
+        # leased Attempt is still active; the bounded recovery claim will
+        # either observe its terminal evidence or reclaim it after expiry.
+        if _frontier_has_active_attempt(record):
+            return record
 
     record = await traversal._finish_walk(
         record,
@@ -413,6 +419,8 @@ async def _walk_frontier(
         raise
     except Exception as exc:
         latest = await _reload_record(record.run_id, store=store, cause=exc)
+        if _frontier_has_active_attempt(latest):
+            return latest
         return await traversal._mark_failed(
             latest,
             error_code="PhysicalExecutionError",
@@ -426,6 +434,20 @@ async def _walk_frontier(
         graph,
         items,
         store=store,
+    )
+
+
+def _frontier_has_active_attempt(record: DurableRunRecord) -> bool:
+    """Whether a persisted active Attempt still owns unfinished frontier work."""
+    active_ids = {
+        node_run.node_run_id
+        for node_run in record.node_runs
+        if node_run.status is RunStatus.RUNNING
+    }
+    return any(
+        attempt.node_run_id in active_ids
+        and attempt.status in {AttemptStatus.CREATED, AttemptStatus.RUNNING}
+        for attempt in record.attempts
     )
 
 
