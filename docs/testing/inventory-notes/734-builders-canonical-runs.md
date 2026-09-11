@@ -5,7 +5,7 @@ Issue: #734
 Parent: #49
 
 inventory-delta:
-  packages/maistro-core/tests: +17
+  packages/maistro-core/tests: +19
 ---
 
 ## Claim and collision boundary
