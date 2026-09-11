@@ -109,6 +109,13 @@ class _ReservationFailingStore(InMemoryRunStore):
         return await super().create_run(graph, parent_run_id=parent_run_id, **kwargs)
 
 
+class _ClaimFailingNode(AgentDelegateRemoteNode):
+    """Stop after child admission but before the transport claim is written."""
+
+    async def _claim_transport_attempt(self, run_id: str) -> bool:
+        raise RuntimeError("injected failure after child reservation")
+
+
 def _recording_delegator() -> _RecordingDelegator:
     delegator = _RecordingDelegator()
     delegator.register_agent_capability("planner", ["researcher"])
@@ -365,6 +372,35 @@ class TestAdmissionAndTransportConverge:
 
         assert result.status == "failed"
         assert delegator.dispatched == []
+
+    async def test_restart_after_child_reservation_can_claim_and_dispatch_once(self) -> None:
+        store, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+        first_delegator = _recording_delegator()
+        inputs = {"from_agent": "planner", "task": "x", "to_agent": "researcher"}
+        ctx = _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id)
+
+        first = await _ClaimFailingNode(a2a_delegator=first_delegator, run_store=store).run(
+            inputs, ctx
+        )
+        assert first.status == "failed"
+        assert first_delegator.dispatched == []
+
+        second_delegator = _recording_delegator()
+        second_node = AgentDelegateRemoteNode(a2a_delegator=second_delegator, run_store=store)
+        second = await second_node.run(inputs, ctx)
+
+        assert second.status == "paused"
+        assert len(second_delegator._tasks) == 1
+        key = second_node._delegation_key(second_node.input_schema.model_validate(inputs), ctx)
+        child = await store.find_delegation_run(key)
+        assert child is not None
+        task = second_delegator.get_task_by_delegation_key(key)
+        assert task is not None
+        assert child.provenance["a2a_task_id"] == task.id
 
     async def test_restart_after_boundary_claim_stays_uncertain_without_resubmitting(self) -> None:
         store, project = await _spine()
