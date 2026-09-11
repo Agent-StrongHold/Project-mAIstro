@@ -21,8 +21,11 @@ Standalone operator diagnostic (the explicit CLI is required):
     python -m maistro_bootstrap.builders.model_selector [--top N]
     python -m maistro_bootstrap.builders.model_selector --models gemini-flash cerebras-llama3.1-8b
 
-``run_benchmark`` rejects implicit/programmatic use unless its caller marks the
-operation as this explicit operator probe. Builders never calls it.
+``run_benchmark`` refuses every caller except this module's own CLI process.
+The authorization is structural, not a self-attested flag (#1088): there is no
+``operator_probe=True`` keyword an arbitrary importer could pass to authorize
+ambient-credential model probes. Library consumers read only the persisted
+cache/default through :func:`best_model`.
 """
 
 from __future__ import annotations
@@ -280,22 +283,39 @@ def _winners(results: list[dict[str, Any]], cap_ms: float) -> list[dict[str, Any
     return sorted(passed, key=lambda r: r["score"], reverse=True)
 
 
+def _require_operator_cli() -> None:
+    """Refuse unless this process is running this module's own CLI.
+
+    The probe performs direct model HTTP with ambient operator credentials, so
+    its authorization must not be expressible as a function argument: a boolean
+    flag let any importer self-attest and turn the diagnostic into a reusable
+    product model client (#1088). Only a process launched as
+    ``python -m maistro_bootstrap.builders.model_selector`` — whose ``__main__``
+    module is this file — may probe. That is checkable, and faking it is a
+    deliberate act, not a silent default.
+    """
+
+    main = sys.modules.get("__main__")
+    main_file = getattr(main, "__file__", None)
+    if not main_file or Path(main_file).resolve() != Path(__file__).resolve():
+        raise RuntimeError(
+            "model selection probes are operator-only; run 'python -m "
+            "maistro_bootstrap.builders.model_selector'. Library callers must "
+            "read the persisted cache via best_model() and never probe."
+        )
+
+
 def run_benchmark(
     models: list[str] | None = None,
     *,
     verbose: bool = True,
-    operator_probe: bool = False,
 ) -> dict[str, Any]:
     """Probe models with tier-appropriate tests for an explicit operator run.
 
     The guard keeps this diagnostic from becoming an accidental product model
     client if a Builder or another library caller imports the helper later.
     """
-    if not operator_probe:
-        raise RuntimeError(
-            "model selection probes are operator-only; invoke the module CLI or "
-            "pass operator_probe=True explicitly"
-        )
+    _require_operator_cli()
     with httpx.Client(timeout=_CAPABLE_LATENCY_CAP_S + 5) as client:
         if models is None:
             if verbose:
@@ -426,7 +446,7 @@ if __name__ == "__main__":
     parser.add_argument("--top", type=int, default=8)
     args = parser.parse_args()
 
-    results = run_benchmark(models=args.models, verbose=True, operator_probe=True)
+    results = run_benchmark(models=args.models, verbose=True)
     save_cache(results)
 
     sep = "=" * 68
