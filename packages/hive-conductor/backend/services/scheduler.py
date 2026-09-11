@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from maistro.runs.model import TERMINAL_RUN_STATUSES
 from maistro.scheduling import FireDecision, OverlapPolicy, Schedule, evaluate
@@ -46,25 +46,29 @@ class ScheduleNotFireable(Exception):
 
 
 async def fire_now(sid: str) -> str:
-    """Fire a schedule on demand through the compatibility execution path.
-
-    The recurring production loop is owned by ``ScheduleRunAdmitter``.  Manual
-    fire keeps the existing immediate semantics until the product exposes a
-    first-class manual occurrence on the canonical scheduling API.
-    """
+    """Fire a schedule on demand, using the canonical cursor when wired."""
     import stores
 
-    schedule = stores.schedules.get(sid)
-    if schedule is None:
-        raise ScheduleNotFireable(f"schedule {sid} does not exist")
-
+    legacy = stores.schedules.get(sid)
     runner = _runner or _ScheduleRunner()
     store = runner._canonical_store()
-    definition = await runner._definition_for(sid, schedule, store=store)
-    if definition is None:
-        raise ScheduleNotFireable(
-            f"schedule {sid} names no mission template, so there is nothing to run"
-        )
+    if store is not None:
+        definition = await store.get(sid)
+        if definition is None and legacy is not None:
+            # One-time compatibility migration; subsequent reads are canonical.
+            container = runner._canonical_container()
+            scope = await runner._canonical_scope(legacy, container) if container else None
+            definition = await runner._definition_for(sid, legacy, store=store, scope=scope)
+        schedule = runner._surface_schedule(definition) if definition is not None else None
+    else:
+        schedule = legacy
+        definition = await runner._definition_for(sid, schedule, store=None) if schedule else None
+    if schedule is None or definition is None:
+        if legacy is not None:
+            raise ScheduleNotFireable(
+                f"schedule {sid} names no mission template, so there is nothing to run"
+            )
+        raise ScheduleNotFireable(f"schedule {sid} does not exist")
     if definition.exhausted:
         raise ScheduleNotFireable(f"schedule {sid} has used all {definition.max_runs} of its runs")
 
@@ -134,13 +138,34 @@ class _ScheduleRunner:
         import stores
 
         now = datetime.now(UTC)
-        for sid, schedule in list(stores.schedules.items()):
-            if not getattr(schedule, "enabled", False):
-                continue
-            try:
-                await self._evaluate_schedule(sid, schedule, now=now)
-            except Exception as exc:
-                logger.warning("Failed to evaluate schedule %s: %s", sid, exc)
+        container = self._canonical_container()
+        admitter = self._canonical_admitter(container)
+        if admitter is not None:
+            store = container.schedule_store
+            await self._migrate_legacy_rows(store, container)
+            candidates = await store.due(now=now)
+            for definition in candidates:
+                try:
+                    await self._evaluate_canonical_definition(
+                        definition, now=now, container=container, admitter=admitter
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to evaluate canonical schedule %s: %s",
+                        definition.schedule_id,
+                        exc,
+                    )
+        else:
+            # Standalone/demo mode has no canonical spine. This fallback is
+            # deliberately isolated; a configured process never uses this map
+            # to decide due-ness.
+            for sid, schedule in list(stores.schedules.items()):
+                if not getattr(schedule, "enabled", False):
+                    continue
+                try:
+                    await self._evaluate_schedule(sid, schedule, now=now)
+                except Exception as exc:
+                    logger.warning("Failed to evaluate schedule %s: %s", sid, exc)
 
         self._last_check = now
 
@@ -169,6 +194,7 @@ class _ScheduleRunner:
             last_fired_at=getattr(schedule, "last_run", None),
             created_at=getattr(schedule, "created_at", None) or _EPOCH,
             actor_principal_id=str(getattr(schedule, "user_id", "") or "") or None,
+            description=str(getattr(schedule, "description", "") or ""),
         )
 
     @staticmethod
@@ -270,7 +296,11 @@ class _ScheduleRunner:
         store: Any,
         scope: tuple[str, str] | None = None,
     ) -> Schedule | None:
-        """Return the editable definition with the durable cursor overlaid."""
+        """Return a canonical definition, importing a legacy row only once."""
+        if store is not None:
+            recorded = await store.get(sid)
+            if recorded is not None:
+                return cast(Schedule, recorded)
         definition = self._as_definition(sid, schedule)
         if definition is None:
             return None
@@ -278,21 +308,44 @@ class _ScheduleRunner:
             definition = definition.model_copy(
                 update={"workspace_id": scope[0], "project_id": scope[1]}
             )
-        if store is None:
-            return definition
-        recorded = await store.get(sid)
-        if recorded is not None:
-            definition = definition.model_copy(
-                update={
-                    "last_fired_at": recorded.last_fired_at,
-                    "last_run_id": recorded.last_run_id,
-                    "runs_so_far": recorded.runs_so_far,
-                    "next_due_at": recorded.next_due_at,
-                    "created_at": recorded.created_at,
-                }
-            )
-        await store.put(definition)
+        if store is not None:
+            await store.put(definition)
         return definition
+
+    @staticmethod
+    def _surface_schedule(definition: Schedule) -> Any:
+        """Expose a canonical definition through the unchanged Hive response shape."""
+        from models.schemas import Schedule as HiveSchedule
+
+        return HiveSchedule(
+            id=definition.schedule_id,
+            user_id=definition.actor_principal_id or "",
+            name=definition.name,
+            description=definition.description,
+            cron_expression=definition.cron,
+            mission_template_id=definition.graph_template_id,
+            enabled=definition.enabled,
+            timezone=definition.timezone,
+            max_runs=definition.max_runs,
+            last_run=definition.last_fired_at,
+            last_run_id=definition.last_run_id,
+            next_run=definition.next_due_at,
+            created_at=definition.created_at,
+            updated_at=definition.updated_at,
+        )
+
+    async def _migrate_legacy_rows(self, store: Any, container: Any) -> None:
+        """Import old product rows without letting them answer due-ness."""
+        import stores
+
+        for sid, row in list(stores.schedules.items()):
+            if await store.get(sid) is not None:
+                continue
+            try:
+                scope = await self._canonical_scope(row, container)
+                await self._definition_for(sid, row, store=store, scope=scope)
+            except Exception as exc:
+                logger.warning("Could not migrate legacy schedule %s: %s", sid, exc)
 
     async def _canonical_active_run(self, definition: Schedule, container: Any) -> bool:
         """Whether the schedule's latest Run is still non-terminal."""
@@ -370,6 +423,46 @@ class _ScheduleRunner:
                 },
             )
 
+    async def _evaluate_canonical_definition(
+        self,
+        definition: Schedule,
+        *,
+        now: datetime,
+        container: Any,
+        admitter: ScheduleRunAdmitter,
+    ) -> None:
+        """Evaluate one candidate returned by the canonical due index."""
+        await self._prime_template(definition, container)
+        admission = await admitter.admit_due(
+            definition,
+            now=now,
+            active_run=await self._canonical_active_run(definition, container),
+        )
+        schedule = self._surface_schedule(definition)
+
+        for skipped in admission.skipped:
+            logger.info(
+                "Schedule %s skipped occurrence %s: %s",
+                definition.schedule_id,
+                skipped.scheduled_for.isoformat(),
+                skipped.reason.value,
+            )
+        for occurred in admission.already_fired:
+            logger.info(
+                "Schedule %s occurrence %s was already claimed by another runner",
+                definition.schedule_id,
+                occurred.isoformat(),
+            )
+        for exc in admission.failures:
+            logger.warning("Schedule %s admission failed: %s", definition.schedule_id, exc)
+
+        await self._audit_canonical_admission(
+            definition.schedule_id, schedule, admission, container
+        )
+        recorded = await container.schedule_store.get(definition.schedule_id)
+        if recorded is not None:
+            self._project_cursor(definition.schedule_id, recorded)
+
     async def _evaluate_canonical(
         self,
         sid: str,
@@ -379,7 +472,7 @@ class _ScheduleRunner:
         container: Any,
         admitter: ScheduleRunAdmitter,
     ) -> None:
-        """Configured Hive path: one canonical scheduler authority."""
+        """Compatibility entry point; canonical state remains authoritative."""
         scope = await self._canonical_scope(schedule, container)
         definition = await self._definition_for(
             sid, schedule, store=container.schedule_store, scope=scope
@@ -387,34 +480,9 @@ class _ScheduleRunner:
         if definition is None:
             logger.debug("Schedule %s names no mission template; nothing to run", sid)
             return
-
-        await self._prime_template(definition, container)
-        admission = await admitter.admit_due(
-            definition,
-            now=now,
-            active_run=await self._canonical_active_run(definition, container),
+        await self._evaluate_canonical_definition(
+            definition, now=now, container=container, admitter=admitter
         )
-
-        for skipped in admission.skipped:
-            logger.info(
-                "Schedule %s skipped occurrence %s: %s",
-                sid,
-                skipped.scheduled_for.isoformat(),
-                skipped.reason.value,
-            )
-        for occurred in admission.already_fired:
-            logger.info(
-                "Schedule %s occurrence %s was already claimed by another runner",
-                sid,
-                occurred.isoformat(),
-            )
-        for exc in admission.failures:
-            logger.warning("Schedule %s admission failed: %s", sid, exc)
-
-        await self._audit_canonical_admission(sid, schedule, admission, container)
-        recorded = await container.schedule_store.get(sid)
-        if recorded is not None:
-            self._project_cursor(sid, recorded)
 
     async def _evaluate_schedule(self, sid: str, schedule: Any, *, now: datetime) -> None:
         container = self._canonical_container()

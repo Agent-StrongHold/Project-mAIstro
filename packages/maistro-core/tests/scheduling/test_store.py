@@ -4,10 +4,9 @@ Every test runs against all three stores, because the failure this layer
 exists to prevent — a schedule that quietly stops existing — is exactly what a
 store that drifts from its protocol reintroduces.
 
-PostgreSQL joined the list in #231. It is the only one two processes can
-share, so it is also the only one where `record_fire` racing itself is
-reachable; `test_concurrent_record_fire_does_not_lose_an_increment` covers
-that separately, because the in-memory and SQLite stores cannot exhibit it.
+PostgreSQL joined the list in #231. It is the shareable multi-process backend,
+while SQLite still needs serialized local writers; the backend-specific tests
+cover both forms of overlapping `record_fire`.
 """
 
 from __future__ import annotations
@@ -115,6 +114,15 @@ async def test_a_schedule_with_no_cursor_is_due(store: ScheduleStore) -> None:
     assert [s.name for s in await store.due(now=NOON)] == ["fresh"]
 
 
+async def test_evaluation_persists_a_future_cursor(store: ScheduleStore) -> None:
+    schedule = await store.put(_schedule(name="future", next_due_at=None))
+    next_due = NOON + timedelta(hours=1)
+    await store.record_evaluation(schedule.schedule_id, next_due_at=next_due)
+    assert await store.due(now=NOON) == []
+    recorded = await store.get(schedule.schedule_id)
+    assert recorded is not None and recorded.next_due_at == next_due
+
+
 async def test_disabled_schedules_are_never_due(store: ScheduleStore) -> None:
     await store.put(_schedule(name="paused", enabled=False, next_due_at=NOON - timedelta(days=1)))
     assert await store.due(now=NOON) == []
@@ -199,6 +207,30 @@ async def test_sqlite_schedules_survive_a_reconnect(tmp_path) -> None:
     assert survivor.name == "briefing" and survivor.enabled is True
     assert survivor.last_run_id == "run-abc"
     assert survivor.next_due_at == NOON + timedelta(hours=19)
+
+
+async def test_sqlite_record_fire_serializes_overlapping_callers(tmp_path) -> None:
+    path = tmp_path / "overlap.db"
+    async with aiosqlite.connect(path) as conn:
+        store = SqliteScheduleStore(conn)
+        await store.ensure_schema()
+        schedule = await store.put(_schedule(name="overlap"))
+        await asyncio.gather(
+            *(
+                store.record_fire(
+                    schedule.schedule_id,
+                    fired_at=NOON + timedelta(minutes=index),
+                    run_id=f"run-{index}",
+                    next_due_at=NOON + timedelta(hours=1),
+                )
+                for index in range(8)
+            )
+        )
+        recorded = await store.get(schedule.schedule_id)
+    assert recorded is not None
+    assert recorded.runs_so_far == 8
+    assert recorded.last_run_id is not None
+    assert recorded.next_due_at == NOON + timedelta(hours=1)
 
 
 async def test_postgres_schedules_are_visible_to_a_second_store(pg_pool: Any) -> None:

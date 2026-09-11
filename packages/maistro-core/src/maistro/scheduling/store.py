@@ -46,6 +46,16 @@ class ScheduleStore(Protocol):
         """Every schedule filed in one Project, enabled or not."""
         ...
 
+    async def list_all(self) -> list[Schedule]:
+        """Every schedule, for projections and administrative surfaces."""
+        ...
+
+    async def record_evaluation(
+        self, schedule_id: str, *, next_due_at: datetime | None
+    ) -> Schedule | None:
+        """Persist an evaluation cursor without claiming an occurrence."""
+        ...
+
     async def due(self, *, now: datetime) -> list[Schedule]:
         """Enabled schedules whose next_due_at has arrived.
 
@@ -117,6 +127,21 @@ class InMemoryScheduleStore:
             if schedule.workspace_id == workspace_id and schedule.project_id == project_id
         ]
 
+    async def list_all(self) -> list[Schedule]:
+        return sorted(self._schedules.values(), key=lambda schedule: schedule.schedule_id)
+
+    async def record_evaluation(
+        self, schedule_id: str, *, next_due_at: datetime | None
+    ) -> Schedule | None:
+        schedule = self._schedules.get(schedule_id)
+        if schedule is None:
+            return None
+        evaluated = schedule.model_copy(
+            update={"next_due_at": next_due_at, "updated_at": datetime.now(UTC)}
+        )
+        self._schedules[schedule_id] = evaluated
+        return evaluated
+
     async def due(self, *, now: datetime) -> list[Schedule]:
         return [s for s in self._schedules.values() if _is_due(s, now=now)]
 
@@ -167,6 +192,11 @@ class SqliteScheduleStore:
 
     def __init__(self, conn: aiosqlite.Connection) -> None:
         self._conn = conn
+        # The lock covers callers sharing one connection; IMMEDIATE transactions
+        # cover separate local SQLite connections.
+        import asyncio
+
+        self._write_lock = asyncio.Lock()
 
     async def ensure_schema(self) -> None:
         await self._conn.execute(_SCHEMA)
@@ -228,6 +258,43 @@ class SqliteScheduleStore:
             rows = await cursor.fetchall()
         return [self._row_to_schedule(row[0]) for row in rows]
 
+    async def list_all(self) -> list[Schedule]:
+        async with self._conn.execute(
+            "SELECT definition FROM schedules ORDER BY schedule_id"
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [self._row_to_schedule(row[0]) for row in rows]
+
+    async def record_evaluation(
+        self, schedule_id: str, *, next_due_at: datetime | None
+    ) -> Schedule | None:
+        async with self._write_lock:
+            await self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                async with self._conn.execute(
+                    "SELECT definition FROM schedules WHERE schedule_id = ?", (schedule_id,)
+                ) as cursor:
+                    row = await cursor.fetchone()
+                if row is None:
+                    await self._conn.rollback()
+                    return None
+                evaluated = self._row_to_schedule(row[0]).model_copy(
+                    update={"next_due_at": next_due_at, "updated_at": datetime.now(UTC)}
+                )
+                await self._conn.execute(
+                    "UPDATE schedules SET next_due_at = ?, definition = ? WHERE schedule_id = ?",
+                    (
+                        next_due_at.timestamp() if next_due_at else None,
+                        evaluated.model_dump_json(),
+                        schedule_id,
+                    ),
+                )
+                await self._conn.commit()
+                return evaluated
+            except BaseException:
+                await self._conn.rollback()
+                raise
+
     async def due(self, *, now: datetime) -> list[Schedule]:
         async with self._conn.execute(
             "SELECT definition FROM schedules WHERE enabled = 1 "
@@ -247,16 +314,36 @@ class SqliteScheduleStore:
         fires: int = 1,
         disable: bool = False,
     ) -> Schedule | None:
-        schedule = await self.get(schedule_id)
-        if schedule is None:
-            return None
-        return await self.put(
-            _advance(
-                schedule,
-                fired_at=fired_at,
-                run_id=run_id,
-                next_due_at=next_due_at,
-                fires=fires,
-                disable=disable,
-            )
-        )
+        async with self._write_lock:
+            await self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                async with self._conn.execute(
+                    "SELECT definition FROM schedules WHERE schedule_id = ?", (schedule_id,)
+                ) as cursor:
+                    row = await cursor.fetchone()
+                if row is None:
+                    await self._conn.rollback()
+                    return None
+                advanced = _advance(
+                    self._row_to_schedule(row[0]),
+                    fired_at=fired_at,
+                    run_id=run_id,
+                    next_due_at=next_due_at,
+                    fires=fires,
+                    disable=disable,
+                )
+                await self._conn.execute(
+                    "UPDATE schedules SET enabled = ?, next_due_at = ?, definition = ? "
+                    "WHERE schedule_id = ?",
+                    (
+                        int(advanced.enabled),
+                        advanced.next_due_at.timestamp() if advanced.next_due_at else None,
+                        advanced.model_dump_json(),
+                        schedule_id,
+                    ),
+                )
+                await self._conn.commit()
+                return advanced
+            except BaseException:
+                await self._conn.rollback()
+                raise

@@ -196,11 +196,9 @@ through. The 15-minute floor is applied by the product that wants it.
 
 - Scheduled work becomes visible to every tool that understands Runs, and
   needs no scheduler-specific observability to be debuggable or billable.
-- Schedules *can* survive a restart: the durable store exists and both
-  implementations are held to the same tests. The failure is not yet closed
-  end to end, because Hive's `/v1/schedules` routes still write the in-memory
-  `stores.schedules`. That migration is the remaining step and is tracked in
-  `KNOWN-GAPS.md` rather than claimed here.
+- Schedules survive a restart: the durable store exists, both implementations
+  are held to the same tests, and Hive's `/v1/schedules` routes now write the
+  canonical store while keeping `stores.schedules` as a response projection.
 - Two reachability islands (`maistro.scheduling`, `maistro.scheduling.store`)
   join the spine.
 - The `/v1/schedules` HTTP contract is unchanged; only the semantics moved.
@@ -222,8 +220,8 @@ missing; it was overtaken on *how* to provide them.
 | Schedule definition pointing at a GraphTemplate | Shipped (`model.py`) |
 | Overlap / catchup / bounded recurrence | Shipped (`engine.py`) |
 | Store protocol + in-memory + SQLite | Shipped (`store.py`) |
-| Hive `/v1/schedules` rows on the durable store | **Not yet** — the routes still write `stores.schedules`, which is in memory, so schedules created through the live API still do not survive a restart. The durable store exists and is tested; migrating the CRUD path behind the unchanged HTTP contract is the next step |
-| Hive runner evaluating through the engine | Shipped (`services/scheduler.py`) |
+| Hive `/v1/schedules` rows on the durable store | Shipped — CRUD writes the canonical store behind the unchanged HTTP contract; the legacy row is a response projection and a one-time migration source |
+| Hive runner evaluating through the engine | Shipped (`services/scheduler.py`); the live tick reads canonical `ScheduleStore.due()` |
 | Fires produce canonical Runs | Shipped — via `services/dag_agents.py` |
 | Postgres store implementation | **Not yet** — the protocol is the seam |
 | Hive `/v1/schedules` timezone column | **Not yet** — UTC until added |

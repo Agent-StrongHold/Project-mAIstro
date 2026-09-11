@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any, cast
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -49,9 +50,33 @@ def _check_max_runs(value: int | None) -> int | None:
     return value
 
 
+def _canonical_context() -> tuple[Any, Any] | None:
+    """Return the wired canonical schedule store and its Container."""
+    try:
+        from services.engine import get_engine
+
+        container = getattr(getattr(get_engine(), "_agent_port", None), "container", None)
+    except RuntimeError:
+        return None
+    store = getattr(container, "schedule_store", None)
+    return (store, container) if store is not None else None
+
+
+async def _canonical_projection(definition: Any) -> Schedule:
+    from services.scheduler import _ScheduleRunner
+
+    projected = _ScheduleRunner._surface_schedule(definition)
+    stores.schedules[definition.schedule_id] = projected
+    return cast(Schedule, projected)
+
+
 @router.get("", response_model=list[Schedule])
-def list_schedules() -> list[Schedule]:
-    return list(stores.schedules.values())
+async def list_schedules() -> list[Schedule]:
+    context = _canonical_context()
+    if context is None:
+        return list(stores.schedules.values())
+    store, _container = context
+    return [await _canonical_projection(definition) for definition in await store.list_all()]
 
 
 @router.get("/history")
@@ -60,7 +85,13 @@ def schedule_history() -> list:
 
 
 @router.get("/{schedule_id}", response_model=Schedule)
-def get_schedule(schedule_id: str) -> Schedule:
+async def get_schedule(schedule_id: str) -> Schedule:
+    context = _canonical_context()
+    if context is not None:
+        definition = await context[0].get(schedule_id)
+        if definition is None:
+            raise HTTPException(status_code=404, detail="schedule not found")
+        return await _canonical_projection(definition)
     if schedule_id not in stores.schedules:
         raise HTTPException(status_code=404, detail="schedule not found")
     return stores.schedules[schedule_id]
@@ -82,9 +113,34 @@ class CreateScheduleBody(BaseModel):
 
 
 @router.post("", response_model=Schedule, status_code=201)
-def create_schedule(body: CreateScheduleBody) -> Schedule:
+async def create_schedule(body: CreateScheduleBody) -> Schedule:
     sid = str(uuid4())
     t = _now()
+    context = _canonical_context()
+    if context is not None:
+        from services.scheduler import _ScheduleRunner
+
+        from maistro.scheduling import Schedule as CanonicalSchedule
+
+        store, container = context
+        workspace_id, project_id = await _ScheduleRunner()._canonical_scope(body, container)
+        definition = CanonicalSchedule(
+            schedule_id=sid,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            name=body.name,
+            description=body.description,
+            cron=body.cron_expression,
+            timezone=body.timezone,
+            graph_template_id=body.mission_template_id,
+            enabled=body.enabled,
+            max_runs=body.max_runs,
+            created_at=t,
+            updated_at=t,
+        )
+        await store.put(definition)
+        return await _canonical_projection(definition)
+
     schedule = Schedule(
         id=sid,
         name=body.name,
@@ -128,7 +184,35 @@ class UpdateScheduleBody(BaseModel):
 
 
 @router.put("/{schedule_id}", response_model=Schedule)
-def update_schedule(schedule_id: str, body: UpdateScheduleBody) -> Schedule:
+async def update_schedule(schedule_id: str, body: UpdateScheduleBody) -> Schedule:
+    context = _canonical_context()
+    if context is not None:
+        from maistro.scheduling import Schedule as CanonicalSchedule
+
+        store, _container = context
+        definition = await store.get(schedule_id)
+        if definition is None:
+            raise HTTPException(status_code=404, detail="schedule not found")
+        values = body.model_dump(exclude_none=True)
+        updates: dict[str, Any] = {"updated_at": _now()}
+        field_map = {
+            "name": "name",
+            "description": "description",
+            "cron_expression": "cron",
+            "mission_template_id": "graph_template_id",
+            "enabled": "enabled",
+            "timezone": "timezone",
+            "max_runs": "max_runs",
+        }
+        updates.update({field_map[key]: value for key, value in values.items()})
+        if "cron_expression" in values or "timezone" in values:
+            updates["next_due_at"] = None
+        updated = CanonicalSchedule.model_validate(
+            definition.model_copy(update=updates).model_dump()
+        )
+        await store.put(updated)
+        return await _canonical_projection(updated)
+
     if schedule_id not in stores.schedules:
         raise HTTPException(status_code=404, detail="schedule not found")
     schedule = stores.schedules[schedule_id]
@@ -141,7 +225,13 @@ def update_schedule(schedule_id: str, body: UpdateScheduleBody) -> Schedule:
 
 
 @router.delete("/{schedule_id}", status_code=204)
-def delete_schedule(schedule_id: str) -> None:
+async def delete_schedule(schedule_id: str) -> None:
+    context = _canonical_context()
+    if context is not None:
+        if not await context[0].delete(schedule_id):
+            raise HTTPException(status_code=404, detail="schedule not found")
+        stores.schedules.pop(schedule_id, None)
+        return
     if schedule_id not in stores.schedules:
         raise HTTPException(status_code=404, detail="schedule not found")
     stores.schedules.pop(schedule_id)
@@ -159,12 +249,20 @@ async def run_schedule(schedule_id: str) -> Schedule:
     A fire that cannot happen is a 409 rather than a silent stamp: the caller
     asked for work to start, and it did not.
     """
-    if schedule_id not in stores.schedules:
+    context = _canonical_context()
+    if context is None and schedule_id not in stores.schedules:
         raise HTTPException(status_code=404, detail="schedule not found")
     from services.scheduler import ScheduleNotFireable, fire_now
 
     try:
         await fire_now(schedule_id)
     except ScheduleNotFireable as exc:
+        if "does not exist" in str(exc):
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if context is not None:
+        definition = await context[0].get(schedule_id)
+        if definition is None:
+            raise HTTPException(status_code=404, detail="schedule not found")
+        return await _canonical_projection(definition)
     return stores.schedules[schedule_id]

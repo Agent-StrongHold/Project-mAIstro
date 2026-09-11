@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import pathlib
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -113,6 +113,86 @@ def _remove_row(row: Any) -> None:
     import stores
 
     stores.schedules._data.pop(row.id, None)  # type: ignore[attr-defined]
+
+
+def test_tick_uses_canonical_due_state_not_the_legacy_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale Hive row cannot make a future canonical schedule fire."""
+    from services.scheduler import _ScheduleRunner
+
+    async def scenario() -> None:
+        container, row, _root = await _fixture()
+        _install_row(row)
+        future = datetime(2099, 8, 21, 13, 0, tzinfo=UTC)
+        from maistro.scheduling import Schedule
+
+        await container.schedule_store.put(
+            Schedule(
+                schedule_id=row.id,
+                workspace_id=row.workspace_id,
+                project_id=row.project_id,
+                name=row.name,
+                cron=row.cron_expression,
+                graph_template_id=row.mission_template_id,
+                last_fired_at=datetime(2026, 8, 21, 12, 0, tzinfo=UTC),
+                next_due_at=future,
+                created_at=row.created_at,
+            )
+        )
+        monkeypatch.setattr(
+            _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
+        )
+        evaluated: list[str] = []
+
+        async def capture(self: Any, definition: Any, **kwargs: Any) -> None:
+            evaluated.append(definition.schedule_id)
+
+        monkeypatch.setattr(_ScheduleRunner, "_evaluate_canonical_definition", capture)
+        try:
+            await _ScheduleRunner()._tick()
+            assert evaluated == []
+        finally:
+            _remove_row(row)
+
+    asyncio.run(scenario())
+
+
+def test_tick_admits_a_canonical_due_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
+    from services.scheduler import _ScheduleRunner
+
+    async def scenario() -> None:
+        container, row, _root = await _fixture()
+        _install_row(row)
+        now = datetime.now(UTC)
+        from maistro.scheduling import Schedule
+
+        await container.schedule_store.put(
+            Schedule(
+                schedule_id=row.id,
+                workspace_id=row.workspace_id,
+                project_id=row.project_id,
+                name=row.name,
+                cron="* * * * *",
+                graph_template_id=row.mission_template_id,
+                last_fired_at=now - timedelta(minutes=1),
+                next_due_at=now - timedelta(seconds=1),
+                created_at=now - timedelta(days=1),
+            )
+        )
+        monkeypatch.setattr(
+            _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
+        )
+        try:
+            await _ScheduleRunner()._tick()
+            recorded = await container.schedule_store.get(row.id)
+            assert recorded is not None
+            assert recorded.runs_so_far == 1
+            assert recorded.last_run_id
+        finally:
+            _remove_row(row)
+
+    asyncio.run(scenario())
 
 
 def test_two_live_runners_claim_one_occurrence(monkeypatch: pytest.MonkeyPatch) -> None:

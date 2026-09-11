@@ -17,7 +17,7 @@ other implementation so the three backends cannot drift on what "fired" means.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from maistro.runs.evidence_json import json_of, model_of
@@ -88,6 +88,33 @@ class PgScheduleStore:
                 project_id,
             )
         return [_schedule_of(row["payload"]) for row in rows]
+
+    async def list_all(self) -> list[Schedule]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch("SELECT payload FROM schedules ORDER BY schedule_id")
+        return [_schedule_of(row["payload"]) for row in rows]
+
+    async def record_evaluation(
+        self, schedule_id: str, *, next_due_at: datetime | None
+    ) -> Schedule | None:
+        async with self._pool.acquire() as conn, conn.transaction():
+            payload = await conn.fetchval(
+                "SELECT payload FROM schedules WHERE schedule_id = $1 FOR UPDATE",
+                schedule_id,
+            )
+            if payload is None:
+                return None
+            evaluated = _schedule_of(payload).model_copy(
+                update={"next_due_at": next_due_at, "updated_at": datetime.now(UTC)}
+            )
+            await conn.execute(
+                """UPDATE schedules SET next_due_at = $2, payload = $3::text::jsonb
+                   WHERE schedule_id = $1""",
+                schedule_id,
+                next_due_at,
+                json_of(evaluated),
+            )
+        return evaluated
 
     async def due(self, *, now: datetime) -> list[Schedule]:
         """Enabled schedules whose cursor has arrived, plus those with none.

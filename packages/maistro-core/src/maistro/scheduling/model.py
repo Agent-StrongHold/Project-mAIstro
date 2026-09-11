@@ -70,6 +70,7 @@ class Schedule(BaseModel):
     workspace_id: str
     project_id: str
     name: str = ""
+    description: str = ""
 
     cron: str
     timezone: str = "UTC"
