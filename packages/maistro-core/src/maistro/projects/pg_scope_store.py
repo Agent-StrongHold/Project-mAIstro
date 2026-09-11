@@ -389,6 +389,7 @@ class PgProjectScopeStore:
     async def remove_membership(self, project_id: str, *, principal_id: str) -> None:
         """Revoke a principal's membership at one Project, if any exists."""
 
+        await self._require(project_id)
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """DELETE FROM canonical_project_memberships
@@ -527,14 +528,16 @@ class PgProjectScopeStore:
         return model_of(ProjectScopedResource, payload) if payload is not None else None
 
     async def _require(self, project_id: str, *, conn: Any = None) -> Project:
-        payload = await self._payload(
-            "SELECT payload FROM canonical_projects WHERE project_id = $1",
-            project_id,
-            conn=conn,
-        )
-        if payload is None:
+        sql = "SELECT workspace_id, payload FROM canonical_projects WHERE project_id = $1"
+        if conn is not None:
+            row = await conn.fetchrow(sql, project_id)
+        else:
+            async with self._pool.acquire() as acquired:
+                row = await acquired.fetchrow(sql, project_id)
+        if row is None:
             raise ProjectNotFound(project_id)
-        return model_of(Project, payload)
+        await self._require_active_workspace(row["workspace_id"])
+        return model_of(Project, row["payload"])
 
     async def _payload(self, sql: str, *params: Any, conn: Any = None) -> Any | None:
         if conn is not None:

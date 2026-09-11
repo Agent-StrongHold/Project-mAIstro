@@ -514,6 +514,7 @@ class SqliteProjectScopeStore:
     async def remove_membership(self, project_id: str, *, principal_id: str) -> None:
         """Revoke a principal's membership at one Project, if any exists."""
 
+        await self._require(project_id)
         async with self._serialized_write():
             await self._conn.execute(
                 """DELETE FROM canonical_project_memberships
