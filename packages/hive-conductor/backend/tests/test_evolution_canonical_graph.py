@@ -225,6 +225,58 @@ async def test_cycle_is_one_run_with_evaluation_battle_finalization_attempts(
     }
 
 
+@pytest.mark.parametrize("failure_stage", ["battle", "finalization"])
+@pytest.mark.asyncio
+async def test_battle_and_finalization_failures_are_canonical_run_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
+) -> None:
+    """Failures after evaluation still terminalize the canonical Run."""
+
+    class _BattleFailureTournament(_Tournament):
+        def record_battle(
+            self, *, benchmark: str, genome_a_id: str, genome_b_id: str, **_: Any
+        ) -> None:
+            raise RuntimeError("synthetic battle failure")
+
+    class _FinalizationFailureCycle(_Cycle):
+        def _compute_all_fitness(self, population: _Population) -> list[_Genome]:
+            raise RuntimeError("synthetic finalization failure")
+
+    monkeypatch.setattr(
+        cycle_module,
+        "EvolutionCycle",
+        _FinalizationFailureCycle if failure_stage == "finalization" else _Cycle,
+    )
+    population = _Population([_Genome("g1"), _Genome("g2")])
+    tournament = _BattleFailureTournament() if failure_stage == "battle" else _Tournament()
+    owner = await _container()
+
+    record = await run_canonical_evolution_cycle(
+        population=population,
+        tournament=tournament,
+        config=_config(population_size=2, eval_batch_size=2),
+        harness=_Harness(),
+        container=owner,
+    )
+
+    assert record.run.status is RunStatus.FAILED
+    assert failure_stage in {"battle", "finalization"}
+    assert failure_stage in (record.run.error or "")
+    node_runs = await owner.run_store.list_node_runs(record.run_id)
+    failed = [item for item in node_runs if item.status is RunStatus.FAILED]
+    assert len(failed) == 1
+    assert failed[0].node_id == (
+        "evolve-battle-1" if failure_stage == "battle" else "evolve-finalize"
+    )
+    attempts = await owner.run_store.list_attempts(failed[0].node_run_id)
+    assert len(attempts) == 1
+    assert attempts[0].status is AttemptStatus.COMPLETED
+    physical = NodeResult.model_validate(attempts[0].result)
+    assert physical.success is False
+    assert physical.error_code == "RuntimeError"
+
+
 @pytest.mark.asyncio
 async def test_multiple_battle_nodes_finish_before_finalization(
     monkeypatch: pytest.MonkeyPatch,
