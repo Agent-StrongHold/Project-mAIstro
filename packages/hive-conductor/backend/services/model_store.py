@@ -39,11 +39,14 @@ class ModelStore(Generic[T]):
         store_name: str,
         model_class: type[T],
         persisted: Any | None = None,
+        unique_fields: tuple[str, ...] = (),
     ) -> None:
         self._store_name = store_name
         self._model_class = model_class
         self._data: dict[str, T] = {}
         self._persisted = persisted
+        self._unique_fields = unique_fields
+        self._unique_lock = threading.Lock()
 
     def initialize(self) -> None:
         if self._persisted is None:
@@ -70,9 +73,54 @@ class ModelStore(Generic[T]):
         return self._data[key]
 
     def __setitem__(self, key: str, value: T) -> None:
+        if self._unique_fields:
+            with self._unique_lock:
+                if self._persisted is not None:
+                    put_unique = getattr(self._persisted, "put_model_unique", None)
+                    if not callable(put_unique):
+                        raise RuntimeError("configured persistence cannot enforce unique fields")
+                    if not bool(put_unique(self._store_name, key, value, self._unique_fields)):
+                        raise ValueError(f"duplicate unique field in {self._store_name}")
+                else:
+                    self._reject_duplicate_unique_fields(key, value)
+                self._data[key] = value
+            return
         self._data[key] = value
         if self._persisted is not None:
             self._persisted.put(self._store_name, key, value)
+
+    def _reject_duplicate_unique_fields(self, key: str, value: T) -> None:
+        for other_key, other in self._data.items():
+            if other_key == key:
+                continue
+            if any(
+                str(getattr(other, field)).casefold() == str(getattr(value, field)).casefold()
+                for field in self._unique_fields
+            ):
+                raise ValueError(f"duplicate unique field in {self._store_name}")
+
+    def put_if_unique(self, key: str, value: T, field_name: str) -> bool:
+        """Insert a record only if its field value is unique.
+
+        The configured persistence backend makes the claim and UUID-keyed row
+        one transaction; the lock covers the in-memory fallback.
+        """
+        with self._unique_lock:
+            if self._persisted is not None:
+                put_once = getattr(self._persisted, "put_model_if_unique", None)
+                if not callable(put_once):
+                    raise RuntimeError("configured persistence cannot enforce unique fields")
+                if not bool(put_once(self._store_name, key, value, field_name)):
+                    return False
+            elif any(
+                str(getattr(other, field_name)).casefold()
+                == str(getattr(value, field_name)).casefold()
+                for other_key, other in self._data.items()
+                if other_key != key
+            ):
+                return False
+            self._data[key] = value
+            return True
 
     def __contains__(self, key: str) -> bool:
         return key in self._data

@@ -100,7 +100,7 @@ persona_feedback: ModelStore = ModelStore("persona_feedback", PersonaFeedback)
 # write-through wrapper could have observed. See ADR-082926-0b72.
 chat_sessions: ModelStore = ModelStore("chat_sessions", ChatSession)
 cli_sessions: JsonStore = JsonStore("cli_sessions")
-users: ModelStore = ModelStore("users", HiveUser)
+users: ModelStore = ModelStore("users", HiveUser, unique_fields=("username",))
 sessions: JsonStore = JsonStore("sessions")
 program_contexts: JsonStore = JsonStore("program_contexts")
 work_item_drafts: JsonStore = JsonStore("work_item_drafts")

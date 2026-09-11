@@ -739,7 +739,13 @@ def register(body: RegisterBody, request: Request, response: Response) -> dict[s
             did=None,
             created_at=now_ts,
         )
-        stores.users[user_id] = user
+        if not stores.users.put_if_unique(user_id, user, "username"):
+            # Another process may have claimed the name after this process's
+            # in-memory availability check. The durable claim is authoritative.
+            _REGISTER_THROTTLE.record_failure(
+                client_key=_client_key(request), account=body.username
+            )
+            raise HTTPException(status_code=409, detail="Username is already taken.")
     if decision.reason == "invitation":
         log_audit(
             "registration_invitation_redeemed",

@@ -23,11 +23,13 @@ from __future__ import annotations
 
 import copy
 import json
+import multiprocessing
 import pathlib
 import sys
 import threading
 import time
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 from fastapi import HTTPException
@@ -92,6 +94,58 @@ def _register_body(username: str, invitation: str | None = None) -> dict:
 def _login(client: TestClient, username: str, password: str) -> None:
     r = client.post("/v1/auth/login", json={"username": username, "password": password})
     assert r.status_code == 200, r.text
+
+
+def _durable_registration_worker(db_path: str, barrier: Any, outcomes: Any, worker_id: int) -> None:
+    """Run the real register route from an independent state writer."""
+    import stores
+    from fastapi import Request, Response
+    from fastapi.exceptions import HTTPException
+    from routes import auth as auth_routes
+    from services import registration_policy
+    from services.model_store import ModelStore
+
+    from maistro.state import PersistedStore, State
+
+    state = State(db_path)
+    persisted = PersistedStore(state)
+    persisted.initialize()
+    stores.users = ModelStore(
+        "users", stores.users._model_class, persisted=persisted, unique_fields=("username",)
+    )
+    stores.users.initialize()
+    registration_policy.reset()
+    registration_policy.set_mode("open", actor="test")
+    auth_routes._REGISTER_THROTTLE = auth_routes.AuthThrottle(auth_routes._STRICTER.register)
+    barrier.wait(timeout=10)
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/auth/register",
+            "headers": [],
+            "client": ("127.0.0.1", 8080 + worker_id),
+            "scheme": "http",
+            "server": ("127.0.0.1", 8000),
+            "query_string": b"",
+        }
+    )
+    response = Response()
+    try:
+        auth_routes.register(
+            auth_routes.RegisterBody(
+                username="cross-process-name",
+                password="securepass1",
+                confirm_password="securepass1",
+            ),
+            request,
+            response,
+        )
+    except HTTPException as exc:
+        outcomes.put(exc.status_code)
+    else:
+        outcomes.put(200)
+    state.close()
 
 
 class TestPostSetupRegistrationIsClosed:
@@ -494,6 +548,59 @@ class TestInvitations:
         assert outcomes.count(409) == 7
         assert len(stores.users) == before + 1
         assert [u.username for u in stores.users.values()].count("same-username") == 1
+
+    def test_independent_process_writers_publish_one_username(self, tmp_path: pathlib.Path) -> None:
+        """The SQLite uniqueness claim survives separate application processes (#1248)."""
+        from models.schemas import HiveUser
+
+        from maistro.state import PersistedStore, State
+
+        db_path = tmp_path / "registration-race.db"
+        bootstrap = State(db_path)
+        persisted = PersistedStore(bootstrap)
+        persisted.initialize()
+        from services.model_store import ModelStore
+
+        users = ModelStore("users", HiveUser, persisted=persisted, unique_fields=("username",))
+        assert users.put_if_unique(
+            "existing-user",
+            HiveUser(
+                id="existing-user",
+                username="existing-user",
+                password_hash="test-hash",
+                role="user",
+                created_at=datetime.now(UTC),
+            ),
+            "username",
+        )
+        bootstrap.close()
+
+        ctx = multiprocessing.get_context("spawn")
+        barrier = ctx.Barrier(2)
+        outcomes = ctx.Queue()
+        workers = [
+            ctx.Process(
+                target=_durable_registration_worker,
+                args=(str(db_path), barrier, outcomes, worker_id),
+            )
+            for worker_id in range(2)
+        ]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=20)
+            assert worker.exitcode == 0
+
+        assert sorted(outcomes.get(timeout=5) for _ in workers) == [200, 409]
+
+        state = State(db_path)
+        persisted = PersistedStore(state)
+        persisted.initialize()
+        users = persisted.list_all("users", HiveUser)
+        state.close()
+        usernames = [user.username for user in users]
+        assert usernames.count("existing-user") == 1
+        assert usernames.count("cross-process-name") == 1
 
     def test_invitation_that_loses_the_redemption_race_is_refused(
         self, monkeypatch: pytest.MonkeyPatch
