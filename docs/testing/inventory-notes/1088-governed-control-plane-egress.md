@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +4
+  packages/hive-conductor/backend/tests: +5
   packages/maistro-bootstrap/tests: +3
 ---
 # Governed evaluator and provider health egress

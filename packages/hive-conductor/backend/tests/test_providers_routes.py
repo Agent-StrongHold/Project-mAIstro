@@ -24,6 +24,67 @@ def _needs_age() -> None:
         pytest.skip("age not installed")
 
 
+@pytest.mark.asyncio
+async def test_activate_route_delegates_to_governed_health_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The route supplies canonical scope and never owns the provider call."""
+    from services import governed_model
+
+    from maistro.capabilities.effect_context import new_in_memory_effect_context
+    from maistro.capabilities.model_chat import ModelCallResult
+    from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
+    from maistro.providers.registry import InMemoryProviderRegistry
+    from maistro.providers.router import CostAwareRouter
+
+    class _Vault:
+        def has(self, name: str) -> bool:
+            assert name == "MISTRAL_API_KEY"
+            return True
+
+        def use(self, name: str, callback):
+            assert name == "MISTRAL_API_KEY"
+            return callback("provider-secret")
+
+    class _Root:
+        project_id = "root-project"
+
+    class _ProjectScope:
+        async def root_for_workspace(self, workspace_id: str) -> _Root:
+            assert workspace_id == "default"
+            return _Root()
+
+    registry = InMemoryProviderRegistry()
+    runtime = governed_model.GovernedModelRuntime(
+        effects=new_in_memory_effect_context(),
+        registry=registry,
+        router=CostAwareRouter(registry),
+        endpoint=GatewayEndpoint(base_url="http://gateway"),
+        project_scope_store=_ProjectScope(),
+    )
+    calls: list[dict[str, Any]] = []
+
+    async def health(**kwargs: Any) -> ModelCallResult:
+        calls.append(kwargs)
+        return ModelCallResult(invocation_id="inv-1", model="mistral/test", body={})
+
+    import config
+    import routes.providers as providers_mod
+
+    monkeypatch.setattr(providers_mod, "_vault", lambda: _Vault())
+    monkeypatch.setattr(providers_mod, "_record_activation", lambda name: None)
+    monkeypatch.setattr(governed_model, "_runtime", lambda: runtime)
+    monkeypatch.setattr(governed_model, "register_and_health_check", health)
+    settings = type("Settings", (), {"hive_default_workspace_id": "default"})()
+    monkeypatch.setattr(config, "get_settings", lambda: settings)
+
+    response = await providers_mod.activate_provider("mistral")
+
+    assert response["first_model_call"]["invocation_id"] == "inv-1"
+    assert calls[0]["binding"].project_id == "root-project"
+    assert calls[0]["api_key"] == "provider-secret"
+
+
 class TestAuthz:
     def test_put_key_requires_config_write(self, authed_client) -> None:
         """A plain daily-driver session must not be able to store deployment-wide
