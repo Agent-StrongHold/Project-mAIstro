@@ -80,11 +80,15 @@ def _paused_record(
 
 
 @pytest.fixture
-def seeded(admin_client: Any) -> Iterator[_Seeded]:
-    from services.dag_agents import get_run_store
+def seeded(admin_client: Any, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Seeded]:
+    from services import dag_agents
 
-    store = get_run_store()
+    # This fixture seeds the legacy document-shaped store directly. Bind it to
+    # the route only as an explicit test seam; production `_store()` refuses
+    # this store and requires the Container's canonical projection.
+    store = dag_agents.get_run_store()
     assert isinstance(store, InMemoryDurableRunStore)
+    monkeypatch.setattr(dag_agents, "get_canonical_run_store", lambda: store)
     created: list[str] = []
 
     async def _seed(run_id: str, *, deadline: datetime) -> None:
@@ -105,6 +109,23 @@ def seeded(admin_client: Any) -> Iterator[_Seeded]:
 
 
 @pytest.mark.ac("SPEC-083026-73c1/AC-6")
+def test_hitl_endpoint_fails_closed_without_canonical_spine(
+    admin_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A degraded Conductor must not present ephemeral human work as durable."""
+    from services import dag_agents
+
+    def _unavailable() -> Any:
+        raise RuntimeError("canonical graph execution spine is unavailable")
+
+    monkeypatch.setattr(dag_agents, "get_canonical_run_store", _unavailable)
+
+    response = admin_client.get("/v1/hitl/pending")
+
+    assert response.status_code == 503
+    assert "canonical execution spine" in response.json()["detail"]
+
+
 async def test_cancel_endpoint_requests_canonical_settlement(seeded: _Seeded) -> None:
     client, store, seed = seeded
     await seed("hitl-api-cancel", deadline=datetime.now(UTC) + timedelta(hours=1))

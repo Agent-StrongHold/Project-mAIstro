@@ -183,6 +183,20 @@ def test_without_a_bridge_the_path_still_resolves_nodes(monkeypatch) -> None:
     assert node._a2a_delegator is None
 
 
+def test_hitl_store_requires_the_canonical_graph_spine(monkeypatch) -> None:
+    """HITL must not expose the standalone process-local compatibility store."""
+    import services.dag_agents as dag_agents
+    import services.engine as engine_module
+
+    port = type("_Port", (), {"container": None})()
+    monkeypatch.setattr(
+        engine_module, "get_engine", lambda: type("_Engine", (), {"_agent_port": port})()
+    )
+
+    with pytest.raises(RuntimeError, match="canonical graph execution spine"):
+        dag_agents.get_canonical_run_store()
+
+
 @pytest.mark.ac("ADR-082526-3ca6/AC-5")
 def test_an_engine_that_raises_falls_back_rather_than_propagating(monkeypatch) -> None:
     """Resolving a node must not be the thing that breaks a DAG execution."""

@@ -18,7 +18,8 @@ not a preference: nothing wires a `DurableRunStore` outside this package.
 the pending work actually is. When that store converges onto the canonical
 spine (#44 / ADR-082826-d9f5), this module keeps working unchanged — it is
 written against the `DurableRunStore` interface, which that convergence
-preserves.
+preserves. The route refuses the standalone compatibility store rather than
+letting a human decision disappear on restart.
 """
 
 from __future__ import annotations
@@ -71,10 +72,22 @@ class HumanAnswer(BaseModel):
 
 
 def _store() -> Any:
-    """The durable graph store holding pending human work."""
-    from services.dag_agents import get_run_store
+    """The canonical graph store holding pending human work.
 
-    return get_run_store()
+    A standalone Conductor can still execute legacy non-HITL DAGs through its
+    compatibility store, but it must not offer a second HITL execution
+    authority. A missing canonical spine is an unavailable capability, not an
+    empty pending queue.
+    """
+    from services.dag_agents import get_canonical_run_store
+
+    try:
+        return get_canonical_run_store()
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="canonical execution spine is required for human work",
+        ) from exc
 
 
 def _request_user_id(request: Request) -> str:
