@@ -15,7 +15,7 @@ from typing import Protocol, runtime_checkable
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.runs.model import Run, RunStatus
 from maistro.runs.recovery_events import RecoveryEventSink
-from maistro.runs.store import RunStore
+from maistro.runs.store import RunStore, run_cursor_key
 from maistro.runtime import ExecutionRuntime
 
 from . import executor as traversal
@@ -206,6 +206,7 @@ async def recover_queued_graph_runs(
     eligible: QueuedRunPredicate,
     runtime: ExecutionRuntime | None = None,
     limit: int = 100,
+    admission_source: str | None = None,
     events: RecoveryEventSink | None = None,
 ) -> int:
     """Recover admitted durable Graph Runs around checkpoint 1.
@@ -216,6 +217,10 @@ async def recover_queued_graph_runs(
     recovery path never substitutes empty inputs for work the caller actually
     admitted.
 
+    ``admission_source`` is an optional durable ownership prefilter. The
+    callback remains a defense-in-depth policy check, while cursor paging makes
+    arbitrary additional predicates fair even when no source prefilter exists.
+
     ``events`` carries each recovery's crash dispositions onto the canonical
     Event stream when the caller provides a sink.
     """
@@ -223,18 +228,33 @@ async def recover_queued_graph_runs(
         return 0
 
     await _reconcile_if_supported(store, limit=limit)
-    candidates = await run_store.list_by_status(RunStatus.QUEUED, limit=limit)
+    # Filter the ownership fact in the durable status query when the consumer
+    # has one. Cursor paging still makes an arbitrary callback fair when a
+    # caller needs additional policy beyond admission_source.
+    after = None
     recovered = 0
-    for run in candidates:
-        if eligible(run) and await _resume_queued_candidate(
-            run,
-            store=store,
-            run_store=run_store,
-            node_resolver_factory=node_resolver_factory,
-            runtime=runtime,
-            events=events,
-        ):
-            recovered += 1
+    while recovered < limit:
+        candidates = await run_store.list_by_status(
+            RunStatus.QUEUED,
+            limit=limit,
+            admission_source=admission_source,
+            after=after,
+        )
+        if not candidates:
+            break
+        for run in candidates:
+            after = run_cursor_key(run)
+            if eligible(run) and await _resume_queued_candidate(
+                run,
+                store=store,
+                run_store=run_store,
+                node_resolver_factory=node_resolver_factory,
+                runtime=runtime,
+                events=events,
+            ):
+                recovered += 1
+                if recovered >= limit:
+                    break
     return recovered
 
 
