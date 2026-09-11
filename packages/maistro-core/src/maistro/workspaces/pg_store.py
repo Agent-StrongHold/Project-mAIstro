@@ -36,7 +36,7 @@ codec (`maistro.persistence._register_json_codecs`). That is why this reads
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Final, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Any, Final, NotRequired, TypedDict, cast
 
 from maistro.projects.scope import ProjectNotFound
 from maistro.runs.evidence_json import json_of, model_of
@@ -78,6 +78,9 @@ class PgWorkspaceStore:
     def __init__(self, pool: asyncpg.Pool, *, project_store: ProjectScopeStore) -> None:
         self._pool = pool
         self.project_store: ProjectScopeStore = project_store
+        configure_lifecycle = getattr(project_store, "set_workspace_lifecycle_reader", None)
+        if configure_lifecycle is not None:
+            configure_lifecycle(self._lifecycle_state)
 
     async def create(
         self,
@@ -400,6 +403,15 @@ class PgWorkspaceStore:
             membership.added_at,
             json_of(membership),
         )
+
+    async def _lifecycle_state(self, workspace_id: str) -> str | None:
+        async with self._pool.acquire() as conn:
+            state = await conn.fetchval(
+                """SELECT state FROM canonical_workspace_lifecycle
+                    WHERE workspace_id = $1""",
+                workspace_id,
+            )
+        return cast(str | None, state)
 
     async def _lock_workspace(self, conn: Any, workspace_id: str) -> None:
         """Serialise membership writes for one Workspace, or refuse."""

@@ -30,6 +30,7 @@ from maistro.projects.scope import (
     ProjectScopeDenied,
     ProjectScopedResource,
 )
+from maistro.projects.scope_store import WorkspaceLifecycleReader
 from maistro.runs.evidence_json import json_of, model_of
 
 #: Passes the leaf-first Project purge may take before it gives up. A Workspace
@@ -46,6 +47,26 @@ class PgProjectScopeStore:
 
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
+        self._workspace_lifecycle_reader: WorkspaceLifecycleReader | None = None
+
+    def set_workspace_lifecycle_reader(self, reader: WorkspaceLifecycleReader) -> None:
+        """Bind Project admission to the canonical Workspace lifecycle journal."""
+        self._workspace_lifecycle_reader = reader
+
+    async def _require_active_workspace(self, workspace_id: str) -> None:
+        reader = self._workspace_lifecycle_reader
+        if reader is None:
+            return
+        state = await reader(workspace_id)
+        if state is None:
+            raise ProjectNotFound(f"Workspace {workspace_id!r}")
+        if state != "active":
+            raise ProjectScopeDenied(f"Workspace {workspace_id!r} is not active")
+
+    async def _require_provisionable_workspace(self, workspace_id: str) -> None:
+        reader = self._workspace_lifecycle_reader
+        if reader is not None and await reader(workspace_id) == "deleting":
+            raise ProjectScopeDenied(f"Workspace {workspace_id!r} is being deleted")
 
     async def purge_workspace(self, workspace_id: str) -> None:
         """Tear down every Project row this Workspace owns.
@@ -100,6 +121,7 @@ class PgProjectScopeStore:
         """
         if not workspace_id.strip():
             raise ValueError("workspace_id must be a non-empty string")
+        await self._require_provisionable_workspace(workspace_id)
         root = Project(
             workspace_id=workspace_id,
             name="Root",
@@ -116,9 +138,16 @@ class PgProjectScopeStore:
                 root.workspace_id,
                 json_of(root),
             )
-        return await self.root_for_workspace(workspace_id)
+        created = await self._root_or_none(workspace_id)
+        if created is None:  # pragma: no cover - conflict cannot erase the row
+            raise ProjectNotFound(f"Root Project for Workspace {workspace_id!r}")
+        return created
 
     async def root_for_workspace(self, workspace_id: str) -> Project:
+        reader = self._workspace_lifecycle_reader
+        if reader is not None and await reader(workspace_id) == "creating":
+            raise ProjectNotFound(f"Root Project for Workspace {workspace_id!r}")
+        await self._require_active_workspace(workspace_id)
         root = await self._root_or_none(workspace_id)
         if root is None:
             raise ProjectNotFound(f"Root Project for Workspace {workspace_id!r}")
@@ -156,10 +185,15 @@ class PgProjectScopeStore:
         return project
 
     async def get(self, project_id: str) -> Project | None:
-        payload = await self._payload(
-            "SELECT payload FROM canonical_projects WHERE project_id = $1", project_id
-        )
-        return model_of(Project, payload) if payload is not None else None
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT workspace_id, payload FROM canonical_projects WHERE project_id = $1",
+                project_id,
+            )
+        if row is None:
+            return None
+        await self._require_active_workspace(row["workspace_id"])
+        return model_of(Project, row["payload"])
 
     async def lineage(self, project_id: str) -> list[Project]:
         return await self._lineage(project_id)

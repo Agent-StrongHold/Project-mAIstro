@@ -17,6 +17,7 @@ from maistro.projects.scope import (
     ProjectScopeDenied,
     ProjectScopedResource,
 )
+from maistro.projects.scope_store import WorkspaceLifecycleReader
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -86,6 +87,7 @@ class SqliteProjectScopeStore:
 
         self._conn = conn
         self._owns_runs: Callable[[str], Awaitable[bool]] | None = None
+        self._workspace_lifecycle_reader: WorkspaceLifecycleReader | None = None
         # One connection, so this orders same-process writers; `BEGIN
         # IMMEDIATE` is what protects a second process sharing this file.
         # Every writer takes it through `_serialized_write` (#1147, #1148,
@@ -100,6 +102,25 @@ class SqliteProjectScopeStore:
         """Register the predicate `delete()` consults for Run ownership."""
 
         self._owns_runs = owns_runs
+
+    def set_workspace_lifecycle_reader(self, reader: WorkspaceLifecycleReader) -> None:
+        """Bind Project admission to the canonical Workspace lifecycle journal."""
+        self._workspace_lifecycle_reader = reader
+
+    async def _require_active_workspace(self, workspace_id: str) -> None:
+        reader = self._workspace_lifecycle_reader
+        if reader is None:
+            return
+        state = await reader(workspace_id)
+        if state is None:
+            raise ProjectNotFound(f"Workspace {workspace_id!r}")
+        if state != "active":
+            raise ProjectScopeDenied(f"Workspace {workspace_id!r} is not active")
+
+    async def _require_provisionable_workspace(self, workspace_id: str) -> None:
+        reader = self._workspace_lifecycle_reader
+        if reader is not None and await reader(workspace_id) == "deleting":
+            raise ProjectScopeDenied(f"Workspace {workspace_id!r} is being deleted")
 
     @asynccontextmanager
     async def _serialized_write(self) -> AsyncIterator[None]:
@@ -217,6 +238,7 @@ class SqliteProjectScopeStore:
 
         if not workspace_id.strip():
             raise ValueError("workspace_id must be a non-empty string")
+        await self._require_provisionable_workspace(workspace_id)
         existing = await self._root_or_none(workspace_id)
         if existing is not None:
             return existing
@@ -234,11 +256,18 @@ class SqliteProjectScopeStore:
                    VALUES (?, ?, NULL, 1, ?)""",
                 (root.project_id, root.workspace_id, root.model_dump_json()),
             )
-        return await self.root_for_workspace(workspace_id)
+        created = await self._root_or_none(workspace_id)
+        if created is None:  # pragma: no cover - INSERT OR IGNORE raced a corruption
+            raise ProjectNotFound(f"Root Project for Workspace {workspace_id!r}")
+        return created
 
     async def root_for_workspace(self, workspace_id: str) -> Project:
-        """Return the canonical Root Project for a Workspace."""
+        """Return the canonical Root Project for an active Workspace."""
 
+        reader = self._workspace_lifecycle_reader
+        if reader is not None and await reader(workspace_id) == "creating":
+            raise ProjectNotFound(f"Root Project for Workspace {workspace_id!r}")
+        await self._require_active_workspace(workspace_id)
         root = await self._root_or_none(workspace_id)
         if root is None:
             raise ProjectNotFound(f"Root Project for Workspace {workspace_id!r}")
@@ -269,13 +298,16 @@ class SqliteProjectScopeStore:
         return project
 
     async def get(self, project_id: str) -> Project | None:
-        """Load a Project by ID, or return ``None`` when absent."""
+        """Load a Project by ID when its Workspace is active."""
 
         row = await self._fetchone(
-            "SELECT payload FROM canonical_projects WHERE project_id = ?",
+            "SELECT workspace_id, payload FROM canonical_projects WHERE project_id = ?",
             (project_id,),
         )
-        return Project.model_validate_json(row[0]) if row is not None else None
+        if row is None:
+            return None
+        await self._require_active_workspace(row[0])
+        return Project.model_validate_json(row[1])
 
     async def lineage(self, project_id: str) -> list[Project]:
         """Load validated ancestry ordered from Root Project to target."""

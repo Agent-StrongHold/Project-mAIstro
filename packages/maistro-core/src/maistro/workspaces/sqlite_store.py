@@ -99,6 +99,9 @@ class SqliteWorkspaceStore:
         self._conn = conn
         self.project_store: ProjectScopeStore = project_store
         self._write_lock = asyncio.Lock()
+        configure_lifecycle = getattr(project_store, "set_workspace_lifecycle_reader", None)
+        if configure_lifecycle is not None:
+            configure_lifecycle(self._lifecycle_state)
 
     async def ensure_schema(self) -> None:
         """Create the Workspace tables and reconcile interrupted lifecycles."""
@@ -413,6 +416,14 @@ class SqliteWorkspaceStore:
                 await self._conn.rollback()
                 raise
             await self._conn.commit()
+
+    async def _lifecycle_state(self, workspace_id: str) -> str | None:
+        async with self._conn.execute(
+            "SELECT state FROM canonical_workspace_lifecycle WHERE workspace_id = ?",
+            (workspace_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return row[0] if row is not None else None
 
     async def _begin_immediate(self) -> None:
         """Take the write lock before reading the roster, not after."""

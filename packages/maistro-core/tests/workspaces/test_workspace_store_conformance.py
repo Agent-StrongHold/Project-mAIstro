@@ -26,7 +26,7 @@ from uuid import uuid4
 
 import pytest
 
-from maistro.projects.scope import ProjectNotFound
+from maistro.projects.scope import ProjectNotFound, ProjectScopeDenied
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.testing.postgres import postgres_dsn
 from maistro.workspaces.model import (
@@ -432,6 +432,41 @@ class TestWorkspaceLifecycleRecovery:
         assert await recovered.get(workspace.workspace_id) is None
         with pytest.raises(ProjectNotFound):
             await recovered.project_store.root_for_workspace(workspace.workspace_id)
+
+    async def test_failed_purge_quarantines_projects_until_restart_recovery(self, backend) -> None:
+        """A deleting Workspace cannot admit Project reads or writes."""
+        if not backend.supports_lifecycle_recovery:
+            pytest.skip("the in-memory reference has no durable restart boundary")
+
+        store = await backend.store()
+        workspace = await store.create(creator_user_id=_user("creator-"), name="Quarantine")
+        root = await store.project_store.root_for_workspace(workspace.workspace_id)
+        original = store.project_store.purge_workspace
+
+        async def fail_purge(workspace_id: str) -> None:
+            raise RuntimeError(f"purge failed for {workspace_id}")
+
+        store.project_store.purge_workspace = fail_purge  # type: ignore[method-assign]
+        try:
+            with pytest.raises(RuntimeError, match="purge failed"):
+                await store.delete(workspace.workspace_id)
+
+            with pytest.raises(ProjectScopeDenied, match="not active"):
+                await store.project_store.root_for_workspace(workspace.workspace_id)
+            with pytest.raises(ProjectScopeDenied, match="not active"):
+                await store.project_store.get(root.project_id)
+            with pytest.raises(ProjectScopeDenied, match="not active"):
+                await store.project_store.create(
+                    workspace_id=workspace.workspace_id,
+                    parent_project_id=root.project_id,
+                    name="must not be admitted",
+                )
+        finally:
+            store.project_store.purge_workspace = original  # type: ignore[method-assign]
+
+        recovered = await backend.store()
+        assert await recovered.get(workspace.workspace_id) is None
+        assert await recovered.project_store.get(root.project_id) is None
 
     async def test_restart_finishes_delete_after_project_purge_before_workspace_delete(
         self, backend
