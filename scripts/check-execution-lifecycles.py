@@ -194,17 +194,30 @@ def _enum_vocabularies(tree: ast.AST, module: str) -> dict[str, set[str]]:
 
 
 def _literal_aliases(tree: ast.AST) -> dict[str, ast.expr]:
+    """Collect local aliases, including PEP 695 ``type`` statements.
+
+    Helper aliases need not themselves be status-shaped: a final ``RunStatus``
+    alias can legally be assembled from a private ``_RUNNING_STATES`` alias.
+    Only status-shaped names are emitted by ``_literal_vocabularies``.
+    """
     aliases: dict[str, ast.expr] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):
             targets = node.targets
+            value = node.value
         elif isinstance(node, ast.AnnAssign):
             targets = (node.target,)
+            value = node.value
+        elif isinstance(node, ast.TypeAlias):
+            targets = (node.name,)
+            value = node.value
         else:
             continue
+        if value is None:
+            continue
         for target in targets:
-            if isinstance(target, ast.Name) and _looks_like_status_alias(target.id):
-                aliases[target.id] = node.value
+            if isinstance(target, ast.Name):
+                aliases[target.id] = value
     return aliases
 
 
@@ -213,6 +226,8 @@ def _literal_vocabularies(tree: ast.AST, module: str) -> dict[str, set[str]]:
     aliases = _literal_aliases(tree)
     literal_names = _literal_names(tree)
     for name, value in aliases.items():
+        if not _looks_like_status_alias(name):
+            continue
         states = _normalized_work_states(_literal_values(value, aliases, literal_names))
         if len(states) >= _MIN_WORK_STATES:
             found[f"{module}::{name}"] = states
