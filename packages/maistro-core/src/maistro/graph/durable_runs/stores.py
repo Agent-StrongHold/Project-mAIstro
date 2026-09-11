@@ -257,12 +257,15 @@ class InMemoryDurableRunStore:
         *,
         limit: int = 100,
         project_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> list[DurableRunRecord]:
         out: list[DurableRunRecord] = []
         for record in self._rows.values():
             if record.run.status is not status:
                 continue
             if project_id is not None and record.run.project_id != project_id:
+                continue
+            if workspace_id is not None and record.run.workspace_id != workspace_id:
                 continue
             out.append(_clone(record))
             if len(out) >= limit:
@@ -426,6 +429,7 @@ class SqliteDurableRunStore:
         *,
         limit: int = 100,
         project_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> list[DurableRunRecord]:
         return await asyncio.to_thread(
             _list_by_status_sync,
@@ -433,6 +437,7 @@ class SqliteDurableRunStore:
             status,
             limit,
             project_id,
+            workspace_id,
         )
 
     async def list_for_project(self, project_id: str, *, limit: int = 25) -> list[DurableRunRecord]:
@@ -603,17 +608,23 @@ def _list_by_status_sync(
     status: RunStatus,
     limit: int,
     project_id: str | None,
+    workspace_id: str | None,
 ) -> list[DurableRunRecord]:
     query = "SELECT * FROM durable_graph_runs WHERE status = ?"
     params: list[Any] = [status.value]
     if project_id is not None:
         query += " AND project_id = ?"
         params.append(project_id)
-    query += " ORDER BY created_at DESC LIMIT ?"
-    params.append(limit)
+    query += " ORDER BY created_at DESC"
+    if workspace_id is None:
+        query += " LIMIT ?"
+        params.append(limit)
     with store._connect() as conn:
         rows = conn.execute(query, params).fetchall()
-    return [store._from_row(row) for row in rows]
+    records = [store._from_row(row) for row in rows]
+    if workspace_id is not None:
+        records = [record for record in records if record.run.workspace_id == workspace_id]
+    return records[:limit]
 
 
 def _list_for_project_sync(
