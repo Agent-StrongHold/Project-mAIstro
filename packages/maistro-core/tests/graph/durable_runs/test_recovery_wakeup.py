@@ -6,8 +6,9 @@ from types import SimpleNamespace
 import pytest
 
 from maistro.graph.definitions import Graph, Node
-from maistro.graph.durable_runs import recovery
+from maistro.graph.durable_runs import DurableRunRecord, InMemoryDurableRunStore, recovery
 from maistro.graph.durable_runs.attempt_executor import LiveAttemptOwned
+from maistro.graph.execution_state import GraphExecutionState
 from maistro.runs.model import GraphSnapshot, Run, RunStatus
 
 pytestmark = [pytest.mark.contract("behavioral")]
@@ -23,6 +24,13 @@ class _Store:
 
     async def get(self, run_id: str):
         return self.records.get(run_id)
+
+
+class _DueInMemoryStore(InMemoryDurableRunStore):
+    async def list_due(self, *, now: datetime, limit: int = 100):
+        del now
+        records = [await self.get(run_id) for run_id in self._rows]
+        return [record for record in records if record is not None][:limit]
 
 
 class _BootstrapStore(_Store):
@@ -135,6 +143,110 @@ async def test_losing_a_cross_replica_resume_race_is_idempotent(monkeypatch) -> 
         )
         == 0
     )
+
+
+@pytest.mark.asyncio
+async def test_one_unexpected_candidate_failure_does_not_starve_later_due_runs(
+    monkeypatch,
+    caplog,
+) -> None:
+    """Candidate-local failures advance this batch and remain due for retry."""
+    now = datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
+    candidates = [
+        _record(f"waiting-{index}", RunStatus.WAITING, now - timedelta(seconds=1))
+        for index in range(1, 4)
+    ]
+    store = _Store(*candidates)
+    calls: list[str] = []
+
+    async def _resume(run_id: str, **kwargs) -> None:
+        del kwargs
+        calls.append(run_id)
+        if run_id == "waiting-1":
+            raise RuntimeError("resolver exploded password=not-a-secret")
+
+    monkeypatch.setattr(recovery, "resume_durable_graph", _resume)
+
+    with caplog.at_level("WARNING", logger="maistro.graph.durable_runs.recovery"):
+        count = await recovery.resume_due_graph_runs(
+            store=store,
+            run_store=object(),
+            node_resolver=lambda _node_id, _graph: None,
+            now=now,
+        )
+
+    assert count == 2
+    assert calls == ["waiting-1", "waiting-2", "waiting-3"]
+    assert await store.get("waiting-1") is candidates[0]
+    assert "run_id=waiting-1" in caplog.text
+    assert "RuntimeError: resolver exploded password=<redacted>" in caplog.text
+    assert "not-a-secret" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_factory_failure_terminalizes_the_candidate_for_later_recovery() -> None:
+    """A resolver failure uses the executor's durable failed-Run policy."""
+    now = datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
+    run = _queued_run("resolver-poisoned").model_copy(update={"status": RunStatus.WAITING})
+    store = _DueInMemoryStore()
+    await store.create(
+        DurableRunRecord(
+            run=run,
+            graph_state=GraphExecutionState(
+                run_id=run.run_id,
+                active_node_ids=("node-1",),
+                blackboard_snapshot={"task_objective": "Recovery graph"},
+            ),
+            resume_at=now - timedelta(seconds=1),
+            version=1,
+        )
+    )
+
+    def _broken_factory(_run: Run):
+        raise RuntimeError("resolver unavailable")
+
+    assert (
+        await recovery.resume_due_graph_runs(
+            store=store,
+            run_store=None,
+            node_resolver_factory=_broken_factory,
+            now=now,
+        )
+        == 1
+    )
+    failed = await store.get(run.run_id)
+    assert failed is not None
+    assert failed.run.status is RunStatus.FAILED
+    assert failed.run.error is not None
+    assert failed.run.error == "PhysicalExecutionError: resolver unavailable"
+
+
+@pytest.mark.asyncio
+async def test_global_store_failure_aborts_the_due_tick(monkeypatch) -> None:
+    """A classified store outage must not produce misleading later success."""
+    now = datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
+    store = _Store(
+        _record("waiting-1", RunStatus.WAITING, now - timedelta(seconds=1)),
+        _record("waiting-2", RunStatus.WAITING, now - timedelta(seconds=1)),
+    )
+    calls: list[str] = []
+
+    async def _store_is_down(run_id: str, **kwargs) -> None:
+        del kwargs
+        calls.append(run_id)
+        raise recovery.RecoveryInfrastructureError("database session is unavailable")
+
+    monkeypatch.setattr(recovery, "resume_durable_graph", _store_is_down)
+
+    with pytest.raises(recovery.RecoveryInfrastructureError, match="database session"):
+        await recovery.resume_due_graph_runs(
+            store=store,
+            run_store=object(),
+            node_resolver=lambda _node_id, _graph: None,
+            now=now,
+        )
+
+    assert calls == ["waiting-1"]
 
 
 @pytest.mark.asyncio
