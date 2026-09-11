@@ -113,7 +113,9 @@ class TestTheChildRunIsSettled:
         [
             ("completed", RunStatus.COMPLETED),
             ("failed", RunStatus.FAILED),
-            ("timed_out", RunStatus.TIMED_OUT),
+            # The transport answered with a timeout; the physical Attempt
+            # completed and the child records the logical failure.
+            ("timed_out", RunStatus.FAILED),
             # Admitted and then declined: `cancelled` rather than `failed`,
             # which would read as attempted-and-gone-wrong.
             ("rejected", RunStatus.CANCELLED),
@@ -122,7 +124,15 @@ class TestTheChildRunIsSettled:
     async def test_the_answer_settles_the_child(self, answered: str, expected: RunStatus) -> None:
         store, project = await _spine()
         node, parent, child_run_id = await _dispatched(store, project.project_id)
-        assert (await store.get_run(child_run_id)).status is RunStatus.CREATED
+        child = await store.get_run(child_run_id)
+        assert child is not None
+        assert child.status is RunStatus.WAITING
+        node_runs = await store.list_node_runs(child_run_id)
+        assert len(node_runs) == 1
+        assert node_runs[0].status is RunStatus.WAITING
+        attempts = await store.list_attempts(node_runs[0].node_run_id)
+        assert len(attempts) == 1
+        assert attempts[0].status.value == "yielded"
 
         await node.run(
             {"from_agent": "planner", "task": "research X"},
@@ -136,6 +146,12 @@ class TestTheChildRunIsSettled:
         assert child is not None
         assert child.status is expected
         assert child.finished_at is not None
+        node_runs = await store.list_node_runs(child_run_id)
+        assert len(node_runs) == 1
+        assert node_runs[0].status is expected
+        attempts = await store.list_attempts(node_runs[0].node_run_id)
+        assert len(attempts) == 2
+        assert attempts[-1].status.value in {"completed", "cancelled"}
 
     async def test_the_delegates_result_lands_on_the_child(self) -> None:
         store, project = await _spine()
