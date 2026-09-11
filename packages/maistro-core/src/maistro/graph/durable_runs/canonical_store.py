@@ -31,6 +31,34 @@ _RECOVERY_VISIBLE_STATUSES = frozenset({RunStatus.WAITING, RunStatus.PAUSED, Run
 logger = logging.getLogger(__name__)
 
 
+def _answered_hitl_evidence(
+    continuation: GraphContinuation,
+) -> dict[str, datetime]:
+    """Read accepted answer timestamps for restart repair.
+
+    Answer records are written into the continuation before its lifecycle is
+    mirrored to the canonical spine. Only the store-authored timestamp counts;
+    malformed or caller-only metadata is ignored rather than used to revive a
+    contradictory Run.
+    """
+    answers_raw = continuation.graph_state.metadata.get("hitl_answers", {})
+    answers = answers_raw if isinstance(answers_raw, Mapping) else {}
+    evidence: dict[str, datetime] = {}
+    for node_id, answer in answers.items():
+        if not isinstance(answer, Mapping):
+            continue
+        answered_at = answer.get("answered_at")
+        if not isinstance(answered_at, str):
+            continue
+        try:
+            moment = datetime.fromisoformat(answered_at)
+        except ValueError:
+            continue
+        if moment.tzinfo is not None:
+            evidence[str(node_id)] = moment
+    return evidence
+
+
 def _terminal_hitl_evidence(
     continuation: GraphContinuation,
     target: RunStatus,
@@ -149,6 +177,10 @@ class CanonicalDurableRunStore:
             await mirror_lifecycle(record, run_store=self._run_store)
             return await self._require(record.run_id)
 
+    async def reconcile_run(self, run_id: str) -> bool:
+        """Repair one known Run without depending on scan ordering."""
+        return await self._reconcile_run(run_id)
+
     async def reconcile_persistence(self, *, limit: int = 100) -> int:
         """Boundedly repair cross-store crash residue and purge true orphans."""
         if limit <= 0:
@@ -191,6 +223,8 @@ class CanonicalDurableRunStore:
                 continuation.version,
             )
             return await self._continuations.delete(run_id)
+        if await self._reconcile_answered_hitl(continuation, canonical):
+            return True
         if await self._reconcile_terminal_hitl(continuation, canonical):
             return True
         if canonical.status is RunStatus.RUNNING and continuation.status in {
@@ -200,6 +234,42 @@ class CanonicalDurableRunStore:
             await self._run_store.transition_run(run_id, continuation.status)
             return True
         return False
+
+    async def _reconcile_answered_hitl(
+        self,
+        continuation: GraphContinuation,
+        canonical: Run,
+    ) -> bool:
+        """Repair an answer accepted between continuation and spine writes."""
+        if continuation.status is not RunStatus.QUEUED or canonical.status is not RunStatus.PAUSED:
+            return False
+        evidence = _answered_hitl_evidence(continuation)
+        if not evidence:
+            return False
+        record = await self.get(continuation.run_id)
+        if record is None:
+            return False
+        matching = [node for node in record.node_runs if node.node_id in evidence]
+        if not matching or all(node.status in TERMINAL_RUN_STATUSES for node in matching):
+            return False
+
+        node_runs = list(record.node_runs)
+        for index, node_run in enumerate(node_runs):
+            if node_run.status is RunStatus.PAUSED and node_run.node_id in evidence:
+                node_runs[index] = transition_node_run(
+                    node_run,
+                    RunStatus.QUEUED,
+                    at=evidence[node_run.node_id],
+                )
+        answered_at = max(evidence.values())
+        desired = record.model_copy(
+            update={
+                "run": transition_run(record.run, RunStatus.QUEUED, at=answered_at),
+                "node_runs": tuple(node_runs),
+            }
+        )
+        await mirror_lifecycle(desired, run_store=self._run_store)
+        return True
 
     async def _reconcile_terminal_hitl(
         self,
