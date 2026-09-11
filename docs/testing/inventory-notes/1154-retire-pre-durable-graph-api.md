@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests/graph: +1
+  packages/maistro-core/tests: -116
 ---
 # Issue 1154
 
