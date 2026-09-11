@@ -115,6 +115,34 @@ class PopulationStore:
         conn.commit()
         conn.close()
 
+    def complete_operation(self, operation_key: str, data: dict[str, object]) -> None:
+        """Commit a previously started domain operation marker."""
+        if self.get_operation(operation_key) is None:
+            self.record_operation(operation_key, data)
+            return
+        marker = dict(data)
+        self._operations[operation_key] = marker
+        if self._db_path is None:
+            return
+        import json
+
+        conn = sqlite3.connect(self._db_path)
+        conn.execute(
+            "UPDATE evolution_operations SET data = ? WHERE operation_key = ?",
+            (json.dumps(marker, separators=(",", ":")), operation_key),
+        )
+        conn.commit()
+        conn.close()
+
+    def delete_operation(self, operation_key: str) -> None:
+        self._operations.pop(operation_key, None)
+        if self._db_path is None:
+            return
+        conn = sqlite3.connect(self._db_path)
+        conn.execute("DELETE FROM evolution_operations WHERE operation_key = ?", (operation_key,))
+        conn.commit()
+        conn.close()
+
     def add(self, genome: PipelineGenome) -> None:
         self._store[genome.id] = genome
         self._persist(genome)

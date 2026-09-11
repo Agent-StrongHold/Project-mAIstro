@@ -388,9 +388,31 @@ async def _finalize_cycle(  # noqa: C901
     record_operation = getattr(population, "record_operation", None)
     persisted = get_operation(operation_key) if get_operation is not None else None
     if persisted is not None:
-        return _FinalizeOutput.model_validate(persisted)
+        if persisted.get("status") == "committed":
+            return _FinalizeOutput.model_validate(persisted["output"])
+        if persisted.get("status") != "started":
+            raise RuntimeError(f"invalid Evolve finalization marker for {node_run_id!r}")
+        snapshot = persisted.get("population")
+        if not isinstance(snapshot, list):
+            raise RuntimeError(f"Evolve finalization marker {node_run_id!r} lacks a snapshot")
+        from maistro_evolve.types import PipelineGenome
+
+        for genome in population.list_all():
+            population.remove(genome.id)
+        for raw_genome in snapshot:
+            population.add(PipelineGenome.model_validate(raw_genome))
+        population.delete_operation(operation_key)
     if node_run_id in completed:
         return _FinalizeOutput.model_validate(completed[node_run_id])
+
+    if record_operation is not None:
+        record_operation(
+            operation_key,
+            {
+                "status": "started",
+                "population": [genome.model_dump(mode="json") for genome in population.list_all()],
+            },
+        )
 
     before = {genome.id for genome in population.list_all()}
     _publish_tournament_elos(cycle, population)
@@ -433,7 +455,10 @@ async def _finalize_cycle(  # noqa: C901
     )
     output_data = output.model_dump(mode="json")
     completed[node_run_id] = output_data
-    if record_operation is not None:
+    complete_operation = getattr(population, "complete_operation", None)
+    if complete_operation is not None:
+        complete_operation(operation_key, {"status": "committed", "output": output_data})
+    elif record_operation is not None:
         record_operation(operation_key, output_data)
     return output
 
