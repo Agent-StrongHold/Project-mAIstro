@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import uuid4
@@ -63,6 +65,106 @@ def _actor(request: Request) -> str:
     return str(user.get("id") or "system")
 
 
+async def _resolve_run_scope(
+    dag_data: Mapping[str, Any], request: Request, workspace_id: str | None
+) -> tuple[str, str]:
+    """Resolve and authorize the scope used by canonical Run admission.
+
+    A request-selected Workspace is checked at the existing Hive authorization
+    boundary before the canonical resolver maps it to its Root Project. The
+    resolver remains the single source for the deployment default and for
+    project selection; this route only supplies an already-authorized request
+    choice when one exists.
+    """
+    selected_workspace = (
+        workspace_id
+        or getattr(request.state, "workspace_id", None)
+        or dag_data.get("workspace_id")
+        or ""
+    )
+    selected_workspace = str(selected_workspace).strip()
+    if selected_workspace:
+        from services.dag_execution_scope import (
+            DagWorkspaceSelectionError,
+            authorize_hive_dag_workspace,
+        )
+
+        try:
+            authorize_hive_dag_workspace(
+                workspace_id=selected_workspace,
+                user_id=_actor(request),
+            )
+        except DagWorkspaceSelectionError as exc:
+            raise HTTPException(status_code=403, detail="Workspace not found") from exc
+
+    selected_project = (
+        getattr(request.state, "project_id", None) or dag_data.get("project_id") or ""
+    )
+    from services.canonical_dag_runner import resolve_execution_scope
+
+    return await resolve_execution_scope(
+        dag_data,
+        workspace_id=selected_workspace or None,
+        project_id=str(selected_project).strip() or None,
+    )
+
+
+def _value_mapping(value: Any) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        dumped = model_dump()
+        if isinstance(dumped, Mapping):
+            return dict(dumped)
+    return {}
+
+
+def _registered_run_result(graph: Any, record: Any) -> dict[str, Any]:
+    """Project canonical Run/NodeRun facts into the existing DAG response shape."""
+    run = record.run
+    status = str(getattr(getattr(run, "status", None), "value", run.status) or "failed")
+    graph_nodes = {node.node_id: node for node in getattr(graph, "nodes", ())}
+    node_results: dict[str, dict[str, Any]] = {}
+    for node_run in getattr(record, "node_runs", ()):
+        node = graph_nodes.get(node_run.node_id)
+        raw = _value_mapping(getattr(node, "metadata", {}).get("legacy_node"))
+        output = _value_mapping(getattr(node_run, "result", None))
+        response = output.get("response")
+        if response is None and output:
+            response = json.dumps(output, default=str)
+        if response is None:
+            response = getattr(node_run, "error", None) or ""
+        node_status = str(
+            getattr(getattr(node_run, "status", None), "value", node_run.status) or "failed"
+        )
+        node_results[node_run.node_id] = {
+            "role": str(output.get("role") or raw.get("role") or "worker"),
+            "response": str(response),
+            # This is deliberately the canonical NodeRun status, not a second
+            # interpretation of an executor result payload.
+            "success": node_status == "completed",
+            "model": output.get("model") or raw.get("model"),
+            **({"isolation": output["isolation"]} if output.get("isolation") else {}),
+        }
+    graph_state = getattr(record, "graph_state", None)
+    blackboard = getattr(graph_state, "blackboard_snapshot", {})
+    annotations = blackboard.get("node_annotations", {}) if isinstance(blackboard, Mapping) else {}
+    result: dict[str, Any] = {
+        "status": status,
+        "run_id": record.run_id,
+        "workspace_id": run.workspace_id,
+        "project_id": run.project_id,
+        "cycles": getattr(graph_state, "cycle", 0),
+        "node_results": node_results,
+        "annotations": dict(annotations) if isinstance(annotations, Mapping) else {},
+    }
+    error = getattr(run, "error", None)
+    if error:
+        result["error"] = str(error)
+    return result
+
+
 async def _record_run_projection(*, dag_id: str, user_id: str, result: dict[str, Any]) -> None:
     """Mirror canonical Run facts into the bounded Recent Runs projection.
 
@@ -78,7 +180,7 @@ async def _record_run_projection(*, dag_id: str, user_id: str, result: dict[str,
 
         store = get_dag_run_store()
         # The result carries the canonical Workspace/Project the Run was
-        # admitted into (`canonical_dag_runner._project` mirrors
+        # admitted into (`_registered_run_result` mirrors
         # `Run.workspace_id`/`Run.project_id`), so the projection row is born
         # with the scope inspection will later authorize it at (#1174).
         await store.start_run(
@@ -89,12 +191,23 @@ async def _record_run_projection(*, dag_id: str, user_id: str, result: dict[str,
             workspace_id=str(result.get("workspace_id") or ""),
             project_id=str(result.get("project_id") or ""),
         )
+        run_status = str(result.get("status") or "failed")
         for node_id, node_result in result.get("node_results", {}).items():
+            # A parked NodeRun is not a failed NodeRun. The projection keeps
+            # the old started event for non-terminal canonical work, while a
+            # terminal Run's unsuccessful node is presented as failed.
+            event_type = (
+                "pm_node_completed"
+                if node_result.get("success")
+                else (
+                    "pm_node_started"
+                    if run_status in {"created", "queued", "running", "waiting", "paused"}
+                    else "pm_node_failed"
+                )
+            )
             await store.append_event(
                 run_id,
-                event_type=(
-                    "pm_node_completed" if node_result.get("success") else "pm_node_failed"
-                ),
+                event_type=event_type,
                 role=node_result.get("role", "worker"),
                 capability=node_id,
                 payload={
@@ -308,37 +421,42 @@ def remove_edge(dag_id: str, edge_id: str) -> dict:
 
 
 @router.post("/{dag_id}/run")
-async def run_dag(dag_id: str, request: Request) -> dict:
-    """Execute through one canonical Run and project its facts for the UI."""
+async def run_dag(
+    dag_id: str,
+    request: Request,
+    workspace_id: str | None = None,
+) -> dict:
+    """Execute a saved DAG through the registered canonical Run path."""
     if dag_id not in stores.dags:
         raise HTTPException(status_code=404, detail="dag not found")
     dag_data = stores.dags[dag_id]
     actor = _actor(request)
     log_audit("dag_run", actor, target=dag_id)
 
-    from services.graph_runner import CanonicalDagExecutionError, execute_dag
+    from services.dag_agents import get_registry, run_registered_dag
 
     try:
-        result = await execute_dag(
-            dag_data,
-            user_id=actor,
-            execution_mode="interactive",
+        resolved_workspace, resolved_project = await _resolve_run_scope(
+            dag_data, request, workspace_id
         )
-    except CanonicalDagExecutionError as exc:
-        result = exc.result
-        await _record_run_projection(dag_id=dag_id, user_id=actor, result=result)
-        run_id = result.get("run_id")
-        return {
-            "status": result.get("status", "failed"),
-            "execution_id": run_id,
-            "run_id": run_id,
-            "error": str(exc),
-            "result": result,
-        }
+        # The saved DAG is the product's editable definition. Registering its
+        # snapshot first makes this route use the same descriptor -> template
+        # projection as schedules and other registered-DAG producers.
+        get_registry().register(dict(dag_data))
+        graph, record = await run_registered_dag(
+            dag_id,
+            workspace_id=resolved_workspace,
+            project_id=resolved_project,
+            user_id=actor,
+            provenance={"admission_source": "hive_dag_route", "execution_mode": "interactive"},
+        )
+    except HTTPException:
+        raise
     except Exception as exc:
-        logger.warning("Graph execution failed: %s", exc)
+        logger.warning("Registered DAG execution failed: %s", exc)
         return {"status": "failed", "error": str(exc)}
 
+    result = _registered_run_result(graph, record)
     await _record_run_projection(dag_id=dag_id, user_id=actor, result=result)
     run_id = result["run_id"]
     return {
