@@ -88,6 +88,42 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Project membership is one canonical row per `(project, principal)`, and
+  is now explicitly revocable (#1148).** `ProjectScopeStore.set_membership`
+  used to mint a fresh `membership_id` on every call, so a re-grant, role
+  change, or explicit deny accumulated a second, independent row instead of
+  replacing the first — `resolve_project_authorization` unions every row it
+  finds, so a stale grant a later deny was meant to narrow stayed live
+  forever, and there was no way to retract a grant outright. `set_membership`
+  now upserts keyed on `(project_id, principal_id)` across all three
+  backends, and a new `remove_membership` revokes a membership durably. A
+  migration (`033`) deduplicates existing PostgreSQL rows (keeping the most
+  recent per pair) before adding the new primary key; a homelab SQLite
+  database created by an older release upgrades its
+  `canonical_project_memberships` table the same way the first time
+  `ensure_schema()` runs against it.
+- **A delegated re-grant can no longer silently clear an existing Project
+  deny (#1148).** `add_project_membership`'s non-owner path only rejected a
+  request that explicitly repeated `denies`, not one that simply omitted
+  them — since `set_membership` now replaces the canonical row wholesale
+  rather than accumulating a second one, a non-owner's ordinary grant-only
+  re-grant would have overwritten an owner-issued deny by omission. The
+  route now carries an existing deny forward when the requester cannot
+  administer the Workspace.
+- **SQLite `move_project` now serializes the cycle check with the reparent
+  write (#1147).** PostgreSQL already locked a Workspace's Projects with
+  `FOR UPDATE` before checking ancestry; the SQLite twin did a plain
+  read-then-write, so two concurrent opposite moves (A under B, B under A)
+  could both pass their independent checks and both commit, leaving a cycle
+  `lineage()` can never resolve again. `move_project` now takes SQLite's
+  write lock (`BEGIN IMMEDIATE`) before reading the tree, matching
+  `workspaces.sqlite_store`'s existing pattern; a forced-interleaving
+  conformance test (two connections to the same file) proves one of the two
+  concurrent moves is refused as a cycle rather than both landing. Every
+  other writer on the shared connection (`create`, `update_defaults`,
+  `delete`, `put_resource`) now takes the same write-critical section, so an
+  unlocked writer left mid-transaction can no longer make a locked writer's
+  `BEGIN IMMEDIATE` raise outright.
 - **Successful NodeRuns require accepted physical evidence (#1153).** New
   completion transitions reject a missing `AcceptedNodeOutcome`, including for
   no-output work. The historical durable-Graph execution entry points delegate
