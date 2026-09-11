@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests/sandbox/test_real_backend.py: +3
+  packages/maistro-core/tests: +3
 ---
 
 # #1235 sandbox rlimit-aware capability probe coverage
