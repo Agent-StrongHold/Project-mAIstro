@@ -7,7 +7,11 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from services.evolution_graph import _evaluate_one, run_canonical_evolution_cycle
+from services.evolution_graph import (
+    _evaluate_one,
+    _finalize_cycle,
+    run_canonical_evolution_cycle,
+)
 
 import maistro_evolve.cycle as cycle_module
 from maistro.graph.durable_runs import (
@@ -778,3 +782,44 @@ async def test_recovered_evaluation_node_run_reuses_published_score_without_reev
     assert persisted.harness_params["total_cost_usd"] == 0.01
     assert persisted.harness_params["evaluation_runs"] == genome.harness_params["evaluation_runs"]
     assert output.evaluation_attempt_id == "attempt-before-crash"
+
+
+@pytest.mark.asyncio
+async def test_finalization_sees_only_the_frozen_membership() -> None:
+    """A genome seeded after admission is not scored, culled, or bred from by
+    a cycle whose provenance says it is not a member; the cycle's own child
+    joins the membership as it is created."""
+    late = _Genome("late")
+    population = _Population([_Genome("g1"), _Genome("g2"), late])
+    for genome_id in ("g1", "g2"):
+        genome = population.get(genome_id)
+        assert genome is not None
+        genome.eval_scores["proxy"] = 0.5
+    late.eval_scores["proxy"] = 0.9
+    culled: list[str] = []
+
+    class _CullingPopulation(_Population):
+        def cull_bottom(self, pct: float) -> int:
+            # The store's own policy, run through whatever `self` it is bound
+            # to: here that must be the membership view, so `late` is unseen.
+            scored = [g for g in self.list_all() if g.fitness_score is not None]
+            culled.extend(g.id for g in scored)
+            return 0
+
+    population.__class__ = _CullingPopulation
+    cycle = _Cycle(harness=_Harness(), tournament=_Tournament())
+
+    output = await _finalize_cycle(
+        cycle,
+        population,
+        _config(population_size=4, eval_batch_size=2),
+        None,
+        membership_ids=("g1", "g2"),
+    )
+
+    assert late.fitness_score is None
+    assert "late" not in culled and set(culled) == {"g1", "g2"}
+    assert output.new_genome_ids == ["child"]
+    # The live store is what the size reports: member or not, it is there.
+    assert output.population_size == 4
+    assert {genome.id for genome in population.list_all()} == {"g1", "g2", "late", "child"}

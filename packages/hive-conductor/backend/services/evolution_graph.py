@@ -265,15 +265,15 @@ class _TournamentWork:
             )
         if self._battle_slots is not None and inputs.pair_index >= self._battle_slots:
             raise RuntimeError("tournament graph requested a battle beyond its immutable capacity")
-        if (
-            self._battle_slots is not None
-            and inputs.pair_index == self._battle_slots - 1
-            and inputs.pair_index + 1 < len(inputs.pairs)
-        ):
-            # Do this before recording a battle: a malformed plan must fail the
-            # canonical Attempt rather than leave an un-routable side effect.
+        if self._battle_slots is not None and len(inputs.pairs) > self._battle_slots:
+            # Checked on *every* battle, so the first slot refuses an oversized
+            # plan before any rating is recorded: a malformed plan must fail
+            # the canonical Attempt rather than publish a partial tournament
+            # and only then discover has_more=True has no successor.
             raise RuntimeError(
-                "tournament pair plan has_more=True but the immutable graph has no successor"
+                f"tournament pair plan has {len(inputs.pairs)} pairs but the immutable "
+                f"graph has {self._battle_slots} battle slots; has_more=True would have "
+                "no successor"
             )
 
         genome_a_id, genome_b_id = inputs.pairs[inputs.pair_index]
@@ -390,15 +390,67 @@ def _publish_tournament_elos(cycle: Any, population: Any) -> None:
             population.add(genome)
 
 
+class _MembershipView:
+    """The live population seen through one cycle's frozen membership.
+
+    Every finalization step -- Elo publication, fitness, culling, island
+    assignment, breeding, self-improvement, migration -- reads and writes the
+    population through this object, so a genome seeded after admission is
+    neither scored nor culled nor bred from by a cycle whose Run provenance
+    says it is not a member. Genomes the cycle itself creates (children,
+    challengers) join the view as they are added: they are this cycle's work.
+
+    Derived operations (`cull_bottom`, `get_breeding_pool`, `get_champion`,
+    ...) run the live population's *own* implementation bound to this view,
+    so they apply the store's policy over the filtered primitives rather than
+    a second copy of it. Anything else delegates to the live store unchanged.
+    """
+
+    _REBOUND = frozenset(
+        {"cull_bottom", "get_breeding_pool", "get_champion", "get_active", "get_lineage"}
+    )
+
+    def __init__(self, live: Any, membership_ids: Sequence[str]) -> None:
+        self._live = live
+        self._member_ids = set(membership_ids)
+
+    def list_all(self) -> list[Any]:
+        return [genome for genome in self._live.list_all() if genome.id in self._member_ids]
+
+    def get(self, genome_id: str) -> Any:
+        if genome_id not in self._member_ids:
+            return None
+        return self._live.get(genome_id)
+
+    def add(self, genome: Any) -> None:
+        self._member_ids.add(genome.id)
+        self._live.add(genome)
+
+    def remove(self, genome_id: str) -> None:
+        self._member_ids.discard(genome_id)
+        self._live.remove(genome_id)
+
+    def __getattr__(self, name: str) -> Any:
+        if name in self._REBOUND:
+            implementation = getattr(type(self._live), name, None)
+            if callable(implementation):
+                return implementation.__get__(self, type(self))
+        return getattr(self._live, name)
+
+
 async def _finalize_cycle(
     cycle: Any,
     population: Any,
     config: Any,
     llm_call: Any,
+    membership_ids: Sequence[str] | None = None,
 ) -> _FinalizeOutput:
     """Run post-tournament domain semantics without creating another lifecycle."""
     from maistro_evolve.population import IslandPopulation, migrate_islands
 
+    live = population
+    if membership_ids is not None:
+        population = _MembershipView(live, membership_ids)
     before = {genome.id for genome in population.list_all()}
     _publish_tournament_elos(cycle, population)
     cycle._compute_all_fitness(population)
@@ -435,7 +487,7 @@ async def _finalize_cycle(
             population.add(genome)
 
     return _FinalizeOutput(
-        population_size=len(population.list_all()),
+        population_size=len(live.list_all()),
         new_genome_ids=new_ids,
     )
 
@@ -454,11 +506,13 @@ class _FinalizeNode(BaseNode[_IgnoreInput, _FinalizeOutput]):
         population: Any,
         config: Any,
         llm_call: Any,
+        membership_ids: Sequence[str] | None = None,
     ) -> None:
         self._cycle = cycle
         self._population = population
         self._config = config
         self._llm_call = llm_call
+        self._membership_ids = tuple(membership_ids) if membership_ids is not None else None
 
     async def _execute(self, inputs: _IgnoreInput, ctx: NodeContext) -> _FinalizeOutput:
         return await _finalize_cycle(
@@ -466,12 +520,20 @@ class _FinalizeNode(BaseNode[_IgnoreInput, _FinalizeOutput]):
             self._population,
             self._config,
             self._llm_call,
+            membership_ids=self._membership_ids,
         )
 
 
 def _population_membership(population: Any) -> tuple[str, ...]:
-    """Capture the admission-time member ids used by one immutable cycle plan."""
-    return tuple(sorted(str(genome.id) for genome in population.list_all()))
+    """Capture the admission-time member ids used by one immutable cycle plan.
+
+    In the store's own order, deliberately. `_evaluation_ids` takes the first
+    `eval_batch_size` unevaluated members, and the store lists genomes in
+    admission order, so this is FIFO: the longest-waiting genome is evaluated
+    first. Sorting by id here made a newly seeded genome jump the queue and
+    left an older one unevaluated, at zero fitness, culled from the bottom.
+    """
+    return tuple(dict.fromkeys(str(genome.id) for genome in population.list_all()))
 
 
 def _membership_hash(membership_ids: Sequence[str]) -> str:
@@ -645,6 +707,7 @@ def _resolver(
         population=population,
         config=config,
         llm_call=llm_call,
+        membership_ids=membership_ids,
     )
 
     def resolve(node_id: str, graph: Graph) -> BaseNode[Any, Any]:
