@@ -20,6 +20,7 @@ from adapters.telemetry_langfuse import telemetry
 from config import get_settings
 from models.schemas import ChatCompletionRequest
 from protocols.llm import LLMPort
+from routes.audit import log_audit
 
 from maistro.http import shared_client
 from services.agent_materialization import (
@@ -28,6 +29,7 @@ from services.agent_materialization import (
     ScanBudgetExceeded,
     chat_agent_id,
     delete_agent_definition,
+    materialize_runtime,
     update_agent_definition,
     upsert_agent_definition,
 )
@@ -1031,6 +1033,20 @@ async def _tool_save_as_action(
         return {"error": "agent not saved: the security scan could not run; nothing was stored"}
     except ScanBudgetExceeded as exc:
         return {"error": f"agent not saved: {exc}"}
+    # Runtime half + audit parity with Forge: the saved definition becomes a
+    # runtime agent when one exists (stamped non-dispatchable otherwise), and
+    # a roster-writing side effect lands in the audit log like every other one.
+    stored = await materialize_runtime(stored)
+    log_audit(
+        "agent_chat_created",
+        user_id,
+        target=stored.id,
+        detail={
+            "name": stored.name,
+            "capability": capability,
+            "dispatchable": stored.config.get("dispatchable"),
+        },
+    )
     return {"saved": True, "agent_id": stored.id, "name": stored.name}
 
 
@@ -1065,6 +1081,18 @@ async def _tool_create_agent_button(
         return {"error": "agent not created: the security scan could not run; nothing was stored"}
     except ScanBudgetExceeded as exc:
         return {"error": f"agent not created: {exc}"}
+    # Runtime half + audit parity with Forge, as in save_as_action above.
+    stored = await materialize_runtime(stored)
+    log_audit(
+        "agent_chat_created",
+        user_id,
+        target=stored.id,
+        detail={
+            "name": stored.name,
+            "capability": capability,
+            "dispatchable": stored.config.get("dispatchable"),
+        },
+    )
     return {
         "created": True,
         "agent": {"id": stored.id, "name": stored.name, "capability": capability},
@@ -1505,11 +1533,20 @@ async def _tool_run_workflow(
     # whether the graph itself finished, so only that decides the status.
     executed = False
     try:
+        from services.canonical_dag_runner import resolve_execution_scope
         from services.dag_run_store import get_dag_run_store
         from services.graph_runner import execute_dag
 
+        # The projection row opens before execution, so it must already carry
+        # the scope the execution will resolve -- resolved here by the same
+        # resolver `execute_dag` uses, never a second mapping (#1174).
+        workspace_id, project_id = await resolve_execution_scope(dag_data)
         store = get_dag_run_store()
-        await store.start_run(run_id=exec_id)
+        await store.start_run(
+            run_id=exec_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+        )
         result = await execute_dag(dag_data, user_id=user_id)
         executed = True
 

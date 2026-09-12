@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import stores
@@ -17,7 +18,9 @@ from services.agent_materialization import (
     agent_id_for,
     materialize_boot_roster,
     materialize_manifest_roster,
+    materialize_runtime,
     materialize_workspace_agents,
+    register_runtime_source,
     workspace_agents,
 )
 
@@ -291,3 +294,167 @@ class TestDemoSeedGating:
         stores._seed_agents()
 
         assert {f"agent-{i}" for i in range(1, 10)} <= set(stores.agents.keys())
+
+
+# ─── Runtime materialization (#840 Slice 4) ───────────────────────────────
+
+
+class _RecordingPrompts:
+    """The prompt-store seam materialization upserts souls behind."""
+
+    def __init__(self) -> None:
+        self.upserted: list[tuple[str, str, str]] = []
+
+    async def upsert(self, name: str, body: str, label: str = "") -> None:
+        self.upserted.append((name, body, label))
+
+
+def _runtime_container() -> tuple[SimpleNamespace, dict[str, Any], _RecordingPrompts]:
+    """A container-shaped runtime: the wiring deps `Agent.__init__` takes, and
+    the `agents` dict a real Container wires its hierarchy closures over."""
+    wired: dict[str, Any] = {}
+    prompts = _RecordingPrompts()
+    container = SimpleNamespace(
+        prompt_manager=prompts,
+        context_builder=object(),
+        warden=object(),
+        sentinel=object(),
+        learning_store=object(),
+        context_assembly_policy=object(),
+        learning_extractor=object(),
+        outcome_store=object(),
+        session_store=object(),
+        quota_tracker=object(),
+        agents=wired,
+    )
+    return container, wired, prompts
+
+
+def _forge_shaped_defn(**config: Any) -> Agent:
+    """A definition shaped exactly like what the Forge route stores."""
+    t = stores.now()
+    return Agent(
+        id="forge-research-abc12345",
+        name="forge-research-abc12345",
+        description="Research market trends",
+        model="gpt-4.1",
+        status="idle",
+        capabilities=["research"],
+        skills=[],
+        tasks_completed=0,
+        avg_response_time_ms=0.0,
+        last_active=t,
+        created_at=t,
+        config={"strategy": "react", "soul": "Research market trends", **config},
+    )
+
+
+class TestRuntimeMaterialization:
+    async def test_a_registered_runtime_builds_a_real_agent_into_the_wired_map(self) -> None:
+        from maistro.agents.base import Agent as RuntimeAgent
+        from maistro.agents.strategies.react import ReactStrategy
+
+        container, wired, prompts = _runtime_container()
+        register_runtime_source(container=container, llm=object(), preamble="for {{agent_name}}")
+
+        stored = await materialize_runtime(_forge_shaped_defn())
+
+        agent = wired["forge-research-abc12345"]
+        assert isinstance(agent, RuntimeAgent)
+        # The identity is the definition: name, declared capabilities as
+        # tools, and the forged strategy.
+        assert agent.identity.name == "forge-research-abc12345"
+        assert agent.identity.reasoning_strategy == "react"
+        assert isinstance(agent._strategy, ReactStrategy)
+        assert agent.identity.tools == ("research",)
+        # The soul prompt is upserted under the factory's own name, behind the
+        # PREAMBLE, exactly like a manifest-seeded agent.
+        name, body, label = prompts.upserted[0]
+        assert (name, label) == ("agent.forge-research-abc12345.soul", "production")
+        assert body.startswith("for forge-research-abc12345")
+        assert "Research market trends" in body
+        # The row is stamped truthfully dispatchable and re-stored.
+        assert stored.config["dispatchable"] is True
+        assert stores.agents[stored.id] is stored
+
+    async def test_materialization_mutates_the_wired_map_the_hierarchy_closed_over(self) -> None:
+        """The in-place contract, proved against maistro's own wiring: the
+        hierarchy closure built BEFORE the agent existed resolves it after."""
+        from maistro.container import _wire_hierarchy
+        from maistro.skills.registry import InMemorySkillRegistry
+
+        container, wired, _prompts = _runtime_container()
+        _registry, orchestrator = _wire_hierarchy(wired, InMemorySkillRegistry())
+        register_runtime_source(container=container, llm=object(), preamble="")
+
+        await materialize_runtime(_forge_shaped_defn())
+
+        assert container.agents is wired
+        identity, _skills = await orchestrator._agent_source.resolve("forge-research-abc12345")
+        assert identity.name == "forge-research-abc12345"
+
+    async def test_rematerializing_a_definition_replaces_the_same_runtime_entry(self) -> None:
+        container, wired, _prompts = _runtime_container()
+        register_runtime_source(container=container, llm=object(), preamble="")
+
+        await materialize_runtime(_forge_shaped_defn())
+        first = wired["forge-research-abc12345"]
+        await materialize_runtime(_forge_shaped_defn())
+
+        assert len(wired) == 1
+        assert wired["forge-research-abc12345"] is not first
+
+    async def test_chat_shaped_definitions_materialize_direct_without_a_strategy(self) -> None:
+        from maistro.agents.strategies.direct import DirectStrategy
+
+        container, wired, _prompts = _runtime_container()
+        register_runtime_source(container=container, llm=object(), preamble="")
+        t = stores.now()
+        defn = Agent(
+            id="ws-9.Sprint Check",
+            workspace_id="ws-9",
+            name="Sprint Check",
+            description="Check the sprint",
+            model="gemini-3.5-flash",
+            status="idle",
+            capabilities=["poll_jira"],
+            skills=[],
+            tasks_completed=0,
+            avg_response_time_ms=0.0,
+            last_active=t,
+            created_at=t,
+            config={"default_payload": {}},
+        )
+
+        await materialize_runtime(defn)
+
+        agent = wired["Sprint Check"]
+        assert agent.identity.reasoning_strategy == "direct"
+        assert isinstance(agent._strategy, DirectStrategy)
+        assert agent.identity.tools == ("poll_jira",)
+
+    async def test_without_a_runtime_the_row_is_stamped_and_no_agent_is_fabricated(self) -> None:
+        """StubAgentPort honesty: a stored definition must not wear the shape
+        of an executable agent when no runtime exists behind the process."""
+        defn = _forge_shaped_defn()
+
+        stored = await materialize_runtime(defn)
+
+        assert stored.config["dispatchable"] is False
+        assert stored.id in stores.agents
+        assert len(stores.agents) == 1
+
+    async def test_a_definition_the_runtime_refuses_is_stamped_not_fabricated(self) -> None:
+        """The narrow stamping path, driven through REAL construction code: a
+        delegate strategy requires sub-agents, so a forge that declares none
+        cannot become a runtime agent. Construction raises at the factory's
+        own fail-closed seam; materialization must turn that into an honest
+        non-dispatchable stamp, not a crash after the row was stored and not
+        a fabricated dispatchable agent either."""
+        container, wired, _prompts = _runtime_container()
+        register_runtime_source(container=container, llm=object(), preamble="")
+
+        stored = await materialize_runtime(_forge_shaped_defn(strategy="delegate"))
+
+        assert stored.config["dispatchable"] is False
+        assert wired == {}  # nothing was fabricated into the runtime map
