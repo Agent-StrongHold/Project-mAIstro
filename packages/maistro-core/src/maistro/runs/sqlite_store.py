@@ -306,6 +306,17 @@ class SqliteRunStore:
         )
         return model_of_json(Run, row[0]) if row is not None else None
 
+    async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
+        # The same two expressions `idx_canonical_runs_occurrence` is built
+        # over, so this is the index lookup the claim already paid for.
+        row = await self._fetchone(
+            """SELECT payload FROM canonical_runs
+                WHERE json_extract(payload, '$.provenance.schedule_id') = ?
+                  AND json_extract(payload, '$.provenance.scheduled_for') = ?""",
+            (schedule_id, scheduled_for),
+        )
+        return model_of_json(Run, row[0]) if row is not None else None
+
     async def list_by_status(
         self,
         status: RunStatus,
