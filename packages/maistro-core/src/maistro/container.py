@@ -617,7 +617,7 @@ class Container:
         error: str | None = None,
         result: dict[str, Any] | None = None,
         cancelled: bool = False,
-    ) -> None:
+    ) -> bool:
         """Terminalize a chat turn's Run, whichever way the turn ended.
 
         A Run left RUNNING is what recovery scans read as a process that died,
@@ -627,9 +627,21 @@ class Container:
         is not an `Exception`, so without the shield a client disconnecting
         during this await would abort the transition and leave behind exactly
         the false "died here" signal the shield exists to prevent.
+
+        Returns whether the terminal state this closure owed is durable. False
+        means the terminal write failed and was not retried here — there is no
+        chat-private retry queue or sweep (#1170's stop condition). What is
+        left behind is the handoff, not a wound: the physical Attempt and its
+        NodeRun are already durable by the time this runs, the un-terminalized
+        Run is exactly the state the canonical recovery authorities read (an
+        expired lease is reclaimable by `recover_abandoned_attempts`; terminal
+        physical facts under a non-terminal Run are what Run reconciliation
+        re-derives), and a caller that must know whether cleanup landed reads
+        this instead of parsing logs. A closure failure never replaces the
+        turn's own answer or exception.
         """
         if run is None:
-            return
+            return True
         if cancelled and (error is not None or result is not None):
             raise ValueError("cancelled chat closure cannot carry error or result")
         if cancelled:
@@ -642,6 +654,8 @@ class Container:
             await asyncio.shield(self._terminalize(run.run_id, target, result, error))
         except Exception:
             logger.warning("chat Run %s could not be terminalized", run.run_id, exc_info=True)
+            return False
+        return True
 
     async def _terminalize(
         self,
@@ -989,9 +1003,9 @@ class Container:
         round). `CREATED` is the window between persisting the Attempt and
         transitioning it: an exception there leaves a `CREATED` Attempt that
         nothing owns. Reading it as live re-creates the same hole one step in,
-        and worse than the NodeRun case, because `ScheduleAttemptExecutor`
-        configures no lease TTL -- so nothing expires it and no recovery tick
-        reclaims it. It is re-parked with the rest.
+        but the schedule executor does configure a finite lease TTL, so the
+        ordinary recovery tick can reclaim it if the creator dies. It is
+        re-parked with the rest.
 
         Re-parking rather than failing, because nothing about the pause has
         changed: the next tick may try again, and terminalizing would throw away
