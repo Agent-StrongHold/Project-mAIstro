@@ -37,3 +37,15 @@ ae2c7d23f3e36409dc876e0a741e524a315e5dd1:packages/maistro-core/tests/skills/test
 48ee34bcb89f9aadc68f08d576bc313c54b83961:packages/maistro-core/tests/security/test_redact.py:jwt:266
 48ee34bcb89f9aadc68f08d576bc313c54b83961:tests/security/test_sandbox_security.py:generic-api-key:58
 48ee34bcb89f9aadc68f08d576bc313c54b83961:tests/tools/test_env_sanitize.py:jwt:107
+# ---- Fixture-shaped hits carried by unmerged lane branches ----
+# security.yml scans `gitleaks git --log-opts=--all` on push/schedule to
+# develop, which sweeps every origin-ref still reachable — including lane
+# branches not yet merged. Two lanes currently carry api_key-shaped test
+# fixtures (error-path dicts and option-name/idempotency pairs — placeholders,
+# never credentials). Rewriting those fixtures is the lanes' own job
+# (auto-1143, auto-41); suppressing here keeps develop's SAST green without
+# touching their diffs. If a lane rebases, its SHA changes and a new
+# fingerprint appears; if it merges as-is, these entries simply persist.
+cde47a2edf6c24a72bacfcc6fab85073d6a67919:packages/maistro-core/tests/graph/durable_runs/test_recovery_wakeup.py:generic-api-key:276
+cde47a2edf6c24a72bacfcc6fab85073d6a67919:packages/maistro-core/tests/graph/durable_runs/test_recovery_wakeup.py:generic-api-key:319
+43d02d6398a465e92321d241a2d237ec7428e017:packages/maistro-core/tests/tasks/test_idempotency.py:generic-api-key:754
