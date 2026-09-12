@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import json
 import re
+import tomllib
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,8 @@ MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 #: is a distinct kind of shipped execution/control surface (#1122) and must be
 #: discovered on its own terms, not folded into the mutating-method vocabulary.
 WEBSOCKET_METHOD = "WEBSOCKET"
+#: Non-HTTP command entrypoints use the same inventory shape as backend routes.
+CLI_METHOD = "CLI"
 VALID_DISPOSITIONS = {
     "canonical",
     "domain-state",
@@ -48,6 +51,7 @@ EXCLUDED_PARTS = {
     "build",
     "__pycache__",
 }
+LAB_ROOT_NAMES = {"lab", "labs"}
 _FRONTEND_STATUS_RE = re.compile(
     r"\b(?:complete|completed|success|succeeded|building|running|started|done|progress)\b",
     re.IGNORECASE,
@@ -207,6 +211,212 @@ def discover_backend_surfaces(repo_root: Path, roots: list[str]) -> list[Backend
     return sorted(set(surfaces))
 
 
+def _lab_roots(repo_root: Path) -> list[Path]:
+    """Return lab directories that need an explicit inventory declaration."""
+    roots: list[Path] = []
+    for path in repo_root.rglob("*"):
+        if not path.is_dir() or path.name.lower() not in LAB_ROOT_NAMES:
+            continue
+        relative_parts = path.relative_to(repo_root).parts
+        if any(part in EXCLUDED_PARTS for part in relative_parts):
+            continue
+        roots.append(path)
+    return sorted(roots)
+
+
+def _lab_root_errors(repo_root: Path, matrix: dict[str, Any]) -> list[str]:
+    configured = {(repo_root / str(root)).resolve() for root in matrix.get("lab_roots", [])}
+    return [
+        f"unconfigured lab surface root: {path.relative_to(repo_root).as_posix()}"
+        for path in _lab_roots(repo_root)
+        if path.resolve() not in configured
+    ]
+
+
+def _discovery_roots(matrix: dict[str, Any], key: str) -> list[str]:
+    roots = [str(root) for root in matrix.get(key, [])]
+    # Lab roots are a separate declaration so a new lab cannot be hidden by
+    # the broad packages root or by a CLI-only root. Both backend and CLI
+    # forms are inventoried whenever a lab root is declared.
+    if key in {"backend_roots", "cli_roots"}:
+        roots.extend(str(root) for root in matrix.get("lab_roots", []))
+    return roots
+
+
+def _cli_decorator_surface(
+    node: ast.AsyncFunctionDef | ast.FunctionDef, source: str
+) -> BackendSurface | None:
+    for decorator in node.decorator_list:
+        if isinstance(decorator, ast.Call) and isinstance(decorator.func, ast.Attribute):
+            if decorator.func.attr not in {"command", "callback"}:
+                continue
+            command = (
+                decorator.args[0].value
+                if decorator.args
+                and isinstance(decorator.args[0], ast.Constant)
+                and isinstance(decorator.args[0].value, str)
+                else node.name
+            )
+            return BackendSurface(source, CLI_METHOD, command, node.name)
+        if isinstance(decorator, ast.Attribute) and decorator.attr in {"command", "callback"}:
+            return BackendSurface(source, CLI_METHOD, node.name, node.name)
+    return None
+
+
+def _cli_call_surface(node: ast.Call, source: str) -> BackendSurface | None:
+    if not isinstance(node.func, ast.Attribute):
+        return None
+    if node.func.attr == "add_parser" and node.args:
+        command = node.args[0]
+        if isinstance(command, ast.Constant) and isinstance(command.value, str):
+            # argparse dispatchers select the callback after parsing; the
+            # module's main function is the stable authority we inventory.
+            return BackendSurface(source, CLI_METHOD, command.value, "main")
+    if (
+        node.func.attr == "run"
+        and node.args
+        and isinstance(node.args[0], ast.Name)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "typer"
+    ):
+        return BackendSurface(source, CLI_METHOD, node.args[0].id, node.args[0].id)
+    return None
+
+
+def _is_main_guard(node: ast.If) -> bool:
+    test = node.test
+    if not isinstance(test, ast.Compare) or len(test.comparators) != 1:
+        return False
+    left, right = test.left, test.comparators[0]
+    return (
+        isinstance(left, ast.Name)
+        and left.id == "__name__"
+        and isinstance(right, ast.Constant)
+        and right.value == "__main__"
+    ) or (
+        isinstance(right, ast.Name)
+        and right.id == "__name__"
+        and isinstance(left, ast.Constant)
+        and left.value == "__main__"
+    )
+
+
+def _cli_direct_surface(tree: ast.Module, path: Path, source: str) -> BackendSurface | None:
+    """Find a module executable directly by Python's ``__main__`` protocol.
+
+    A PEP 621 script is not the only way a shipped package is run: the RSI
+    launcher invokes two modules by file path, and ``python -m`` uses a package
+    ``__main__.py``. Keep those execution forms in the same disposition gate
+    without importing arbitrary production modules.
+    """
+    if not any(isinstance(node, ast.If) and _is_main_guard(node) for node in tree.body):
+        return None
+    has_main = any(
+        isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)) and node.name == "main"
+        for node in ast.walk(tree)
+    )
+    route = path.parent.name if path.stem == "__main__" else path.stem
+    handler = "main" if has_main else "__main__"
+    return BackendSurface(source, CLI_METHOD, route, handler)
+
+
+def _cli_command_surfaces(path: Path, repo_root: Path) -> list[BackendSurface]:
+    """Find declared commands and direct module entrypoints.
+
+    This is intentionally syntax-level discovery: importing a CLI can execute
+    configuration or prompt for input. A command declaration is still a stable
+    shipped surface even when its framework resolves the final callback at
+    runtime.
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (SyntaxError, UnicodeDecodeError):
+        return []
+    source = path.relative_to(repo_root).as_posix()
+    surfaces: set[BackendSurface] = set()
+    direct_surface = _cli_direct_surface(tree, path, source)
+    if direct_surface is not None:
+        surfaces.add(direct_surface)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
+            surface = _cli_decorator_surface(node, source)
+        elif isinstance(node, ast.Call):
+            surface = _cli_call_surface(node, source)
+        else:
+            surface = None
+        if surface is not None:
+            surfaces.add(surface)
+    return sorted(surfaces)
+
+
+def _module_source(project_file: Path, module: str, repo_root: Path) -> Path | None:
+    """Resolve a PEP 621 script target without importing the package."""
+    module_path = Path(*module.split("."))
+    package_root = project_file.parent
+    source_roots = [package_root / "src", package_root]
+    # The workspace metadata publishes package scripts too. Its target is
+    # supplied by a workspace member rather than a root-level ``src`` tree.
+    packages_root = repo_root / "packages"
+    if project_file == repo_root / "pyproject.toml" and packages_root.is_dir():
+        source_roots.extend(
+            package / "src" for package in sorted(packages_root.iterdir()) if package.is_dir()
+        )
+    for source_root in source_roots:
+        candidate = source_root / f"{module_path}.py"
+        if candidate.is_file():
+            return candidate
+        candidate = source_root / module_path / "__init__.py"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _cli_project_script_surfaces(path: Path, repo_root: Path) -> list[BackendSurface]:
+    try:
+        document = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
+        raise ValueError(f"cannot read CLI project metadata: {path}") from exc
+    project = document.get("project", {})
+    if not isinstance(project, dict):
+        raise ValueError(f"invalid project metadata in {path}")
+    scripts = project.get("scripts", {})
+    if not isinstance(scripts, dict):
+        raise ValueError(f"invalid project.scripts metadata in {path}")
+    surfaces: list[BackendSurface] = []
+    for command, target in scripts.items():
+        if not isinstance(command, str) or not isinstance(target, str):
+            raise ValueError(f"invalid CLI project script in {path}: {command!r}")
+        module, separator, handler = target.partition(":")
+        if not separator or not module or not handler:
+            raise ValueError(f"invalid CLI project script target in {path}: {target!r}")
+        source_path = _module_source(path, module, repo_root)
+        if source_path is None:
+            raise ValueError(f"CLI project script target does not exist in {path}: {target!r}")
+        surfaces.append(
+            BackendSurface(
+                source=source_path.relative_to(repo_root).as_posix(),
+                method=CLI_METHOD,
+                route=command,
+                handler=handler,
+            )
+        )
+    return surfaces
+
+
+def discover_cli_surfaces(
+    repo_root: Path, roots: list[str], project_roots: list[str] | None = None
+) -> list[BackendSurface]:
+    surfaces: list[BackendSurface] = []
+    for path in _iter_source_files(repo_root, roots, (".py",)):
+        surfaces.extend(_cli_command_surfaces(path, repo_root))
+    for project_root in project_roots or []:
+        project_file = repo_root / project_root
+        if not project_file.is_file():
+            raise ValueError(f"CLI project root does not exist: {project_root}")
+        surfaces.extend(_cli_project_script_surfaces(project_file, repo_root))
+    return sorted(set(surfaces))
+
+
 def _timer_success_signal(text: str) -> bool:
     for match in _TIMER_CALLBACK_RE.finditer(text):
         if _FRONTEND_STATUS_RE.search(match.group("body")):
@@ -251,6 +461,17 @@ def _backend_entry_key(entry: dict[str, Any]) -> str:
         (
             str(entry.get("source", "")),
             str(entry.get("method", "")),
+            str(entry.get("route", "")),
+            str(entry.get("handler", "")),
+        )
+    )
+
+
+def _cli_entry_key(entry: dict[str, Any]) -> str:
+    return ":".join(
+        (
+            str(entry.get("source", "")),
+            str(entry.get("method", CLI_METHOD)),
             str(entry.get("route", "")),
             str(entry.get("handler", "")),
         )
@@ -365,7 +586,12 @@ def _frontend_entry_errors(
 
 
 def validate_matrix(repo_root: Path, matrix: dict[str, Any], *, strict: bool = False) -> list[str]:
-    backend = discover_backend_surfaces(repo_root, list(matrix.get("backend_roots", [])))
+    backend = discover_backend_surfaces(repo_root, _discovery_roots(matrix, "backend_roots"))
+    cli = discover_cli_surfaces(
+        repo_root,
+        _discovery_roots(matrix, "cli_roots"),
+        list(matrix.get("cli_project_roots", [])),
+    )
     frontend = discover_frontend_surfaces(repo_root, list(matrix.get("frontend_roots", [])))
     backend_entries, duplicate_backend = _index_entries(
         list(matrix.get("backend_surfaces", [])), _backend_entry_key, "backend"
@@ -373,7 +599,11 @@ def validate_matrix(repo_root: Path, matrix: dict[str, Any], *, strict: bool = F
     frontend_entries, duplicate_frontend = _index_entries(
         list(matrix.get("frontend_surfaces", [])), _frontend_entry_key, "frontend"
     )
+    cli_entries, duplicate_cli = _index_entries(
+        list(matrix.get("cli_surfaces", [])), _cli_entry_key, "CLI"
+    )
     discovered_backend = {surface.key: surface for surface in backend}
+    discovered_cli = {surface.key: surface for surface in cli}
     discovered_frontend = {surface.key: surface for surface in frontend}
     auto_frontend_entries = {
         key: entry
@@ -381,13 +611,22 @@ def validate_matrix(repo_root: Path, matrix: dict[str, Any], *, strict: bool = F
         if entry.get("signal") in {"timer-status-simulation", "mutating-api-call"}
     }
 
-    errors = [*duplicate_backend, *duplicate_frontend]
+    errors = [*duplicate_backend, *duplicate_frontend, *duplicate_cli]
+    errors.extend(_lab_root_errors(repo_root, matrix))
     errors.extend(
         _coverage_errors(
             set(discovered_backend),
             set(backend_entries),
             unclassified_label="unclassified backend surface",
             stale_label="stale backend surface entry",
+        )
+    )
+    errors.extend(
+        _coverage_errors(
+            set(discovered_cli),
+            set(cli_entries),
+            unclassified_label="unclassified CLI surface",
+            stale_label="stale CLI surface entry",
         )
     )
     errors.extend(
@@ -399,6 +638,7 @@ def validate_matrix(repo_root: Path, matrix: dict[str, Any], *, strict: bool = F
         )
     )
     errors.extend(_backend_entry_errors(discovered_backend, backend_entries, strict=strict))
+    errors.extend(_backend_entry_errors(discovered_cli, cli_entries, strict=strict))
     errors.extend(_frontend_entry_errors(repo_root, frontend_entries, strict=strict))
     return errors
 
@@ -411,7 +651,15 @@ def discovered_inventory(
         "backend_surfaces": [
             surface.__dict__
             for surface in discover_backend_surfaces(
-                repo_root, list(matrix.get("backend_roots", []))
+                repo_root, _discovery_roots(matrix, "backend_roots")
+            )
+        ],
+        "cli_surfaces": [
+            surface.__dict__
+            for surface in discover_cli_surfaces(
+                repo_root,
+                _discovery_roots(matrix, "cli_roots"),
+                list(matrix.get("cli_project_roots", [])),
             )
         ],
         "frontend_surfaces": [

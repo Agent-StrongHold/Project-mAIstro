@@ -1,5 +1,5 @@
 {
-  "_comment": "Truthful shipped-surface matrix (#465). Generated classification is reviewed content: every discovered mutating backend route and frontend execution signal must carry an exact disposition; scripts/check-shipped-surface-truth.py fails closed on drift. Facades stay visible as unresolved/disabled with owning issues rather than being hidden.",
+  "_comment": "Truthful shipped-surface matrix (#465). Generated classification is reviewed content: every discovered mutating/WebSocket backend route, configured CLI command or direct module, published project script, and frontend execution signal must carry an exact disposition; scripts/check-shipped-surface-truth.py fails closed on drift. Facades stay visible as unresolved/disabled with owning issues rather than being hidden.",
   "schema_version": 2,
   "backend_roots": [
     "packages"
@@ -2330,5 +2330,422 @@
       "reason": "redeems a handoff code for a session token",
       "effect_owner": "server.js /api/handoff/redeem (handoff code -> session token)"
     }
+  ],
+  "lab_roots": [],
+  "cli_roots": [
+    "packages/maistro-core/src/maistro/cli",
+    "packages/maistro-rsi/src/maistro_rsi",
+    "packages/maistro-bootstrap/src/maistro_bootstrap",
+    "packages/maistro-registry/src/maistro_registry",
+    "packages/maistro-server/src/maistro_server"
+  ],
+  "cli_surfaces": [
+    {
+      "source": "packages/maistro-bootstrap/src/maistro_bootstrap/builders/model_selector.py",
+      "method": "CLI",
+      "route": "model_selector",
+      "handler": "__main__",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "standalone bootstrap model benchmark and cache utility is local operator tooling",
+      "truth_contract": "selects and caches local builder-model metadata; it does not create a user Run"
+    },
+    {
+      "source": "packages/maistro-bootstrap/src/maistro_bootstrap/cli.py",
+      "method": "CLI",
+      "route": "cli",
+      "handler": "main",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "direct installer module invocation owns local bootstrap artifacts",
+      "truth_contract": "resolves or applies local installation artifacts; it does not create a user Run"
+    },
+    {
+      "source": "packages/maistro-bootstrap/src/maistro_bootstrap/cli.py",
+      "method": "CLI",
+      "route": "main",
+      "handler": "main",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "installer CLI owns local bootstrap artifacts, not canonical user-work execution",
+      "truth_contract": "resolves or applies local installation artifacts; it does not create a user Run"
+    },
+    {
+      "source": "packages/maistro-bootstrap/src/maistro_bootstrap/cli.py",
+      "method": "CLI",
+      "route": "maistro-install",
+      "handler": "run",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "published installer entrypoint owns local bootstrap artifacts, not canonical user-work execution",
+      "truth_contract": "resolves or applies local installation artifacts; it does not create a user Run"
+    },
+    {
+      "source": "packages/maistro-core/src/maistro/cli/__init__.py",
+      "method": "CLI",
+      "route": "maistro",
+      "handler": "main",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "published maistro entrypoint dispatches the canonical operator command surface",
+      "effect_owner": "maistro-core operator command implementation"
+    },
+    {
+      "source": "packages/maistro-core/src/maistro/cli/_approvals.py",
+      "method": "CLI",
+      "route": "approve",
+      "handler": "approvals_approve",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "shipped operator command is classified at its implementation boundary",
+      "effect_owner": "maistro-core operator command implementation"
+    },
+    {
+      "source": "packages/maistro-core/src/maistro/cli/_approvals.py",
+      "method": "CLI",
+      "route": "deny",
+      "handler": "approvals_deny",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "shipped operator command is classified at its implementation boundary",
+      "effect_owner": "maistro-core operator command implementation"
+    },
+    {
+      "source": "packages/maistro-core/src/maistro/cli/_approvals.py",
+      "method": "CLI",
+      "route": "list",
+      "handler": "approvals_list",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "operator command has a local management or read-only contract",
+      "truth_contract": "reports or manages local operator state without creating a user Run"
+    },
+    {
+      "source": "packages/maistro-core/src/maistro/cli/_archive.py",
+      "method": "CLI",
+      "route": "list",
+      "handler": "archive_list",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "operator command has a local management or read-only contract",
+      "truth_contract": "reports or manages local operator state without creating a user Run"
+    },
+    {
+      "source": "packages/maistro-core/src/maistro/cli/_archive.py",
+      "method": "CLI",
+      "route": "show",
+      "handler": "archive_show",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "operator command has a local management or read-only contract",
+      "truth_contract": "reports or manages local operator state without creating a user Run"
+    },
+    {
+      "source": "packages/maistro-core/src/maistro/cli/_builders.py",
+      "method": "CLI",
+      "route": "builders_main",
+      "handler": "builders_main",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "shipped operator command is classified at its implementation boundary",
+      "effect_owner": "maistro-core operator command implementation"
+    },
+    {
+      "source": "packages/maistro-core/src/maistro/cli/_install.py",
+      "method": "CLI",
+      "route": "install_main",
+      "handler": "install_main",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "operator lifecycle command is outside the user-work Run lifecycle",
+      "truth_contract": "changes or starts local installation infrastructure, not user-work execution"
+    },
+    {
+      "source": "packages/maistro-core/src/maistro/cli/_launch.py",
+      "method": "CLI",
+      "route": "server",
+      "handler": "launch_server",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "operator lifecycle command is outside the user-work Run lifecycle",
+      "truth_contract": "changes or starts local installation infrastructure, not user-work execution"
+    },
+    {
+      "source": "packages/maistro-core/src/maistro/cli/_launch.py",
+      "method": "CLI",
+      "route": "tui",
+      "handler": "launch_tui",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "operator command has a local management or read-only contract",
+      "truth_contract": "reports or manages local operator state without creating a user Run"
+    },
+    {
+      "source": "packages/maistro-core/src/maistro/cli/_repair.py",
+      "method": "CLI",
+      "route": "attempt-outputs",
+      "handler": "attempt_outputs",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "shipped operator command is classified at its implementation boundary",
+      "effect_owner": "maistro-core operator command implementation"
+    },
+    {
+      "source": "packages/maistro-core/src/maistro/cli/_sandbox.py",
+      "method": "CLI",
+      "route": "status",
+      "handler": "sandbox_status",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "operator command has a local management or read-only contract",
+      "truth_contract": "reports or manages local operator state without creating a user Run"
+    },
+    {
+      "source": "packages/maistro-core/src/maistro/cli/_security.py",
+      "method": "CLI",
+      "route": "purge-sessions",
+      "handler": "purge_sessions",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "operator security maintenance command uses the canonical credential or session store",
+      "effect_owner": "maistro credential/session stores"
+    },
+    {
+      "source": "packages/maistro-core/src/maistro/cli/_security.py",
+      "method": "CLI",
+      "route": "rotate-credential-key",
+      "handler": "rotate_credential_key",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "operator security maintenance command uses the canonical credential or session store",
+      "effect_owner": "maistro credential/session stores"
+    },
+    {
+      "source": "packages/maistro-core/src/maistro/cli/_upgrade.py",
+      "method": "CLI",
+      "route": "upgrade_main",
+      "handler": "upgrade_main",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "operator command has a local management or read-only contract",
+      "truth_contract": "reports or manages local operator state without creating a user Run"
+    },
+    {
+      "source": "packages/maistro-registry/src/maistro_registry/cli.py",
+      "method": "CLI",
+      "route": "cli",
+      "handler": "main",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "direct governance module invocation is deliberately local to the operator checkout",
+      "truth_contract": "operator-side ADR/spec registry validation or artifact generation; it does not run user work"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/entrypoint.py",
+      "method": "CLI",
+      "route": "entrypoint",
+      "handler": "main",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "container module entrypoint serializes schema migration before starting the canonical API",
+      "truth_contract": "boots the server process and migration lock; it does not create a user Run"
+    },
+    {
+      "source": "packages/maistro-registry/src/maistro_registry/cli.py",
+      "method": "CLI",
+      "route": "generate",
+      "handler": "main",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "governance CLI command is deliberately local to the operator checkout",
+      "truth_contract": "operator-side ADR/spec registry validation or artifact generation; it does not run user work"
+    },
+    {
+      "source": "packages/maistro-registry/src/maistro_registry/cli.py",
+      "method": "CLI",
+      "route": "lint",
+      "handler": "main",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "governance CLI command is deliberately local to the operator checkout",
+      "truth_contract": "operator-side ADR/spec registry validation or artifact generation; it does not run user work"
+    },
+    {
+      "source": "packages/maistro-registry/src/maistro_registry/cli.py",
+      "method": "CLI",
+      "route": "maistro-registry",
+      "handler": "main",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "published governance entrypoint is deliberately local to the operator checkout",
+      "truth_contract": "operator-side ADR/spec registry validation or artifact generation; it does not run user work"
+    },
+    {
+      "source": "packages/maistro-registry/src/maistro_registry/cli.py",
+      "method": "CLI",
+      "route": "validate",
+      "handler": "main",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "governance CLI command is deliberately local to the operator checkout",
+      "truth_contract": "operator-side ADR/spec registry validation or artifact generation; it does not run user work"
+    },
+    {
+      "source": "packages/maistro-registry/src/maistro_registry/cli.py",
+      "method": "CLI",
+      "route": "walk",
+      "handler": "main",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "governance CLI command is deliberately local to the operator checkout",
+      "truth_contract": "operator-side ADR/spec registry validation or artifact generation; it does not run user work"
+    },
+    {
+      "source": "packages/maistro-rsi/src/maistro_rsi/__main__.py",
+      "method": "CLI",
+      "route": "approve",
+      "handler": "main",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "shipped RSI command delegates to the RSI cycle and its explicit promotion gate",
+      "effect_owner": "maistro-rsi self-improvement cycle and promotion gate"
+    },
+    {
+      "source": "packages/maistro-rsi/src/maistro_rsi/__main__.py",
+      "method": "CLI",
+      "route": "deny",
+      "handler": "main",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "shipped RSI command delegates to the RSI cycle and its explicit promotion gate",
+      "effect_owner": "maistro-rsi self-improvement cycle and promotion gate"
+    },
+    {
+      "source": "packages/maistro-rsi/src/maistro_rsi/__main__.py",
+      "method": "CLI",
+      "route": "evolve",
+      "handler": "main",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "shipped RSI command delegates to the RSI cycle and its explicit promotion gate",
+      "effect_owner": "maistro-rsi self-improvement cycle and promotion gate"
+    },
+    {
+      "source": "packages/maistro-rsi/src/maistro_rsi/__main__.py",
+      "method": "CLI",
+      "route": "harvest",
+      "handler": "main",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "shipped RSI command delegates to the RSI cycle and its explicit promotion gate",
+      "effect_owner": "maistro-rsi self-improvement cycle and promotion gate"
+    },
+    {
+      "source": "packages/maistro-rsi/src/maistro_rsi/__main__.py",
+      "method": "CLI",
+      "route": "list",
+      "handler": "main",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "shipped RSI command delegates to the RSI cycle and its explicit promotion gate",
+      "effect_owner": "maistro-rsi self-improvement cycle and promotion gate"
+    },
+    {
+      "source": "packages/maistro-rsi/src/maistro_rsi/__main__.py",
+      "method": "CLI",
+      "route": "maistro_rsi",
+      "handler": "main",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "python -m RSI entrypoint delegates to the explicit self-improvement and promotion lifecycle",
+      "effect_owner": "maistro-rsi self-improvement cycle and promotion gate"
+    },
+    {
+      "source": "packages/maistro-rsi/src/maistro_rsi/__main__.py",
+      "method": "CLI",
+      "route": "review",
+      "handler": "main",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "shipped RSI command delegates to the RSI cycle and its explicit promotion gate",
+      "effect_owner": "maistro-rsi self-improvement cycle and promotion gate"
+    },
+    {
+      "source": "packages/maistro-rsi/src/maistro_rsi/__main__.py",
+      "method": "CLI",
+      "route": "run",
+      "handler": "main",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "shipped RSI command delegates to the RSI cycle and its explicit promotion gate",
+      "effect_owner": "maistro-rsi self-improvement cycle and promotion gate"
+    },
+    {
+      "source": "packages/maistro-rsi/src/maistro_rsi/autorun.py",
+      "method": "CLI",
+      "route": "maistro-rsi-autorun",
+      "handler": "main",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "published RSI autorun entrypoint delegates to the explicit autonomous experimentation and promotion lifecycle",
+      "effect_owner": "maistro-rsi autonomous cycle and promotion gate"
+    },
+    {
+      "source": "packages/maistro-rsi/src/maistro_rsi/cli.py",
+      "method": "CLI",
+      "route": "cli",
+      "handler": "main",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "direct RSI CLI module invocation delegates to the explicit self-improvement lifecycle",
+      "effect_owner": "maistro-rsi self-improvement cycle and promotion gate"
+    },
+    {
+      "source": "packages/maistro-rsi/src/maistro_rsi/cli.py",
+      "method": "CLI",
+      "route": "maistro-rsi",
+      "handler": "main",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "published RSI entrypoint delegates to the RSI cycle and its explicit promotion gate",
+      "effect_owner": "maistro-rsi self-improvement cycle and promotion gate"
+    },
+    {
+      "source": "packages/maistro-rsi/src/maistro_rsi/cli.py",
+      "method": "CLI",
+      "route": "run",
+      "handler": "main",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "shipped RSI command delegates to the RSI cycle and its explicit promotion gate",
+      "effect_owner": "maistro-rsi self-improvement cycle and promotion gate"
+    },
+    {
+      "source": "packages/maistro-rsi/src/maistro_rsi/free_router.py",
+      "method": "CLI",
+      "route": "free_router",
+      "handler": "main",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "launcher helper resolves and registers concrete free-model aliases for RSI execution",
+      "effect_owner": "maistro-rsi free-router selection and gateway registration"
+    },
+    {
+      "source": "packages/maistro-rsi/src/maistro_rsi/model_identifiers.py",
+      "method": "CLI",
+      "route": "model_identifiers",
+      "handler": "main",
+      "disposition": "local-only",
+      "production_enabled": true,
+      "reason": "launcher security boundary validates model identifiers before credentials are mounted",
+      "truth_contract": "canonicalizes or refuses a model roster; it does not create a user Run"
+    }
+  ],
+  "cli_project_roots": [
+    "packages/maistro-core/pyproject.toml",
+    "packages/maistro-rsi/pyproject.toml",
+    "packages/maistro-bootstrap/pyproject.toml",
+    "packages/maistro-registry/pyproject.toml",
+    "pyproject.toml"
   ]
 }
