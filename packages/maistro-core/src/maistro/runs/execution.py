@@ -17,6 +17,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol, runtime_checkable
 
 from maistro.observability.correlation import bind_execution_context
+from maistro.runs.lifecycle import InvalidLifecycleTransition, StaleLeaseRenewal
 from maistro.runs.model import (
     PAUSE_AWAITS_HUMAN,
     AcceptedNodeOutcome,
@@ -29,7 +30,7 @@ from maistro.runs.reconciliation import (
     AttemptLifecycleStore,
     CancellationCause,
 )
-from maistro.runs.store import RunIntegrityError
+from maistro.runs.store import AttemptNotFound, RunIntegrityError
 from maistro.runtime import (
     ExecutionCallable,
     ExecutionPaused,
@@ -223,12 +224,26 @@ class AttemptExecutionService:
                 await asyncio.sleep(interval)
                 try:
                     await self._store.renew_lease(attempt_id, fencing_token=token, ttl=ttl)
-                except Exception:
-                    # The Attempt may have terminalized under us, or the store
-                    # may be briefly unavailable. Neither is this task's problem
-                    # to solve: stop renewing and let the lease lapse, which is
-                    # the same outcome as the process dying and is safe.
+                except (AttemptNotFound, InvalidLifecycleTransition, StaleLeaseRenewal):
+                    # Permanent: this Attempt can never be renewed again with
+                    # this token -- it is gone, terminalized, its lease already
+                    # lapsed, or recovery superseded the holder. The executor's
+                    # own terminalization runs into the same refusal through
+                    # its fencing token, so there is nothing left to prove.
                     return
+                except Exception:
+                    # Transient: the store may be briefly unreachable, but the
+                    # executor is alive *in this process* and keeps running.
+                    # Quitting here would fake death -- the lease would lapse
+                    # and a live Attempt would become reclaimable while its
+                    # work continues, which is the double-execution window.
+                    # One failed tick does not lapse the lease (the cadence is
+                    # a third of the TTL), so keep proving liveness on the next
+                    # tick. A store that stays unreachable past the TTL lapses
+                    # the lease on its own -- that is the genuine-death outcome
+                    # reclamation exists for (ADR-082526-b36a), and it falls
+                    # out of renewal failing, not from this loop quitting.
+                    continue
 
         return asyncio.create_task(_beat())
 
