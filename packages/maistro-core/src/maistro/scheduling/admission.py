@@ -64,6 +64,8 @@ from maistro.runs.sources import (
     SCHEDULE_ID_KEY,
     SCHEDULE_INPUTS_KEY,
     SCHEDULE_SOURCE,
+    SCHEDULE_TRIGGER_KEY,
+    SCHEDULE_TRIGGER_RECURRING,
     SCHEDULED_FOR_KEY,
 )
 from maistro.runs.store import DuplicateOccurrence
@@ -335,6 +337,10 @@ class ScheduleRunAdmitter:
             SCHEDULE_ID_KEY: schedule.schedule_id,
             SCHEDULED_FOR_KEY: fire.scheduled_for.isoformat(),
             SCHEDULE_CATCHUP_KEY: fire.catchup,
+            # Named, not implied by an absence: a Run with no trigger key is a
+            # Run from before the distinction existed (#1120), which is a
+            # different fact from "this was a nominal occurrence".
+            SCHEDULE_TRIGGER_KEY: SCHEDULE_TRIGGER_RECURRING,
         }
         if schedule.inputs:
             # `Schedule.inputs` is the schedule's configured payload, and

@@ -29,6 +29,8 @@ from maistro.runs.sources import (
     SCHEDULE_ID_KEY,
     SCHEDULE_INPUTS_KEY,
     SCHEDULE_SOURCE,
+    SCHEDULE_TRIGGER_KEY,
+    SCHEDULE_TRIGGER_RECURRING,
     SCHEDULED_FOR_KEY,
 )
 from maistro.runs.store import InMemoryRunStore
@@ -99,6 +101,11 @@ class TestProvenance:
         assert run is not None
         assert run.provenance[ADMISSION_SOURCE] == SCHEDULE_SOURCE
         assert run.provenance[SCHEDULE_ID_KEY] == schedule.schedule_id
+        # Named, not implied: an admitter that only ever produced recurring
+        # Runs had no way to say so, and a consumer could not tell a nominal
+        # occurrence from a manual one except by guessing from which keys were
+        # absent (#1120).
+        assert run.provenance[SCHEDULE_TRIGGER_KEY] == SCHEDULE_TRIGGER_RECURRING
 
     async def test_the_nominal_fire_time_is_recorded_not_the_tick(self, harness) -> None:
         """A Run that started late is still attributable to the occurrence it
