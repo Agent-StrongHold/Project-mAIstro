@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from maistro.observability.correlation import bind_execution_context, detached_execution_context
 from maistro.runs.model import TERMINAL_RUN_STATUSES
 from maistro.scheduling import FireDecision, OverlapPolicy, Schedule, evaluate
 from maistro.scheduling.admission import ScheduleRunAdmitter
@@ -559,19 +561,28 @@ class _ScheduleRunner:
         scope_id = f"hive:schedule:{sid}"
         user_id = str(getattr(schedule, "user_id", "") or "") or None
         try:
-            graph, record = await run_registered_dag(
-                str(template_id),
-                workspace_id=scope_id,
-                project_id=scope_id,
-                user_id=user_id,
-                provenance={
-                    "admission_source": "schedule",
-                    "schedule_id": sid,
-                    "schedule_name": schedule.name,
-                    "scheduled_for": (scheduled_for or t).isoformat(),
-                    "catchup": catchup,
-                },
-            )
+            # A timer tick has no incoming request and shares the event loop
+            # with whatever else is running, so it starts from a clean slate
+            # (#1063) rather than risking an unrelated Attempt's ids still
+            # bound on this task, then mints its own correlation root -- the
+            # request-id equivalent of #41's Run being the receipt's identity.
+            with detached_execution_context():
+                request_id = uuid.uuid4().hex[:12]
+                with bind_execution_context(request_id=request_id):
+                    graph, record = await run_registered_dag(
+                        str(template_id),
+                        workspace_id=scope_id,
+                        project_id=scope_id,
+                        user_id=user_id,
+                        provenance={
+                            "admission_source": "schedule",
+                            "schedule_id": sid,
+                            "schedule_name": schedule.name,
+                            "scheduled_for": (scheduled_for or t).isoformat(),
+                            "catchup": catchup,
+                            "request_id": request_id,
+                        },
+                    )
         except Exception as exc:
             logger.warning("Schedule %s run failed: %s", sid, exc)
             log_audit(

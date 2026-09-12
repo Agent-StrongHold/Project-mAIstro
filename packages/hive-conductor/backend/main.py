@@ -65,6 +65,8 @@ from services.ha_tools import get_all_confirms, get_pending_confirms, respond_co
 from services.oauth_login import close_oauth_login_service
 from services.settings_store import SettingsPersistenceError
 
+from maistro.observability.middleware import RequestIDMiddleware
+
 ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT / "frontend" / "dist"
 _log = logging.getLogger("hive.lifespan")
@@ -270,6 +272,14 @@ def create_app() -> FastAPI:
     # application rewiring (#63, the disposition root this fulfils).
     app.add_middleware(PrivilegeMiddleware)
     app.add_middleware(AuthMiddleware)
+
+    # Request correlation — wraps Auth/Privilege/RequestLog/CORS and the route
+    # handler, so a request id is bound onto the canonical execution context
+    # (#1063) before any of them run: forwarding to maistro-server's own
+    # /tasks call, and everything the handler logs, can see it. Missing,
+    # invalid, or duplicate `X-Request-ID` values become a fresh server id
+    # (see `maistro.observability.middleware`), never an unvalidated pass-through.
+    app.add_middleware(RequestIDMiddleware)
 
     # Security headers — the true outermost middleware (added last), so
     # headers land on every response, including early rejections from the
