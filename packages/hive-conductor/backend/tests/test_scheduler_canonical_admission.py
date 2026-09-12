@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import pathlib
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -148,6 +148,63 @@ def test_two_live_runners_claim_one_occurrence(monkeypatch: pytest.MonkeyPatch) 
             assert len(container.run_store._runs) == 1  # type: ignore[attr-defined]
         finally:
             _remove_row(row)
+
+    asyncio.run(scenario())
+
+
+def test_scheduler_tick_executes_the_admitted_run_to_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The configured scheduler closes admission through canonical execution."""
+    from services.scheduler import _ScheduleRunner
+
+    from maistro.container import create_container
+    from maistro.graph.definitions import GraphTemplate, Node
+    from maistro.runs.model import RunStatus
+    from maistro.types.config import AgentConfig
+
+    async def scenario() -> None:
+        container = await create_container(
+            AgentConfig(router_api_key="test-key", workspace_id="ws-1")
+        )
+        root = await container.project_scope_store.create_root("ws-1")
+        await container.template_store.put(
+            GraphTemplate(
+                template_id="scheduled-template",
+                workspace_id="ws-1",
+                version=1,
+                name="Scheduled template",
+                nodes=[
+                    Node(
+                        node_id="only",
+                        node_type="transform.alias_keys",
+                        parameters={"mapping": {}},
+                    )
+                ],
+                edges=[],
+                metadata={"entry_node": "only"},
+            )
+        )
+        row = _Row("s-1", "scheduled-template", project_id=root.project_id)
+        row.cron_expression = "* * * * *"
+        row.last_run = datetime.now(UTC).replace(second=0, microsecond=0) - timedelta(minutes=2)
+        _install_row(row)
+        monkeypatch.setattr(
+            _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
+        )
+        try:
+            await _ScheduleRunner()._tick()
+            recorded = await container.schedule_store.get("s-1")
+            assert recorded is not None and recorded.last_run_id
+            run = await container.run_store.get_run(recorded.last_run_id)
+            assert run is not None and run.status is RunStatus.COMPLETED
+            (node_run,) = await container.run_store.list_node_runs(run.run_id)
+            (attempt,) = await container.run_store.list_attempts(node_run.node_run_id)
+            assert node_run.status is RunStatus.COMPLETED
+            assert attempt.status.value == "completed"
+        finally:
+            _remove_row(row)
+            await container.aclose()
 
     asyncio.run(scenario())
 
