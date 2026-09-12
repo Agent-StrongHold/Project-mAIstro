@@ -40,7 +40,7 @@ jobs:
         run: |
           sha256sum get.sh get.ps1 install.sh > SHA256SUMS
           cat SHA256SUMS
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: installer-checksums
           path: SHA256SUMS
