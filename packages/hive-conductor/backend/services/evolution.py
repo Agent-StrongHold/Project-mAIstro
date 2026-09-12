@@ -105,14 +105,37 @@ class _EvolutionService:
             self._execution_available = False
             self._availability = exc.availability
             self._availability_reason = str(exc)
-        else:
-            self._execution_available = True
-            self._availability = "executable"
-            self._availability_reason = None
+            return
+        # A healthy engine is necessary, not sufficient: a cycle also needs the
+        # domain state `initialize_domain_state` builds. Advertising
+        # "executable" without it enabled the Run Cycle button and started the
+        # cadence, and every request then failed before Run admission with
+        # "population is not initialized" (Codex review). Readiness is one
+        # answer, not two.
+        if self._population is None or self._tournament is None:
+            self._execution_available = False
+            self._availability = "unavailable"
+            self._availability_reason = self._domain_state_reason()
+            return
+        self._execution_available = True
+        self._availability = "executable"
+        self._availability_reason = None
+
+    def _domain_state_reason(self) -> str:
+        reason = "Evolution population is not initialized"
+        if self._last_cycle_error:
+            reason = f"{reason}: {self._last_cycle_error}"
+        return reason
 
     def initialize_domain_state(self) -> None:
-        """Initialize inspectable Evolve state without claiming execution is live."""
+        """Initialize inspectable Evolve state without claiming execution is live.
+
+        Ends by re-deriving availability either way: the domain state is part
+        of what "executable" means, so a successful init is what turns the
+        flag on and a failed one is what keeps it off.
+        """
         if self._population is not None and self._tournament is not None:
+            self._refresh_execution_availability()
             return
         try:
             from maistro_evolve.population import PopulationStore
@@ -123,6 +146,7 @@ class _EvolutionService:
         except Exception as exc:
             self._last_cycle_error = str(exc)
             logger.warning("Evolution population init failed: %s", exc)
+        self._refresh_execution_availability()
 
     def stop(self) -> None:
         self._running = False
@@ -184,11 +208,18 @@ class _EvolutionService:
                 self._availability_reason,
                 availability=self._availability,
             ) from exc
+        if self._population is None or self._tournament is None:
+            # Same answer `/status` gives: unavailable, with the reason, as a
+            # 503 rather than a bare 500 from a RuntimeError.
+            self._execution_available = False
+            self._availability = "unavailable"
+            self._availability_reason = self._domain_state_reason()
+            raise EvolutionUnavailableError(
+                self._availability_reason, availability=self._availability
+            )
         self._execution_available = True
         self._availability = "executable"
         self._availability_reason = None
-        if self._population is None or self._tournament is None:
-            raise RuntimeError("Evolution population is not initialized")
 
         config = EvolutionConfig(
             self_improve=True,
