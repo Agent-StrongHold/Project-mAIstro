@@ -1,11 +1,11 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +9
+  packages/hive-conductor/backend/tests: +15
   packages/maistro-core/tests: +6
 ---
 # 1119-manual-fire-canonical-admission
 
-**+14 across two suites** — the manual schedule fire (`POST /v1/schedules/{id}/run`)
+**+20 across two suites** — the manual schedule fire (`POST /v1/schedules/{id}/run`)
 moved onto the canonical `ScheduleRunAdmitter` authority (#1119), and every
 behavior the migration promised got its own test.
 
@@ -22,7 +22,7 @@ recreated.
 
 `packages/hive-conductor/backend/tests` (+9):
 
-- `test_scheduler.py` (+5) — with a Container present, `fire_now` consumes the
+- `test_scheduler.py` (+11) — with a Container present, `fire_now` consumes the
   Container's injected `schedule_admitter` (a spy proves no second admitter is
   constructed) and enters `admit_due(manual=True)` through the real scope resolution
   (real Workspace/Root Project; the compatibility registry is asserted unread), primes

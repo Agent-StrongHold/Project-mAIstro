@@ -1,12 +1,12 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +21
+  packages/maistro-core/tests: +23
 ---
 # #1119 review: manual fire claims its quota first and leaves the cursor alone
 
-Three behavioral cases in `scheduling/test_admission.py` and six store
+Three behavioral cases in `scheduling/test_admission.py`, six store
 conformance cases (`scheduling/test_store.py`, each over memory / SQLite /
-PostgreSQL = 18 node IDs):
+PostgreSQL = 18 node IDs), plus two PostgreSQL adapter seam cases:
 
 - a manual fire at 12:00:30 leaves `last_fired_at`/`next_due_at` where the
   cron left them, and the following tick still admits the owed 12:00
