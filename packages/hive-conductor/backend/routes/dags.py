@@ -77,11 +77,17 @@ async def _record_run_projection(*, dag_id: str, user_id: str, result: dict[str,
         from services.dag_run_store import get_dag_run_store
 
         store = get_dag_run_store()
+        # The result carries the canonical Workspace/Project the Run was
+        # admitted into (`canonical_dag_runner._project` mirrors
+        # `Run.workspace_id`/`Run.project_id`), so the projection row is born
+        # with the scope inspection will later authorize it at (#1174).
         await store.start_run(
             run_id=run_id,
             canonical_run_id=run_id,
             dag_id=dag_id,
             user_id=user_id,
+            workspace_id=str(result.get("workspace_id") or ""),
+            project_id=str(result.get("project_id") or ""),
         )
         for node_id, node_result in result.get("node_results", {}).items():
             await store.append_event(

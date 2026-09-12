@@ -327,6 +327,64 @@ async def test_delegation_requires_separate_delegable_authority() -> None:
     )
 
 
+@pytest.mark.asyncio
+async def test_remove_membership_revokes_a_grant_and_is_idempotent() -> None:
+    store = InMemoryProjectScopeStore()
+    root = await store.create_root("ws-1")
+    await store.set_membership(
+        ProjectMembership(
+            workspace_id="ws-1",
+            project_id=root.project_id,
+            principal_id="alice",
+            grants={"publish"},
+        )
+    )
+
+    await store.remove_membership(root.project_id, principal_id="alice")
+
+    assert await store.memberships_for(root.project_id, principal_id="alice") == []
+    # Idempotent: revoking a principal with no membership is a no-op, not an error.
+    await store.remove_membership(root.project_id, principal_id="alice")
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_workspace_purges_its_memberships() -> None:
+    # `memberships_for` requires its Project to still exist, so once the
+    # Workspace is purged there is no public-API way to ask "is this
+    # principal's grant still here" for the deleted Project. The store's own
+    # bookkeeping is exactly what purge_workspace exists to bound, so this
+    # checks it directly rather than through a query the deletion itself
+    # makes unaskable.
+    projects = InMemoryProjectScopeStore()
+    workspaces = InMemoryWorkspaceStore(project_store=projects)
+    workspace = await workspaces.create(creator_user_id="alice", name="Alpha")
+    other_workspace = await workspaces.create(creator_user_id="bob", name="Beta")
+    root = await projects.root_for_workspace(workspace.workspace_id)
+    other_root = await projects.root_for_workspace(other_workspace.workspace_id)
+    await projects.set_membership(
+        ProjectMembership(
+            workspace_id=workspace.workspace_id,
+            project_id=root.project_id,
+            principal_id="alice",
+            grants={"publish"},
+        )
+    )
+    await projects.set_membership(
+        ProjectMembership(
+            workspace_id=other_workspace.workspace_id,
+            project_id=other_root.project_id,
+            principal_id="bob",
+            grants={"publish"},
+        )
+    )
+
+    await workspaces.delete(workspace.workspace_id)
+
+    assert (root.project_id, "alice") not in projects._memberships
+    # An unrelated Workspace's membership survives the purge.
+    assert await projects.memberships_for(other_root.project_id) != []
+
+
 def test_graph_templates_are_workspace_wide_not_project_filed() -> None:
     template = GraphTemplate(
         workspace_id="ws-1",

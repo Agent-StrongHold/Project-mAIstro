@@ -228,12 +228,18 @@ class TestTheRepositorysOwnRegistry:
                 assert isinstance(entry["issue"], int), path
                 assert entry["issue"] > 0, path
 
-    def test_main_passes_and_says_how_many(self, gate, capsys) -> None:
+    def test_main_passes_and_says_how_many(
+        self, gate, capsys, real_repository_ratchet_base: None
+    ) -> None:
         assert gate.main() == 0
         assert "unauthenticated path(s) are declared" in capsys.readouterr().out
 
     def test_main_fails_when_a_source_file_is_missing(
-        self, gate, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        gate,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        real_repository_ratchet_base: None,
     ) -> None:
         """A gate that cannot find what it governs must go red, not report
         `ok` over a file it never opened."""
@@ -242,7 +248,12 @@ class TestTheRepositorysOwnRegistry:
         assert gate.main() == 1
 
     def test_main_reports_each_problem(
-        self, gate, bench, capsys, monkeypatch: pytest.MonkeyPatch
+        self,
+        gate,
+        bench,
+        capsys,
+        monkeypatch: pytest.MonkeyPatch,
+        real_repository_ratchet_base: None,
     ) -> None:
         bench('_PUBLIC_PREFIXES = ("/v1/voice/",)\n', {})
         _trusted_registry(gate, monkeypatch, {"/v1/voice/": dict(_ENTRY)})
