@@ -401,6 +401,29 @@ class Container:
             self.session_conn = None
             self.holds_db_pool = False
 
+    def _resolve_chat_auth(self, auth: Any) -> Any:
+        """Require identity for armed controls and deny anonymous tool use."""
+        if auth is not None:
+            return auth
+        if self.sentinel._permission_table or self.strike_tracker:
+            armed = []
+            if self.sentinel._permission_table:
+                armed.append("sentinel permission table")
+            if self.strike_tracker:
+                armed.append("strike tracking")
+            msg = (
+                f"route_request() called without auth while {' and '.join(armed)} "
+                f"{'are' if len(armed) > 1 else 'is'} armed. These controls key on "
+                "the caller identity, so they would silently enforce nothing. "
+                "Pass an AuthContext, or disable them in config.security."
+            )
+            raise AgentError(msg)
+        # The fail-closed table (ADR-072726-0d6b, #1165) is armed even when it
+        # is empty -- it denies -- but strategies only consult Sentinel when
+        # auth is not None. Evaluate an identity-free request as the role-less
+        # anonymous principal so it cannot walk past the table.
+        return ANONYMOUS_AUTH
+
     async def route_request(
         self,
         messages: list[dict[str, Any]],
@@ -424,44 +447,7 @@ class Container:
         every turn to catch a mistake that is not reachable from within one
         process.
         """
-        # An armed security control that cannot run is worse than an unarmed
-        # one: the operator believes it is enforcing. Both controls this
-        # container can arm are keyed on the caller's identity --
-        # Gate.process_input derives user_id from auth and skips every strike
-        # path when it is empty (security/gate.py:62,64,102), and the ReAct and
-        # Artificer strategies guard Sentinel.pre_call with `auth is not None`
-        # (agents/strategies/react.py:252). So with auth=None an armed
-        # permission table authorizes everything and an armed strike tracker
-        # records nothing, silently.
-        #
-        # Refusing here costs nothing at the shipped defaults (empty table, no
-        # tracker -> this never fires) and converts a silent no-op into an
-        # unmissable error for anyone who opts in. That is the same defect
-        # class this container's permission table was fixed for; it should not
-        # reappear one level up.
-        if auth is None and (self.sentinel._permission_table or self.strike_tracker):
-            armed = []
-            if self.sentinel._permission_table:
-                armed.append("sentinel permission table")
-            if self.strike_tracker:
-                armed.append("strike tracking")
-            msg = (
-                f"route_request() called without auth while {' and '.join(armed)} "
-                f"{'are' if len(armed) > 1 else 'is'} armed. These controls key on "
-                "the caller identity, so they would silently enforce nothing. "
-                "Pass an AuthContext, or disable them in config.security."
-            )
-            raise AgentError(msg)
-        if auth is None:
-            # The fail-closed table (ADR-072726-0d6b, #1165) is armed even when
-            # it is empty -- it denies -- but the ReAct and Artificer
-            # strategies only consult Sentinel when `auth is not None`, so a
-            # request that carried no identity used to walk past the table and
-            # execute every tool. It is evaluated as the role-less anonymous
-            # principal instead: every tool it reaches for is denied, and a
-            # configured table keyed on roles still needs a real identity (the
-            # refusal above), because roles cannot be evaluated for nobody.
-            auth = ANONYMOUS_AUTH
+        auth = self._resolve_chat_auth(auth)
 
         if run is None:
             run = await self._admit_chat_turn(

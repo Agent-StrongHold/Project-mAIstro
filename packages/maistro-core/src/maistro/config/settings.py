@@ -24,6 +24,17 @@ from maistro.security.resource_policy import (
 logger = logging.getLogger(__name__)
 
 
+def validate_permission_preset(value: str) -> str:
+    """Reject a preset name that the permission policy does not define."""
+    from maistro.security.permission_policy import VALID_PRESETS
+
+    if value not in VALID_PRESETS:
+        valid = ", ".join(sorted(VALID_PRESETS))
+        msg = f"Unknown permission preset '{value}'. Valid values: {valid}."
+        raise ValueError(msg)
+    return value
+
+
 def validate_cors_origins(origins: list[str]) -> list[str]:
     """Reject CORS origins that would defeat the browser's same-origin policy.
 
@@ -376,17 +387,7 @@ class SecurityConfig(BaseModel):
     permission_preset: str = "none"
     permissions: dict[str, list[str]] = Field(default_factory=dict)
 
-    @field_validator("permission_preset")
-    @classmethod
-    def _known_preset(cls, value: str) -> str:
-        """Refuse a preset name nothing defines, at load rather than at boot."""
-        from maistro.security.permission_policy import VALID_PRESETS
-
-        if value not in VALID_PRESETS:
-            valid = ", ".join(sorted(VALID_PRESETS))
-            msg = f"Unknown permission preset '{value}'. Valid values: {valid}."
-            raise ValueError(msg)
-        return value
+    _check_permission_preset = field_validator("permission_preset")(validate_permission_preset)
 
 
 class CORSConfig(BaseModel):

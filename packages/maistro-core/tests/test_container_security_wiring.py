@@ -518,6 +518,24 @@ async def test_route_request_allows_no_auth_at_shipped_defaults() -> None:
 
 @pytest.mark.contract("boundary")
 @pytest.mark.scope("integration")
+async def test_route_request_preserves_supplied_auth() -> None:
+    container = await _container()
+    auth = AuthContext(user_id="u1", roles=frozenset({"user"}))
+    captured: dict[str, object] = {}
+
+    async def capture(messages, **kwargs):
+        captured.update(kwargs)
+        return {"content": "ok", "finish_reason": "stop"}
+
+    container.conduit.route_request = capture  # type: ignore[method-assign]
+    with contextlib.suppress(Exception):
+        await container.route_request([{"role": "user", "content": "hi"}], auth=auth)
+
+    assert captured["auth"] is auth
+
+
+@pytest.mark.contract("boundary")
+@pytest.mark.scope("integration")
 async def test_route_request_without_auth_is_evaluated_as_the_anonymous_principal() -> None:
     """The fail-closed table must reach a turn that carried no identity.
 
