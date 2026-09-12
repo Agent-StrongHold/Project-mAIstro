@@ -25,17 +25,28 @@ or placeholder-only section.
 
 ### Security
 
-- **Frontend dependency advisories closed (no linked issue: Dependabot
-  security alerts, no tracked issue).** `packages/maistro-canvas/frontend`
-  moves `vitest` (and its `@vitest/*` packages) from 4.1.5 to 4.1.11, the
-  first release past GHSA-82fw-gwwq-j7x9 (path traversal / arbitrary file
-  read via `@vitest/mocker`'s redirect mock), staying on the 4.x line the
-  test suite is written against rather than the 5.0.0 major Dependabot
-  proposed. `packages/hive-conductor/frontend` regenerates its lockfile so the
-  transitive `brace-expansion` (GHSA-rgw5-rvv9-x895, unbounded intermediate
-  arrays) and `nanoid` (GHSA-2v37-7h3g-55p8, zero-size custom generator loop)
-  resolve to patched releases; no direct dependency changes. `npm audit`
-  reports zero findings in both trees.
+- **Sentinel's permission table is fail-closed, and the production paths can
+  both feel it and configure it (#1165).** An empty or omitted deployment
+  table now denies every tool instead of authorizing all of them. A chat turn
+  that carries no identity is evaluated as the role-less anonymous principal
+  rather than walking past the table (the strategies only consult Sentinel
+  when an identity is present), so an auth-less request can no longer execute
+  tools the table denies; a configured table or strike tracking still refuses
+  to run without a real identity. Operators state grants in `maistro.yaml`
+  (`security.permission_preset`, `security.permissions`, unknown presets
+  refused at load) and Hive reads `MAISTRO_PERMISSION_PRESET` /
+  `MAISTRO_PERMISSIONS`; both reach the config the Container is built from.
+  Hive's bridge and engine accept the caller's principal on `route`.
+- **Frontend transitive advisories closed (no linked issue: Dependabot
+  security alerts, no tracked issue).** `packages/hive-conductor/frontend`
+  regenerates its lockfile so the transitive `brace-expansion`
+  (GHSA-rgw5-rvv9-x895, unbounded intermediate arrays) and `nanoid`
+  (GHSA-2v37-7h3g-55p8, zero-size custom generator loop) resolve to patched
+  releases; no direct dependency changes. `npm audit` reports zero findings.
+  The canvas frontend's own `@vitest/mocker` advisory (GHSA-82fw-gwwq-j7x9,
+  path traversal via the redirect mock) is closed on `develop` by #1212's
+  move to `vitest` 5, which this branch now takes rather than the 4.x pin it
+  originally carried.
 - **Python dependency floors raised past their advisories (no linked issue:
   Dependabot security alerts, no tracked issue).** Every `pyproject.toml` in
   the workspace and both backend `requirements.txt` files declared version
