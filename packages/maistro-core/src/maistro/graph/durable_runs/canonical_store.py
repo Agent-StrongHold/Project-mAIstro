@@ -13,11 +13,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Any
 
-from maistro.runs.model import Attempt, NodeRun, RunStatus
+from maistro.runs.lifecycle import settle_open_node_run, transition_node_run, transition_run
+from maistro.runs.model import TERMINAL_RUN_STATUSES, Attempt, NodeRun, Run, RunStatus
 from maistro.runs.store import RunIntegrityError, RunStore
 
 from .continuation import GraphContinuation, GraphContinuationStore
@@ -28,6 +29,101 @@ from .types import DurableRunRecord
 _RECOVERY_VISIBLE_STATUSES = frozenset({RunStatus.WAITING, RunStatus.PAUSED, RunStatus.RUNNING})
 
 logger = logging.getLogger(__name__)
+
+
+def _answered_hitl_evidence(
+    continuation: GraphContinuation,
+) -> dict[str, datetime]:
+    """Read accepted answer timestamps for restart repair.
+
+    Answer records are written into the continuation before its lifecycle is
+    mirrored to the canonical spine. Only the store-authored timestamp counts;
+    malformed or caller-only metadata is ignored rather than used to revive a
+    contradictory Run.
+    """
+    answers_raw = continuation.graph_state.metadata.get("hitl_answers", {})
+    answers = answers_raw if isinstance(answers_raw, Mapping) else {}
+    evidence: dict[str, datetime] = {}
+    for node_id, answer in answers.items():
+        if not isinstance(answer, Mapping):
+            continue
+        answered_at = answer.get("answered_at")
+        if not isinstance(answered_at, str):
+            continue
+        try:
+            moment = datetime.fromisoformat(answered_at)
+        except ValueError:
+            continue
+        if moment.tzinfo is not None:
+            evidence[str(node_id)] = moment
+    return evidence
+
+
+def _terminal_hitl_evidence(
+    continuation: GraphContinuation,
+    target: RunStatus,
+) -> tuple[str, str, datetime, str] | None:
+    """Read one durable terminal HITL decision for crash repair."""
+    metadata = continuation.graph_state.metadata
+    settlements_raw = metadata.get("hitl_settlements", {})
+    settlements = settlements_raw if isinstance(settlements_raw, Mapping) else {}
+    matching = [
+        (str(node_id), settlement)
+        for node_id, settlement in settlements.items()
+        if isinstance(settlement, Mapping) and settlement.get("outcome") == target.value
+    ]
+    if len(matching) != 1:
+        return None
+    node_id, settlement = matching[0]
+    node_run_id = settlement.get("node_run_id")
+    decided_at = settlement.get("decided_at")
+    if not isinstance(node_run_id, str) or not isinstance(decided_at, str):
+        return None
+    try:
+        moment = datetime.fromisoformat(decided_at)
+        if moment.tzinfo is None:
+            return None
+    except ValueError:
+        logger.warning(
+            "cannot reconcile terminal HITL continuation %s: invalid decided_at",
+            continuation.run_id,
+        )
+        return None
+    pause = settlement.get("pause")
+    if target is RunStatus.TIMED_OUT:
+        deadline = pause.get("resume_at") if isinstance(pause, Mapping) else None
+        detail = f" at {deadline}" if isinstance(deadline, str) else ""
+        reason = f"human input for node {node_id!r} timed out{detail}"
+    else:
+        reason = f"human input for node {node_id!r} was cancelled"
+    return node_id, node_run_id, moment, reason
+
+
+def _terminal_hitl_node_runs(
+    node_runs: tuple[NodeRun, ...],
+    *,
+    node_run_id: str,
+    target: RunStatus,
+    moment: datetime,
+    reason: str,
+) -> tuple[NodeRun, ...] | None:
+    """Rebuild canonical NodeRun projections from terminal HITL evidence."""
+    repaired = list(node_runs)
+    for index, node_run in enumerate(repaired):
+        if node_run.status in TERMINAL_RUN_STATUSES:
+            if node_run.node_run_id == node_run_id and node_run.status is not target:
+                return None
+            continue
+        if node_run.node_run_id == node_run_id:
+            repaired[index] = transition_node_run(
+                node_run,
+                target,
+                error=reason,
+                at=moment,
+            )
+        else:
+            repaired[index] = settle_open_node_run(node_run, target, at=moment)
+    return tuple(repaired)
 
 
 class CanonicalDurableRunStore:
@@ -81,6 +177,10 @@ class CanonicalDurableRunStore:
             await mirror_lifecycle(record, run_store=self._run_store)
             return await self._require(record.run_id)
 
+    async def reconcile_run(self, run_id: str) -> bool:
+        """Repair one known Run without depending on scan ordering."""
+        return await self._reconcile_run(run_id)
+
     async def reconcile_persistence(self, *, limit: int = 100) -> int:
         """Boundedly repair cross-store crash residue and purge true orphans."""
         if limit <= 0:
@@ -123,6 +223,10 @@ class CanonicalDurableRunStore:
                 continuation.version,
             )
             return await self._continuations.delete(run_id)
+        if await self._reconcile_answered_hitl(continuation, canonical):
+            return True
+        if await self._reconcile_terminal_hitl(continuation, canonical):
+            return True
         if canonical.status is RunStatus.RUNNING and continuation.status in {
             RunStatus.WAITING,
             RunStatus.PAUSED,
@@ -131,19 +235,113 @@ class CanonicalDurableRunStore:
             return True
         return False
 
+    async def _reconcile_answered_hitl(
+        self,
+        continuation: GraphContinuation,
+        canonical: Run,
+    ) -> bool:
+        """Repair an answer accepted between continuation and spine writes."""
+        if continuation.status is not RunStatus.QUEUED or canonical.status is not RunStatus.PAUSED:
+            return False
+        evidence = _answered_hitl_evidence(continuation)
+        if not evidence:
+            return False
+        record = await self.get(continuation.run_id)
+        if record is None:
+            return False
+        matching = [node for node in record.node_runs if node.node_id in evidence]
+        if not matching or all(node.status in TERMINAL_RUN_STATUSES for node in matching):
+            return False
+
+        node_runs = list(record.node_runs)
+        for index, node_run in enumerate(node_runs):
+            if node_run.status is RunStatus.PAUSED and node_run.node_id in evidence:
+                node_runs[index] = transition_node_run(
+                    node_run,
+                    RunStatus.QUEUED,
+                    at=evidence[node_run.node_id],
+                )
+        answered_at = max(evidence.values())
+        desired = record.model_copy(
+            update={
+                "run": transition_run(record.run, RunStatus.QUEUED, at=answered_at),
+                "node_runs": tuple(node_runs),
+            }
+        )
+        await mirror_lifecycle(desired, run_store=self._run_store)
+        return True
+
+    async def _reconcile_terminal_hitl(
+        self,
+        continuation: GraphContinuation,
+        canonical: Run,
+    ) -> bool:
+        """Repair a crash after continuation settlement but before spine mirroring."""
+        target = continuation.status
+        if target not in {RunStatus.CANCELLED, RunStatus.TIMED_OUT}:
+            return False
+        if canonical.status in TERMINAL_RUN_STATUSES:
+            return False
+        evidence = _terminal_hitl_evidence(continuation, target)
+        if evidence is None:
+            return False
+        node_id, node_run_id, moment, reason = evidence
+        record = await self.get(continuation.run_id)
+        if record is None or not any(
+            node.node_run_id == node_run_id and node.node_id == node_id for node in record.node_runs
+        ):
+            logger.warning(
+                "cannot reconcile terminal HITL continuation %s: node run %s is missing",
+                continuation.run_id,
+                node_run_id,
+            )
+            return False
+        node_runs = _terminal_hitl_node_runs(
+            record.node_runs,
+            node_run_id=node_run_id,
+            target=target,
+            moment=moment,
+            reason=reason,
+        )
+        if node_runs is None:
+            logger.warning(
+                "cannot reconcile terminal HITL continuation %s: node run %s disagrees",
+                continuation.run_id,
+                node_run_id,
+            )
+            return False
+        desired_run = transition_run(record.run, target, at=moment, error=reason)
+        desired = record.model_copy(update={"run": desired_run, "node_runs": node_runs})
+        await mirror_lifecycle(desired, run_store=self._run_store)
+        return True
+
     async def list_by_status(
         self,
         status: RunStatus,
         *,
         limit: int = 100,
         project_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> list[DurableRunRecord]:
-        run_ids = await self._continuations.list_run_ids_by_status(
-            status,
-            limit=limit,
-            project_id=project_id,
-        )
-        return await self._assemble_all(run_ids)
+        if workspace_id is None:
+            run_ids = await self._continuations.list_run_ids_by_status(
+                status,
+                limit=limit,
+                project_id=project_id,
+            )
+        else:
+            # Continuations carry project scope, while Workspace scope belongs
+            # to the canonical Run. Query the spine first so the page limit is
+            # applied after the caller's Workspace boundary, not before it.
+            runs = await self._run_store.list_by_status(
+                status,
+                limit=limit,
+                project_id=project_id,
+                workspace_id=workspace_id,
+            )
+            run_ids = [run.run_id for run in runs]
+        records = await self._assemble_all(run_ids)
+        return [record for record in records if record.run.status is status]
 
     async def list_due(
         self,

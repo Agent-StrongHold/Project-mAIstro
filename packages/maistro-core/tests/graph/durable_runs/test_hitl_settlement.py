@@ -65,6 +65,22 @@ class _CanonicalAsk(BaseNode[_Empty, _Empty]):
         return _Empty()
 
 
+class _AnswerThenComplete(BaseNode[_Empty, _Empty]):
+    kind: ClassVar[str] = "test.hitl_settlement.answer_then_complete"
+    kind_category: ClassVar[str] = "hitl"
+    input_schema: ClassVar[type[BaseModel]] = _Empty
+    output_schema: ClassVar[type[BaseModel]] = _Empty
+
+    async def _execute(self, inputs: _Empty, ctx: NodeContext) -> _Empty:
+        if ((ctx.metadata or {}).get("hitl_answers") or {}).get(ctx.node_id) is None:
+            pause_until(
+                "awaiting_human_answer",
+                resume_at=_DEADLINE,
+                metadata={"question": "Ship it?", "timeout_seconds": 1},
+            )
+        return _Empty()
+
+
 class _LosingTimeoutStore(InMemoryDurableRunStore):
     async def timeout_hitl(
         self,
@@ -424,6 +440,130 @@ async def test_sqlite_instances_serialize_answer_cancel_race(tmp_path: Path) -> 
     persisted = await SqliteDurableRunStore(db).get("sqlite-one-winner")
     assert persisted is not None
     assert persisted.status in {RunStatus.QUEUED, RunStatus.CANCELLED}
+
+
+@pytest.mark.ac("SPEC-083026-73c1/AC-1")
+@pytest.mark.ac("SPEC-083026-73c1/AC-5")
+async def test_reconcile_repairs_crash_after_terminal_continuation_persistence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A crash between continuation and spine writes remains restart-repairable."""
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("ws-hitl-reconcile")
+    project = await projects.create(
+        workspace_id="ws-hitl-reconcile",
+        parent_project_id=root.project_id,
+        name="HITL",
+    )
+    run_store = InMemoryRunStore(project_store=projects)
+    continuations = InMemoryGraphContinuationStore()
+    store = CanonicalDurableRunStore(run_store, continuations)
+    graph = Graph(
+        workspace_id="ws-hitl-reconcile",
+        project_id=project.project_id,
+        name="crash after timeout evidence",
+        nodes=[Node(node_id="ask", node_type=_CanonicalAsk.kind)],
+    )
+    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    paused = await run_durable_graph(
+        graph,
+        store=store,
+        node_resolver=lambda node_id, current_graph: _CanonicalAsk(),
+        run_id=admitted.run_id,
+        run_store=run_store,
+    )
+    original_attempts = paused.attempts
+    original_transition_run = run_store.transition_run
+    crash = True
+
+    async def crash_before_run_mirror(run_id: str, target: RunStatus, **kwargs: Any) -> Any:
+        nonlocal crash
+        if crash and target is RunStatus.TIMED_OUT:
+            crash = False
+            raise RuntimeError("injected crash after HITL continuation write")
+        return await original_transition_run(run_id, target, **kwargs)
+
+    monkeypatch.setattr(run_store, "transition_run", crash_before_run_mirror)
+    with pytest.raises(RuntimeError, match="injected crash"):
+        await store.timeout_hitl(paused.run_id, "ask", at=_AFTER)
+
+    interrupted = await run_store.get_run(paused.run_id)
+    assert interrupted is not None and interrupted.status is RunStatus.PAUSED
+    [interrupted_node] = await run_store.list_node_runs(paused.run_id)
+    assert interrupted_node.status is RunStatus.TIMED_OUT
+
+    reopened = CanonicalDurableRunStore(run_store, continuations)
+    assert await reopened.reconcile_persistence() == 1
+    repaired = await reopened.get(paused.run_id)
+    assert repaired is not None and repaired.status is RunStatus.TIMED_OUT
+    assert repaired.node_runs[0].status is RunStatus.TIMED_OUT
+    assert repaired.attempts == original_attempts
+    assert await reopened.reconcile_persistence() == 0
+
+
+@pytest.mark.ac("SPEC-083026-73c1/AC-3")
+@pytest.mark.ac("SPEC-083026-73c1/AC-5")
+async def test_reconcile_repairs_crash_after_answer_before_run_mirror(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An accepted answer must remain resumable after a split canonical write."""
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("ws-hitl-answer-reconcile")
+    project = await projects.create(
+        workspace_id="ws-hitl-answer-reconcile",
+        parent_project_id=root.project_id,
+        name="HITL",
+    )
+    run_store = InMemoryRunStore(project_store=projects)
+    continuations = InMemoryGraphContinuationStore()
+    store = CanonicalDurableRunStore(run_store, continuations)
+    graph = Graph(
+        workspace_id="ws-hitl-answer-reconcile",
+        project_id=project.project_id,
+        name="crash after answer evidence",
+        nodes=[Node(node_id="ask", node_type=_AnswerThenComplete.kind)],
+    )
+    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    paused = await run_durable_graph(
+        graph,
+        store=store,
+        node_resolver=lambda node_id, current_graph: _AnswerThenComplete(),
+        run_id=admitted.run_id,
+        run_store=run_store,
+    )
+    original_transition_run = run_store.transition_run
+    crash = True
+
+    async def crash_before_run_mirror(run_id: str, target: RunStatus, **kwargs: Any) -> Any:
+        nonlocal crash
+        if crash and target is RunStatus.QUEUED:
+            crash = False
+            raise RuntimeError("injected crash after HITL answer write")
+        return await original_transition_run(run_id, target, **kwargs)
+
+    monkeypatch.setattr(run_store, "transition_run", crash_before_run_mirror)
+    with pytest.raises(RuntimeError, match="injected crash"):
+        await store.submit_hitl_answer(paused.run_id, "ask", {"answer": "yes"}, at=_BEFORE)
+
+    interrupted = await run_store.get_run(paused.run_id)
+    assert interrupted is not None and interrupted.status is RunStatus.PAUSED
+    [interrupted_node] = await run_store.list_node_runs(paused.run_id)
+    assert interrupted_node.status is RunStatus.QUEUED
+
+    resumed = await resume_durable_graph(
+        paused.run_id,
+        store=store,
+        node_resolver=lambda node_id, current_graph: _AnswerThenComplete(),
+        run_store=run_store,
+    )
+    assert resumed.status is RunStatus.COMPLETED
+    assert [attempt.status for attempt in resumed.attempts] == [
+        AttemptStatus.COMPLETED,
+        AttemptStatus.COMPLETED,
+    ]
+    assert [attempt.ordinal for attempt in resumed.attempts] == [1, 2]
+    canonical = await run_store.get_run(paused.run_id)
+    assert canonical is not None and canonical.status is RunStatus.COMPLETED
 
 
 @pytest.mark.ac("SPEC-083026-73c1/AC-1")

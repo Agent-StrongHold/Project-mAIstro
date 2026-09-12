@@ -162,6 +162,17 @@ async def run_durable_graph(
     )
 
 
+async def _reconcile_before_resume(run_id: str, store: DurableRunStore) -> None:
+    """Repair a known cross-store split before reading resume eligibility."""
+    reconcile_run = getattr(store, "reconcile_run", None)
+    if callable(reconcile_run):
+        await reconcile_run(run_id)
+        return
+    reconcile = getattr(store, "reconcile_persistence", None)
+    if callable(reconcile):
+        await reconcile(limit=1)
+
+
 async def resume_durable_graph(
     run_id: str,
     *,
@@ -172,6 +183,10 @@ async def resume_durable_graph(
     events: RecoveryEventSink | None = None,
 ) -> DurableRunRecord:
     """Claim and resume persisted Graph work through canonical physical evidence."""
+    # A direct resume can be the first process to observe a crash between the
+    # continuation write and its canonical lifecycle mirror. Repair that
+    # narrow split before interpreting the spine's status.
+    await _reconcile_before_resume(run_id, store)
     record = await store.get(run_id)
     if record is None:
         raise KeyError(f"no such run: {run_id!r}")

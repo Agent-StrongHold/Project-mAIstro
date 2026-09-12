@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from services.workspace_authority import create_workspace
 
 from maistro.graph.definitions import Graph, Node
 from maistro.graph.execution_state import GraphExecutionState
@@ -24,12 +25,12 @@ def _paused_node_run(run_id: str, node_id: str, ordinal: int) -> NodeRun:
     return transition_node_run(node_run, RunStatus.PAUSED)
 
 
-def _paused_record(run_id: str, *, kind: str = "hitl") -> Any:
+def _paused_record(run_id: str, *, workspace_id: str = "ws-hitl", kind: str = "hitl") -> Any:
     """A Run paused on one node, the way the durable executor leaves one."""
     from maistro.graph.durable_runs.types import DurableRunRecord
 
     graph = Graph(
-        workspace_id="ws-hitl",
+        workspace_id=workspace_id,
         project_id="project-hitl",
         name="approval",
         nodes=[Node(node_id="ask", node_type="human.ask_question")],
@@ -78,7 +79,15 @@ def seeded(admin_client):
     created: list[str] = []
 
     async def _seed(run_id: str, **kwargs: Any) -> None:
-        await store.create(_paused_record(run_id, **kwargs))
+        workspace = await create_workspace(
+            creator_user_id="admin",
+            name=f"Test Workspace-{run_id}",
+            persona_template_id="default",
+            checklist=[],
+            theme_id="default",
+            voice_tone_override=None,
+        )
+        await store.create(_paused_record(run_id, workspace_id=workspace.id, **kwargs))
         created.append(run_id)
 
     yield admin_client, store, _seed
@@ -137,6 +146,84 @@ def _audit_entries(action: str, target: str) -> list[dict[str, Any]]:
         and entry.get("action") == action
         and entry.get("target") == target
     ]
+
+
+@pytest.fixture
+def scoped_client():
+    """A non-admin principal with the route's coarse write permission."""
+    import stores
+    from fastapi.testclient import TestClient
+    from main import app
+
+    stores.users["scope-user"] = stores.users["user"].model_copy(
+        update={
+            "id": "scope-user",
+            "username": "scope-user",
+            "permissions": ["dags.write"],
+        }
+    )
+    client = TestClient(app)
+    try:
+        login = client.post(
+            "/v1/auth/login", json={"username": "scope-user", "password": "testpass"}
+        )
+        assert login.status_code == 200
+        elevated = client.post(
+            "/v1/auth/elevate",
+            json={
+                "password": "testpass",
+                "permissions": ["dags.write"],
+                "task_id": "hitl-scope-test",
+            },
+        )
+        assert elevated.status_code == 200
+        yield client
+    finally:
+        stores.users.pop("scope-user", None)
+
+
+async def test_hitl_routes_are_scoped_to_the_callers_workspaces(scoped_client) -> None:
+    """A scoped writer cannot list, answer, or cancel another workspace's pause."""
+    from services.dag_agents import get_run_store
+
+    store = get_run_store()
+    mine = await create_workspace(
+        creator_user_id="scope-user",
+        name="HITL scope mine",
+        persona_template_id="default",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
+    )
+    other = await create_workspace(
+        creator_user_id="other-tenant",
+        name="HITL scope other",
+        persona_template_id="default",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
+    )
+    mine_id = "hitl-scope-mine"
+    other_id = "hitl-scope-other"
+    await store.create(_paused_record(mine_id, workspace_id=mine.id))
+    await store.create(_paused_record(other_id, workspace_id=other.id))
+    try:
+        pending = scoped_client.get("/v1/hitl/pending").json()
+        assert {item["run_id"] for item in pending} == {mine_id}
+
+        assert (
+            scoped_client.post(
+                f"/v1/hitl/{other_id}/ask/answer", json={"answer": "yes"}
+            ).status_code
+            == 403
+        )
+        assert scoped_client.post(f"/v1/hitl/{other_id}/ask/cancel").status_code == 403
+        record = await store.get(other_id)
+        assert record is not None
+        assert record.run.status is RunStatus.PAUSED
+    finally:
+        store._rows.pop(mine_id, None)
+        store._rows.pop(other_id, None)
 
 
 @pytest.mark.ac("ADR-090726-9a4e/AC-5")
