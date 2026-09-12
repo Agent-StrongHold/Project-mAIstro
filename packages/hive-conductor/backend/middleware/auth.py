@@ -218,14 +218,63 @@ def resolve_principal(
         return None
 
 
-def principal_has_permission(user: dict[str, Any], perm: str) -> bool:
+_ELEVATED_TASK_HEADER = "x-elevated-task"
+_ELEVATED_TASK_MAX = 128
+
+
+def _requested_task(request: Request) -> str | None:
+    """The task id a request claims to act under, or None.
+
+    Taken from `X-Elevated-Task`. The value is only ever used as a lookup key
+    into the session's own grant map, so a forged id simply finds no grant;
+    it is length-bounded anyway so a huge header cannot be carried into logs
+    or comparisons. Task ids are syntax-validated at elevation time
+    (`ElevateBody.validate_task_id`); anything else matches nothing.
+    """
+    value = request.headers.get(_ELEVATED_TASK_HEADER, "").strip()
+    if not value or len(value) > _ELEVATED_TASK_MAX:
+        return None
+    # Keep request-side bindings on the same grammar as elevation and stored
+    # grants. Length alone would still permit a malformed persisted key to be
+    # addressed if it ever entered the session store.
+    if not auth_routes.is_valid_task_id(value):
+        return None
+    return value
+
+
+def principal_has_permission(user: dict[str, Any], perm: str, task_id: str | None = None) -> bool:
+    """May this principal act with `perm`, under the task the request names?
+
+    Elevation is task-scoped (#1239): a grant satisfies a check only when the
+    request names the very task the grant was issued for, and only while that
+    grant is still valid (`elevated_grants` is expiry-filtered upstream in
+    `routes.auth.get_current_user`, which also prunes dead grants). The old
+    check read a session-wide union of every task's grants, so one elevation
+    covered every later request for the session's whole lifetime — the
+    flattening the audit flagged. Admin keeps its bypass: that is the
+    break-glass role, not an elevation.
+    """
     if user.get("role") == "admin":
         return True
     user_perms = user.get("permissions", [])
     if perm not in user_perms:
         return False
-    elevated = user.get("elevated_permissions", [])
-    return perm in elevated
+    if not task_id:
+        # No task named, no elevation. An unnamed request cannot be bound to
+        # a grant, so answering from the union would reintroduce the
+        # session-wide set this check exists to prevent.
+        return False
+    if not auth_routes.is_active_task_for_user(task_id, str(user.get("id") or "")):
+        return False
+    grants = user.get("elevated_grants") or {}
+    if not isinstance(grants, dict):
+        return False
+    grant = grants.get(task_id)
+    if not isinstance(grant, dict):
+        return False
+    # The grant itself is the action association: only the exact permission
+    # requested by this protected operation may be exercised under this task.
+    return perm in grant.get("permissions", [])
 
 
 def origin_allowed(origin: str | None, host: str | None = None) -> bool:
@@ -319,7 +368,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 )
 
             required_perm = self._required_permission(request)
-            if required_perm and not self._check_permission(user, required_perm):
+            if required_perm and not self._check_permission(
+                user, required_perm, _requested_task(request)
+            ):
                 return JSONResponse(
                     status_code=403,
                     content={
@@ -404,5 +455,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 return perm
         return None
 
-    def _check_permission(self, user: dict[str, Any], perm: str) -> bool:
-        return principal_has_permission(user, perm)
+    def _check_permission(
+        self, user: dict[str, Any], perm: str, task_id: str | None = None
+    ) -> bool:
+        return principal_has_permission(user, perm, task_id)

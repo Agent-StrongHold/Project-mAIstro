@@ -274,6 +274,18 @@ class Settings(BaseSettings):
     # is only meaningful with Secure, so it is not offered as a default.
     session_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
 
+    # How long an elevation grant may live, in seconds (#1239). Elevation is
+    # task-scoped AND time-boxed: ADR-028's delegation modes are "15 min,
+    # 1 hour — auto-revokes" and ADR-068 §D calls the self-elevation grant a
+    # "short-TTL elevation grant". The TTL is the backstop that keeps a grant
+    # from outliving its task: a task id that never reaches a terminal status
+    # (a UI ad-hoc id, a mistyped mission id) used to hold its permissions for
+    # the session's full seven-day lifetime. Revocation on task completion
+    # still fires first; this only bounds what revocation does not reach.
+    # 3600 is the generous end of ADR-028's stated range so a long harness
+    # session does not demand re-auth mid-task.
+    elevation_grant_ttl_seconds: int = Field(default=3600, ge=1, le=3600)
+
     # Explicit human-login front-door policy. `hybrid` is the compatibility
     # default for the generic OAuth feature that already shipped: with no OAuth
     # providers configured it behaves exactly like local-only, while a
