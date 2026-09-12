@@ -93,6 +93,57 @@ async def get_run(run_id: str, request: Request) -> dict[str, Any]:
     return detail
 
 
+async def _event_generator(*, uid: str, run_id: str, request: Request, store: Any):
+    q: asyncio.Queue[Any] | None = None
+    try:
+        # Authorization is intentionally checked again when the stream starts.
+        # The response may have been created after the route's admission check
+        # but before this generator is first resumed. Delay subscription until
+        # this check so an abandoned response cannot leave an unauthorized
+        # live queue behind.
+        if not await can_inspect_run(uid, run_id):
+            return
+        q = store.subscribe(run_id)
+
+        # Helpful preamble + keepalive comment so corp proxies don't kill idle
+        # SSE. It contains no run data, but is emitted only while the
+        # subscription is still authorized.
+        yield ": connected\n\n"
+        while True:
+            if await request.is_disconnected():
+                break
+            # Membership can be revoked while q.get() is waiting. Check before
+            # waiting so a queued event is not exposed after the last
+            # successful authorization check.
+            if not await can_inspect_run(uid, run_id):
+                break
+            try:
+                ev = await asyncio.wait_for(q.get(), timeout=15.0)
+            except TimeoutError:
+                # Poll the canonical Workspace boundary even when the run is
+                # idle; otherwise revocation leaves an open stream authorized
+                # until the next event arrives.
+                if not await can_inspect_run(uid, run_id):
+                    break
+                yield ": keepalive\n\n"  # SSE comment line; ignored by clients
+                continue
+            # Do not yield an event that was queued before membership was
+            # revoked while this connection was waiting for it.
+            if not await can_inspect_run(uid, run_id):
+                break
+            payload = {
+                "event_type": ev.event_type,
+                "role": ev.role,
+                "capability": ev.capability,
+                "payload": ev.payload,
+                "timestamp": ev.timestamp,
+            }
+            yield f"event: {ev.event_type}\ndata: {json.dumps(payload)}\n\n"
+    finally:
+        if q is not None:
+            store.unsubscribe(run_id, q)
+
+
 @router.get("/{run_id}/events")
 async def stream_run_events(run_id: str, request: Request) -> StreamingResponse:
     """SSE stream of pm_node_* events for one run. Cancels when the client
@@ -106,33 +157,9 @@ async def stream_run_events(run_id: str, request: Request) -> StreamingResponse:
         raise HTTPException(status_code=404, detail="run not found")
 
     store = get_dag_run_store()
-    q = store.subscribe(run_id)
-
-    async def event_gen():
-        # Helpful preamble + keepalive comment so corp proxies don't kill idle SSE.
-        yield ": connected\n\n"
-        try:
-            while True:
-                if await request.is_disconnected():
-                    break
-                try:
-                    ev = await asyncio.wait_for(q.get(), timeout=15.0)
-                except TimeoutError:
-                    yield ": keepalive\n\n"  # SSE comment line; ignored by clients
-                    continue
-                payload = {
-                    "event_type": ev.event_type,
-                    "role": ev.role,
-                    "capability": ev.capability,
-                    "payload": ev.payload,
-                    "timestamp": ev.timestamp,
-                }
-                yield f"event: {ev.event_type}\ndata: {json.dumps(payload)}\n\n"
-        finally:
-            store.unsubscribe(run_id, q)
 
     return StreamingResponse(
-        event_gen(),
+        _event_generator(uid=uid, run_id=run_id, request=request, store=store),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
