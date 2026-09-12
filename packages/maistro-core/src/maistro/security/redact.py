@@ -212,7 +212,83 @@ def _looks_like_secret(s: str) -> bool:
 # ─── Merge-spans redaction (fix #10: no order-dependent overlaps) ─────────────
 
 
-def redact(text: str) -> str:  # noqa: C901  pre-existing: sequence of independent pattern passes
+def _collect_pattern_spans(text: str) -> list[tuple[int, int, str]]:
+    """Collect spans from the fixed detector patterns."""
+    spans: list[tuple[int, int, str]] = []
+    for pattern, replacement in _PATTERNS:
+        spans.extend((m.start(), m.end(), replacement) for m in pattern.finditer(text))
+    return spans
+
+
+def _collect_special_spans(text: str) -> list[tuple[int, int, str]]:
+    """Collect validated AWS and high-entropy secret spans."""
+    spans: list[tuple[int, int, str]] = []
+    for m in AWS_SECRET_ACCESS_KEY_PATTERN.finditer(text):
+        if looks_like_aws_secret_access_key(m.group()):
+            spans.append((m.start(), m.end(), "[REDACTED_AWS_SECRET_KEY]"))
+    for m in _HIGH_ENTROPY_RE.finditer(text):
+        if _looks_like_secret(m.group()):
+            spans.append((m.start(), m.end(), "[REDACTED_HIGH_ENTROPY]"))
+    return spans
+
+
+def _collect_assignment_spans(
+    text: str,
+    claimed: list[tuple[int, int]],
+) -> list[tuple[int, int, str]]:
+    """Collect assignment values not already claimed by a specific detector."""
+    return [
+        (start, end, "[REDACTED_SECRET_ASSIGNMENT]")
+        for start, end in iter_secret_assignment_value_spans(text)
+        if not any(
+            start < claimed_end and claimed_start < end for claimed_start, claimed_end in claimed
+        )
+    ]
+
+
+def _collect_redaction_spans(text: str) -> list[tuple[int, int, str]]:
+    """Collect detector spans before applying any replacement."""
+    spans = _collect_pattern_spans(text)
+    spans.extend(_collect_special_spans(text))
+    claimed = [(start, end) for start, end, _ in spans]
+    spans.extend(_collect_assignment_spans(text, claimed))
+    return spans
+
+
+def _merge_redaction_spans(
+    spans: list[tuple[int, int, str]],
+) -> list[tuple[int, int, str]]:
+    """Sort spans and keep the longest detector match at each overlap."""
+    if not spans:
+        return []
+    spans.sort(key=lambda s: (s[0], -(s[1] - s[0])))
+    merged: list[tuple[int, int, str]] = []
+    for start, end, repl in spans:
+        if merged and start < merged[-1][1]:
+            prev_start, prev_end, prev_repl = merged[-1]
+            if end > prev_end:
+                merged[-1] = (prev_start, end, prev_repl)
+        else:
+            merged.append((start, end, repl))
+    return merged
+
+
+def _render_redaction(text: str, merged: list[tuple[int, int, str]]) -> str:
+    """Build the redacted text in one pass."""
+    if not merged:
+        return text
+    parts: list[str] = []
+    cursor = 0
+    for start, end, repl in merged:
+        if start > cursor:
+            parts.append(text[cursor:start])
+        parts.append(repl)
+        cursor = end
+    parts.append(text[cursor:])
+    return "".join(parts)
+
+
+def redact(text: str) -> str:
     """Redact all secrets from text using span-merging (no partial fragments)."""
     if not text:
         # `""`, not `text`. The falsy short-circuit used to pass its argument
@@ -223,81 +299,6 @@ def redact(text: str) -> str:  # noqa: C901  pre-existing: sequence of independe
         # rather than live behaviour, and a redactor should fail closed anyway.
         return ""
 
-    # Collect all (start, end, replacement) spans
-    spans: list[tuple[int, int, str]] = []
-
-    for pattern, replacement in _PATTERNS:
-        for m in pattern.finditer(text):
-            spans.append((m.start(), m.end(), replacement))
-
-    # AWS secret access key (#1159): the 40-character paired secret, not the
-    # AKIA identifier. Validated shape, so it lives outside `_PATTERNS`.
-    for m in AWS_SECRET_ACCESS_KEY_PATTERN.finditer(text):
-        if looks_like_aws_secret_access_key(m.group()):
-            spans.append((m.start(), m.end(), "[REDACTED_AWS_SECRET_KEY]"))
-
-    # Entropy heuristic: catch unknown key formats
-    for m in _HIGH_ENTROPY_RE.finditer(text):
-        candidate = m.group()
-        if _looks_like_secret(candidate):
-            spans.append((m.start(), m.end(), "[REDACTED_HIGH_ENTROPY]"))
-
-    # Generic secret assignments (#1159): `my_secret = '...'` and friends.
-    # Only the value span is redacted — the field name stays readable for
-    # audit. A value a more specific detector already claims (an AKIA key, a
-    # JWT, an entropy run) keeps that label: those spans are appended first
-    # and an assignment span overlapping one is skipped — the same precedence
-    # the PII filter encodes by putting `secret_assignment` last in detector
-    # order. What remains visible around the specific label is value filler,
-    # never the credential itself: assignment values contain no whitespace,
-    # so a whitespace-crossing pattern span can only contain an assignment
-    # value, and a same-run pattern span only sits inside it.
-    #
-    # The overlap test is the standard interval predicate — spans [a1,a2) and
-    # [b1,b2) intersect iff a1 < b2 and b1 < a2. A previous revision tested
-    # only `assignment_start < claimed_end`, which is also true when the
-    # claimed span lies entirely AFTER the value (a Slack token later in the
-    # same line), and silently dropped the assignment: the raw credential
-    # survived any line that contained one other redactable span (#1159
-    # repair regression).
-    assignment_spans = [
-        (start, end, "[REDACTED_SECRET_ASSIGNMENT]")
-        for start, end in iter_secret_assignment_value_spans(text)
-    ]
-    if assignment_spans:
-        claimed = [(start, end) for start, end, _ in spans]
-        spans.extend(
-            span
-            for span in assignment_spans
-            if not any(span[0] < end and start < span[1] for start, end in claimed)
-        )
-
-    if not spans:
-        return text
-
-    # Sort by start position, then by length descending (longer match wins)
-    spans.sort(key=lambda s: (s[0], -(s[1] - s[0])))
-
-    # Merge overlapping spans (longest match at each position wins)
-    merged: list[tuple[int, int, str]] = []
-    for start, end, repl in spans:
-        if merged and start < merged[-1][1]:
-            # Overlaps with previous — keep the one that covers more
-            prev_start, prev_end, prev_repl = merged[-1]
-            if end > prev_end:
-                merged[-1] = (prev_start, end, prev_repl)
-            # Otherwise skip (already covered by previous longer match)
-        else:
-            merged.append((start, end, repl))
-
-    # Build result in one pass (no sequential re.sub mutations)
-    parts: list[str] = []
-    cursor = 0
-    for start, end, repl in merged:
-        if start > cursor:
-            parts.append(text[cursor:start])
-        parts.append(repl)
-        cursor = end
-    parts.append(text[cursor:])
-
-    return "".join(parts)
+    spans = _collect_redaction_spans(text)
+    merged = _merge_redaction_spans(spans)
+    return _render_redaction(text, merged)

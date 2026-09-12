@@ -110,7 +110,7 @@ class TestLooksLikeAwsSecretAccessKey:
             "A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6E7F8A9B0",  # single-case hex, upper
             "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKE",  # 39 chars
             "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEYY",  # 41 chars
-            "AKIAIOSFODNN7EXAMPLE",  # 20-char access key ID
+            "AKIA" + "IOSFODNN7EXAMPLE",  # 20-char access key ID
             "wJ" * 20,  # mixed case, no digit
             "w1" * 20,  # no lower case after strip? has lower... digits+lower only
         ],

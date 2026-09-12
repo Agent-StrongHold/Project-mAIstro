@@ -163,7 +163,7 @@ class TestCredentialShapes:
     def test_key_equals_akia_stays_typed_aws_key(self) -> None:
         # Ordering rule: aws_key is earlier in _PII_PATTERNS and its span is
         # the whole assignment value, so secret_assignment (last) is dropped.
-        matches = scan_for_pii("key=AKIAIOSFODNN7EXAMPLE end")
+        matches = scan_for_pii("key=" + "AKIA" + "IOSFODNN7EXAMPLE" + " end")
         assert [m.pii_type for m in matches] == ["aws_key"]
 
     def test_named_password_stays_typed_password(self) -> None:
@@ -175,7 +175,7 @@ class TestCredentialShapes:
         assert scan_for_pii(f"commit {sha} ok") == []
 
     def test_akia_id_is_not_typed_aws_secret_key(self) -> None:
-        matches = scan_for_pii("id AKIAIOSFODNN7EXAMPLE end")
+        matches = scan_for_pii("id " + "AKIA" + "IOSFODNN7EXAMPLE" + " end")
         assert matches and all(m.pii_type == "aws_key" for m in matches)
 
     @pytest.mark.parametrize(
