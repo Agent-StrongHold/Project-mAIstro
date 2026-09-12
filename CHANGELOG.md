@@ -88,6 +88,18 @@ or placeholder-only section.
 
 ### Fixed
 
+- **HITL settlement repair is fair, idempotent, and keeps the recorded time
+  (#737).** Startup reconciliation now finds crash residue (a canonical Run
+  still PAUSED under a CANCELLED/TIMED_OUT continuation) from the canonical
+  PAUSED side before the per-status scan, so an accumulating COMPLETED prefix
+  can no longer starve it; a second tick that loses the race to the same
+  repair stops instead of raising; the repaired Run and NodeRun are stamped
+  with the durable `decided_at`, not the reconciliation time. The expiry tick
+  repairs a continuation whose pause was never mirrored to its Run and widens
+  its candidate page past projections it cannot repair. Migration 033
+  validates each legacy `resume_at` (ISO-8601 with an explicit offset) before
+  casting, leaving malformed or timezone-less values unindexed rather than
+  aborting the upgrade or reading them in the session zone.
 - **Successful NodeRuns require accepted physical evidence (#1153).** New
   completion transitions reject a missing `AcceptedNodeOutcome`, including for
   no-output work. The historical durable-Graph execution entry points delegate

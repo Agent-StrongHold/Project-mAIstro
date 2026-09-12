@@ -17,7 +17,12 @@ from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Any
 
-from maistro.runs.lifecycle import settle_open_node_run, transition_node_run, transition_run
+from maistro.runs.lifecycle import (
+    InvalidLifecycleTransition,
+    settle_open_node_run,
+    transition_node_run,
+    transition_run,
+)
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Attempt, NodeRun, Run, RunStatus
 from maistro.runs.store import RunIntegrityError, RunStore
 
@@ -28,6 +33,10 @@ from .stores import answer_record, settle_hitl_record
 from .types import DurableRunRecord
 
 _RECOVERY_VISIBLE_STATUSES = frozenset({RunStatus.WAITING, RunStatus.PAUSED, RunStatus.RUNNING})
+#: How many times `list_hitl_due` widens its candidate page when the indexed
+#: prefix is occupied by projections the canonical Run disqualifies. Six
+#: doublings read at most 64x the requested work before giving up on a tick.
+_CANDIDATE_PAGES = 6
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +165,19 @@ class CanonicalDurableRunStore:
 
         changed = 0
         seen: set[str] = set()
+        # Terminal settlement residue first, and from the side that shrinks. A
+        # crash between the continuation write and the spine mirror leaves the
+        # canonical Run PAUSED while its continuation is already CANCELLED or
+        # TIMED_OUT. The per-status scan below reads a bounded prefix, and the
+        # COMPLETED bucket in front of those statuses only ever grows, so such
+        # residue behind a full prefix would never be reached. PAUSED canonical
+        # Runs are few and transient: a scan over them always reaches its end.
+        for run in await self._run_store.list_by_status(RunStatus.PAUSED, limit=limit):
+            if run.run_id in seen:
+                continue
+            seen.add(run.run_id)
+            if await self._reconcile_run(run.run_id):
+                changed += 1
         for status in RunStatus:
             remaining = limit - len(seen)
             if remaining <= 0:
@@ -252,7 +274,16 @@ class CanonicalDurableRunStore:
 
         desired_run = transition_run(record.run, target, at=moment, error=reason)
         desired = record.model_copy(update={"run": desired_run, "node_runs": node_runs})
-        await mirror_lifecycle(desired, run_store=self._run_store)
+        try:
+            await mirror_lifecycle(desired, run_store=self._run_store)
+        except InvalidLifecycleTransition:
+            # Two ticks can both pass the non-terminal check above; the one
+            # that mirrors second finds the Run already at `target` and its
+            # terminal hop refused. That is the same repair, already done.
+            current = await self._run_store.get_run(continuation.run_id)
+            if current is not None and current.status is target:
+                return False
+            raise
         return True
 
     async def list_by_status(
@@ -291,15 +322,38 @@ class CanonicalDurableRunStore:
         now: datetime,
         limit: int = 100,
     ) -> list[DurableRunRecord]:
-        run_ids = await self._continuations.list_hitl_due_run_ids(now=now, limit=limit)
-        records = await self._assemble_all(run_ids)
-        return [
-            record
-            for record in records
-            if record.run.status is RunStatus.PAUSED
-            and (deadline := earliest_hitl_deadline(record)) is not None
-            and deadline <= now
-        ][:limit]
+        """Elapsed human pauses the canonical Run agrees are paused.
+
+        The deadline index is a continuation projection; the canonical Run is
+        the authority. A continuation parked PAUSED before its Run was mirrored
+        (a crash between the two writes) sits at the head of the index with a
+        due deadline and is disqualified here on every tick -- so it is
+        repaired in place through the same reconciliation the startup sweep
+        runs, and the page is widened past any candidate that still does not
+        qualify, rather than re-reading one permanent prefix forever.
+        """
+        requested = limit
+        due: list[DurableRunRecord] = []
+        for _ in range(_CANDIDATE_PAGES):
+            run_ids = await self._continuations.list_hitl_due_run_ids(now=now, limit=requested)
+            due = []
+            for record in await self._assemble_all(run_ids):
+                if record.run.status is not RunStatus.PAUSED and await self._reconcile_run(
+                    record.run_id
+                ):
+                    refreshed = await self.get(record.run_id)
+                    if refreshed is not None:
+                        record = refreshed
+                if (
+                    record.run.status is RunStatus.PAUSED
+                    and (deadline := earliest_hitl_deadline(record)) is not None
+                    and deadline <= now
+                ):
+                    due.append(record)
+            if len(due) >= limit or len(run_ids) < requested:
+                break
+            requested *= 2
+        return due[:limit]
 
     async def list_for_project(
         self,

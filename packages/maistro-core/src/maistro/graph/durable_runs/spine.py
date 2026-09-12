@@ -52,6 +52,10 @@ async def mirror_node_run(node_run: NodeRun, *, run_store: RunStore) -> None:
         await run_store.transition_node_run(
             node_run.node_run_id,
             step,
+            # The record's own moment, not the mirror's: a repair that runs
+            # hours after a timeout must stamp the timeout, or canonical
+            # latency and audit read the reconciliation as the settlement.
+            at=node_run.updated_at if final else None,
             result=node_run.result if final else None,
             error=node_run.error if final else None,
             accepted_outcome=outcome if final else None,
@@ -68,6 +72,7 @@ async def mirror_run(record: DurableRunRecord, *, run_store: RunStore) -> None:
         await run_store.transition_run(
             record.run_id,
             step,
+            at=record.run.updated_at if final else None,
             result=record.run.result if final else None,
             error=record.run.error if final else None,
         )

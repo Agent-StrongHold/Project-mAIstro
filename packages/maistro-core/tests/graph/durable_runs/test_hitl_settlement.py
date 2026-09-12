@@ -531,7 +531,185 @@ async def test_reconcile_repairs_crash_after_terminal_continuation_persistence(
     assert repaired is not None and repaired.status is RunStatus.TIMED_OUT
     assert repaired.node_runs[0].status is RunStatus.TIMED_OUT
     assert repaired.attempts == original_attempts
+    # The repair stamps the recorded settlement, not the moment it ran: the
+    # durable evidence says when the deadline elapsed, and canonical latency
+    # and audit read `finished_at`.
+    assert repaired.run.finished_at == _AFTER
+    assert repaired.node_runs[0].finished_at == _AFTER
     assert await reopened.reconcile_persistence() == 0
+
+
+async def _canonical_pause(
+    store: CanonicalDurableRunStore, run_store: InMemoryRunStore, project_id: str
+) -> DurableRunRecord:
+    graph = Graph(
+        workspace_id="ws-hitl-reconcile",
+        project_id=project_id,
+        name="human pause",
+        nodes=[Node(node_id="ask", node_type=_CanonicalAsk.kind)],
+    )
+    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    return await run_durable_graph(
+        graph,
+        store=store,
+        node_resolver=lambda node_id, current_graph: _CanonicalAsk(),
+        run_id=admitted.run_id,
+        run_store=run_store,
+    )
+
+
+async def _canonical_spine() -> tuple[InMemoryRunStore, InMemoryGraphContinuationStore, str]:
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("ws-hitl-reconcile")
+    project = await projects.create(
+        workspace_id="ws-hitl-reconcile", parent_project_id=root.project_id, name="HITL"
+    )
+    return (
+        InMemoryRunStore(project_store=projects),
+        InMemoryGraphContinuationStore(),
+        project.project_id,
+    )
+
+
+async def _crash_after_continuation_timeout(
+    store: CanonicalDurableRunStore,
+    run_store: InMemoryRunStore,
+    run_id: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Persist the terminal continuation, then die before the Run mirror."""
+    original_transition_run = run_store.transition_run
+    crash = True
+
+    async def crash_before_run_mirror(target_run_id: str, target: RunStatus, **kwargs: Any) -> Any:
+        nonlocal crash
+        if crash and target is RunStatus.TIMED_OUT and target_run_id == run_id:
+            crash = False
+            raise RuntimeError("injected crash after HITL continuation write")
+        return await original_transition_run(target_run_id, target, **kwargs)
+
+    monkeypatch.setattr(run_store, "transition_run", crash_before_run_mirror)
+    with pytest.raises(RuntimeError, match="injected crash"):
+        await store.timeout_hitl(run_id, "ask", at=_AFTER)
+    monkeypatch.setattr(run_store, "transition_run", original_transition_run)
+    interrupted = await run_store.get_run(run_id)
+    assert interrupted is not None and interrupted.status is RunStatus.PAUSED
+
+
+async def test_reconcile_reaches_settlement_residue_behind_a_full_terminal_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One consistent TIMED_OUT row is enough to fill a budget of one.
+
+    Scanning the continuation buckets in enum order re-read that consistent
+    prefix on every tick and never reached the residue behind it. Settlement
+    residue is a PAUSED canonical Run with a terminal continuation, so it is
+    found from the canonical side, whose PAUSED bucket does not accumulate.
+    """
+    run_store, continuations, project_id = await _canonical_spine()
+    store = CanonicalDurableRunStore(run_store, continuations)
+    settled = await _canonical_pause(store, run_store, project_id)
+    await store.timeout_hitl(settled.run_id, "ask", at=_AFTER)
+    residue = await _canonical_pause(store, run_store, project_id)
+    await _crash_after_continuation_timeout(store, run_store, residue.run_id, monkeypatch)
+
+    reopened = CanonicalDurableRunStore(run_store, continuations)
+    assert await reopened.reconcile_persistence(limit=1) == 1
+
+    repaired = await reopened.get(residue.run_id)
+    assert repaired is not None and repaired.status is RunStatus.TIMED_OUT
+    assert repaired.run.finished_at == _AFTER
+    assert await reopened.reconcile_persistence(limit=1) == 0
+
+
+async def test_concurrent_reconcile_ticks_settle_the_same_residue_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The tick that mirrors second finds the Run already settled and stops.
+
+    Both ticks read the canonical Run PAUSED; the loser's terminal hop is then
+    refused by the lifecycle table. That refusal is the same repair already
+    done, not a failure of this tick.
+    """
+    run_store, continuations, project_id = await _canonical_spine()
+    store = CanonicalDurableRunStore(run_store, continuations)
+    residue = await _canonical_pause(store, run_store, project_id)
+    await _crash_after_continuation_timeout(store, run_store, residue.run_id, monkeypatch)
+
+    original_transition_run = run_store.transition_run
+    raced = False
+
+    async def other_tick_lands_first(run_id: str, target: RunStatus, **kwargs: Any) -> Any:
+        nonlocal raced
+        if target is RunStatus.TIMED_OUT and not raced:
+            raced = True
+            await original_transition_run(run_id, target, **kwargs)
+        return await original_transition_run(run_id, target, **kwargs)
+
+    monkeypatch.setattr(run_store, "transition_run", other_tick_lands_first)
+    reopened = CanonicalDurableRunStore(run_store, continuations)
+
+    assert await reopened.reconcile_persistence() == 0
+    assert raced is True
+    repaired = await reopened.get(residue.run_id)
+    assert repaired is not None and repaired.status is RunStatus.TIMED_OUT
+    assert repaired.run.finished_at == _AFTER
+
+
+async def test_expiry_repairs_a_pause_whose_run_mirror_never_landed() -> None:
+    """A PAUSED continuation over a RUNNING canonical Run heads the deadline
+    index forever; the tick repairs the projection and settles it."""
+    run_store, continuations, project_id = await _canonical_spine()
+    store = CanonicalDurableRunStore(run_store, continuations)
+    valid = await _canonical_pause(store, run_store, project_id)
+    # The crash shape: the continuation parked PAUSED with its deadline, and
+    # the process died before the canonical Run was mirrored out of RUNNING.
+    original_transition_run = run_store.transition_run
+    crash = True
+
+    async def crash_before_pause_mirror(run_id: str, target: RunStatus, **kwargs: Any) -> Any:
+        nonlocal crash
+        if crash and target is RunStatus.PAUSED:
+            crash = False
+            raise RuntimeError("injected crash before the pause mirror")
+        return await original_transition_run(run_id, target, **kwargs)
+
+    run_store.transition_run = crash_before_pause_mirror  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="injected crash"):
+        await _canonical_pause(store, run_store, project_id)
+    run_store.transition_run = original_transition_run  # type: ignore[method-assign]
+    (stale_id,) = [
+        run_id
+        for run_id in await continuations.list_run_ids_by_status(RunStatus.PAUSED)
+        if run_id != valid.run_id
+    ]
+    stale_run = await run_store.get_run(stale_id)
+    assert stale_run is not None and stale_run.status is RunStatus.RUNNING
+
+    first = await expire_hitl_pauses(store, now=_AFTER, limit=1)
+    second = await expire_hitl_pauses(store, now=_AFTER, limit=1)
+
+    assert {record.run_id for record in first + second} == {stale_id, valid.run_id}
+    for run_id in (stale_id, valid.run_id):
+        settled = await run_store.get_run(run_id)
+        assert settled is not None and settled.status is RunStatus.TIMED_OUT
+    assert await expire_hitl_pauses(store, now=_AFTER, limit=1) == []
+
+
+async def test_expiry_pages_past_a_projection_that_cannot_be_repaired() -> None:
+    """A stale candidate the reconciler cannot fix must not hide the rest."""
+    run_store, continuations, project_id = await _canonical_spine()
+    store = CanonicalDurableRunStore(run_store, continuations)
+    stale = await _canonical_pause(store, run_store, project_id)
+    valid = await _canonical_pause(store, run_store, project_id)
+    # Cancelled on the canonical side while the continuation still says PAUSED.
+    await run_store.transition_run(stale.run_id, RunStatus.CANCELLED)
+
+    settled = await expire_hitl_pauses(store, now=_AFTER, limit=1)
+
+    assert [record.run_id for record in settled] == [valid.run_id]
+    cancelled = await run_store.get_run(stale.run_id)
+    assert cancelled is not None and cancelled.status is RunStatus.CANCELLED
 
 
 async def test_canonical_projection_mirrors_timeout_without_rewriting_attempt() -> None:
