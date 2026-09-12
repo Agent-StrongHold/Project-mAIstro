@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 from typing import Any
 
@@ -12,7 +13,16 @@ from maistro.runs.execution import (
     AttemptExecutionService,
     AttemptReconciler,
 )
-from maistro.runs.model import AcceptedNodeOutcome, Attempt, NodeRun, Run
+from maistro.runs.lifecycle import InvalidLifecycleTransition
+from maistro.runs.model import (
+    TERMINAL_ATTEMPT_STATUSES,
+    TERMINAL_RUN_STATUSES,
+    AcceptedNodeOutcome,
+    Attempt,
+    NodeRun,
+    Run,
+    RunStatus,
+)
 from maistro.runs.store import RunStore
 from maistro.runtime import ExecutionCallable, ExecutionRuntime
 
@@ -185,6 +195,88 @@ class RunExecutionService:
         """Request cancellation using canonical physical Attempt identity."""
 
         return await self._attempts.cancel(attempt_id)
+
+    async def _fence_cancelled_run(self, run_id: str, *, error: str) -> Run:
+        """Persist the cancellation winner, tolerating a concurrent loser."""
+        try:
+            await self._store.transition_run(
+                run_id,
+                RunStatus.CANCELLED,
+                error=error,
+            )
+        except InvalidLifecycleTransition:
+            current = await self._store.get_run(run_id)
+            if current is None:
+                raise ValueError(f"Run {run_id!r} disappeared during cancellation") from None
+            if current.status is not RunStatus.CANCELLED:
+                return current
+        current = await self._store.get_run(run_id)
+        if current is None:
+            raise ValueError(f"Run {run_id!r} disappeared during cancellation")
+        return current
+
+    async def cancel_run(
+        self,
+        run_id: str,
+        *,
+        error: str = "execution cancelled",
+    ) -> Run:
+        """Fence and cancel one Run through its physical Attempts.
+
+        The Run transition is persisted before signaling local Runtime owners.
+        That ordering is the stale-completion fence: a provider that returns in
+        the cancellation race is converted to a cancelled Attempt by
+        ``AttemptExecutionService`` rather than being allowed to publish
+        ordinary success. This method never edits a product projection.
+        """
+        run = await self._store.get_run(run_id)
+        if run is None:
+            raise ValueError(f"Run {run_id!r} does not exist")
+        if run.status in TERMINAL_RUN_STATUSES:
+            return run
+
+        node_runs = await self._store.list_node_runs(run_id)
+        active_attempts = [
+            attempt
+            for node_run in node_runs
+            for attempt in await self._store.list_attempts(node_run.node_run_id)
+            if attempt.status not in TERMINAL_ATTEMPT_STATUSES
+        ]
+        # Another canceller or normal completion may win this durable fence
+        # after the initial read. Only cancellation is idempotent; a completed
+        # or failed outcome remains authoritative.
+        fenced = await self._fence_cancelled_run(run_id, error=error)
+        if fenced.status is not RunStatus.CANCELLED:
+            return fenced
+        owner_found = await AttemptExecutionService.cancel_registered_run(run_id)
+        if not owner_found:
+            # No in-process owner exists. Do not claim an external worker
+            # stopped; persisted recovery remains responsible for that record.
+            await asyncio.gather(
+                *(
+                    AttemptExecutionService.cancel_registered(attempt.attempt_id)
+                    for attempt in active_attempts
+                )
+            )
+
+        # Queue-only Nodes have no Attempt owner to notify. Terminalize those
+        # logical records directly; active Attempts must settle themselves so
+        # an unreachable owner is never represented as stopped work.
+        for node_run in await self._store.list_node_runs(run_id):
+            if node_run.status in TERMINAL_RUN_STATUSES:
+                continue
+            attempts = await self._store.list_attempts(node_run.node_run_id)
+            if any(attempt.status not in TERMINAL_ATTEMPT_STATUSES for attempt in attempts):
+                continue
+            await self._store.transition_node_run(
+                node_run.node_run_id,
+                RunStatus.CANCELLED,
+                error="execution cancelled",
+            )
+        cancelled = await self._store.get_run(run_id)
+        if cancelled is None:  # pragma: no cover - store contract violation
+            raise ValueError(f"Run {run_id!r} disappeared during cancellation")
+        return cancelled
 
 
 __all__ = ["RunExecutionService"]

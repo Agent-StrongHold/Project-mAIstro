@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from itertools import islice
 from typing import Any, Protocol, runtime_checkable
@@ -85,6 +86,14 @@ class ArchivedPayloadUnavailable(RunIntegrityError):
 
 class ActiveAttemptExists(RunIntegrityError):
     pass
+
+
+@dataclass(frozen=True)
+class RunEffectClaim:
+    """The canonical result of an atomic logical-effect admission."""
+
+    run: Run
+    claimed: bool
 
 
 class DuplicateOccurrence(RunIntegrityError):
@@ -331,6 +340,33 @@ class RunStore(Protocol):
     async def non_terminal_run_stats(self) -> tuple[int, datetime | None]: ...
 
     async def get_run(self, run_id: str) -> Run | None: ...
+
+    async def find_child_run_by_effect(
+        self,
+        parent_run_id: str,
+        effect_key: str,
+    ) -> Run | None: ...
+
+    async def claim_run_by_effect(
+        self,
+        graph: Graph,
+        *,
+        effect_key: str,
+        parent_run_id: str | None = None,
+        parent_node_run_id: str | None = None,
+        allow_cross_project: bool = False,
+        persona_id: str | None = None,
+        actor_principal_id: str | None = None,
+        provenance: dict[str, Any] | None = None,
+        retention_expires_at: datetime | None = None,
+        initial_status: RunStatus = RunStatus.CREATED,
+    ) -> RunEffectClaim: ...
+
+    async def update_run_provenance(
+        self,
+        run_id: str,
+        updates: dict[str, Any],
+    ) -> Run: ...
 
     async def transition_run(
         self,
@@ -768,6 +804,84 @@ class InMemoryRunStore:
     async def get_run(self, run_id: str) -> Run | None:
         run = self._runs.get(run_id)
         return run.model_copy(deep=True) if run is not None else None
+
+    async def find_child_run_by_effect(
+        self,
+        parent_run_id: str,
+        effect_key: str,
+    ) -> Run | None:
+        for run in self._runs.values():
+            if (
+                run.parent_run_id == parent_run_id
+                and run.provenance.get("effect_key") == effect_key
+            ):
+                return run.model_copy(deep=True)
+        return None
+
+    async def claim_run_by_effect(
+        self,
+        graph: Graph,
+        *,
+        effect_key: str,
+        parent_run_id: str | None = None,
+        parent_node_run_id: str | None = None,
+        allow_cross_project: bool = False,
+        persona_id: str | None = None,
+        actor_principal_id: str | None = None,
+        provenance: dict[str, Any] | None = None,
+        retention_expires_at: datetime | None = None,
+        initial_status: RunStatus = RunStatus.CREATED,
+    ) -> RunEffectClaim:
+        """Atomically claim a logical effect in the reference store.
+
+        Validation is the only await before the check and insert. The store is
+        event-loop confined, so another caller cannot interleave the claim.
+        Durable stores provide the same contract with a database uniqueness
+        constraint.
+        """
+        if not effect_key:
+            raise ValueError("effect_key must be non-empty")
+        await self._validate_graph_scope(graph)
+        for existing in self._runs.values():
+            if existing.provenance.get("effect_key") == effect_key:
+                return RunEffectClaim(existing.model_copy(deep=True), False)
+        if parent_node_run_id is not None and parent_run_id is None:
+            raise RunIntegrityError("parent_node_run_id requires parent_run_id")
+        parent = self._require_run(parent_run_id) if parent_run_id is not None else None
+        if parent is not None:
+            validate_child_scope(
+                parent,
+                workspace_id=graph.workspace_id,
+                project_id=graph.project_id,
+                allow_cross_project=allow_cross_project,
+            )
+            if parent_node_run_id is not None:
+                parent_node_run = self._require_node_run(parent_node_run_id)
+                if parent_node_run.run_id != parent_run_id:
+                    raise RunIntegrityError("parent_node_run_id does not belong to parent_run_id")
+        run = admit_in_state(
+            Run(
+                workspace_id=graph.workspace_id,
+                project_id=graph.project_id,
+                graph=GraphSnapshot.from_graph(graph.model_copy(deep=True)),
+                parent_run_id=parent_run_id,
+                parent_node_run_id=parent_node_run_id,
+                persona_id=persona_id,
+                actor_principal_id=actor_principal_id,
+                provenance={**dict(provenance or {}), "effect_key": effect_key},
+                retention_expires_at=retention_expires_at,
+            ),
+            initial_status,
+        )
+        self._runs[run.run_id] = run
+        self._prune_terminal_runs()
+        return RunEffectClaim(run.model_copy(deep=True), True)
+
+    async def update_run_provenance(self, run_id: str, updates: dict[str, Any]) -> Run:
+        run = self._require_run(run_id)
+        updated = run.model_copy(update={"provenance": {**run.provenance, **updates}})
+        self._runs[run_id] = updated
+        return updated.model_copy(deep=True)
 
     async def transition_run(
         self,

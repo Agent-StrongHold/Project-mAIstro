@@ -221,7 +221,8 @@ class TaskAttemptExecutor:
         )
         if in_flight is None:
             return False
-        return await self._service.cancel_attempt(in_flight.attempt_id)
+        await self._service.cancel_run(run_id)
+        return True
 
     async def _node_id(self, run_id: str) -> str:
         run = await self._runs.get_run(run_id)

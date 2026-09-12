@@ -16,7 +16,7 @@ from maistro.graph.durable_runs import (
     resume_durable_graph,
     run_durable_graph,
 )
-from maistro.graph.nodes import BaseNode, NodeContext, NodeResult
+from maistro.graph.nodes import BaseNode, NodeContext, NodeResult, ReplaySemantics
 from maistro.runs import Attempt, AttemptStatus, GraphSnapshot, NodeRun, Run
 from maistro.runtime import PythonExecutionRuntime
 
@@ -99,6 +99,37 @@ class _Blocking(BaseNode[_Empty, _Seed]):
         return _Seed(seed="unreachable")
 
 
+class _NeverRetry(BaseNode[_Empty, _Seed]):
+    kind: ClassVar[str] = "test.attempt.never_retry"
+    kind_category: ClassVar[str] = "sync.transform"
+    input_schema: ClassVar[type[BaseModel]] = _Empty
+    output_schema: ClassVar[type[BaseModel]] = _Seed
+    # A label without a concrete key must fail closed rather than retrying an
+    # ambiguous external effect.
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.EFFECT_KEY
+    calls: ClassVar[int] = 0
+
+    async def _execute(self, inputs: _Empty, ctx: NodeContext) -> _Seed:
+        type(self).calls += 1
+        raise RuntimeError("ambiguous effect")
+
+
+def _never_retry_graph() -> Graph:
+    return Graph(
+        workspace_id="ws-1",
+        project_id="project-1",
+        name="Non-retryable",
+        nodes=[
+            Node(
+                node_id="never",
+                node_type=_NeverRetry.kind,
+                policies={"max_attempts": 3},
+            )
+        ],
+        metadata={"entry_node": "never"},
+    )
+
+
 class _RecordingRuntime(PythonExecutionRuntime):
     def __init__(self) -> None:
         super().__init__()
@@ -159,6 +190,12 @@ def _blocking_graph() -> Graph:
         nodes=[Node(node_id="blocking", node_type=_Blocking.kind)],
         metadata={"entry_node": "blocking"},
     )
+
+
+def _never_retry_resolver(node_id: str, graph: Graph) -> BaseNode[Any, Any]:
+    del graph
+    assert node_id == "never"
+    return _NeverRetry()
 
 
 def _blocking_resolver(node_id: str, graph: Graph) -> BaseNode[Any, Any]:
@@ -246,6 +283,22 @@ async def test_public_durable_executor_routes_each_node_run_through_attempt_runt
         node_run.node_run_id for node_run in record.node_runs
     }
     assert set(runtime.execution_ids) == {attempt.attempt_id for attempt in record.attempts}
+
+
+@pytest.mark.asyncio
+async def test_unkeyed_effect_contract_overrides_a_graph_retry_budget() -> None:
+    _NeverRetry.calls = 0
+    store = InMemoryDurableRunStore()
+
+    record = await run_durable_graph(
+        _never_retry_graph(),
+        store=store,
+        node_resolver=_never_retry_resolver,
+    )
+
+    assert record.status is RunStatus.FAILED
+    assert _NeverRetry.calls == 1
+    assert len(record.attempts) == 1
 
 
 @pytest.mark.asyncio

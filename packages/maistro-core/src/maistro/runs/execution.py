@@ -14,15 +14,18 @@ import asyncio
 import contextlib
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from maistro.observability.correlation import bind_execution_context
 from maistro.runs.model import (
     PAUSE_AWAITS_HUMAN,
+    TERMINAL_ATTEMPT_STATUSES,
+    TERMINAL_RUN_STATUSES,
     AcceptedNodeOutcome,
     Attempt,
     AttemptStatus,
     NodeRun,
+    RunStatus,
 )
 from maistro.runs.reconciliation import (
     AttemptLifecycleReconciler,
@@ -171,7 +174,15 @@ class AttemptExecutionStore(AttemptLifecycleStore, Protocol):
 
 
 class AttemptExecutionService:
-    """Execute physical Attempts while keeping lifecycle authority in domain code."""
+    """Execute physical Attempts while keeping lifecycle authority in domain code.
+
+    The small process-local index is only a signal path to the owner of live
+    physical work. Durable Run/Attempt state remains authoritative, so a
+    restarted process can inspect the record but cannot claim that it stopped a
+    worker it does not own.
+    """
+
+    _active_services: ClassVar[dict[str, AttemptExecutionService]] = {}
 
     def __init__(
         self,
@@ -198,6 +209,10 @@ class AttemptExecutionService:
         self._lifecycle = AttemptLifecycleReconciler(store)
         self._after_reconcile = reconciler
         self._lease_ttl = lease_ttl
+        # Serializes the small claim-to-launch window with cancellation. The
+        # lock is released as soon as Runtime has its own active task, so it
+        # never blocks cancellation while provider work is running.
+        self._launch_lock = asyncio.Lock()
 
     def _start_heartbeat(self, attempt_id: str, token: str) -> asyncio.Task[None] | None:
         """Renew this Attempt's lease from this process while the executor runs.
@@ -378,64 +393,172 @@ class AttemptExecutionService:
         if lease is None:
             raise RunIntegrityError("claimed Attempt is missing its execution lease")
         token = lease.fencing_token
-        if attempt.status is AttemptStatus.CREATED:
-            attempt = await self._store.transition_attempt(
-                attempt.attempt_id,
-                AttemptStatus.RUNNING,
-                fencing_token=token,
-            )
-        elif attempt.status is not AttemptStatus.RUNNING:
+        if attempt.status not in {AttemptStatus.CREATED, AttemptStatus.RUNNING}:
             raise RunIntegrityError("execute_claimed requires an active Attempt")
 
         with contextlib.ExitStack() as correlation:
             correlation.enter_context(bind_execution_context(node_run_id=attempt.node_run_id))
             correlation.enter_context(bind_execution_context(attempt_id=attempt.attempt_id))
-            runtime_context = _materialize_execution_context(
-                attempt,
-                execution_context,
-                context_factory,
-            )
-            heartbeat = self._start_heartbeat(attempt.attempt_id, token)
+            heartbeat: asyncio.Task[None] | None = None
+            runtime_task: asyncio.Task[Any] | None = None
+            self._active_services[attempt.attempt_id] = self
             try:
-                try:
-                    result = await self._runtime.execute(
-                        work_item,
-                        runtime_context,
-                        execution_id=attempt.attempt_id,
-                        executor=executor,
-                        timeout_s=timeout_s,
-                    )
-                finally:
-                    await self._stop_heartbeat(heartbeat)
+                attempt, runtime_task, heartbeat = await self._launch_claimed(
+                    attempt,
+                    work_item,
+                    execution_context,
+                    executor=executor,
+                    timeout_s=timeout_s,
+                    context_factory=context_factory,
+                    token=token,
+                )
+                result = await runtime_task
             except ExecutionYielded as exc:
-                terminal = await self._terminalize(
+                terminal, settled = await self._terminalize_if_open(
                     attempt.attempt_id,
                     AttemptStatus.YIELDED,
                     fencing_token=token,
                     result=exc.as_result(),
                 )
-                await self._reconcile(terminal)
+                if settled:
+                    await self._reconcile(terminal)
                 return terminal
             except (asyncio.CancelledError, RuntimeDeadlineExceeded, Exception) as exc:
+                if runtime_task is not None and not runtime_task.done():
+                    runtime_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await runtime_task
                 status, cause, error = _failure_disposition(exc)
-                terminal = await self._terminalize(
+                terminal, settled = await self._terminalize_if_open(
                     attempt.attempt_id,
                     status,
                     fencing_token=token,
                     result=attempt_evidence_of(exc),
                     error=error,
                 )
-                await self._reconcile(terminal, cancellation=cause)
+                if settled:
+                    await self._reconcile(terminal, cancellation=cause)
                 raise
-            terminal = await self._terminalize(
+            else:
+                return await self._settle_provider_success(
+                    attempt,
+                    fencing_token=token,
+                    result=result,
+                    reconcile_logical=reconcile_logical,
+                )
+            finally:
+                await self._stop_heartbeat(heartbeat)
+                self._active_services.pop(attempt.attempt_id, None)
+
+    async def _settle_provider_success(
+        self,
+        attempt: Attempt,
+        *,
+        fencing_token: str,
+        result: Any,
+        reconcile_logical: bool,
+    ) -> Attempt:
+        """Publish a provider success — unless the durable Run fence forbids it.
+
+        The durable Run transition is the cancellation fence. A provider that
+        won the local task race cannot publish a stale successful Attempt
+        after that fence: its success is converted to a cancelled Attempt
+        instead, and the executor unwinds as cancelled.
+        """
+        current_node = await self._store.get_node_run(attempt.node_run_id)
+        current_run = (
+            await self._store.get_run(current_node.run_id) if current_node is not None else None
+        )
+        if current_run is not None and current_run.status is RunStatus.CANCELLED:
+            terminal, settled = await self._terminalize_if_open(
                 attempt.attempt_id,
-                AttemptStatus.COMPLETED,
-                fencing_token=token,
-                result=result,
+                AttemptStatus.CANCELLED,
+                fencing_token=fencing_token,
+                error="execution cancelled by Run fence",
             )
-            if reconcile_logical:
-                await self._reconcile(terminal)
-            return terminal
+            if settled:
+                await self._reconcile(terminal, cancellation=CancellationCause.REQUESTED)
+            raise asyncio.CancelledError
+        terminal, settled = await self._terminalize_if_open(
+            attempt.attempt_id,
+            AttemptStatus.COMPLETED,
+            fencing_token=fencing_token,
+            result=result,
+        )
+        if settled and reconcile_logical:
+            await self._reconcile(terminal)
+        return terminal
+
+    async def _launch_claimed(
+        self,
+        attempt: Attempt,
+        work_item: Any,
+        execution_context: Any,
+        *,
+        executor: ExecutionCallable,
+        timeout_s: float | None,
+        context_factory: AttemptContextFactory | None,
+        token: str,
+    ) -> tuple[Attempt, asyncio.Task[Any], asyncio.Task[None] | None]:
+        """Claim and start Runtime without crossing a cancellation fence."""
+        heartbeat: asyncio.Task[None] | None = None
+        runtime_task: asyncio.Task[Any] | None = None
+        try:
+            async with self._launch_lock:
+                persisted_attempt = await self._store.get_attempt(attempt.attempt_id)
+                if persisted_attempt is None:
+                    raise RunIntegrityError(
+                        f"Attempt {attempt.attempt_id!r} disappeared before launch"
+                    )
+                if persisted_attempt.status in TERMINAL_ATTEMPT_STATUSES:
+                    if persisted_attempt.status is AttemptStatus.CANCELLED:
+                        raise asyncio.CancelledError
+                    raise RunIntegrityError("execute_claimed requires an active Attempt")
+                attempt = persisted_attempt
+                if attempt.status is AttemptStatus.CREATED:
+                    attempt = await self._store.transition_attempt(
+                        attempt.attempt_id,
+                        AttemptStatus.RUNNING,
+                        fencing_token=token,
+                    )
+                elif attempt.status is not AttemptStatus.RUNNING:
+                    raise RunIntegrityError("execute_claimed requires an active Attempt")
+                current_node = await self._store.get_node_run(attempt.node_run_id)
+                current_run = (
+                    await self._store.get_run(current_node.run_id)
+                    if current_node is not None
+                    else None
+                )
+                if current_run is not None and current_run.status in TERMINAL_RUN_STATUSES:
+                    raise asyncio.CancelledError
+                runtime_context = _materialize_execution_context(
+                    attempt,
+                    execution_context,
+                    context_factory,
+                )
+                heartbeat = self._start_heartbeat(attempt.attempt_id, token)
+                runtime_task = asyncio.create_task(
+                    self._runtime.execute(
+                        work_item,
+                        runtime_context,
+                        execution_id=attempt.attempt_id,
+                        executor=executor,
+                        timeout_s=timeout_s,
+                    )
+                )
+                # Runtime registers its execution before its first await.
+                # Yield once while holding the launch lock so cancellation
+                # either sees that owner or waits for this launch to finish.
+                await asyncio.sleep(0)
+            assert runtime_task is not None
+            return attempt, runtime_task, heartbeat
+        except BaseException:
+            if runtime_task is not None and not runtime_task.done():
+                runtime_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await runtime_task
+            await self._stop_heartbeat(heartbeat)
+            raise
 
     async def accept_outcome(self, outcome: AcceptedNodeOutcome) -> NodeRun:
         """Accept one persisted physical result with an explicit logical disposition."""
@@ -467,8 +590,116 @@ class AttemptExecutionService:
                 "before redispatch"
             )
 
+    @classmethod
+    async def cancel_registered(cls, attempt_id: str) -> bool:
+        """Cancel the local owner and persist a pre-launch cancellation."""
+        service = cls._active_services.get(attempt_id)
+        if service is None:
+            return False
+        return await service._cancel_local_attempt(attempt_id)
+
     async def cancel(self, attempt_id: str) -> bool:
-        return await self._runtime.cancel(attempt_id)
+        return await self.cancel_registered(attempt_id)
+
+    async def _cancel_local_attempt(self, attempt_id: str) -> bool:
+        async with self._launch_lock:
+            attempt = await self._store.get_attempt(attempt_id)
+            if attempt is None:
+                return False
+            if attempt.status in TERMINAL_ATTEMPT_STATUSES:
+                return attempt.status is AttemptStatus.CANCELLED
+            cancelled = await self._runtime.cancel(attempt_id)
+            if cancelled:
+                return True
+            lease = attempt.execution_lease
+            if lease is None:
+                raise RunIntegrityError("active Attempt is missing its execution lease")
+            terminal = await self._terminalize(
+                attempt_id,
+                AttemptStatus.CANCELLED,
+                fencing_token=lease.fencing_token,
+                error="execution cancelled before Runtime launch",
+            )
+        await self._reconcile(terminal, cancellation=CancellationCause.REQUESTED)
+        return True
+
+    @classmethod
+    async def cancel_registered_run(cls, run_id: str) -> bool:
+        """Cancel the local owner of a Run, including its durable projection."""
+        owners: set[AttemptExecutionService] = set()
+        for service in set(cls._active_services.values()):
+            run = await service._store.get_run(run_id)
+            if run is not None:
+                owners.add(service)
+        for service in owners:
+            await service._cancel_local_run(run_id)
+        return bool(owners)
+
+    async def _cancel_local_run(self, run_id: str) -> None:
+        async with self._launch_lock:
+            node_runs = await self._store.list_node_runs(run_id)
+            active = [
+                attempt
+                for node_run in node_runs
+                for attempt in await self._store.list_attempts(node_run.node_run_id)
+                if attempt.status not in TERMINAL_ATTEMPT_STATUSES
+            ]
+            current_run = await self._store.get_run(run_id)
+            if current_run is None:
+                raise RunIntegrityError(f"Run {run_id!r} does not exist")
+            if current_run.status is not RunStatus.CANCELLED:
+                await self._store.transition_run(
+                    run_id, RunStatus.CANCELLED, error="execution cancelled"
+                )
+            await asyncio.gather(*(self._runtime.cancel(attempt.attempt_id) for attempt in active))
+            for node_run in await self._store.list_node_runs(run_id):
+                if node_run.status in TERMINAL_RUN_STATUSES:
+                    continue
+                attempts = await self._store.list_attempts(node_run.node_run_id)
+                if any(attempt.status not in TERMINAL_ATTEMPT_STATUSES for attempt in attempts):
+                    continue
+                await self._store.transition_node_run(
+                    node_run.node_run_id,
+                    RunStatus.CANCELLED,
+                    error="execution cancelled",
+                )
+
+    async def _terminalize_if_open(
+        self,
+        attempt_id: str,
+        status: AttemptStatus,
+        *,
+        fencing_token: str,
+        result: object | None = None,
+        error: str | None = None,
+    ) -> tuple[Attempt, bool]:
+        """Transition an open Attempt; report whether THIS call settled it.
+
+        ``True`` means this call wrote the terminal status and therefore owns
+        the reconciliation that follows it. ``False`` means the Attempt was
+        already terminal: another authority — crash reclamation, a run-level
+        cancel, the pre-launch fence — settled the durable record and applied
+        its own disposition. Reconciling that record again here would override
+        the settled answer with this task's view of why the work stopped: a
+        reclaimed Attempt's NodeRun would turn wrongly terminal instead of
+        staying parked for the policy that owns the retry decision
+        (ADR-082526-b36a).
+        """
+        current = await self._store.get_attempt(attempt_id)
+        if current is None:
+            raise RunIntegrityError(f"Attempt {attempt_id!r} disappeared during execution")
+        if current.status in TERMINAL_ATTEMPT_STATUSES:
+            return current, False
+        return (
+            await self._terminalize(
+                attempt_id,
+                status,
+                fencing_token=fencing_token,
+                result=result,
+                error=error,
+            ),
+            True,
+        )
 
     async def _terminalize(
         self,

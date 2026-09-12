@@ -35,6 +35,7 @@ from maistro.tasks.runner import TaskRunner
 from maistro.tools.sandbox.server import cleanup_all_containers
 from maistro.types.config import AgentConfig
 from maistro_server.api import (
+    a2a,
     canvas,
     chat_completions,
     health,
@@ -281,6 +282,11 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
     # The handles these APIs return must resolve against the exact stores the
     # Container selected, not lookalike stores reconstructed by the server.
     runs.configure_run_store(run_store)
+    a2a.configure_a2a_admission(
+        run_store,
+        container.project_scope_store,
+        workspace_id=settings.workspace_id,
+    )
     workspaces.configure_workspace_store(container.workspace_store)
     # The OpenAI-compatible door now routes through the same Container (#142),
     # which owns the Gate scan, the Run admission and the terminalization that
@@ -326,6 +332,7 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Run afterwards — and without this that guard latched permanently.
         reset_task_queue()
         runs.configure_run_store(None)
+        a2a.configure_a2a_admission(None, None)
         workspaces.configure_workspace_store(None)
 
         await cleanup_all_containers()
@@ -453,6 +460,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 # Register routers — unversioned operational endpoints
 app.include_router(health.router)
 app.include_router(metrics.router)
+app.include_router(a2a.router)
 
 # API v1 — all business endpoints under /v1 prefix for versioning
 API_V1_PREFIX = "/v1"

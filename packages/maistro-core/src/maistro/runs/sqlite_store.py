@@ -40,6 +40,7 @@ from maistro.runs.store import (
     AttemptNotFound,
     DuplicateOccurrence,
     NodeRunNotFound,
+    RunEffectClaim,
     RunIntegrityError,
     RunNotFound,
     StaleExecutionFence,
@@ -117,6 +118,13 @@ CREATE INDEX IF NOT EXISTS idx_canonical_runs_workspace_project
     ON canonical_runs(workspace_id, project_id);
 CREATE INDEX IF NOT EXISTS idx_canonical_runs_parent
     ON canonical_runs(parent_run_id);
+
+-- One canonical Run claims each logical effect. The effect key is the stable
+-- identity used by retries and remote receivers; the partial predicate keeps
+-- ordinary Runs that have no effect key out of the index.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_canonical_runs_effect
+    ON canonical_runs(json_extract(payload, '$.provenance.effect_key'))
+    WHERE json_extract(payload, '$.provenance.effect_key') IS NOT NULL;
 
 -- One Run per schedule firing (#220). The unique index *is* the claim: two
 -- tickers evaluating the same due window both reach the insert, and the
@@ -305,6 +313,134 @@ class SqliteRunStore:
             (run_id,),
         )
         return model_of_json(Run, row[0]) if row is not None else None
+
+    async def find_child_run_by_effect(
+        self,
+        parent_run_id: str,
+        effect_key: str,
+    ) -> Run | None:
+        row = await self._fetchone(
+            """SELECT payload FROM canonical_runs
+               WHERE parent_run_id = ?
+                 AND json_extract(payload, '$.provenance.effect_key') = ?
+               ORDER BY rowid LIMIT 1""",
+            (parent_run_id, effect_key),
+        )
+        return model_of_json(Run, row[0]) if row is not None else None
+
+    async def claim_run_by_effect(  # noqa: C901
+        self,
+        graph: Graph,
+        *,
+        effect_key: str,
+        parent_run_id: str | None = None,
+        parent_node_run_id: str | None = None,
+        allow_cross_project: bool = False,
+        persona_id: str | None = None,
+        actor_principal_id: str | None = None,
+        provenance: dict[str, Any] | None = None,
+        retention_expires_at: datetime | None = None,
+        initial_status: RunStatus = RunStatus.CREATED,
+    ) -> RunEffectClaim:
+        """Atomically insert or recover one logical effect."""
+        if not effect_key:
+            raise ValueError("effect_key must be non-empty")
+        async with self._write_lock:
+            await self._validate_graph_scope(graph)
+            await self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = await self._fetchone(
+                    """SELECT payload FROM canonical_runs
+                       WHERE json_extract(payload, '$.provenance.effect_key') = ?
+                       LIMIT 1""",
+                    (effect_key,),
+                )
+                if row is not None:
+                    await self._conn.commit()
+                    return RunEffectClaim(model_of_json(Run, row[0]), False)
+                if parent_node_run_id is not None and parent_run_id is None:
+                    raise RunIntegrityError("parent_node_run_id requires parent_run_id")
+                parent = await self._require_run(parent_run_id) if parent_run_id else None
+                if parent is not None:
+                    validate_child_scope(
+                        parent,
+                        workspace_id=graph.workspace_id,
+                        project_id=graph.project_id,
+                        allow_cross_project=allow_cross_project,
+                    )
+                    if parent_node_run_id is not None:
+                        parent_node_run = await self._require_node_run(parent_node_run_id)
+                        if parent_node_run.run_id != parent_run_id:
+                            raise RunIntegrityError(
+                                "parent_node_run_id does not belong to parent_run_id"
+                            )
+                run = admit_in_state(
+                    Run(
+                        workspace_id=graph.workspace_id,
+                        project_id=graph.project_id,
+                        graph=GraphSnapshot.from_graph(graph.model_copy(deep=True)),
+                        parent_run_id=parent_run_id,
+                        parent_node_run_id=parent_node_run_id,
+                        persona_id=persona_id,
+                        actor_principal_id=actor_principal_id,
+                        provenance={**dict(provenance or {}), "effect_key": effect_key},
+                        retention_expires_at=retention_expires_at,
+                    ),
+                    initial_status,
+                )
+                await self._conn.execute(
+                    """INSERT INTO canonical_runs
+                       (run_id, workspace_id, project_id, parent_run_id,
+                        parent_node_run_id, status, payload)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        run.run_id,
+                        run.workspace_id,
+                        run.project_id,
+                        run.parent_run_id,
+                        run.parent_node_run_id,
+                        run.status.value,
+                        json_of(run),
+                    ),
+                )
+                await self._conn.commit()
+                return RunEffectClaim(run, True)
+            except sqlite3.IntegrityError as exc:
+                await self._conn.rollback()
+                if "idx_canonical_runs_effect" not in str(exc):
+                    raise
+                existing = await self.find_run_by_effect(effect_key)
+                if existing is None:
+                    raise
+                return RunEffectClaim(existing, False)
+            except BaseException:
+                await self._conn.rollback()
+                raise
+
+    async def find_run_by_effect(self, effect_key: str) -> Run | None:
+        row = await self._fetchone(
+            """SELECT payload FROM canonical_runs
+               WHERE json_extract(payload, '$.provenance.effect_key') = ?
+               LIMIT 1""",
+            (effect_key,),
+        )
+        return model_of_json(Run, row[0]) if row is not None else None
+
+    async def update_run_provenance(self, run_id: str, updates: dict[str, Any]) -> Run:
+        async with self._write_lock:
+            row = await self._fetchone(
+                "SELECT payload FROM canonical_runs WHERE run_id = ?", (run_id,)
+            )
+            if row is None:
+                raise RunNotFound(run_id)
+            run = model_of_json(Run, row[0])
+            updated = run.model_copy(update={"provenance": {**run.provenance, **updates}})
+            await self._conn.execute(
+                "UPDATE canonical_runs SET payload = ? WHERE run_id = ?",
+                (json_of(updated), run_id),
+            )
+            await self._conn.commit()
+            return updated
 
     async def list_by_status(
         self,

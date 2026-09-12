@@ -33,7 +33,7 @@ from maistro.providers.registry import InMemoryProviderRegistry
 from maistro.providers.router import CostAwareRouter
 
 from . import register_node
-from .base import BaseNode, NodeContext
+from .base import BaseNode, NodeContext, ReplaySemantics
 
 
 class LlmSummarizeIn(BaseModel):
@@ -84,7 +84,9 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
     input_schema: ClassVar[type[BaseModel]] = LlmSummarizeIn
     output_schema: ClassVar[type[BaseModel]] = LlmSummarizeOut
     cost_hint: ClassVar[float] = 3.0  # billable LLM call
-    idempotent: ClassVar[bool] = False  # LLM output varies; not safe to retry blindly
+    replay_semantics: ClassVar[ReplaySemantics] = (
+        ReplaySemantics.NON_RETRYABLE
+    )  # LLM output varies; not safe to retry blindly
     external_io: ClassVar[bool] = True
     display_name: ClassVar[str] = "LLM: summarize"
     description: ClassVar[str] = (

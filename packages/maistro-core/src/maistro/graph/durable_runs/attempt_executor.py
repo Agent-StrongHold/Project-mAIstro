@@ -21,6 +21,7 @@ from maistro.graph.nodes.base import (
     RESUME_ON_ELAPSED,
     NodeContext,
     NodeResult,
+    ReplaySemantics,
 )
 from maistro.observability.correlation import bind_execution_context
 from maistro.runs.execution import AttemptExecutionService
@@ -504,6 +505,12 @@ async def _execute_frontier(
         inputs: dict[str, Any],
     ) -> Any:
         prior_completion_accepted = False
+        logical_effect_key: str | None = None
+        key_builder = getattr(node, "logical_effect_key", None)
+        input_schema = getattr(node, "input_schema", None)
+        if callable(key_builder):
+            key_inputs = input_schema.model_validate(inputs) if input_schema is not None else inputs
+            logical_effect_key = key_builder(key_inputs, ctx)
         attempts = await execution_store.list_attempts(node_run.node_run_id)
         if attempts and attempts[-1].status is AttemptStatus.COMPLETED:
             persisted_result = NodeResult.model_validate(attempts[-1].result)
@@ -519,6 +526,10 @@ async def _execute_frontier(
                     node_run,
                     ctx,
                     persisted_result,
+                    ReplaySemantics(
+                        getattr(node, "replay_semantics", ReplaySemantics.NON_RETRYABLE)
+                    ),
+                    logical_effect_key,
                 )
 
         raw_result: NodeResult | None = None
@@ -557,6 +568,8 @@ async def _execute_frontier(
             node_run,
             ctx,
             raw_result,
+            ReplaySemantics(getattr(node, "replay_semantics", ReplaySemantics.NON_RETRYABLE)),
+            logical_effect_key,
         )
 
     return tuple(

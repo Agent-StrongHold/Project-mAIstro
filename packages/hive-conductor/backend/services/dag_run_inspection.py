@@ -31,6 +31,30 @@ from services.dag_run_store import get_dag_run_store
 from services.workspace_authority import list_views_for_user
 
 
+async def _canonical_projection(record: dict[str, Any]) -> dict[str, Any]:
+    """Overlay lifecycle truth from the canonical Run, when this deployment has one."""
+    run_id = str(record.get("canonical_run_id") or record.get("id") or "")
+    if not run_id:
+        return record
+    try:
+        from services.engine import get_engine
+
+        store = get_engine().run_store
+        run = await store.get_run(run_id) if store is not None else None
+    except Exception:
+        # Projection reads remain available in standalone mode, but never
+        # invent canonical status when the spine is unavailable.
+        return record
+    if run is None:
+        return record
+    return {
+        **record,
+        "status": run.status.value,
+        **({"result": run.result} if run.result is not None else {}),
+        **({"error": run.error} if run.error else {}),
+    }
+
+
 async def authorized_workspace_ids(user_id: str) -> set[str]:
     """The canonical Workspaces whose runs `user_id` may inspect.
 
@@ -52,11 +76,12 @@ def _in_scope(record: dict[str, Any], allowed: set[str]) -> bool:
 async def list_visible_runs(user_id: str, *, limit: int = 25) -> list[dict[str, Any]]:
     """Recent-run summaries, restricted to the caller's Workspace universe."""
     allowed = await authorized_workspace_ids(user_id)
-    return [
+    summaries = [
         summary
         for summary in get_dag_run_store().list_runs(limit=limit)
         if _in_scope(summary, allowed)
     ]
+    return [await _canonical_projection(summary) for summary in summaries]
 
 
 async def can_inspect_run(user_id: str, run_id: str) -> bool:
@@ -86,7 +111,7 @@ async def visible_run_detail(user_id: str, run_id: str) -> dict[str, Any] | None
     allowed = await authorized_workspace_ids(user_id)
     if not _in_scope(record, allowed):
         return None
-    return record
+    return await _canonical_projection(record)
 
 
 async def visible_run_ids(user_id: str, run_ids: Iterable[str]) -> set[str]:

@@ -9,6 +9,8 @@ reads exactly as it did before.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from maistro.agents.types import CodeOutput, ConductorOutput
@@ -258,6 +260,35 @@ async def test_the_adapter_returns_the_full_output_not_the_stored_summary(wired)
 
 
 # --- cancellation and shutdown --------------------------------------------
+
+
+async def test_queue_cancellation_signals_the_canonical_attempt(wired) -> None:
+    queue, runs = wired
+    started = asyncio.Event()
+    stopped = asyncio.Event()
+
+    async def slow(_request: TaskCreate) -> ConductorOutput:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+        return _ok()
+
+    task = await queue.submit(TaskCreate(description="long task"))
+    running = asyncio.create_task(_runner(queue, runs, slow)._execute_task(task.task_id))
+    await started.wait()
+
+    assert await queue.cancel(task.task_id) is True
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    assert stopped.is_set()
+    receipt = queue.get(task.task_id)
+    assert receipt is not None and receipt.status is TaskStatus.CANCELLED
+    node_run = (await runs.list_node_runs(task.run_id or ""))[0]
+    attempt = (await runs.list_attempts(node_run.node_run_id))[0]
+    assert attempt.status is AttemptStatus.CANCELLED
+    assert (await runs.get_run(task.run_id or "")).status is RunStatus.CANCELLED
 
 
 async def test_an_in_flight_attempt_is_cancellable_by_canonical_identity(wired) -> None:

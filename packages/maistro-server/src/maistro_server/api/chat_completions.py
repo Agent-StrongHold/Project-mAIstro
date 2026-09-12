@@ -58,7 +58,7 @@ from pydantic import BaseModel, Field
 
 from maistro.agents.types import LLMProviderError
 from maistro.constants import STREAM_CHUNK_SIZE
-from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
+from maistro.runs.model import Run, RunStatus
 from maistro.security._types import AuthContext
 from maistro_server.api.auth import RequireAuth
 from maistro_server.api.principal import AuthenticatedPrincipal
@@ -302,10 +302,13 @@ async def _close_if_open(run: Run) -> None:
     if _container is None:
         return
     try:
-        current = await _container.run_store.get_run(run.run_id)
-        if current is None or current.status in TERMINAL_RUN_STATUSES:
-            return
-        await _container.run_store.transition_run(run.run_id, RunStatus.CANCELLED, error=ABANDONED)
+        from maistro.runs.service import RunExecutionService
+        from maistro.runtime import PythonExecutionRuntime
+
+        await RunExecutionService(
+            store=_container.run_store,
+            runtime=PythonExecutionRuntime(),
+        ).cancel_run(run.run_id, error=ABANDONED)
     except Exception:
         logger.exception("chat_completions_abandoned_run_close_failed", run_id=run.run_id)
 

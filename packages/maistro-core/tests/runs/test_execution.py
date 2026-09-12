@@ -12,6 +12,7 @@ from maistro.runs import (
     AttemptExecutionService,
     AttemptStatus,
     InMemoryRunStore,
+    RunExecutionService,
     RunStatus,
 )
 from maistro.runs.execution import ExecutionYielded
@@ -202,6 +203,108 @@ async def test_runtime_cancellation_persists_cancelled_attempt_without_phantom_r
     # from a provider outage on any record that counts them.
     assert node_run is not None and node_run.status is RunStatus.CANCELLED
     assert run is not None and run.status is RunStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_run_cancellation_fences_before_provider_launch() -> None:
+    class GateStore(InMemoryRunStore):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            self.running_transition = asyncio.Event()
+            self.release_transition = asyncio.Event()
+
+        async def transition_attempt(
+            self, attempt_id: str, target: AttemptStatus, **kwargs: Any
+        ) -> Attempt:
+            if target is AttemptStatus.RUNNING and not self.running_transition.is_set():
+                self.running_transition.set()
+                await self.release_transition.wait()
+            return await super().transition_attempt(attempt_id, target, **kwargs)
+
+    project_store = InMemoryProjectScopeStore()
+    root = await project_store.create_root("ws-1")
+    store = GateStore(project_store=project_store)
+    graph = Graph(
+        workspace_id="ws-1",
+        project_id=root.project_id,
+        name="One node",
+        nodes=[Node(node_id="node-1", node_type="agent")],
+    )
+    run = await store.create_run(graph)
+    service = RunExecutionService(store=store, runtime=PythonExecutionRuntime())
+    started = asyncio.Event()
+
+    async def executor(_work: Any, _context: Any) -> None:
+        started.set()
+
+    running = asyncio.create_task(
+        service.execute_node(run.run_id, "node-1", None, None, executor=executor)
+    )
+    await store.running_transition.wait()
+    cancelling = asyncio.create_task(service.cancel_run(run.run_id))
+    for _ in range(100):
+        current = await store.get_run(run.run_id)
+        if current is not None and current.status is RunStatus.CANCELLED:
+            break
+        await asyncio.sleep(0)
+    else:
+        raise AssertionError("cancellation did not win the durable fence")
+    store.release_transition.set()
+
+    assert (await cancelling).status is RunStatus.CANCELLED
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    assert not started.is_set()
+    node_run = (await store.list_node_runs(run.run_id))[-1]
+    attempt = (await store.list_attempts(node_run.node_run_id))[0]
+    assert attempt.status is AttemptStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_run_cancellation_fences_a_provider_that_returns_after_cancel() -> None:
+    store, run_id, node_run_id = await _node_run()
+    service = RunExecutionService(store=store, runtime=PythonExecutionRuntime())
+    started = asyncio.Event()
+    returned_after_cancel = asyncio.Event()
+
+    async def executor(_work: Any, _context: Any) -> str:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            # A provider may acknowledge cancellation only after it has
+            # produced a final response. The durable Run fence must still win.
+            returned_after_cancel.set()
+            return "stale success"
+        raise AssertionError("unreachable")
+
+    running = asyncio.create_task(
+        service.execute_node(
+            run_id,
+            "node-1",
+            None,
+            None,
+            executor=executor,
+            reconcile_logical=False,
+        )
+    )
+    await started.wait()
+    cancelled = await service.cancel_run(run_id)
+    again = await service.cancel_run(run_id)
+
+    assert cancelled.status is RunStatus.CANCELLED
+    assert again.status is RunStatus.CANCELLED
+    assert returned_after_cancel.is_set()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    attempts = await store.list_attempts(node_run_id)
+    assert attempts == []  # execute_node owns a fresh NodeRun, not the fixture one
+
+    node_runs = await store.list_node_runs(run_id)
+    assert len(node_runs) == 2
+    attempt = (await store.list_attempts(node_runs[-1].node_run_id))[0]
+    assert attempt.status is AttemptStatus.CANCELLED
+    assert (await store.get_node_run(node_runs[-1].node_run_id)).status is RunStatus.CANCELLED
 
 
 @pytest.mark.asyncio

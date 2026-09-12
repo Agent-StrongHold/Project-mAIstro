@@ -26,7 +26,9 @@ from .base import (
     PAUSE_AWAITING_HARNESS,
     BaseNode,
     NodeContext,
+    ReplaySemantics,
     pause_until,
+    replay_effect_key,
 )
 from .capability_effect import invoke_capability_effect
 
@@ -76,7 +78,7 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
     input_schema: ClassVar[type[BaseModel]] = SpawnHarnessIn
     output_schema: ClassVar[type[BaseModel]] = SpawnHarnessOut
     cost_hint: ClassVar[float] = 5.0
-    idempotent: ClassVar[bool] = False
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.EFFECT_KEY
     external_io: ClassVar[bool] = True
     display_name: ClassVar[str] = "Agent: spawn harness"
     description: ClassVar[str] = (
@@ -93,6 +95,18 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
     ) -> None:
         self._adapters: dict[str, HarnessAdapter] = adapters or {}
         self._effects = effect_context or default_effect_context()
+
+    def logical_effect_key(self, inputs: SpawnHarnessIn, ctx: NodeContext) -> str:
+        return replay_effect_key(
+            ctx,
+            "agent.spawn_harness.dispatch",
+            {
+                "harness_type": inputs.harness_type,
+                "task": inputs.task,
+                "context": inputs.context,
+                "timeout_seconds": inputs.timeout_seconds,
+            },
+        )
 
     @staticmethod
     def _resume_output(resumed: Any) -> SpawnHarnessOut:
@@ -171,7 +185,9 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
                 "harness_type": handle.harness_type,
             }
 
-        effect_key = f"agent.spawn_harness.dispatch:{inputs.harness_type}"
+        # The graph may retry this logical node with a new NodeRun. Scope the
+        # effect by the stable Run/node/input identity, not that physical visit.
+        effect_key = self.logical_effect_key(inputs, ctx)
         invocation = await invoke_capability_effect(
             lambda: self._effects.invocations.invoke(
                 binding=binding,
@@ -179,6 +195,7 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
                 node_run_id=ctx.node_run_id,
                 attempt_id=ctx.attempt_id,
                 effect_key=effect_key,
+                effect_scope=effect_key,
                 request=request_payload,
                 resolver=resolve_provider,
                 executor=execute_provider,

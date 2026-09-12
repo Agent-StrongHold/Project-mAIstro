@@ -28,6 +28,7 @@ from maistro.graph.nodes.base import (
     BaseNode,
     NodeContext,
     NodeResult,
+    ReplaySemantics,
 )
 from maistro.runs.aggregation import derive_run_terminal_status, terminal_run_payload
 from maistro.runs.lifecycle import (
@@ -67,13 +68,15 @@ _PREDICATE_NAMESPACE_ALIASES = {
 
 @dataclass(frozen=True)
 class _FrontierItem:
-    """Bind one active frontier node to its canonical NodeRun and execution inputs."""
+    """Bind one active frontier node to its canonical NodeRun and replay contract."""
 
     node_id: str
     spec: GraphNode
     node_run: NodeRun
     ctx: NodeContext
     result: NodeResult
+    replay_semantics: ReplaySemantics = ReplaySemantics.NON_RETRYABLE
+    effect_key: str | None = None
 
 
 def _replace_state(
@@ -574,7 +577,7 @@ def _visit_budget(spec: GraphNode) -> int:
 
 
 def _may_revisit_after(prior_state: GraphExecutionState, item: _FrontierItem) -> bool:
-    """Whether this failed node has a try left, and is the kind that earns one.
+    """Whether this failed node has a try left under its executable contract.
 
     A retry here is the node's **next visit** -- a new NodeRun, with its own
     Attempt -- not a second Attempt under the one that just completed. The
@@ -588,6 +591,13 @@ def _may_revisit_after(prior_state: GraphExecutionState, item: _FrontierItem) ->
     classifies and retries those beneath the Attempt, where repeating is safe
     because nothing was accomplished yet.
     """
+    if not item.replay_semantics.retryable:
+        return False
+    # EFFECT_KEY is a contract, not a descriptive label: the node must have
+    # supplied a concrete logical key at execution time. Missing keys fail
+    # closed because the executor cannot prove replay safety on its own.
+    if item.replay_semantics is ReplaySemantics.EFFECT_KEY and not item.effect_key:
+        return False
     visits = prior_state.visit_counts.get(item.node_id, 0)
     return visits < _visit_budget(item.spec)
 
