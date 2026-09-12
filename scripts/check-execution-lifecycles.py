@@ -23,6 +23,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
 
@@ -35,7 +36,8 @@ METRIC_DEFINITION_VERSION = "3"
 
 CLASSIFICATIONS = frozenset({"CANONICAL", "DOMAIN", "PROJECTION", "RECEIPT", "CONVERGE"})
 _ENUM_BASES = frozenset({"Enum", "StrEnum", "IntEnum", "IntFlag", "Flag"})
-_LITERAL_NAME = "Literal"
+_TYPING_FORMS = frozenset({"Literal", "Optional", "Union", "Annotated"})
+_SCOPE_BOUNDARIES = (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 _ALIAS_HINTS = frozenset({"lifecycle", "phase", "state", "status"})
 _WORK_STATES = frozenset(
     {
@@ -117,50 +119,79 @@ def _looks_like_status_alias(name: str) -> bool:
     return bool(parts & _ALIAS_HINTS or any(normalized.endswith(hint) for hint in _ALIAS_HINTS))
 
 
-def _literal_names(tree: ast.AST) -> set[str]:
-    names = {_LITERAL_NAME}
-    for node in ast.walk(tree):
+def _scope_nodes(tree: ast.AST) -> Iterator[ast.AST]:
+    """Walk one lexical scope, exposing but not entering its child scopes."""
+    for node in ast.iter_child_nodes(tree):
+        yield node
+        if not isinstance(node, _SCOPE_BOUNDARIES):
+            yield from _scope_nodes(node)
+
+
+def _typing_names(tree: ast.AST, inherited: dict[str, str]) -> dict[str, str]:
+    """Resolve supported typing spellings without importing production code."""
+    names = {**{name: name for name in _TYPING_FORMS}, **inherited}
+    for node in _scope_nodes(tree):
         if not isinstance(node, ast.ImportFrom) or node.module not in {
             "typing",
             "typing_extensions",
         }:
             continue
         for imported in node.names:
-            if imported.name == _LITERAL_NAME:
-                names.add(imported.asname or imported.name)
+            if imported.name in _TYPING_FORMS:
+                names[imported.asname or imported.name] = imported.name
     return names
+
+
+def _typing_arguments(
+    node: ast.Subscript, typing_names: dict[str, str]
+) -> tuple[str | None, list[ast.expr]]:
+    """Return type-bearing arguments, excluding unsupported forms and metadata."""
+    form = typing_names.get(_attribute_name(node.value))
+    if form not in _TYPING_FORMS:
+        return None, []
+    arguments = node.slice.elts if isinstance(node.slice, ast.Tuple) else [node.slice]
+    return form, arguments[:1] if form == "Annotated" else arguments
 
 
 def _literal_values(
     node: ast.expr,
     aliases: dict[str, ast.expr],
-    literal_names: set[str],
+    typing_names: dict[str, str],
+    inherited: dict[str, set[str]],
     resolving: frozenset[str] = frozenset(),
 ) -> set[str]:
-    """Resolve the supported static Literal/type-alias shapes.
+    """Resolve local aliases, unions and typing wrappers in their defining scope.
 
-    ``Literal[...] | None`` is common in PEP 604 annotations. Resolving local
-    aliases also catches a vocabulary split between a named type alias and a
-    field alias without importing or executing production code.
+    Inherited aliases are already resolved in their parent scope so a child
+    shadowing a helper cannot reinterpret a parent's vocabulary. Annotated
+    contributes its type only, never strings or Literals in its metadata.
     """
-    if isinstance(node, ast.Subscript) and _attribute_name(node.value) in literal_names:
-        return {
-            value.value
-            for value in ast.walk(node.slice)
-            if isinstance(value, ast.Constant) and isinstance(value.value, str)
-        }
-    if isinstance(node, ast.Name) and node.id in aliases and node.id not in resolving:
+    if isinstance(node, ast.Name):
+        if node.id not in aliases:
+            return inherited.get(node.id, set())
+        if node.id in resolving:
+            return set()
         return _literal_values(
-            node=aliases[node.id],
-            aliases=aliases,
-            literal_names=literal_names,
-            resolving=resolving | {node.id},
+            aliases[node.id],
+            aliases,
+            typing_names,
+            inherited,
+            resolving | {node.id},
         )
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
-        return _literal_values(node.left, aliases, literal_names, resolving) | _literal_values(
-            node.right, aliases, literal_names, resolving
-        )
-    return set()
+        left = _literal_values(node.left, aliases, typing_names, inherited, resolving)
+        return left | _literal_values(node.right, aliases, typing_names, inherited, resolving)
+    if not isinstance(node, ast.Subscript):
+        return set()
+    form, arguments = _typing_arguments(node, typing_names)
+    values: set[str] = set()
+    for argument in arguments:
+        if form == "Literal" and isinstance(argument, ast.Constant):
+            if isinstance(argument.value, str):
+                values.add(argument.value)
+        else:
+            values.update(_literal_values(argument, aliases, typing_names, inherited, resolving))
+    return values
 
 
 def _is_enum(node: ast.ClassDef) -> bool:
@@ -211,14 +242,14 @@ def _enum_vocabularies(tree: ast.AST, module: str) -> dict[str, set[str]]:
 
 
 def _literal_aliases(tree: ast.AST) -> dict[str, ast.expr]:
-    """Collect local aliases, including PEP 695 ``type`` statements.
+    """Collect aliases in this scope only, including PEP 695 ``type`` statements.
 
     Helper aliases need not themselves be status-shaped: a final ``RunStatus``
     alias can legally be assembled from a private ``_RUNNING_STATES`` alias.
     Only status-shaped names are emitted by ``_literal_vocabularies``.
     """
     aliases: dict[str, ast.expr] = {}
-    for node in ast.walk(tree):
+    for node in _scope_nodes(tree):
         if isinstance(node, ast.Assign):
             targets = node.targets
             value = node.value
@@ -238,72 +269,100 @@ def _literal_aliases(tree: ast.AST) -> dict[str, ast.expr]:
     return aliases
 
 
-def _literal_alias_vocabularies(
-    aliases: dict[str, ast.expr], literal_names: set[str], module: str
-) -> dict[str, set[str]]:
-    found: dict[str, set[str]] = {}
-    for name, value in aliases.items():
-        if not _looks_like_status_alias(name):
-            continue
-        states = _normalized_work_states(_literal_values(value, aliases, literal_names))
-        if len(states) >= _MIN_WORK_STATES:
-            found[f"{module}::{name}"] = states
-    return found
-
-
-def _contains_discovered_alias(
-    node: ast.expr, alias_vocabularies: dict[str, set[str]], module: str
+def _uses_named_vocabulary(
+    node: ast.expr, states: set[str], named: dict[str, set[str]], typing_names: dict[str, str]
 ) -> bool:
-    """Avoid a second identity when a field annotation wraps a local alias."""
-    return any(
-        isinstance(name, ast.Name) and f"{module}::{name.id}" in alias_vocabularies
-        for name in ast.walk(node)
-    )
+    """Reuse an alias only from the type expression, never Annotated metadata."""
+    if isinstance(node, ast.Name):
+        return named.get(node.id) == states
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        left = _uses_named_vocabulary(node.left, states, named, typing_names)
+        return left or _uses_named_vocabulary(node.right, states, named, typing_names)
+    if not isinstance(node, ast.Subscript):
+        return False
+    _, arguments = _typing_arguments(node, typing_names)
+    return any(_uses_named_vocabulary(item, states, named, typing_names) for item in arguments)
 
 
 def _literal_field_vocabularies(
     tree: ast.AST,
     aliases: dict[str, ast.expr],
-    literal_names: set[str],
-    module: str,
-    alias_vocabularies: dict[str, set[str]],
+    typing_names: dict[str, str],
+    inherited: dict[str, set[str]],
+    named: dict[str, set[str]],
+    identity_prefix: str,
 ) -> dict[str, set[str]]:
-    """Find status-shaped Literal annotations on model/dataclass fields.
-
-    A field annotation is a vocabulary even when it has no separately named
-    alias (for example ``status: Literal[... ]``). Fields that reference an
-    already-discovered named alias use that alias identity once, rather than
-    creating a second ledger row for every consumer.
-    """
+    """Discover fields in this class, retaining nested scopes in their identity."""
     found: dict[str, set[str]] = {}
-    for owner in ast.walk(tree):
-        if not isinstance(owner, ast.ClassDef):
+    if not isinstance(tree, ast.ClassDef):
+        return found
+    for node in _scope_nodes(tree):
+        if not isinstance(node, ast.AnnAssign) or not isinstance(node.target, ast.Name):
             continue
-        for node in owner.body:
-            if not isinstance(node, ast.AnnAssign) or not isinstance(node.target, ast.Name):
-                continue
-            field_name = node.target.id
-            if not _looks_like_status_alias(field_name):
-                continue
-            states = _normalized_work_states(
-                _literal_values(node.annotation, aliases, literal_names)
+        if not _looks_like_status_alias(node.target.id):
+            continue
+        states = _normalized_work_states(
+            _literal_values(node.annotation, aliases, typing_names, inherited)
+        )
+        if len(states) < _MIN_WORK_STATES:
+            continue
+        # Reusing a named vocabulary adds no authority. Extending it with new
+        # states does, so a union containing an alias must not hide the field.
+        if _uses_named_vocabulary(node.annotation, states, named, typing_names):
+            continue
+        found[f"{identity_prefix}{node.target.id}"] = states
+    return found
+
+
+def _literal_scope_vocabularies(
+    tree: ast.AST,
+    module: str,
+    prefix: str,
+    inherited: dict[str, set[str]],
+    inherited_named: dict[str, set[str]],
+    inherited_typing: dict[str, str],
+) -> dict[str, set[str]]:
+    """Give each alias its lexical identity rather than flattening sibling scopes."""
+    aliases = _literal_aliases(tree)
+    typing_names = _typing_names(tree, inherited_typing)
+    values = {
+        name: _literal_values(value, aliases, typing_names, inherited)
+        for name, value in aliases.items()
+    }
+    named = {
+        name: _normalized_work_states(value)
+        for name, value in values.items()
+        if _looks_like_status_alias(name)
+        and len(_normalized_work_states(value)) >= _MIN_WORK_STATES
+    }
+    identity_prefix = f"{module}::{prefix}"
+    found = {f"{identity_prefix}{name}": states for name, states in named.items()}
+    visible_named = {
+        **{name: states for name, states in inherited_named.items() if name not in aliases},
+        **named,
+    }
+    found.update(
+        _literal_field_vocabularies(
+            tree, aliases, typing_names, inherited, visible_named, identity_prefix
+        )
+    )
+    for child in _scope_nodes(tree):
+        if isinstance(child, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            found.update(
+                _literal_scope_vocabularies(
+                    child,
+                    module,
+                    f"{prefix}{child.name}.",
+                    {**inherited, **values},
+                    visible_named,
+                    typing_names,
+                )
             )
-            if len(states) < _MIN_WORK_STATES:
-                continue
-            if _contains_discovered_alias(node.annotation, alias_vocabularies, module):
-                continue
-            found[f"{module}::{owner.name}.{field_name}"] = states
     return found
 
 
 def _literal_vocabularies(tree: ast.AST, module: str) -> dict[str, set[str]]:
-    aliases = _literal_aliases(tree)
-    literal_names = _literal_names(tree)
-    alias_vocabularies = _literal_alias_vocabularies(aliases, literal_names, module)
-    return {
-        **alias_vocabularies,
-        **_literal_field_vocabularies(tree, aliases, literal_names, module, alias_vocabularies),
-    }
+    return _literal_scope_vocabularies(tree, module, "", {}, {}, {})
 
 
 def work_state_vocabularies(source: str, module: str) -> dict[str, set[str]]:
@@ -347,7 +406,7 @@ def _discover_at_revision(revision: str | None, current: dict[str, set[str]]) ->
     """Find current identities whose source already existed at the trusted base."""
     if not revision:
         return set()
-    modules = {name.split("::", 1)[0] for name in current}
+    modules = {name.rsplit("::", 1)[0] for name in current}
     reach = _load_reachability()
     visible: set[str] = set()
     for key, path in reach._collect_modules().items():  # type: ignore[attr-defined]
