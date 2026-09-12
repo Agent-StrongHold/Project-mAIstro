@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import sqlite3
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -504,6 +506,79 @@ async def _durable_store(tmp_path: Path) -> tuple[SqliteRunStore, str]:
     store = SqliteRunStore(conn, project_store=project_store)
     await store.ensure_schema()
     return store, project_id
+
+
+@pytest.mark.asyncio
+async def test_reclaim_does_not_overwrite_a_renewal_on_another_connection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale sweep cannot cancel a worker renewed by another process.
+
+    Each ``SqliteRunStore`` owns its own asyncio lock, so the database-level
+    compare-and-set on the lease version is the authority across connections.
+    """
+    project_store, project_id = await _project_store()
+    db_path = tmp_path / "runs.db"
+    first_conn = await aiosqlite.connect(db_path)
+    second_conn = await aiosqlite.connect(db_path)
+    first = SqliteRunStore(first_conn, project_store=project_store)
+    second = SqliteRunStore(second_conn, project_store=project_store)
+    await first.ensure_schema()
+    await second.ensure_schema()
+    try:
+        run = await first.create_run(_graph(project_id))
+        await first.transition_run(run.run_id, RunStatus.QUEUED)
+        await first.transition_run(run.run_id, RunStatus.RUNNING)
+        node_run = await first.create_node_run(run.run_id, node_id="node-1")
+        await first.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
+        await first.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+        attempt = await first.create_attempt(
+            node_run.node_run_id,
+            lease_holder="worker-a",
+            lease_ttl=timedelta(seconds=30),
+        )
+        lease = attempt.execution_lease
+        assert lease is not None and lease.expires_at is not None
+        token = lease.fencing_token
+        await first.transition_attempt(
+            attempt.attempt_id,
+            AttemptStatus.RUNNING,
+            fencing_token=token,
+        )
+
+        candidate_loaded = asyncio.Event()
+        allow_sweep = asyncio.Event()
+        original_require = first._require_attempt
+
+        async def pause_after_read(attempt_id: str) -> Attempt:
+            loaded = await original_require(attempt_id)
+            candidate_loaded.set()
+            await allow_sweep.wait()
+            return loaded
+
+        monkeypatch.setattr(first, "_require_attempt", pause_after_read)
+        sweep = asyncio.create_task(
+            first.reclaim_expired_attempts(now=lease.expires_at + timedelta(seconds=1))
+        )
+        await candidate_loaded.wait()
+
+        renewed = await second.renew_lease(
+            attempt.attempt_id,
+            fencing_token=token,
+            ttl=timedelta(seconds=30),
+            at=lease.issued_at + timedelta(seconds=2),
+        )
+        allow_sweep.set()
+
+        assert await sweep == []
+        current = await second.get_attempt(attempt.attempt_id)
+        assert current is not None
+        assert current.status is AttemptStatus.RUNNING
+        assert current.execution_lease == renewed.execution_lease
+    finally:
+        await first_conn.close()
+        await second_conn.close()
 
 
 @pytest.mark.asyncio

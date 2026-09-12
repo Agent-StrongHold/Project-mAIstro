@@ -1903,3 +1903,80 @@ async def test_an_unleased_attempt_is_never_reclaimed_in_memory(memory_spine: An
 @pytest.mark.ac("ADR-082526-b36a/AC-6")
 async def test_a_stale_token_cannot_renew_in_memory(memory_spine: Any) -> None:
     await _assert_a_stale_token_cannot_renew(memory_spine)
+
+
+@pytest.mark.ac("ADR-082526-b36a/AC-7")
+async def test_task_worker_recovery_preserves_attempt_history(spine: Any, monkeypatch) -> None:
+    """A task crash is recovered from the canonical persisted spine.
+
+    This parameterized test includes the PostgreSQL fixture, so its process-loss
+    simulation exercises persisted rows rather than an in-memory task-only
+    approximation. Recovery parks the logical records, and
+    retrying creates a new Attempt without rewriting the abandoned one.
+    """
+    import asyncio
+    import contextlib
+
+    from maistro.agents.types import ConductorOutput
+    from maistro.tasks.execution import TaskAttemptExecutor
+    from maistro.tasks.models import TaskCreate
+
+    store, _workspace, _project_id = spine
+    run = await _run(spine)
+    started = asyncio.Event()
+
+    async def _dead_worker(_request: TaskCreate) -> ConductorOutput:
+        started.set()
+        await asyncio.sleep(3600)
+        raise AssertionError("an abandoned worker must not finish its work")
+
+    worker = asyncio.create_task(
+        TaskAttemptExecutor(store, lease_ttl=timedelta(seconds=30)).execute(
+            run.run_id,
+            TaskCreate(description="crash recovery"),
+            _dead_worker,
+        )
+    )
+    await started.wait()
+    node_runs = await store.list_node_runs(run.run_id)
+    assert len(node_runs) == 1
+    attempts = await store.list_attempts(node_runs[0].node_run_id)
+    assert len(attempts) == 1
+    original = attempts[0]
+    assert original.status is AttemptStatus.RUNNING
+    lease = original.execution_lease
+    assert lease is not None and lease.expires_at is not None
+
+    async def _renew_after_death(*_args: Any, **_kwargs: Any) -> Any:
+        raise ConnectionError("worker process is gone")
+
+    monkeypatch.setattr(store, "renew_lease", _renew_after_death)
+    still_running = await store.get_attempt(original.attempt_id)
+    assert still_running is not None and still_running.status is AttemptStatus.RUNNING
+
+    # Jump the durable clock past the lease instead of sleeping for the TTL.
+    reclaimed = await store.reclaim_expired_attempts(now=lease.expires_at + timedelta(seconds=1))
+    assert [item.attempt_id for item in reclaimed] == [original.attempt_id]
+    await AttemptLifecycleReconciler(store).reconcile(reclaimed[0])
+
+    parked_node = await store.get_node_run(original.node_run_id)
+    parked_run = await store.get_run(run.run_id)
+    assert parked_node is not None and parked_node.status is RunStatus.WAITING
+    assert parked_run is not None and parked_run.status is RunStatus.WAITING
+
+    worker.cancel()
+    with contextlib.suppress(BaseException):
+        await worker
+
+    async def _retry(_request: TaskCreate) -> ConductorOutput:
+        return ConductorOutput(success=True, final_answer="recovered")
+
+    await TaskAttemptExecutor(store, lease_ttl=None).execute(
+        run.run_id,
+        TaskCreate(description="crash recovery"),
+        _retry,
+    )
+    recovered_attempts = await store.list_attempts(original.node_run_id)
+    assert [attempt.ordinal for attempt in recovered_attempts] == [1, 2]
+    assert recovered_attempts[0].status is AttemptStatus.CANCELLED
+    assert recovered_attempts[1].status is AttemptStatus.COMPLETED
