@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar
@@ -244,6 +245,52 @@ async def test_deadline_survives_restart_and_timeout_preserves_attempt(tmp_path:
 
 @pytest.mark.ac("SPEC-083026-73c1/AC-2")
 @pytest.mark.ac("SPEC-083026-73c1/AC-5")
+async def test_pre_index_sqlite_pause_is_backfilled_and_expires_after_restart(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "pre-index-hitl.db"
+    original = _paused_record("pre-index-timeout")
+    row = SqliteDurableRunStore._to_row(original)
+    with sqlite3.connect(db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE durable_graph_runs (
+                run_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                active_node_id TEXT,
+                project_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                resume_at TEXT,
+                version INTEGER NOT NULL DEFAULT 0,
+                record_json TEXT NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            """INSERT INTO durable_graph_runs
+               (run_id, status, active_node_id, project_id, created_at,
+                resume_at, version, record_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                row["run_id"],
+                row["status"],
+                row["active_node_id"],
+                row["project_id"],
+                row["created_at"],
+                row["resume_at"],
+                row["version"],
+                row["record_json"],
+            ),
+        )
+        conn.commit()
+
+    store = SqliteDurableRunStore(db)
+    expired = await expire_hitl_pauses(store, now=_AFTER, limit=1)
+
+    assert [record.run_id for record in expired] == ["pre-index-timeout"]
+    assert expired[0].status is RunStatus.TIMED_OUT
+
+
 async def test_cancel_survives_restart_without_fabricating_an_answer(tmp_path: Path) -> None:
     db = tmp_path / "hitl-cancel.db"
     store = SqliteDurableRunStore(db)
@@ -493,6 +540,40 @@ async def test_expiry_tick_is_bounded_and_ignores_unelapsed_pauses() -> None:
     assert len(expired) == 1
     remaining = await store.list_by_status(RunStatus.PAUSED)
     assert len(remaining) == 1
+
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+async def test_expiry_deadline_query_skips_an_ineligible_paused_prefix(
+    backend: str, tmp_path: Path
+) -> None:
+    if backend == "memory":
+        store = InMemoryDurableRunStore()
+    else:
+        store = SqliteDurableRunStore(tmp_path / "hitl-fairness.db")
+
+    # These records are older in the operator's mental ordering, but their
+    # durable pause entries are not HITL. They must not consume the settlement
+    # limit or become a repeatedly reread prefix.
+    for index in range(3):
+        nonhuman = _with_pause_entry(
+            _paused_record(f"nonhuman-{index}"),
+            {"kind": "wait", "metadata": {}, "resume_at": _DEADLINE.isoformat()},
+        ).model_copy(update={"resume_at": None})
+        await store.create(nonhuman)
+    future = _with_pause_entry(
+        _paused_record("future-hitl"),
+        {"kind": "hitl", "metadata": {}, "resume_at": (_AFTER + timedelta(days=1)).isoformat()},
+    ).model_copy(update={"resume_at": None})
+    await store.create(future)
+
+    expired = _paused_record("expired-hitl").model_copy(update={"resume_at": None})
+    await store.create(expired)
+
+    settled = await expire_hitl_pauses(store, now=_AFTER, limit=1)
+
+    assert [record.run_id for record in settled] == ["expired-hitl"]
+    assert await store.get("expired-hitl") is not None
+    assert (await store.get("expired-hitl")).status is RunStatus.TIMED_OUT
 
 
 async def test_expiry_tick_ignores_nonhuman_pauses_and_lost_races() -> None:
