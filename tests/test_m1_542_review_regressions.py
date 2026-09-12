@@ -70,7 +70,7 @@ def test_stale_trusted_adapter_mapping_is_a_failure(inventory) -> None:
 
 def test_lifecycle_consumer_has_a_real_trusted_adapter(inventory, tmp_path: Path) -> None:
     key = ("tools/lint_lifecycle.py", "quality/lifecycle-baseline.json")
-    adapter = inventory.TRUSTED_ADAPTERS[key]
+    adapter = inventory.DELEGATED_ADAPTERS[key]
 
     assert adapter == "check-lifecycle-provenance"
     assert inventory._adapter_problem(ROOT, adapter) is None

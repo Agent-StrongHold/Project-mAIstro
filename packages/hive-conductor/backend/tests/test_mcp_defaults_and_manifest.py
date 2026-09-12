@@ -319,4 +319,6 @@ class TestRovoUrlIsMatchedByHost:
         from services.mcp_defaults import is_atlassian_rovo_url
 
         assert is_atlassian_rovo_url("") is False
-        assert is_atlassian_rovo_url("http://[::1") is False
+        # An unterminated IPv6 literal: `urlparse` raises rather than
+        # returning a host, and the caller must read that as "no match".
+        assert is_atlassian_rovo_url("https://[::1") is False
