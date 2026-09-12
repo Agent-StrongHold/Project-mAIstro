@@ -25,6 +25,13 @@ or placeholder-only section.
 
 ### Security
 
+- **Due-recovery failures never persist or log credential text (#1143).** A
+  node-resolver factory that fails while a due Run is being resumed now
+  terminalizes the Run with a stable `NodeResolverUnavailable` message (Run id
+  and exception type only) instead of the factory's raw error, and the
+  recovery log sanitizer also redacts quoted keys (`{'api_key': ...}`),
+  `Authorization`/`Bearer` headers, and provider-style key literals
+  (`sk-…`, `ghp_…`, `xox…`, `AKIA…`).
 - **Bootstrap credential staging is now private, atomic, and never follows a
   link (#809).** `write_bootstrap_credentials` writes secrets to a fresh 0600
   temp file in the same directory and promotes it with `os.replace`, so secret

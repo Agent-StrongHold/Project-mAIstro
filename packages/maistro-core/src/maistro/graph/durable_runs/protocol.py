@@ -10,6 +10,15 @@ from maistro.runs.model import RunStatus
 from .types import DurableRunRecord
 
 
+class RecoveryInfrastructureError(RuntimeError):
+    """A persistence failure that makes continuing the recovery scan unsafe.
+
+    Candidate-local resolver and execution failures are handled by the durable
+    executor or by the recovery tick. Store adapters use this explicit type
+    when a database/session failure invalidates every candidate in the tick.
+    """
+
+
 @runtime_checkable
 class DurableRunStore(Protocol):
     """Persist canonical Run + GraphExecutionState checkpoints."""
@@ -70,4 +79,4 @@ class DurableRunStore(Protocol):
         ...
 
 
-__all__ = ["DurableRunStore"]
+__all__ = ["DurableRunStore", "RecoveryInfrastructureError"]

@@ -6,8 +6,9 @@ from types import SimpleNamespace
 import pytest
 
 from maistro.graph.definitions import Graph, Node
-from maistro.graph.durable_runs import recovery
+from maistro.graph.durable_runs import DurableRunRecord, InMemoryDurableRunStore, recovery
 from maistro.graph.durable_runs.attempt_executor import LiveAttemptOwned
+from maistro.graph.execution_state import GraphExecutionState
 from maistro.runs.model import GraphSnapshot, Run, RunStatus
 
 pytestmark = [pytest.mark.contract("behavioral")]
@@ -23,6 +24,13 @@ class _Store:
 
     async def get(self, run_id: str):
         return self.records.get(run_id)
+
+
+class _DueInMemoryStore(InMemoryDurableRunStore):
+    async def list_due(self, *, now: datetime, limit: int = 100):
+        del now
+        records = [await self.get(run_id) for run_id in self._rows]
+        return [record for record in records if record is not None][:limit]
 
 
 class _BootstrapStore(_Store):
@@ -59,6 +67,15 @@ class _RunStore:
             for run in self.runs.values()
             if run.status is status and (project_id is None or run.project_id == project_id)
         ][:limit]
+
+
+class _FailingRunStore:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def get_run(self, run_id: str):
+        self.calls.append(run_id)
+        raise OSError("canonical database session is unavailable")
 
 
 def _record(run_id: str, status: RunStatus, resume_at: datetime | None):
@@ -135,6 +152,217 @@ async def test_losing_a_cross_replica_resume_race_is_idempotent(monkeypatch) -> 
         )
         == 0
     )
+
+
+@pytest.mark.asyncio
+async def test_one_unexpected_candidate_failure_does_not_starve_later_due_runs(
+    monkeypatch,
+    caplog,
+) -> None:
+    """Candidate-local failures advance this batch and remain due for retry."""
+    now = datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
+    candidates = [
+        _record(f"waiting-{index}", RunStatus.WAITING, now - timedelta(seconds=1))
+        for index in range(1, 4)
+    ]
+    store = _Store(*candidates)
+    calls: list[str] = []
+
+    async def _resume(run_id: str, **kwargs) -> None:
+        del kwargs
+        calls.append(run_id)
+        if run_id == "waiting-1":
+            raise RuntimeError("resolver exploded password=not-a-secret")
+
+    monkeypatch.setattr(recovery, "resume_durable_graph", _resume)
+
+    with caplog.at_level("WARNING", logger="maistro.graph.durable_runs.recovery"):
+        count = await recovery.resume_due_graph_runs(
+            store=store,
+            run_store=object(),
+            node_resolver=lambda _node_id, _graph: None,
+            now=now,
+        )
+
+    assert count == 2
+    assert calls == ["waiting-1", "waiting-2", "waiting-3"]
+    assert await store.get("waiting-1") is candidates[0]
+    assert "run_id=waiting-1" in caplog.text
+    assert "RuntimeError: resolver exploded password=<redacted>" in caplog.text
+    assert "not-a-secret" not in caplog.text
+
+    calls.clear()
+    assert (
+        await recovery.resume_due_graph_runs(
+            store=store,
+            run_store=object(),
+            node_resolver=lambda _node_id, _graph: None,
+            now=now,
+        )
+        == 2
+    )
+    assert calls == ["waiting-1", "waiting-2", "waiting-3"]
+
+
+@pytest.mark.asyncio
+async def test_factory_failure_terminalizes_each_candidate_for_later_recovery() -> None:
+    """A real resolver failure uses durable failure policy for every candidate."""
+    now = datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
+    runs = [
+        _queued_run(f"resolver-poisoned-{index}").model_copy(update={"status": RunStatus.WAITING})
+        for index in range(1, 4)
+    ]
+    store = _DueInMemoryStore()
+    for run in runs:
+        await store.create(
+            DurableRunRecord(
+                run=run,
+                graph_state=GraphExecutionState(
+                    run_id=run.run_id,
+                    active_node_ids=("node-1",),
+                    blackboard_snapshot={"task_objective": "Recovery graph"},
+                ),
+                resume_at=now - timedelta(seconds=1),
+                version=1,
+            )
+        )
+
+    factory_calls: list[str] = []
+
+    def _broken_factory(run: Run):
+        factory_calls.append(run.run_id)
+        raise RuntimeError(f"resolver unavailable for {run.run_id}")
+
+    assert (
+        await recovery.resume_due_graph_runs(
+            store=store,
+            run_store=None,
+            node_resolver_factory=_broken_factory,
+            now=now,
+        )
+        == 3
+    )
+    assert factory_calls == [run.run_id for run in runs]
+    for run in runs:
+        failed = await store.get(run.run_id)
+        assert failed is not None
+        assert failed.run.status is RunStatus.FAILED
+        assert failed.run.error == (
+            "PhysicalExecutionError: node resolver could not be built for Run "
+            f"{run.run_id!r}: RuntimeError"
+        )
+
+
+@pytest.mark.asyncio
+async def test_factory_failure_text_never_reaches_the_failed_run() -> None:
+    """The persisted failure is the stable message, not the factory's own text."""
+    now = datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
+    run = _queued_run("resolver-leaky").model_copy(update={"status": RunStatus.WAITING})
+    store = _DueInMemoryStore()
+    await store.create(
+        DurableRunRecord(
+            run=run,
+            graph_state=GraphExecutionState(
+                run_id=run.run_id,
+                active_node_ids=("node-1",),
+                blackboard_snapshot={"task_objective": "Recovery graph"},
+            ),
+            resume_at=now - timedelta(seconds=1),
+            version=1,
+        )
+    )
+
+    def _leaky_factory(_run: Run):
+        raise ConnectionError("provider refused {'api_key': 'sk-live-abcdef123'}")
+
+    assert (
+        await recovery.resume_due_graph_runs(
+            store=store,
+            run_store=None,
+            node_resolver_factory=_leaky_factory,
+            now=now,
+        )
+        == 1
+    )
+    failed = await store.get(run.run_id)
+    assert failed is not None
+    assert failed.run.status is RunStatus.FAILED
+    assert failed.run.error == (
+        "PhysicalExecutionError: node resolver could not be built for Run "
+        "'resolver-leaky': ConnectionError"
+    )
+    assert "sk-live" not in failed.run.error
+    assert "provider refused" not in failed.run.error
+
+
+def test_lazy_resolver_keeps_the_factory_error_as_the_cause() -> None:
+    """Operators can still see the underlying failure in-process."""
+    run = _queued_run("resolver-cause")
+    original = ValueError("no provider for tenant")
+
+    def _factory(_run: Run):
+        raise original
+
+    resolve = recovery._lazy_resolver(run, _factory)
+    with pytest.raises(recovery.NodeResolverUnavailable) as caught:
+        resolve("node-1", object())
+    assert caught.value.__cause__ is original
+    assert str(caught.value) == (
+        "node resolver could not be built for Run 'resolver-cause': ValueError"
+    )
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("resolver exploded password=not-a-secret", "password=<redacted>"),
+        ("bad config {'api_key': 'sk-live-abcdef123'}", "bad config {api_key=<redacted>}"),
+        (
+            'header {"Authorization": "Bearer sk-live-abcdef123"} rejected',
+            "header {Authorization=<redacted>} rejected",
+        ),
+        ("Authorization: Bearer eyJhbGciOi.xyz, retry later", "Authorization=<redacted>, retry"),
+        ("Bearer abc.def.ghi rejected", "Bearer <redacted> rejected"),
+        ("provider rejected key sk-proj-ABCdef123456 for tenant", "key <redacted-key> for"),
+        ("token: ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345 expired", "token=<redacted> expired"),
+        ("AWS AKIAIOSFODNN7EXAMPLE denied", "AWS <redacted-key> denied"),
+    ],
+)
+def test_sanitized_cause_redacts_quoted_header_and_provider_credentials(
+    message: str, expected: str
+) -> None:
+    sanitized = recovery._sanitized_cause(RuntimeError(message))
+    assert sanitized.startswith("RuntimeError: ")
+    assert expected in sanitized
+    for leak in ("not-a-secret", "sk-live", "sk-proj", "eyJhbGciOi", "abc.def.ghi", "ghp_", "AKIA"):
+        assert leak not in sanitized
+
+
+def test_sanitized_cause_leaves_plain_text_alone() -> None:
+    assert recovery._sanitized_cause(RuntimeError("plain failure, no credentials")) == (
+        "RuntimeError: plain failure, no credentials"
+    )
+
+
+@pytest.mark.asyncio
+async def test_global_run_store_failure_aborts_the_due_tick() -> None:
+    """A canonical store outage must not produce misleading later success."""
+    now = datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
+    store = _Store(
+        _record("waiting-1", RunStatus.WAITING, now - timedelta(seconds=1)),
+        _record("waiting-2", RunStatus.WAITING, now - timedelta(seconds=1)),
+    )
+    run_store = _FailingRunStore()
+
+    with pytest.raises(recovery.RecoveryInfrastructureError, match="canonical recovery"):
+        await recovery.resume_due_graph_runs(
+            store=store,
+            run_store=run_store,
+            node_resolver=lambda _node_id, _graph: None,
+            now=now,
+        )
+
+    assert run_store.calls == ["waiting-1"]
 
 
 @pytest.mark.asyncio
