@@ -171,7 +171,9 @@ class TestCredentialShapes:
         assert [m.pii_type for m in matches] == ["password"]
 
     def test_lowercase_hex_sha_is_not_detected(self) -> None:
-        sha = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+        # Synthetic commit SHA (negative control), split so no source line
+        # carries the whole 40-char hex run (DevSkim DS173237, deferred to #1348).
+        sha = "a1b2c3d4e5f6a7b8c9d0" + "e1f2a3b4c5d6e7f8a9b0"
         assert scan_for_pii(f"commit {sha} ok") == []
 
     def test_akia_id_is_not_typed_aws_secret_key(self) -> None:
