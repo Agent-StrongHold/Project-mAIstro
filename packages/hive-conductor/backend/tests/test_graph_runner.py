@@ -57,6 +57,38 @@ def _set_allow_stub_llm(monkeypatch: pytest.MonkeyPatch, allowed: bool) -> None:
     monkeypatch.setattr(config, "get_settings", lambda: _S())
 
 
+def _wire_canonical_container(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give facade tests a real in-memory canonical Run/Graph seam."""
+    from maistro.graph.durable_runs import (
+        CanonicalDurableRunStore,
+        InMemoryGraphContinuationStore,
+    )
+    from maistro.runs import InMemoryRunStore
+
+    class _Projects:
+        async def get(self, project_id: str) -> Any:
+            return SimpleNamespace(project_id=project_id, workspace_id="default")
+
+        async def root_for_workspace(self, workspace_id: str) -> Any:
+            return SimpleNamespace(project_id="root-project", workspace_id=workspace_id)
+
+    projects = _Projects()
+    run_store = InMemoryRunStore(project_store=projects)
+    container = SimpleNamespace(
+        config=SimpleNamespace(workspace_id="default"),
+        project_scope_store=projects,
+        a2a_delegator=object(),
+        guest_peers=object(),
+        run_store=run_store,
+        graph_run_store=CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore()),
+    )
+    import services.canonical_dag_runner as canonical_runner
+    import services.dag_agents as dag_agents
+
+    monkeypatch.setattr(canonical_runner, "_container", lambda: container)
+    monkeypatch.setattr(dag_agents, "_container", lambda: container)
+
+
 def test_build_llm_call_refuses_when_base_url_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -151,11 +183,10 @@ async def test_run_llm_node_marks_node_failed_when_llm_unconfigured(
 async def test_execute_dag_streaming_fails_when_llm_unconfigured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A DAG stream against an unconfigured LLM ends in `failed`, not `completed`.
+    """A DAG stream without the canonical spine is unavailable, not completed.
 
-    The node is `safe`-tier so the LLM refusal is the failure that surfaces;
-    a default-tier node is routed through the isolation floor instead, and
-    that refusal is the sandbox contract's to assert, not this one's.
+    The stub/degraded engine must refuse Graph execution before an unconfigured
+    LLM can become a second, process-local execution path.
     """
     from services import graph_runner as gr
 
@@ -181,8 +212,8 @@ async def test_execute_dag_streaming_fails_when_llm_unconfigured(
 
     statuses = [ev["status"] for ev in events]
     assert "completed" not in statuses
-    assert statuses[-1] == "failed"
-    assert "ALLOW_STUB_LLM" in events[-1]["error"]
+    assert statuses[-1] == "unavailable"
+    assert events[-1]["error"] == "canonical Graph execution is unavailable"
 
 
 async def test_build_llm_call_real_httpx_posts_and_extracts(
@@ -431,6 +462,7 @@ async def test_execute_dag_builds_config_and_returns_shape(
     """execute_dag runs a wave executor; stub _build_llm_call and verify shape."""
     import services.graph_runner as gr
 
+    _wire_canonical_container(monkeypatch)
     # Stub _build_llm_call to return a coroutine that returns a response string.
     # n1 → n2 (two waves), so cycles == 2.
     calls: list[list[dict]] = []
@@ -476,6 +508,7 @@ async def test_execute_dag_entry_node_fallback_to_first_node(
     """Single-node DAG with no entry_node runs to completion (1 wave, 1 cycle)."""
     import services.graph_runner as gr
 
+    _wire_canonical_container(monkeypatch)
     calls: list[list[dict]] = []
 
     async def _stub_llm(messages: list[dict], **kw: Any) -> str:
@@ -693,7 +726,14 @@ async def test_execute_dag_streaming_yields_full_lifecycle(
     async def _run_durable_graph(graph: Any, **kw: Any) -> Any:
         return _CompletedRecord()
 
-    monkeypatch.setattr(runner, "_container", lambda: None)
+    class _RunStore:
+        async def create_run(self, *args: Any, **kwargs: Any) -> Any:
+            return SimpleNamespace(run_id="canonical-run")
+
+    async def _scope(*args: Any, **kwargs: Any) -> Any:
+        return "w", "p", _RunStore()
+
+    monkeypatch.setattr(runner, "_scope", _scope)
     monkeypatch.setattr(runner, "get_run_store", lambda: object())
     monkeypatch.setattr(runner, "record_run_completion", lambda record: 0)
     monkeypatch.setattr(runner, "run_durable_graph", _run_durable_graph)
@@ -721,7 +761,14 @@ async def test_execute_dag_streaming_yields_failed_on_exception(
     async def _boom(graph: Any, **kw: Any) -> Any:
         raise RuntimeError("synthetic")
 
-    monkeypatch.setattr(runner, "_container", lambda: None)
+    class _RunStore:
+        async def create_run(self, *args: Any, **kwargs: Any) -> Any:
+            return SimpleNamespace(run_id="canonical-run")
+
+    async def _scope(*args: Any, **kwargs: Any) -> Any:
+        return "w", "p", _RunStore()
+
+    monkeypatch.setattr(runner, "_scope", _scope)
     monkeypatch.setattr(runner, "get_run_store", lambda: object())
     monkeypatch.setattr(runner, "run_durable_graph", _boom)
 

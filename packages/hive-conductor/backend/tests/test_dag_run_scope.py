@@ -433,6 +433,7 @@ def test_chat_workflow_tool_opens_the_projection_with_resolved_scope(
     mapping (#1174)."""
     import asyncio
 
+    import services.canonical_dag_runner as canonical_runner
     import services.eval_judge as eval_judge_service
     import services.graph_runner as graph_runner
     import stores
@@ -449,12 +450,17 @@ def test_chat_workflow_tool_opens_the_projection_with_resolved_scope(
         "project_id": "proj-chat",
     }
 
+    async def _fake_scope(*args: Any, **kwargs: Any) -> tuple[str, str]:
+        del args, kwargs
+        return ws, "proj-chat"
+
     async def _fake_execute_dag(dag_data: Any, *, user_id: str = "", **kw: Any) -> dict:
         return {"status": "completed", "run_id": "ignored", "node_results": {}}
 
     async def _fake_score_run(run_record: Any, **kw: Any) -> dict:
         return {"score": 50}
 
+    monkeypatch.setattr(canonical_runner, "resolve_execution_scope", _fake_scope)
     monkeypatch.setattr(graph_runner, "execute_dag", _fake_execute_dag)
     monkeypatch.setattr(eval_judge_service, "score_run", _fake_score_run)
 

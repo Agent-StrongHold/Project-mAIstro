@@ -352,11 +352,26 @@ async def run_dag(dag_id: str, request: Request) -> dict:
 @router.post("/run-champion")
 async def run_champion() -> dict:
     try:
-        from services.graph_runner import execute_champion
+        from services.graph_runner import CanonicalDagExecutionError, execute_champion
 
         result = await execute_champion()
         run_id = result.get("run_id")
         return {"execution_id": run_id, "run_id": run_id, "result": result}
+    except CanonicalDagExecutionError as exc:
+        # Unavailable *or* a Run that ended failed/paused/cancelled: the same
+        # error type carries both, so the log and the top-level `error` say
+        # what the canonical result says rather than labelling every case
+        # unavailable. Clients read `error` here exactly as they do on
+        # `run_dag`'s failure shape.
+        logger.warning("Champion Graph execution did not complete: %s", exc)
+        run_id = exc.result.get("run_id")
+        return {
+            "status": exc.result.get("status", "failed"),
+            "execution_id": run_id,
+            "run_id": run_id,
+            "error": str(exc),
+            "result": exc.result,
+        }
     except Exception as exc:
         logger.warning("Champion execution failed: %s", exc)
         return {"status": "failed", "error": str(exc)}

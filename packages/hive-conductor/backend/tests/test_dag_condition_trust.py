@@ -2,11 +2,37 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from maistro.graph.durable_runs import InMemoryDurableRunStore
+
+def _canonical_test_container() -> tuple[Any, Any]:
+    from maistro.graph.durable_runs import (
+        CanonicalDurableRunStore,
+        InMemoryGraphContinuationStore,
+    )
+    from maistro.runs import InMemoryRunStore
+
+    class _Projects:
+        async def get(self, project_id: str) -> Any:
+            return SimpleNamespace(project_id=project_id, workspace_id="w")
+
+        async def root_for_workspace(self, workspace_id: str) -> Any:
+            return SimpleNamespace(project_id="root-project", workspace_id=workspace_id)
+
+    run_store = InMemoryRunStore(project_store=_Projects())
+    graph_store = CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore())
+    return (
+        SimpleNamespace(
+            config=SimpleNamespace(workspace_id="w"),
+            project_scope_store=_Projects(),
+            run_store=run_store,
+            graph_run_store=graph_store,
+        ),
+        graph_store,
+    )
 
 
 def _safe_node(node_id: str) -> dict[str, Any]:
@@ -79,9 +105,11 @@ async def test_arbitrary_legacy_condition_cannot_silently_skip_successor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import services.canonical_dag_runner as runner
+    import services.dag_agents as dag_agents
 
-    store = InMemoryDurableRunStore()
-    monkeypatch.setattr(runner, "_container", lambda: None)
+    container, store = _canonical_test_container()
+    monkeypatch.setattr(runner, "_container", lambda: container)
+    monkeypatch.setattr(dag_agents, "_container", lambda: container)
     monkeypatch.setattr(runner, "get_run_store", lambda: store)
 
     result = await runner.execute_dag(

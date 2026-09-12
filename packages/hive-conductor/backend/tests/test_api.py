@@ -62,13 +62,47 @@ def test_health_not_degraded_when_all_dependencies_healthy(
             return_value={"enabled": True, "state": "running"},
         ),
         patch("routes.health._log_redaction_active", return_value=True),
+        patch("routes.health._graph_execution_available", return_value=True),
     ):
         data = client.get("/health").json()
 
     assert data["llm_configured"] is True
     assert data["memory_decay_enabled"] is True
     assert data["log_redaction_active"] is True
+    assert data["graph_execution_available"] is True
     assert data["degraded"] is False
+
+
+def test_health_reports_missing_graph_execution_as_degraded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1113: a stub engine has no canonical execution spine, so every Graph
+    surface answers 503. That is degraded on the liveness probe, not silent."""
+    monkeypatch.setenv("LITELLM_API_BASE", "http://gateway.example")
+
+    with (
+        patch(
+            "routes.health._memory_decay_state",
+            return_value={"enabled": True, "state": "running"},
+        ),
+        patch("routes.health._log_redaction_active", return_value=True),
+    ):
+        data = client.get("/health").json()
+
+    assert data["status"] == "ok"
+    assert data["graph_execution_available"] is False
+    assert data["degraded"] is True
+
+
+def test_health_ready_reports_graph_execution_without_flipping_ready() -> None:
+    """Visible in `checks`; readiness stays keyed on the API, like the LLM check."""
+    body = client.get("/health/ready").json()
+    assert body["checks"]["graph_execution"] is False
+    assert body["ready"] is True
+
+    with patch("routes.health._graph_execution_available", return_value=True):
+        body = client.get("/health/ready").json()
+    assert body["checks"]["graph_execution"] is True
 
 
 def test_health_ready_reports_llm_check_without_flipping_ready(

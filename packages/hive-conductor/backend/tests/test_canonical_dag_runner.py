@@ -2,11 +2,38 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from maistro.graph.durable_runs import InMemoryDurableRunStore
+
+def _canonical_test_container() -> tuple[Any, Any]:
+    """Use the same two-store seam as production, without a database."""
+    from maistro.graph.durable_runs import (
+        CanonicalDurableRunStore,
+        InMemoryGraphContinuationStore,
+    )
+    from maistro.runs import InMemoryRunStore
+
+    class _Projects:
+        async def get(self, project_id: str) -> Any:
+            return SimpleNamespace(project_id=project_id, workspace_id="w")
+
+        async def root_for_workspace(self, workspace_id: str) -> Any:
+            return SimpleNamespace(project_id="root-project", workspace_id=workspace_id)
+
+    run_store = InMemoryRunStore(project_store=_Projects())
+    graph_store = CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore())
+    return (
+        SimpleNamespace(
+            config=SimpleNamespace(workspace_id="w"),
+            project_scope_store=_Projects(),
+            run_store=run_store,
+            graph_run_store=graph_store,
+        ),
+        graph_store,
+    )
 
 
 def _safe_node(node_id: str, *, prompt: str | None = None) -> dict[str, Any]:
@@ -167,9 +194,11 @@ async def test_required_node_failure_terminalizes_canonical_run_failed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import services.canonical_dag_runner as runner
+    import services.dag_agents as dag_agents
 
-    store = InMemoryDurableRunStore()
-    monkeypatch.setattr(runner, "_container", lambda: None)
+    container, store = _canonical_test_container()
+    monkeypatch.setattr(runner, "_container", lambda: container)
+    monkeypatch.setattr(dag_agents, "_container", lambda: container)
     monkeypatch.setattr(runner, "get_run_store", lambda: store)
 
     result = await runner.execute_dag(
@@ -195,9 +224,11 @@ async def test_fanout_runs_under_one_canonical_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import services.canonical_dag_runner as runner
+    import services.dag_agents as dag_agents
 
-    store = InMemoryDurableRunStore()
-    monkeypatch.setattr(runner, "_container", lambda: None)
+    container, store = _canonical_test_container()
+    monkeypatch.setattr(runner, "_container", lambda: container)
+    monkeypatch.setattr(dag_agents, "_container", lambda: container)
     monkeypatch.setattr(runner, "get_run_store", lambda: store)
 
     result = await runner.execute_dag(
@@ -228,9 +259,11 @@ async def test_run_scout_executes_under_the_same_canonical_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import services.canonical_dag_runner as runner
+    import services.dag_agents as dag_agents
 
-    store = InMemoryDurableRunStore()
-    monkeypatch.setattr(runner, "_container", lambda: None)
+    container, store = _canonical_test_container()
+    monkeypatch.setattr(runner, "_container", lambda: container)
+    monkeypatch.setattr(dag_agents, "_container", lambda: container)
     monkeypatch.setattr(runner, "get_run_store", lambda: store)
 
     result = await runner.execute_dag(
@@ -346,6 +379,7 @@ async def test_scope_resolves_the_default_workspace_and_its_root_project(
     """With a live container, an unscoped legacy DAG is admitted into the
     configured workspace and the workspace's root project, not a compat scope."""
     import services.canonical_dag_runner as runner
+    import services.dag_agents as dag_agents
 
     class _Config:
         workspace_id = "ws-configured"
@@ -361,8 +395,10 @@ async def test_scope_resolves_the_default_workspace_and_its_root_project(
         config = _Config()
         project_scope_store = _ScopeStore()
         run_store = "the-canonical-run-store"
+        graph_run_store = "the-canonical-graph-store"
 
     monkeypatch.setattr(runner, "_container", lambda: _Container())
+    monkeypatch.setattr(dag_agents, "_container", lambda: _Container())
 
     workspace, project, run_store = await runner._scope({}, workspace_id=None, project_id=None)
 
@@ -378,6 +414,7 @@ async def test_scope_prefers_the_dag_declared_workspace_and_project(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import services.canonical_dag_runner as runner
+    import services.dag_agents as dag_agents
 
     class _Config:
         workspace_id = "ws-configured"
@@ -390,8 +427,10 @@ async def test_scope_prefers_the_dag_declared_workspace_and_project(
         config = _Config()
         project_scope_store = _ScopeStore()
         run_store = "the-canonical-run-store"
+        graph_run_store = "the-canonical-graph-store"
 
     monkeypatch.setattr(runner, "_container", lambda: _Container())
+    monkeypatch.setattr(dag_agents, "_container", lambda: _Container())
 
     workspace, project, _ = await runner._scope(
         {"workspace_id": "ws-declared", "project_id": "p-declared"},
@@ -400,6 +439,28 @@ async def test_scope_prefers_the_dag_declared_workspace_and_project(
     )
 
     assert (workspace, project) == ("ws-declared", "p-declared")
+
+
+@pytest.mark.asyncio
+async def test_execute_dag_returns_unavailable_without_the_canonical_spine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.canonical_dag_runner as runner
+    import services.dag_agents as dag_agents
+
+    monkeypatch.setattr(runner, "_container", lambda: None)
+    monkeypatch.setattr(dag_agents, "_container", lambda: None)
+
+    result = await runner.execute_dag(
+        {"id": "unavailable", "nodes": [_safe_node("a")], "edges": []}
+    )
+
+    assert result == {
+        "status": "unavailable",
+        "run_id": None,
+        "error": "canonical Graph execution is unavailable",
+        "node_results": {},
+    }
 
 
 def test_request_credentials_reach_nodes_as_scoped_env_keys() -> None:
@@ -474,9 +535,11 @@ async def test_a_metrics_recording_failure_never_fails_the_completed_run(
     import logging
 
     import services.canonical_dag_runner as runner
+    import services.dag_agents as dag_agents
 
-    store = InMemoryDurableRunStore()
-    monkeypatch.setattr(runner, "_container", lambda: None)
+    container, store = _canonical_test_container()
+    monkeypatch.setattr(runner, "_container", lambda: container)
+    monkeypatch.setattr(dag_agents, "_container", lambda: container)
     monkeypatch.setattr(runner, "get_run_store", lambda: store)
 
     def _metrics_down(_record: Any) -> int:
