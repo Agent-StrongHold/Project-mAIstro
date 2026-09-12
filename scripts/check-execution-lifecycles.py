@@ -330,8 +330,7 @@ def _reuses_vocabulary(
     if isinstance(node, (ast.Name, ast.Attribute)):
         binding = _type_binding(node, environment)
         return bool(
-            binding.identity
-            and _work_vocabulary(_resolve_binding(binding, frozenset())) == states
+            binding.identity and _work_vocabulary(_resolve_binding(binding, frozenset())) == states
         )
     return any(
         _reuses_vocabulary(operand, states, environment)
