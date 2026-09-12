@@ -241,3 +241,16 @@ class TestDemoDashboardIdsStayInsideTheDemoDirectory:
         from routes.dashboard_layout import get_demo_dashboard
 
         assert await get_demo_dashboard("no-such-demo") == {"error": "not found"}
+
+    async def test_a_real_demo_id_still_loads_and_is_sanitized(self) -> None:
+        """The containment check must refuse traversal without also refusing
+        the shipped demos -- a guard that returns "not found" for everything
+        passes every test above and breaks the feature."""
+        from routes.dashboard_layout import get_demo_dashboard
+
+        layout = await get_demo_dashboard("pm-operations")
+
+        assert "error" not in layout
+        assert layout
+        for widget in layout.get("widgets", []):
+            assert widget_config_violations(widget.get("type"), widget.get("config", {})) == []
