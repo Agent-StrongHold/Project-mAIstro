@@ -280,7 +280,65 @@ class TestWhereTheRouterKeyComesFrom:
         assert _router_api_key() == "from-the-environment"
 
 
+class TestWhereTheModelBindingsComeFrom:
+    """Operator-declared canonical model.chat authorizations (#1079) live on
+    `MaistroYamlConfig`, like the router key. They must survive the explicit
+    mapping into `AgentConfig` — a field present on one model and absent from
+    the mapper is exactly the "quietly does nothing" overlap the mapper's own
+    docstring warns about, and it would leave `llm.summarize` refusing the
+    Bindings a deployment actually declared."""
+
+    def test_declared_bindings_are_mapped_into_the_agent_config(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from maistro.config import settings as settings_module
+        from maistro.config.settings import Settings
+        from maistro_server.main import _agent_config
+
+        declarations = [
+            {
+                "binding_id": "model-default",
+                "project_id": "project-a",
+                "provider_name": "yaml-model",
+            }
+        ]
+        monkeypatch.setattr(
+            settings_module,
+            "get_yaml_config",
+            lambda: _FakeYaml(model_bindings=declarations),
+        )
+
+        config = _agent_config(Settings())
+
+        assert len(config.model_bindings) == 1
+        binding = config.model_bindings[0]
+        assert binding.binding_id == "model-default"
+        assert binding.project_id == "project-a"
+        assert binding.provider_name == "yaml-model"
+
+    def test_no_yaml_config_declares_no_binding_authorization(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Absent configuration authorizes nothing — the fail-closed default,
+        not an inherited or environment-derived grant."""
+        from maistro.config import settings as settings_module
+        from maistro.config.settings import Settings
+        from maistro_server.main import _agent_config
+
+        monkeypatch.setattr(settings_module, "get_yaml_config", lambda: None)
+
+        config = _agent_config(Settings())
+
+        assert config.model_bindings == []
+
+
 class _FakeYaml:
-    def __init__(self, router_api_key: str) -> None:
+    def __init__(
+        self,
+        router_api_key: str = "",
+        model_bindings: list[dict[str, Any]] | None = None,
+    ) -> None:
         self.router_api_key = router_api_key
+        self.agents_dir = ""
+        self.model_bindings = list(model_bindings or [])
         self.agents_dir = ""

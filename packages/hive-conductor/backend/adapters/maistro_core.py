@@ -146,6 +146,11 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         litellm_url=llm_base or "http://localhost:4000",
         litellm_key=llm_key,
         agents_dir=settings.maistro_agents_dir,
+        # Operator-declared canonical model.chat Bindings (#1079). Pydantic
+        # coerces each raw map into `ModelBindingConfig` here, so a malformed
+        # declaration is a bridge-startup failure rather than a Binding the
+        # node cannot resolve. Empty authorizes nothing and stays fail-closed.
+        model_bindings=list(settings.maistro_model_bindings or []),
         # Stated, not inherited (#158). Core defaults this to "default" too,
         # so the value is the same today — but a Hive that changed its
         # default Workspace and a core that did not would then disagree

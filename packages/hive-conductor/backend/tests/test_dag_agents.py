@@ -85,7 +85,17 @@ _DELEGATE_DAG = {"nodes": [{"id": "d", "kind": "agent.delegate_remote"}]}
 class _StubContainer:
     """Stands in for the core Container the bridge exposes."""
 
-    def __init__(self, delegator=None, peers=None, runs=None, graph_runs=None) -> None:
+    def __init__(
+        self,
+        delegator=None,
+        peers=None,
+        runs=None,
+        graph_runs=None,
+        effects=None,
+        registry=None,
+        router=None,
+        endpoint=None,
+    ) -> None:
         # Distinct sentinels, built here rather than in the signature: the tests
         # assert identity, so each field must be its own object.
         self.a2a_delegator = delegator if delegator is not None else object()
@@ -95,6 +105,15 @@ class _StubContainer:
         # `run_store` on purpose: the whole point of the test below is that the
         # two are one line apart and must not be swapped.
         self.graph_run_store = graph_runs if graph_runs is not None else object()
+        # The governed model-egress authorities (#1079): the effect context the
+        # Container's bootstrap loaded Bindings into, plus its Provider registry
+        # and router. Distinct objects so the wiring test can assert identity.
+        self.capability_effects = effects if effects is not None else object()
+        self.provider_registry = registry if registry is not None else object()
+        self.llm_router = router if router is not None else object()
+        # The configured gateway endpoint (#1079 review), handed to the node
+        # so programmatic configuration reaches it without the environment.
+        self.gateway_endpoint = endpoint if endpoint is not None else object()
 
 
 def _with_container(monkeypatch, container) -> None:
@@ -206,6 +225,33 @@ def test_ordinary_node_kinds_are_unaffected_by_the_wiring(monkeypatch) -> None:
         "only", {"nodes": [{"id": "only", "kind": "transform.alias_keys", "config": {}}]}
     )
     assert type(node).__name__ == "TransformAliasKeysNode"
+
+
+def test_the_summarize_node_gets_the_containers_model_egress_authorities(
+    monkeypatch,
+) -> None:
+    """A registered DAG whose node is `llm.summarize` must be built against the
+    Container's own effect context, Provider registry and router (#1079).
+
+    Omitting the trio does not crash — the node falls back to fresh empty
+    authorities — but then a deployment's configured Bindings are invisible on
+    this path and every summarize run refuses no matter what the operator
+    declared. Identity is the assertion: the exact objects the Container owns,
+    not fresh lookalikes."""
+    import services.dag_agents as dag_agents
+
+    from maistro.graph.nodes.llm_summarize import LlmSummarizeNode
+
+    container = _StubContainer()
+    _with_container(monkeypatch, container)
+
+    node = dag_agents._resolve_nodes_with()("d", {"nodes": [{"id": "d", "kind": "llm.summarize"}]})
+
+    assert isinstance(node, LlmSummarizeNode)
+    assert node._effects is container.capability_effects
+    assert node._registry is container.provider_registry
+    assert node._router is container.llm_router
+    assert node._endpoint is container.gateway_endpoint
 
 
 @pytest.mark.ac("ADR-082826-d9f5/AC-1")

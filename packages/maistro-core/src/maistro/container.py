@@ -233,6 +233,10 @@ class Container:
     #: cannot share `db_pool`; it is this container's to close on the same
     #: terms (`holds_db_pool`), never the store's.
     session_conn: Any = None
+    # The capability Invocation ledger's own SQLite connection (#1079 review):
+    # its event store holds `BEGIN IMMEDIATE` transactions, which must not share
+    # a connection with stores that commit independently (#327).
+    ledger_conn: Any = None
     #: The asyncpg pool, when PostgreSQL is selected. Separate from `db_pool`
     #: because the two are different objects with different APIs, and code that
     #: branches on "is a database configured" needs to know which.
@@ -290,6 +294,10 @@ class Container:
     # LLM provider registry + cost-aware router (SPEC-070226-cb8d).
     provider_registry: LLMProviderRegistry = None  # type: ignore[assignment]
     llm_router: LLMRouter = None  # type: ignore[assignment]
+    # The configured LLM gateway (`AgentConfig.litellm_url` / `litellm_key`), handed
+    # to wired `llm.summarize` nodes so programmatic configuration reaches them
+    # without an environment round trip (#1079 review).
+    gateway_endpoint: Any = None
     # Observability record/replay + PII tier routing (ADR-055).
     record_store: RecordStore = None  # type: ignore[assignment]
     pii_detector: PIIDetector = None  # type: ignore[assignment]
@@ -384,7 +392,7 @@ class Container:
             # shutdown that stops at the first failure leaves the rest
             # unreleased -- and must not leave the container looking open,
             # though `closed` is already True, so no retry re-enters here.
-            for connection in (self.db_pool, self.session_conn):
+            for connection in (self.db_pool, self.session_conn, self.ledger_conn):
                 if connection is None:
                     continue
                 try:
@@ -398,6 +406,7 @@ class Container:
             # connection the next user would find dead.
             self.db_pool = None
             self.session_conn = None
+            self.ledger_conn = None
             self.holds_db_pool = False
 
     async def route_request(
@@ -815,6 +824,9 @@ class Container:
                 guest_peers=self.guest_peers,
                 run_store=self.run_store,
                 effect_context=self.capability_effects,
+                provider_registry=self.provider_registry,
+                llm_router=self.llm_router,
+                gateway_endpoint=self.gateway_endpoint,
             ),
         )
         executed = 0
@@ -891,6 +903,9 @@ class Container:
                 guest_peers=self.guest_peers,
                 run_store=self.run_store,
                 effect_context=self.capability_effects,
+                provider_registry=self.provider_registry,
+                llm_router=self.llm_router,
+                gateway_endpoint=self.gateway_endpoint,
             ),
         )
         resumed = 0
@@ -1269,6 +1284,7 @@ async def create_container(
     # wiring below came to assume "a database is configured" means "SQLite".
     db_pool: Any = None
     session_conn: Any = None
+    ledger_conn: Any = None
     # Held aside before the URL branch runs, because that branch rebinds
     # `pg_pool`. Rebinding it unconditionally — which is what merging #122 into
     # #135 first did — drops the parameter on the floor, and a caller-supplied
@@ -1282,6 +1298,7 @@ async def create_container(
         (
             db_pool,
             session_conn,
+            ledger_conn,
             quota_tracker,
             learning_store,
             outcome_store,
@@ -1485,6 +1502,13 @@ async def create_container(
         else InMemoryProviderRegistry()
     )
     llm_router = CostAwareRouter(provider_registry)
+    # The configured gateway, as an object wired nodes can be handed (#1079
+    # review): `LlmSummarizeNode` used to read only the environment, so a
+    # Container configured programmatically held a valid endpoint its own
+    # nodes could not see.
+    from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
+
+    gateway_endpoint = GatewayEndpoint(base_url=config.litellm_url, api_key=config.litellm_key)
 
     # --- Observability record/replay + PII tiers (ADR-055) ---------------
     from maistro.observability.replay import InMemoryRecordStore
@@ -1520,7 +1544,20 @@ async def create_container(
 
     # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) -----------
     wired_harness_adapters = _wire_harness_adapters(harness_adapters)
-    capability_effects = new_in_memory_effect_context()
+    # The Invocation ledger is what makes a retry after a worker death refuse a
+    # duplicate model call (`UnsafeEffectRetry`) instead of charging twice, so
+    # a Container with a durable backend keeps it there (#1079 review). SQLite
+    # gets both halves; PostgreSQL has a durable event store but no PostgreSQL
+    # InvocationStore yet, so its ledger stays process-local and says so.
+    ledger_invocations, ledger_events = await _wire_capability_ledger(
+        ledger_conn=ledger_conn, pg_pool=pg_pool
+    )
+    capability_effects = new_in_memory_effect_context(
+        invocation_store=ledger_invocations, event_store=ledger_events
+    )
+    from maistro.capabilities.model_binding_bootstrap import bootstrap_model_bindings
+
+    await bootstrap_model_bindings(config, capability_effects)
     spawn_harness_node = AgentSpawnHarnessNode(
         adapters=wired_harness_adapters, effect_context=capability_effects
     )
@@ -1577,6 +1614,7 @@ async def create_container(
         audit_log=audit_log,
         db_pool=db_pool,
         session_conn=session_conn,
+        ledger_conn=ledger_conn,
         pg_pool=pg_pool,
         holds_pg_pool=holds_pg_pool,
         holds_db_pool=holds_db_pool,
@@ -1588,6 +1626,7 @@ async def create_container(
         handler_caller=handler_caller,
         provider_registry=provider_registry,
         llm_router=llm_router,
+        gateway_endpoint=gateway_endpoint,
         record_store=record_store,
         pii_detector=pii_detector,
         identity_store=identity_store,
@@ -2075,6 +2114,7 @@ async def _wire_sqlite_backend(
 ) -> tuple[
     Any,
     Any,
+    Any,
     QuotaTracker,
     LearningStore,
     OutcomeStore,
@@ -2127,6 +2167,10 @@ async def _wire_sqlite_backend(
     # nothing but this store reads `sessions` or `session_turns`, and that URL
     # is already warned about above as non-durable.
     session_conn = await aiosqlite.connect(path)
+    # The capability Invocation ledger gets a connection of its own for the
+    # same reason (#1079 review): its event store allocates sequences under
+    # `BEGIN IMMEDIATE`, and a transaction belongs to the connection.
+    ledger_conn = await aiosqlite.connect(path)
 
     sqlite_quota_tracker = SqliteQuotaTracker(conn)
     sqlite_learning_store = SqliteLearningStore(conn)
@@ -2142,7 +2186,47 @@ async def _wire_sqlite_backend(
     outcome_store: OutcomeStore = sqlite_outcome_store
     session_store: SessionStore = sqlite_session_store
 
-    return conn, session_conn, quota_tracker, learning_store, outcome_store, session_store
+    return (
+        conn,
+        session_conn,
+        ledger_conn,
+        quota_tracker,
+        learning_store,
+        outcome_store,
+        session_store,
+    )
+
+
+async def _wire_capability_ledger(*, ledger_conn: Any, pg_pool: Any) -> tuple[Any, Any]:
+    """The capability Invocation ledger's stores for this Container's backend.
+
+    Returns ``(invocation_store, event_store)``, either of which is None to
+    mean "keep the in-memory default". SQLite gets `SqliteInvocationStore`
+    and `SqliteEventStore` on the ledger's own connection. PostgreSQL gets the
+    durable `PgEventStore` for the correlated events but keeps invocations
+    process-local, because no PostgreSQL `InvocationStore` exists yet: that
+    gap is logged at startup rather than hidden behind an in-memory default.
+    """
+    if ledger_conn is not None:
+        from maistro.capabilities.invocation_store import (
+            SqliteInvocationStore as SqliteCapabilityInvocationStore,
+        )
+        from maistro.events.envelope import SqliteEventStore
+
+        invocations = SqliteCapabilityInvocationStore(ledger_conn)
+        events = SqliteEventStore(ledger_conn)
+        await invocations.ensure_schema()
+        await events.ensure_schema()
+        return invocations, events
+    if pg_pool is not None:
+        from maistro.events.pg_envelope import PgEventStore
+
+        logger.warning(
+            "capability invocation ledger is process-local on PostgreSQL: no PostgreSQL "
+            "InvocationStore exists yet, so a worker restart forgets in-flight model calls"
+        )
+        return None, PgEventStore(pg_pool)
+    return None, None
 
 
 async def _wire_sqlite_durable_events(
@@ -2252,6 +2336,9 @@ def _di_node(
     guest_peers: Any,
     run_store: RunStore | None,
     effect_context: CapabilityEffectContext | None,
+    provider_registry: LLMProviderRegistry | None,
+    llm_router: LLMRouter | None,
+    gateway_endpoint: Any = None,
 ) -> Any:
     """Construct a dependency-injected node kind, or None for registry kinds.
 
@@ -2263,16 +2350,21 @@ def _di_node(
 
     from maistro.graph.nodes.agent_delegate_remote import AgentDelegateRemoteNode
     from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
+    from maistro.graph.nodes.agent_synth_dag import AgentSynthDagNode
     from maistro.graph.nodes.llm_summarize import LlmSummarizeNode
     from maistro.graph.nodes.rsi_quota_pace_trigger import RsiQuotaPaceTriggerNode
 
     if kind == "agent.spawn_harness":
         return AgentSpawnHarnessNode(adapters=harness_adapters, effect_context=effect_context)
     if kind == "llm.summarize":
-        # The shipped model path crosses the governed model egress (#56):
-        # the node resolves Bindings and files Invocations against the same
-        # authorities the container's own effect nodes use.
-        return LlmSummarizeNode(effect_context=effect_context)
+        # Production callers pass the exact Container collaborators; bare
+        # resolvers may omit them and remain fail-closed on empty defaults.
+        return LlmSummarizeNode(
+            effect_context=effect_context,
+            registry=provider_registry,
+            router=llm_router,
+            endpoint=gateway_endpoint,
+        )
     if kind == "rsi.quota_pace_trigger":
         return RsiQuotaPaceTriggerNode(usage_log)
     if kind == "agent.delegate_remote":
@@ -2286,6 +2378,29 @@ def _di_node(
         return AgentDelegateRemoteNode(
             a2a_delegator=a2a_delegator, guest_peers=guest_peers, run_store=run_store
         )
+    if kind == "agent.synth_dag":
+        # Same omission shape as delegate_remote above, one level out: the
+        # synth catalog explicitly offers `llm.summarize`, so a bare parent
+        # hands its child graphs a resolver that builds `llm.summarize` with
+        # a fresh empty effect context, registry and router (#1079) -- the
+        # child then refuses Bindings the deployment configured, and unpinned
+        # selection routes over an empty registry. The child resolver carries
+        # this same wiring down (child delegate nodes included). Child-run
+        # filing keeps the bare node's store behavior: this node takes a
+        # DurableRunStore, which `run_store` here is not.
+        return AgentSynthDagNode(
+            node_resolver=build_node_resolver(
+                harness_adapters=harness_adapters,
+                usage_log=usage_log,
+                a2a_delegator=a2a_delegator,
+                guest_peers=guest_peers,
+                run_store=run_store,
+                effect_context=effect_context,
+                provider_registry=provider_registry,
+                llm_router=llm_router,
+                gateway_endpoint=gateway_endpoint,
+            ),
+        )
     return None
 
 
@@ -2297,6 +2412,9 @@ def build_node_resolver(
     guest_peers: Any = None,
     run_store: RunStore | None = None,
     effect_context: CapabilityEffectContext | None = None,
+    provider_registry: LLMProviderRegistry | None = None,
+    llm_router: LLMRouter | None = None,
+    gateway_endpoint: Any = None,
 ) -> Callable[[str, Any], Any]:
     """Build the production durable-executor node resolver.
 
@@ -2353,6 +2471,9 @@ def build_node_resolver(
             guest_peers=guest_peers,
             run_store=run_store,
             effect_context=resolved_effect_context,
+            provider_registry=provider_registry,
+            llm_router=llm_router,
+            gateway_endpoint=gateway_endpoint,
         )
         return injected if injected is not None else get_node(kind)()
 

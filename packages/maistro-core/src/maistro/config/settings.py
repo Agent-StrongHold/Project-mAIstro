@@ -420,6 +420,12 @@ class MaistroYamlConfig(BaseModel):
     rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
     model_groups: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    # Operator-declared canonical model.chat authorizations (#1079). Raw maps
+    # here for the same reason `providers`/`models` are: the YAML layer stays
+    # schema-light, and the declarations are validated once into
+    # `ModelBindingConfig` at the AgentConfig/Container boundary, where a
+    # malformed declaration is a startup failure rather than a silent no-op.
+    model_bindings: list[dict[str, Any]] = Field(default_factory=list)
     permissions: dict[str, list[str]] = Field(default_factory=dict)
     rate_profiles: list[ModelRateProfileConfig] = Field(default_factory=list)
     database_url: str = ""

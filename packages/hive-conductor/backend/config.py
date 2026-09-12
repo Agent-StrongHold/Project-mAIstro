@@ -6,7 +6,7 @@ import re
 import uuid
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -204,6 +204,14 @@ class Settings(BaseSettings):
     maistro_agents_dir: str = "agents"
     maistro_llm_api_key: SecretStr | None = None
     maistro_model: str = "mistral-large"
+    # Operator-declared canonical model.chat Bindings (#1079), passed to the
+    # maistro-core bridge and validated into `AgentConfig.model_bindings`.
+    # Env/`.env` shape is a JSON array of declaration objects, e.g.
+    # `MAISTRO_MODEL_BINDINGS='[{"binding_id": "model-default",
+    # "project_id": "project-a", "provider_name": "gpt-4o"}]'`. Empty is the
+    # default and authorizes nothing: every governed model egress then fails
+    # closed at the Binding instead of dispatching.
+    maistro_model_bindings: list[dict[str, Any]] = []
 
     conductor_data_dir: str = "~/.conductor"
     conductor_vault_path: str | None = None
