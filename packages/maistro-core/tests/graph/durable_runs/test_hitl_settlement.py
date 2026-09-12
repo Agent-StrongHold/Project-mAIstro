@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar
@@ -244,6 +245,52 @@ async def test_deadline_survives_restart_and_timeout_preserves_attempt(tmp_path:
 
 @pytest.mark.ac("SPEC-083026-73c1/AC-2")
 @pytest.mark.ac("SPEC-083026-73c1/AC-5")
+async def test_pre_index_sqlite_pause_is_backfilled_and_expires_after_restart(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "pre-index-hitl.db"
+    original = _paused_record("pre-index-timeout")
+    row = SqliteDurableRunStore._to_row(original)
+    with sqlite3.connect(db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE durable_graph_runs (
+                run_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                active_node_id TEXT,
+                project_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                resume_at TEXT,
+                version INTEGER NOT NULL DEFAULT 0,
+                record_json TEXT NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            """INSERT INTO durable_graph_runs
+               (run_id, status, active_node_id, project_id, created_at,
+                resume_at, version, record_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                row["run_id"],
+                row["status"],
+                row["active_node_id"],
+                row["project_id"],
+                row["created_at"],
+                row["resume_at"],
+                row["version"],
+                row["record_json"],
+            ),
+        )
+        conn.commit()
+
+    store = SqliteDurableRunStore(db)
+    expired = await expire_hitl_pauses(store, now=_AFTER, limit=1)
+
+    assert [record.run_id for record in expired] == ["pre-index-timeout"]
+    assert expired[0].status is RunStatus.TIMED_OUT
+
+
 async def test_cancel_survives_restart_without_fabricating_an_answer(tmp_path: Path) -> None:
     db = tmp_path / "hitl-cancel.db"
     store = SqliteDurableRunStore(db)
@@ -428,6 +475,65 @@ async def test_sqlite_instances_serialize_answer_cancel_race(tmp_path: Path) -> 
 
 @pytest.mark.ac("SPEC-083026-73c1/AC-1")
 @pytest.mark.ac("SPEC-083026-73c1/AC-5")
+async def test_reconcile_repairs_crash_after_terminal_continuation_persistence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A crash between continuation and spine writes is restart-repairable."""
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("ws-hitl-reconcile")
+    project = await projects.create(
+        workspace_id="ws-hitl-reconcile",
+        parent_project_id=root.project_id,
+        name="HITL",
+    )
+    run_store = InMemoryRunStore(project_store=projects)
+    continuations = InMemoryGraphContinuationStore()
+    store = CanonicalDurableRunStore(run_store, continuations)
+    graph = Graph(
+        workspace_id="ws-hitl-reconcile",
+        project_id=project.project_id,
+        name="crash after timeout evidence",
+        nodes=[Node(node_id="ask", node_type=_CanonicalAsk.kind)],
+    )
+    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    paused = await run_durable_graph(
+        graph,
+        store=store,
+        node_resolver=lambda node_id, current_graph: _CanonicalAsk(),
+        run_id=admitted.run_id,
+        run_store=run_store,
+    )
+    original_attempts = paused.attempts
+    original_transition_run = run_store.transition_run
+    crash = True
+
+    async def crash_before_run_mirror(run_id: str, target: RunStatus, **kwargs: Any) -> Any:
+        nonlocal crash
+        if crash and target is RunStatus.TIMED_OUT:
+            crash = False
+            raise RuntimeError("injected crash after HITL continuation write")
+        return await original_transition_run(run_id, target, **kwargs)
+
+    monkeypatch.setattr(run_store, "transition_run", crash_before_run_mirror)
+    with pytest.raises(RuntimeError, match="injected crash"):
+        await store.timeout_hitl(paused.run_id, "ask", at=_AFTER)
+
+    interrupted = await run_store.get_run(paused.run_id)
+    assert interrupted is not None and interrupted.status is RunStatus.PAUSED
+    [interrupted_node] = await run_store.list_node_runs(paused.run_id)
+    assert interrupted_node.status is RunStatus.TIMED_OUT
+
+    # A newly opened canonical facade sees the durable terminal continuation
+    # and repairs the remaining spine projection without another Attempt.
+    reopened = CanonicalDurableRunStore(run_store, continuations)
+    assert await reopened.reconcile_persistence() == 1
+    repaired = await reopened.get(paused.run_id)
+    assert repaired is not None and repaired.status is RunStatus.TIMED_OUT
+    assert repaired.node_runs[0].status is RunStatus.TIMED_OUT
+    assert repaired.attempts == original_attempts
+    assert await reopened.reconcile_persistence() == 0
+
+
 async def test_canonical_projection_mirrors_timeout_without_rewriting_attempt() -> None:
     projects = InMemoryProjectScopeStore()
     root = await projects.create_root("ws-hitl-settlement")
@@ -493,6 +599,40 @@ async def test_expiry_tick_is_bounded_and_ignores_unelapsed_pauses() -> None:
     assert len(expired) == 1
     remaining = await store.list_by_status(RunStatus.PAUSED)
     assert len(remaining) == 1
+
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+async def test_expiry_deadline_query_skips_an_ineligible_paused_prefix(
+    backend: str, tmp_path: Path
+) -> None:
+    if backend == "memory":
+        store = InMemoryDurableRunStore()
+    else:
+        store = SqliteDurableRunStore(tmp_path / "hitl-fairness.db")
+
+    # These records are older in the operator's mental ordering, but their
+    # durable pause entries are not HITL. They must not consume the settlement
+    # limit or become a repeatedly reread prefix.
+    for index in range(3):
+        nonhuman = _with_pause_entry(
+            _paused_record(f"nonhuman-{index}"),
+            {"kind": "wait", "metadata": {}, "resume_at": _DEADLINE.isoformat()},
+        ).model_copy(update={"resume_at": None})
+        await store.create(nonhuman)
+    future = _with_pause_entry(
+        _paused_record("future-hitl"),
+        {"kind": "hitl", "metadata": {}, "resume_at": (_AFTER + timedelta(days=1)).isoformat()},
+    ).model_copy(update={"resume_at": None})
+    await store.create(future)
+
+    expired = _paused_record("expired-hitl").model_copy(update={"resume_at": None})
+    await store.create(expired)
+
+    settled = await expire_hitl_pauses(store, now=_AFTER, limit=1)
+
+    assert [record.run_id for record in settled] == ["expired-hitl"]
+    assert await store.get("expired-hitl") is not None
+    assert (await store.get("expired-hitl")).status is RunStatus.TIMED_OUT
 
 
 async def test_expiry_tick_ignores_nonhuman_pauses_and_lost_races() -> None:

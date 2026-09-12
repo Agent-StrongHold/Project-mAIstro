@@ -16,6 +16,7 @@ from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
 from .hitl import (
     HitlDeadlineElapsed,
     HitlDeadlinePending,
+    earliest_hitl_deadline,
     hitl_deadline,
     hitl_pause,
     settlement_time,
@@ -269,6 +270,23 @@ class InMemoryDurableRunStore:
                 break
         return out
 
+    async def list_hitl_due(self, *, now: datetime, limit: int = 100) -> list[DurableRunRecord]:
+        rows = [
+            record
+            for record in self._rows.values()
+            if record.run.status is RunStatus.PAUSED
+            and (deadline := earliest_hitl_deadline(record)) is not None
+            and deadline <= now
+        ]
+        rows.sort(
+            key=lambda record: (
+                earliest_hitl_deadline(record),
+                record.run.created_at,
+                record.run_id,
+            )
+        )
+        return [_clone(record) for record in rows[:limit]]
+
     async def list_for_project(self, project_id: str, *, limit: int = 25) -> list[DurableRunRecord]:
         runs = [record for record in self._rows.values() if record.run.project_id == project_id]
         runs.sort(key=lambda record: record.run.created_at, reverse=True)
@@ -329,6 +347,7 @@ CREATE TABLE IF NOT EXISTS durable_graph_runs (
     project_id      TEXT NOT NULL,
     created_at      TEXT NOT NULL,
     resume_at       TEXT,
+    hitl_deadline_at TEXT,
     version         INTEGER NOT NULL DEFAULT 0,
     record_json     TEXT NOT NULL
 );
@@ -368,6 +387,23 @@ def _reject_unmigrated_legacy_rows(conn: sqlite3.Connection) -> None:
     )
 
 
+def _backfill_hitl_deadlines(conn: sqlite3.Connection) -> None:
+    """Restore the lookup projection for rows written before the index."""
+    rows = conn.execute(
+        """SELECT run_id, record_json FROM durable_graph_runs
+            WHERE status = ? AND hitl_deadline_at IS NULL""",
+        (RunStatus.PAUSED.value,),
+    ).fetchall()
+    for row in rows:
+        record = DurableRunRecord.model_validate_json(row["record_json"])
+        deadline = earliest_hitl_deadline(record)
+        if deadline is not None:
+            conn.execute(
+                "UPDATE durable_graph_runs SET hitl_deadline_at = ? WHERE run_id = ?",
+                (deadline.isoformat(), row["run_id"]),
+            )
+
+
 class SqliteDurableRunStore:
     """SQLite-backed canonical durable graph checkpoint store.
 
@@ -383,6 +419,15 @@ class SqliteDurableRunStore:
         with self._connect() as conn:
             _reject_unmigrated_legacy_rows(conn)
             conn.executescript(_SCHEMA_SQL)
+            columns = conn.execute("PRAGMA table_info(durable_graph_runs)").fetchall()
+            if not any(row[1] == "hitl_deadline_at" for row in columns):
+                conn.execute("ALTER TABLE durable_graph_runs ADD COLUMN hitl_deadline_at TEXT")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_durable_graph_runs_hitl_deadline "
+                "ON durable_graph_runs(status, hitl_deadline_at)"
+            )
+            _backfill_hitl_deadlines(conn)
+            conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._path)
@@ -391,6 +436,7 @@ class SqliteDurableRunStore:
 
     @staticmethod
     def _to_row(record: DurableRunRecord) -> dict[str, Any]:
+        hitl_deadline = earliest_hitl_deadline(record)
         return {
             "run_id": record.run_id,
             "status": record.run.status.value,
@@ -398,6 +444,7 @@ class SqliteDurableRunStore:
             "project_id": record.run.project_id,
             "created_at": record.run.created_at.isoformat(),
             "resume_at": record.resume_at.isoformat() if record.resume_at else None,
+            "hitl_deadline_at": hitl_deadline.isoformat() if hitl_deadline else None,
             "version": record.version,
             "record_json": record.model_dump_json(),
         }
@@ -434,6 +481,9 @@ class SqliteDurableRunStore:
             limit,
             project_id,
         )
+
+    async def list_hitl_due(self, *, now: datetime, limit: int = 100) -> list[DurableRunRecord]:
+        return await asyncio.to_thread(_list_hitl_due_sync, self, now, limit)
 
     async def list_for_project(self, project_id: str, *, limit: int = 25) -> list[DurableRunRecord]:
         return await asyncio.to_thread(
@@ -500,10 +550,10 @@ def _create_sync(
             """
             INSERT INTO durable_graph_runs(
                 run_id, status, active_node_id, project_id, created_at,
-                resume_at, version, record_json
+                resume_at, hitl_deadline_at, version, record_json
             ) VALUES (
                 :run_id, :status, :active_node_id, :project_id, :created_at,
-                :resume_at, :version, :record_json
+                :resume_at, :hitl_deadline_at, :version, :record_json
             )
             """,
             row,
@@ -538,6 +588,7 @@ def _update_sync(
                    project_id = :project_id,
                    created_at = :created_at,
                    resume_at = :resume_at,
+                   hitl_deadline_at = :hitl_deadline_at,
                    version = :version,
                    record_json = :record_json
              WHERE run_id = :run_id
@@ -586,6 +637,7 @@ def _mutate_hitl_sync(
                    project_id = :project_id,
                    created_at = :created_at,
                    resume_at = :resume_at,
+                   hitl_deadline_at = :hitl_deadline_at,
                    version = :version,
                    record_json = :record_json
              WHERE run_id = :run_id
@@ -613,6 +665,24 @@ def _list_by_status_sync(
     params.append(limit)
     with store._connect() as conn:
         rows = conn.execute(query, params).fetchall()
+    return [store._from_row(row) for row in rows]
+
+
+def _list_hitl_due_sync(
+    store: SqliteDurableRunStore,
+    now: datetime,
+    limit: int,
+) -> list[DurableRunRecord]:
+    with store._connect() as conn:
+        rows = conn.execute(
+            """SELECT * FROM durable_graph_runs
+                WHERE status = ?
+                  AND hitl_deadline_at IS NOT NULL
+                  AND hitl_deadline_at <= ?
+             ORDER BY hitl_deadline_at ASC, run_id ASC
+                LIMIT ?""",
+            (RunStatus.PAUSED.value, now.isoformat(), limit),
+        ).fetchall()
     return [store._from_row(row) for row in rows]
 
 
