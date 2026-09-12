@@ -75,6 +75,7 @@ _WORK_STATES = frozenset(
     }
 )
 _MIN_WORK_STATES = 3
+_IMPORTED_TYPE_PREFIX = "<imported-type:"
 
 
 def _provenance() -> ModuleType:
@@ -142,6 +143,50 @@ def _typing_names(tree: ast.AST, inherited: dict[str, str]) -> dict[str, str]:
     return names
 
 
+def _imported_type_values(tree: ast.AST) -> dict[str, set[str]]:
+    """Keep unresolved imports symbolic instead of treating them as empty types.
+
+    No production module is imported or executed. A marker names the imported
+    type; it is not an invented status value. Pure reuse is ignored, but a
+    status-shaped alias/field extending it with a known work state needs a
+    disposition even when its locally visible vocabulary has fewer than three
+    states. The same source-only rule applies at the trusted base.
+    """
+    found: dict[str, set[str]] = {}
+    for node in _scope_nodes(tree):
+        if isinstance(node, ast.ImportFrom):
+            if node.module in {"typing", "typing_extensions"}:
+                continue
+            origin = "." * node.level + (node.module or "")
+            for item in node.names:
+                if item.name != "*":
+                    target = f"{origin}.{item.name}" if node.module else f"{origin}{item.name}"
+                    found[item.asname or item.name] = {f"{_IMPORTED_TYPE_PREFIX}{target}>"}
+        elif isinstance(node, ast.Import):
+            for item in node.names:
+                if item.name in {"typing", "typing_extensions"}:
+                    continue
+                bound = item.asname or item.name.split(".")[0]
+                target = item.name if item.asname else bound
+                found[bound] = {f"{_IMPORTED_TYPE_PREFIX}{target}>"}
+    return found
+
+
+def _work_vocabulary(values: set[str]) -> set[str]:
+    """Return known states and explicit unresolved-import evidence for review.
+
+    The ordinary three-state threshold is unchanged. An unresolved import
+    combined with at least one known work state is conservatively visible:
+    otherwise importing the first three states would conceal a new extension.
+    No-import small Literals and pure imported-type reuse remain unclassified.
+    """
+    states = _normalized_work_states(values)
+    imported = {value for value in values if value.startswith(_IMPORTED_TYPE_PREFIX)}
+    if len(states) >= _MIN_WORK_STATES or (states and imported):
+        return states | imported
+    return set()
+
+
 def _typing_arguments(
     node: ast.Subscript, typing_names: dict[str, str]
 ) -> tuple[str | None, list[ast.expr]]:
@@ -178,6 +223,13 @@ def _literal_values(
             inherited,
             resolving | {node.id},
         )
+    if isinstance(node, ast.Attribute):
+        roots = _literal_values(node.value, aliases, typing_names, inherited, resolving)
+        return {
+            f"{value[:-1]}.{node.attr}>"
+            for value in roots
+            if value.startswith(_IMPORTED_TYPE_PREFIX)
+        }
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
         left = _literal_values(node.left, aliases, typing_names, inherited, resolving)
         return left | _literal_values(node.right, aliases, typing_names, inherited, resolving)
@@ -301,10 +353,10 @@ def _literal_field_vocabularies(
             continue
         if not _looks_like_status_alias(node.target.id):
             continue
-        states = _normalized_work_states(
+        states = _work_vocabulary(
             _literal_values(node.annotation, aliases, typing_names, inherited)
         )
-        if len(states) < _MIN_WORK_STATES:
+        if not states:
             continue
         # Reusing a named vocabulary adds no authority. Extending it with new
         # states does, so a union containing an alias must not hide the field.
@@ -324,21 +376,26 @@ def _literal_scope_vocabularies(
 ) -> dict[str, set[str]]:
     """Give each alias its lexical identity rather than flattening sibling scopes."""
     aliases = _literal_aliases(tree)
+    imported = _imported_type_values(tree)
+    inherited = {**inherited, **imported}
     typing_names = _typing_names(tree, inherited_typing)
     values = {
         name: _literal_values(value, aliases, typing_names, inherited)
         for name, value in aliases.items()
     }
     named = {
-        name: _normalized_work_states(value)
+        name: _work_vocabulary(value)
         for name, value in values.items()
-        if _looks_like_status_alias(name)
-        and len(_normalized_work_states(value)) >= _MIN_WORK_STATES
+        if _looks_like_status_alias(name) and _work_vocabulary(value)
     }
     identity_prefix = f"{module}::{prefix}"
     found = {f"{identity_prefix}{name}": states for name, states in named.items()}
     visible_named = {
-        **{name: states for name, states in inherited_named.items() if name not in aliases},
+        **{
+            name: states
+            for name, states in inherited_named.items()
+            if name not in aliases and name not in imported
+        },
         **named,
     }
     found.update(
