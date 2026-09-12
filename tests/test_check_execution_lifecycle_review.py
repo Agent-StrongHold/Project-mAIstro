@@ -40,10 +40,14 @@ class Outer:
     class Inner:
         type Status = Literal["queued", "running", "failed"]
 """
-    assert gate.work_state_literals(source, "pkg.jobs") == {
-        f"pkg.jobs::{scope}.Status": STATES
-        for scope in ("A", "B", "make_a", "make_b", "Outer.Inner")
+    expected = {
+        "pkg.jobs::A.Status": STATES,
+        "pkg.jobs::B.Status": STATES,
+        "pkg.jobs::make_a.Status": STATES,
+        "pkg.jobs::make_b.Status": STATES,
+        "pkg.jobs::Outer.Inner.Status": STATES,
     }
+    assert gate.work_state_literals(source, "pkg.jobs") == expected
 
 
 def test_sibling_helpers_do_not_overwrite_each_other(gate) -> None:
@@ -107,12 +111,10 @@ import typing as t
 from typing import Literal, Optional, Union, Annotated
 from typing_extensions import Literal as L, Optional as Maybe, Annotated as Tagged, Union as Either
 """
-    assert gate.work_state_literals(imports + f"RunStatus = {annotation}\n", "pkg.jobs") == {
-        "pkg.jobs::RunStatus": STATES,
-    }
-    assert gate.work_state_literals(
-        imports + f"class Job:\n    status: {annotation}\n", "pkg.jobs"
-    ) == {"pkg.jobs::Job.status": STATES}
+    alias_source = imports + f"RunStatus = {annotation}\n"
+    field_source = imports + f"class Job:\n    status: {annotation}\n"
+    assert gate.work_state_literals(alias_source, "pkg.jobs") == {"pkg.jobs::RunStatus": STATES}
+    assert gate.work_state_literals(field_source, "pkg.jobs") == {"pkg.jobs::Job.status": STATES}
 
 
 def test_annotated_metadata_does_not_invent_a_lifecycle(gate) -> None:
@@ -167,7 +169,7 @@ def test_recursive_aliases_terminate_without_inventing_values(gate) -> None:
 
 def test_a_new_sibling_cannot_use_an_existing_scope_disposition(gate) -> None:
     base = (
-        'from typing import Literal\nclass A:\n'
+        "from typing import Literal\nclass A:\n"
         '    Status = Literal["queued", "running", "failed"]\n'
     )
     candidate = base + 'class B:\n    Status = Literal["queued", "running", "failed"]\n'
@@ -178,9 +180,8 @@ def test_a_new_sibling_cannot_use_an_existing_scope_disposition(gate) -> None:
     assert any(
         "pkg.jobs::B.Status" in failure and "unclassified" in failure for failure in failures
     )
-    assert gate._unauthorized_additions(sorted(set(found) - set(trusted)), {}, set(trusted)) == [
-        "pkg.jobs::B.Status",
-    ]
+    added = sorted(set(found) - set(trusted))
+    assert gate._unauthorized_additions(added, {}, set(trusted)) == ["pkg.jobs::B.Status"]
 
 
 @pytest.mark.parametrize(
@@ -227,7 +228,6 @@ def test_trusted_revision_lookup_preserves_prefixed_module_names(
     )
     monkeypatch.setattr(gate, "_load_reachability", lambda: reachability)
     current = gate.work_state_literals(source.read_text(), module)
-    assert gate._discover_at_revision(revision, current) == {f"{module}::RunStatus"}
-    assert gate._unauthorized_additions(
-        sorted(current), {}, gate._discover_at_revision(revision, current)
-    ) == [f"{module}::NewStatus"]
+    visible = gate._discover_at_revision(revision, current)
+    assert visible == {f"{module}::RunStatus"}
+    assert gate._unauthorized_additions(sorted(current), {}, visible) == [f"{module}::NewStatus"]
