@@ -48,6 +48,10 @@ class _EvolutionService:
         self._last_run_id: str | None = None
         self.task: asyncio.Task[None] | None = None
         self._tournament: Any = None
+        # Manual requests and the cadence task share one admission lock. This
+        # serializes cycle planning/finalization without making the population
+        # store a second execution authority.
+        self._cycle_lock = asyncio.Lock()
 
     def stop(self) -> None:
         self._running = False
@@ -89,7 +93,24 @@ class _EvolutionService:
                 self._last_cycle_error = str(exc)
                 logger.warning("Evolution cycle failed: %s", exc)
 
+    async def seed_population(self, count: int) -> tuple[int, int]:
+        """Fence seeding against cycle planning, traversal, and finalization."""
+        from maistro_evolve.diversity import emergency_spawn
+
+        async with self._cycle_lock:
+            if self._population is None:
+                raise RuntimeError("Evolution population is not initialized")
+            existing = self._population.list_all()
+            spawned = emergency_spawn(existing, count)
+            for genome in spawned:
+                self._population.add(genome)
+            return len(spawned), len(self._population.list_all())
+
     async def _run_one_cycle(self, *, actor_principal_id: str | None = None) -> str:
+        async with self._cycle_lock:
+            return await self._run_one_cycle_locked(actor_principal_id=actor_principal_id)
+
+    async def _run_one_cycle_locked(self, *, actor_principal_id: str | None = None) -> str:
         from maistro_evolve.cycle import EvolutionConfig
         from maistro_evolve.harness import EvalHarness
         from services.evolution_graph import run_canonical_evolution_cycle

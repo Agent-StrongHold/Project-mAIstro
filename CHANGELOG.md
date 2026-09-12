@@ -88,6 +88,15 @@ or placeholder-only section.
 
 ### Fixed
 
+- **An Evolve cycle finalizes over the membership it admitted (#1065).**
+  Fitness, culling, island assignment, breeding, self-improvement, and
+  migration now run through a membership view of the population, so a genome
+  seeded after admission is neither scored nor culled by a Run whose
+  provenance says it is not a member. The admission snapshot keeps the
+  store's FIFO order instead of sorting by id, so a new seed can no longer
+  jump the evaluation queue ahead of an older unevaluated genome, and an
+  oversized persisted pair plan is refused on the first battle slot before
+  any rating is recorded.
 - **Project membership is one canonical row per `(project, principal)`, and
   is now explicitly revocable (#1148).** `ProjectScopeStore.set_membership`
   used to mint a fresh `membership_id` on every call, so a re-grant, role
