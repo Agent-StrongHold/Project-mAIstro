@@ -47,6 +47,7 @@ is also required live on both branches; because it is produced by
 | `Analyze (python)` | ○ | ● |
 | `Container scan + SBOM + cosign` | ○ | ● |
 | `Coverage gate (publish-set floor + diff coverage)` | ● | ● |
+| `DevSkim` | adv | ○ |
 | `Gate C — canonical clean install` | ● | ● |
 | `Quality gate (Pillars 1–4, 7, 8)` | ● | ● |
 | `SAST (bandit + semgrep + gitleaks)` | ● | ● |
