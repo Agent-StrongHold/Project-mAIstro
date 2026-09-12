@@ -126,8 +126,17 @@ def resolve_repo(raw: str) -> Path:
             "to the directories this deployment may run the loop against"
         )
 
+    # The normalized-string check is the containment a scanner can follow;
+    # the resolved check below is the one that closes the symlink escape.
+    normalized = os.path.normpath(os.path.expanduser(raw))
+    if not any(
+        normalized == str(root) or normalized.startswith(str(root) + os.sep) for root in roots
+    ):
+        raise RsiPolicyError(
+            f"repo_path is not beneath an authorized root ({', '.join(str(r) for r in roots)})"
+        )
     try:
-        resolved = Path(raw).expanduser().resolve()
+        resolved = Path(normalized).resolve()
     except (OSError, RuntimeError) as exc:  # RuntimeError: symlink loop
         raise RsiPolicyError(f"repo_path could not be resolved: {exc}") from exc
 

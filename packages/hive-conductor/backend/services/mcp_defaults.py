@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from datetime import UTC, datetime
+from urllib.parse import urlparse
 
 from models.schemas import MCPServer, MCPTool
 
@@ -79,7 +80,13 @@ FILESYSTEM_TOOLS: tuple[dict[str, str], ...] = (
 
 
 def is_atlassian_rovo_url(url: str) -> bool:
-    return "mcp.atlassian.com" in (url or "")
+    """Whether ``url`` is the Atlassian Rovo MCP host, by hostname, not substring."""
+    try:
+        host = (urlparse(url or "").hostname or "").lower()
+    except ValueError:
+        # A malformed URL (an unbalanced IPv6 literal, say) is not Rovo's.
+        return False
+    return host == "mcp.atlassian.com" or host.endswith(".mcp.atlassian.com")
 
 
 def atlassian_rovo_server(*, now: datetime | None = None) -> MCPServer:

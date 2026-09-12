@@ -2194,7 +2194,7 @@
       "source": "packages/maistro-canvas/frontend/server.js",
       "signal": "mutating-api-call",
       "method": "POST",
-      "route": "${LULU_SERVICE_URL}/orders/${req.params.id}/cancel",
+      "route": "${LULU_SERVICE_URL}/orders/${id}/cancel",
       "disposition": "canonical",
       "production_enabled": true,
       "reason": "cancels a real print order through the lulu service",

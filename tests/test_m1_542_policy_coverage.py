@@ -650,7 +650,7 @@ def test_mutation_main_covers_measurement_empty_and_write_candidate_paths(
     assert module._entry_rate({"kill_rate": "bad"}) is None
     assert module._measured_rate({}, "missing") is None
     assert module._new_candidate_entry_failures("m", {"kill_rate": 0.9}, None)
-    assert module._trusted_entry_failures("m", {}, {}, None)
+    assert module._base_entry_failures("m", {}, {}, None)
 
 
 def test_ratchet_provenance_error_edges_are_explicit(

@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import rateLimit from "express-rate-limit";
 import pg from "pg";
 import { resolveSecurityConfig, isOriginAllowed, requireToken } from "./server/security.js";
 import {
@@ -25,6 +26,18 @@ const handoffs = createHandoffStore();
 const app = express();
 app.use(cors({ origin: (o, cb) => cb(null, isOriginAllowed(o, security.origins)), credentials: true }));
 app.use(express.json({ limit: security.bodyLimit }));
+// Every /api route touches the database, the filesystem, or an upstream
+// service; none of them should be reachable at an unbounded rate from one
+// client. Generous for a studio session, hostile to a loop.
+app.use(
+  "/api",
+  rateLimit({
+    windowMs: 60_000,
+    limit: Number(process.env.API_RATE_LIMIT_PER_MINUTE || 600),
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+  }),
+);
 
 // No credential this server issues may reach a third party through a header
 // the browser adds on its own. `Referer` is the one that does that by default,
@@ -257,9 +270,23 @@ app.get("/api/print/orders", async (_req, res) => {
   }
 });
 
+// An order id is a path segment of an upstream request: only an identifier
+// shape is forwarded, and it is encoded so it cannot carry a second segment.
+const ORDER_ID = /^[A-Za-z0-9_-]{1,64}$/;
+function orderId(req, res) {
+  const id = String(req.params.id || "");
+  if (!ORDER_ID.test(id)) {
+    res.status(400).json({ error: "invalid order id" });
+    return null;
+  }
+  return encodeURIComponent(id);
+}
+
 app.get("/api/print/orders/:id", async (req, res) => {
+  const id = orderId(req, res);
+  if (id === null) return;
   try {
-    const r = await fetch(`${LULU_SERVICE_URL}/orders/${req.params.id}`);
+    const r = await fetch(`${LULU_SERVICE_URL}/orders/${id}`);
     if (!r.ok) throw new Error(`Lulu service ${r.status}`);
     res.json(await r.json());
   } catch (e) {
@@ -268,8 +295,10 @@ app.get("/api/print/orders/:id", async (req, res) => {
 });
 
 app.post("/api/print/orders/:id/cancel", async (req, res) => {
+  const id = orderId(req, res);
+  if (id === null) return;
   try {
-    const r = await fetch(`${LULU_SERVICE_URL}/orders/${req.params.id}/cancel`, { method: "POST" });
+    const r = await fetch(`${LULU_SERVICE_URL}/orders/${id}/cancel`, { method: "POST" });
     if (!r.ok) throw new Error(`Lulu service ${r.status}`);
     res.json(await r.json());
   } catch (e) {

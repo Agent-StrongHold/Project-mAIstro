@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from importlib import import_module
@@ -371,9 +372,15 @@ def create_app() -> FastAPI:
             # and the "v1/" guard above never fires for such a path. `..` traversal
             # is the other half. resolve() collapses both (and any symlink escape),
             # and is_relative_to() is the actual boundary check.
-            fp = (static_root / full_path).resolve()
-            if fp.is_relative_to(static_root) and fp.is_file():
-                return FileResponse(fp)
+            # Two boundary checks on purpose: the normalized string check is
+            # the containment a scanner can follow, and `resolve()` closes the
+            # symlink escape the string check cannot see.
+            root_text = os.path.normpath(str(static_root))
+            candidate = os.path.normpath(os.path.join(root_text, full_path))
+            if candidate.startswith(root_text + os.sep):
+                fp = Path(candidate).resolve()
+                if fp.is_relative_to(static_root) and fp.is_file():
+                    return FileResponse(fp)
             return FileResponse(static_root / "index.html")
 
     return app

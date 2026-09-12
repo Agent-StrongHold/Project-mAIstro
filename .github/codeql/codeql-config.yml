@@ -1,0 +1,17 @@
+# Code scanning configuration (referenced from .github/workflows/codeql.yml).
+#
+# Tests deliberately log secrets to prove redaction and compare URLs by
+# substring to build fixtures; vendored third-party code is not ours to fix in
+# place; build output is a copy of sources already scanned. None of them is a
+# shipped surface, so findings there are noise that hides real ones.
+name: "maistro-engine"
+paths-ignore:
+  - "**/tests/**"
+  - "**/test_*.py"
+  - "**/*.test.js"
+  - "**/*.test.jsx"
+  - "**/*.test.ts"
+  - "**/*.test.tsx"
+  - "**/third_party/**"
+  - "**/node_modules/**"
+  - "**/dist/**"
