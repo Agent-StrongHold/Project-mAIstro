@@ -33,6 +33,7 @@ from maistro.runs.model import (
     RunStatus,
 )
 from maistro.runs.retention import RetentionPolicy, RunRetentionSweeper
+from maistro.runs.retention_scope import WorkspaceRetentionScope
 from maistro.runs.sources import ADMISSION_SOURCE, CHAT_SOURCE
 from maistro.workspaces.store import InMemoryWorkspaceStore
 from maistro_turing.runtime import TuringChatSession
@@ -99,10 +100,18 @@ class TuringExecutionPlane:
             raise ValueError("max_retained must be >= 1")
         self.project_store = InMemoryProjectScopeStore()
         self.workspace_store = InMemoryWorkspaceStore(project_store=self.project_store)
-        self.run_store = InMemoryRunStore(project_store=self.project_store)
+        # One continuation store, shared by the durable-graph facade and the
+        # Run store's purge (#1175): a retention sweep reclaims the traversal
+        # state of the Runs it deletes instead of leaving orphans for the
+        # reconciliation pass to find later.
+        self._continuations = InMemoryGraphContinuationStore()
+        self.run_store = InMemoryRunStore(
+            project_store=self.project_store,
+            continuation_store=self._continuations,
+        )
         self.durable_store = CanonicalDurableRunStore(
             self.run_store,
-            InMemoryGraphContinuationStore(),
+            self._continuations,
         )
         self._workspace_by_user: dict[str, str] = {}
         self._scope_lock = asyncio.Lock()
@@ -110,6 +119,13 @@ class TuringExecutionPlane:
         self._retention_lock = asyncio.Lock()
         self._max_retained = max_retained
         self._retention = retention if retention is not None else RetentionPolicy()
+        # This plane's store is private to the process but spans every
+        # per-user Workspace it creates, so the sweeper cannot be given one
+        # Workspace at construction — and it must not be given the store
+        # instead (#1175): store-wide would let one user's admission purge
+        # another user's expired Runs. Each sweep is handed the Workspace of
+        # the admission that triggered it, the same seam ChatRunAdmitter
+        # uses; a sweep with no Workspace named refuses rather than default.
         self._retention_sweeper = RunRetentionSweeper(self.run_store, self._retention)
 
     @property
@@ -131,7 +147,7 @@ class TuringExecutionPlane:
             root = await self.project_store.root_for_workspace(workspace_id)
             return workspace_id, root.project_id
 
-    async def _track_admission(self, run_id: str) -> None:
+    async def _track_admission(self, run_id: str, *, workspace_id: str) -> None:
         self._retained_runs[run_id] = None
         async with self._retention_lock:
             for retained_id in list(self._retained_runs):
@@ -145,7 +161,11 @@ class TuringExecutionPlane:
                     continue
                 await self.run_store.delete_run(retained_id)
                 self._retained_runs.pop(retained_id, None)
-        await self._retention_sweeper.maybe_sweep()
+        # Scoped to the Workspace this admission ran in: one user's turn
+        # is never the deletion authority over another user's expired
+        # Runs (#1175). A sweep with no scope refuses and deletes nothing;
+        # housekeeping never fails the turn that rode it in.
+        await self._retention_sweeper.maybe_sweep(scope=WorkspaceRetentionScope(workspace_id))
 
     async def _clear_continuation(self, run_id: str) -> None:
         """Clear runnable frontier after a compensated/cancelled Turing Run."""
@@ -276,7 +296,7 @@ class TuringExecutionPlane:
                 initial_status=RunStatus.QUEUED,
             )
             admitted_run_id = admitted.run_id
-            await self._track_admission(admitted.run_id)
+            await self._track_admission(admitted.run_id, workspace_id=workspace_id)
         except asyncio.CancelledError:
             await asyncio.shield(self._cancel_incomplete_admission(admitted_run_id))
             raise

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from itertools import islice
 from typing import Any, Protocol, runtime_checkable
@@ -35,6 +36,12 @@ from maistro.runs.model import (
     Run,
     RunStatus,
     evidence_values_equal,
+)
+from maistro.runs.retention_scope import (
+    GlobalRetentionScope,
+    RetentionScope,
+    WorkspaceRetentionScope,
+    run_in_purge_scope,
 )
 from maistro.runs.sources import (
     ADMISSION_SOURCE,
@@ -160,6 +167,20 @@ class StaleExecutionFence(RunIntegrityError):
 RunCursor = tuple[str, str]
 
 
+def _lease_expiry(attempt: Attempt) -> datetime:
+    """The expiry of an Attempt the caller has already proven has a lease.
+
+    ``lease_is_expired`` answers False for a leaseless Attempt, so every
+    Attempt reaching the sort in ``reclaim_expired_attempts`` carries one —
+    but that proof lives in the filter, where a type checker cannot see it.
+    A lease with no expiry at all never lapses, so it sorts last.
+    """
+    lease = attempt.execution_lease
+    if lease is None or lease.expires_at is None:  # pragma: no cover - filtered upstream
+        return datetime.max.replace(tzinfo=UTC)
+    return lease.expires_at
+
+
 def run_cursor_key(run: Run) -> RunCursor:
     """Stable oldest-first key using the exact durable JSON timestamp."""
     created_at = run.model_dump(mode="json")["created_at"]
@@ -203,6 +224,22 @@ def validate_child_scope(
         )
 
 
+@runtime_checkable
+class ContinuationPurge(Protocol):
+    """The slice of a Graph continuation store that a purge needs (#1175).
+
+    Structural, so `InMemoryRunStore` can take any backend's continuation
+    store without `runs` importing `graph.durable_runs`: the durable backends
+    delete continuations inside their own purge transaction, and this is the
+    in-memory store's equivalent seam. Optional — a store wired without one
+    leaves continuation cleanup to
+    `CanonicalDurableRunStore.reconcile_persistence`, the same crash backstop
+    the durable stores rely on.
+    """
+
+    async def delete(self, run_id: str) -> bool: ...
+
+
 #: Most Runs one `purge_expired_runs` call may delete.
 #:
 #: A bound, not a tuning knob. The first sweep after a long outage would
@@ -211,6 +248,71 @@ def validate_child_scope(
 #: sweep. Sweeping is opportunistic (ADR-082326-c126), so a backlog larger than
 #: one batch simply drains over the next several sweeps.
 DEFAULT_PURGE_BATCH = 500
+
+
+@dataclass(frozen=True)
+class PurgeOutcome:
+    """What one purge did, per class of dependent evidence (#1175).
+
+    The count a purge used to return was the one number that made retention
+    look cheaper than it is: it said nothing about which Workspace was
+    authorized, and nothing about the rows hanging off each Run. Retention
+    metrics read this instead, so "purged 500" can never again mean "500 Runs,
+    scope unknown, dependents unaccounted".
+
+    Dispositions, and why each is what it is:
+
+    - ``runs`` / ``node_runs`` / ``attempts`` — owned spine rows, deleted.
+    - ``continuations`` — owned resumable state (the graph-continuation and
+      durable-graph-run tables), deleted. The reference is logical — no foreign
+      key — so nothing would notice it dangling, and a recovery scan would pick
+      the orphan up and try to resume a Run whose identity no longer exists.
+    - ``event_references_retained`` — rows in the canonical Event log that name
+      a purged Run, kept. The Event log is append-only provenance: deleting it
+      would destroy the audit record of work whose deletion is itself an
+      auditable act, so retention's job here is to count what it leaves
+      behind, not to empty it. Other attribution history (task receipts,
+      session turns) is kept for the same reason; only what a store itself can
+      count gets a counter here.
+    - ``schedule_claims_released`` — `(schedule_id, scheduled_for)` occurrence
+      claims that died with their Run rows. Released deliberately: nothing is
+      duplicated by re-admitting a firing whose only record was deliberately
+      destroyed, which is the same coupling the in-memory store's eviction
+      already has.
+
+    ``backlog_remaining`` is the difference between "the scope is drained"
+    and "the batch ran out" — the one bit a bare count could never carry, and
+    the one a retention alert is actually about.
+    """
+
+    scope: RetentionScope
+    runs: int = 0
+    node_runs: int = 0
+    attempts: int = 0
+    continuations: int = 0
+    event_references_retained: int = 0
+    schedule_claims_released: int = 0
+    backlog_remaining: bool = False
+
+    @property
+    def workspace_id(self) -> str | None:
+        """The Workspace this purge was authorized for, or None if global."""
+        scope = self.scope
+        return scope.workspace_id if isinstance(scope, WorkspaceRetentionScope) else None
+
+    @property
+    def is_global(self) -> bool:
+        """Whether this purge ran under a presented global authorization."""
+        return isinstance(self.scope, GlobalRetentionScope)
+
+    @property
+    def mode(self) -> str:
+        """Bounded label for metric series: ``workspace`` or ``global``.
+
+        Deliberately the mode and never the Workspace id — metric label
+        values are bounded (#818), and Workspaces are caller-created.
+        """
+        return "global" if self.is_global else "workspace"
 
 
 def is_purgeable(run: Run, cutoff: datetime) -> bool:
@@ -311,10 +413,11 @@ class RunStore(Protocol):
 
     async def purge_expired_runs(
         self,
+        scope: RetentionScope,
         *,
         now: datetime | None = None,
         limit: int = DEFAULT_PURGE_BATCH,
-    ) -> int: ...
+    ) -> PurgeOutcome: ...
 
     async def has_runs_in_project(self, project_id: str) -> bool: ...
 
@@ -437,10 +540,18 @@ class InMemoryRunStore:
         max_runs: int = MAX_IN_MEMORY_RUNS,
         prune_target: int = RUN_PRUNE_TARGET,
         archive_store: ArchiveStore | None = None,
+        continuation_store: ContinuationPurge | None = None,
     ) -> None:
         if prune_target > max_runs:
             raise ValueError("prune_target cannot exceed max_runs")
         self._project_store = project_store
+        # The same seam `archive_store` is: a capability the reference store
+        # may be wired with, so a retention sweep reclaims Graph continuation
+        # state along with the Run it belongs to (#1175). None — the default —
+        # leaves the cleanup to `reconcile_persistence`, which is correct but
+        # later; wiring it here is what makes the sweep referentially complete
+        # in one call.
+        self._continuation_store = continuation_store
         # None is the default and means the tier is off (f436 decision 9): no
         # archive store configured is today's behaviour unchanged, with no
         # warning, because warning on a deliberate choice is how operators
@@ -613,30 +724,81 @@ class InMemoryRunStore:
 
     async def purge_expired_runs(
         self,
+        scope: RetentionScope,
         *,
         now: datetime | None = None,
         limit: int = DEFAULT_PURGE_BATCH,
-    ) -> int:
-        """Delete up to ``limit`` expired terminal Runs. Returns how many went.
+    ) -> PurgeOutcome:
+        """Delete up to ``limit`` expired terminal Runs inside ``scope``.
 
         Orphan-safe: a Run some other Run descends from is skipped, however
         expired. The durable backend enforces that with `ON DELETE RESTRICT`
         and this one must agree, or the same retention policy would produce a
         dangling parent pointer here and an integrity error there.
+
+        The scope is the whole of the deletion authority (#1175): a Workspace
+        sweep cannot see another Workspace's Runs, and a store-wide sweep is
+        only ever an explicit `GlobalRetentionScope` — never the absence of a
+        predicate, because a parameter nobody can forget is the one thing that
+        makes the default honest.
+
+        Orphan-safe: a Run some other Run descends from is skipped, however
+        expired. The durable backend enforces that with `ON DELETE RESTRICT`
+        and this one must agree, or the same retention policy would produce a
+        dangling parent pointer here and an integrity error there.
+
+        The spine forgets run without an await between them, so the sweep is
+        atomic with respect to this event loop: two concurrent sweeps divide
+        a backlog, and neither can double-count a Run the other deleted.
+        Continuations go after the spine — this store has no transaction to
+        offer a collaborator — so the window between "Run gone" and
+        "continuation gone" is closed by
+        `CanonicalDurableRunStore.reconcile_persistence`, the same backstop
+        the durable stores keep for a crash.
         """
         if limit <= 0:
             raise ValueError("limit must be positive")
         cutoff = now if now is not None else datetime.now(UTC)
         parent_runs, parent_node_runs = self._referenced_by_children()
         doomed = [
-            run_id
-            for run_id, run in self._runs.items()
-            if is_purgeable(run, cutoff)
-            and not self._has_child(run_id, parent_runs, parent_node_runs)
+            run
+            for run in self._runs.values()
+            if run_in_purge_scope(run, scope)
+            and is_purgeable(run, cutoff)
+            and not self._has_child(run.run_id, parent_runs, parent_node_runs)
         ]
-        for run_id in doomed[:limit]:
-            await self.delete_run(run_id, force=True)
-        return min(len(doomed), limit)
+        selected = doomed[:limit]
+        selected_ids = {run.run_id for run in selected}
+        node_runs_of_selected = {
+            node_run_id
+            for node_run_id, node_run in self._node_runs.items()
+            if node_run.run_id in selected_ids
+        }
+        attempts = sum(
+            1 for attempt in self._attempts.values() if attempt.node_run_id in node_runs_of_selected
+        )
+        for run in selected:
+            self._forget_run(run.run_id)
+        continuations = 0
+        if self._continuation_store is not None:
+            for run_id in selected_ids:
+                if await self._continuation_store.delete(run_id):
+                    continuations += 1
+        return PurgeOutcome(
+            scope=scope,
+            runs=len(selected),
+            node_runs=len(node_runs_of_selected),
+            attempts=attempts,
+            continuations=continuations,
+            # This store owns no Event log — canonical Events live in their own
+            # store — so there is nothing here to count, and zero is the
+            # truthful report rather than a stub.
+            event_references_retained=0,
+            schedule_claims_released=sum(
+                1 for run in selected if occurrence_key(run.provenance) is not None
+            ),
+            backlog_remaining=len(doomed) > limit,
+        )
 
     async def non_terminal_run_stats(self) -> tuple[int, datetime | None]:
         """How many Runs are non-terminal, and when the oldest one was created.
@@ -991,7 +1153,7 @@ class InMemoryRunStore:
         moment = now if now is not None else datetime.now(UTC)
         doomed = sorted(
             (a for a in self._attempts.values() if lease_is_expired(a, moment)),
-            key=lambda a: (a.execution_lease.expires_at, a.attempt_id),  # type: ignore[union-attr]
+            key=lambda a: (_lease_expiry(a), a.attempt_id),
         )
         reclaimed: list[Attempt] = []
         for attempt in doomed[:limit]:
@@ -1115,12 +1277,18 @@ class InMemoryRunStore:
 __all__ = [
     "ActiveAttemptExists",
     "AttemptNotFound",
+    "ContinuationPurge",
+    "GlobalRetentionScope",
     "InMemoryRunStore",
     "NodeRunNotFound",
+    "PurgeOutcome",
+    "RetentionScope",
     "RunIntegrityError",
     "RunNotFound",
     "RunStore",
     "StaleExecutionFence",
+    "WorkspaceRetentionScope",
+    "run_in_purge_scope",
     "validate_accepted_outcome_against_attempt",
     "validate_child_scope",
 ]

@@ -28,7 +28,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from maistro.runs.store import DEFAULT_PURGE_BATCH
+from maistro.observability.metrics import retention_backlog_remaining, retention_purged_total
+from maistro.runs.retention_scope import GlobalRetentionScope
+from maistro.runs.store import DEFAULT_PURGE_BATCH, PurgeOutcome, RetentionScope
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from maistro.runs.store import RunStore
@@ -79,6 +81,17 @@ class RetentionPolicy:
 UNBOUNDED_RETENTION = RetentionPolicy(ttl_seconds=None)
 
 
+class RetentionScopeRequired(RuntimeError):
+    """A sweep was asked to run with no deletion authority (#1175).
+
+    Raised instead of sweeping store-wide: an unnamed scope must mean *nothing
+    was deleted*, never *everything eligible was deleted*. `maybe_sweep` records
+    it in `last_error` (housekeeping must not fail the admission it rides on);
+    `sweep_now` propagates it, because an operator demanding a sweep deserves
+    the refusal in their face.
+    """
+
+
 class RunRetentionSweeper:
     """Drives `RunStore.purge_expired_runs` opportunistically, at most one at a time.
 
@@ -91,18 +104,55 @@ class RunRetentionSweeper:
       database hiccup during a sweep must not turn into a user's chat turn being
       refused. Failures are reported through `last_error` for a caller that
       wants to log them, and swallowed otherwise.
+
+    And since #1175, a third it cannot quietly lack: **a deletion scope.** The
+    sweeper is constructed with one (`scope=`) or handed one per sweep; a
+    sweeper with neither refuses to sweep rather than defaulting to store-wide,
+    because an unscoped purge is not a milder purge — it is a purge of every
+    Workspace at once.
     """
 
-    def __init__(self, store: RunStore, policy: RetentionPolicy | None = None) -> None:
+    def __init__(
+        self,
+        store: RunStore,
+        policy: RetentionPolicy | None = None,
+        scope: RetentionScope | None = None,
+    ) -> None:
         self._store = store
         self._policy = policy if policy is not None else RetentionPolicy()
+        self._scope = scope
         self._lock = asyncio.Lock()
         self._last_sweep: float | None = None
         self.last_error: BaseException | None = None
+        self._last_outcome: PurgeOutcome | None = None
 
     @property
     def policy(self) -> RetentionPolicy:
         return self._policy
+
+    @property
+    def scope(self) -> RetentionScope | None:
+        """The scope every sweep carries unless the call names another."""
+        return self._scope
+
+    @property
+    def last_outcome(self) -> PurgeOutcome | None:
+        """What the last completed sweep deleted, by class of evidence.
+
+        None after a failed sweep, however good the one before it was: a
+        metric that outlives its sweep describes a purge that did not
+        happen, which is exactly what a retention metric must never do.
+        """
+        return self._last_outcome
+
+    def _resolve_scope(self, override: RetentionScope | None) -> RetentionScope:
+        scope = override if override is not None else self._scope
+        if scope is None:
+            raise RetentionScopeRequired(
+                "retention sweep has no deletion scope: construct the sweeper with a "
+                "RetentionScope or pass one to this sweep; nothing is deleted by default"
+            )
+        return scope
 
     def _due(self) -> bool:
         if not self._policy.bounded:
@@ -111,7 +161,12 @@ class RunRetentionSweeper:
             return True
         return (time.monotonic() - self._last_sweep) >= self._policy.sweep_interval_seconds
 
-    async def maybe_sweep(self, *, now: datetime | None = None) -> int:
+    async def maybe_sweep(
+        self,
+        *,
+        now: datetime | None = None,
+        scope: RetentionScope | None = None,
+    ) -> int:
         """Sweep if one is due and none is running. Returns Runs purged, or 0."""
         if not self._due() or self._lock.locked():
             return 0
@@ -123,22 +178,73 @@ class RunRetentionSweeper:
                 return 0
             self._last_sweep = time.monotonic()
             try:
-                purged = await self._store.purge_expired_runs(
-                    now=now, limit=self._policy.batch_limit
+                outcome = await self._store.purge_expired_runs(
+                    self._resolve_scope(scope), now=now, limit=self._policy.batch_limit
                 )
             except Exception as exc:
+                # A missing scope is a misconfiguration, and this is where it
+                # surfaces: recorded, visible, and deleting nothing — the one
+                # failure mode the pre-#1175 signature could not have.
                 self.last_error = exc
+                self._last_outcome = None
+                # The standing backlog observation is withdrawn with the
+                # outcome it came from: a failed sweep commits nothing, so it
+                # neither drained a backlog nor may keep claiming one from a
+                # purge that no longer stands as completed.
+                retention_backlog_remaining.set(0.0, mode=self._failure_mode())
                 return 0
             self.last_error = None
-            return purged
+            self._last_outcome = outcome
+            self._report_backlog(outcome)
+            if outcome.runs:
+                retention_purged_total.inc(outcome.runs, mode=outcome.mode)
+            return outcome.runs
 
-    async def sweep_now(self, *, now: datetime | None = None) -> int:
+    async def sweep_now(
+        self,
+        *,
+        now: datetime | None = None,
+        scope: RetentionScope | None = None,
+    ) -> int:
         """Sweep unconditionally, ignoring the interval. Errors propagate."""
         if not self._policy.bounded:
             return 0
         async with self._lock:
             self._last_sweep = time.monotonic()
-            return await self._store.purge_expired_runs(now=now, limit=self._policy.batch_limit)
+            outcome = await self._store.purge_expired_runs(
+                self._resolve_scope(scope), now=now, limit=self._policy.batch_limit
+            )
+            self.last_error = None
+            self._last_outcome = outcome
+            self._report_backlog(outcome)
+            if outcome.runs:
+                retention_purged_total.inc(outcome.runs, mode=outcome.mode)
+            return outcome.runs
+
+    def _report_backlog(self, outcome: PurgeOutcome) -> None:
+        """Publish the sweep's backlog verdict under its bounded mode label.
+
+        The purge count alone cannot alert: a scope whose backlog never
+        drains looks identical to a quiet one unless "the batch ran out"
+        is itself a series a dashboard can graph. The label is the mode,
+        never a Workspace id, for the same #818 bound the purge counter
+        carries.
+        """
+        retention_backlog_remaining.set(
+            1.0 if outcome.backlog_remaining else 0.0, mode=outcome.mode
+        )
+
+    def _failure_mode(self) -> str:
+        """The mode label for a sweep that never completed.
+
+        The scope the sweeper was constructed with, reduced to its mode:
+        the label space must stay bounded, and an unresolved scope's
+        refusal is a construction-time condition, not a per-Workspace fact
+        worth a label of its own.
+        """
+        if isinstance(self._scope, GlobalRetentionScope):
+            return "global"
+        return "workspace"
 
 
 __all__ = [
@@ -146,5 +252,6 @@ __all__ = [
     "DEFAULT_SWEEP_INTERVAL_SECONDS",
     "UNBOUNDED_RETENTION",
     "RetentionPolicy",
+    "RetentionScopeRequired",
     "RunRetentionSweeper",
 ]
