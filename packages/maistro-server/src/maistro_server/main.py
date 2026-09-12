@@ -152,6 +152,20 @@ def _agents_dir() -> str:
     return yaml_config.agents_dir if yaml_config is not None else ""
 
 
+def _model_bindings() -> list[dict[str, Any]]:
+    """`model_bindings`, from the same place, for the same reason.
+
+    Operator-declared canonical model.chat authorizations (#1079). They live
+    on `MaistroYamlConfig` like `router_api_key`; mapped here so a deployment
+    that declares one actually reaches `create_container`'s Binding bootstrap
+    instead of the field quietly doing nothing on `AgentConfig`. Empty means
+    the deployment authorizes no model, and every governed model egress fails
+    closed at the Binding.
+    """
+    yaml_config = settings_module.get_yaml_config()
+    return list(yaml_config.model_bindings) if yaml_config is not None else []
+
+
 def _agent_config(settings: Settings) -> AgentConfig:
     """The `AgentConfig` this server's Container is wired from (#142).
 
@@ -175,6 +189,7 @@ def _agent_config(settings: Settings) -> AgentConfig:
         litellm_url=settings.litellm.base_url,
         litellm_key=settings.litellm.master_key,
         agents_dir=_agents_dir(),
+        model_bindings=_model_bindings(),
         database_url=resolve_database_url(),
         workspace_id=settings.workspace_id,
     )

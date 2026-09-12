@@ -32,6 +32,10 @@ MODEL_CHAT_CAPABILITY = "model.chat"
 _GATEWAY_TRUST_TIER = "t1"
 
 
+#: Credential pool name for a gateway alias with no registry metadata.
+_GATEWAY_PROVIDER = "llm-gateway"
+
+
 class GatewayEndpoint(BaseModel):
     """Where the one approved model Provider sends traffic; secrets stay here.
 
@@ -85,6 +89,16 @@ class LlmGatewayProvider:
     @property
     def metadata(self) -> ModelMetadata | None:
         return self._metadata
+
+    @property
+    def credential_provider(self) -> str:
+        """The credential pool a Binding's ``credential_refs`` are drawn from.
+
+        The registry's provider name (``"openai"``, ``"anthropic"``) when
+        metadata is known; the gateway itself otherwise. Declaring this is
+        what lets `CredentialRouting` route the call instead of refusing it.
+        """
+        return self._metadata.provider if self._metadata is not None else _GATEWAY_PROVIDER
 
 
 class ModelChatRequest(BaseModel):
@@ -142,6 +156,12 @@ async def execute_model_chat(
     provider type is a wiring error, not a silent alternate egress.
     """
 
+    # A credential-routed call arrives wrapped: the Binding's own credential
+    # authenticates it, never the process-wide gateway key (#1079 review).
+    credential = getattr(provider, "credential", None)
+    if credential is not None:
+        provider = getattr(provider, "base", provider)
+        endpoint = endpoint.model_copy(update={"api_key": str(credential.api_key)})
     if not isinstance(provider, LlmGatewayProvider):
         raise TypeError(f"model-chat Invocation resolved a non-gateway provider: {provider!r}")
     if not isinstance(request, ModelChatRequest):

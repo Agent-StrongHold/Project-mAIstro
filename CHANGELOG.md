@@ -35,6 +35,19 @@ or placeholder-only section.
   as staged input by the CLI's "already staged" skip either.
 ### Added
 
+- **Governed model egress is wired into the shipped Container (#1079).**
+  Operator-declared `model.chat` Bindings are loaded at startup from
+  `maistro.yaml` (`model_bindings`) and Hive's `MAISTRO_MODEL_BINDINGS`; a
+  misspelled declaration field is refused rather than widening what it
+  authorizes. Wired `llm.summarize` nodes use the Container's configured
+  gateway (`litellm_url` / `litellm_key`) instead of reading only the
+  environment, a Binding that declares `credential_refs` authenticates its
+  calls with a credential from its own scope, and a gateway alias passes
+  through when no model metadata is registered while a populated registry
+  refuses unknown aliases. SQLite Containers keep the capability Invocation
+  ledger and its events durable across restarts; PostgreSQL keeps the events
+  durable and logs at startup that its Invocation ledger is still
+  process-local.
 - **Browser sessions are governed at the Playwright boundary (#855).** Every
   network request a `BrowserClient` browser makes — main-frame navigations,
   redirect hops, subresources, and the destinations the browser-use agent

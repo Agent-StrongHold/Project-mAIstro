@@ -79,17 +79,29 @@ def new_in_memory_effect_context(
     *,
     policy_evaluator: PolicyEvaluator | None = None,
     credentials: CredentialRouter | None = None,
+    invocation_store: InvocationStore | None = None,
+    event_store: EventStore | None = None,
 ) -> CapabilityEffectContext:
-    """Build an isolated canonical effect context for local/runtime composition.
+    """Build a canonical effect context for local/runtime composition.
 
     ``credentials`` supplies the scoped credential pool for Provider selection
     (#58); omitted, the router exists but holds no credentials, so routed
     acquisitions fail closed until one is registered in the requesting scope.
+
+    ``invocation_store`` / ``event_store`` let a Container with a durable
+    backend keep the Invocation ledger and its events across a restart
+    (#1079 review): a worker that dies mid-call must find the same RUNNING or
+    UNKNOWN row afterwards and refuse a duplicate dispatch, which a
+    process-local ledger cannot promise. Omitted, both stay in memory -- the
+    Binding store always does; Bindings are re-bootstrapped from configuration
+    at every start.
     """
 
     binding_store = InMemoryBindingStore()
-    invocation_store = InMemoryInvocationStore()
-    event_store = InMemoryEventStore()
+    invocation_store = (
+        invocation_store if invocation_store is not None else InMemoryInvocationStore()
+    )
+    event_store = event_store if event_store is not None else InMemoryEventStore()
     invocation_service = InvocationExecutionService(store=invocation_store)
     governed = GovernedInvocationExecutionService(
         invocation_service=invocation_service,
