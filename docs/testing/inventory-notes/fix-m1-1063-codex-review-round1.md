@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/maistro-core/tests: +3
-  packages/hive-conductor/backend/tests: +7
+  packages/hive-conductor/backend/tests: +5
 ---
 # fix-m1-1063-codex-review-round1
 
@@ -55,11 +55,9 @@ carries its own `request_id`; a stray ambient context bound before
 `admit_due` does not leak into the Run; each occurrence in a catch-up batch
 gets a distinct id. `test_scheduler.py` (+2): a manual fire preserves the
 HTTP request's id; one triggered with no ambient request mints its own.
-`test_request_id_middleware.py` (+3): the header is exposed cross-origin;
+`test_request_id_middleware.py` (+2): the header is exposed cross-origin;
 present on an unhandled exception (a throwaway route registered and
-removed within the test); the two prior `_fire_schedule` tests from the
-first round continue to hold now that it no longer peeks at ambient
-context. `test_log_redaction.py` (+1): `configure_logging()` installs
+removed within the test). `test_log_redaction.py` (+1): `configure_logging()` installs
 correlation and a bound `request_id` reaches a captured log line, following
 that file's existing `_reconfigure` harness for the ADR-064 redaction wiring.
 
