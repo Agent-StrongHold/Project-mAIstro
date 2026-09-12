@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 
 from maistro.sandbox.detect import HostCapabilities, detect_host_capabilities
+from maistro.sandbox.protocol import SandboxConfig
 from maistro.sandbox.selector import SandboxSelector
 
 logger = logging.getLogger("maistro.sandbox.wiring")
@@ -31,14 +32,23 @@ def build_selector(
     *,
     capabilities: HostCapabilities | None = None,
     allow_fake: bool = False,
+    sandbox_config: SandboxConfig | None = None,
 ) -> SandboxSelector:
     """Assemble a selector for this host.
 
     `capabilities` is injectable so the assembly can be tested against hosts
     this machine is not — the interesting cases are a KVM host, a gVisor host
     and a bare one, and no single runner is all three.
+
+    `sandbox_config` is the config execution will run under, forwarded to
+    detection when `capabilities` is not injected (#1328): the Tier-3 probe
+    budgets itself with it, so the tier it evidences is one *that* config can
+    reproduce at spawn. A host that fits the default `max_processes=128`
+    budget but not a configured `max_processes=1` answers "no" — here, before
+    a workload is placed — instead of failing EAGAIN at spawn after the policy
+    check believed it had a boundary.
     """
-    caps = capabilities if capabilities is not None else detect_host_capabilities()
+    caps = capabilities if capabilities is not None else detect_host_capabilities(sandbox_config)
     selector = SandboxSelector()
 
     if caps.supports("bubblewrap"):
