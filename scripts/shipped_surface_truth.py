@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import re
 from collections.abc import Iterable
@@ -15,6 +16,11 @@ MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 #: is a distinct kind of shipped execution/control surface (#1122) and must be
 #: discovered on its own terms, not folded into the mutating-method vocabulary.
 WEBSOCKET_METHOD = "WEBSOCKET"
+#: Stand-in method for a registration whose `methods=` argument the gate
+#: cannot read statically (`methods=MUTATING_METHODS`, a list holding a
+#: name). It may well contain POST, so the route is a matrix-required
+#: surface exactly like a dynamic path -- never a silently dropped one.
+DYNAMIC_METHODS = "<dynamic-methods>"
 VALID_DISPOSITIONS = {
     "canonical",
     "domain-state",
@@ -106,19 +112,39 @@ def _excluded(path: Path, root: Path) -> bool:
     )
 
 
-def _literal_methods(call: ast.Call) -> list[str]:
+def _declared_methods(call: ast.Call) -> list[str]:
+    """The mutating methods a `methods=` argument names, or `DYNAMIC_METHODS`.
+
+    A literal collection of string literals is read; the mutating subset is
+    returned. Anything else -- a name, a call, a collection holding a
+    non-literal element -- cannot be proven free of `POST`, so it yields the
+    one conservative stand-in rather than nothing: the route stays in the
+    fail-closed inventory and the matrix must classify it. No `methods=` at
+    all is FastAPI's default GET, which is not a mutating surface.
+    """
     for keyword in call.keywords:
         if keyword.arg != "methods":
             continue
         value = keyword.value
         if not isinstance(value, (ast.List, ast.Tuple, ast.Set)):
-            return []
+            return [DYNAMIC_METHODS]
         methods: list[str] = []
         for item in value.elts:
-            if isinstance(item, ast.Constant) and isinstance(item.value, str):
-                methods.append(item.value.upper())
+            if not (isinstance(item, ast.Constant) and isinstance(item.value, str)):
+                return [DYNAMIC_METHODS]
+            methods.append(item.value.upper())
         return [method for method in methods if method in MUTATING_METHODS]
     return []
+
+
+def _path_argument(call: ast.Call) -> ast.expr | None:
+    """The route-path expression a registration passes, positional or `path=`."""
+    if call.args:
+        return call.args[0]
+    for keyword in call.keywords:
+        if keyword.arg == "path":
+            return keyword.value
+    return None
 
 
 def _route_path(expr: ast.expr, *, dynamic_at: ast.expr) -> str:
@@ -134,7 +160,11 @@ def _route_path(expr: ast.expr, *, dynamic_at: ast.expr) -> str:
     """
     if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
         return expr.value
-    return f"<dynamic-route:{dynamic_at.lineno}>"
+    # The expression's digest is part of the identity, not only its line:
+    # rewriting `f"{PREFIX}/safe"` to `f"{PREFIX}/admin"` on the same line is
+    # a different shipped route and must not inherit the old disposition.
+    digest = hashlib.sha1(ast.unparse(expr).encode("utf-8")).hexdigest()[:8]
+    return f"<dynamic-route:{dynamic_at.lineno}:{digest}>"
 
 
 def _decorated_routes(node: ast.AsyncFunctionDef | ast.FunctionDef) -> list[tuple[str, str]]:
@@ -142,13 +172,14 @@ def _decorated_routes(node: ast.AsyncFunctionDef | ast.FunctionDef) -> list[tupl
     for decorator in node.decorator_list:
         if not isinstance(decorator, ast.Call) or not isinstance(decorator.func, ast.Attribute):
             continue
-        if not decorator.args:
+        path_expr = _path_argument(decorator)
+        if path_expr is None:
             continue
-        path = _route_path(decorator.args[0], dynamic_at=decorator)
+        path = _route_path(path_expr, dynamic_at=decorator)
         name = decorator.func.attr.lower()
         methods = [name.upper()] if name.upper() in MUTATING_METHODS else []
         if name in {"api_route", "route"}:
-            methods = _literal_methods(decorator)
+            methods = _declared_methods(decorator)
         elif name == "websocket":
             # Every WebSocket route is a shipped execution/control surface
             # regardless of "mutating": it bypasses HTTP-method semantics
@@ -164,13 +195,21 @@ def _call_attr_name(call: ast.Call) -> str | None:
     return func.attr if isinstance(func, ast.Attribute) else None
 
 
-def _handler_name(expr: ast.expr) -> str | None:
-    """The referenced handler's name for a call-registered route, best effort."""
+def _handler_identity(expr: ast.expr) -> tuple[str | None, bool]:
+    """`(identity, resolvable)` for a call-registered route's endpoint.
+
+    A bare name is the handler's identity and may be correlated to a
+    function defined in this module. A qualified endpoint (`handlers.build`)
+    keeps its qualifier as identity and is never resolved by its bare
+    attribute name: this module may define an unrelated `build` whose canned
+    return would then be attributed to the imported real handler. Anything
+    else (a call, a subscript) has no static identity at all.
+    """
     if isinstance(expr, ast.Name):
-        return expr.id
+        return expr.id, True
     if isinstance(expr, ast.Attribute):
-        return expr.attr
-    return None
+        return ast.unparse(expr), False
+    return None, False
 
 
 #: Placeholder handler identity for a resolvable route whose endpoint
@@ -180,28 +219,30 @@ def _handler_name(expr: ast.expr) -> str | None:
 _UNRESOLVED_ENDPOINT = "<unresolved endpoint>"
 
 
-def _add_api_route_calls(tree: ast.Module) -> list[tuple[str, str, str | None]]:
-    """`(method, path, handler_name)` for every `*.add_api_route(...)` call.
+def _add_api_route_calls(tree: ast.Module) -> list[tuple[str, str, str | None, bool]]:
+    """`(method, path, handler_identity, resolvable)` per `*.add_api_route(...)`.
 
     The non-decorator registration form FastAPI supports alongside
     `@router.post(...)`; a route registered this way carries no decorator for
     `_decorated_routes` to see at all; this walks the whole module for the
-    call directly instead.
+    call directly instead. The path may be positional or `path=`, the
+    endpoint positional or `endpoint=`.
     """
-    found: list[tuple[str, str, str | None]] = []
+    found: list[tuple[str, str, str | None, bool]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or _call_attr_name(node) != "add_api_route":
             continue
-        if not node.args:
+        path_expr = _path_argument(node)
+        if path_expr is None:
             continue
-        path = _route_path(node.args[0], dynamic_at=node)
+        path = _route_path(path_expr, dynamic_at=node)
         endpoint = node.args[1] if len(node.args) >= 2 else None
         for keyword in node.keywords:
             if keyword.arg == "endpoint":
                 endpoint = keyword.value
-        handler = _handler_name(endpoint) if endpoint is not None else None
-        methods = _literal_methods(node)
-        found.extend((method, path, handler) for method in methods)
+        handler, resolvable = _handler_identity(endpoint) if endpoint is not None else (None, False)
+        methods = _declared_methods(node)
+        found.extend((method, path, handler, resolvable) for method in methods)
     return found
 
 
@@ -293,6 +334,33 @@ class _RealWorkDetector(ast.NodeVisitor):
             self.has_real_work = True
         self.generic_visit(node)
 
+    # A write through an attribute or a subscript (`record.status = "done"`,
+    # `state["enabled"] = True`, `del jobs[job_id]`) mutates something that
+    # outlives the handler, so it is real work whatever the return says. A
+    # plain local name binding is inert and stays permitted.
+    def visit_Assign(self, node: ast.Assign) -> None:
+        self._note_targets(node.targets)
+        self.generic_visit(node)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        self._note_targets([node.target])
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        self._note_targets([node.target])
+        self.generic_visit(node)
+
+    def visit_Delete(self, node: ast.Delete) -> None:
+        self._note_targets(node.targets)
+        self.generic_visit(node)
+
+    def _note_targets(self, targets: list[ast.expr]) -> None:
+        for target in targets:
+            for sub in ast.walk(target):
+                if isinstance(sub, (ast.Attribute, ast.Subscript)):
+                    self.has_real_work = True
+                    return
+
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         pass
 
@@ -348,22 +416,30 @@ def _obvious_fake(node: ast.AsyncFunctionDef | ast.FunctionDef) -> bool:
     return status in SUCCESS_STATUS if status is not None else False
 
 
-def _function_defs(tree: ast.Module) -> dict[str, ast.AsyncFunctionDef | ast.FunctionDef]:
-    """Every function defined anywhere in this module, by name.
+def _function_nodes(tree: ast.Module) -> list[ast.AsyncFunctionDef | ast.FunctionDef]:
+    """Every function definition in this module, in source order, duplicates kept.
 
-    Best-effort correlation for a non-decorator route registration
-    (`router.add_api_route("/x", handler, ...)`), which names its handler by
-    reference rather than wrapping it: more than one function can share a
-    name across nested scopes, in which case the last one encountered wins.
-    That is acceptable here -- this dict only inspects a *candidate*
-    handler's obvious-fake-success shape, never decides whether the route
-    itself exists.
+    Decorator discovery walks *these*, never a by-name map: Python happily
+    registers `@router.post("/a")` and then redefines the same function name
+    for `@router.post("/b")`, both routes stay live at runtime, and a map
+    keyed on the name would report only the later one.
     """
-    return {
-        node.name: node
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
-    }
+    return [
+        node for node in ast.walk(tree) if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
+    ]
+
+
+def _function_defs(
+    nodes: list[ast.AsyncFunctionDef | ast.FunctionDef],
+) -> dict[str, ast.AsyncFunctionDef | ast.FunctionDef]:
+    """Best-effort by-name map for resolving a call-registered handler.
+
+    Only `router.add_api_route("/x", handler, ...)` uses it, and only to
+    inspect a *candidate* handler's obvious-fake-success shape -- never to
+    decide whether a route exists. When more than one function shares a
+    name across nested scopes, the last one encountered wins.
+    """
+    return {node.name: node for node in nodes}
 
 
 def _source_surfaces(path: Path, repo_root: Path) -> list[BackendSurface]:
@@ -373,8 +449,9 @@ def _source_surfaces(path: Path, repo_root: Path) -> list[BackendSurface]:
         return []
     source = path.relative_to(repo_root).as_posix()
     surfaces: list[BackendSurface] = []
-    functions = _function_defs(tree)
-    for node in functions.values():
+    nodes = _function_nodes(tree)
+    functions = _function_defs(nodes)
+    for node in nodes:
         obvious_fake = _obvious_fake(node)
         for method, route in _decorated_routes(node):
             surfaces.append(
@@ -386,8 +463,8 @@ def _source_surfaces(path: Path, repo_root: Path) -> list[BackendSurface]:
                     obvious_fake_success=obvious_fake,
                 )
             )
-    for method, route, handler_name in _add_api_route_calls(tree):
-        handler_def = functions.get(handler_name) if handler_name else None
+    for method, route, handler_name, resolvable in _add_api_route_calls(tree):
+        handler_def = functions.get(handler_name) if handler_name and resolvable else None
         surfaces.append(
             BackendSurface(
                 source=source,

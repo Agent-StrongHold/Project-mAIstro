@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +6
+  tests/: +12
 ---
 # fix-m1-static-gate-coverage-c9b6
 
@@ -20,3 +20,18 @@ stopping at a nested helper function rather than looking inside it,
 an `add_api_route` call whose endpoint can't be resolved still being
 recorded (as unresolved, not dropped), and a dynamically-built route path
 never being silently dropped from the matrix.
+
+Codex review of the first head added six more in
+`tests/test_shipped_surface_truth.py`, one per finding: two decorated
+handlers sharing a name are both discovered (decorator discovery walks every
+function node, not a by-name map); an `add_api_route(path=..., endpoint=...)`
+registration with only keyword arguments is discovered and its handler
+resolved; a non-literal `methods=` collection on either registration form
+becomes the `<dynamic-methods>` stand-in the matrix must classify rather than
+a dropped route; a qualified endpoint (`handlers.build`) keeps its qualifier
+as identity and is never resolved by its bare name to an unrelated local
+function; a write through an attribute or subscript (and a `del`) counts as
+real work so a state-mutating handler is not an obvious fake success while an
+inert local binding still is; and a dynamic route's identity carries a digest
+of its expression, so rewriting the f-string on the same line yields a new
+surface.
