@@ -72,20 +72,29 @@ class TestRequestIDPresence:
         """With no generic exception handler, an unhandled exception used to
         propagate straight past RequestIDMiddleware to Starlette's outer
         ServerErrorMiddleware, which has no way to attach an id it never
-        saw -- exactly when a caller most needs it to report the failure."""
+        saw -- exactly when a caller most needs it to report the failure.
 
+        Built as an isolated app (same handler + middleware Hive registers,
+        wired the same way) rather than mutating the shared `main.app`
+        singleton every other test in this file (and the rest of the suite)
+        also uses -- registering a route and an exception handler on that
+        shared object is order-dependent on when Starlette caches its
+        middleware stack relative to other tests' requests, and this way
+        removes that dependency entirely."""
+        from fastapi import FastAPI
+        from main import unhandled_exception_handler
+
+        from maistro.observability.middleware import RequestIDMiddleware
+
+        test_app = FastAPI()
+        test_app.add_middleware(RequestIDMiddleware)
+        test_app.add_exception_handler(Exception, unhandled_exception_handler)
+
+        @test_app.get("/boom")
         async def _boom() -> None:
             raise RuntimeError("synthetic failure for this test")
 
-        app.router.add_api_route("/__test-unhandled-exception__", _boom, methods=["GET"])
-        try:
-            c = TestClient(app, raise_server_exceptions=False)
-            r = c.get("/__test-unhandled-exception__")
-            assert r.status_code == 500
-            assert r.headers["X-Request-ID"]
-        finally:
-            app.router.routes[:] = [
-                route
-                for route in app.router.routes
-                if getattr(route, "path", None) != "/__test-unhandled-exception__"
-            ]
+        c = TestClient(test_app, raise_server_exceptions=False)
+        r = c.get("/boom")
+        assert r.status_code == 500
+        assert r.headers["X-Request-ID"]

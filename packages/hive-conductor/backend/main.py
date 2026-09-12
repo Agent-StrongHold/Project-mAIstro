@@ -254,6 +254,32 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await foundation_service.stop_foundation()
 
 
+async def unhandled_exception_handler(request: Request, exc: Exception) -> Response:
+    """A 500 must still carry the request id every other response does (#1063).
+
+    With no handler registered for this, an unhandled exception propagates
+    past `RequestIDMiddleware` (its `call_next` raises rather than
+    returning a response), straight to Starlette's outer
+    `ServerErrorMiddleware` -- which builds the 500 with no knowledge of
+    the id at all, exactly when a caller most needs it to report the
+    failure. The body/status is Starlette's own unhandled-exception
+    default (`PlainTextResponse("Internal Server Error", 500)`); only the
+    header is new. Module-level (not nested in `create_app()`) so a test
+    can exercise it against an isolated app, independent of the shared
+    production `app` singleton and whatever order other test files touch it.
+    """
+    from starlette.responses import PlainTextResponse
+
+    request_id = getattr(request.state, "request_id", "")
+    logging.getLogger("hive").exception(
+        "unhandled_exception: %s", exc, extra={"request_id": request_id}
+    )
+    response = PlainTextResponse("Internal Server Error", status_code=500)
+    if request_id:
+        response.headers[REQUEST_ID_HEADER] = request_id
+    return response
+
+
 def create_app() -> FastAPI:
     configure_logging()
     app = FastAPI(title="Hive Conductor", version="0.9.0", lifespan=lifespan)
@@ -307,29 +333,7 @@ def create_app() -> FastAPI:
             status_code=503, content={"detail": f"settings were not persisted: {exc}"}
         )
 
-    @app.exception_handler(Exception)
-    async def _unhandled_exception(request: Request, exc: Exception) -> Response:
-        """A 500 must still carry the request id every other response does (#1063).
-
-        With no handler registered here, an unhandled exception propagates
-        past `RequestIDMiddleware` (its `call_next` raises rather than
-        returning a response), straight to Starlette's outer
-        `ServerErrorMiddleware` -- which builds the 500 with no knowledge of
-        the id at all, exactly when a caller most needs it to report the
-        failure. The body/status is Starlette's own unhandled-exception
-        default (`PlainTextResponse("Internal Server Error", 500)`); only the
-        header is new.
-        """
-        from starlette.responses import PlainTextResponse
-
-        request_id = getattr(request.state, "request_id", "")
-        logging.getLogger("hive").exception(
-            "unhandled_exception: %s", exc, extra={"request_id": request_id}
-        )
-        response = PlainTextResponse("Internal Server Error", status_code=500)
-        if request_id:
-            response.headers[REQUEST_ID_HEADER] = request_id
-        return response
+    app.add_exception_handler(Exception, unhandled_exception_handler)
 
     app.include_router(health.router)
     app.include_router(auth.router, prefix="/v1/auth")
