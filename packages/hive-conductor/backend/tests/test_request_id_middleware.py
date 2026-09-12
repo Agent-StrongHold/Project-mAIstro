@@ -58,3 +58,34 @@ class TestRequestIDPresence:
         r = c.get("/v1/tasks")
         assert r.status_code == 401
         assert r.headers["X-Request-ID"]
+
+    def test_the_id_is_exposed_to_cross_origin_browser_callers(self) -> None:
+        """Without `expose_headers`, `X-Request-ID` is sent but invisible to
+        browser JS: only the CORS-safelisted header set is readable from
+        `response.headers` cross-origin, so a server-generated id would have
+        been an advertised correlation path no cross-origin UI could follow."""
+        c = _client()
+        r = c.get("/health", headers={"Origin": "http://localhost:5173"})
+        assert "x-request-id" in r.headers.get("access-control-expose-headers", "").lower()
+
+    def test_the_id_is_present_on_an_unhandled_exception(self) -> None:
+        """With no generic exception handler, an unhandled exception used to
+        propagate straight past RequestIDMiddleware to Starlette's outer
+        ServerErrorMiddleware, which has no way to attach an id it never
+        saw -- exactly when a caller most needs it to report the failure."""
+
+        async def _boom() -> None:
+            raise RuntimeError("synthetic failure for this test")
+
+        app.router.add_api_route("/__test-unhandled-exception__", _boom, methods=["GET"])
+        try:
+            c = TestClient(app, raise_server_exceptions=False)
+            r = c.get("/__test-unhandled-exception__")
+            assert r.status_code == 500
+            assert r.headers["X-Request-ID"]
+        finally:
+            app.router.routes[:] = [
+                route
+                for route in app.router.routes
+                if getattr(route, "path", None) != "/__test-unhandled-exception__"
+            ]

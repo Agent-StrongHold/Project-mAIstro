@@ -52,11 +52,17 @@ reaching a limit it did not reach.
 from __future__ import annotations
 
 import logging
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Final
 
 from maistro.graph.templates import require_template
+from maistro.observability.correlation import (
+    bind_execution_context,
+    current_execution_context,
+    detached_execution_context,
+)
 from maistro.runs.model import RunStatus
 from maistro.runs.sources import (
     ADMISSION_SOURCE,
@@ -78,6 +84,13 @@ if TYPE_CHECKING:
     from maistro.scheduling.store import ScheduleStore
 
 logger = logging.getLogger("maistro.scheduling.admission")
+
+#: Provenance key recording a scheduled Run's own correlation root (#1063).
+#: `admit_due` runs on the background tick loop, never inside an incoming
+#: request, so each admitted occurrence mints its own rather than leaving the
+#: Run uncorrelated or risking a stray id from an unrelated Attempt left
+#: bound on the same event loop tick.
+REQUEST_ID_KEY = "request_id"
 
 #: Skip reasons whose occurrence is still owed, so the cursor must not pass it.
 #:
@@ -195,7 +208,15 @@ class ScheduleRunAdmitter:
         failures: list[Exception] = []
         for fire in decision.fires:
             try:
-                run_ids.append(await self._admit_one(schedule, template, fire))
+                # A clean slate, not just a fresh id: this loop runs on the
+                # background tick loop, sharing an event loop with whatever
+                # else happens to be running, so it must not risk inheriting
+                # a stray Attempt's ids still bound on this tick.
+                with (
+                    detached_execution_context(),
+                    bind_execution_context(request_id=uuid.uuid4().hex[:12]),
+                ):
+                    run_ids.append(await self._admit_one(schedule, template, fire))
                 admitted.append(fire)
                 consumed.append(fire)
             except DuplicateOccurrence:
@@ -344,6 +365,9 @@ class ScheduleRunAdmitter:
             # runner, because a Run that cannot say what it was asked to do
             # cannot be audited or replayed.
             provenance[SCHEDULE_INPUTS_KEY] = schedule.inputs
+        request_id = current_execution_context().request_id
+        if request_id:
+            provenance[REQUEST_ID_KEY] = request_id
         run = await self._runs.create_run(
             graph,
             persona_id=schedule.persona_id,

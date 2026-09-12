@@ -1021,6 +1021,60 @@ def test_a_manual_run_creates_a_run_and_records_it(monkeypatch: pytest.MonkeyPat
         stores.schedules._data.pop("s-man", None)  # type: ignore[attr-defined]
 
 
+def test_a_manual_run_preserves_the_http_requests_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#1063: `POST /v1/schedules/{id}/run` is a real HTTP request that
+    RequestIDMiddleware already bound an id for -- `fire_now` must forward
+    it rather than minting an unrelated one, or the request/response and the
+    resulting Run's provenance would carry two different correlation ids for
+    the same logical request."""
+    import stores
+    from services.scheduler import fire_now
+
+    from maistro.observability.correlation import bind_execution_context
+    from maistro.scheduling import InMemoryScheduleStore
+
+    _register("sched-manual-reqid")
+    stub = _bounded_stub("s-man-reqid", "sched-manual-reqid")
+    stores.schedules._data["s-man-reqid"] = stub  # type: ignore[attr-defined]
+    _with_store(monkeypatch, InMemoryScheduleStore())
+    try:
+        with bind_execution_context(request_id="http-req-42"):
+            run_id = asyncio.run(fire_now("s-man-reqid"))
+
+        from services.dag_agents import _fallback_run_store
+
+        run = _fallback_run_store._rows[run_id].run  # type: ignore[attr-defined]
+        assert run.provenance["request_id"] == "http-req-42"
+    finally:
+        stores.schedules._data.pop("s-man-reqid", None)  # type: ignore[attr-defined]
+
+
+def test_a_manual_run_with_no_ambient_request_mints_its_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A manual fire triggered with no request id in scope (e.g. a script
+    calling the service function directly) still gets a real one, not a
+    blank provenance field."""
+    import stores
+    from services.scheduler import fire_now
+
+    from maistro.scheduling import InMemoryScheduleStore
+
+    _register("sched-manual-noreqid")
+    stub = _bounded_stub("s-man-noreqid", "sched-manual-noreqid")
+    stores.schedules._data["s-man-noreqid"] = stub  # type: ignore[attr-defined]
+    _with_store(monkeypatch, InMemoryScheduleStore())
+    try:
+        run_id = asyncio.run(fire_now("s-man-noreqid"))
+
+        from services.dag_agents import _fallback_run_store
+
+        run = _fallback_run_store._rows[run_id].run  # type: ignore[attr-defined]
+        assert run.provenance.get("request_id")
+    finally:
+        stores.schedules._data.pop("s-man-noreqid", None)  # type: ignore[attr-defined]
+
+
 def test_a_manual_run_that_cannot_start_leaves_no_stamp(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
