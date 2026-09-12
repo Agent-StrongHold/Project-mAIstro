@@ -28,7 +28,7 @@ in **[ADR-072](docs/adr/ADR-072-threat-model.md)**. It is not duplicated here; t
 ## Defense-in-depth layers
 
 | Layer | Mechanism | Engine module |
-|---|---|---|
+| --- | --- | --- |
 | **1. Gate** | Untrusted-input entry point into the Conduit pipeline | `maistro/conduit.py` |
 | **2. Warden** | Trust-boundary scanner: fast-tier heuristics (regex/pattern/anomaly, free) escalate only ambiguous input to an LLM judge (risk `0..1`). Scans user input, tool results, and — at the MCP boundary — both ingress and egress | `maistro/security/warden/detector.py`, `heuristics.py`, `semantic.py`, `llm_classifier.py`, `sanitizer.py`, `patterns.py` |
 | **3. Sentinel (AuthZ / elevation)** | Policy decision + enforcement point (PDP/PEP) at the tool-call boundary. Evaluates CLASSIFY → AUTHORIZE → BUDGET → GATE (ADR-068) in order, stopping at first deny | `maistro/security/sentinel/policy.py`, `validator.py`, `elevation.py`, `approver_graph.py`, `rlphd.py` |
@@ -94,7 +94,7 @@ verifies every path, name and value below against the code on each PR — see th
 docstring for what it cannot check):
 
 | Limit | Value | File:constant | Purpose |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Warden regex scan window | 50 KiB, 2 KiB overlap | `security/warden/detector.py` (`_SCAN_WINDOW_CHARS = 50 * 1024`, `_SCAN_OVERLAP_CHARS = 2 * 1024`) | ReDoS / pathological-input protection while still catching cross-chunk patterns |
 | Warden pattern-match timeout | 0.5 s | `security/warden/detector.py` (`_PATTERN_TIMEOUT_S`) | Bounds a single regex pass |
 | Warden heuristic instruction-density threshold | 0.15 | `security/warden/heuristics.py` (`INSTRUCTION_DENSITY_THRESHOLD`) | Flags imperative-verb-dense (likely-injected) content |
@@ -122,7 +122,7 @@ floor in the weakening direction fails `Settings` validation at startup, naming
 the setting and the override that would permit it.
 
 | Setting (env var) | Default = floor | Tighter means | Enforced by |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `MAX_REQUEST_BODY_BYTES` | 1,048,576 | smaller | `PayloadSizeLimitMiddleware` |
 | `MAX_WEBHOOK_BODY_BYTES` | 1,048,576 | smaller | webhook routes |
 | `RATE_LIMIT_PER_MINUTE` | 60 | smaller | `security/rate_limiter.py` |
@@ -162,7 +162,7 @@ environment it was supposed to have been given.
 Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have an equivalent for:
 
 | Stronghold had | Engine has | Status |
-|---|---|---|
+| --- | --- | --- |
 | Tool-argument size limit (100 KB, JSON-bomb protection) | No dedicated tool-arg size cap found in `security/sentinel/validator.py` or `tools/` | `gap-impl` |
 | SSRF blocklist (private networks, cloud metadata endpoints, loopback) for outbound tool/skill HTTP calls | **Present** — `security/ssrf.py::validate_outbound_url` refuses any URL that is not http(s) with a resolvable host on the public internet, checking every address the host resolves to (private, loopback, link-local, reserved, multicast, unspecified, and the RFC 6598 shared range `100.64.0.0/10`, which no stdlib predicate names) and refusing a name it cannot resolve at all. Applied at `maistro.http`'s pooled transport by `security/outbound.py` (ADR-082326-5386), and at the sync seam `maistro.http::sync_client` builds for the approvals CLI, so a module is covered by routing through the shared pool rather than by remembering to call the guard — redirect hops included, since httpx re-enters the transport for each one. Configured endpoints — the LiteLLM/Ollama gateway, ntfy, a Home Assistant URL — are allowed by exact origin, seeded from settings. The **filesystem** path blocklist (`security/patterns.py:BLOCKED_HOST_PATHS`) is separate and unrelated | `partial` — covered at both the async and sync seams, proxy mounts included; the measured reach is in Known Limitation 1, and the rebinding window between the guard's lookup and the client's remains open |
 | `hmac.compare_digest`-based constant-time comparison for API keys | Present: `security/secret_equal.py` | ✅ (engine has this) |
@@ -173,7 +173,7 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
 ## OWASP Top 10 for LLM Applications (2025) — short mapping
 
 | ID | Threat | Engine mitigation |
-|---|---|---|
+| --- | --- | --- |
 | LLM01 | Prompt Injection | Warden fast-tier heuristics + LLM-judge escalation on ambiguity (`security/warden/`) |
 | LLM02 | Sensitive Information Disclosure | Sentinel PII filter (`security/sentinel/pii_filter.py`) + secret redaction on both log pipelines (`security/redact.py` installed by `security/log_redaction.py`, ADR-064). The PII filter reaches only callers of the Sentinel post-call pipeline, which the Conductor chat path does not traverse (#350) |
 | LLM03 | Supply Chain (skills / MCP / dependencies) | Skill content scan on the CRUD write paths (`skills/parser.py::security_scan`, #347) + microVM isolation for untrusted code (ADR-093). **Two caveats:** `import_pipeline.import_skill`'s full gate has no production caller, and **signed code-registry entries (`code_registry/verify.py`, ADR-069) are not operative** — `CodeRegistry.register()` is never called, so nothing is signature-checked at load (#346) |
@@ -255,7 +255,23 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    before scanning, but the PII filter itself does not). `security/redact.py` additionally carries a
    Shannon-entropy fallback (`_looks_like_secret`, >4.0 bits/char with a mixed charset) that catches
    unknown key formats an earlier revision of this section wrongly said it lacked; that fallback
-   does not extend to the PII filter. **Redaction covers the log pipelines only** — a secret placed
+   does not extend to the PII filter. The PII filter's credential detectors beyond prefixes — the
+   Slack `xox*` family, validated AWS secret access keys, and generic secret-named assignments —
+   share their compiled shapes with `redact.py` through `security/secret_policy.py` (#1159), which
+   is also the one field-name classifier for approval-evidence redaction
+   (`capabilities/approval_store.py`); the classifier splits separator AND camel-case boundaries
+   on the original spelling (`private_key`, `privateKey`, `SigningKey` all classify; a lowering
+   regression that let camelCase synonyms bypass approval evidence is covered by test), and
+   identifier-valued names (`aws_access_key_id`, `awsAccessKeyId`, `key_arn`) stay readable by
+   policy. Both filters consume full PEM blocks — the base64 body between the BEGIN/END markers
+   is the reusable credential, so redacting the header alone is not enough — and
+   `Violation.detail` is redacted at construction in both `security/_types.py` and
+   `types/security.py`. The shared assignment shape does not claim an unquoted value containing a
+   mid-value `=` (`key=abc=def12345`) — quote such values — and never re-claims a value from the
+   reserved `[REDACTED…` label namespace, which is what makes redaction idempotent across the
+   multiple boundaries that apply it. The PII filter — not the log redactor — owns decoding views
+   (percent/Base64) and the homoglyph fold; the entropy fallback remains log-path only.
+   **Redaction covers the log pipelines only** — a secret placed
    in an HTTP response body or written directly to a file is not scrubbed.
 6. **Warden's configured LLM-judge tier fails closed on uncertainty.** When L3 is invoked, only an
    exact `safe` response clears the judge. Provider errors, timeouts, empty/malformed responses,

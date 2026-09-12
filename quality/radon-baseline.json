@@ -583,16 +583,6 @@
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
-      "key": "packages/maistro-core/src/maistro/security/redact.py::redact",
-      "path": "packages/maistro-core/src/maistro/security/redact.py",
-      "line": 105,
-      "name": "redact",
-      "classname": null,
-      "rank": "C",
-      "complexity": 13,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
       "key": "packages/maistro-core/src/maistro/security/sentinel/policy.py::Sentinel.authorize",
       "path": "packages/maistro-core/src/maistro/security/sentinel/policy.py",
       "line": 87,
