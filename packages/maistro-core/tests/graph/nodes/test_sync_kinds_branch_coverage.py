@@ -24,7 +24,7 @@ def _ctx(**o: Any) -> NodeContext:
         "dag_id": "d",
         "node_id": "n",
         "user_id": "u",
-        "project_id": "p",
+        "project_id": "p1",
         "workspace_id": "w1",
         "node_run_id": "nr1",
         "attempt_id": "a1",
@@ -46,7 +46,7 @@ async def llm_binding_id() -> str:
             created_at=datetime(2026, 9, 1, tzinfo=UTC),
             binding_id="llm-summarize-test-binding-bc",
             workspace_id="w1",
-            project_id="p",
+            project_id="p1",
             capability="model.chat",
         )
     )
@@ -86,7 +86,9 @@ def _patch_httpx(
 async def test_airtable_poll_401_raises_permission(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_httpx(monkeypatch, payload={}, status_code=401)
     node = get_node("airtable.poll")()
-    out = await node.run({"pat": "p", "base_id": "b", "table": "t"}, _ctx())
+    out = await node.run(
+        {"binding_id": "test-airtable-binding", "base_id": "b", "table": "t"}, _ctx()
+    )
     assert out.success is False
     assert out.error_code == "PermissionError"
     assert "airtable_auth_failed" in (out.error_message or "")
@@ -95,7 +97,10 @@ async def test_airtable_poll_401_raises_permission(monkeypatch: pytest.MonkeyPat
 async def test_airtable_poll_403_raises_permission(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_httpx(monkeypatch, payload={}, status_code=403)
     node = get_node("airtable.poll")()
-    out = await node.run({"pat": "p", "base_id": "b", "table": "t"}, _ctx())
+    out = await node.run(
+        {"binding_id": "test-airtable-binding", "base_id": "b", "table": "t"},
+        _ctx(run_id="airtable-403"),
+    )
     assert out.success is False
     assert out.error_code == "PermissionError"
     assert "airtable_forbidden" in (out.error_message or "")
@@ -104,9 +109,12 @@ async def test_airtable_poll_403_raises_permission(monkeypatch: pytest.MonkeyPat
 async def test_airtable_poll_500_raises_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_httpx(monkeypatch, payload={}, status_code=500)
     node = get_node("airtable.poll")()
-    out = await node.run({"pat": "p", "base_id": "b", "table": "t"}, _ctx())
+    out = await node.run(
+        {"binding_id": "test-airtable-binding", "base_id": "b", "table": "t"},
+        _ctx(run_id="airtable-500"),
+    )
     assert out.success is False
-    assert out.error_code == "RuntimeError"
+    assert out.error_code == "PollingHttpError"
     assert "status=500" in (out.error_message or "")
 
 
@@ -134,7 +142,10 @@ async def test_airtable_poll_without_since_iso_no_filter_param(
 
     monkeypatch.setattr(httpx, "AsyncClient", _Client)
     node = get_node("airtable.poll")()
-    out = await node.run({"pat": "p", "base_id": "b", "table": "t"}, _ctx())  # no since_iso
+    out = await node.run(
+        {"binding_id": "test-airtable-binding", "base_id": "b", "table": "t"},
+        _ctx(run_id="airtable-no-since"),
+    )  # no since_iso
     assert out.success is True
     assert "filterByFormula" not in seen["params"]
 
@@ -430,9 +441,8 @@ async def test_wait_for_subtasks_resume_within_deadline_pauses_again(
     ).isoformat()
     out = await node.run(
         {
-            "base_url": "https://jira.example.com",
+            "binding_id": "test-jira-subtasks-binding",
             "parent_key": "P-1",
-            "pat": "p",
             "target_statuses": ["Done"],
             "timeout_seconds": 3600,
             "poll_interval_seconds": 60,
@@ -457,9 +467,8 @@ async def test_wait_for_subtasks_resume_with_bad_first_seen_falls_back_to_now(
     ctx.metadata[f"wait_first_seen:{ctx.node_id}"] = "not-an-iso-date"
     out = await node.run(
         {
-            "base_url": "https://jira.example.com",
+            "binding_id": "test-jira-subtasks-binding",
             "parent_key": "P-1",
-            "pat": "p",
             "target_statuses": ["Done"],
             "timeout_seconds": 3600,
             "poll_interval_seconds": 60,
@@ -505,16 +514,13 @@ async def test_wait_for_subtasks_cloud_flavor_with_email_uses_basic_auth(
     node = get_node("jira.wait_for_subtasks")()
     out = await node.run(
         {
-            "base_url": "https://acme.atlassian.net",
+            "binding_id": "test-jira-cloud-subtasks-binding",
             "parent_key": "P-1",
-            "pat": "cloud-token",
-            "flavor": "cloud",
-            "email": "alice@example.com",
         },
         _ctx(),
     )
     assert out.success
-    assert seen["auth"] == ("alice@example.com", "cloud-token")
+    assert seen["auth"] == ("alice@example.com", "test-jira-secret")
     assert "/rest/api/3/issue/P-1" in seen["url"]
 
 
@@ -552,15 +558,13 @@ async def test_wait_for_subtasks_cloud_flavor_without_email_uses_bearer(
     node = get_node("jira.wait_for_subtasks")()
     await node.run(
         {
-            "base_url": "https://acme.atlassian.net",
+            "binding_id": "test-jira-cloud-no-email-subtasks-binding",
             "parent_key": "P-1",
-            "pat": "tk",
-            "flavor": "cloud",
             # no email
         },
         _ctx(),
     )
-    assert seen["headers"]["Authorization"] == "Bearer tk"
+    assert seen["headers"]["Authorization"] == "Bearer test-jira-secret"
     assert seen["auth"] is None
 
 
@@ -571,15 +575,14 @@ async def test_wait_for_subtasks_500_raises_runtime(monkeypatch: pytest.MonkeyPa
     node = get_node("jira.wait_for_subtasks")()
     out = await node.run(
         {
-            "base_url": "https://jira.example.com",
+            "binding_id": "test-jira-subtasks-binding",
             "parent_key": "P-1",
-            "pat": "p",
             "target_statuses": ["Done"],
         },
-        _ctx(),
+        _ctx(run_id="jira-wait-500"),
     )
     assert out.success is False
-    assert out.error_code == "RuntimeError"
+    assert out.error_code == "PollingHttpError"
     assert "status=500" in (out.error_message or "")
 
 
@@ -589,12 +592,11 @@ async def test_wait_for_subtasks_401_raises_permission(monkeypatch: pytest.Monke
     node = get_node("jira.wait_for_subtasks")()
     out = await node.run(
         {
-            "base_url": "https://jira.example.com",
+            "binding_id": "test-jira-subtasks-binding",
             "parent_key": "P-1",
-            "pat": "bad",
             "target_statuses": ["Done"],
         },
-        _ctx(),
+        _ctx(run_id="jira-wait-401"),
     )
     assert out.success is False
     assert out.error_code == "PermissionError"
@@ -619,12 +621,11 @@ async def test_wait_for_subtasks_subtask_without_key_is_dropped(
     node = get_node("jira.wait_for_subtasks")()
     out = await node.run(
         {
-            "base_url": "https://jira.example.com",
+            "binding_id": "test-jira-subtasks-binding",
             "parent_key": "P-1",
-            "pat": "p",
             "target_statuses": ["Done"],
         },
-        _ctx(),
+        _ctx(run_id="jira-wait-subtasks"),
     )
     assert out.success
     assert out.output.subtask_keys == ["S2"]
