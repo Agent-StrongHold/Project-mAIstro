@@ -14,15 +14,20 @@ import asyncio
 import json
 import logging
 import os
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from maistro.http import shared_client
 
+ModelCall = Callable[..., Awaitable[str]]
+
 logger = logging.getLogger("hive.tool_executor")
 
 
-async def web_search(query: str, max_results: int = 5) -> dict[str, Any]:
-    """Real web search via Brave Search API (primary), with fallbacks."""
+async def web_search(
+    query: str, max_results: int = 5, *, model_call: ModelCall | None = None
+) -> dict[str, Any]:
+    """Real web search with a governed model-only fallback."""
     # Brave Search (fast, real results, free tier)
     brave_key = os.environ.get("BRAVE_SEARCH_API_KEY", "")
     if brave_key:
@@ -57,7 +62,7 @@ async def web_search(query: str, max_results: int = 5) -> dict[str, Any]:
         logger.warning(f"BrowserClient failed for '{query}': {e}")
 
     # Last resort: use Gemini with grounding (search built into the model)
-    return await _gemini_grounded_search(query, max_results)
+    return await _gemini_grounded_search(query, max_results, model_call=model_call)
 
 
 def _ssrf_blocked(url: str) -> str | None:
@@ -154,17 +159,20 @@ async def browse_url(url: str, task: str = "Extract key facts and quotes") -> di
             return {"url": safe_url, "error": str(e2)}
 
 
-async def clarify(questions: list[str], context: dict[str, Any]) -> dict[str, str]:
-    """Multi-turn clarification — ask questions, get answers from context or LLM.
+async def clarify(
+    questions: list[str],
+    context: dict[str, Any],
+    *,
+    model_call: ModelCall | None = None,
+) -> dict[str, str]:
+    """Ask clarification questions through the caller's governed model seam.
 
-    In production, this would be interactive. For DAG execution, we use the
-    input context to answer clarifying questions, or generate reasonable defaults.
+    This function owns prompt shaping only. A missing caller is a wiring error,
+    not permission to use environment credentials or fabricate answers.
+    Provider failures propagate so the owning NodeRun cannot report success.
     """
-    base = os.environ.get("LITELLM_API_BASE", "").rstrip("/")
-    if not base.endswith("/v1"):
-        base += "/v1"
-    key = os.environ.get("LITELLM_API_KEY", "")
-
+    if model_call is None:
+        raise RuntimeError("clarify requires a governed model caller")
     prompt = (
         "You are helping clarify requirements for a creative project.\n"
         f"Original request: {context.get('input', '')}\n\n"
@@ -176,25 +184,19 @@ async def clarify(questions: list[str], context: dict[str, Any]) -> dict[str, st
         + "\n\nAnswer each question in detail (2-3 sentences each). "
         'Output JSON: {"answers": {"1": "...", "2": "...", ...}}'
     )
-
-    try:
-        async with shared_client(timeout=30.0) as client:
-            r = await client.post(
-                f"{base}/chat/completions",
-                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                json={
-                    "model": os.environ.get("CHAT_DEFAULT_MODEL", "chat"),
-                    "messages": [{"role": "user", "content": prompt}],
-                    "response_format": {"type": "json_object"},
-                },
-            )
-            r.raise_for_status()
-            content = r.json()["choices"][0]["message"]["content"]
-            data = json.loads(content)
-            return data.get("answers", data)
-    except Exception as e:
-        logger.error(f"Clarification failed: {e}")
-        return {str(i + 1): "Not specified" for i in range(len(questions))}
+    content = await model_call(
+        [{"role": "user", "content": prompt}],
+        model=os.environ.get("CHAT_DEFAULT_MODEL", "chat"),
+        temperature=0.3,
+        max_tokens=2048,
+    )
+    data = json.loads(content)
+    if not isinstance(data, dict):
+        raise RuntimeError("clarification model returned a non-object answers payload")
+    answers = data.get("answers", data)
+    if not isinstance(answers, dict):
+        raise RuntimeError("clarification model returned a non-object answers payload")
+    return {str(key): str(value) for key, value in answers.items()}
 
 
 async def _brave_search(query: str, max_results: int, api_key: str) -> dict[str, Any]:
@@ -230,13 +232,12 @@ async def _brave_search(query: str, max_results: int, api_key: str) -> dict[str,
         return {"query": query, "summary": "", "citations": [], "source": "error", "error": str(e)}
 
 
-async def _gemini_grounded_search(query: str, max_results: int) -> dict[str, Any]:
-    """Use Gemini model with search grounding via LiteLLM gateway."""
-    base = os.environ.get("LITELLM_API_BASE", "").rstrip("/")
-    if not base.endswith("/v1"):
-        base += "/v1"
-    key = os.environ.get("LITELLM_API_KEY", "")
-
+async def _gemini_grounded_search(
+    query: str, max_results: int, *, model_call: ModelCall | None = None
+) -> dict[str, Any]:
+    """Use the governed model caller for Gemini-style grounded search."""
+    if model_call is None:
+        raise RuntimeError("grounded search requires a governed model caller")
     prompt = (
         f"Search the web for: {query}\n\n"
         f"Return the top {max_results} most relevant results you find. "
@@ -244,36 +245,30 @@ async def _gemini_grounded_search(query: str, max_results: int) -> dict[str, Any
         "Then write a 3-sentence summary synthesizing the findings.\n\n"
         'Output JSON: {"summary": str, "citations": [{"title": str, "url": str, "snippet": str}]}'
     )
-
-    try:
-        async with shared_client(timeout=30.0) as client:
-            r = await client.post(
-                f"{base}/chat/completions",
-                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                json={
-                    "model": os.environ.get("CHAT_DEFAULT_MODEL", "chat"),
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": "You are a web research assistant. Search for real, current information. Cite real URLs you know exist. If you're not sure a URL is real, don't include it.",
-                        },
-                        {"role": "user", "content": prompt},
-                    ],
-                    "response_format": {"type": "json_object"},
-                },
-            )
-            r.raise_for_status()
-            content = r.json()["choices"][0]["message"]["content"]
-            data = json.loads(content)
-            return {
-                "query": query,
-                "summary": data.get("summary", ""),
-                "citations": data.get("citations", [])[:max_results],
-                "source": "gemini-grounded",
-            }
-    except Exception as e:
-        logger.error(f"Gemini grounded search failed for '{query}': {e}")
-        return {"query": query, "summary": "", "citations": [], "source": "error", "error": str(e)}
+    content = await model_call(
+        [
+            {
+                "role": "system",
+                "content": "You are a web research assistant. Search for real, current information. Cite real URLs you know exist. If you're not sure a URL is real, don't include it.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        model=os.environ.get("CHAT_DEFAULT_MODEL", "chat"),
+        temperature=0.2,
+        max_tokens=2048,
+    )
+    data = json.loads(content)
+    if not isinstance(data, dict):
+        raise RuntimeError("grounded search model returned a non-object payload")
+    citations = data.get("citations", [])
+    if not isinstance(citations, list):
+        raise RuntimeError("grounded search model returned invalid citations")
+    return {
+        "query": query,
+        "summary": str(data.get("summary", "")),
+        "citations": citations[:max_results],
+        "source": "gemini-grounded",
+    }
 
 
 async def _serper_search(query: str, max_results: int, api_key: str) -> dict[str, Any]:
@@ -335,9 +330,17 @@ TOOLS = {
 }
 
 
-async def dispatch_tool(tool_name: str, tool_args: dict[str, Any]) -> Any:
-    """The ``(tool_name, tool_args)`` dispatcher maistro's strategies call.
+async def dispatch_tool(
+    tool_name: str,
+    tool_args: dict[str, Any],
+    *,
+    model_call: ModelCall | None = None,
+) -> Any:
+    """Dispatch a tool, forwarding model work to the caller's governed seam.
 
+    The ordinary two-argument factory contract remains intact. Canonical DAG
+    adapters may supply ``model_call`` so clarify and grounded search share the
+    node's Invocation correlation; without it, model-backed fallbacks refuse.
     This is the executor half of the factory's tool seam (#840 Slice 5,
     ADR-082526-3ca6: the runtime that owns the agents owns their tools): the
     bridge passes this function to ``create_agents``, so an agent whose
@@ -351,9 +354,11 @@ async def dispatch_tool(tool_name: str, tool_args: dict[str, Any]) -> Any:
     """
     try:
         if tool_name == "web_search":
+            search_kwargs = {"model_call": model_call} if model_call is not None else {}
             return await web_search(
                 str(tool_args.get("query", "")),
                 int(tool_args.get("max_results", 5) or 5),
+                **search_kwargs,
             )
         if tool_name == "browse_url":
             return await browse_url(
@@ -361,9 +366,11 @@ async def dispatch_tool(tool_name: str, tool_args: dict[str, Any]) -> Any:
                 str(tool_args.get("task", "Extract key facts and quotes")),
             )
         if tool_name == "clarify":
+            clarify_kwargs = {"model_call": model_call} if model_call is not None else {}
             return await clarify(
                 list(tool_args.get("questions", []) or []),
                 dict(tool_args.get("context", {}) or {}),
+                **clarify_kwargs,
             )
     except (TypeError, ValueError) as exc:
         return f"Error: bad arguments for tool '{tool_name}': {exc}"

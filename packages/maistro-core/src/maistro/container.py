@@ -1521,6 +1521,9 @@ async def create_container(
     # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) -----------
     wired_harness_adapters = _wire_harness_adapters(harness_adapters)
     capability_effects = new_in_memory_effect_context()
+    from maistro.capabilities.model_binding_bootstrap import bootstrap_model_bindings
+
+    await bootstrap_model_bindings(config, capability_effects)
     spawn_harness_node = AgentSpawnHarnessNode(
         adapters=wired_harness_adapters, effect_context=capability_effects
     )
