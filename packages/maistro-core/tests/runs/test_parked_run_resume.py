@@ -138,7 +138,35 @@ class _UnclassifiedPauseNode(BaseNode[_PauseIn, _PauseOut]):
         return _PauseOut(text="unreachable")
 
 
-for _cls in (_PollingPauseNode, _DispatchingPauseNode, _UnclassifiedPauseNode, _FailingNode):
+class _CrashAfterResumeNode(BaseNode[_PauseIn, _PauseOut]):
+    """Pauses once, then stays live until the resumed worker is killed."""
+
+    kind: ClassVar[str] = "test.resume.crash-after-resume"
+    kind_category: ClassVar = "wait"
+    input_schema: ClassVar[type[BaseModel]] = _PauseIn
+    output_schema: ClassVar[type[BaseModel]] = _PauseOut
+    resumed_started: ClassVar[asyncio.Event | None] = None
+
+    async def _execute(self, inputs: _PauseIn, ctx: NodeContext) -> _PauseOut:
+        if resumed_pause(ctx):
+            event = type(self).resumed_started
+            assert event is not None
+            event.set()
+            await asyncio.sleep(3600)
+        pause_until(
+            PAUSE_WAITING_ON_JIRA_SUBTASKS,
+            resume_at=datetime.now(UTC) - timedelta(seconds=1),
+        )
+        return _PauseOut(text="unreachable")
+
+
+for _cls in (
+    _PollingPauseNode,
+    _DispatchingPauseNode,
+    _UnclassifiedPauseNode,
+    _CrashAfterResumeNode,
+    _FailingNode,
+):
     with contextlib.suppress(ValueError):
         register_node(_cls)
 
@@ -247,6 +275,142 @@ class TestAnElapsedPollResumes:
 
         assert _PollingPauseNode.carried.get("first_seen")
         assert _PollingPauseNode.carried["paused_reason"] == PAUSE_WAITING_ON_JIRA_SUBTASKS
+
+
+@pytest.mark.ac("ADR-082526-b36a/AC-7")
+async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_death(
+    schedule_spine: Any,
+) -> None:
+    """A resumed physical try has the same crash boundary as first reach.
+
+    The store fixture covers memory, SQLite, and PostgreSQL when configured. A
+    fresh durable store is reopened for the SQLite and PostgreSQL legs before
+    the ordinary recovery tick, modeling a restarted worker without introducing
+    schedule-owned repair. The final explicit retry proves recovery leaves the
+    canonical spine usable by the policy that owns retry decisions.
+    """
+    from maistro.runs.consumption import ScheduleAttemptExecutor, resumable_pause
+
+    store, workspace, project_id, reopen = schedule_spine
+    recovery_container = await _container()
+    graph = Graph(
+        workspace_id=workspace,
+        project_id=project_id,
+        name="resumable schedule lease",
+        nodes=[Node(node_id="n1", node_type=_CrashAfterResumeNode.kind)],
+    )
+    run = await store.create_run(
+        graph,
+        provenance={ADMISSION_SOURCE: SCHEDULE_SOURCE, SCHEDULE_INPUTS_KEY: {"marker": "m"}},
+        initial_status=RunStatus.QUEUED,
+    )
+    # Leave room for a real PostgreSQL round trip while keeping the recovery
+    # window short enough to exercise the heartbeat and expiry boundary.
+    ttl = timedelta(seconds=0.5)
+    executor = ScheduleAttemptExecutor(store, lease_ttl=ttl)
+
+    parked = await executor.execute(run)
+    assert parked.status in {RunStatus.WAITING, RunStatus.PAUSED}
+    (node_run,) = await store.list_node_runs(run.run_id)
+    attempts = await store.list_attempts(node_run.node_run_id)
+    first_lease = attempts[0].execution_lease
+    assert first_lease is not None and first_lease.expires_at is not None
+    assert first_lease.expires_at - first_lease.issued_at == ttl
+    pause = resumable_pause(node_run, attempts, now=datetime.now(UTC))
+    assert pause is not None
+
+    _CrashAfterResumeNode.resumed_started = asyncio.Event()
+    worker = asyncio.create_task(executor.resume(parked, pause))
+    try:
+        await _CrashAfterResumeNode.resumed_started.wait()
+        attempts = await store.list_attempts(node_run.node_run_id)
+        resumed = attempts[-1]
+        assert resumed.status is AttemptStatus.RUNNING
+        lease = resumed.execution_lease
+        assert lease is not None and lease.expires_at is not None, (
+            "a schedule resume must opt into the same finite lease as first reach"
+        )
+        assert lease.expires_at - lease.issued_at == ttl
+        # Poll for a renewal instead of sleeping a fixed multiple of the TTL:
+        # PostgreSQL round trips can consume most of a short test window, while
+        # the explicit recovery clock below makes expiry itself deterministic.
+        loop = asyncio.get_running_loop()
+        live = await store.get_attempt(resumed.attempt_id)
+        renewal_deadline = loop.time() + 5.0
+        while (
+            live is None
+            or live.execution_lease is None
+            or live.execution_lease.expires_at is None
+            or live.execution_lease.expires_at <= lease.expires_at
+        ):
+            if loop.time() >= renewal_deadline:
+                pytest.fail("a live resumed Attempt was not renewed by the heartbeat")
+            await asyncio.sleep(0.05)
+            live = await store.get_attempt(resumed.attempt_id)
+        live_lease = live.execution_lease
+        assert live_lease is not None and live_lease.expires_at is not None
+
+        async def _dead(*_args: Any, **_kwargs: Any) -> Any:
+            raise ConnectionError("resumed worker is gone")
+
+        # Stop the heartbeat without orderly cancellation: this is the process
+        # death boundary, leaving the Attempt durably RUNNING for recovery. The
+        # recovery tick's explicit clock advances past the unrenewed expiry, so
+        # this remains deterministic even when a durable backend has a sweep
+        # running in another process.
+        store.renew_lease = _dead  # type: ignore[method-assign]
+
+        # Reopen the durable store before recovery. PostgreSQL gets a fresh
+        # store object and SQLite closes/reopens its file-backed connection;
+        # neither relies on the worker's process-local store state.
+        recovery_store = await reopen()
+        recovery_container.run_store = recovery_store
+        assert (
+            await recovery_container.recover_abandoned_attempts(
+                now=live_lease.expires_at + timedelta(microseconds=1)
+            )
+            == 1
+        )
+
+        recovered = await recovery_store.get_attempt(resumed.attempt_id)
+        recovered_node = await recovery_store.get_node_run(node_run.node_run_id)
+        recovered_run = await recovery_store.get_run(run.run_id)
+        assert recovered is not None and recovered.status is AttemptStatus.CANCELLED
+        assert recovered_node is not None and recovered_node.status is RunStatus.WAITING
+        assert recovered_run is not None and recovered_run.status is RunStatus.WAITING
+
+        # Recovery parks the logical work; it does not invent a schedule retry.
+        # Prove the canonical retry seam can make the next physical Attempt
+        # when an owning policy explicitly chooses to continue.
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+        from maistro.runs.service import RunExecutionService
+        from maistro.runtime import PythonExecutionRuntime
+
+        retry_service = RunExecutionService(
+            store=recovery_store,
+            runtime=PythonExecutionRuntime(),
+            lease_ttl=ttl,
+        )
+
+        async def _retry(_work_item: Any, _context: Any) -> dict[str, bool]:
+            return {"recovered": True}
+
+        retried = await retry_service.retry_node(
+            node_run.node_run_id,
+            {"marker": "m"},
+            None,
+            executor=_retry,
+            executor_id="schedule-consumer",
+        )
+        assert retried.status is AttemptStatus.COMPLETED
+        completed_node = await recovery_store.get_node_run(node_run.node_run_id)
+        completed_run = await recovery_store.get_run(run.run_id)
+        assert completed_node is not None and completed_node.status is RunStatus.COMPLETED
+        assert completed_run is not None and completed_run.status is RunStatus.COMPLETED
+    finally:
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
 
 
 class TestAnAnswerGatedPauseIsLeftAlone:
