@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/hive-conductor/backend/tests: +1
-  packages/maistro-core/tests: +49
+  packages/maistro-core/tests: +54
 ---
 # claude-m1-issues-merge-plan-l7g9xz-95af
 
@@ -12,7 +12,7 @@ long ineligible prefix starve real work forever. All three now page
 through a new `fair_page_scan` combinator instead of taking the first
 page's worth of candidates as the whole answer.
 
-`packages/maistro-core/tests` (+49): a new
+`packages/maistro-core/tests` (+54): a new
 `graph/durable_runs/test_fair_scan.py` suite covers `fair_page_scan`
 directly (cursoring, short-but-nonempty pages, `max_inspected`/`limit`
 stops, and — after the review finding that a per-tick bound restarting from
@@ -51,3 +51,15 @@ progress and results separately (`ScanPage`), the inspection ceiling counting
 dropped rows, exhaustion still restarting from the top, and — over the real
 store on each backend — a hundred settled rows ahead of one genuinely due Run
 being paged past in a single scan.
+
+A further +5 in `graph/durable_runs/test_recovery_wakeup.py` close what the
+diff-coverage floor found: the whole `scan_due_page` branch of
+`_due_page_fetcher` was unexercised at the seam, so the fix was tested one
+layer down but not where production reaches it. A miniature store implementing
+the same page contract now proves the due tick prefers it over `list_due` and
+never calls the latter, and a store without it still gets the plain listing.
+Three error arms the same change introduced are covered too: cancellation
+during a due resume and during a queued resume each abort the tick rather than
+being swallowed by per-candidate isolation, and a due candidate with no
+`resume_at` raises rather than paging from an invented cursor. `recovery.py`
+is now at 100% line coverage.

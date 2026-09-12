@@ -914,3 +914,159 @@ async def test_queued_recovery_threads_the_recovery_event_sink_into_the_resume(
     )
 
     assert seen["events"] is sink
+
+
+class _ScanningStore(_Store):
+    """A store that can tell "nothing due on this page" from "index ended".
+
+    `CanonicalDurableRunStore` is the real one. This is the same contract in
+    miniature, so the wiring that prefers it over `list_due` is exercised at
+    the seam rather than only one layer down.
+    """
+
+    def __init__(self, *records, settled: int = 0) -> None:
+        super().__init__(*records)
+        self.settled = settled
+        self.list_due_calls = 0
+        self.scan_calls = 0
+
+    async def list_due(self, **kwargs):
+        self.list_due_calls += 1
+        return await super().list_due(**kwargs)
+
+    async def scan_due_page(
+        self,
+        *,
+        now: datetime,
+        limit: int = 100,
+        after: tuple[str, str] | None = None,
+        max_inspected: int = 2000,
+    ):
+        del now, max_inspected
+        self.scan_calls += 1
+        rows = sorted(self.records.values(), key=_due_cursor)
+        if after is not None:
+            rows = [row for row in rows if _due_cursor(row) > after]
+        if not rows:
+            return recovery.ScanPage(items=[], resume_after=after, inspected=0, exhausted=True)
+        kept = rows[:limit]
+        return recovery.ScanPage(
+            items=kept,
+            resume_after=_due_cursor(kept[-1]),
+            # The settled rows this page read and dropped: invisible in
+            # `items`, and the whole reason a page needs to report them.
+            inspected=len(kept) + self.settled,
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_store_that_can_page_past_settled_rows_is_asked_to(monkeypatch) -> None:
+    """The due tick prefers `scan_due_page` where the store offers it.
+
+    Without this the fix is unreached in production: `list_due` cannot say
+    whether an empty page means the index ended, so a settled prefix still
+    resets the scan to the top on every tick.
+    """
+    now = datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
+    waiting = _record("waiting", RunStatus.WAITING, now - timedelta(seconds=1))
+    store = _ScanningStore(waiting, settled=100)
+    calls: list[str] = []
+
+    async def _resume(run_id: str, **kwargs) -> None:
+        del kwargs
+        calls.append(run_id)
+
+    monkeypatch.setattr(recovery, "resume_durable_graph", _resume)
+
+    count = await recovery.resume_due_graph_runs(
+        store=store,
+        run_store=object(),
+        node_resolver=lambda _node_id, _graph: None,
+        now=now,
+    )
+
+    assert count == 1
+    assert calls == ["waiting"]
+    assert store.scan_calls >= 1
+    assert store.list_due_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_a_store_without_the_page_scanner_still_uses_the_plain_listing() -> None:
+    """The preference is a capability check, not a requirement: a store that
+    does not filter its own page needs nothing new."""
+    now = datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
+    store = _Store(_record("waiting", RunStatus.WAITING, now - timedelta(seconds=1)))
+
+    assert not isinstance(store, recovery.DuePageScanner)
+
+    fetch = recovery._due_page_fetcher(store, now)
+    page = await fetch(None, 10)
+
+    assert [record.run_id for record in page] == ["waiting"]
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_due_resume_aborts_the_tick_rather_than_being_isolated(
+    monkeypatch,
+) -> None:
+    """Per-candidate isolation must not swallow cancellation: the tick is
+    being torn down, and continuing to the next candidate would resume work
+    nobody is waiting for."""
+    import asyncio
+
+    now = datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
+    first = _record("first", RunStatus.WAITING, now - timedelta(seconds=2))
+    second = _record("second", RunStatus.WAITING, now - timedelta(seconds=1))
+    store = _Store(first, second)
+    attempted: list[str] = []
+
+    async def _cancel(run_id: str, **kwargs) -> None:
+        del kwargs
+        attempted.append(run_id)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(recovery, "resume_durable_graph", _cancel)
+
+    with pytest.raises(asyncio.CancelledError):
+        await recovery.resume_due_graph_runs(
+            store=store,
+            run_store=object(),
+            node_resolver=lambda _node_id, _graph: None,
+            limit=5,
+            now=now,
+        )
+
+    assert attempted == ["first"]
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_queued_resume_aborts_the_tick_too(monkeypatch) -> None:
+    import asyncio
+
+    run = _queued_run()
+    store = _BootstrapStore(recovery._initial_queued_record(run))
+
+    async def _cancel(run_id: str, **kwargs) -> None:
+        del run_id, kwargs
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(recovery, "resume_durable_graph", _cancel)
+
+    with pytest.raises(asyncio.CancelledError):
+        await recovery.recover_queued_graph_runs(
+            store=store,
+            run_store=_RunStore(run),
+            eligible=lambda _candidate: True,
+            node_resolver_factory=lambda _run: lambda _node_id, _graph: None,
+        )
+
+
+def test_a_due_candidate_without_a_resume_at_cannot_be_paged_by() -> None:
+    """The keyset cursor is `(resume_at, run_id)`. A record reaching this with
+    no deadline would page from an invented position and silently skip rows,
+    so the contract fails loudly instead."""
+    record = _record("no-deadline", RunStatus.WAITING, None)
+
+    with pytest.raises(ValueError, match="no resume_at to page by"):
+        recovery._due_cursor_key(record)
