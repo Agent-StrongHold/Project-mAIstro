@@ -5,7 +5,7 @@ Numbered specifications that live in this monorepo. Each file is `SPEC-NNN-<slug
 Frozen **reference** trees that specs ported from (hyperagent bundle, gateway snapshot) were archived under `potential-dead-code/` and have since been **removed** ([SPEC-178](./SPEC-178-legacy-snapshot-retention.md)); provenance lives in git history and the sibling repos.
 
 | ID | Document |
-|---|---|
+| --- | --- |
 | SPEC-175 | [Task progress webhook](SPEC-175-task-progress-webhook.md) |
 | SPEC-176 | [Hive Conductor package](SPEC-176-hive-conductor-package.md) |
 | SPEC-177 | [Hyperagent graph execution](SPEC-177-hyperagent-graph-execution.md) |
@@ -28,4 +28,3 @@ Frozen **reference** trees that specs ported from (hyperagent bundle, gateway sn
 | SPEC-194 | [Ultra Think — tiered parallel diverse generation](SPEC-194-ultra-think-parallel-generation.md) |
 | SPEC-195 | [Operational training data collection](SPEC-195-operational-training-data.md) |
 | SPEC-091226-1341 | [Gates Ran path-scoped execution evidence](SPEC-091226-1341-gates-ran-path-scope-evaluator.md) |
-

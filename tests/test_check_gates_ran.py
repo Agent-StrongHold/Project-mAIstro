@@ -22,6 +22,10 @@ from pathlib import Path
 
 import pytest
 
+# The path-scope regression suite is the behavioral evidence named by
+# ADR-091226-1341 and SPEC-091226-1341.
+pytestmark = pytest.mark.contract("behavioral")
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "check-gates-ran.py"
 

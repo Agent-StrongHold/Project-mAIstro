@@ -15,7 +15,7 @@ Turing / deferred-to-vN) and **`DECISION-BACKLOG.md`** (in-scope but not yet dec
   field is absent on an Accepted/Superseded ADR) · **Last Modified** git last-commit (Central time).
 
 | ID | Ver | Status | Created | Accepted | Last Modified | Summary |
-|----|-----|--------|---------|----------|---------------|---------|
+| ---- | ----- | -------- | --------- | ---------- | --------------- | --------- |
 | ADR-001 | v3 | Superseded | 2026-04-26 | 2026-04-26† | 2026-05-29 17:48 CDT | Original branching strategy (integration as PR base) — superseded by ADR-095. |
 | ADR-002 | v2 | Accepted | 2026-04-26 | 2026-04-26† | 2026-05-29 22:00 CDT | Per-port spec-first workflow: a written spec precedes code for each port. |
 | ADR-003 | v3 | Accepted | 2026-04-26 | 2026-04-26† | 2026-05-29 22:00 CDT | Agent-runtime gap analysis — roadmap mapping archived-branch work to future ADRs. |
