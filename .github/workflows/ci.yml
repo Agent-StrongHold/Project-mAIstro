@@ -303,14 +303,17 @@ jobs:
       # which is why this used `bitnami/minio` — a repackaging that starts the
       # server by default. Bitnami withdrew that tag and the job began failing
       # on `manifest unknown`, so the dependency on someone else's repackaging
-      # is gone: the upstream image, pinned, started here.
+      # is gone: the upstream image, pinned, started here. That did not end the
+      # churn either — Docker Hub stopped serving `minio/minio` anonymously
+      # (`pull access denied` before a single test ran), so the pin now names
+      # quay.io, where MinIO publishes the identical RELEASE tag.
       - name: Start MinIO
         run: |
           docker run -d --name minio \
             -p 9000:9000 \
             -e MINIO_ROOT_USER=maistro \
             -e MINIO_ROOT_PASSWORD=maistro-secret \
-            minio/minio:RELEASE.2025-04-22T22-12-26Z server /data
+            quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z server /data
           for _ in $(seq 1 40); do
             if curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null; then
               echo "minio ready"
