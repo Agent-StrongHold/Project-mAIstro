@@ -286,7 +286,16 @@ class PythonExecutionRuntime:
         work_task: asyncio.Task[Any] = asyncio.create_task(invoke())
         self._work_tasks[execution_id] = work_task
         try:
-            return await work_task
+            # Shielded, not awaited bare: CPython's Task.cancel() pre-cancels
+            # the future the victim is waiting on, so a bare await would
+            # propagate the outer cancellation INTO the child and settle it
+            # before this frame's handler runs -- leaving the explicit fence
+            # below unreachable, and losing an outer cancel entirely when the
+            # child swallows it and returns. The shield keeps the child
+            # mid-flight when the CancelledError lands here, so this frame
+            # owns the child's cancellation. External contract is unchanged:
+            # cancel the child, await its settlement, then re-raise.
+            return await asyncio.shield(work_task)
         except asyncio.CancelledError:
             if not work_task.done():
                 work_task.cancel()
