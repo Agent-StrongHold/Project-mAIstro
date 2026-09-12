@@ -86,7 +86,9 @@ class SqliteWorkspaceStore:
     def __init__(self, conn: aiosqlite.Connection, *, project_store: ProjectScopeStore) -> None:
         self._conn = conn
         self.project_store: ProjectScopeStore = project_store
-        self._write_lock = asyncio.Lock()
+        # Project provisioning and Workspace rows share one SQLite transaction.
+        # Reuse the scope store's lock when it exposes the atomic transaction.
+        self._write_lock = getattr(project_store, "write_lock", asyncio.Lock())
 
     async def ensure_schema(self) -> None:
         """Create the Workspace tables and their indexes."""
@@ -117,30 +119,21 @@ class SqliteWorkspaceStore:
             role=WorkspaceRole.OWNER,
             added_at=workspace.created_at,
         )
-        await self._conn.execute(
-            """INSERT INTO canonical_workspaces
-                   (workspace_id, name, created_at, updated_at, payload)
-               VALUES (?, ?, ?, ?, ?)""",
-            (
-                workspace.workspace_id,
-                workspace.name,
-                _iso(workspace.created_at),
-                _iso(workspace.updated_at),
-                workspace.model_dump_json(),
-            ),
-        )
-        await self._write_membership(owner)
-        await self._conn.commit()
-
-        try:
-            await self.project_store.create_root(workspace.workspace_id)
-        except BaseException:
+        async with self.project_store.workspace_transaction():
             await self._conn.execute(
-                "DELETE FROM canonical_workspaces WHERE workspace_id = ?",
-                (workspace.workspace_id,),
+                """INSERT INTO canonical_workspaces
+                       (workspace_id, name, created_at, updated_at, payload)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (
+                    workspace.workspace_id,
+                    workspace.name,
+                    _iso(workspace.created_at),
+                    _iso(workspace.updated_at),
+                    workspace.model_dump_json(),
+                ),
             )
-            await self._conn.commit()
-            raise
+            await self._write_membership(owner)
+            await self.project_store.create_root(workspace.workspace_id)
         return workspace
 
     async def get(self, workspace_id: str) -> Workspace | None:

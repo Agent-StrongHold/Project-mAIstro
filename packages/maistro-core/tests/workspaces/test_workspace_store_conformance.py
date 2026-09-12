@@ -26,6 +26,7 @@ from uuid import uuid4
 
 import pytest
 
+from maistro.projects.scope import ProjectNotFound
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.testing.postgres import postgres_dsn
 from maistro.workspaces.model import (
@@ -483,16 +484,14 @@ class TestAnAbsentWorkspaceIsRefusedTheSameWayEverywhere:
 
 class TestARootProjectFailureLeavesNoWorkspaceBehind:
     async def test_create_rolls_back_when_the_root_project_cannot_be_made(self, backend) -> None:
-        """The Root Project is another store's write and cannot join the
-        Workspace's transaction, so `create` compensates. A Workspace without
-        one is a Workspace whose Runs can never be filed, which is worse than
-        no Workspace at all."""
+        """Workspace and Root Project provisioning fail as one operation."""
         store = await backend.store()
         original = store.project_store.create_root
         seen: list[str] = []
 
         async def refuse(workspace_id: str):
             seen.append(workspace_id)
+            await original(workspace_id)
             raise RuntimeError("scope store is down")
 
         store.project_store.create_root = refuse  # type: ignore[method-assign]
@@ -505,3 +504,5 @@ class TestARootProjectFailureLeavesNoWorkspaceBehind:
         assert len(seen) == 1
         second = await backend.store()
         assert await second.get(seen[0]) is None
+        with pytest.raises(ProjectNotFound):
+            await second.project_store.root_for_workspace(seen[0])

@@ -109,9 +109,13 @@ class InMemoryWorkspaceStore:
         self._memberships[(workspace.workspace_id, creator_user_id)] = owner
         try:
             await self.project_store.create_root(workspace.workspace_id)
-        except Exception:
+        except BaseException:
             del self._workspaces[workspace.workspace_id]
             del self._memberships[(workspace.workspace_id, creator_user_id)]
+            # A failing scope backend may have persisted the Root before
+            # reporting the failure; remove it so the operation is atomic in
+            # the reference store as well as in the durable transactions.
+            await self.project_store.purge_workspace(workspace.workspace_id)
             raise
         return workspace.model_copy(deep=True)
 

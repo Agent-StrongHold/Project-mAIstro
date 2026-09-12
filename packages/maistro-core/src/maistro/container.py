@@ -37,7 +37,6 @@ from maistro.memory.learnings.extractor import ToolCorrectionExtractor
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.outcomes import InMemoryOutcomeStore
 from maistro.projects.scope_store import ProjectScopeStore
-from maistro.projects.store import InMemoryProjectStore
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
@@ -105,7 +104,6 @@ if TYPE_CHECKING:
     from maistro.observability.tiers import PIIDetector
     from maistro.orchestrator.hierarchy import HarnessRegistry, HierarchicalOrchestrator
     from maistro.personas.golden import GoldenRecordStore
-    from maistro.projects.store import ProjectStore
     from maistro.protocols.embeddings import EmbeddingClient
     from maistro.protocols.memory import (
         ContextAssemblyPolicy,
@@ -165,7 +163,8 @@ class Container:
     prompt_manager: PromptManager = None  # type: ignore[assignment]
     capabilities: CapabilityRegistry = None  # type: ignore[assignment]  # wired in create_container
     episodic_store: EpisodicStore = None  # type: ignore[assignment]  # wired in create_container
-    project_store: ProjectStore = None  # type: ignore[assignment]  # wired in create_container
+    # Compatibility name retained for callers; it is the canonical scope store.
+    project_store: ProjectScopeStore = None  # type: ignore[assignment]  # wired in create_container
     # Canonical execution spine (#41): the Project scope tree work is filed in,
     # the Run store that holds its execution identity, and the seam that turns a
     # directly-submitted task into a Run over a one-node Graph.
@@ -1317,7 +1316,6 @@ async def create_container(
     episodic_store = await _wire_episodic_store(
         database_url=config.database_url, pg_pool=pg_pool, db_pool=db_pool
     )
-    project_store = InMemoryProjectStore()
     archive_store = build_archive_store(config.archive_url)
     # Built here rather than below, because the admission seam routes on it: a
     # separately-constructed default registry would disagree with the one the
@@ -1361,7 +1359,7 @@ async def create_container(
     context_assembly_policy = DefaultContextAssemblyPolicy(
         episodic_store=episodic_store,
         outcome_store=outcome_store,
-        project_store=project_store,
+        project_store=project_scope_store,
         # The same client #188 wires for durable memory similarity. Absent, the
         # hybrid score is its lexical term alone rather than a second formula.
         embedding_client=embeddings,
@@ -1561,7 +1559,7 @@ async def create_container(
         intent_registry=intent_registry,
         capabilities=capabilities,
         episodic_store=episodic_store,
-        project_store=project_store,
+        project_store=project_scope_store,
         project_scope_store=project_scope_store,
         workspace_store=workspace_store,
         run_store=run_store,
