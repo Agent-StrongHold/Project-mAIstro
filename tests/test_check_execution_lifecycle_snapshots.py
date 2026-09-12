@@ -74,10 +74,7 @@ def test_a_later_typing_import_does_not_reinterpret_an_earlier_custom_generic(ga
 
 @pytest.mark.parametrize("shadow", ["t = object", "import custom as t", "class t: pass"])
 def test_qualified_typing_names_obey_their_module_binding(gate, shadow) -> None:
-    source = (
-        f"import typing as t\n{shadow}\n"
-        'RunStatus = t.Literal["queued", "running", "failed"]\n'
-    )
+    source = f'import typing as t\n{shadow}\nRunStatus = t.Literal["queued", "running", "failed"]\n'
     assert gate.work_state_literals(source, "pkg.worker") == {}
 
 
@@ -174,10 +171,13 @@ def test_stage_names_share_the_existing_vocabulary_filter(gate, shape) -> None:
     assert gate.work_state_literals("from typing import Literal\n" + declaration, "pkg.worker") == {
         f"pkg.worker::{name}": STATES
     }
-    assert gate.work_state_literals(
-        'from typing import Literal\nExecutionStage = Literal["seed", "flower", "fruit"]',
-        "pkg.garden",
-    ) == {}
+    assert (
+        gate.work_state_literals(
+            'from typing import Literal\nExecutionStage = Literal["seed", "flower", "fruit"]',
+            "pkg.garden",
+        )
+        == {}
+    )
 
 
 @pytest.mark.parametrize(
@@ -200,7 +200,9 @@ class Worker:
     type RunStatus = Values
     Values = {LITERAL}
 """
-    assert gate.work_state_literals(source, "pkg.worker") == {"pkg.worker::Worker.RunStatus": STATES}
+    assert gate.work_state_literals(source, "pkg.worker") == {
+        "pkg.worker::Worker.RunStatus": STATES
+    }
 
 
 def test_a_transitive_snapshot_cannot_self_authorize_at_the_trusted_base(
@@ -263,6 +265,8 @@ def test_a_transitive_snapshot_cannot_self_authorize_at_the_trusted_base(
         ),
     ],
 )
-def test_copied_typing_forms_keep_the_original_import(gate, imports, copy, expression, shadow) -> None:
+def test_copied_typing_forms_keep_the_original_import(
+    gate, imports, copy, expression, shadow
+) -> None:
     source = f"{imports}\n{copy}\n{shadow}\nRunStatus = {expression}\n"
     assert gate.work_state_literals(source, "pkg.worker") == {"pkg.worker::RunStatus": STATES}
