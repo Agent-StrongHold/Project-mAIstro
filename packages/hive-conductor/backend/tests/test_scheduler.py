@@ -539,6 +539,19 @@ class _RecordingStore:
         return self.saved.get(schedule_id)
 
     async def put(self, schedule: Any) -> Any:
+        # The protocol's contract (#1199): an existing row keeps the cursors
+        # `record_fire` wrote, and the row as stored is what comes back.
+        stored = self.saved.get(schedule.schedule_id)
+        if stored is not None:
+            schedule = schedule.model_copy(
+                update={
+                    "last_fired_at": stored.last_fired_at,
+                    "last_run_id": stored.last_run_id,
+                    "runs_so_far": stored.runs_so_far,
+                    "next_due_at": stored.next_due_at,
+                    "created_at": stored.created_at,
+                }
+            )
         self.saved[schedule.schedule_id] = schedule
         return schedule
 
@@ -1156,3 +1169,37 @@ def test_an_explicit_null_leaves_the_field_alone(admin_client: Any) -> None:
         assert updated.json()["max_runs"] == 5
     finally:
         admin_client.delete(f"/v1/schedules/{sid}")
+
+
+def test_a_fire_recorded_after_the_row_was_read_survives_the_definition_refresh() -> None:
+    """`_definition_for` refreshes the canonical row from the in-memory one on
+    every tick. The cursors it returns and leaves on disk are the store's,
+    so a `record_fire` that landed since the row was read is not written
+    back over by the stale copy (Codex, #1199)."""
+    from services.scheduler import _ScheduleRunner
+
+    from maistro.scheduling import InMemoryScheduleStore
+
+    store = InMemoryScheduleStore()
+    runner = _ScheduleRunner()
+    stub = _schedule_stub("s-refresh", "tpl", cron="0 * * * *")
+    first = asyncio.run(runner._definition_for("s-refresh", stub, store=store))
+    assert first is not None and first.runs_so_far == 0
+
+    noon = datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
+    asyncio.run(
+        store.record_fire(
+            "s-refresh", fired_at=noon, run_id="run-1", next_due_at=noon + timedelta(hours=1)
+        )
+    )
+
+    stub.name = "renamed"
+    refreshed = asyncio.run(runner._definition_for("s-refresh", stub, store=store))
+    assert refreshed is not None
+    assert refreshed.name == "renamed", "the definition is the row's"
+    assert refreshed.runs_so_far == 1 and refreshed.last_run_id == "run-1", (
+        "the cursor is the store's"
+    )
+    recorded = asyncio.run(store.get("s-refresh"))
+    assert recorded is not None and recorded.runs_so_far == 1
+    assert recorded.next_due_at == noon + timedelta(hours=1)

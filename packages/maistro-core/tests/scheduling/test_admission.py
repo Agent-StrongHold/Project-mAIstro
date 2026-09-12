@@ -33,6 +33,7 @@ from maistro.runs.sources import (
 )
 from maistro.runs.store import InMemoryRunStore
 from maistro.scheduling.admission import ScheduleRunAdmitter
+from maistro.scheduling.engine import SkipReason
 from maistro.scheduling.model import OverlapPolicy, Schedule
 from maistro.scheduling.store import InMemoryScheduleStore
 
@@ -200,9 +201,9 @@ class TestTheCursor:
         assert len(again.run_ids) == 1
 
     async def test_nothing_due_records_no_fire(self, harness) -> None:
-        """`next_due_at` still moved and the caller wants it — but writing it
-        through `record_fire` would stamp `last_fired_at` for a fire that did
-        not happen."""
+        """`next_due_at` still moved and the caller wants it — and recording
+        it must not stamp `last_fired_at` for a fire that did not happen
+        (#1199 writes the due cursor alone)."""
         admitter, _runs, _templates, schedules, project_id = harness
         schedule = await _schedule(schedules, project_id, last_fired_at=NOON)
         before = await schedules.get(schedule.schedule_id)
@@ -214,6 +215,149 @@ class TestTheCursor:
         assert result.next_due_at is not None
         assert after is not None and before is not None
         assert after.last_fired_at == before.last_fired_at
+        assert after.runs_so_far == before.runs_so_far
+        assert after.next_due_at == result.next_due_at
+
+
+class TestTheDueCursorIsRecordedWithoutAFire:
+    """The first defect #1199 names in the canonical store.
+
+    `ScheduleStore.due()` selects on `next_due_at`, and a missing cursor is
+    due by contract (an unknown cursor must be evaluated). An evaluation that
+    fired nothing computed the next occurrence and returned it to the caller
+    without persisting it — so a schedule whose first occurrence is next week
+    was handed to the admitter on every tick until then, and a tick reading
+    `due()` could never tell it apart from real work.
+    """
+
+    async def test_a_future_schedule_stops_being_due_after_its_first_evaluation(
+        self, harness
+    ) -> None:
+        admitter, _runs, _templates, schedules, project_id = harness
+        # Created just after the hour, never fired: its first occurrence is
+        # 13:00, and the first tick to look at it comes at 12:00:30.
+        tick = NOON + timedelta(seconds=30)
+        schedule = await _schedule(
+            schedules,
+            project_id,
+            created_at=NOON + timedelta(seconds=1),
+            last_fired_at=None,
+            next_due_at=None,
+        )
+        assert [s.schedule_id for s in await schedules.due(now=tick)] == [schedule.schedule_id]
+
+        result = await admitter.admit_due(schedule, now=tick)
+
+        assert result.run_ids == () and result.skipped == ()
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        assert stored.next_due_at == NOON + timedelta(hours=1)
+        assert stored.last_fired_at is None
+        assert stored.runs_so_far == 0
+        assert stored.last_run_id is None
+        # Not due again until the occurrence it recorded.
+        assert await schedules.due(now=NOON + timedelta(minutes=59)) == []
+        assert [s.schedule_id for s in await schedules.due(now=NOON + timedelta(hours=1))] == [
+            schedule.schedule_id
+        ]
+
+    async def test_the_recorded_cursor_is_where_the_next_evaluation_fires(self, harness) -> None:
+        """Recording the due cursor changes when the schedule is *looked at*,
+        never what it does: the occurrence still fires, once, on time."""
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(
+            schedules,
+            project_id,
+            created_at=NOON + timedelta(seconds=1),
+            last_fired_at=None,
+            next_due_at=None,
+        )
+        await admitter.admit_due(schedule, now=NOON + timedelta(seconds=30))
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None and stored.next_due_at is not None
+
+        later = await admitter.admit_due(stored, now=stored.next_due_at)
+
+        assert len(later.run_ids) == 1
+        run = await runs.get_run(later.run_ids[0])
+        assert run is not None
+        assert run.provenance[SCHEDULED_FOR_KEY] == (NOON + timedelta(hours=1)).isoformat()
+
+    async def test_an_unchanged_cursor_is_not_rewritten_every_tick(self, harness) -> None:
+        """Idle schedules are most schedules; an evaluation that learned
+        nothing new must not cost a write."""
+        admitter, _runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(
+            schedules, project_id, last_fired_at=NOON, next_due_at=NOON + timedelta(hours=1)
+        )
+        before = await schedules.get(schedule.schedule_id)
+        assert before is not None
+
+        await admitter.admit_due(schedule, now=NOON + timedelta(minutes=1))
+
+        after = await schedules.get(schedule.schedule_id)
+        assert after is not None
+        assert after.updated_at == before.updated_at
+
+    async def test_a_buffered_occurrence_keeps_the_schedule_due(self, harness) -> None:
+        """BUFFER_ONE holds an occurrence back while a Run is active, to run it
+        once that Run finishes. Advancing the due cursor past it would hide
+        the schedule from `due()` until the occurrence *after* the one it
+        still owes — a deferral of one whole period, not "afterwards"."""
+        admitter, _runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(
+            schedules,
+            project_id,
+            overlap_policy=OverlapPolicy.BUFFER_ONE,
+            last_fired_at=NOON - timedelta(hours=1),
+            next_due_at=NOON,
+        )
+
+        result = await admitter.admit_due(schedule, now=NOON, active_run=True)
+
+        assert [skip.reason for skip in result.skipped] == [SkipReason.BUFFERED]
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        assert stored.next_due_at == NOON
+        assert stored.last_fired_at == NOON - timedelta(hours=1)
+        assert [s.schedule_id for s in await schedules.due(now=NOON)] == [schedule.schedule_id]
+
+    async def test_a_fire_beside_a_buffered_occurrence_keeps_the_schedule_due(
+        self, harness
+    ) -> None:
+        """The same rule on the firing path: one occurrence ran and the next
+        is held, so the schedule is still owed work and stays due."""
+        admitter, _runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(
+            schedules,
+            project_id,
+            overlap_policy=OverlapPolicy.BUFFER_ONE,
+            # Two occurrences owed (11:00 and 12:00), both inside the window.
+            catchup_window_seconds=4 * 3600,
+            last_fired_at=NOON - timedelta(hours=2),
+            next_due_at=NOON - timedelta(hours=1),
+        )
+
+        result = await admitter.admit_due(schedule, now=NOON)
+
+        assert len(result.run_ids) == 1
+        assert [skip.reason for skip in result.skipped] == [SkipReason.BUFFERED]
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        assert stored.last_fired_at == NOON - timedelta(hours=1)
+        assert stored.next_due_at == NOON - timedelta(hours=1)
+        assert [s.schedule_id for s in await schedules.due(now=NOON)] == [schedule.schedule_id]
+
+    async def test_a_disabled_schedule_records_nothing(self, harness) -> None:
+        admitter, _runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, enabled=False, next_due_at=None)
+        before = await schedules.get(schedule.schedule_id)
+        assert before is not None
+
+        await admitter.admit_due(schedule, now=NOON)
+
+        after = await schedules.get(schedule.schedule_id)
+        assert after is not None and after.updated_at == before.updated_at
 
 
 class TestBoundedRecurrence:
