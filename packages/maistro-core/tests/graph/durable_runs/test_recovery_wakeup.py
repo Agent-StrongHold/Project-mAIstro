@@ -248,8 +248,100 @@ async def test_factory_failure_terminalizes_each_candidate_for_later_recovery() 
         assert failed is not None
         assert failed.run.status is RunStatus.FAILED
         assert failed.run.error == (
-            f"PhysicalExecutionError: resolver unavailable for {run.run_id}"
+            "PhysicalExecutionError: node resolver could not be built for Run "
+            f"{run.run_id!r}: RuntimeError"
         )
+
+
+@pytest.mark.asyncio
+async def test_factory_failure_text_never_reaches_the_failed_run() -> None:
+    """The persisted failure is the stable message, not the factory's own text."""
+    now = datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
+    run = _queued_run("resolver-leaky").model_copy(update={"status": RunStatus.WAITING})
+    store = _DueInMemoryStore()
+    await store.create(
+        DurableRunRecord(
+            run=run,
+            graph_state=GraphExecutionState(
+                run_id=run.run_id,
+                active_node_ids=("node-1",),
+                blackboard_snapshot={"task_objective": "Recovery graph"},
+            ),
+            resume_at=now - timedelta(seconds=1),
+            version=1,
+        )
+    )
+
+    def _leaky_factory(_run: Run):
+        raise ConnectionError("provider refused {'api_key': 'sk-live-abcdef123'}")
+
+    assert (
+        await recovery.resume_due_graph_runs(
+            store=store,
+            run_store=None,
+            node_resolver_factory=_leaky_factory,
+            now=now,
+        )
+        == 1
+    )
+    failed = await store.get(run.run_id)
+    assert failed is not None
+    assert failed.run.status is RunStatus.FAILED
+    assert failed.run.error == (
+        "PhysicalExecutionError: node resolver could not be built for Run "
+        "'resolver-leaky': ConnectionError"
+    )
+    assert "sk-live" not in failed.run.error
+    assert "provider refused" not in failed.run.error
+
+
+def test_lazy_resolver_keeps_the_factory_error_as_the_cause() -> None:
+    """Operators can still see the underlying failure in-process."""
+    run = _queued_run("resolver-cause")
+    original = ValueError("no provider for tenant")
+
+    def _factory(_run: Run):
+        raise original
+
+    resolve = recovery._lazy_resolver(run, _factory)
+    with pytest.raises(recovery.NodeResolverUnavailable) as caught:
+        resolve("node-1", object())
+    assert caught.value.__cause__ is original
+    assert str(caught.value) == (
+        "node resolver could not be built for Run 'resolver-cause': ValueError"
+    )
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("resolver exploded password=not-a-secret", "password=<redacted>"),
+        ("bad config {'api_key': 'sk-live-abcdef123'}", "bad config {api_key=<redacted>}"),
+        (
+            'header {"Authorization": "Bearer sk-live-abcdef123"} rejected',
+            "header {Authorization=<redacted>} rejected",
+        ),
+        ("Authorization: Bearer eyJhbGciOi.xyz, retry later", "Authorization=<redacted>, retry"),
+        ("Bearer abc.def.ghi rejected", "Bearer <redacted> rejected"),
+        ("provider rejected key sk-proj-ABCdef123456 for tenant", "key <redacted-key> for"),
+        ("token: ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345 expired", "token=<redacted> expired"),
+        ("AWS AKIAIOSFODNN7EXAMPLE denied", "AWS <redacted-key> denied"),
+    ],
+)
+def test_sanitized_cause_redacts_quoted_header_and_provider_credentials(
+    message: str, expected: str
+) -> None:
+    sanitized = recovery._sanitized_cause(RuntimeError(message))
+    assert sanitized.startswith("RuntimeError: ")
+    assert expected in sanitized
+    for leak in ("not-a-secret", "sk-live", "sk-proj", "eyJhbGciOi", "abc.def.ghi", "ghp_", "AKIA"):
+        assert leak not in sanitized
+
+
+def test_sanitized_cause_leaves_plain_text_alone() -> None:
+    assert recovery._sanitized_cause(RuntimeError("plain failure, no credentials")) == (
+        "RuntimeError: plain failure, no credentials"
+    )
 
 
 @pytest.mark.asyncio
