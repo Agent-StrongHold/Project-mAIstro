@@ -13,6 +13,7 @@ import asyncio
 import pathlib
 import sys
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any, ClassVar
 
 import pytest
@@ -1203,3 +1204,124 @@ def test_a_fire_recorded_after_the_row_was_read_survives_the_definition_refresh(
     recorded = asyncio.run(store.get("s-refresh"))
     assert recorded is not None and recorded.runs_so_far == 1
     assert recorded.next_due_at == noon + timedelta(hours=1)
+
+
+class _QuietScheduleStore:
+    """Enough store for the reporting block: the cursor re-read finds nothing."""
+
+    async def get(self, _sid: str) -> None:
+        return None
+
+
+async def test_a_live_run_the_cursor_did_not_name_is_reported_to_operators(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """#1059's recovered winner has to be visible.
+
+    When a ticker dies after creating a Run but before recording it, the next
+    evaluation finds that Run in the store rather than through the cursor. The
+    admitter reports it as `active_run_id`; this is the only place an operator
+    learns it exists, and under CANCEL_OTHER it names the Run that was asked
+    to be cancelled. Silence here means a live Run nobody can account for.
+    """
+    import logging
+
+    import services.scheduler as sched
+
+    from maistro.scheduling.admission import ScheduleAdmission
+
+    runner = sched._ScheduleRunner()
+    definition = object()
+    admission = ScheduleAdmission(active_run_id="run-recovered", cancel_active_run=True)
+
+    async def _scope(_schedule, _container):
+        return None
+
+    async def _definition_for(_sid, _schedule, *, store, scope):
+        del store, scope
+        return definition
+
+    async def _prime(_definition, _container):
+        return None
+
+    async def _active_run(_definition, _container):
+        return None
+
+    class _Admitter:
+        async def admit_due(self, _definition, *, now, active_run):
+            del now, active_run
+            return admission
+
+    monkeypatch.setattr(runner, "_canonical_scope", _scope)
+    monkeypatch.setattr(runner, "_definition_for", _definition_for)
+    monkeypatch.setattr(runner, "_prime_template", _prime)
+    monkeypatch.setattr(runner, "_canonical_active_run", _active_run)
+
+    audited: list[Any] = []
+
+    async def _audit(_sid, _schedule, result, _container):
+        audited.append(result)
+
+    monkeypatch.setattr(runner, "_audit_canonical_admission", _audit)
+
+    with caplog.at_level(logging.INFO, logger="services.scheduler"):
+        await runner._evaluate_canonical(
+            "sched-1",
+            object(),
+            now=datetime(2026, 9, 12, 12, 0, tzinfo=UTC),
+            container=SimpleNamespace(schedule_store=_QuietScheduleStore()),
+            admitter=_Admitter(),
+        )
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(
+        "live Run run-recovered the cursor did not name" in message
+        and "cancel requested: True" in message
+        for message in messages
+    ), messages
+    assert audited == [admission]
+
+
+async def test_an_evaluation_with_no_recovered_run_says_nothing_about_one(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The ordinary tick must stay quiet, or the line above means nothing."""
+    import logging
+
+    import services.scheduler as sched
+
+    from maistro.scheduling.admission import ScheduleAdmission
+
+    runner = sched._ScheduleRunner()
+
+    async def _scope(_schedule, _container):
+        return None
+
+    async def _definition_for(_sid, _schedule, *, store, scope):
+        del store, scope
+        return object()
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    class _Admitter:
+        async def admit_due(self, _definition, *, now, active_run):
+            del now, active_run
+            return ScheduleAdmission()
+
+    monkeypatch.setattr(runner, "_canonical_scope", _scope)
+    monkeypatch.setattr(runner, "_definition_for", _definition_for)
+    monkeypatch.setattr(runner, "_prime_template", _noop)
+    monkeypatch.setattr(runner, "_canonical_active_run", _noop)
+    monkeypatch.setattr(runner, "_audit_canonical_admission", _noop)
+
+    with caplog.at_level(logging.INFO, logger="services.scheduler"):
+        await runner._evaluate_canonical(
+            "sched-1",
+            object(),
+            now=datetime(2026, 9, 12, 12, 0, tzinfo=UTC),
+            container=SimpleNamespace(schedule_store=_QuietScheduleStore()),
+            admitter=_Admitter(),
+        )
+
+    assert not any("cursor did not name" in record.getMessage() for record in caplog.records)

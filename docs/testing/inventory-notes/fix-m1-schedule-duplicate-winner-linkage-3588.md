@@ -1,5 +1,6 @@
 ---
 inventory-delta:
+  packages/hive-conductor/backend/tests: +2
   packages/maistro-core/tests: +52
 ---
 # fix-m1-schedule-duplicate-winner-linkage-3588
@@ -71,3 +72,16 @@ once and exhaust `max_runs=1`; `put` keeps the cursors a concurrent
 archived winner's tombstone keeps its promoted claim columns, refuses a
 second Run and still resolves by occurrence. All five skip without
 `MAISTRO_TEST_PG_DSN`.
+
+Two more (+2) in `packages/hive-conductor/backend/tests/test_scheduler.py`,
+added because the diff-coverage floor found the operator-facing half of this
+change untested. `_evaluate_canonical` logs the live Run an evaluation found
+in the store rather than through the cursor -- #1059's recovered winner, whose
+ticker died after creating it -- and that log line is the only place an
+operator learns the Run exists; under CANCEL_OTHER it also names the Run that
+was asked to be cancelled. One case drives an evaluation whose admission
+carries `active_run_id` and asserts both the run id and the cancel flag reach
+the log, and hands the admission on to the audit surface unchanged. The other
+drives an ordinary evaluation and asserts it says nothing about a recovered
+Run, because a line that is always emitted carries no information.
+
