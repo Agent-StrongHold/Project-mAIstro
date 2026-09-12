@@ -212,7 +212,7 @@ jobs:
         # runtime has patched versions before those exact duplicate records are
         # filtered. All other vendor-SBOM, filesystem, OS and binary findings
         # remain blocking.
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           version: v0.73.0
           image-ref: hive-conductor:pr-${{ env.CANDIDATE_TAG }}
@@ -227,7 +227,7 @@ jobs:
       # hive-conductor image is trivy/grype scanned)". It is a PUBLISHED image
       # -- release.yml pushes it -- so it is now gated like the rest (#346).
       - name: Trivy scan maistro-engine (HIGH/CRITICAL only)
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           version: v0.73.0
           image-ref: maistro-engine:pr-${{ env.CANDIDATE_TAG }}
@@ -237,7 +237,7 @@ jobs:
           trivyignores: .trivyignore.yaml
 
       - name: Trivy scan maistro-engine-research (HIGH/CRITICAL only)
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           version: v0.73.0
           image-ref: maistro-engine-research:pr-${{ env.CANDIDATE_TAG }}
@@ -247,7 +247,7 @@ jobs:
           trivyignores: .trivyignore.yaml
 
       - name: Trivy scan maistro-rsi-runner (HIGH/CRITICAL only)
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           version: v0.73.0
           image-ref: maistro-rsi-runner:pr-${{ env.CANDIDATE_TAG }}
