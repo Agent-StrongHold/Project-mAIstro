@@ -152,7 +152,7 @@ jobs:
           uv run coverage run --append --branch --source=packages/maistro-bootstrap/src/maistro_bootstrap \
             -m pytest packages/maistro-bootstrap/tests --timeout=30 -q
       - name: upload coverage data
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-unit
           # `.coverage` is a dotfile and upload-artifact@v4 skips hidden files
@@ -244,7 +244,7 @@ jobs:
           uv run coverage run --branch --source=packages/maistro-core/src/maistro \
             -m pytest packages/maistro-core/tests/archive -v --tb=short
       - name: upload coverage data
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-archive
           include-hidden-files: true
@@ -360,7 +360,7 @@ jobs:
             --source=packages/maistro-canvas/src/maistro_canvas \
             -m pytest packages/maistro-canvas/tests --timeout=30 -q
       - name: upload coverage data
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-postgres
           include-hidden-files: true

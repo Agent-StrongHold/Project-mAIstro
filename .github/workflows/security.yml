@@ -285,7 +285,7 @@ jobs:
             -o cyclonedx-json > sbom-maistro-rsi-runner.json
 
       - name: Upload SBOMs as artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sboms-${{ env.CANDIDATE_TAG }}
           path: sbom-*.json
