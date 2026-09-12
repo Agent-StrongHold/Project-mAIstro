@@ -15,11 +15,9 @@ trigger billed calls.
 from __future__ import annotations
 
 import logging
-import os
 from datetime import UTC, datetime
 from typing import Any
 
-import httpx
 from fastapi import APIRouter, HTTPException
 
 router = APIRouter(tags=["providers"])
@@ -105,30 +103,6 @@ def _vault() -> Any:
     return Vault(vault_path=vault_path, identity_path=identity_path)
 
 
-def _litellm_admin_base() -> str:
-    base = os.environ.get("LITELLM_PROXY_URL")
-    if not base:
-        from config import get_settings
-
-        api_base = os.environ.get("LITELLM_API_BASE") or (get_settings().litellm_api_base or "")
-        base = api_base.removesuffix("/v1")
-    if not base:
-        raise HTTPException(status_code=503, detail="LiteLLM gateway is not configured")
-    return base.rstrip("/")
-
-
-def _litellm_master_key() -> str:
-    key = os.environ.get("LITELLM_PROXY_KEY") or os.environ.get("LITELLM_API_KEY")
-    if not key:
-        from config import get_settings
-
-        secret = get_settings().litellm_api_key
-        key = secret.get_secret_value() if secret is not None else ""
-    if not key:
-        raise HTTPException(status_code=503, detail="LiteLLM master key is not configured")
-    return key
-
-
 def _kv() -> Any | None:
     import stores
 
@@ -193,7 +167,7 @@ def put_provider_key(name: str, body: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.post("/{name}/activate")
-def activate_provider(name: str) -> dict[str, Any]:
+async def activate_provider(name: str) -> dict[str, Any]:
     """Register the provider's models with LiteLLM and run a one-token test
     completion. Success is the install journey's first model call."""
     p = _provider_or_404(name)
@@ -209,56 +183,109 @@ def activate_provider(name: str) -> dict[str, Any]:
             detail=f"No key stored for '{name}' — PUT /v1/providers/{name}/key first.",
         )
 
-    admin_base = _litellm_admin_base()
-    master_key = _litellm_master_key()
-    headers = {"Authorization": f"Bearer {master_key}"}
+    from config import get_settings
+    from services.governed_model import (
+        ProviderActivationError,
+        ProviderAuthorizationError,
+        ProviderHealthError,
+        _runtime,
+        control_plane_binding,
+        ensure_binding,
+        mint_operation_identity,
+        register_and_health_check,
+        resolve_binding,
+        settle_operation_identity,
+    )
 
-    def _register_and_test(api_key: str) -> dict[str, Any]:
-        with httpx.Client(timeout=30.0) as client:
-            for model in p["models"]:
-                r = client.post(
-                    f"{admin_base}/model/new",
-                    headers=headers,
-                    json={
-                        "model_name": model,
-                        "litellm_params": {"model": model, "api_key": api_key},
-                    },
-                )
-                if r.status_code >= 400:
-                    raise HTTPException(
-                        status_code=502,
-                        detail=f"LiteLLM registration failed for {model}: HTTP {r.status_code}",
-                    )
-            r = client.post(
-                f"{admin_base}/v1/chat/completions",
-                headers=headers,
-                json={
-                    "model": p["test_model"],
-                    "max_tokens": 1,
-                    "messages": [{"role": "user", "content": "ping"}],
-                },
-            )
-        if r.status_code >= 400:
-            raise HTTPException(
-                status_code=502,
-                detail=(
-                    f"Test completion failed on {p['test_model']}: HTTP {r.status_code}. "
-                    "Check that the API key is valid and has quota."
-                ),
-            )
-        data = r.json()
-        return {"model": p["test_model"], "usage": data.get("usage", {})}
+    from maistro.capabilities.binding_store import BindingResolutionError
 
     try:
-        result = vault.use(p["env_key"], _register_and_test)
+        runtime = _runtime()
+        settings = get_settings()
+        workspace_id = settings.hive_default_workspace_id
+        if runtime.project_scope_store is None:
+            raise RuntimeError("canonical project scope is unavailable")
+        root_project = await runtime.project_scope_store.root_for_workspace(workspace_id)
+        binding = control_plane_binding(
+            binding_id=f"provider-activation:{name}",
+            workspace_id=workspace_id,
+            project_id=root_project.project_id,
+            provider_name=p["test_model"],
+        )
+        binding = await ensure_binding(runtime, binding)
+        binding = await resolve_binding(runtime, binding)
+        # Each activation is its own canonical operation: a fresh child Run,
+        # NodeRun and Attempt correlate the health Invocation to real records
+        # (#1088), and a re-activation genuinely re-tests instead of replaying
+        # a previous activation's completed effect.
+        identity = await mint_operation_identity(
+            runtime,
+            operation=f"provider-activation:{name}",
+            workspace_id=workspace_id,
+            project_id=root_project.project_id,
+            provenance={"activation_source": "routes.providers", "provider": name},
+        )
+    except (BindingResolutionError, LookupError) as exc:
+        raise HTTPException(
+            status_code=403, detail=f"Provider health authorization failed: {exc}"
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    try:
+        # The vault owns the secret lifetime. The callback returns only the
+        # operation result, never the credential; Invocation stores request and
+        # usage metadata but not this transient registration key.
+        result = vault.use(
+            p["env_key"],
+            lambda api_key: register_and_health_check(
+                runtime=runtime,
+                binding=binding,
+                run_id=identity.run_id,
+                node_run_id=identity.node_run_id,
+                attempt_id=identity.attempt_id,
+                provider_name=p["test_model"],
+                models=tuple(p["models"]),
+                api_key=api_key,
+            ),
+        )
+        result = await result
     except SecretMissingError:
+        await settle_operation_identity(
+            runtime, identity, outcome="cancelled", error="secret missing"
+        )
         raise HTTPException(
             status_code=409,
             detail=f"No key stored for '{name}' — PUT /v1/providers/{name}/key first.",
         ) from None
-    except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"LiteLLM gateway unreachable: {exc}") from exc
+    except ProviderActivationError as exc:
+        await settle_operation_identity(runtime, identity, outcome="failed", error=str(exc))
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except ProviderAuthorizationError as exc:
+        await settle_operation_identity(runtime, identity, outcome="cancelled", error=str(exc))
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ProviderHealthError as exc:
+        await settle_operation_identity(runtime, identity, outcome="failed", error=str(exc))
+        raise HTTPException(
+            status_code=502,
+            detail=f"Provider health check failed for {name}: {exc}",
+        ) from exc
+
+    await settle_operation_identity(
+        runtime,
+        identity,
+        outcome="completed",
+        result={"invocation_id": result.invocation_id, "model": result.model},
+    )
 
     _record_activation(name)
-    logger.info("provider activated (test completion OK): %s", name)
-    return {"name": name, "activated": True, "first_model_call": result}
+    logger.info("provider activated (governed health check OK): %s", name)
+    return {
+        "name": name,
+        "activated": True,
+        "first_model_call": {
+            "model": result.model,
+            "usage": result.usage.model_dump(mode="json") if result.usage else {},
+            "invocation_id": result.invocation_id,
+        },
+    }

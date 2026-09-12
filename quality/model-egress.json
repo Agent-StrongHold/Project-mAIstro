@@ -1,5 +1,5 @@
 {
-  "_comment": "Modules that call a model endpoint (chat/completions, /completions, /v1/responses) directly over HTTP, frozen so the set cannot grow (#36, invariant 2). maistro.capabilities.providers.llm_gateway is the approved Provider implementation #56 built; entries here are direct callers that have not migrated onto it yet, and deciding which of these are providers, adapters or escapes is that issue's adjudication. Enforced by scripts/check-model-egress.py, which ratchets both ways: a new direct caller fails, and an entry that stops calling out fails until pruned, so a migration shrinks this file.",
+  "_comment": "Modules that call a model endpoint (chat/completions, /completions, /v1/responses) directly over HTTP, frozen so the set cannot grow (#36, invariant 2). maistro.capabilities.providers.llm_gateway is the approved Provider implementation #56 built. The bootstrap model_selector entry is an explicit intentional non-product operator diagnostic: its CLI may probe, while Builders reads only persisted cache/default and never calls the probe implicitly. All other entries are direct callers awaiting governed migration. Enforced by scripts/check-model-egress.py, which ratchets both ways: a new direct caller fails, and an entry that stops calling out fails until pruned, so a migration shrinks this file.",
   "modules": [
     "adapters.llm_http",
     "adapters.maistro_core",
@@ -15,8 +15,6 @@
     "maistro_rsi.free_router",
     "maistro_rsi.gateway",
     "maistro_server.api.chat_completions",
-    "routes.providers",
-    "services.benchmark_eval",
     "services.canonical_corpus",
     "services.canvas_dag",
     "services.chat_completion",
