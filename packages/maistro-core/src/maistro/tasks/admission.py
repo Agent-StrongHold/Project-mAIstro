@@ -37,6 +37,7 @@ from maistro.runs.admission import admit_direct_work
 from maistro.runs.lifecycle import RUN_TRANSITIONS, InvalidLifecycleTransition
 from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
 from maistro.runs.task_kinds import resolve_direct_work
+from maistro.tasks.idempotency import IDEMPOTENCY_KEY_PROVENANCE
 from maistro.tasks.models import TaskStatus
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -143,6 +144,23 @@ class TaskRunAdmitter:
         """The single Workspace this admitter files work in."""
         return self._workspace_id
 
+    async def admission_scope(self, workspace_id: str | None = None) -> tuple[str, str]:
+        """Return the immutable Workspace/Project binding for admission keys.
+
+        Idempotency must claim the same scope the Run will use. Resolving a
+        lazy Root Project here makes that binding explicit before the claim is
+        written, instead of scoping only by Workspace and allowing two Project
+        bindings in one process to reconcile the wrong Run. A named Workspace
+        must still match this bound admitter; silently scoping it to the wrong
+        Project would make the key replay an unrelated Run.
+        """
+        if workspace_id is not None and workspace_id != self._workspace_id:
+            raise WorkspaceNotAdmissible(
+                f"admitter is bound to Workspace {self._workspace_id!r} and cannot "
+                f"scope {workspace_id!r}"
+            )
+        return self._workspace_id, await self._resolve_project_id()
+
     async def admit(self, task: TaskResponse, *, workspace_id: str | None = None) -> str:
         """Admit one queued task as a Run and return its ``run_id``.
 
@@ -168,6 +186,14 @@ class TaskRunAdmitter:
             provenance[SESSION_ID_KEY] = task.session_id
         if task.user_id:
             provenance["user_id"] = task.user_id
+        if task.idempotency_key:
+            # The caller's explicit key, on the Run (#1176): the claim store is
+            # the reconciliation mechanism, but an auditor correlating a retry
+            # storm reads the Run, so the key the caller chose is recorded
+            # where the admission it produced lives. Derived keys are absent —
+            # the derivation is admission machinery, not something the caller
+            # said.
+            provenance[IDEMPOTENCY_KEY_PROVENANCE] = task.idempotency_key
         run = await admit_direct_work(
             self._runs,
             workspace_id=self._workspace_id,
@@ -253,6 +279,20 @@ class TaskRunAdmitter:
             return False
         return True
 
+    async def run_for_task_receipt(self, task_id: str) -> str | None:
+        """The Run this admitter minted for one task receipt, or None.
+
+        The discovery seam behind admission idempotency (#1176): ``admit``
+        stamps the receipt id into the Run's provenance, so a claimant that
+        died between minting and recording leaves a Run that is *findable* by
+        the receipt its claim announced — which is what lets a retry resolve
+        the existing Run instead of minting a second one. None means no Run
+        names the receipt: it was never minted, and the claim may be taken
+        over safely.
+        """
+        run = await self._runs.find_run_by_task_receipt(task_id)
+        return run.run_id if run is not None else None
+
 
 class WorkspaceRoutingAdmitter:
     """Route each submission to the :class:`TaskRunAdmitter` for its Workspace.
@@ -328,6 +368,11 @@ class WorkspaceRoutingAdmitter:
             self._by_workspace[resolved] = admitter
             return admitter
 
+    async def admission_scope(self, workspace_id: str | None = None) -> tuple[str, str]:
+        """Return the routed Workspace and its canonical Root Project."""
+        admitter = await self.admitter_for(workspace_id)
+        return await admitter.admission_scope()
+
     async def admit(self, task: TaskResponse, *, workspace_id: str | None = None) -> str:
         """Admit one task into the Workspace the submission named."""
         admitter = await self.admitter_for(workspace_id)
@@ -351,6 +396,18 @@ class WorkspaceRoutingAdmitter:
         """
         admitter = await self.admitter_for(None)
         return await admitter.record_transition(run_id, status, result=result, error=error)
+
+    async def run_for_task_receipt(self, task_id: str) -> str | None:
+        """Resolve one task receipt to its Run, Workspace-independently.
+
+        Same reasoning as ``record_transition``: by admission time the Run
+        exists and knows which Project it is filed in, and task ids are minted
+        globally, so routing the lookup through the default admitter reaches
+        the one implementation of the provenance search rather than a second
+        copy per Workspace.
+        """
+        admitter = await self.admitter_for(None)
+        return await admitter.run_for_task_receipt(task_id)
 
 
 __all__ = [

@@ -29,6 +29,11 @@ from maistro.observability.logging import configure_logging
 from maistro.observability.middleware import RequestIDMiddleware
 from maistro.security.outbound import configure_outbound_policy, configured_endpoints
 from maistro.tasks.execution import TaskAttemptExecutor
+from maistro.tasks.http_contract import (
+    IDEMPOTENCY_KEY_HEADER,
+    WORKSPACE_ID_HEADER,
+    WORKSPACE_SCOPE_SIGNATURE_HEADER,
+)
 from maistro.tasks.progress_webhook import ProgressWebhookNotifier
 from maistro.tasks.queue import configure_task_queue, reset_task_queue
 from maistro.tasks.runner import TaskRunner
@@ -277,7 +282,13 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
                 "are lost on restart"
             ),
         )
-    queue = configure_task_queue(admitter=container.task_admitter)
+    queue = configure_task_queue(
+        admitter=container.task_admitter,
+        # Same claim tier the spine selected (#1176): a retry reconciles across
+        # a restart or a replica handoff exactly as far as the Runs it names
+        # are durable.
+        idempotency_store=container.task_idempotency,
+    )
     # The handles these APIs return must resolve against the exact stores the
     # Container selected, not lookalike stores reconstructed by the server.
     runs.configure_run_store(run_store)
@@ -385,7 +396,21 @@ app.add_middleware(
     allow_origins=_settings.cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
-    allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "X-Request-ID",
+        # The task submission contract (#1176): the standard Idempotency-Key
+        # header is how a browser client carries a retry's identity, and the
+        # workspace-scope headers are how the trusted Hive boundary carries the
+        # Workspace binding across to maestro-server. Without these in the CORS
+        # allow-list, a preflight that carries any of them is rejected with
+        # "400 Disallowed CORS headers" and the cross-origin client cannot
+        # submit a task with an idempotency key at all.
+        IDEMPOTENCY_KEY_HEADER,
+        WORKSPACE_ID_HEADER,
+        WORKSPACE_SCOPE_SIGNATURE_HEADER,
+    ],
     # Response headers a browser client may actually read. Without this the
     # header is sent and then hidden: `response.headers` in browser JS only
     # exposes the CORS-safelisted set, so `X-Maistro-Run-Id` would have been

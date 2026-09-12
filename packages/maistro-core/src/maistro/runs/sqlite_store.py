@@ -306,6 +306,20 @@ class SqliteRunStore:
         )
         return model_of_json(Run, row[0]) if row is not None else None
 
+    async def find_run_by_task_receipt(self, task_id: str) -> Run | None:
+        # Same expression-index pattern as the schedule-occurrence claim above:
+        # the task admitter's provenance lives inside the payload JSON, and
+        # json_extract reads it without every admitter owning columns.
+        row = await self._fetchone(
+            """
+            SELECT payload FROM canonical_runs
+            WHERE json_extract(payload, '$.provenance.task_id') = ?
+            LIMIT 1
+            """,
+            (task_id,),
+        )
+        return model_of_json(Run, row[0]) if row is not None else None
+
     async def list_by_status(
         self,
         status: RunStatus,

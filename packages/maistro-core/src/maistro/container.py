@@ -69,6 +69,7 @@ from maistro.security.outbound import configure_outbound_policy, configured_endp
 from maistro.security.warden.detector import Warden
 from maistro.sessions.store import InMemorySessionStore
 from maistro.tasks.admission import WorkspaceRoutingAdmitter
+from maistro.tasks.idempotency import TaskIdempotencyStore, wire_task_idempotency
 from maistro.types.config import AgentConfig
 from maistro.types.errors import AgentError, ConfigError
 from maistro.workspaces.store import WorkspaceStore
@@ -215,6 +216,12 @@ class Container:
     #: canonical spine exists to stop. `None` when there is no template store,
     #: because an admitter that cannot resolve a template cannot admit.
     schedule_admitter: ScheduleRunAdmitter | None = None
+    #: Stable admission identity for task submission (#1176). On the backend
+    #: tier the spine chose, so a retry reconciles across a restart or a
+    #: replica handoff the same way the Runs it names survive. `None` only for
+    #: a Container built by hand that never wired it — submission then behaves
+    #: exactly as before, minting a receipt per call.
+    task_idempotency: TaskIdempotencyStore | None = None
     #: Delegation dependencies (#147). Read by `build_node_resolver`, which is
     #: what makes them admissible under ADR-082426-6201 — that ADR retired
     #: `a2a_broker` for having no reader, and check-wiring-reads.py enforces the
@@ -1351,6 +1358,9 @@ async def create_container(
         pg_pool=pg_pool,
     )
     node_template_store = await wire_node_template_store(db_pool, pg_pool=pg_pool)
+    # Same backend the spine just chose (#1176): claims beside the Runs they
+    # reconcile, or the tiers cannot answer a restart the same way.
+    task_idempotency = await wire_task_idempotency(db_pool, pg_pool=pg_pool)
     schedule_admitter = _wire_schedule_admission(run_store, graph_template_store, schedule_store)
     chat_admitter = wire_chat_admission(
         run_store,
@@ -1572,6 +1582,7 @@ async def create_container(
         graph_run_store=CanonicalDurableRunStore(run_store, graph_continuations),
         schedule_store=schedule_store,
         schedule_admitter=schedule_admitter,
+        task_idempotency=task_idempotency,
         context_assembly_policy=context_assembly_policy,
         agents=agents,
         audit_log=audit_log,
