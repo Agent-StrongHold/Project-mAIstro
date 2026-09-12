@@ -705,6 +705,26 @@ class Container:
         )
         return self.durable_event_cursor
 
+    def node_resolver(self) -> Callable[[str, Any], Any]:
+        """The production node resolver, wired from this Container's authorities.
+
+        One place builds it so every production consumer — the admitted-Run
+        sweep, the parked-Run resume, and a product reading it off the
+        Container — resolves node kinds against the same Container-owned
+        instances (#1193). `graph_run_store` is what `agent.synth_dag` files
+        its child Run into; without it the resolver refuses that kind rather
+        than constructing one that would report success for nothing.
+        """
+        return build_node_resolver(
+            harness_adapters=self.harness_adapters,
+            usage_log=self.usage_log,
+            a2a_delegator=self.a2a_delegator,
+            guest_peers=self.guest_peers,
+            run_store=self.run_store,
+            effect_context=self.capability_effects,
+            graph_run_store=self.graph_run_store,
+        )
+
     async def recover_abandoned_attempts(
         self, *, now: datetime | None = None, limit: int = 100
     ) -> int:
@@ -806,17 +826,7 @@ class Container:
         # or compute against empty state, inside a Run that looks properly
         # admitted. Building it per tick rather than per Run keeps the cost off
         # the loop while still reading whatever this Container was wired with.
-        executor = ScheduleAttemptExecutor(
-            self.run_store,
-            node_resolver=build_node_resolver(
-                harness_adapters=self.harness_adapters,
-                usage_log=self.usage_log,
-                a2a_delegator=self.a2a_delegator,
-                guest_peers=self.guest_peers,
-                run_store=self.run_store,
-                effect_context=self.capability_effects,
-            ),
-        )
+        executor = ScheduleAttemptExecutor(self.run_store, node_resolver=self.node_resolver())
         executed = 0
         while executed < limit:
             queued = await self.run_store.list_by_status(RunStatus.QUEUED, limit=limit, after=after)
@@ -882,17 +892,7 @@ class Container:
         moment = now if now is not None else datetime.now(UTC)
         parked = await self._parked_candidates()
 
-        executor = ScheduleAttemptExecutor(
-            self.run_store,
-            node_resolver=build_node_resolver(
-                harness_adapters=self.harness_adapters,
-                usage_log=self.usage_log,
-                a2a_delegator=self.a2a_delegator,
-                guest_peers=self.guest_peers,
-                run_store=self.run_store,
-                effect_context=self.capability_effects,
-            ),
-        )
+        executor = ScheduleAttemptExecutor(self.run_store, node_resolver=self.node_resolver())
         resumed = 0
         for run in parked:
             if resumed >= limit:
@@ -2243,52 +2243,6 @@ def _wire_harness_adapters(
     return dict(overrides or {})
 
 
-def _di_node(
-    kind: str,
-    *,
-    harness_adapters: dict[str, HarnessAdapter],
-    usage_log: InMemoryUsageLog,
-    a2a_delegator: Any,
-    guest_peers: Any,
-    run_store: RunStore | None,
-    effect_context: CapabilityEffectContext | None,
-) -> Any:
-    """Construct a dependency-injected node kind, or None for registry kinds.
-
-    Extracted from ``build_node_resolver``'s resolver so adding DI kinds (#55
-    spawn_harness, #56 llm.summarize) does not raise the resolver's own
-    complexity; each branch documents why the kind cannot use plain registry
-    construction.
-    """
-
-    from maistro.graph.nodes.agent_delegate_remote import AgentDelegateRemoteNode
-    from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
-    from maistro.graph.nodes.llm_summarize import LlmSummarizeNode
-    from maistro.graph.nodes.rsi_quota_pace_trigger import RsiQuotaPaceTriggerNode
-
-    if kind == "agent.spawn_harness":
-        return AgentSpawnHarnessNode(adapters=harness_adapters, effect_context=effect_context)
-    if kind == "llm.summarize":
-        # The shipped model path crosses the governed model egress (#56):
-        # the node resolves Bindings and files Invocations against the same
-        # authorities the container's own effect nodes use.
-        return LlmSummarizeNode(effect_context=effect_context)
-    if kind == "rsi.quota_pace_trigger":
-        return RsiQuotaPaceTriggerNode(usage_log)
-    if kind == "agent.delegate_remote":
-        # Previously fell through to `get_node(kind)()`, which constructs
-        # the node with `a2a_delegator=None` and `guest_peers=None` -- so in
-        # the only resolver production uses, every delegation returned
-        # `status="failed"` with "no a2a_delegator configured". A returned
-        # failure reads like the target agent declining, so nothing
-        # surfaced it (#147). `run_store` is what lets the node file the
-        # delegated work as a canonical child Run.
-        return AgentDelegateRemoteNode(
-            a2a_delegator=a2a_delegator, guest_peers=guest_peers, run_store=run_store
-        )
-    return None
-
-
 def build_node_resolver(
     *,
     harness_adapters: dict[str, HarnessAdapter] | None = None,
@@ -2297,6 +2251,7 @@ def build_node_resolver(
     guest_peers: Any = None,
     run_store: RunStore | None = None,
     effect_context: CapabilityEffectContext | None = None,
+    graph_run_store: DurableRunStore | None = None,
 ) -> Callable[[str, Any], Any]:
     """Build the production durable-executor node resolver.
 
@@ -2316,9 +2271,18 @@ def build_node_resolver(
     adapter here, because a `DurableRunRecord` is a checkpoint of one graph
     execution and a `Run` is the execution's canonical identity, and pretending
     either can stand in for the other is what produced the confusion.
+
+    ``graph_run_store`` *is* the durable executor's store, and is what
+    `agent.synth_dag` files its synthesized sub-graph into as a canonical child
+    Run. Every dependency-injected kind is constructed from the authorities its
+    class declares (`BaseNode.required_authorities` /
+    `optional_authorities`, #1193) rather than from a hand-maintained
+    ``if kind == ...`` list: a kind that declares a required authority this
+    resolver was not given is refused with `NodeCompositionError`, never built
+    bare from the registry with the constructor's own permissive default.
     """
     from maistro.graph.definitions import Graph
-    from maistro.graph.nodes import get_node
+    from maistro.graph.nodes import compose_node
 
     resolved_adapters = harness_adapters if harness_adapters is not None else {}
     resolved_usage_log = usage_log if usage_log is not None else get_default_usage_log()
@@ -2345,15 +2309,19 @@ def build_node_resolver(
         else:
             raise TypeError("node resolver requires canonical Graph or raw DAG snapshot")
 
-        injected = _di_node(
-            kind,
-            harness_adapters=resolved_adapters,
-            usage_log=resolved_usage_log,
-            a2a_delegator=a2a_delegator,
-            guest_peers=guest_peers,
-            run_store=run_store,
-            effect_context=resolved_effect_context,
-        )
-        return injected if injected is not None else get_node(kind)()
+        return compose_node(kind, authorities)
 
+    # The resolver hands itself on as `node_resolver`, so a composite node
+    # (`agent.synth_dag`) builds its child graph's nodes with the same
+    # dependencies its own caller wired, not from the bare registry.
+    authorities: dict[str, Any] = {
+        "harness_adapters": resolved_adapters,
+        "usage_log": resolved_usage_log,
+        "a2a_delegator": a2a_delegator,
+        "guest_peers": guest_peers,
+        "run_store": run_store,
+        "graph_run_store": graph_run_store,
+        "effect_context": resolved_effect_context,
+        "node_resolver": _resolver,
+    }
     return _resolver

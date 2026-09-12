@@ -75,12 +75,17 @@ def test_via_registry_default_constructible() -> None:
 
 
 async def test_default_rule_synthesizer_dry_run_approves() -> None:
-    node = AgentSynthDagNode()
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
+
+    node = AgentSynthDagNode(run_store=InMemoryDurableRunStore())
     result = await node.run({"objective": "add a caching layer"}, _ctx())
     assert result.status == "completed"
     assert result.output.success is True
     assert result.output.synthesized_nodes == ["scout", "coder", "reviewer"]
-    assert "no llm_call provided" in result.output.run_output
+    # Role placeholders are not registered kinds, so the approved config is
+    # declined with the reason rather than dispatched.
+    assert result.output.dispatched is False
+    assert "not executed" in result.output.run_output
 
 
 async def test_depth_at_cap_refuses_without_synthesizing() -> None:
@@ -95,9 +100,14 @@ async def test_depth_at_cap_refuses_without_synthesizing() -> None:
 
 
 async def test_depth_below_cap_proceeds() -> None:
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
+
     synthesizer = _CountingSynthesizer([_result(["scout", "coder"])])
     node = AgentSynthDagNode(
-        synthesizer=synthesizer, proportionality_judge=_AlwaysJustified(), max_depth=3
+        synthesizer=synthesizer,
+        proportionality_judge=_AlwaysJustified(),
+        max_depth=3,
+        run_store=InMemoryDurableRunStore(),
     )
     ctx = _ctx()
     ctx.metadata["synth_depth"] = 2  # ORCHESTRATOR role at max_depth=3
@@ -123,11 +133,15 @@ async def test_hostile_rationale_blocks_without_revision_retry() -> None:
 
 
 async def test_needs_revision_retries_once_and_can_succeed() -> None:
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
+
     first = _result(["scout", "architect", "coder"])
     second = _result(["scout", "coder"])
     synthesizer = _CountingSynthesizer([first, second])
     judge = _RejectOnceThenApprove()
-    node = AgentSynthDagNode(synthesizer=synthesizer, proportionality_judge=judge)
+    node = AgentSynthDagNode(
+        synthesizer=synthesizer, proportionality_judge=judge, run_store=InMemoryDurableRunStore()
+    )
 
     result = await node.run({"objective": "implement a feature"}, _ctx())
 
@@ -179,27 +193,25 @@ async def test_revision_note_fed_back_as_constraint() -> None:
     assert any("drop" in c and "architect" in c for c in second_constraints)
 
 
-async def test_llm_call_without_a_store_declines_execution_honestly() -> None:
-    """The in-process GraphRun dispatch is retired (#520).
+async def test_a_node_built_without_a_store_fails_loudly_rather_than_reporting_success() -> None:
+    """The defect #1193 names, at the node.
 
-    An llm_call used to route the approved config into `run_graph`, executing
-    the whole subtree with no canonical Run/NodeRun/Attempt records. Without a
-    durable store the node now reports the synthesis and truthfully does not
-    execute, naming why.
+    This used to answer `success=True` with "execution skipped" / "not
+    executed": a Graph node reporting success for a sub-graph nothing ran,
+    which is exactly what the production resolver's generic construction
+    handed it (`run_store=None`). The in-process GraphRun path is retired
+    (#520) and there is no other way to run the work, so the *node* fails —
+    the NodeResult, not an output saying the dispatch was declined — naming
+    the authority it was built without.
     """
-
-    async def fake_llm_call(messages: list[dict[str, str]], **kwargs: Any) -> str:
-        return '{"summary": "ok", "subtasks": [], "estimated_files": []}'
-
-    node = AgentSynthDagNode(llm_call=fake_llm_call, proportionality_judge=_AlwaysJustified())
+    node = AgentSynthDagNode(proportionality_judge=_AlwaysJustified())
     result = await node.run({"objective": "plan a small feature"}, _ctx())
-    assert result.status == "completed"
-    assert result.output.rationale
-    assert result.output.success is True
-    assert result.output.dispatched is False
-    assert result.output.child_run_id == ""
-    assert "not executed" in result.output.run_output
-    assert "durable run store" in result.output.run_output
+    assert result.status == "failed"
+    assert result.success is False
+    assert result.error_code == "NodeCompositionError"
+    assert result.error_message is not None
+    assert "graph_run_store" in result.error_message
+    assert result.output is None
 
 
 def test_agent_role_nodes_use_unit_cost_estimate() -> None:
