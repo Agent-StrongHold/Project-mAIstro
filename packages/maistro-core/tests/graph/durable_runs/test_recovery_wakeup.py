@@ -9,6 +9,7 @@ from maistro.graph.definitions import Graph, Node
 from maistro.graph.durable_runs import recovery
 from maistro.graph.durable_runs.attempt_executor import LiveAttemptOwned
 from maistro.runs.model import GraphSnapshot, Run, RunStatus
+from maistro.runs.store import run_cursor_key
 
 pytestmark = [pytest.mark.contract("behavioral")]
 
@@ -43,6 +44,7 @@ class _BootstrapStore(_Store):
 class _RunStore:
     def __init__(self, *runs: Run) -> None:
         self.runs = {run.run_id: run for run in runs}
+        self.admission_source_queries: list[str | None] = []
 
     async def list_by_status(
         self,
@@ -51,14 +53,24 @@ class _RunStore:
         limit: int = 100,
         offset: int = 0,
         project_id: str | None = None,
+        admission_source: str | None = None,
         after=None,
     ) -> list[Run]:
-        del offset, after
-        return [
+        del offset
+        self.admission_source_queries.append(admission_source)
+        runs = [
             run
             for run in self.runs.values()
-            if run.status is status and (project_id is None or run.project_id == project_id)
-        ][:limit]
+            if run.status is status
+            and (project_id is None or run.project_id == project_id)
+            and (
+                admission_source is None
+                or run.provenance.get("admission_source") == admission_source
+            )
+        ]
+        if after is not None:
+            runs = [run for run in runs if run_cursor_key(run) > after]
+        return runs[:limit]
 
 
 def _record(run_id: str, status: RunStatus, resume_at: datetime | None):
@@ -184,6 +196,37 @@ async def test_queued_run_without_continuation_is_claimed_then_resumed(monkeypat
     assert initial is not None
     assert initial.version == 1
     assert initial.graph_state.active_node_ids == ("node-1",)
+
+
+@pytest.mark.asyncio
+async def test_queued_recovery_finds_owned_work_behind_a_foreign_prefix(monkeypatch) -> None:
+    """Ownership is part of the bounded status query, not only a post-query guard."""
+    foreign = [_queued_run(f"foreign-{index}", source="another_consumer") for index in range(3)]
+    owned = _queued_run("owned-after-foreign", source="owned")
+    run_store = _RunStore(*foreign, owned)
+    store = _BootstrapStore()
+    calls: list[str] = []
+
+    async def _resume(run_id: str, **kwargs) -> None:
+        del kwargs
+        calls.append(run_id)
+
+    monkeypatch.setattr(recovery, "resume_durable_graph", _resume)
+
+    recovered = await recovery.recover_queued_graph_runs(
+        store=store,
+        run_store=run_store,
+        eligible=lambda candidate: candidate.provenance.get("admission_source") == "owned",
+        admission_source="owned",
+        node_resolver_factory=lambda _run: lambda _node_id, _graph: None,
+        limit=2,
+    )
+
+    assert recovered == 1
+    assert calls == [owned.run_id]
+    assert run_store.admission_source_queries == ["owned", "owned"]
+    for run in foreign:
+        assert await store.get(run.run_id) is None
 
 
 @pytest.mark.asyncio
