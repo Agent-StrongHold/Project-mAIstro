@@ -88,14 +88,47 @@ class _CandidateRunStore:
         return call
 
 
-_SAFE_DETAIL = re.compile(r"(?i)\b(password|token|secret|api[_-]?key)\b\s*[=:]\s*[^\s,;]+")
+class NodeResolverUnavailable(RuntimeError):
+    """A candidate's node resolver could not be built from its Run.
+
+    The message is deliberately stable: it names the Run and the failure type
+    only, so the executor's failure boundary can persist it on the failed Run
+    without copying provider or credential text from the underlying error.
+    The original exception stays attached as ``__cause__`` for in-process
+    diagnosis.
+    """
+
+
+# ``key=value`` / ``key: value`` / ``'key': 'value'`` / ``Authorization: Bearer x``
+_SAFE_DETAIL = re.compile(
+    r"""(?ix)
+    ["']?\b(?P<key>password|passwd|token|secret|api[_-]?key|authorization)\b["']?
+    \s*[=:]\s*["']?
+    (?:bearer\s+)?
+    [^\s,;"'}\])]+["']?
+    """
+)
+# Bare ``Bearer <token>`` fragments that carry no header name.
+_SAFE_BEARER = re.compile(r"(?i)\bbearer\s+[^\s,;\"'}\])]+")
+# Provider-style key literals that identify themselves by prefix.
+_SAFE_KEY_LITERAL = re.compile(
+    r"\b(?:sk|pk|rk)-[A-Za-z0-9_\-]{6,}"
+    r"|\bgh[pousr]_[A-Za-z0-9]{16,}"
+    r"|\bxox[abprs]-[A-Za-z0-9\-]{8,}"
+    r"|\bAKIA[0-9A-Z]{16}\b"
+)
+
+
+def _redacted(detail: str) -> str:
+    detail = _SAFE_DETAIL.sub(lambda match: f"{match.group('key')}=<redacted>", detail)
+    detail = _SAFE_BEARER.sub("Bearer <redacted>", detail)
+    return _SAFE_KEY_LITERAL.sub("<redacted-key>", detail)
 
 
 def _sanitized_cause(exc: BaseException) -> str:
     """Return bounded log evidence without copying provider/credential text."""
     detail = str(exc).splitlines()[0].strip() if str(exc) else ""
-    detail = _SAFE_DETAIL.sub(r"\1=<redacted>", detail)
-    detail = detail[:240]
+    detail = _redacted(detail)[:240]
     return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
 
 
@@ -103,13 +136,23 @@ def _lazy_resolver(
     run: Run,
     resolver_for: Callable[[Run], NodeResolver],
 ) -> NodeResolver:
-    """Resolve a candidate only inside the executor's failure boundary."""
+    """Resolve a candidate only inside the executor's failure boundary.
+
+    A factory failure surfaces as :class:`NodeResolverUnavailable`, whose
+    stable message is what the boundary persists on the failed Run; the raw
+    factory error is never written to durable state.
+    """
     resolved: NodeResolver | None = None
 
     def resolve(node_id: str, graph: Any) -> Any:
         nonlocal resolved
         if resolved is None:
-            resolved = resolver_for(run)
+            try:
+                resolved = resolver_for(run)
+            except Exception as exc:
+                raise NodeResolverUnavailable(
+                    f"node resolver could not be built for Run {run.run_id!r}: {type(exc).__name__}"
+                ) from exc
         return resolved(node_id, graph)
 
     return resolve
