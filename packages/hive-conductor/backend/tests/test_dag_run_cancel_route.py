@@ -199,3 +199,35 @@ async def test_cancel_route_answers_a_missing_run_with_a_scoped_404() -> None:
     with pytest.raises(HTTPException) as refused:
         await cancel_route("dag-never-was", _ScopedRequest(_USER_ID))
     assert refused.value.status_code == 404
+
+
+async def test_cancel_route_answers_a_canonical_run_the_spine_never_saw_with_404(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A projection pointing at a canonical Run that no longer exists is 404.
+
+    The DAG row exists, so the scoped detail lookup succeeds — the miss is on
+    the canonical side, and the route must answer in the caller's terms
+    rather than leaking the spine's ValueError.
+    """
+    import services.engine as engine_mod
+    from routes.dag_runs import cancel_run as cancel_route
+    from services.dag_run_store import get_dag_run_store
+
+    from maistro.projects.scope_store import InMemoryProjectScopeStore
+    from maistro.runs import InMemoryRunStore
+
+    view = await _owned_workspace()
+    empty = InMemoryRunStore(project_store=InMemoryProjectScopeStore())
+    monkeypatch.setattr(engine_mod, "_singleton", SimpleNamespace(run_store=empty))
+    await get_dag_run_store().start_run(
+        run_id="dag-ghost-canonical",
+        user_id=_USER_ID,
+        workspace_id=view.id,
+        canonical_run_id="canonical-never-was",
+    )
+
+    with pytest.raises(HTTPException) as refused:
+        await cancel_route("dag-ghost-canonical", _ScopedRequest(_USER_ID))
+    assert refused.value.status_code == 404
+    assert refused.value.detail == "run not found"

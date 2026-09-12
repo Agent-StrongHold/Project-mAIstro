@@ -302,3 +302,27 @@ async def test_event_loop_lag_sample_is_exposed_in_metrics() -> None:
 
     assert lag_ms >= 0
     assert runtime.metrics().event_loop_lag_ms_last == lag_ms
+
+
+@pytest.mark.asyncio
+async def test_work_that_finishes_before_the_deadline_is_a_success() -> None:
+    runtime = PythonExecutionRuntime()
+
+    async def executor(_work_item: Any, _context: Any) -> str:
+        return "done-quickly"
+
+    result = await runtime.execute(
+        None,
+        None,
+        execution_id="attempt-in-time",
+        executor=executor,
+        timeout_s=30,
+    )
+
+    # The deadline never expired, so the completed-work guard at the end of
+    # the timeout branch must let the success through untouched.
+    assert result == "done-quickly"
+    metrics = runtime.metrics()
+    assert metrics.executions_started == 1
+    assert metrics.executions_completed == 1
+    assert metrics.executions_timed_out == 0

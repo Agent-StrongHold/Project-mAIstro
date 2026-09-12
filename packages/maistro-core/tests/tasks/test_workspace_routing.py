@@ -15,6 +15,7 @@ import asyncio
 import pytest
 
 from maistro.projects.scope_store import InMemoryProjectScopeStore
+from maistro.runs.model import RunStatus
 from maistro.runs.store import InMemoryRunStore
 from maistro.tasks.admission import (
     TaskRunAdmitter,
@@ -190,3 +191,23 @@ async def test_omitting_the_workspace_still_means_the_default(spine) -> None:
 
     assert (await router.admitter_for(None)).workspace_id == "default"
     assert (await router.admitter_for()).workspace_id == "default"
+
+
+# --- run cancellation routed through the shared seam -----------------------
+
+
+async def test_the_router_cancels_a_run_it_admitted(spine) -> None:
+    _projects, runs, router = spine
+    queue = TaskQueue(admitter=router)
+    task = await queue.submit(TaskCreate(description="Routed work"), workspace_id="w-cancel")
+
+    assert await router.cancel_run(task.run_id or "") is True
+    run = await runs.get_run(task.run_id or "")
+    assert run is not None
+    assert run.status is RunStatus.CANCELLED
+
+
+async def test_the_router_reports_a_run_that_never_existed(spine) -> None:
+    _projects, _runs, router = spine
+
+    assert await router.cancel_run("run-never-was") is False
