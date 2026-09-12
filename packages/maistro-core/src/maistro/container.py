@@ -22,10 +22,8 @@ from maistro.a2a.guest_peers import GuestPeerManager
 from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.intents import IntentRegistry, build_intent_registry
 from maistro.archive.wiring import build_archive_store
-from maistro.capabilities.effect_context import (
-    CapabilityEffectContext,
-    new_in_memory_effect_context,
-)
+from maistro.capabilities.effect_context import CapabilityEffectContext, new_effect_context
+from maistro.capabilities.invocation import InvocationStore as CapabilityInvocationStore
 from maistro.classifier.engine import ClassifierEngine
 from maistro.graph.durable_runs.canonical_store import CanonicalDurableRunStore
 from maistro.graph.durable_runs.protocol import DurableRunStore
@@ -1520,7 +1518,10 @@ async def create_container(
 
     # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) -----------
     wired_harness_adapters = _wire_harness_adapters(harness_adapters)
-    capability_effects = new_in_memory_effect_context()
+    capability_invocation_store = await _wire_capability_invocations(
+        pg_pool=pg_pool, db_pool=db_pool
+    )
+    capability_effects = new_effect_context(invocation_store=capability_invocation_store)
     spawn_harness_node = AgentSpawnHarnessNode(
         adapters=wired_harness_adapters, effect_context=capability_effects
     )
@@ -2143,6 +2144,30 @@ async def _wire_sqlite_backend(
     session_store: SessionStore = sqlite_session_store
 
     return conn, session_conn, quota_tracker, learning_store, outcome_store, session_store
+
+
+async def _wire_capability_invocations(
+    *,
+    pg_pool: Any,
+    db_pool: Any,
+) -> CapabilityInvocationStore:
+    """Select the canonical effect ledger from the container's durable backend."""
+    store: CapabilityInvocationStore
+    if pg_pool is not None:
+        from maistro.capabilities.pg_invocation_store import PgInvocationStore
+
+        store = PgInvocationStore(pg_pool)
+        await store.ensure_schema()
+        return store
+    if db_pool is not None:
+        from maistro.capabilities.invocation_store import SqliteInvocationStore
+
+        store = SqliteInvocationStore(db_pool)
+        await store.ensure_schema()
+        return store
+    from maistro.capabilities.invocation import InMemoryInvocationStore
+
+    return InMemoryInvocationStore()
 
 
 async def _wire_sqlite_durable_events(
