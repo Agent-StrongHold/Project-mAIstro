@@ -16,7 +16,12 @@ import pytest
 
 from maistro.container import Container, create_container
 from maistro.runs.admission import ADMISSION_SOURCE
-from maistro.runs.chat_admission import ADMISSION_INCOMPLETE, CHAT_SOURCE, SESSION_ID_KEY
+from maistro.runs.chat_admission import (
+    ADMISSION_INCOMPLETE,
+    CHAT_SOURCE,
+    SESSION_ID_KEY,
+    ChatRunAdmitter,
+)
 from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
 from maistro.types.config import AgentConfig
 
@@ -44,13 +49,16 @@ async def test_a_turn_yields_a_run_id_that_resolves() -> None:
     container.conduit = _Conduit()
 
     result = await container.route_request(
-        [{"role": "user", "content": "what broke?"}], session_id="sess-1"
+        [{"role": "user", "content": "what broke?"}],
+        session_id="sess-1",
+        request_id="req-1",
     )
 
     run = await container.run_store.get_run(result["run_id"])
     assert run is not None
     assert run.provenance[ADMISSION_SOURCE] == CHAT_SOURCE
     assert run.provenance[SESSION_ID_KEY] == "sess-1"
+    assert run.provenance["request_id"] == "req-1"
 
 
 async def test_the_openai_shape_is_untouched() -> None:
@@ -155,6 +163,30 @@ async def test_the_chat_admitter_is_wired_by_the_container() -> None:
 
     assert container.chat_admitter is not None
     assert container.chat_admitter.retained == 0
+
+
+async def test_terminalized_concurrent_chat_burst_is_swept() -> None:
+    """The bound still holds when no later admission arrives to sweep."""
+    container = await _container()
+    container.chat_admitter = ChatRunAdmitter(
+        container.run_store,
+        workspace_id=container.config.workspace_id,
+        project_store=container.project_scope_store,
+        max_retained=2,
+    )
+    container.conduit = _Conduit()
+
+    results = await asyncio.gather(
+        *(container.route_request([{"role": "user", "content": f"turn {i}"}]) for i in range(8))
+    )
+
+    assert all("run_id" in result for result in results)
+    assert container.chat_admitter.retained <= 2
+    terminal_chat_runs = [
+        run for run in _chat_runs(container) if run.provenance[ADMISSION_SOURCE] == CHAT_SOURCE
+    ]
+    assert len(terminal_chat_runs) <= 2
+    assert all(run.status in TERMINAL_RUN_STATUSES for run in terminal_chat_runs)
 
 
 def _chat_runs(container: Container):

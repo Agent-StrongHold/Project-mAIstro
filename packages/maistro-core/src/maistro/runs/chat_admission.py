@@ -42,6 +42,7 @@ from maistro.runs.archival import ArchivePolicy, RunArchiveSweeper
 from maistro.runs.model import TERMINAL_RUN_STATUSES
 from maistro.runs.retention import RetentionPolicy, RunRetentionSweeper
 from maistro.runs.sources import CHAT_SOURCE
+from maistro.runs.store import RunIntegrityError
 from maistro.runs.task_kinds import resolve_direct_work
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -207,6 +208,17 @@ class ChatRunAdmitter:
         """How many admitted chat Runs this process is still tracking."""
         return len(self._window)
 
+    async def sweep(self) -> int:
+        """Re-apply the window after a Run becomes terminal.
+
+        Admission can only sweep Runs that are terminal at the time a new Run
+        arrives. The canonical chat execution seam terminalizes after
+        dispatch, so it calls this hook as well; otherwise a final burst that
+        ends with no following admission would leave completed Runs beyond
+        the policy window until the next turn.
+        """
+        return await self._sweep()
+
     async def admit(
         self,
         messages: list[dict[str, Any]],
@@ -303,7 +315,13 @@ class ChatRunAdmitter:
                     continue
                 if run.status not in TERMINAL_RUN_STATUSES:
                     continue
-                await self._runs.delete_run(run_id)
+                try:
+                    await self._runs.delete_run(run_id)
+                except RunIntegrityError:
+                    # A terminal parent with a child is intentionally not
+                    # deletable. Keep walking: a protected old Run must not
+                    # strand younger terminal Runs that can be forgotten.
+                    continue
                 # `pop`, not `del`: the lock makes a concurrent sweep
                 # impossible, but a caller may also have deleted this Run
                 # directly, and a sweep must not fail over work it wanted done.

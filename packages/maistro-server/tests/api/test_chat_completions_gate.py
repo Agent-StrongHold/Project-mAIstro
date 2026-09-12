@@ -27,7 +27,7 @@ from fastapi.testclient import TestClient
 from maistro.agents.types import ConductorOutput, LLMProviderError
 from maistro.container import create_container
 from maistro.runs.admission import ADMISSION_SOURCE
-from maistro.runs.chat_admission import CHAT_SOURCE, UPSTREAM_FAILURE
+from maistro.runs.chat_admission import CHAT_SOURCE, UPSTREAM_FAILURE, ChatRunAdmitter
 from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
 from maistro.runs.store import InMemoryRunStore
 from maistro.security._types import GateResult
@@ -253,13 +253,19 @@ async def test_a_turn_yields_a_run_id_that_resolves(wired, client: TestClient) -
     with patch(RUN_TASK, AsyncMock(return_value=_output("42"))):
         response = client.post(
             "/v1/chat/completions",
-            json={"messages": [{"role": "user", "content": "what is the answer"}]},
+            headers={"X-Request-ID": "req-chat-1"},
+            json={
+                "session_id": "session-chat-1",
+                "messages": [{"role": "user", "content": "what is the answer"}],
+            },
         )
 
     run_id = response.json()["run_id"]
     run = await wired.get_run(run_id)
     assert run is not None
     assert run.provenance[ADMISSION_SOURCE] == CHAT_SOURCE
+    assert run.provenance["session_id"] == "session-chat-1"
+    assert run.provenance["request_id"] == "req-chat-1"
     assert run.status is RunStatus.COMPLETED
 
 
@@ -332,6 +338,29 @@ async def test_a_streamed_failure_leaves_no_running_run(wired, client: TestClien
     assert chat_runs[0].status is RunStatus.FAILED
 
 
+async def test_admission_failure_means_a_null_run_id_and_a_working_endpoint(
+    container: object,
+    client: TestClient,
+) -> None:
+    """A broken admitter must not turn best-effort bookkeeping into a refusal."""
+
+    class _BrokenAdmitter:
+        async def admit(self, *_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("project unavailable")
+
+    container.chat_admitter = _BrokenAdmitter()  # type: ignore[attr-defined]
+    with patch(RUN_TASK, AsyncMock(return_value=_output("42"))):
+        response = client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["choices"][0]["message"]["content"] == "42"
+    assert body["run_id"] is None
+
+
 async def test_no_chat_admitter_means_a_null_run_id_and_a_working_endpoint(
     container: object,
     client: TestClient,
@@ -355,6 +384,43 @@ async def test_no_chat_admitter_means_a_null_run_id_and_a_working_endpoint(
 
 
 # --- review findings ------------------------------------------------------
+
+
+async def test_abandoned_stream_cleanup_enforces_the_retention_bound(
+    container: object, wired
+) -> None:
+    """Cleanup of a final pre-dispatch burst must invoke the same sweep."""
+    import asyncio
+
+    container.chat_admitter = ChatRunAdmitter(  # type: ignore[attr-defined]
+        wired,
+        workspace_id=container.config.workspace_id,  # type: ignore[attr-defined]
+        project_store=container.project_scope_store,  # type: ignore[attr-defined]
+        max_retained=2,
+    )
+    request = chat_api.ChatCompletionRequest(
+        stream=True, messages=[chat_api.ChatMessage(role="user", content="hi")]
+    )
+    streams = []
+    admitted = []
+    for _ in range(8):
+        run = await chat_api._admit_turn(request, None)
+        assert run is not None
+        stream = chat_api._stream_conductor_response(request, None, run)
+        await stream.__anext__()
+        admitted.append(run)
+        streams.append(stream)
+
+    for stream in streams:
+        await stream.aclose()
+    await asyncio.sleep(0)
+
+    assert container.chat_admitter.retained <= 2  # type: ignore[attr-defined]
+    surviving = [
+        stored for run in admitted if (stored := await wired.get_run(run.run_id)) is not None
+    ]
+    assert len(surviving) <= 2
+    assert all(run.status is RunStatus.CANCELLED for run in surviving)
 
 
 async def test_an_abandoned_stream_still_closes_its_run(wired) -> None:

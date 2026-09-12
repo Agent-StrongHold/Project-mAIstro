@@ -406,6 +406,7 @@ class Container:
         *,
         auth: Any = None,
         session_id: str | None = None,
+        request_id: str | None = None,
         intent_hint: str = "",
         run: Run | None = None,
     ) -> dict[str, Any]:
@@ -457,6 +458,7 @@ class Container:
                 messages,
                 auth=auth,
                 session_id=session_id,
+                request_id=request_id,
                 intent_hint=intent_hint,
             )
 
@@ -530,6 +532,7 @@ class Container:
         *,
         auth: Any = None,
         session_id: str | None = None,
+        request_id: str | None = None,
         intent_hint: str = "",
     ) -> Run | None:
         """Admit this turn as a canonical Run, or None when none is wired.
@@ -546,6 +549,7 @@ class Container:
             run = await self.chat_admitter.admit(
                 messages,
                 session_id=session_id,
+                request_id=request_id,
                 intent_hint=intent_hint,
                 known_task_types=self.config.task_types,
                 actor_principal_id=getattr(auth, "user_id", None) or None,
@@ -598,6 +602,7 @@ class Container:
                 RunStatus.CANCELLED,
                 error=ADMISSION_INCOMPLETE,
             )
+            await self._sweep_chat_runs()
         except Exception:
             logger.warning(
                 "stranded chat Run %s could not be compensated", run.run_id, exc_info=True
@@ -648,7 +653,18 @@ class Container:
         except Exception:
             logger.warning("chat Run %s could not be terminalized", run.run_id, exc_info=True)
             return False
+        await self._sweep_chat_runs()
         return True
+
+    async def _sweep_chat_runs(self) -> None:
+        """Trim terminal chat Runs after the canonical seam closes one."""
+        if self.chat_admitter is None:
+            return
+        try:
+            await asyncio.shield(self.chat_admitter.sweep())
+        except Exception:
+            # Retention is housekeeping and must not replace the turn's answer.
+            logger.warning("chat Run retention sweep failed", exc_info=True)
 
     async def _terminalize(
         self,
