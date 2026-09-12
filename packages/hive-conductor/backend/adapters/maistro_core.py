@@ -30,10 +30,11 @@ class StubAgentPort:
         self,
         messages: list[dict[str, Any]],
         *,
+        auth: Any = None,
         session_id: str | None = None,
         intent_hint: str = "",
     ) -> dict[str, Any]:
-        del messages, session_id, intent_hint
+        del messages, auth, session_id, intent_hint
         raise RuntimeError("maistro-core Agent runtime is unavailable")
 
 
@@ -134,7 +135,7 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
     from maistro.agents.factory import _load_preamble, create_agents
     from maistro.config.database import resolve_database_url
     from maistro.container import create_container
-    from maistro.types.config import AgentConfig
+    from maistro.types.config import AgentConfig, SecurityConfig
     from maistro.types.errors import ConfigError
 
     llm_base = (settings.litellm_api_base or "").strip()
@@ -163,6 +164,13 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         # reads both `DATABASE_URL` and the `DB_*` set the shipped compose
         # file passes.
         database_url=resolve_database_url(),
+        # The Sentinel permission table is fail-closed (#1165): an empty table
+        # denies every tool, so the grants this deployment states must reach
+        # the config the Container is built from.
+        security=SecurityConfig(
+            permission_preset=settings.maistro_permission_preset,
+            permissions=settings.maistro_permissions,
+        ),
     )
 
     container = await create_container(config)
@@ -281,13 +289,23 @@ class MaistroCoreBridge:
         self,
         messages: list[dict[str, Any]],
         *,
+        auth: Any = None,
         session_id: str | None = None,
         intent_hint: str = "",
     ) -> dict[str, Any]:
+        """Route one turn through the Container, as the caller's identity.
+
+        `auth` is the `maistro.security.AuthContext` of the principal behind
+        the turn. Without one the Container evaluates the turn as the
+        role-less anonymous principal, whose every tool call the fail-closed
+        permission table denies (#1165) -- so a caller that wants its agents
+        to hold tool authority passes the principal it authenticated.
+        """
         if self._container is None:
             raise RuntimeError("MaistroCoreBridge.start() was not called")
         return await self._container.route_request(
             messages,
+            auth=auth,
             session_id=session_id,
             intent_hint=intent_hint,
         )

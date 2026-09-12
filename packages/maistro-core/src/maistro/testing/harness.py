@@ -135,9 +135,22 @@ def create_test_environment(
         preset=config.security.permission_preset,
         permissions=config.security.permissions,
     )
+    # Mirror create_container's live capability reconciliation (#1165): the
+    # harness is a second composition path, and one that drifted from the real
+    # Sentinel wiring once already. The same registry instance goes into the
+    # source and the container, so a test disabling a slot sees exactly what a
+    # production deployment would see.
+    from maistro.capabilities.bootstrap import default_capability_registry
+    from maistro.security.sentinel.permission_source import CapabilityPermissionSource
+
+    capabilities = default_capability_registry()
     sentinel = Sentinel(
         warden=warden,
         permission_table=permission_table,
+        permission_source=CapabilityPermissionSource(
+            base=permission_table,
+            capabilities=capabilities,
+        ),
         audit_log=audit_log,
     )
 
@@ -157,6 +170,7 @@ def create_test_environment(
         context_builder=context_builder,
         intent_registry=intent_registry,
         audit_log=audit_log,
+        capabilities=capabilities,
     )
 
     if agents:

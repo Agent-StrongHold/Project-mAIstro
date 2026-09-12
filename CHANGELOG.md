@@ -25,6 +25,18 @@ or placeholder-only section.
 
 ### Security
 
+- **Sentinel's permission table is fail-closed, and the production paths can
+  both feel it and configure it (#1165).** An empty or omitted deployment
+  table now denies every tool instead of authorizing all of them. A chat turn
+  that carries no identity is evaluated as the role-less anonymous principal
+  rather than walking past the table (the strategies only consult Sentinel
+  when an identity is present), so an auth-less request can no longer execute
+  tools the table denies; a configured table or strike tracking still refuses
+  to run without a real identity. Operators state grants in `maistro.yaml`
+  (`security.permission_preset`, `security.permissions`, unknown presets
+  refused at load) and Hive reads `MAISTRO_PERMISSION_PRESET` /
+  `MAISTRO_PERMISSIONS`; both reach the config the Container is built from.
+  Hive's bridge and engine accept the caller's principal on `route`.
 - **Bootstrap credential staging is now private, atomic, and never follows a
   link (#809).** `write_bootstrap_credentials` writes secrets to a fresh 0600
   temp file in the same directory and promotes it with `os.replace`, so secret

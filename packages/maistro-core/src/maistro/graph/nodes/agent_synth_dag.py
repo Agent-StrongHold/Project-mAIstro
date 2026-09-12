@@ -293,6 +293,15 @@ class AgentSynthDagNode(BaseNode[SynthDagIn, SynthDagOut]):
         self._runtime = runtime
         self._node_resolver = node_resolver
         self._warden = warden or Warden()
+        # Fail-closed by the shared Sentinel semantics (ADR-072726-0d6b,
+        # #1165): with no governed permission source wired, the empty table
+        # DENIES every ``authorize`` lookup, so a bare-constructed node refuses
+        # to approve (and therefore dispatch) synthesized sub-graphs instead of
+        # granting the synth action by omission. A deployment that wants
+        # governed synth_dag authority wires an explicit Sentinel whose table
+        # grants it; the compatibility escape hatch (allow_on_miss=True) is
+        # deliberately not offered here -- production construction sites do not
+        # get to re-arm allow-all.
         self._sentinel = sentinel or Sentinel(warden=self._warden, permission_table={})
         self._principal = principal or DEFAULT_PRINCIPAL
         self._proportionality_judge: ProportionalityJudge = (
