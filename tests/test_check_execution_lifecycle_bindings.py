@@ -29,10 +29,9 @@ def gate():
     ["def Shared(): pass", "async def Shared(): pass", "class Shared: pass"],
 )
 def test_local_definition_masks_imported_evidence(gate, binding: str) -> None:
-    source = f"""{IMPORTS}class Worker:
-    {binding}
-    Status = Shared | Literal["cancelled"]
-"""
+    source = IMPORTS + (
+        f"class Worker:\n    {binding}\n" '    Status = Shared | Literal["cancelled"]\n'
+    )
     assert gate.work_state_literals(source, "pkg.worker") == {}
 
 
@@ -41,9 +40,9 @@ def test_local_definition_masks_imported_evidence(gate, binding: str) -> None:
     ["Shared", "Shared, /", "*, Shared", "*Shared", "**Shared"],
 )
 def test_parameter_masks_an_outer_import(gate, signature: str) -> None:
-    source = f"""{IMPORTS}def make({signature}):
-    WorkerStatus = Shared | Literal["cancelled"]
-"""
+    source = IMPORTS + (
+        f"def make({signature}):\n" '    WorkerStatus = Shared | Literal["cancelled"]\n'
+    )
     assert gate.work_state_literals(source, "pkg.worker") == {}
 
 
@@ -56,10 +55,10 @@ def test_parameter_masks_an_outer_import(gate, signature: str) -> None:
     ],
 )
 def test_import_replaces_an_earlier_binding(gate, setup: str, expression: str) -> None:
-    source = f"""from typing import Literal
-{setup}
-WorkerStatus = {expression} | Literal["cancelled"]
-"""
+    source = (
+        f"from typing import Literal\n{setup}\n"
+        f'WorkerStatus = {expression} | Literal["cancelled"]\n'
+    )
     found = gate.work_state_literals(source, "pkg.worker")
     assert found == {"pkg.worker::WorkerStatus": EVIDENCE}
     assert gate.audit({"lifecycles": {}}, found)
@@ -67,14 +66,12 @@ WorkerStatus = {expression} | Literal["cancelled"]
 
 
 def test_parameter_can_be_rebound_by_a_local_import(gate) -> None:
-    source = f"""{IMPORTS}
+    source = IMPORTS + """
 def make(Shared):
     from pkg.base import RunStatus as Shared
     WorkerStatus = Shared | Literal["cancelled"]
 """
-    assert gate.work_state_literals(source, "pkg.worker") == {
-        "pkg.worker::make.WorkerStatus": EVIDENCE,
-    }
+    assert gate.work_state_literals(source, "pkg.worker") == {"pkg.worker::make.WorkerStatus": EVIDENCE}
 
 
 def test_relative_typing_module_is_not_the_standard_library(gate) -> None:
@@ -84,12 +81,12 @@ from .typing import RunStatus
 WorkerStatus = RunStatus | Literal["cancelled"]
 """
     assert gate.work_state_literals(source, "pkg.worker") == {
-        "pkg.worker::WorkerStatus": {"CANCELLED", "<imported-type:.typing.RunStatus>"},
+        "pkg.worker::WorkerStatus": {"CANCELLED", "<imported-type:.typing.RunStatus>"}
     }
 
 
 def test_an_assignment_after_an_import_still_masks_it(gate) -> None:
-    source = f"""{IMPORTS}
+    source = IMPORTS + """
 Shared = None
 WorkerStatus = Shared | Literal["cancelled"]
 """

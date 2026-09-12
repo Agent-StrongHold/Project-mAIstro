@@ -69,37 +69,34 @@ class B:
 @pytest.mark.parametrize(
     "annotation",
     [
-        """'Literal["queued", "running", "failed"]'""",
-        """'t.Literal["queued", "running", "failed"]'""",
-        """'Optional[Literal["queued", "running", "failed"]]'""",
-        """'Union[Literal["queued", "running"], Literal["failed"]]'""",
-        """'Annotated[Literal["queued", "running", "failed"], "note"]'""",
-        """Optional['Literal["queued", "running", "failed"]']""",
-        """Union['Literal["queued", "running"]', Literal["failed"]]""",
-        """Annotated['Literal["queued", "running", "failed"]', "note"]""",
+        "'Literal[\"queued\", \"running\", \"failed\"]'",
+        "'t.Literal[\"queued\", \"running\", \"failed\"]'",
+        "'Optional[Literal[\"queued\", \"running\", \"failed\"]]'",
+        "'Union[Literal[\"queued\", \"running\"], Literal[\"failed\"]]'",
+        "'Annotated[Literal[\"queued\", \"running\", \"failed\"], \"note\"]'",
+        "Optional['Literal[\"queued\", \"running\", \"failed\"]']",
+        "Union['Literal[\"queued\", \"running\"]', Literal[\"failed\"]]",
+        "Annotated['Literal[\"queued\", \"running\", \"failed\"]', \"note\"]",
     ],
 )
 def test_postponed_field_annotations_are_discovered(gate, annotation: str) -> None:
-    source = f"""import typing as t
-from typing import Literal, Optional, Union, Annotated
-class Job:
-    status: {annotation.strip()}
-"""
+    source = (
+        "import typing as t\nfrom typing import Literal, Optional, Union, Annotated\n"
+        f"class Job:\n    status: {annotation.strip()}\n"
+    )
     found = gate.work_state_literals(source, "pkg.worker")
     assert found == {"pkg.worker::Job.status": STATES}
     assert gate.audit({"lifecycles": {}}, found)
 
 
 @pytest.mark.parametrize(
-    "annotation",
-    ["'RunStatus'", "Optional['RunStatus']", "'Optional[RunStatus]'"],
+    "annotation", ["'RunStatus'", "Optional['RunStatus']", "'Optional[RunStatus]'"]
 )
 def test_quoted_reuse_keeps_the_named_vocabulary_identity(gate, annotation: str) -> None:
-    source = f"""from typing import Literal, Optional
-RunStatus = Literal["queued", "running", "failed"]
-class Job:
-    status: {annotation}
-"""
+    source = (
+        'from typing import Literal, Optional\nRunStatus = Literal["queued", "running", "failed"]\n'
+        f"class Job:\n    status: {annotation}\n"
+    )
     assert gate.work_state_literals(source, "pkg.worker") == {"pkg.worker::RunStatus": STATES}
 
 
@@ -110,7 +107,7 @@ class Job:
     status: 'RunStatus | Literal["cancelled"]'
 """
     assert gate.work_state_literals(source, "pkg.worker") == {
-        "pkg.worker::Job.status": {"CANCELLED", "<imported-type:.base.RunStatus>"},
+        "pkg.worker::Job.status": {"CANCELLED", "<imported-type:.base.RunStatus>"}
     }
 
 
@@ -119,16 +116,15 @@ class Job:
     [
         "'not valid ['",
         "'int'",
-        """Annotated[str, 'Literal["queued", "running", "failed"]']""",
-        """Literal['Literal["queued", "running", "failed"]']""",
-        """'__import__("module_that_must_never_be_executed").run()'""",
+        "Annotated[str, 'Literal[\"queued\", \"running\", \"failed\"]']",
+        "Literal['Literal[\"queued\", \"running\", \"failed\"]']",
+        "'__import__(\"module_that_must_never_be_executed\").run()'",
     ],
 )
 def test_quoted_annotations_never_execute_or_reinterpret_metadata(gate, annotation: str) -> None:
-    source = f"""from typing import Literal, Annotated
-class Job:
-    status: {annotation.strip()}
-"""
+    source = (
+        "from typing import Literal, Annotated\n" f"class Job:\n    status: {annotation.strip()}\n"
+    )
     assert gate.work_state_literals(source, "pkg.worker") == {}
 
 
@@ -142,5 +138,5 @@ class Job:
 
 
 def test_a_runtime_string_assignment_is_not_a_type_alias(gate) -> None:
-    source = """RunStatus = 'Literal["queued", "running", "failed"]'\n"""
+    source = "RunStatus = 'Literal[\"queued\", \"running\", \"failed\"]'\n"
     assert gate.work_state_literals(source, "pkg.worker") == {}
