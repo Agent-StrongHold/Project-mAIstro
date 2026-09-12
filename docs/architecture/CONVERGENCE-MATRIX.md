@@ -187,5 +187,5 @@ A share rather than the `19/62` this column used to carry, because the denominat
 - `quality/reachability-baseline.json` — ratcheted unreachable set.
 - `quality/reachability-dispositions.json` — CONNECT/LIBRARY/RETIRE classification per unreachable module (#33).
 - `quality/ac-state.json` — measured acceptance evidence and design coverage (#31/#166).
-- `quality/execution-lifecycles.json` — classified work-state enums (#36).
+- `quality/execution-lifecycles.json` — classified work-state Enum and status-shaped Literal vocabularies (#36/#1136).
 - `docs/quality-gates.md` — enforcement boundaries and known limitations.
