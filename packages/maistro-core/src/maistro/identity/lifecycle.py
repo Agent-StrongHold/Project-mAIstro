@@ -19,6 +19,8 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Literal, Protocol
 
+from maistro.security.secret_equal import secret_equal
+
 # See maistro/identity/__init__.py: these ship in the `identity` extra.
 try:
     from bip_utils import Base58Decoder, Base58Encoder, Bip39SeedGenerator
@@ -251,7 +253,11 @@ def normalize_recovery_seed(seed: bytes | str | list[str]) -> bytes:
         try:
             derived: bytes = Bip39SeedGenerator(mnemonic).Generate()
         except Exception as exc:
-            raise InvalidRecoverySeedError(f"Invalid mnemonic: {exc}") from exc
+            # bip_utils error strings can embed the full mnemonic (e.g.
+            # "Invalid language for mnemonic '...'"). The public error carries
+            # only the exception type, and chaining is suppressed so a logged
+            # traceback cannot surface the recovery words either.
+            raise InvalidRecoverySeedError(f"Invalid mnemonic ({type(exc).__name__})") from None
         return derived[:32]
     if len(seed) != 32:
         raise InvalidRecoverySeedError("Raw recovery seed must be 32 bytes")
@@ -392,7 +398,10 @@ async def recover_agent_identity(
         raise IdentityArchivedError(f"Agent {agent_id!r} is offboarded")
 
     stored_seed = secret_store.decrypt(identity.recovery_seed_encrypted)
-    if normalize_recovery_seed(recovery_seed) != stored_seed:
+    candidate_seed = normalize_recovery_seed(recovery_seed)
+    # Encode both byte strings deterministically before routing the comparison
+    # through the shared fixed-length constant-time secret comparator.
+    if not secret_equal(candidate_seed.hex(), stored_seed.hex()):
         raise InvalidRecoverySeedError("Recovery seed does not match")
 
     # Deterministic regeneration: same seed -> same keypair -> same DID.

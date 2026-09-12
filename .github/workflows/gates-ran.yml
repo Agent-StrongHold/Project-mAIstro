@@ -27,6 +27,7 @@ on:
       - "quality"
       - "security"
       - "CodeQL Advanced"
+      - "DevSkim"
       - "Formal Conformance"
       - "Gate C"
       - "Registry CI"

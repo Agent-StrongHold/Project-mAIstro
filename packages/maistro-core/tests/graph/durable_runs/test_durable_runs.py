@@ -208,6 +208,37 @@ async def test_list_by_status_filters_correctly(mem_store: DurableRunStore) -> N
     assert {r.run_id for r in completed} == {"b"}
 
 
+@pytest.fixture(params=["memory", "sqlite"])
+async def scoped_store(request: pytest.FixtureRequest, tmp_path: Any) -> Any:
+    """The same durable surface on each backend, for scope-filter tests."""
+    if request.param == "memory":
+        return InMemoryDurableRunStore()
+    return SqliteDurableRunStore(tmp_path / "scoped.db")
+
+
+async def test_list_by_status_honors_the_workspace_boundary(
+    scoped_store: DurableRunStore,
+) -> None:
+    """Workspace scope filters rows, before the page limit, on every backend.
+
+    The HITL backlog pages per Workspace: a filter applied after a global page
+    could hide a caller's own work behind another tenant's backlog, and a
+    filter that ignored the argument would leak every tenant's rows. Both
+    stores must actually discriminate on the argument.
+    """
+    dag = {"id": "d1", "nodes": [{"id": "n1"}], "edges": []}
+    await scoped_store.create(durable_record(dag, run_id="ws-a"))
+    await scoped_store.create(durable_record(dag, run_id="ws-b", workspace_id="workspace-b"))
+
+    mine = await scoped_store.list_by_status(RunStatus.RUNNING, workspace_id="test-workspace")
+    other = await scoped_store.list_by_status(RunStatus.RUNNING, workspace_id="workspace-b")
+    nobody = await scoped_store.list_by_status(RunStatus.RUNNING, workspace_id="workspace-nobody")
+
+    assert {record.run_id for record in mine} == {"ws-a"}
+    assert {record.run_id for record in other} == {"ws-b"}
+    assert nobody == []
+
+
 # --- SqliteDurableRunStore: same surface, persistence verified ------------
 
 

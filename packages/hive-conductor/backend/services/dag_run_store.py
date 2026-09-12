@@ -102,6 +102,16 @@ class DagRun:
     events: list[DagRunEvent] = field(default_factory=list)
     finished_at: float | None = None
     dag_id: str = ""
+    #: The canonical Workspace/Project this execution was admitted into.
+    #:
+    #: Copied from the canonical Run the execution produced (`execute_dag`
+    #: projects `Run.workspace_id`/`Run.project_id` into its result), so the
+    #: inspection surface can authorize a projection row at the same boundary
+    #: every other Hive surface uses (#1174). A record with neither is a row
+    #: written before scope reached the projection: it is visible to no one,
+    #: fail-closed, until #1036 re-scopes it.
+    workspace_id: str = ""
+    project_id: str = ""
     #: "running" until the run reports otherwise. Declared, because the run
     #: route used to assign `run.status` and `run.result` to a dataclass that
     #: had neither -- Python attached both silently and `to_summary` read
@@ -131,6 +141,8 @@ class DagRun:
             status=raw.get("status", "running"),
             result=raw.get("result"),
             canonical_run_id=raw.get("canonical_run_id", ""),
+            workspace_id=raw.get("workspace_id", ""),
+            project_id=raw.get("project_id", ""),
         )
 
     def to_record(self) -> dict[str, Any]:
@@ -151,6 +163,8 @@ class DagRun:
             "status": self.status,
             "result": _bounded(self.result),
             "canonical_run_id": self.canonical_run_id,
+            "workspace_id": self.workspace_id,
+            "project_id": self.project_id,
             "events": [asdict(ev) for ev in self.events],
         }
 
@@ -170,6 +184,8 @@ class DagRun:
             "dag_id": self.dag_id,
             "status": self.status,
             "canonical_run_id": self.canonical_run_id,
+            "workspace_id": self.workspace_id,
+            "project_id": self.project_id,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "event_count": len(self.events),
@@ -279,8 +295,16 @@ class DagRunStore:
         run_id: str | None = None,
         dag_id: str = "",
         canonical_run_id: str = "",
+        workspace_id: str = "",
+        project_id: str = "",
     ) -> DagRun:
         """Begin a new run (correlation key). Returns the DagRun object.
+
+        `workspace_id`/`project_id` carry the canonical scope the execution
+        was admitted into, resolved by the caller from the same authority
+        `execute_dag` uses (`resolve_execution_scope`) -- the projection never
+        derives scope itself, it only records what the canonical Run already
+        carries (#1174).
 
         Evicts the oldest run from `_runs` dict + `_subscribers` map when the
         ring buffer is full. The deque itself silently drops the oldest entry
@@ -294,6 +318,8 @@ class DagRunStore:
             user_id=user_id,
             dag_id=dag_id,
             canonical_run_id=canonical_run_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
         )
         async with self._lock:
             # If we're at capacity, manually evict before append (otherwise

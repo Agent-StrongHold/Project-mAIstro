@@ -385,8 +385,17 @@ def test_get_verdict_returns_persisted_or_none() -> None:
 
 
 def test_get_verdict_endpoint_returns_persisted(authed_client: Any) -> None:
+    import asyncio
+
+    from services.dag_run_store import get_dag_run_store
     from services.eval_judge import _persist
 
+    # The verdict read is scoped to the run (#1174): the run is seeded inside
+    # a Workspace the caller owns, so the persisted verdict is readable.
+    workspace_id = authed_client.post(
+        "/v1/workspaces", json={"persona_template_id": "pm_fleet", "name": "Verdict Read"}
+    ).json()["id"]
+    asyncio.run(get_dag_run_store().start_run(run_id="r-V", workspace_id=workspace_id))
     _persist(
         _Run(run_id="r-V"),
         {"score": 70, "rationale": "ok", "topology_proposal": None, "status": "ok"},
@@ -402,8 +411,19 @@ def test_get_verdict_endpoint_404(authed_client: Any) -> None:
 
 
 def test_list_verdicts_endpoint_returns_newest_first(authed_client: Any) -> None:
+    import asyncio
+
+    from services.dag_run_store import get_dag_run_store
     from services.eval_judge import _persist
 
+    # Both runs live in a Workspace the caller owns, so both verdicts are
+    # inside the caller's scoped list (#1174).
+    workspace_id = authed_client.post(
+        "/v1/workspaces", json={"persona_template_id": "pm_fleet", "name": "Verdict List"}
+    ).json()["id"]
+    store = get_dag_run_store()
+    asyncio.run(store.start_run(run_id="r-old", workspace_id=workspace_id))
+    asyncio.run(store.start_run(run_id="r-new", workspace_id=workspace_id))
     _persist(
         _Run(run_id="r-old"), {"score": 50, "status": "ok"}, now=datetime(2026, 1, 1, tzinfo=UTC)
     )
@@ -418,9 +438,26 @@ def test_list_verdicts_endpoint_returns_newest_first(authed_client: Any) -> None
 
 
 def test_list_verdicts_limit_clamped_to_100(authed_client: Any) -> None:
+    import asyncio
+
+    from services.dag_run_store import get_dag_run_store
     from services.eval_judge import _persist
 
+    # Every verdict needs a run inside the caller's Workspace universe to be
+    # listable (#1174). The projection keeps MAX_RUNS rows, so seeding 110
+    # runs leaves exactly the newest 100 rows — still enough for the cap to
+    # bind, and the verdicts whose rows were evicted are invisible, not
+    # counted.
+    workspace_id = authed_client.post(
+        "/v1/workspaces", json={"persona_template_id": "pm_fleet", "name": "Verdict Cap"}
+    ).json()["id"]
+    store = get_dag_run_store()
+
+    def _seed(rid: str) -> None:
+        asyncio.run(store.start_run(run_id=rid, workspace_id=workspace_id))
+
     for i in range(110):
+        _seed(f"r-{i}")
         _persist(_Run(run_id=f"r-{i}"), {"score": i % 100, "status": "ok"})
     r = authed_client.get("/v1/eval-judge?limit=999")
     assert r.status_code == 200
@@ -430,7 +467,12 @@ def test_list_verdicts_limit_clamped_to_100(authed_client: Any) -> None:
 def test_trigger_score_endpoint_runs_against_dag_run_store(
     authed_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Seed a fake run into dag_run_store, stub the LLM, hit POST."""
+    """Seed a scoped fake run into dag_run_store, stub the LLM, hit POST.
+
+    The run is seeded inside a Workspace the caller is a member of (#1174):
+    the trigger reads the projection through the scoped inspection service,
+    so an unscoped row would be refused like a missing one.
+    """
     import services.eval_judge as ej
     from services.dag_run_store import get_dag_run_store
 
@@ -445,13 +487,23 @@ def test_trigger_score_endpoint_runs_against_dag_run_store(
 
     monkeypatch.setattr(routes_ej, "score_run", _patched_score)
 
+    # A Workspace the caller (the session user) owns, so the run seeded into
+    # it is inside the caller's canonical Workspace universe (#1174).
+    workspace_id = authed_client.post(
+        "/v1/workspaces", json={"persona_template_id": "pm_fleet", "name": "Eval Scope"}
+    ).json()["id"]
+
     # Seed a fake run via dag_run_store's public start_run + append_event
     import asyncio
 
     store = get_dag_run_store()
 
     async def _seed() -> str:
-        run = await store.start_run(user_id="testuser", run_id="r-trigger")
+        run = await store.start_run(
+            user_id="testuser",
+            run_id="r-trigger",
+            workspace_id=workspace_id,
+        )
         await store.append_event(
             "r-trigger",
             event_type="pm_node_completed",
@@ -470,6 +522,41 @@ def test_trigger_score_endpoint_runs_against_dag_run_store(
     r = authed_client.post(f"/v1/eval-judge/{rid}")
     assert r.status_code == 200
     assert r.json()["score"] == 91
+
+
+def test_trigger_score_out_of_scope_run_is_not_scored(
+    authed_client: Any, admin_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run outside the caller's Workspace universe scores nothing (#1174).
+
+    The run exists — the admin seeded it into THEIR workspace — but the
+    caller gets the same 404 a missing run gets, so the response confirms no
+    run beyond the boundary. The projection record itself is untouched.
+    """
+    import asyncio
+
+    from services.dag_run_store import get_dag_run_store
+
+    workspace_id = admin_client.post(
+        "/v1/workspaces", json={"persona_template_id": "pm_fleet", "name": "Admin Runs"}
+    ).json()["id"]
+    asyncio.run(get_dag_run_store().start_run(run_id="r-foreign", workspace_id=workspace_id))
+
+    called = False
+
+    async def _must_not_score(run_record: Any, **kw: Any) -> dict[str, Any]:
+        nonlocal called
+        called = True
+        return {"score": 0}
+
+    import routes.eval_judge as routes_ej
+
+    monkeypatch.setattr(routes_ej, "score_run", _must_not_score)
+
+    r = authed_client.post("/v1/eval-judge/r-foreign")
+    assert r.status_code == 404
+    assert r.json() == {"detail": "run not found"}
+    assert called is False
 
 
 def test_trigger_score_missing_run_returns_404(authed_client: Any) -> None:
