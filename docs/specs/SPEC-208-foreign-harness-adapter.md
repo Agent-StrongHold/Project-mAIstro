@@ -53,6 +53,11 @@ history:
 
 # SPEC-208: Foreign harness adapter
 
+> **Retirement note (#1154):** The historical `NodeRun` executor seam described
+> below is not a supported standalone Graph execution path. `NodeExecutor` is
+> provider-level plumbing only; the canonical durable Graph executor owns the
+> Run/NodeRun/Attempt lifecycle around any capability turn.
+
 **Implements:** ADR-061526-f383. ADR-061526-f383 decides *that* maistro wraps foreign agent harnesses behind a
 `harness_runner` slot, can be wrapped the same way by other orchestrators, and adopts an
 import-wide/export-narrow posture for agent and skill formats. This spec defines *how*: the slot
@@ -202,12 +207,10 @@ harness instead of the LLM. This needs an *execution* seam, not a strategy: ADR-
 `HarnessNodeStrategy.execute()` did not match that interface and was **not** built as such. The
 as-built design instead adds a distinct seam:
 
-- **`NodeExecutor` protocol** (`graph/node.py`) — a non-LLM execution backend. When a `NodeRun`
-  carries an `executor`, `execute()` dispatches to `_execute_via_executor()`, which **reuses** the
-  existing circuit-breaker, `IterationBudget`, retry, and success/failure/telemetry plumbing but
-  replaces "call `llm_call`, parse text" with "call the executor, get a parsed output." The shared
-  per-attempt guard (cancel/circuit/budget) is factored into `_preflight_stop()`, used by both the
-  LLM and executor paths.
+- **`NodeExecutor` protocol** (`graph/node.py`) — a provider-level seam for a typed capability
+  result. It does not own a node lifecycle or dispatch a Graph by itself; when wired into a
+  durable node, the canonical executor owns the surrounding Run/NodeRun/Attempt records and
+  Attempt-scoped retry/failure evidence.
 - **`HarnessStrategy`** (`graph/strategy.py`) — the shaper half: role `AgentRole.HARNESS`, output
   type `HarnessOutput`, registered in `STRATEGY_REGISTRY` so a DAG can schedule a harness node by
   role.
@@ -217,10 +220,9 @@ as-built design instead adds a distinct seam:
   bridges to `HarnessSessionManager`: `start` → `send` (Warden-scanned, policy-gated) → `stop`,
   normalizing either envelope shape (OpenAI `choices` or flat `content`) into `HarnessOutput`, and
   raising `HarnessExecutionError` on `Unavailable` so the node's retry/circuit plumbing records it.
-- **Wiring** — a per-role `node_executors: dict[str, NodeExecutor]` map is threaded through
-  `GraphRun` and `run_graph()`; when a node's role matches, it runs via the executor. A foreign
-  harness node thus cannot exceed the shared `IterationBudget` and records `NodeRun` telemetry
-  identically to a native node.
+- **Wiring** — a harness node is resolved by the canonical durable Graph executor; when its kind
+  matches, physical work crosses the Attempt firewall. A foreign harness node therefore records
+  canonical Run/NodeRun/Attempt evidence alongside native nodes.
 
 **Inbound (maistro is driven by another orchestrator).** A `hive-conductor` route
 (`routes/harness.py`) exposes the `HarnessRunner` HTTP shape: `POST /v1/harness/sessions`
@@ -249,9 +251,9 @@ the existing middleware; a dedicated `harness:session` service-key scope can gat
       `to_*()` round-tripped in a unit test (`portability/`).
 - [x] `export_agent()` produces an MCP server manifest + a `SKILL.md` whose frontmatter
       `skills/parser.py` can re-parse — proving the import→export round trip.
-- [x] A harness-backed graph node runs under ADR-062's `GraphRun` via the `NodeExecutor` seam
-      (`HarnessNodeExecutor` + `HarnessStrategy`), recording `NodeRun` telemetry identically to a
-      native node and respecting `IterationBudget`. *(Built as an executor seam, not a
+- [x] A harness-backed graph node runs under the canonical durable Graph executor via the
+      `HarnessNodeExecutor` seam (`HarnessNodeExecutor` + `HarnessStrategy`), recording canonical
+      Run/NodeRun/Attempt evidence. *(Built as an executor seam, not a
       `NodeStrategy.execute()` — see §5 rationale.)*
 - [x] `POST /v1/harness/sessions` (+ send/stream/stop) is reachable through the Conductor auth
       middleware, backed by `HarnessSessionManager` (same Warden + policy gating), returning
@@ -266,7 +268,7 @@ the existing middleware; a dedicated `harness:session` service-key scope can gat
   wrapping order is enforced regardless of provider (behavioral) — a fake provider cannot bypass
   the wrapper.
 - Integration: outbound — a `HarnessNodeStrategy` node driving a stub `HarnessRunner` inside a
-  `GraphRun`; inbound — `POST /v1/harness/sessions/.../send` round-tripping through
+  durable Graph Run; inbound — `POST /v1/harness/sessions/.../send` round-tripping through
   `Conduit.route_request()` against an in-memory container.
 - Property (formal/, per repo convention): "a `harness_runner` provider that is absent, disabled,
   or unhealthy never causes a graph node or `Conduit` call to raise" (extends the SPEC-184

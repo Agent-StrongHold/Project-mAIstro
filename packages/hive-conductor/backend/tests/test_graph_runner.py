@@ -1,7 +1,8 @@
 """Boy Scout coverage: services/graph_runner.py (was 10% line/branch).
 
 Covers:
-- execute_dag with stub maistro.graph: builds GraphConfig + invokes run_graph
+- execute_dag with the canonical durable Graph seam: builds a graph and invokes
+  the durable runner
 - execute_dag entry_node fallback: when not set, uses first node's id
 - genome_to_dag: maps PipelineGenome → DAG dict with all node + edge fields
 - execute_champion: 4 branches (no svc / no population / no champion / success)

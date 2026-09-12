@@ -1,21 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.intents import IntentRegistry
 from maistro.classifier.engine import ClassifierEngine
 from maistro.container import Container
-from maistro.graph.events import GraphEvent
-from maistro.graph.run import GraphRun
-from maistro.graph.types import (
-    AgentRole,
-    GraphConfig,
-    GraphEdge,
-    GraphTask,
-    HyperagentOutput,
-)
 from maistro.memory.learnings.extractor import ToolCorrectionExtractor
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.outcomes import InMemoryOutcomeStore
@@ -39,11 +30,7 @@ class HarnessEnvironment:
     classifier: ClassifierEngine
     router: RouterEngine
     provider: FauxProvider
-    graph_run: GraphRun
-    events: list[GraphEvent] = field(default_factory=list)
-    responses: list[dict[str, Any]] = field(default_factory=list)
-    _event_filter: set[str] | None = field(default=None, repr=False)
-    _graph_config: GraphConfig = field(default_factory=lambda: GraphConfig(nodes=[]), repr=False)
+    responses: list[dict[str, Any]]
 
     async def send_prompt(self, prompt: str, **kwargs: Any) -> dict[str, Any]:
         messages = [{"role": "user", "content": prompt}]
@@ -51,44 +38,13 @@ class HarnessEnvironment:
         self.responses.append(result)
         return result
 
-    def get_events(self, event_type: str | None = None) -> list[GraphEvent]:
-        if event_type is None:
-            return list(self.events)
-        return [e for e in self.events if e.type == event_type]
-
     def get_last_response(self) -> dict[str, Any] | None:
         return self.responses[-1] if self.responses else None
 
-    def assert_event_type(self, event_type: str, count: int = 1) -> list[GraphEvent]:
-        matching = [e for e in self.events if e.type == event_type]
-        actual = len(matching)
-        if actual != count:
-            raise AssertionError(f"Expected {count} events of type '{event_type}', got {actual}")
-        return matching
-
     def reset(self) -> None:
-        self.events.clear()
         self.responses.clear()
         self.provider._responses.clear()
         self.provider.reset()
-
-    async def run_graph(self, **kwargs: Any) -> HyperagentOutput:
-        task_description = kwargs.pop("task_description", "test task")
-        # This is a test-harness default — the string is consumed by GraphTask
-        # which never writes to it directly; sandbox writes are gated by
-        # tools/sandbox/workspace.validate_workspace_path. False positive.
-        workspace = kwargs.pop("workspace", "/tmp")  # nosec B108 — test fixture default, not a file op
-        task = GraphTask(description=task_description, workspace=workspace)
-        new_run = GraphRun(config=self._graph_config, task=task)
-        env = self
-
-        async def _capture(event: GraphEvent) -> None:
-            if env._event_filter is None or event.type in env._event_filter:
-                env.events.append(event)
-
-        new_run.event_callbacks.append(_capture)
-        self.graph_run = new_run
-        return await new_run.start(llm_call=self.provider, **kwargs)
 
 
 def create_test_environment(
@@ -96,8 +52,6 @@ def create_test_environment(
     provider: FauxProvider | None = None,
     config: AgentConfig | None = None,
     agents: dict[str, Any] | None = None,
-    graph_config: GraphConfig | None = None,
-    event_filter: set[str] | None = None,
 ) -> HarnessEnvironment:
     if provider is None:
         provider = FauxProvider()
@@ -164,31 +118,10 @@ def create_test_environment(
         for name in agents:
             intent_registry.register(name, name)
 
-    if graph_config is None:
-        graph_config = GraphConfig(
-            nodes=[AgentRole.PLANNER, AgentRole.CODER, AgentRole.REVIEWER],
-            edges=[
-                GraphEdge(from_role=AgentRole.PLANNER, to_role=AgentRole.CODER),
-                GraphEdge(from_role=AgentRole.CODER, to_role=AgentRole.REVIEWER),
-            ],
-        )
-
-    graph_run = GraphRun(config=graph_config)
-
-    env = HarnessEnvironment(
+    return HarnessEnvironment(
         container=container,
         classifier=classifier,
         router=router,
         provider=provider,
-        graph_run=graph_run,
-        _event_filter=event_filter,
-        _graph_config=graph_config,
+        responses=[],
     )
-
-    async def _capture(event: GraphEvent) -> None:
-        if event_filter is None or event.type in event_filter:
-            env.events.append(event)
-
-    graph_run.event_callbacks.append(_capture)
-
-    return env

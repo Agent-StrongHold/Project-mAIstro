@@ -54,13 +54,18 @@ the graph executor, conduit, and observability pipeline.
 - Auto-tuning resilience policy (operator-set, not learned in P1).
 - Circuit breaker (ADR-038 Shallow; separate from P1 control).
 
-## Decision (as implemented)
+## Decision (historical implementation)
+
+> **Retirement note (#1154):** The former `NodeRun.execute` integration described
+> here belonged to the pre-durable Graph executor and is retired. P1 resilience
+> for physical Graph work must wrap the canonical Attempt execution seam; this
+> document preserves the earlier design for provenance only.
 
 All new policy/compaction code lives in `maistro/resilience/p1.py`, reusing the
 ADR-038 primitives (`maistro.resilience.classifier.classify_error`, deterministic
 backoff helpers). The executor integration lives in `maistro/graph/executor.py`
-as `execute_with_resilience`, which wraps any async operation (e.g. a
-`NodeRun.execute` call) rather than replacing `NodeRun`'s internal loop.
+as `execute_with_resilience`, which wraps an async operation at the owning
+execution seam rather than creating another lifecycle loop.
 
 ### Error codes
 
