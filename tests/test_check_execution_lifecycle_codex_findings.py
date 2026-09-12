@@ -1,5 +1,6 @@
 """Fixes for the Codex review round on ed7fd3b (#1136): global rebinding,
-PEP 613 explicit ``TypeAlias`` strings, and PEP 695 type-parameter shadowing.
+PEP 613 explicit ``TypeAlias`` strings, PEP 695 type-parameter shadowing, and
+conditional-branch rebinding of a meaningful typing form/import.
 
 Each case here was independently reproduced against the scanner before this
 change and confirmed to misbehave; the assertions below are what a correct
@@ -126,3 +127,60 @@ type Stage[T] = RunStatus
         "pkg.mod::RunStatus": STATES,
         "pkg.mod::Stage": STATES,
     }
+
+
+def test_dead_conditional_branch_cannot_erase_a_typing_form(gate) -> None:
+    """A branch that never executes (``if False:``) still gets walked, since
+    the scanner is syntax-only; it must not be allowed to permanently erase
+    an already-established ``Literal`` binding for the rest of the scope.
+    The scanner previously returned no vocabulary at all here."""
+    source = """from typing import Literal
+if False:
+    Literal = str
+RunStatus = Literal["pending", "running", "failed"]
+"""
+    assert gate.work_state_literals(source, "pkg.mod") == {
+        "pkg.mod::RunStatus": STATES,
+    }
+
+
+def test_try_except_typing_fallback_still_resolves(gate) -> None:
+    """The common ``try/except ImportError`` fallback for `TypeAlias`
+    (or any typing form) is conditional too -- the fix must not break it."""
+    source = """
+try:
+    from typing import TypeAlias
+except ImportError:
+    from typing_extensions import TypeAlias
+RunStatus: TypeAlias = "Literal['pending', 'running', 'failed']"
+"""
+    assert gate.work_state_literals(source, "pkg.mod") == {
+        "pkg.mod::RunStatus": STATES,
+    }
+
+
+def test_conditional_rebind_to_another_meaningful_form_still_applies(gate) -> None:
+    """Rebinding a typing name to a *different* meaningful form inside a
+    conditional still applies -- only a downgrade to a plain value is
+    protected. Here ``Literal`` ends up meaning ``Optional`` in both
+    branches, so `Literal["pending", ...]` is not a Literal alias at all;
+    correctly finding nothing is not the bug this guards against."""
+    source = """
+if True:
+    from typing import Literal
+else:
+    from typing import Optional as Literal
+RunStatus = Literal["pending", "running", "failed"]
+"""
+    assert gate.work_state_literals(source, "pkg.mod") == {}
+
+
+def test_unconditional_rebind_still_erases_the_prior_meaning(gate) -> None:
+    """Outside of a conditional construct, a plain sequential rebinding must
+    still erase the prior meaning exactly as before -- this guard is scoped
+    to conditional constructs only."""
+    source = """from typing import Literal
+Literal = str
+RunStatus = Literal["pending", "running", "failed"]
+"""
+    assert gate.work_state_literals(source, "pkg.mod") == {}
