@@ -106,6 +106,72 @@ or placeholder-only section.
 
 ### Fixed
 
+- **A schedule refused by the occurrence claim now links the Run that won it
+  (#1059).** Occurrence uniqueness stopped a second Run for
+  `(schedule_id, scheduled_for)` but not the stale cursor behind it: a ticker
+  that died between creating the Run and `record_fire`, followed by any other
+  ticker, left `Schedule.last_run_id` empty while the winning Run was still
+  live, so the overlap policy was judged against nothing and a `SKIP` schedule
+  could admit its next occurrence beside the one still running.
+  `ScheduleRunAdmitter` now resolves the winner through a new
+  `RunStore.get_run_for_occurrence()` — served from the same unique index that
+  enforces the claim on every backend, never a provenance scan — and
+  `last_run_id` follows the newest consumed occurrence whichever ticker
+  admitted it. The admitter reads those claims *before* applying the overlap
+  policy, so a crashed winner the caller's pointer never named is what
+  `CANCEL_OTHER`, `SKIP` and `BUFFER_ONE` see as in flight (reported as
+  `ScheduleAdmission.active_run_id`) rather than an occurrence to drop, and
+  every consumed occurrence with a Run is counted toward `max_runs` — once:
+  `ScheduleStore.record_fire` now takes the fired occurrences and counts each
+  against the stored cursor under its lock, so two tickers consuming one
+  occurrence cannot count it twice and a winner that died before recording is
+  still counted. The advance is monotonic as well: a delayed ticker's write
+  for an older occurrence can no longer move `last_fired_at`, `last_run_id` or
+  `next_due_at` backward over a rival's newer one, and reaching `max_runs`
+  disables the schedule in the store whether or not the caller asked. The
+  pointer names the Run behind the newest fired occurrence or stays where it
+  was: when that winner cannot be resolved, no earlier Run of the same batch
+  stands in for it. A winner that crashed before the catch-up horizon — the
+  ticker died mid-fire and stayed down longer than the window, so no later
+  evaluation enumerates its occurrence — is recovered by walking the claims
+  forward from the cursor, one lookup per contiguous crashed Run and none on
+  an idle tick. On PostgreSQL the occurrence claim is promoted out of the
+  payload into `schedule_id`/`scheduled_for` columns (migration `034`), so
+  archiving a cold winner — which sets its payload to NULL — no longer
+  releases the claim on the occurrence it ran. Rows archived *before* the
+  migration have no payload left to backfill from and stay without a claim;
+  they are already terminal and older than the catch-up window, so nothing
+  re-fires them, but a lookup by occurrence does not find them.
+- **A schedule's due cursor is recorded on every evaluation, and SQLite
+  `record_fire` is serialized (#1199).** `ScheduleRunAdmitter` computed
+  `next_due_at` on an evaluation that fired nothing but never persisted it, so
+  a schedule whose first occurrence was days away stayed `next_due_at=None`
+  and was selected by `ScheduleStore.due()` on every tick until then.
+  `record_fire` now takes `fired_at=None` to record the due cursor alone —
+  the enumeration cursor (`last_fired_at`), `last_run_id` and `runs_so_far`
+  are untouched — and the admitter writes it whenever it changes and nothing
+  is owed; a `BUFFER_ONE` occurrence held behind an active Run keeps the
+  schedule due rather than hiding it until the occurrence after it.
+  `SqliteScheduleStore.record_fire` was a get-then-put with nothing between
+  the read and the write, so a tick and a manual fire advancing one schedule
+  could both read `runs_so_far = n` and both write `n + 1`, losing each
+  other's `last_run_id` and `next_due_at` with it; every SQLite writer now
+  goes through one `BEGIN IMMEDIATE` critical section, matching the
+  PostgreSQL store's `FOR UPDATE`. That section is the connection's, so the
+  container now opens the schedule store its own SQLite connection
+  (`Container.schedule_conn`, on the session store's terms) rather than
+  sharing the spine's, where its BEGIN collided with a sibling store's open
+  transaction and its rollback discarded that sibling's work; a cancelled
+  writer waits the queued COMMIT out before deciding whether a rollback is
+  real. `ScheduleStore.put` keeps an existing row's recorded cursors
+  (`last_fired_at`, `last_run_id`, `runs_so_far`, `next_due_at`) instead of
+  writing back the copy the caller read, so the Hive tick's per-tick
+  definition refresh can no longer undo a fire that landed between its read
+  and its write; a changed recurrence clears `next_due_at` for re-evaluation.
+  `record_fire`'s `fires` now follows `fired_at` when omitted (none for a
+  due-cursor-only write), so a bounded schedule cannot be spent by one. The
+  live Hive tick still enumerates its own schedule rows; moving it onto
+  `ScheduleStore.due()` is #1199's remaining scope.
 - **Project membership is one canonical row per `(project, principal)`, and
   is now explicitly revocable (#1148).** `ProjectScopeStore.set_membership`
   used to mint a fresh `membership_id` on every call, so a re-grant, role

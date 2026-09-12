@@ -1230,6 +1230,67 @@ async def test_deleting_a_run_releases_its_occurrence(spine: Any) -> None:
     assert readmitted.run_id != run.run_id
 
 
+# ── resolving the Run that won an occurrence (#1059) ──────────────
+#
+# The claim proves a Run exists for `(schedule_id, scheduled_for)`; a ticker
+# refused by it needs to know *which* Run, so the schedule's cursor can point
+# at the Run that actually won rather than at nothing. Served from the same
+# index that enforces the claim, on every backend.
+
+
+async def test_the_claiming_run_resolves_from_its_occurrence(spine: Any) -> None:
+    store, workspace, project_id = spine
+    run = await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
+
+    found = await store.get_run_for_occurrence("sched-1", "2026-08-24T12:00:00+00:00")
+
+    assert found is not None
+    assert found.run_id == run.run_id
+
+
+async def test_an_unclaimed_occurrence_resolves_to_nothing(spine: Any) -> None:
+    """Neither half of the key alone identifies a firing: a different time on
+    the same schedule and the same time on a different schedule are both
+    unclaimed, however many Runs share one half with the claimed one."""
+    store, workspace, project_id = spine
+    await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
+
+    assert await store.get_run_for_occurrence("sched-1", "2026-08-24T13:00:00+00:00") is None
+    assert await store.get_run_for_occurrence("sched-2", "2026-08-24T12:00:00+00:00") is None
+
+
+async def test_every_refused_ticker_resolves_the_same_winner(spine: Any) -> None:
+    """The eight-ticker race, then the question the seven losers actually
+    have: who won? Every one of them must get the same answer, and it must be
+    the Run the claim admitted."""
+    store, workspace, project_id = spine
+    results = await asyncio.gather(
+        *(
+            store.create_run(_graph(workspace, project_id), provenance=_occurrence())
+            for _ in range(8)
+        ),
+        return_exceptions=True,
+    )
+    (winner,) = [r for r in results if not isinstance(r, BaseException)]
+
+    resolved = await asyncio.gather(
+        *(store.get_run_for_occurrence("sched-1", "2026-08-24T12:00:00+00:00") for _ in range(8))
+    )
+
+    assert all(run is not None for run in resolved)
+    assert {run.run_id for run in resolved if run is not None} == {winner.run_id}
+
+
+async def test_a_deleted_winner_no_longer_resolves(spine: Any) -> None:
+    """The claim goes with the Run. A resolution that outlived the Run would
+    link a schedule to an id nothing can load."""
+    store, workspace, project_id = spine
+    run = await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
+    await store.delete_run(run.run_id, force=True)
+
+    assert await store.get_run_for_occurrence("sched-1", "2026-08-24T12:00:00+00:00") is None
+
+
 # ── the three physical failures are told apart (#230, ADR-082426-f170) ──
 #
 # Before this they were not: cancelled, timed-out and failed Attempts all

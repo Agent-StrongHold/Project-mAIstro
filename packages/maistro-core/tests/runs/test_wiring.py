@@ -350,3 +350,20 @@ def test_the_spine_preflight_does_not_demand_the_continuations_table() -> None:
     from maistro.runs.wiring import SPINE_PG_TABLES
 
     assert "graph_continuations" not in SPINE_PG_TABLES
+
+
+async def test_the_sqlite_schedule_store_writes_on_the_connection_it_is_given(tmp_path) -> None:
+    """The container opens the schedule store its own connection (#1199):
+    its `BEGIN IMMEDIATE` must not share a connection with the stores that
+    commit and roll back on their own cadence."""
+    from maistro.runs.wiring import wire_execution_spine
+
+    path = tmp_path / "spine.db"
+    async with aiosqlite.connect(path) as conn, aiosqlite.connect(path) as schedule_conn:
+        *_rest, schedules, _continuations = await wire_execution_spine(
+            conn, workspace_id="w1", schedule_conn=schedule_conn
+        )
+        assert schedules._conn is schedule_conn  # type: ignore[attr-defined]
+
+        *_rest, fallback, _continuations = await wire_execution_spine(conn, workspace_id="w1")
+        assert fallback._conn is conn, "a caller that opened one connection gets one"  # type: ignore[attr-defined]

@@ -301,3 +301,37 @@ async def test_an_archived_row_without_a_tier_says_so_rather_than_vanishing(
 
     with pytest.raises(ArchivedPayloadUnavailable, match="still exists in the tier"):
         await _without_archive(store).get_run(run.run_id)
+
+
+# ── the occurrence claim outlives the payload (#1059 review) ─────────────
+
+
+async def test_an_archived_winner_still_holds_its_occurrence_claim(archive_spine: Any) -> None:
+    """Migration 015's claim lived only in the payload, and migration 017 let
+    the archive tier set the payload to NULL — so a scheduled Run that went
+    cold released its claim, and a scheduler recovering late enough could fire
+    the same occurrence again. The claim is promoted out of the payload now
+    (migration 034): the archived winner still refuses a second Run and is
+    still the answer to `get_run_for_occurrence`.
+    """
+    from maistro.runs.sources import ADMISSION_SOURCE, SCHEDULE_SOURCE
+    from maistro.runs.store import DuplicateOccurrence
+
+    store, _archive, workspace, project_id = archive_spine
+    provenance = {
+        ADMISSION_SOURCE: SCHEDULE_SOURCE,
+        "schedule_id": "sched-archived",
+        "scheduled_for": COLD.isoformat(),
+    }
+    winner = await store.create_run(_graph(workspace, project_id), provenance=provenance)
+    await store.transition_run(winner.run_id, RunStatus.QUEUED)
+    await store.transition_run(winner.run_id, RunStatus.RUNNING)
+    await store.transition_run(winner.run_id, RunStatus.COMPLETED, at=COLD)
+
+    assert await store.archive_cold_runs(now=NOW, archive_after=NINETY_DAYS) == 1
+
+    with pytest.raises(DuplicateOccurrence):
+        await store.create_run(_graph(workspace, project_id), provenance=dict(provenance))
+    found = await store.get_run_for_occurrence("sched-archived", COLD.isoformat())
+    assert found is not None
+    assert found.run_id == winner.run_id
