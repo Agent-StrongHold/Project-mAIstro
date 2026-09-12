@@ -738,7 +738,7 @@ jobs:
       # red, but the whole point of this job's caching quietly stops working
       # (Codex, #684). This is Docker's own documented fix for exactly this
       # gap: https://docs.docker.com/build/cache/backends/gha/#authentication
-      - uses: crazy-max/ghaction-github-runtime@v3
+      - uses: crazy-max/ghaction-github-runtime@v4
 
       # Fetch the base images first, retrying (#204). This job used to fail on a
       # registry reset before touching a line of repository content — a red
