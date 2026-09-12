@@ -35,6 +35,14 @@ _BATTLE_KIND = "evolve.tournament_pair"
 _FINALIZE_KIND = "evolve.finalize_cycle"
 
 
+class CanonicalExecutionUnavailable(RuntimeError):
+    """The engine cannot admit Evolve work onto the canonical Run spine."""
+
+    def __init__(self, message: str, *, availability: str = "unavailable") -> None:
+        super().__init__(message)
+        self.availability = availability
+
+
 class _EvaluateInput(BaseModel):
     genome_id: str
 
@@ -567,14 +575,50 @@ def _resolver(*, cycle: Any, population: Any, config: Any, llm_call: Any):
     return resolve
 
 
-def _engine_container() -> Any:
-    from services.engine import get_engine
+def canonical_execution_owner(container: Any | None = None) -> Any:
+    """Return the already-constructed Container that owns canonical Runs.
 
-    engine = get_engine()
-    container = getattr(getattr(engine, "_agent_port", None), "container", None)
+    Evolve may inspect this owner, but never constructs or replaces it. The
+    same admission check is used by startup/status and by cycle execution so a
+    truthful status cannot drift from the path that admits work.
+    """
     if container is None:
-        raise RuntimeError("Evolve requires the canonical engine Container (#51)")
+        from services.engine import get_engine
+
+        try:
+            engine = get_engine()
+        except RuntimeError as exc:
+            raise CanonicalExecutionUnavailable(
+                "Evolve requires the canonical engine Container (#51): engine is not started"
+            ) from exc
+        port = getattr(engine, "agent_port", None)
+        if port is None:
+            # Keep isolated engine doubles compatible with the public accessor's
+            # underlying seam while production uses `agent_port` above.
+            port = getattr(engine, "_agent_port", None)
+        container = getattr(port, "container", None)
+
+    if container is None:
+        raise CanonicalExecutionUnavailable(
+            "Evolve requires the canonical engine Container (#51): no Container is available",
+            availability="degraded",
+        )
+
+    missing = [
+        name
+        for name in ("run_store", "graph_run_store", "project_scope_store")
+        if getattr(container, name, None) is None
+    ]
+    if missing:
+        raise CanonicalExecutionUnavailable(
+            f"Evolve canonical execution spine is unavailable (#51): missing {', '.join(missing)}",
+            availability="degraded",
+        )
     return container
+
+
+def _engine_container() -> Any:
+    return canonical_execution_owner()
 
 
 async def run_canonical_evolution_cycle(
@@ -591,13 +635,7 @@ async def run_canonical_evolution_cycle(
     """Execute one Evolve cycle as canonical Graph -> Run -> NodeRun -> Attempt work."""
     from maistro_evolve.cycle import EvolutionCycle
 
-    owner = container or _engine_container()
-    if (
-        owner.run_store is None
-        or owner.graph_run_store is None
-        or owner.project_scope_store is None
-    ):
-        raise RuntimeError("Evolve canonical execution spine is unavailable (#51)")
+    owner = canonical_execution_owner(container)
 
     workspace_id = str(owner.config.workspace_id)
     project = await owner.project_scope_store.root_for_workspace(workspace_id)

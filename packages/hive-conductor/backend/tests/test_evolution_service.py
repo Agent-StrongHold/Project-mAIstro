@@ -65,8 +65,93 @@ def test_start_then_get_returns_instance(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(evo.asyncio, "ensure_future", _capture)
     asyncio.run(evo.start_evolution())
     assert evo._service is not None
+    assert started == []
+    assert evo._service.status()["availability"] == "degraded"
+    assert evo._service.status()["running"] is False
     inst = evo.get_evolution_service()
     assert inst is evo._service
+
+
+async def test_start_evolution_schedules_cadence_when_owner_is_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.engine as engine_module
+    import services.evolution as evo
+
+    owner = SimpleNamespace(
+        run_store=object(), graph_run_store=object(), project_scope_store=object()
+    )
+    monkeypatch.setattr(
+        engine_module,
+        "get_engine",
+        lambda: SimpleNamespace(agent_port=SimpleNamespace(container=owner)),
+    )
+    scheduled: list[Any] = []
+
+    def _capture(coro: Any) -> str:
+        scheduled.append(coro)
+        coro.close()
+        return "task-sentinel"
+
+    monkeypatch.setattr(evo.asyncio, "ensure_future", _capture)
+    await evo.start_evolution()
+    try:
+        assert len(scheduled) == 1
+        assert evo._service is not None
+        assert evo._service.task == "task-sentinel"
+        assert evo._service.status()["running"] is True
+    finally:
+        await evo.stop_evolution()
+
+
+def test_initialize_domain_state_is_idempotent() -> None:
+    from services.evolution import _EvolutionService
+
+    service = _EvolutionService()
+    population = object()
+    tournament = object()
+    service._population = population
+    service._tournament = tournament
+    service.initialize_domain_state()
+    assert service.population is population
+    assert service.tournament is tournament
+
+
+async def test_run_loop_stops_when_owner_degrades_after_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.engine as engine_module
+    import services.evolution as evo
+    import services.evolution_graph as evolution_graph
+    from services.evolution import _EvolutionService
+    from services.evolution_graph import CanonicalExecutionUnavailable
+
+    owner = SimpleNamespace(
+        run_store=object(), graph_run_store=object(), project_scope_store=object()
+    )
+    checks = 0
+
+    def _owner() -> Any:
+        nonlocal checks
+        checks += 1
+        if checks >= 3:
+            raise CanonicalExecutionUnavailable("Container disappeared", availability="degraded")
+        return owner
+
+    monkeypatch.setattr(engine_module, "get_engine", lambda: SimpleNamespace())
+    monkeypatch.setattr(evolution_graph, "canonical_execution_owner", _owner)
+    service = _EvolutionService()
+    service._population = SimpleNamespace(list_all=lambda: [])
+    service._tournament = object()
+
+    async def _no_sleep(_: float) -> None:
+        return None
+
+    monkeypatch.setattr(evo.asyncio, "sleep", _no_sleep)
+    await service.run_loop()
+    assert checks == 3
+    assert service.execution_available is False
+    assert service.status()["availability"] == "degraded"
 
 
 def test_stop_when_not_started_is_noop() -> None:
@@ -107,6 +192,7 @@ def test_service_properties_initial_state() -> None:
     assert s.tournament is None
     assert s.last_run_id is None
     assert s._running is True
+    assert s.execution_available is False
     s.stop()
     assert s._running is False
 
@@ -205,6 +291,14 @@ def test_run_loop_captures_cycle_exception(
         self_.stop()
         return "run-2"
 
+    import services.evolution_graph as evolution_graph
+
+    owner = SimpleNamespace(
+        run_store=object(), graph_run_store=object(), project_scope_store=object()
+    )
+    monkeypatch.setattr(
+        evolution_graph, "canonical_execution_owner", lambda *_args, **_kwargs: owner
+    )
     monkeypatch.setattr(_EvolutionService, "_run_one_cycle", _flaky_cycle)
 
     async def _no_sleep(_: float) -> None:
@@ -246,6 +340,13 @@ def test_run_one_cycle_dispatches_canonical_graph(
 
     monkeypatch.setattr(evolution_graph, "run_canonical_evolution_cycle", _canonical)
 
+    owner = SimpleNamespace(
+        run_store=object(), graph_run_store=object(), project_scope_store=object()
+    )
+    monkeypatch.setattr(
+        evolution_graph, "canonical_execution_owner", lambda *_args, **_kwargs: owner
+    )
+
     s = _EvolutionService()
     s._population = _StubPop()
     s._tournament = _StubTour()
@@ -283,6 +384,13 @@ def test_run_one_cycle_does_not_count_failed_canonical_run(
 
     monkeypatch.setattr(evolution_graph, "run_canonical_evolution_cycle", _canonical)
 
+    owner = SimpleNamespace(
+        run_store=object(), graph_run_store=object(), project_scope_store=object()
+    )
+    monkeypatch.setattr(
+        evolution_graph, "canonical_execution_owner", lambda *_args, **_kwargs: owner
+    )
+
     s = _EvolutionService()
     s._population = _StubPop()
     s._tournament = _StubTour()
@@ -292,6 +400,7 @@ def test_run_one_cycle_does_not_count_failed_canonical_run(
 
     assert s.cycle_count == 0
     assert s.last_run_id == "failed-evolve-run"
+    assert s.status()["last_run_status"] == "failed"
 
 
 # --- _build_llm_call ----------------------------------------------------
@@ -388,11 +497,15 @@ def test_status_reports_zero_state_when_nothing_running() -> None:
 
     s = _EvolutionService()
     out = s.status()
-    assert out["running"] is True
+    assert out["running"] is False
+    assert out["execution_available"] is False
+    assert out["availability"] == "degraded"
+    assert out["domain_state_only"] is True
     assert out["cycle_count"] == 0
     assert out["population_size"] == 0
     assert out["last_error"] is None
     assert out["last_run_id"] is None
+    assert out["last_run_status"] is None
     assert out["tournament"] == {}
 
 
@@ -419,3 +532,92 @@ def test_status_reports_population_size_tournament_and_run() -> None:
     assert out["last_error"] == "prev error"
     assert out["last_run_id"] == "run-7"
     assert out["tournament"] == {"matches": 10}
+
+
+# --- availability includes domain readiness (Codex review on #1300) ------
+
+
+def _available_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    import services.engine as engine_module
+    import services.evolution_graph as evolution_graph
+
+    owner = SimpleNamespace(
+        run_store=object(), graph_run_store=object(), project_scope_store=object()
+    )
+    monkeypatch.setattr(engine_module, "get_engine", lambda: SimpleNamespace())
+    monkeypatch.setattr(evolution_graph, "canonical_execution_owner", lambda *_a, **_k: owner)
+
+
+def test_a_healthy_engine_without_domain_state_is_not_executable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The engine being up is necessary, not sufficient: without a population
+    and tournament every cycle fails before admission, so `/status` must not
+    say `running` and the frontend must not offer Run Cycle."""
+    from services.evolution import _EvolutionService
+
+    _available_owner(monkeypatch)
+    service = _EvolutionService()
+    assert service.population is None
+    assert service.execution_available is False
+    out = service.status()
+    assert out["running"] is False
+    assert out["execution_available"] is False
+    assert out["availability"] == "unavailable"
+    assert "population is not initialized" in str(out["availability_reason"])
+
+
+def test_a_failed_domain_init_keeps_execution_unavailable_and_says_why(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from services.evolution import EvolutionUnavailableError, _EvolutionService
+
+    class _Broken:
+        def __getattr__(self, name: str) -> Any:
+            raise ImportError(f"synthetic: no {name}")
+
+    monkeypatch.setitem(sys.modules, "maistro_evolve.population", _Broken())
+    _available_owner(monkeypatch)
+    service = _EvolutionService()
+    service.initialize_domain_state()
+
+    assert service.execution_available is False
+    out = service.status()
+    assert out["running"] is False
+    assert "synthetic:" in str(out["availability_reason"])
+    with pytest.raises(EvolutionUnavailableError) as raised:
+        asyncio.run(service._run_one_cycle())
+    assert raised.value.availability == "unavailable"
+
+
+def test_a_successful_domain_init_turns_execution_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    from services.evolution import _EvolutionService
+
+    _available_owner(monkeypatch)
+    service = _EvolutionService()
+    service._population = SimpleNamespace(list_all=lambda: [])
+    service._tournament = object()
+    service.initialize_domain_state()
+    assert service.execution_available is True
+    assert service.status()["running"] is True
+
+
+async def test_start_evolution_does_not_schedule_a_cadence_without_domain_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.evolution as evo
+
+    class _Broken:
+        def __getattr__(self, name: str) -> Any:
+            raise ImportError(f"synthetic: no {name}")
+
+    monkeypatch.setitem(sys.modules, "maistro_evolve.population", _Broken())
+    _available_owner(monkeypatch)
+    monkeypatch.setattr(evo.asyncio, "ensure_future", lambda coro: coro.close() or "task-sentinel")
+    await evo.start_evolution()
+    try:
+        assert evo._service is not None
+        assert evo._service.task is None, "no cadence for a service that cannot run a cycle"
+        assert evo._service.status()["running"] is False
+    finally:
+        await evo.stop_evolution()

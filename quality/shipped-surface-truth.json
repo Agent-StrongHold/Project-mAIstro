@@ -515,8 +515,9 @@
       "handler": "trigger_cycle",
       "disposition": "canonical",
       "production_enabled": true,
-      "reason": "runs one real evolution cycle",
-      "effect_owner": "services.evolution run cycle"
+      "reason": "admits one canonical Graph -> Run -> NodeRun -> Attempt evolution cycle; unavailable canonical execution returns an explicit availability error and terminal Run failures preserve their identity",
+      "effect_owner": "services.evolution -> services.evolution_graph canonical Run spine",
+      "truth_contract": "POST /cycle is executable only when the engine exposes a canonical Container with Run, Graph continuation, and Project scope stores; canonical failed/cancelled/timed-out Runs are projected with run_id, status, and diagnostic rather than as service-unavailable"
     },
     {
       "source": "packages/hive-conductor/backend/routes/evolution.py",
@@ -1987,8 +1988,8 @@
       "route": "${API}/cycle",
       "disposition": "canonical",
       "production_enabled": true,
-      "reason": "triggers an evolution cycle through the real backend route",
-      "effect_owner": "routes/evolution.py trigger_cycle"
+      "reason": "requests a canonical evolution cycle when status reports executable; unavailable or terminal Run failure truth remains visible in the backend response",
+      "effect_owner": "routes/evolution.py trigger_cycle -> canonical Run response"
     },
     {
       "source": "packages/hive-conductor/frontend/src/pages/Evolution.tsx",
