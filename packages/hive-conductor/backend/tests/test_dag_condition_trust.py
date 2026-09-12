@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from services.dag_execution_scope import DagExecutionScope
 
 from maistro.graph.durable_runs import InMemoryDurableRunStore
 
@@ -99,6 +100,9 @@ async def test_arbitrary_legacy_condition_cannot_silently_skip_successor(
             ],
         },
         llm_builder=_fake_llm_builder,
+        scope=DagExecutionScope(
+            workspace_id="test-workspace", project_id="test-project", user_id="test-user"
+        ),
     )
 
     assert result["status"] == "completed"

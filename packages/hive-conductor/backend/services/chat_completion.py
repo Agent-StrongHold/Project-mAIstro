@@ -623,12 +623,16 @@ PM_TOOLS: list[dict[str, Any]] = [
                 "type": "object",
                 "properties": {
                     "dag_id": {"type": "string", "description": "The DAG workflow ID to run"},
+                    "workspace_id": {
+                        "type": "string",
+                        "description": "The authorized Workspace in which to run the workflow",
+                    },
                     "goal": {
                         "type": "string",
                         "description": "Optional goal/context to pass to the DAG nodes",
                     },
                 },
-                "required": ["dag_id"],
+                "required": ["dag_id", "workspace_id"],
             },
         },
     },
@@ -1519,6 +1523,7 @@ async def _tool_run_workflow(
         return {"error": f"DAG '{dag_id}' not found. Use list_workflows to see available DAGs."}
 
     dag_data = stores.dags[dag_id]
+    workspace_id = str(args.get("workspace_id") or "").strip()
     goal = args.get("goal", "")
     if goal:
         dag_data = {**dag_data, "description": goal}
@@ -1533,21 +1538,19 @@ async def _tool_run_workflow(
     # whether the graph itself finished, so only that decides the status.
     executed = False
     try:
-        from services.canonical_dag_runner import resolve_execution_scope
+        from services.dag_execution_scope import authorize_hive_dag_scope
         from services.dag_run_store import get_dag_run_store
         from services.graph_runner import execute_dag
 
-        # The projection row opens before execution, so it must already carry
-        # the scope the execution will resolve -- resolved here by the same
-        # resolver `execute_dag` uses, never a second mapping (#1174).
-        workspace_id, project_id = await resolve_execution_scope(dag_data)
+        scope = await authorize_hive_dag_scope(workspace_id=workspace_id, user_id=user_id)
+        project_id = scope.project_id
         store = get_dag_run_store()
         await store.start_run(
             run_id=exec_id,
             workspace_id=workspace_id,
             project_id=project_id,
         )
-        result = await execute_dag(dag_data, user_id=user_id)
+        result = await execute_dag(dag_data, scope=scope)
         executed = True
 
         # Store events

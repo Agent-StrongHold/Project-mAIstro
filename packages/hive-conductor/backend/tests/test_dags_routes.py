@@ -19,6 +19,14 @@ def _seed(client: Any) -> str:
     return response.json()["id"]
 
 
+def _workspace(client: Any) -> str:
+    response = client.post(
+        "/v1/workspaces", json={"persona_template_id": "pm_fleet", "name": "DAG runs"}
+    )
+    assert response.status_code == 201
+    return response.json()["id"]
+
+
 def test_list_dags_returns_array(admin_client: Any) -> None:
     response = admin_client.get("/v1/dags")
     assert response.status_code == 200
@@ -160,7 +168,8 @@ def test_run_dag_success_uses_canonical_run_id(
 
     monkeypatch.setattr(graph_runner, "execute_dag", ok)
     dag_id = _seed(admin_client)
-    response = admin_client.post(f"/v1/dags/{dag_id}/run")
+    workspace_id = _workspace(admin_client)
+    response = admin_client.post(f"/v1/dags/{dag_id}/run", json={"workspace_id": workspace_id})
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "completed"
@@ -195,7 +204,8 @@ def test_run_dag_canonical_failure_stays_failed(
 
     monkeypatch.setattr(graph_runner, "execute_dag", fail)
     dag_id = _seed(admin_client)
-    response = admin_client.post(f"/v1/dags/{dag_id}/run")
+    workspace_id = _workspace(admin_client)
+    response = admin_client.post(f"/v1/dags/{dag_id}/run", json={"workspace_id": workspace_id})
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "failed"
@@ -222,7 +232,8 @@ def test_run_dag_pre_admission_failure_has_no_fake_execution_id(
 
     monkeypatch.setattr(graph_runner, "execute_dag", boom)
     dag_id = _seed(admin_client)
-    response = admin_client.post(f"/v1/dags/{dag_id}/run")
+    workspace_id = _workspace(admin_client)
+    response = admin_client.post(f"/v1/dags/{dag_id}/run", json={"workspace_id": workspace_id})
     assert response.status_code == 200
     body = response.json()
     assert body == {"status": "failed", "error": "cyclic DAG rejected before execution"}
@@ -244,11 +255,53 @@ def test_run_dag_projection_failure_does_not_rewrite_execution(
     monkeypatch.setattr(history, "get_dag_run_store", unavailable)
 
     dag_id = _seed(admin_client)
-    response = admin_client.post(f"/v1/dags/{dag_id}/run")
+    workspace_id = _workspace(admin_client)
+    response = admin_client.post(f"/v1/dags/{dag_id}/run", json={"workspace_id": workspace_id})
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "completed"
     assert body["run_id"] == "run-with-history-failure"
+
+
+def test_run_dag_missing_scope_fails_before_execution(
+    admin_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import services.graph_runner as graph_runner
+
+    async def should_not_run(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("execution admitted without Workspace scope")
+
+    monkeypatch.setattr(graph_runner, "execute_dag", should_not_run)
+    dag_id = _seed(admin_client)
+    response = admin_client.post(f"/v1/dags/{dag_id}/run")
+    assert response.status_code == 403
+
+
+def test_run_dag_carries_distinct_authorized_scopes(
+    admin_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import services.graph_runner as graph_runner
+
+    captured: list[Any] = []
+
+    async def ok(_dag_data: Any, **kwargs: Any) -> dict[str, Any]:
+        captured.append(kwargs["scope"])
+        return _completed_result(f"run-{len(captured)}")
+
+    monkeypatch.setattr(graph_runner, "execute_dag", ok)
+    dag_id = _seed(admin_client)
+    workspace_a = _workspace(admin_client)
+    workspace_b = _workspace(admin_client)
+    assert (
+        admin_client.post(f"/v1/dags/{dag_id}/run", json={"workspace_id": workspace_a}).status_code
+        == 200
+    )
+    assert (
+        admin_client.post(f"/v1/dags/{dag_id}/run", json={"workspace_id": workspace_b}).status_code
+        == 200
+    )
+    assert [scope.workspace_id for scope in captured] == [workspace_a, workspace_b]
+    assert captured[0].project_id != captured[1].project_id
 
 
 def test_run_dag_missing_dag_returns_404(admin_client: Any) -> None:
@@ -260,11 +313,12 @@ def test_run_champion_success_uses_canonical_run_id(
 ) -> None:
     import services.graph_runner as graph_runner
 
-    async def ok() -> dict[str, Any]:
+    async def ok(**_kwargs: Any) -> dict[str, Any]:
         return {"status": "completed", "run_id": "champion-run", "champion": True}
 
     monkeypatch.setattr(graph_runner, "execute_champion", ok)
-    response = admin_client.post("/v1/dags/run-champion")
+    workspace_id = _workspace(admin_client)
+    response = admin_client.post("/v1/dags/run-champion", json={"workspace_id": workspace_id})
     assert response.status_code == 200
     body = response.json()
     assert body["result"]["champion"] is True
@@ -275,11 +329,12 @@ def test_run_champion_success_uses_canonical_run_id(
 def test_run_champion_failure(admin_client: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     import services.graph_runner as graph_runner
 
-    async def boom() -> dict[str, Any]:
+    async def boom(**_kwargs: Any) -> dict[str, Any]:
         raise RuntimeError("champion crash")
 
     monkeypatch.setattr(graph_runner, "execute_champion", boom)
-    response = admin_client.post("/v1/dags/run-champion")
+    workspace_id = _workspace(admin_client)
+    response = admin_client.post("/v1/dags/run-champion", json={"workspace_id": workspace_id})
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "failed"

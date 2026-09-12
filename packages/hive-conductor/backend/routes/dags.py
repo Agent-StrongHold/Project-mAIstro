@@ -6,8 +6,12 @@ from typing import Any, Literal
 from uuid import uuid4
 
 import stores
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict
+from services.dag_execution_scope import (
+    DagWorkspaceSelectionError,
+    authorize_hive_dag_scope,
+)
 from services.edit_lock import diff_dag_snapshots, mark_edited
 
 from routes.audit import log_audit
@@ -36,6 +40,13 @@ class DAGEdge(BaseModel):
     from_node: str
     to_node: str | None = None
     condition: str | None = None
+
+
+class DagRunRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    workspace_id: str | None = None
+    project_id: str | None = None
 
 
 class DAGFile(BaseModel):
@@ -308,12 +319,28 @@ def remove_edge(dag_id: str, edge_id: str) -> dict:
 
 
 @router.post("/{dag_id}/run")
-async def run_dag(dag_id: str, request: Request) -> dict:
+async def run_dag(
+    dag_id: str,
+    request: Request,
+    body: DagRunRequest | None = None,
+    workspace_id: str | None = Query(default=None),
+    project_id: str | None = Query(default=None),
+) -> dict:
     """Execute through one canonical Run and project its facts for the UI."""
     if dag_id not in stores.dags:
         raise HTTPException(status_code=404, detail="dag not found")
     dag_data = stores.dags[dag_id]
     actor = _actor(request)
+    selection = (body.workspace_id if body is not None else None) or workspace_id
+    requested_project = (body.project_id if body is not None else None) or project_id
+    try:
+        scope = await authorize_hive_dag_scope(
+            workspace_id=selection or "", user_id=actor, project_id=requested_project
+        )
+    except DagWorkspaceSelectionError as exc:
+        raise HTTPException(
+            status_code=403, detail="DAG Workspace scope is not authorized"
+        ) from exc
     log_audit("dag_run", actor, target=dag_id)
 
     from services.graph_runner import CanonicalDagExecutionError, execute_dag
@@ -321,7 +348,7 @@ async def run_dag(dag_id: str, request: Request) -> dict:
     try:
         result = await execute_dag(
             dag_data,
-            user_id=actor,
+            scope=scope,
             execution_mode="interactive",
         )
     except CanonicalDagExecutionError as exc:
@@ -350,11 +377,23 @@ async def run_dag(dag_id: str, request: Request) -> dict:
 
 
 @router.post("/run-champion")
-async def run_champion() -> dict:
+async def run_champion(
+    request: Request,
+    body: DagRunRequest | None = None,
+    workspace_id: str | None = Query(default=None),
+) -> dict:
+    actor = _actor(request)
+    selection = (body.workspace_id if body is not None else None) or workspace_id
+    try:
+        scope = await authorize_hive_dag_scope(workspace_id=selection or "", user_id=actor)
+    except DagWorkspaceSelectionError as exc:
+        raise HTTPException(
+            status_code=403, detail="DAG Workspace scope is not authorized"
+        ) from exc
     try:
         from services.graph_runner import execute_champion
 
-        result = await execute_champion()
+        result = await execute_champion(scope=scope)
         run_id = result.get("run_id")
         return {"execution_id": run_id, "run_id": run_id, "result": result}
     except Exception as exc:
