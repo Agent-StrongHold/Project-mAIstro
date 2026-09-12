@@ -240,6 +240,48 @@ class TestTheWorkflowItself:
         assert producers - triggers == set(), "a producer workflow is not a trigger"
 
 
+class TestPathScopedRequiredChecks:
+    def test_a_non_specialized_path_scoped_check_can_be_skipped(self, check, monkeypatch):
+        """The skip rule is generic: it is not a hard-coded specialized-job list."""
+        monkeypatch.setitem(check.PATH_SCOPED_CHECKS, "coverage (path-gated)", "postgres")
+        verdict = check.evaluate(
+            ["coverage (path-gated)", "always-required"],
+            [
+                _run("coverage (path-gated)", conclusion="skipped"),
+                _run("always-required", conclusion="skipped"),
+            ],
+            require_complete=True,
+            scope={"postgres": False},
+            scope_measured=True,
+        )
+        assert verdict.not_executed == ["always-required"]
+        assert verdict.ok is False
+
+    def test_an_out_of_scope_failure_is_still_a_finding(self, check, monkeypatch):
+        monkeypatch.setitem(check.PATH_SCOPED_CHECKS, "coverage (path-gated)", "postgres")
+        verdict = check.evaluate(
+            ["coverage (path-gated)"],
+            [_run("coverage (path-gated)", conclusion="failure")],
+            require_complete=True,
+            scope={"postgres": False},
+            scope_measured=True,
+        )
+        assert verdict.not_executed == []
+        assert verdict.ran == ["coverage (path-gated)"]
+
+    def test_unmeasured_scope_keeps_path_scoped_skip_pending(self, check, monkeypatch):
+        monkeypatch.setitem(check.PATH_SCOPED_CHECKS, "coverage (path-gated)", "postgres")
+        verdict = check.evaluate(
+            ["coverage (path-gated)"],
+            [_run("coverage (path-gated)", conclusion="skipped")],
+            require_complete=True,
+            scope=None,
+            scope_measured=False,
+        )
+        assert verdict.unfinished == ["coverage (path-gated)"]
+        assert verdict.pending and not verdict.ok
+
+
 class TestTheReport:
     """A gate is read by someone deciding whether to trust a merge, so what it
     prints is part of what it does."""

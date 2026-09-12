@@ -33,6 +33,7 @@ on:
       - "Vulture Ratchet"
       - "Cage Guard — Auto-reject PRs touching cage/ or eval/"
       - "Autonomous Merge Safety"
+      - "DevSkim"
     types: [completed]
 
 concurrency:
@@ -173,128 +174,12 @@ jobs:
         shell: bash
         run: |
           set +e
-          python3 - "$BASE_BRANCH" "$EVENT_NAME" <<'PY'
-          import importlib.util
-          import json
-          import sys
-          from pathlib import Path
-
-          base_branch, event_name = sys.argv[1:]
-          root = Path.cwd()
-
-          def load(name, path):
-              spec = importlib.util.spec_from_file_location(name, path)
-              if spec is None or spec.loader is None:
-                  raise RuntimeError(f"cannot load {path}")
-              module = importlib.util.module_from_spec(spec)
-              sys.modules[name] = module
-              spec.loader.exec_module(module)
-              return module
-
-          gate = load("check_gates_ran_inline", root / "scripts" / "check-gates-ran.py")
-          required = gate.required_check_names(base_branch=base_branch, event_name=event_name)
-          if not required:
-              print("FAIL: the required-check contract is empty; nothing to verify ran.")
-              raise SystemExit(1)
-
-          try:
-              payload = json.loads(Path("check-runs.json").read_text(encoding="utf-8"))
-              runs = payload["check_runs"] if isinstance(payload, dict) else payload
-          except (OSError, TypeError, ValueError, KeyError) as exc:
-              print(f"FAIL: the check-run payload is unreadable, so whether the gates ran is unmeasured.\n  {exc}")
-              raise SystemExit(1)
-
-          # The existing merge-group classifier is the reviewed source of truth
-          # for which expensive CI legs a changed path can affect. Apply it to
-          # pull-request candidates only after measuring the PR file list. A
-          # missing/ambiguous list never creates a pass: skipped specialized
-          # checks remain pending until their scope is known.
-          specialized = {
-              "postgres (pg17)": "postgres",
-              "postgres (pg18)": "postgres",
-              "object storage (MinIO)": "object_storage",
-              "durable-events": "durable_events",
-              "strike-ladder": "strike_ladder",
-              "hive-conductor-e2e": "hive_e2e",
-              "hive-conductor-e2e-ui": "hive_e2e",
-              "wheel-imports": "wheel_imports",
-              "docker-build": "docker_build",
-          }
-          scoped_off = set()
-          scope_measured = event_name != "pull_request"
-          if event_name == "pull_request":
-              try:
-                  changed_payload = json.loads(
-                      Path("changed-files.json").read_text(encoding="utf-8")
-                  )
-                  scope_measured = changed_payload.get("measured") is True
-                  changed_files = changed_payload.get("files", [])
-                  if scope_measured and not isinstance(changed_files, list):
-                      scope_measured = False
-                  if scope_measured:
-                      classifier = load(
-                          "ci_merge_group_scope_inline", root / "scripts" / "ci_merge_group_scope.py"
-                      )
-                      scope = classifier.classify(changed_files)
-                      scoped_off = {
-                          name for name, leg in specialized.items() if not scope.get(leg, True)
-                      }
-              except (OSError, TypeError, ValueError, AttributeError, ImportError, RuntimeError) as exc:
-                  print(f"PENDING: specialized execution scope is ambiguous ({exc})")
-
-          latest = {}
-          for run in runs:
-              if not isinstance(run, dict) or not isinstance(run.get("name"), str):
-                  continue
-              name = run["name"]
-              incumbent = latest.get(name)
-              if incumbent is None or gate._supersedes(run, incumbent):
-                  latest[name] = run
-
-          required = [
-              name
-              for name in required
-              if name not in scoped_off or latest.get(name, {}).get("conclusion") != "skipped"
-          ]
-          absent = []
-          not_executed = []
-          unfinished = []
-          for name in required:
-              run = latest.get(name)
-              if run is None:
-                  absent.append(name)
-              elif run.get("status") != "completed":
-                  unfinished.append(name)
-              elif run.get("conclusion") in gate.NON_EXECUTED:
-                  if name in specialized and not scope_measured and run.get("conclusion") == "skipped":
-                      unfinished.append(name)
-                  else:
-                      not_executed.append(name)
-
-          if absent or unfinished or not_executed:
-              pending = not not_executed and bool(absent or unfinished)
-              heading = (
-                  "PENDING: execution evidence is still arriving"
-                  if pending
-                  else "FAIL: the gate set did not reach this commit"
-              )
-              print(heading + "\n")
-              if absent:
-                  print(f"  not present yet ({len(absent)}):")
-                  for name in absent:
-                      print(f"    {name}")
-              if not_executed:
-                  print(f"\n  present but did not execute to a verdict ({len(not_executed)}):")
-                  for name in not_executed:
-                      print(f"    {name}")
-              if unfinished:
-                  print(f"\n  started but not finished ({len(unfinished)}):")
-                  for name in unfinished:
-                      print(f"    {name}")
-              raise SystemExit(2 if pending else 1)
-
-          print(f"ok: all {len(required)} required check(s) ran on this head")
-          PY
+          python3 scripts/check-gates-ran.py \
+            --check-runs check-runs.json \
+            --require-complete \
+            --base-branch "$BASE_BRANCH" \
+            --event-name "$EVENT_NAME" \
+            --changed-files changed-files.json
           code=$?
           set -e
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"

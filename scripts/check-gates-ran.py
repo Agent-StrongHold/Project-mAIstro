@@ -22,6 +22,7 @@ import argparse
 import importlib.util
 import json
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -45,6 +46,23 @@ MERGE_GROUP_SPECIALIZED_CHECKS = frozenset(
         "postgres (pg18)",
     }
 )
+
+# Every required check whose job may be path-scoped belongs here.  The values
+# are the reviewed leg names from ci_merge_group_scope.py, rather than a
+# second set of path globs.  Keeping the filtering generic means a future
+# non-specialized required check gets the same skip handling without changing
+# the evaluator's verdict rules.
+PATH_SCOPED_CHECKS = {
+    "postgres (pg17)": "postgres",
+    "postgres (pg18)": "postgres",
+    "object storage (MinIO)": "object_storage",
+    "durable-events": "durable_events",
+    "strike-ladder": "strike_ladder",
+    "hive-conductor-e2e": "hive_e2e",
+    "hive-conductor-e2e-ui": "hive_e2e",
+    "wheel-imports": "wheel_imports",
+    "docker-build": "docker_build",
+}
 
 
 def required_check_names(
@@ -115,6 +133,8 @@ def evaluate(
     check_runs: list[dict[str, Any]],
     *,
     require_complete: bool,
+    scope: Mapping[str, bool] | None = None,
+    scope_measured: bool = True,
 ) -> Verdict:
     latest: dict[str, dict[str, Any]] = {}
     for run in check_runs:
@@ -125,16 +145,37 @@ def evaluate(
         if incumbent is None or _supersedes(run, incumbent):
             latest[name] = run
 
+    # A measured out-of-scope check may be explicitly skipped.  Absence is
+    # still pending (we cannot prove why it is absent), and any conclusion
+    # other than skipped remains evidence that must be judged normally.
+    if scope is not None:
+        required = [
+            name
+            for name in required
+            if not (
+                name in PATH_SCOPED_CHECKS
+                and not scope.get(PATH_SCOPED_CHECKS[name], True)
+                and latest.get(name, {}).get("conclusion") == "skipped"
+            )
+        ]
+
     verdict = Verdict()
     for name in required:
-        run = latest.get(name)
-        if run is None:
+        candidate = latest.get(name)
+        if candidate is None:
             verdict.absent.append(name)
             continue
-        if run.get("conclusion") in NON_EXECUTED:
-            verdict.not_executed.append(name)
+        if candidate.get("conclusion") in NON_EXECUTED:
+            if (
+                not scope_measured
+                and name in PATH_SCOPED_CHECKS
+                and candidate.get("conclusion") == "skipped"
+            ):
+                verdict.unfinished.append(name)
+            else:
+                verdict.not_executed.append(name)
             continue
-        if run.get("status") != "completed":
+        if candidate.get("status") != "completed":
             (verdict.unfinished if require_complete else verdict.ran).append(name)
             continue
         verdict.ran.append(name)
@@ -143,6 +184,7 @@ def evaluate(
 
 def _load(path: Path) -> list[dict[str, Any]]:
     payload = json.loads(path.read_text(encoding="utf-8"))
+    runs: Any
     if isinstance(payload, list):
         runs = payload
     elif isinstance(payload, dict):
@@ -154,12 +196,60 @@ def _load(path: Path) -> list[dict[str, Any]]:
     return [run for run in runs if isinstance(run, dict)]
 
 
+def _load_scope_classifier() -> Any:
+    path = REPO_ROOT / "scripts" / "ci_merge_group_scope.py"
+    spec = importlib.util.spec_from_file_location("ci_merge_group_scope_for_gates_ran", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _pull_request_scope(path: Path) -> tuple[dict[str, bool] | None, bool]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or payload.get("measured") is not True:
+        return None, False
+    changed_files = payload.get("files")
+    if not isinstance(changed_files, list) or not all(
+        isinstance(item, str) for item in changed_files
+    ):
+        return None, False
+    return _load_scope_classifier().classify(changed_files), True
+
+
+def _scope_for_args(
+    event_name: str | None, changed_files_path: Path | None
+) -> tuple[dict[str, bool] | None, bool]:
+    if event_name != "pull_request":
+        return None, True
+    if changed_files_path is None:
+        print("PENDING: path-scoped execution scope is ambiguous (changed files were not measured)")
+        return None, False
+    try:
+        scope, measured = _pull_request_scope(changed_files_path)
+        if not measured:
+            print(
+                "PENDING: path-scoped execution scope is ambiguous (changed-file payload is invalid)"
+            )
+        return scope, measured
+    except (OSError, TypeError, ValueError, json.JSONDecodeError, ImportError, RuntimeError) as exc:
+        print(f"PENDING: path-scoped execution scope is ambiguous ({exc})")
+        return None, False
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check-runs", type=Path, required=True)
     parser.add_argument("--require-complete", action="store_true")
     parser.add_argument("--base-branch")
     parser.add_argument("--event-name")
+    parser.add_argument(
+        "--changed-files",
+        type=Path,
+        help="measured PR changed-file envelope used for path-scoped skip handling",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -178,7 +268,15 @@ def main(argv: list[str] | None = None) -> int:
         print("FAIL: the required-check contract is empty; nothing to verify ran.")
         return 1
 
-    verdict = evaluate(required, runs, require_complete=args.require_complete)
+    scope, scope_measured = _scope_for_args(args.event_name, args.changed_files)
+
+    verdict = evaluate(
+        required,
+        runs,
+        require_complete=args.require_complete,
+        scope=scope,
+        scope_measured=scope_measured,
+    )
     if verdict.ok:
         print(f"ok: all {len(required)} required check(s) ran on this head")
         return 0
