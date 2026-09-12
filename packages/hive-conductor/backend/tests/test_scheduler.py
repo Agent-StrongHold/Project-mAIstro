@@ -1185,6 +1185,84 @@ def test_a_manual_fire_with_no_durable_template_refuses_and_keeps_state(
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        "no-definition",
+        "exhausted",
+        "template-missing",
+        "admission-error",
+        "already-fired",
+        "empty-run",
+    ],
+)
+def test_manual_canonical_fire_refuses_each_non_run_outcome(
+    monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    """Every canonical refusal is explicit and leaves execution uncreated."""
+    from services.scheduler import ScheduleNotFireable, _ScheduleRunner
+
+    from maistro.graph.templates import GraphTemplateNotFound
+
+    async def scenario() -> None:
+        runner = _ScheduleRunner()
+        schedule = _canonical_row()
+        store = SimpleNamespace(get=lambda _sid: None)
+        container = SimpleNamespace(schedule_store=store)
+        failures: list[str] = []
+
+        async def scope(_schedule: Any, _container: Any) -> object:
+            return object()
+
+        async def definition(*_args: Any, **_kwargs: Any) -> Any:
+            if outcome == "no-definition":
+                return None
+            return SimpleNamespace(exhausted=outcome == "exhausted", max_runs=3)
+
+        async def prime(_definition: Any, _container: Any) -> None:
+            return None
+
+        class _Admitter:
+            async def admit_due(self, *_args: Any, **_kwargs: Any) -> Any:
+                if outcome == "template-missing":
+                    raise GraphTemplateNotFound("missing")
+                if outcome == "admission-error":
+                    raise RuntimeError("boom")
+                if outcome == "already-fired":
+                    return SimpleNamespace(
+                        already_fired=[datetime(2026, 8, 21, 12, tzinfo=UTC)],
+                        run_ids=["not-created"],
+                    )
+                return SimpleNamespace(already_fired=[], run_ids=[])
+
+        monkeypatch.setattr(runner, "_canonical_scope", scope)
+        monkeypatch.setattr(runner, "_definition_for", definition)
+        monkeypatch.setattr(runner, "_prime_template", prime)
+        monkeypatch.setattr(
+            runner,
+            "_audit_manual_failure",
+            lambda _sid, _schedule, error: failures.append(error),
+        )
+
+        admitter: Any = _Admitter()
+        with pytest.raises(ScheduleNotFireable):
+            await runner._fire_manual_canonical(
+                "s-canonical-manual",
+                schedule,
+                container=container,
+                admitter=admitter,
+            )
+        assert failures == (
+            ["template_not_found"]
+            if outcome == "template-missing"
+            else ["RuntimeError"]
+            if outcome == "admission-error"
+            else []
+        )
+
+    asyncio.run(scenario())
+
+
 def test_a_half_wired_container_fails_closed_instead_of_degrading(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

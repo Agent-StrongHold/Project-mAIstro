@@ -382,3 +382,86 @@ class TestFireReservation:
             stamped_at=NOON,
         )
         assert await store.settle_fire("missing", reservation, run_id=None) is None
+
+
+class _FakeTransaction:
+    async def __aenter__(self) -> _FakeTransaction:
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+
+class _FakeConnection:
+    def __init__(self, payload: object) -> None:
+        self.payload = payload
+        self.executed: list[tuple[str, tuple[object, ...]]] = []
+
+    def transaction(self) -> _FakeTransaction:
+        return _FakeTransaction()
+
+    async def fetchval(self, _query: str, _schedule_id: str) -> object:
+        return self.payload
+
+    async def execute(self, query: str, *args: object) -> None:
+        self.executed.append((query, args))
+
+
+class _FakeAcquire:
+    def __init__(self, connection: _FakeConnection) -> None:
+        self.connection = connection
+
+    async def __aenter__(self) -> _FakeConnection:
+        return self.connection
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+
+class _FakePool:
+    def __init__(self, payload: object) -> None:
+        self.connection = _FakeConnection(payload)
+
+    def acquire(self) -> _FakeAcquire:
+        return _FakeAcquire(self.connection)
+
+
+async def test_postgres_reservation_and_settlement_use_locked_transactions() -> None:
+    """The PG adapter's new quota methods issue both row-lock reads and writes."""
+    from maistro.runs.evidence_json import json_of
+    from maistro.scheduling.pg_store import PgScheduleStore
+
+    schedule = _schedule(max_runs=2)
+    pool = _FakePool(json_of(schedule))
+    store = PgScheduleStore(pool)  # type: ignore[arg-type]
+
+    reserved = await store.reserve_fire(schedule.schedule_id)
+    assert reserved is not None
+    current, reservation = reserved
+    assert current.runs_so_far == 1
+
+    settled = await store.settle_fire(schedule.schedule_id, reservation, run_id="run-1")
+    assert settled is not None
+    assert settled.last_run_id == "run-1"
+    assert len(pool.connection.executed) == 2
+    assert all("UPDATE schedules" in query for query, _args in pool.connection.executed)
+
+
+async def test_postgres_reservation_and_settlement_return_none_for_missing_rows() -> None:
+    from maistro.scheduling.pg_store import PgScheduleStore
+    from maistro.scheduling.store import FireReservation
+
+    pool = _FakePool(None)
+    store = PgScheduleStore(pool)  # type: ignore[arg-type]
+    reservation = FireReservation(
+        schedule_id="missing",
+        fires=1,
+        disabled=False,
+        next_due_at_before=None,
+        updated_at_before=NOON,
+        stamped_at=NOON,
+    )
+
+    assert await store.reserve_fire("missing") is None
+    assert await store.settle_fire("missing", reservation, run_id=None) is None
+    assert pool.connection.executed == []
