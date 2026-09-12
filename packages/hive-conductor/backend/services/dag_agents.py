@@ -106,6 +106,11 @@ def _resolve_nodes_with() -> Callable[[str, Any], Any]:
         a2a_delegator=container.a2a_delegator,
         guest_peers=container.guest_peers,
         run_store=container.run_store,
+        # The durable graph store, which `agent.synth_dag` declares as
+        # required (#1193): without it the resolver refuses that kind instead
+        # of constructing one that reports success for a sub-graph nothing
+        # ran. Distinct from `run_store` on purpose — see get_run_store().
+        graph_run_store=container.graph_run_store,
     )
 
 

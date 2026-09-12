@@ -10,6 +10,7 @@ canonical Run until the harness result is supplied on resume.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, ClassVar, Literal
 
@@ -72,6 +73,13 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
     """Dispatch through Binding -> governed Invocation, then pause for the result."""
 
     kind: ClassVar[str] = "agent.spawn_harness"
+    # Both degrade truthfully when absent: no adapters means every harness
+    # request is refused as unknown, and the process-default effect context
+    # registers no Bindings and therefore authorizes nothing.
+    optional_authorities: ClassVar[Mapping[str, str]] = {
+        "adapters": "harness_adapters",
+        "effect_context": "effect_context",
+    }
     kind_category: ClassVar = "wait"
     input_schema: ClassVar[type[BaseModel]] = SpawnHarnessIn
     output_schema: ClassVar[type[BaseModel]] = SpawnHarnessOut

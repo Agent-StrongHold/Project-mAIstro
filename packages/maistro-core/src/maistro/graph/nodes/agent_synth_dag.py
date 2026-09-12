@@ -37,7 +37,7 @@ retires.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel, Field
@@ -59,13 +59,14 @@ from maistro.security.sentinel.policy import Sentinel
 from maistro.security.warden.detector import Warden
 
 from . import get_node, register_node
-from .base import BaseNode, NodeContext
+from .base import BaseNode, NodeCompositionError, NodeContext
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; runtime import would cycle
     from maistro.graph.definitions import Graph
     from maistro.graph.durable_runs.attempt_executor import NodeResolver
     from maistro.graph.durable_runs.protocol import DurableRunStore
     from maistro.graph.types import GraphConfig
+    from maistro.runs.store import RunStore
     from maistro.runtime import ExecutionRuntime
 
 # Absolute substrate backstop only (mirrors fan_out.MAX_PARALLEL_CEILING) — the
@@ -261,6 +262,17 @@ class AgentSynthDagNode(BaseNode[SynthDagIn, SynthDagOut]):
     """Synthesize a GraphConfig from an objective, then run it as a sub-graph."""
 
     kind: ClassVar[str] = "agent.synth_dag"
+    # The two stores are what turn an approved config into a canonical child
+    # Run: the canonical RunStore admits it, the durable graph store runs it.
+    # Both declared required so the production resolver can never hand this
+    # node `run_store=None` and let it answer "success" for a sub-graph
+    # nothing ran (#1193). The wired resolver is optional: the child's nodes
+    # get the caller's dependencies when there is one.
+    required_authorities: ClassVar[Mapping[str, str]] = {
+        "run_store": "graph_run_store",
+        "canonical_run_store": "run_store",
+    }
+    optional_authorities: ClassVar[Mapping[str, str]] = {"node_resolver": "node_resolver"}
     kind_category: ClassVar = "composite"
     input_schema: ClassVar[type[BaseModel]] = SynthDagIn
     output_schema: ClassVar[type[BaseModel]] = SynthDagOut
@@ -276,7 +288,6 @@ class AgentSynthDagNode(BaseNode[SynthDagIn, SynthDagOut]):
     def __init__(
         self,
         synthesizer: DagSynthesizer | None = None,
-        llm_call: Callable[..., Awaitable[Any]] | None = None,
         *,
         warden: Warden | None = None,
         sentinel: Sentinel | None = None,
@@ -284,12 +295,13 @@ class AgentSynthDagNode(BaseNode[SynthDagIn, SynthDagOut]):
         proportionality_judge: ProportionalityJudge | None = None,
         max_depth: int = _DEFAULT_MAX_DEPTH,
         run_store: DurableRunStore | None = None,
+        canonical_run_store: RunStore | None = None,
         runtime: ExecutionRuntime | None = None,
         node_resolver: NodeResolver | None = None,
     ) -> None:
         self._synthesizer: DagSynthesizer = synthesizer or RuleDagSynthesizer()
-        self._llm_call = llm_call
         self._run_store = run_store
+        self._canonical_run_store = canonical_run_store
         self._runtime = runtime
         self._node_resolver = node_resolver
         self._warden = warden or Warden()
@@ -299,6 +311,42 @@ class AgentSynthDagNode(BaseNode[SynthDagIn, SynthDagOut]):
             proportionality_judge or RuleProportionalityJudge()
         )
         self._max_depth = max_depth
+
+    async def _admit_child(
+        self,
+        graph: Graph,
+        ctx: NodeContext,
+        *,
+        provenance: dict[str, Any],
+        blackboard_metadata: dict[str, Any],
+    ) -> str | None:
+        """Admit the child on the canonical spine before its first checkpoint.
+
+        The Container's durable graph store is a projection of the canonical
+        spine: it refuses to checkpoint a Run that `RunStore` has not admitted,
+        and `run_durable_graph` against a canonical store consumes an admitted,
+        still-QUEUED Run whose launch snapshot it re-reads (#1193). So admission
+        is one durable write here, carrying the launch metadata, filed under the
+        parent Run and NodeRun the way `agent.delegate_remote` files its child.
+        Without a canonical store — an in-memory durable store in tests — the
+        executor mints the Run itself, as it always did.
+        """
+        if self._canonical_run_store is None:
+            return None
+        from maistro.graph.durable_runs.launch import durable_graph_launch_provenance
+
+        admitted = await self._canonical_run_store.create_run(
+            graph,
+            parent_run_id=ctx.run_id,
+            parent_node_run_id=ctx.node_run_id or None,
+            actor_principal_id=ctx.user_id,
+            provenance={
+                **provenance,
+                **durable_graph_launch_provenance(blackboard_metadata=blackboard_metadata),
+            },
+            initial_status=RunStatus.QUEUED,
+        )
+        return admitted.run_id
 
     def _child_resolver(self) -> NodeResolver:
         """The resolver the child graph builds its nodes with.
@@ -387,26 +435,13 @@ class AgentSynthDagNode(BaseNode[SynthDagIn, SynthDagOut]):
     ) -> SynthDagOut:
         """Run the approved config as a canonical child Run, or say why not (#520)."""
         if self._run_store is None:
-            if self._llm_call is None:
-                return SynthDagOut(
-                    success=True,
-                    synthesized_nodes=synthesized_kinds,
-                    rationale=synth.rationale,
-                    run_output="dag synthesized — no llm_call provided, execution skipped",
-                )
-            # An llm_call used to select the ephemeral GraphRun path here,
-            # executing the subtree with no canonical records (#520). Declining
-            # is the honest replacement: the synthesis stands, and the output
-            # says exactly why nothing ran.
-            return SynthDagOut(
-                success=True,
-                synthesized_nodes=synthesized_kinds,
-                rationale=synth.rationale,
-                run_output=(
-                    "dag synthesized — not executed: canonical dispatch requires "
-                    "a durable run store; the in-process GraphRun path is retired (#520)"
-                ),
-            )
+            # This used to answer `success=True` with "execution skipped" —
+            # a Graph node reporting success for work it did not do, in the
+            # production resolver's own generic construction (#1193). The
+            # in-process GraphRun path is retired (#520) and there is no
+            # other way to run the sub-graph, so a node built without the
+            # store fails as the node, loudly, rather than completing.
+            raise NodeCompositionError(self.kind, missing=("graph_run_store", "run_store"))
 
         undispatchable = _undispatchable_reason(synth.graph_config, ctx, inputs.available_kinds)
         if undispatchable is not None:
@@ -419,11 +454,23 @@ class AgentSynthDagNode(BaseNode[SynthDagIn, SynthDagOut]):
 
         from maistro.graph.durable_runs import run_durable_graph
 
+        child_graph = _child_graph(synth.graph_config, inputs.objective, ctx)
+        provenance = {
+            "admission_source": "agent.synth_dag",
+            "objective": inputs.objective[:200],
+        }
+        # The child starts one level deeper than the node that spawned it,
+        # so a nested agent.synth_dag inside it hits the same hard cap.
+        blackboard_metadata = {"synth_depth": depth + 1}
         child = await run_durable_graph(
-            _child_graph(synth.graph_config, inputs.objective, ctx),
+            child_graph,
             store=self._run_store,
             node_resolver=self._child_resolver(),
             actor_principal_id=ctx.user_id,
+            run_id=await self._admit_child(
+                child_graph, ctx, provenance=provenance, blackboard_metadata=blackboard_metadata
+            ),
+            run_store=self._canonical_run_store,
             # Deliberately NOT `self._runtime`. `ExecutionRuntime.execute`
             # holds a semaphore slot for the whole executor call, so the
             # parent Attempt is holding one while this awaits the child. On a
@@ -435,13 +482,8 @@ class AgentSynthDagNode(BaseNode[SynthDagIn, SynthDagOut]):
             runtime=None,
             parent_run_id=ctx.run_id,
             parent_node_run_id=ctx.node_run_id or None,
-            provenance={
-                "admission_source": "agent.synth_dag",
-                "objective": inputs.objective[:200],
-            },
-            # The child starts one level deeper than the node that spawned it,
-            # so a nested agent.synth_dag inside it hits the same hard cap.
-            blackboard_metadata={"synth_depth": depth + 1},
+            provenance=provenance,
+            blackboard_metadata=blackboard_metadata,
         )
         # A child parked WAITING or PAUSED has not failed — it is a wait or a
         # HITL pause the subgraph is entitled to, and calling it a failure
