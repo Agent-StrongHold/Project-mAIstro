@@ -7,7 +7,7 @@ requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 dependencies = [
-    "pydantic>=2.0,<3",
+    "pydantic>=2.4.0,<3",
     "pydantic-settings>=2.7,<3",
     "structlog>=24.4,<26",
     "httpx>=0.28,<1",
@@ -25,7 +25,7 @@ dependencies = [
     "regex>=2024.5.15,<2027",
     # OIDC production verification must never depend on mcp/llm extras
     # happening to install PyJWT transitively.
-    "pyjwt[crypto]>=2.10,<3",
+    "pyjwt[crypto]>=2.13.0,<3",
 ]
 
 [project.scripts]
@@ -34,7 +34,7 @@ maistro = "maistro.cli:main"
 [project.optional-dependencies]
 llm = [
     # Resolves at 3.x in the workspace lock; >=2.0 remains the true floor.
-    "fastmcp>=2.0,<4",
+    "fastmcp>=3.2.0,<4",
 ]
 # The sandbox tool drives the `docker` CLI via subprocess, not the Python SDK,
 # so it needs no pip dependency. Kept as an explicit (empty) extra for clarity.
@@ -108,7 +108,7 @@ sqlite = [
 # maistro.identity raises an ImportError naming this extra when it is missing —
 # loud and actionable, not a silent fallback.
 identity = [
-    "pynacl>=1.5,<2",
+    "pynacl>=1.6.2,<2",
     "bip-utils>=2.9,<3",
 ]
 # ASGI framework adapters — auth/middleware.py (FastAPI) and
@@ -117,7 +117,7 @@ identity = [
 # drag a web framework into a library consumer.
 asgi = [
     "fastapi>=0.115,<1",
-    "starlette>=0.40,<2",
+    "starlette>=1.3.1,<2",
 ]
 # The widest extra set, and what `wheel-imports` installs before importing every
 # module in the wheel. `s3` belongs here even though the Archive tier is opt-in:
@@ -136,7 +136,7 @@ all = [
     "maistro-core[llm,sandbox,observability,tui,builders,sqlite,asgi,identity,s3,bcrypt]",
 ]
 dev = [
-    "pytest>=8.3,<10",
+    "pytest>=9.0.3,<10",
     "pytest-asyncio>=0.25,<2",
     "pytest-cov>=6.0,<8",
     "ruff>=0.9,<1",

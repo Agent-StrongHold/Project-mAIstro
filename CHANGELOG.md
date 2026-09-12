@@ -36,6 +36,21 @@ or placeholder-only section.
   arrays) and `nanoid` (GHSA-2v37-7h3g-55p8, zero-size custom generator loop)
   resolve to patched releases; no direct dependency changes. `npm audit`
   reports zero findings in both trees.
+- **Python dependency floors raised past their advisories (no linked issue:
+  Dependabot security alerts, no tracked issue).** Every `pyproject.toml` in
+  the workspace and both backend `requirements.txt` files declared version
+  ranges whose lower bound was a release with open advisories, which is what
+  Dependabot alerts on for a range: `pydantic` (>=2.4.0, GHSA-mr82-8j83-vxmv),
+  `python-multipart` (>=0.0.31, eight advisories through GHSA-v9pg-7xvm-68hf),
+  `pyjwt` (>=2.13.0, seven through GHSA-xgmm-8j9v-c9wx), `pytest` (>=9.0.3,
+  GHSA-6w46-j5rx-g56g), `pillow` (>=12.3.0, seventeen through
+  GHSA-xj96-63gp-2gmr), `fastmcp` (>=3.2.0, eight through
+  GHSA-vv7q-7jx5-f767), `pynacl` (>=1.6.2, GHSA-mrfv-m5wm-5w6w), `starlette`
+  (>=1.3.1, seven through GHSA-82w8-qh3p-5jfq), `nltk` (>=3.10.3; three
+  advisories have no fixed release and remain), and the dev-tools-only
+  `guarddog` (>=2.7.1; two have no fixed release and remain). `uv.lock`
+  already resolved every one of these at or above the new floor, so no
+  installed version changes; the lock's recorded specifiers are refreshed.
 - **Bootstrap credential staging is now private, atomic, and never follows a
   link (#809).** `write_bootstrap_credentials` writes secrets to a fresh 0600
   temp file in the same directory and promotes it with `os.replace`, so secret

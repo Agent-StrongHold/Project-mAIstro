@@ -8,7 +8,7 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 dependencies = [
     "maistro-core>=0.9.0",
-    "pydantic>=2.0,<3",
+    "pydantic>=2.4.0,<3",
     # structlog and httpx were declared here and imported nowhere in
     # `src/maistro_turing`; both arrive as hard dependencies of
     # maistro-core, which is what actually imports them (#514). A second
@@ -19,7 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.3,<10",
+    "pytest>=9.0.3,<10",
     "pytest-asyncio>=0.25,<2",
     "ruff>=0.9,<1",
     "mypy>=1.14,<2",
