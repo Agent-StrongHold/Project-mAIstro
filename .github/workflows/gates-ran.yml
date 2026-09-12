@@ -62,6 +62,7 @@ jobs:
             const source = context.payload.workflow_run;
             const headSha = source.head_sha;
             let baseBranch;
+            let prNumber = '';
 
             if (source.event === 'merge_group') {
               const headBranch = source.head_branch || '';
@@ -88,6 +89,7 @@ jobs:
                 return;
               }
               baseBranch = pr.base.ref;
+              prNumber = String(pr.number || '');
             }
 
             if (!/^[0-9a-f]{40}$/.test(headSha || '')) {
@@ -98,6 +100,7 @@ jobs:
             core.setOutput('head_sha', headSha);
             core.setOutput('base_branch', baseBranch);
             core.setOutput('event_name', source.event);
+            core.setOutput('pr_number', prNumber);
             core.info(`evaluating ${headSha} for base ${baseBranch} from ${source.event}`);
 
       - uses: actions/checkout@v7
@@ -132,6 +135,36 @@ jobs:
             fs.writeFileSync('check-runs.json', JSON.stringify({ check_runs: runs }));
             core.info(`${runs.length} check run(s) on ${process.env.HEAD_SHA}`);
 
+      - name: Collect changed files for pull-request scope
+        if: steps.target.outputs.head_sha != '' && steps.target.outputs.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        continue-on-error: true
+        env:
+          PR_NUMBER: ${{ steps.target.outputs.pr_number }}
+        with:
+          script: |
+            const fs = require('fs');
+            const number = Number(process.env.PR_NUMBER || '0');
+            if (!number) {
+              fs.writeFileSync('changed-files.json', JSON.stringify({ measured: false }));
+              core.warning('pull-request number was unavailable; specialized scope is ambiguous');
+              return;
+            }
+            const files = await github.paginate(
+              github.rest.pulls.listFiles,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: number,
+                per_page: 100,
+              },
+            );
+            fs.writeFileSync(
+              'changed-files.json',
+              JSON.stringify({ measured: true, files: files.map(file => file.filename) }),
+            );
+            core.info(`${files.length} changed file(s) on PR #${number}`);
+
       - name: Evaluate required execution evidence
         id: evaluate
         if: steps.target.outputs.head_sha != ''
@@ -145,7 +178,8 @@ jobs:
             --check-runs check-runs.json \
             --require-complete \
             --base-branch "$BASE_BRANCH" \
-            --event-name "$EVENT_NAME"
+            --event-name "$EVENT_NAME" \
+            --changed-files changed-files.json
           code=$?
           set -e
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"

@@ -42,6 +42,20 @@ def test_publisher_has_only_the_write_permission_it_needs():
     assert doc["jobs"]["publish-gates-ran"]["name"] == "gates-ran-publisher"
 
 
+def test_publisher_delegates_path_scope_to_the_checked_in_evaluator():
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "--changed-files changed-files.json" in text
+    assert "<<'PY'" not in text
+    assert "DevSkim" in text
+
+
+def test_publisher_triggers_devskim_exactly_once() -> None:
+    doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    triggers = doc.get(True) or doc.get("on")
+
+    assert triggers["workflow_run"]["workflows"].count("DevSkim") == 1
+
+
 def test_publisher_targets_the_pr_head_from_trusted_workflow_run_code():
     text = WORKFLOW.read_text(encoding="utf-8")
     doc = yaml.safe_load(text)

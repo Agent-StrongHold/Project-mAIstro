@@ -220,9 +220,17 @@ class TestAgainstTheRealWorkflows:
             ("CodeQL Advanced", "Analyze (actions)"),
             ("CodeQL Advanced", "Analyze (javascript-typescript)"),
             ("CodeQL Advanced", "Analyze (python)"),
+            ("DevSkim", "DevSkim"),
             ("security", "Container scan + SBOM + cosign"),
             ("DevSkim", "DevSkim"),
         }
+
+    def test_advisory_devskim_is_not_required_on_either_branch(self, gate) -> None:
+        protection = json.loads((ROOT / ".github" / "branch-protection.json").read_text())
+        assert protection["advisory"]["DevSkim"]
+        for branch in ("develop", "main"):
+            contexts = protection["branches"][branch]["required_status_checks"]["contexts"]
+            assert "DevSkim" not in contexts
 
     def test_every_unfiltered_pr_workflow_cancels_superseded_runs(self, gate) -> None:
         offenders = []

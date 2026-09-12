@@ -46,6 +46,12 @@ def _payload(tmp_path: Path, runs: list[dict]) -> Path:
     return path
 
 
+def _envelope(tmp_path: Path, payload: dict | list) -> Path:
+    path = tmp_path / "changed-files.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
 class TestTheThreeStates:
     def test_a_check_that_ran_and_passed_is_fine(self, check):
         v = check.evaluate(["a"], [_run("a")], require_complete=True)
@@ -240,6 +246,213 @@ class TestTheWorkflowItself:
         assert producers - triggers == set(), "a producer workflow is not a trigger"
 
 
+class TestPathScopedRequiredChecks:
+    def test_a_non_specialized_path_scoped_check_can_be_skipped(self, check, monkeypatch):
+        """The skip rule is generic: it is not a hard-coded specialized-job list."""
+        monkeypatch.setitem(check.PATH_SCOPED_CHECKS, "coverage (path-gated)", "postgres")
+        verdict = check.evaluate(
+            ["coverage (path-gated)", "always-required"],
+            [
+                _run("coverage (path-gated)", conclusion="skipped"),
+                _run("always-required", conclusion="skipped"),
+            ],
+            require_complete=True,
+            scope={"postgres": False},
+            scope_measured=True,
+        )
+        assert verdict.not_executed == ["always-required"]
+        assert verdict.ok is False
+
+    def test_an_out_of_scope_failure_is_still_a_finding(self, check, monkeypatch):
+        monkeypatch.setitem(check.PATH_SCOPED_CHECKS, "coverage (path-gated)", "postgres")
+        verdict = check.evaluate(
+            ["coverage (path-gated)"],
+            [_run("coverage (path-gated)", conclusion="failure")],
+            require_complete=True,
+            scope={"postgres": False},
+            scope_measured=True,
+        )
+        assert verdict.not_executed == []
+        assert verdict.ran == ["coverage (path-gated)"]
+
+    def test_unmeasured_scope_keeps_path_scoped_skip_pending(self, check, monkeypatch):
+        monkeypatch.setitem(check.PATH_SCOPED_CHECKS, "coverage (path-gated)", "postgres")
+        verdict = check.evaluate(
+            ["coverage (path-gated)"],
+            [_run("coverage (path-gated)", conclusion="skipped")],
+            require_complete=True,
+            scope=None,
+            scope_measured=False,
+        )
+        assert verdict.unfinished == ["coverage (path-gated)"]
+        assert verdict.pending and not verdict.ok
+
+
+class TestTheCliScopeEnvelope:
+    """The workflow hands the CLI a measured changed-file envelope next to the
+    check-run payload. Between the argparse surface and evaluate() sit the
+    lines that load the scope classifier, refuse to guess when the envelope is
+    missing or unmeasured, and honor a measured out-of-scope skip -- none of
+    which a direct evaluate() call can reach."""
+
+    @staticmethod
+    def _runs_for_scope(check, legs_off: set[str]) -> list[dict]:
+        """Every required check either ran, or is skipped because the measured
+        scope says its leg was never reachable -- the shape a PR that cannot
+        affect a leg produces when CI correctly skips it."""
+        runs = []
+        for name in check.required_check_names(event_name="pull_request"):
+            leg = check.PATH_SCOPED_CHECKS.get(name)
+            conclusion = "skipped" if leg is not None and leg in legs_off else "success"
+            runs.append(_run(name, conclusion=conclusion))
+        return runs
+
+    def test_a_measured_deps_only_envelope_excuses_out_of_scope_skips(
+        self, check, tmp_path, capsys
+    ):
+        """A PR touching nothing any specialized leg reads (release notes) may
+        legitimately skip all of them; with a measured envelope saying so, the
+        skipped legs must not be findings."""
+        every_leg = set(check.PATH_SCOPED_CHECKS.values())
+        code = check.main(
+            [
+                "--check-runs",
+                str(_payload(tmp_path, self._runs_for_scope(check, every_leg))),
+                "--require-complete",
+                "--event-name",
+                "pull_request",
+                "--changed-files",
+                str(_envelope(tmp_path, {"measured": True, "files": ["notes/todo.txt"]})),
+            ]
+        )
+        assert code == 0
+        assert "ok: all" in capsys.readouterr().out
+
+    def test_an_in_scope_skip_still_fails_with_a_measured_envelope(self, check, tmp_path, capsys):
+        """The envelope excuses skips the scope proves unreachable, never ones it
+        proves reachable: uv.lock is a global file, every leg runs on it, so a
+        skipped leg there really did not execute."""
+        every_leg = set(check.PATH_SCOPED_CHECKS.values())
+        code = check.main(
+            [
+                "--check-runs",
+                str(_payload(tmp_path, self._runs_for_scope(check, every_leg))),
+                "--require-complete",
+                "--event-name",
+                "pull_request",
+                "--changed-files",
+                str(_envelope(tmp_path, {"measured": True, "files": ["uv.lock"]})),
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == 1
+        assert "FAIL: the gate set did not reach this commit" in out
+        assert "did not execute to a verdict" in out
+
+    def test_a_pull_request_without_a_measured_envelope_is_pending(self, check, tmp_path, capsys):
+        """pull_request with no --changed-files: the skip evidence cannot be
+        judged, so the verdict must be pending rather than green or red."""
+        every_leg = set(check.PATH_SCOPED_CHECKS.values())
+        code = check.main(
+            [
+                "--check-runs",
+                str(_payload(tmp_path, self._runs_for_scope(check, every_leg))),
+                "--require-complete",
+                "--event-name",
+                "pull_request",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == check.PENDING_EXIT
+        assert "changed files were not measured" in out
+
+    def test_an_envelope_that_was_never_measured_is_pending(self, check, tmp_path, capsys):
+        """`measured` must be literally true; anything else is the same
+        ambiguity as no envelope at all."""
+        every_leg = set(check.PATH_SCOPED_CHECKS.values())
+        code = check.main(
+            [
+                "--check-runs",
+                str(_payload(tmp_path, self._runs_for_scope(check, every_leg))),
+                "--require-complete",
+                "--event-name",
+                "pull_request",
+                "--changed-files",
+                str(_envelope(tmp_path, {"measured": False, "files": ["notes/todo.txt"]})),
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == check.PENDING_EXIT
+        assert "changed-file payload is invalid" in out
+
+    def test_an_envelope_with_non_string_files_is_pending(self, check, tmp_path, capsys):
+        """A files array holding a non-string is not an envelope this gate can
+        interpret; guessing either way would be fabrication."""
+        every_leg = set(check.PATH_SCOPED_CHECKS.values())
+        code = check.main(
+            [
+                "--check-runs",
+                str(_payload(tmp_path, self._runs_for_scope(check, every_leg))),
+                "--require-complete",
+                "--event-name",
+                "pull_request",
+                "--changed-files",
+                str(_envelope(tmp_path, {"measured": True, "files": ["notes/todo.txt", 7]})),
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == check.PENDING_EXIT
+        assert "changed-file payload is invalid" in out
+
+    def test_an_unreadable_envelope_is_pending(self, check, tmp_path, capsys):
+        """A corrupt envelope file is unmeasured scope, not a pass."""
+        bad = tmp_path / "changed-files.json"
+        bad.write_text("{not json", encoding="utf-8")
+        every_leg = set(check.PATH_SCOPED_CHECKS.values())
+        code = check.main(
+            [
+                "--check-runs",
+                str(_payload(tmp_path, self._runs_for_scope(check, every_leg))),
+                "--require-complete",
+                "--event-name",
+                "pull_request",
+                "--changed-files",
+                str(bad),
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == check.PENDING_EXIT
+        assert "execution scope is ambiguous" in out
+
+    def test_an_unloadable_scope_classifier_degrades_to_pending(
+        self, check, tmp_path, capsys, monkeypatch
+    ):
+        """If the classifier module cannot even be loaded, the envelope cannot be
+        judged -- that packaging accident must surface as pending scope, never
+        as a crash or a green guess."""
+        real_spec = importlib.util.spec_from_file_location
+
+        def _broken_scope_loader(name, *args, **kwargs):
+            return None if "scope" in name else real_spec(name, *args, **kwargs)
+
+        monkeypatch.setattr("importlib.util.spec_from_file_location", _broken_scope_loader)
+        every_leg = set(check.PATH_SCOPED_CHECKS.values())
+        code = check.main(
+            [
+                "--check-runs",
+                str(_payload(tmp_path, self._runs_for_scope(check, every_leg))),
+                "--require-complete",
+                "--event-name",
+                "pull_request",
+                "--changed-files",
+                str(_envelope(tmp_path, {"measured": True, "files": ["notes/todo.txt"]})),
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == check.PENDING_EXIT
+        assert "execution scope is ambiguous" in out
+
+
 class TestTheReport:
     """A gate is read by someone deciding whether to trust a merge, so what it
     prints is part of what it does."""
@@ -284,3 +497,23 @@ class TestTheReport:
         monkeypatch.setattr(check, "required_check_names", lambda **_kwargs: [])
         assert check.main(["--check-runs", str(_payload(tmp_path, [_run("x")]))]) == 1
         assert "contract is empty" in capsys.readouterr().out
+
+    def test_the_script_entry_point_judges_a_green_head(self, check, tmp_path):
+        """The `python3 scripts/check-gates-ran.py` invocation the workflow
+        actually runs -- argparse on real argv, exit code through the shell --
+        rather than the imported main() every other test uses."""
+        runs = [_run(name) for name in check.required_check_names()]
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--check-runs",
+                str(_payload(tmp_path, runs)),
+                "--require-complete",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+        )
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "ok: all" in proc.stdout
