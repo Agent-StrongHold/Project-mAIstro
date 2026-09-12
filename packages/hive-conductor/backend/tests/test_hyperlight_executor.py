@@ -48,7 +48,11 @@ async def test_a_command_run_reports_its_output_and_env() -> None:
     executor = SandboxExecutor()
 
     report = await executor._subprocess_via_cmd(
-        [_sys.executable, "-c", f"import os; print(os.environ.get('CMD_MARKER', 'unset')); print({marker!r})"],
+        [
+            _sys.executable,
+            "-c",
+            f"import os; print(os.environ.get('CMD_MARKER', 'unset')); print({marker!r})",
+        ],
         {"CMD_MARKER": "present"},
         30,
     )
