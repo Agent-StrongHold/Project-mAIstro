@@ -108,7 +108,7 @@ from typing import Literal, Optional, Union, Annotated
 from typing_extensions import Literal as L, Optional as Maybe, Annotated as Tagged, Union as Either
 """
     assert gate.work_state_literals(imports + f"RunStatus = {annotation}\n", "pkg.jobs") == {
-        "pkg.jobs::RunStatus": STATES
+        "pkg.jobs::RunStatus": STATES,
     }
     assert gate.work_state_literals(
         imports + f"class Job:\n    status: {annotation}\n", "pkg.jobs"
@@ -166,15 +166,20 @@ def test_recursive_aliases_terminate_without_inventing_values(gate) -> None:
 
 
 def test_a_new_sibling_cannot_use_an_existing_scope_disposition(gate) -> None:
-    base = 'from typing import Literal\nclass A:\n    Status = Literal["queued", "running", "failed"]\n'
+    base = (
+        'from typing import Literal\nclass A:\n'
+        '    Status = Literal["queued", "running", "failed"]\n'
+    )
     candidate = base + 'class B:\n    Status = Literal["queued", "running", "failed"]\n'
     trusted = gate.work_state_literals(base, "pkg.jobs")
     found = gate.work_state_literals(candidate, "pkg.jobs")
     entries = {name: {"classification": "DOMAIN", "rationale": "existing"} for name in trusted}
     failures = gate.audit({"lifecycles": entries}, found)
-    assert any("pkg.jobs::B.Status" in failure and "unclassified" in failure for failure in failures)
+    assert any(
+        "pkg.jobs::B.Status" in failure and "unclassified" in failure for failure in failures
+    )
     assert gate._unauthorized_additions(sorted(set(found) - set(trusted)), {}, set(trusted)) == [
-        "pkg.jobs::B.Status"
+        "pkg.jobs::B.Status",
     ]
 
 
@@ -186,7 +191,9 @@ def test_trusted_revision_lookup_preserves_prefixed_module_names(
 ) -> None:
     """Use real git history: candidate-only aliases must not become trusted evidence."""
     source = tmp_path / "models.py"
-    source.write_text('from typing import Literal\nRunStatus = Literal["queued", "running", "failed"]\n')
+    source.write_text(
+        'from typing import Literal\nRunStatus = Literal["queued", "running", "failed"]\n'
+    )
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     subprocess.run(["git", "-C", str(tmp_path), "add", "models.py"], check=True)
     subprocess.run(
