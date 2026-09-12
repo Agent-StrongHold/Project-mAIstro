@@ -111,6 +111,16 @@ class _Walk(Generic[T, C]):
     resume_after: C | None
 
 
+@dataclass(frozen=True)
+class _Taken(Generic[T, C]):
+    """What one page's rows contributed to the walk."""
+
+    items: list[T]
+    cursor: C | None
+    inspected: int
+    at_limit: bool
+
+
 async def fair_page_scan(
     *,
     fetch_page: Callable[[C | None, int], Awaitable[list[T] | ScanPage[T, C]]],
@@ -184,7 +194,8 @@ async def _walk(
     while len(found) < limit and inspected < max_inspected:
         page = _as_page(await fetch_page(cursor, min(page_size, max_inspected - inspected)))
         if not page.items:
-            if page.exhausted or page.resume_after is None:
+            skipped = _skipped_rows(page)
+            if skipped is None:
                 # Walked off the end -- or a filtering fetcher that yielded
                 # nothing and could not say where it got to, which cannot be
                 # distinguished from the end and must not spin on the same
@@ -194,29 +205,68 @@ async def _walk(
             # Yielded nothing but moved: a filtering fetcher paged over rows
             # it dropped. That is progress, and resetting to the top here is
             # exactly how a stale prefix starves the live work behind it.
-            inspected += max(1, page.inspected if page.inspected is not None else 0)
+            inspected += skipped
             cursor = page.resume_after
             continue
-        for item in page.items:
-            inspected += 1
-            # Advanced per row, not per page: a stop at `limit` mid-page must
-            # resume after the last row *inspected*, or the rest of that page
-            # would be skipped on the next tick.
-            cursor = cursor_of(item)
-            if eligible(item):
-                found.append(item)
-                if len(found) >= limit:
-                    return _Walk(found, cursor)
+        taken = _take(page.items, cursor_of, eligible, limit - len(found))
+        found.extend(taken.items)
+        inspected += taken.inspected
+        if taken.at_limit:
+            return _Walk(found, taken.cursor)
         # The whole page was consumed, so the fetcher's own position is at
         # least as far along as its last yielded row and may be further, past
         # rows it dropped after the last one it kept.
-        if page.resume_after is not None:
-            cursor = page.resume_after
-        if page.inspected is not None and page.inspected > len(page.items):
-            inspected += page.inspected - len(page.items)
+        cursor = page.resume_after if page.resume_after is not None else taken.cursor
+        inspected += _dropped_rows(page)
         if page.exhausted:
             return _Walk(found, None)
     return _Walk(found, cursor)
+
+
+def _skipped_rows(page: ScanPage[T, C]) -> int | None:
+    """Rows a page that yielded nothing moved past, or ``None`` to stop.
+
+    A page cannot be paged past when the fetcher says the ordering is
+    exhausted, nor when it yielded nothing and reported no position: there is
+    nowhere further to go, and re-fetching the same cursor would spin.
+    """
+    if page.exhausted or page.resume_after is None:
+        return None
+    # At least one, so a fetcher that reports no count cannot buy free work
+    # against the inspection ceiling.
+    return max(1, page.inspected if page.inspected is not None else 0)
+
+
+def _dropped_rows(page: ScanPage[T, C]) -> int:
+    """Rows the fetcher inspected and dropped beyond the ones it yielded."""
+    if page.inspected is None or page.inspected <= len(page.items):
+        return 0
+    return page.inspected - len(page.items)
+
+
+def _take(
+    items: list[T],
+    cursor_of: Callable[[T], C],
+    eligible: Callable[[T], bool],
+    remaining: int,
+) -> _Taken[T, C]:
+    """Consume one page's rows until ``remaining`` eligible ones are found.
+
+    The cursor advances per row, not per page: a stop at the limit mid-page
+    must resume after the last row *inspected*, or the rest of that page would
+    be skipped on the next tick.
+    """
+    kept: list[T] = []
+    cursor: C | None = None
+    inspected = 0
+    for item in items:
+        inspected += 1
+        cursor = cursor_of(item)
+        if eligible(item):
+            kept.append(item)
+            if len(kept) >= remaining:
+                return _Taken(kept, cursor, inspected, True)
+    return _Taken(kept, cursor, inspected, False)
 
 
 def _as_page(result: list[T] | ScanPage[T, C]) -> ScanPage[T, C]:

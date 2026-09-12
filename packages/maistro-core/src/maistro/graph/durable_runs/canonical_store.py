@@ -189,12 +189,6 @@ class CanonicalDurableRunStore:
         reports where it got to whether or not anything was eligible.
         ``exhausted`` is set only when the index itself ran out, which is the
         one case where restarting from the top is right.
-
-        An id that no longer assembles at all -- its continuation was deleted
-        between the index read and this read -- contributes no position, since
-        there is no row left to page past. The rows after it in the same page
-        do, so this costs position only when such a row is last in the page,
-        and only until the next tick re-reads it.
         """
         if limit <= 0 or max_inspected <= 0:
             return ScanPage(items=[], resume_after=after, inspected=0)
@@ -203,23 +197,41 @@ class CanonicalDurableRunStore:
         cursor = after
         inspected = 0
         while len(due) < limit and inspected < max_inspected:
-            page_size = min(limit, max_inspected - inspected)
             run_ids = await self._continuations.list_due_run_ids(
-                now=now, limit=page_size, after=cursor
+                now=now, limit=min(limit, max_inspected - inspected), after=cursor
             )
             if not run_ids:
                 return ScanPage(items=due, resume_after=cursor, inspected=inspected, exhausted=True)
             for run_id in run_ids:
                 inspected += 1
-                record = await self.get(run_id)
-                if record is None or record.resume_at is None:
+                candidate = await self._due_candidate(run_id, now)
+                if candidate is None:
                     continue
-                cursor = (record.resume_at.isoformat(), record.run_id)
-                if record.run.status in _RECOVERY_VISIBLE_STATUSES and record.resume_at <= now:
+                cursor, record = candidate
+                if record is not None:
                     due.append(record)
                     if len(due) >= limit:
                         break
         return ScanPage(items=due, resume_after=cursor, inspected=inspected)
+
+    async def _due_candidate(
+        self, run_id: str, now: datetime
+    ) -> tuple[tuple[str, str], DurableRunRecord | None] | None:
+        """One index row's keyset position, and its record if it is still due.
+
+        ``None`` means the row contributes no position: its continuation was
+        deleted between the index read and this read, so there is no row left
+        to page past. The rows after it in the same page still place the walk,
+        so this costs position only when such a row is last in its page, and
+        only until the next tick re-reads it.
+        """
+        record = await self.get(run_id)
+        if record is None or record.resume_at is None:
+            return None
+        position = (record.resume_at.isoformat(), record.run_id)
+        if record.run.status in _RECOVERY_VISIBLE_STATUSES and record.resume_at <= now:
+            return position, record
+        return position, None
 
     async def list_for_project(
         self,
