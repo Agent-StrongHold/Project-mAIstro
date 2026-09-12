@@ -73,6 +73,11 @@ EXPECTED_TABLES = frozenset(
         # `workspace_id` columns were bare Text with nothing to reference
         # until migration 019 gave the Workspace a table of its own.
         "canonical_workspaces",
+        # The Workspace's lifecycle journal (034): `creating` and `deleting`
+        # rows are hidden from canonical reads and finished by recovery, so a
+        # crash between the Workspace row and its Root Project cannot expose
+        # half a Workspace (#1121).
+        "canonical_workspace_lifecycle",
         "canonical_workspace_memberships",
         "child_profiles",
         "design_outputs",

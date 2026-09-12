@@ -112,6 +112,23 @@ class WorkspaceOwnershipError(ValueError):
     pass
 
 
+class WorkspaceRetainsHistory(Exception):
+    """Deletion was refused because durable Run history references the tree.
+
+    `canonical_runs.project_id` is `ON DELETE RESTRICT` (migration 012): a
+    Project a Run was filed under cannot be purged, so neither can the
+    Workspace above it. The store restores the Workspace to ``active`` before
+    raising, so the refusal leaves it visible rather than hidden ``deleting``.
+    """
+
+    def __init__(self, workspace_id: str) -> None:
+        self.workspace_id = workspace_id
+        super().__init__(
+            f"Workspace {workspace_id!r} owns canonical Run history that must be retained; "
+            "it cannot be deleted"
+        )
+
+
 __all__ = [
     "Workspace",
     "WorkspaceAccessDenied",
@@ -119,5 +136,6 @@ __all__ = [
     "WorkspaceMembership",
     "WorkspaceNotFound",
     "WorkspaceOwnershipError",
+    "WorkspaceRetainsHistory",
     "WorkspaceRole",
 ]

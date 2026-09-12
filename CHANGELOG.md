@@ -88,6 +88,19 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Workspace lifecycle recovery survives refusals, races, and older writers
+  (#1121).** Deleting a Workspace whose Projects carry canonical Run history
+  (`ON DELETE RESTRICT`) now restores it to `active` and raises
+  `WorkspaceRetainsHistory` instead of leaving it hidden `deleting` and failing
+  every later startup; recovery treats the same refusal the same way and no
+  longer aborts on one stuck row. Lifecycle transitions are compare-and-set,
+  and a create compensator holds the journal row while it rolls back, so
+  startup recovery on another replica cannot orphan a Root Project or
+  resurrect a Workspace its creator removed. A create rollback over an
+  imported Project tree removes only the Workspace row. Migration 034 installs
+  a trigger that journals every new Workspace row as `active`, and recovery
+  backfills missing journal rows, so a replica on the previous release cannot
+  write a Workspace the new release never shows.
 - **Project membership is one canonical row per `(project, principal)`, and
   is now explicitly revocable (#1148).** `ProjectScopeStore.set_membership`
   used to mint a fresh `membership_id` on every call, so a re-grant, role

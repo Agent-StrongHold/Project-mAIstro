@@ -101,6 +101,31 @@ class SqliteProjectScopeStore:
 
         self._owns_runs = owns_runs
 
+    async def _lifecycle_state(self, workspace_id: str) -> str | None:
+        """Read the canonical lifecycle row for every store on this database."""
+        table = await self._fetchone(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'canonical_workspace_lifecycle'",
+            (),
+        )
+        if table is None:
+            # Standalone Project stores may be used before a Workspace exists.
+            return None
+        row = await self._fetchone(
+            "SELECT state FROM canonical_workspace_lifecycle WHERE workspace_id = ?",
+            (workspace_id,),
+        )
+        return str(row[0]) if row is not None else None
+
+    async def _require_active_workspace(self, workspace_id: str) -> None:
+        state = await self._lifecycle_state(workspace_id)
+        if state is not None and state != "active":
+            raise ProjectScopeDenied(f"Workspace {workspace_id!r} is not active")
+
+    async def _require_provisionable_workspace(self, workspace_id: str) -> None:
+        if await self._lifecycle_state(workspace_id) == "deleting":
+            raise ProjectScopeDenied(f"Workspace {workspace_id!r} is being deleted")
+
     @asynccontextmanager
     async def _serialized_write(self) -> AsyncIterator[None]:
         """Take this connection's one write-critical section.
@@ -217,6 +242,7 @@ class SqliteProjectScopeStore:
 
         if not workspace_id.strip():
             raise ValueError("workspace_id must be a non-empty string")
+        await self._require_provisionable_workspace(workspace_id)
         existing = await self._root_or_none(workspace_id)
         if existing is not None:
             return existing
@@ -228,17 +254,24 @@ class SqliteProjectScopeStore:
             is_root=True,
         )
         async with self._serialized_write():
+            await self._require_provisionable_workspace(workspace_id)
             await self._conn.execute(
                 """INSERT OR IGNORE INTO canonical_projects
                    (project_id, workspace_id, parent_project_id, is_root, payload)
                    VALUES (?, ?, NULL, 1, ?)""",
                 (root.project_id, root.workspace_id, root.model_dump_json()),
             )
-        return await self.root_for_workspace(workspace_id)
+        created = await self._root_or_none(workspace_id)
+        if created is None:  # pragma: no cover - INSERT OR IGNORE raced a corruption
+            raise ProjectNotFound(f"Root Project for Workspace {workspace_id!r}")
+        return created
 
     async def root_for_workspace(self, workspace_id: str) -> Project:
-        """Return the canonical Root Project for a Workspace."""
+        """Return the canonical Root Project for an active Workspace."""
 
+        if await self._lifecycle_state(workspace_id) == "creating":
+            raise ProjectNotFound(f"Root Project for Workspace {workspace_id!r}")
+        await self._require_active_workspace(workspace_id)
         root = await self._root_or_none(workspace_id)
         if root is None:
             raise ProjectNotFound(f"Root Project for Workspace {workspace_id!r}")
@@ -269,13 +302,16 @@ class SqliteProjectScopeStore:
         return project
 
     async def get(self, project_id: str) -> Project | None:
-        """Load a Project by ID, or return ``None`` when absent."""
+        """Load a Project by ID when its Workspace is active."""
 
         row = await self._fetchone(
-            "SELECT payload FROM canonical_projects WHERE project_id = ?",
+            "SELECT workspace_id, payload FROM canonical_projects WHERE project_id = ?",
             (project_id,),
         )
-        return Project.model_validate_json(row[0]) if row is not None else None
+        if row is None:
+            return None
+        await self._require_active_workspace(row[0])
+        return Project.model_validate_json(row[1])
 
     async def lineage(self, project_id: str) -> list[Project]:
         """Load validated ancestry ordered from Root Project to target."""
@@ -327,6 +363,7 @@ class SqliteProjectScopeStore:
         """
         async with self._serialized_write():
             project = await self._require(project_id)
+            await self._require_active_workspace(project.workspace_id)
             if project.is_root:
                 raise ProjectIntegrityError("Root Project cannot be moved")
             parent = await self._require(parent_project_id)
@@ -396,6 +433,8 @@ class SqliteProjectScopeStore:
         if self._owns_runs is not None and await self._owns_runs(project_id):
             raise ProjectNotEmpty("Project has canonical Runs")
         async with self._serialized_write():
+            project = await self._require(project_id)
+            await self._require_active_workspace(project.workspace_id)
             await self._conn.execute(
                 "DELETE FROM canonical_projects WHERE project_id = ?",
                 (project_id,),
@@ -427,6 +466,7 @@ class SqliteProjectScopeStore:
         """
         async with self._serialized_write():
             project = await self._require(membership.project_id)
+            await self._require_active_workspace(project.workspace_id)
             if project.workspace_id != membership.workspace_id:
                 raise ProjectIntegrityError("ProjectMembership Workspace does not match Project")
             existing = await self._membership_or_none(
@@ -482,7 +522,10 @@ class SqliteProjectScopeStore:
     async def remove_membership(self, project_id: str, *, principal_id: str) -> None:
         """Revoke a principal's membership at one Project, if any exists."""
 
+        await self._require(project_id)
         async with self._serialized_write():
+            project = await self._require(project_id)
+            await self._require_active_workspace(project.workspace_id)
             await self._conn.execute(
                 """DELETE FROM canonical_project_memberships
                    WHERE project_id = ? AND principal_id = ?""",
@@ -499,6 +542,8 @@ class SqliteProjectScopeStore:
         if existing is not None and existing.workspace_id != resource.workspace_id:
             raise ProjectIntegrityError("resource identity cannot cross Workspaces")
         async with self._serialized_write():
+            project = await self._require(resource.project_id)
+            await self._require_active_workspace(project.workspace_id)
             await self._conn.execute(
                 """INSERT INTO canonical_project_resources
                    (resource_id, workspace_id, project_id, resource_type, payload)
@@ -560,6 +605,7 @@ class SqliteProjectScopeStore:
 
     async def _insert_project(self, project: Project) -> None:
         async with self._serialized_write():
+            await self._require_active_workspace(project.workspace_id)
             await self._conn.execute(
                 """INSERT INTO canonical_projects
                    (project_id, workspace_id, parent_project_id, is_root, payload)
@@ -575,6 +621,7 @@ class SqliteProjectScopeStore:
 
     async def _update_project(self, project: Project) -> None:
         async with self._serialized_write():
+            await self._require_active_workspace(project.workspace_id)
             await self._conn.execute(
                 """UPDATE canonical_projects
                    SET parent_project_id = ?, payload = ?
