@@ -247,6 +247,7 @@ class TestTheWorkflowItself:
 
 
 class TestPathScopedRequiredChecks:
+    @pytest.mark.ac("SPEC-091226-1341/AC-1")
     def test_a_non_specialized_path_scoped_check_can_be_skipped(self, check, monkeypatch):
         """The skip rule is generic: it is not a hard-coded specialized-job list."""
         monkeypatch.setitem(check.PATH_SCOPED_CHECKS, "coverage (path-gated)", "postgres")
@@ -263,6 +264,7 @@ class TestPathScopedRequiredChecks:
         assert verdict.not_executed == ["always-required"]
         assert verdict.ok is False
 
+    @pytest.mark.ac("SPEC-091226-1341/AC-2")
     def test_an_out_of_scope_failure_is_still_a_finding(self, check, monkeypatch):
         monkeypatch.setitem(check.PATH_SCOPED_CHECKS, "coverage (path-gated)", "postgres")
         verdict = check.evaluate(
@@ -275,6 +277,7 @@ class TestPathScopedRequiredChecks:
         assert verdict.not_executed == []
         assert verdict.ran == ["coverage (path-gated)"]
 
+    @pytest.mark.ac("SPEC-091226-1341/AC-3")
     def test_unmeasured_scope_keeps_path_scoped_skip_pending(self, check, monkeypatch):
         monkeypatch.setitem(check.PATH_SCOPED_CHECKS, "coverage (path-gated)", "postgres")
         verdict = check.evaluate(
