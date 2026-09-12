@@ -38,7 +38,7 @@ CLASSIFICATIONS = frozenset({"CANONICAL", "DOMAIN", "PROJECTION", "RECEIPT", "CO
 _ENUM_BASES = frozenset({"Enum", "StrEnum", "IntEnum", "IntFlag", "Flag"})
 _TYPING_FORMS = frozenset({"Literal", "Optional", "Union", "Annotated"})
 _SCOPE_BOUNDARIES = (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
-_ALIAS_HINTS = frozenset({"lifecycle", "phase", "state", "status"})
+_ALIAS_HINTS = frozenset({"lifecycle", "phase", "stage", "state", "status"})
 _WORK_STATES = frozenset(
     {
         "ABORTED",
@@ -128,19 +128,60 @@ def _scope_nodes(tree: ast.AST) -> Iterator[ast.AST]:
             yield from _scope_nodes(node)
 
 
+def _typing_import_bindings(node: ast.ImportFrom, names: dict[str, str]) -> None:
+    """Apply one ``from ... import ...`` statement's effect on typing-form names."""
+    if node.level == 0 and node.module in {"typing", "typing_extensions"}:
+        for imported in node.names:
+            local = imported.asname or imported.name
+            if imported.name in _TYPING_FORMS:
+                names[local] = imported.name
+            else:
+                names.pop(local, None)
+        return
+    for imported in node.names:
+        names.pop(imported.asname or imported.name, None)
+
+
+def _typing_assignment_bindings(node: ast.AST, names: dict[str, str]) -> None:
+    """Invalidate typing-form names an assignment-like statement rebinds."""
+    if isinstance(node, ast.Assign):
+        targets: tuple[ast.expr, ...] = tuple(node.targets)
+    elif isinstance(node, ast.AnnAssign):
+        targets = (node.target,)
+    else:
+        assert isinstance(node, ast.TypeAlias)
+        targets = (node.name,)
+    for target in targets:
+        if isinstance(target, ast.Name):
+            names.pop(target.id, None)
+
+
+def _typing_name_binding(node: ast.AST, names: dict[str, str]) -> None:
+    """Invalidate a typing-form mapping when this node rebinds its local name.
+
+    Applied in source order over one binding-introducing node at a time, so a
+    later import, definition, parameter, or assignment that shadows an
+    earlier typing-form import removes it -- otherwise the shadowed local
+    name would keep being treated as e.g. ``Literal`` after being rebound.
+    """
+    if isinstance(node, ast.ImportFrom):
+        _typing_import_bindings(node, names)
+    elif isinstance(node, ast.Import):
+        for item in node.names:
+            names.pop(item.asname or item.name.split(".")[0], None)
+    elif isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+        names.pop(node.name, None)
+    elif isinstance(node, ast.arg):
+        names.pop(node.arg, None)
+    elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.TypeAlias)):
+        _typing_assignment_bindings(node, names)
+
+
 def _typing_names(tree: ast.AST, inherited: dict[str, str]) -> dict[str, str]:
     """Resolve supported typing spellings without importing production code."""
     names = {**{name: name for name in _TYPING_FORMS}, **inherited}
     for node in _scope_nodes(tree):
-        if (
-            not isinstance(node, ast.ImportFrom)
-            or node.level != 0
-            or node.module not in {"typing", "typing_extensions"}
-        ):
-            continue
-        for imported in node.names:
-            if imported.name in _TYPING_FORMS:
-                names[imported.asname or imported.name] = imported.name
+        _typing_name_binding(node, names)
     return names
 
 
@@ -220,6 +261,26 @@ def _typing_arguments(
     return form, [_type_expression(argument) for argument in arguments]
 
 
+def _resolve_named_alias(
+    node: ast.Name,
+    aliases: dict[str, ast.expr],
+    typing_names: dict[str, str],
+    inherited: dict[str, set[str]],
+    resolving: frozenset[str],
+) -> set[str]:
+    """Resolve a bare name against this scope's aliases, falling back to what
+    an enclosing scope already resolved it to. A name mid-resolution (a
+    self- or mutually-referential alias) contributes nothing further, rather
+    than recursing forever."""
+    if node.id not in aliases:
+        return inherited.get(node.id, set())
+    if node.id in resolving:
+        return set()
+    return _literal_values(
+        aliases[node.id], aliases, typing_names, inherited, resolving | {node.id}
+    )
+
+
 def _literal_values(
     node: ast.expr,
     aliases: dict[str, ast.expr],
@@ -233,18 +294,15 @@ def _literal_values(
     shadowing a helper cannot reinterpret a parent's vocabulary. Annotated
     contributes its type only, never strings or Literals in its metadata.
     """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        # A chased alias may bottom out at a plain string constant rather than
+        # another type expression -- e.g. `PENDING: Final = "pending"` used as
+        # `Literal[PENDING, RUNNING, FAILED]`. Only reached via alias/union
+        # recursion: a Literal argument's own constants are already collected
+        # directly below, so this does not double-count them.
+        return {node.value}
     if isinstance(node, ast.Name):
-        if node.id not in aliases:
-            return inherited.get(node.id, set())
-        if node.id in resolving:
-            return set()
-        return _literal_values(
-            aliases[node.id],
-            aliases,
-            typing_names,
-            inherited,
-            resolving | {node.id},
-        )
+        return _resolve_named_alias(node, aliases, typing_names, inherited, resolving)
     if isinstance(node, ast.Attribute):
         roots = _literal_values(node.value, aliases, typing_names, inherited, resolving)
         return {
@@ -253,8 +311,16 @@ def _literal_values(
             if value.startswith(_IMPORTED_TYPE_PREFIX)
         }
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
-        left = _literal_values(node.left, aliases, typing_names, inherited, resolving)
-        return left | _literal_values(node.right, aliases, typing_names, inherited, resolving)
+        # A union operand may itself be an explicitly postponed (quoted) type,
+        # e.g. `Literal["queued"] | "Literal['failed']"` -- unwrap it the same
+        # way a whole annotation or wrapper argument already is.
+        left = _literal_values(
+            _type_expression(node.left), aliases, typing_names, inherited, resolving
+        )
+        right = _literal_values(
+            _type_expression(node.right), aliases, typing_names, inherited, resolving
+        )
+        return left | right
     if not isinstance(node, ast.Subscript):
         return set()
     form, arguments = _typing_arguments(node, typing_names)
@@ -342,14 +408,26 @@ def _rebind_non_alias(node: ast.AST, aliases: dict[str, ast.expr]) -> bool:
     return False
 
 
-def _literal_aliases(tree: ast.AST) -> dict[str, ast.expr]:
-    """Collect aliases in this scope only, including PEP 695 ``type`` statements.
+def _resolve_aliases(
+    tree: ast.AST,
+    typing_names: dict[str, str],
+    inherited: dict[str, set[str]],
+) -> tuple[dict[str, ast.expr], dict[str, set[str]]]:
+    """Collect this scope's aliases, including PEP 695 ``type`` statements, and
+    resolve each against only the bindings visible at its own assignment.
 
     Helper aliases need not themselves be status-shaped: a final ``RunStatus``
     alias can legally be assembled from a private ``_RUNNING_STATES`` alias.
     Only status-shaped names are emitted by ``_literal_vocabularies``.
+
+    Resolution happens inline, immediately after each assignment is recorded,
+    rather than in one pass over the finished ``aliases`` dict afterward: a
+    later rebinding of a helper (``Values = Literal[...]; RunStatus = Values;
+    Values = str``) must not retroactively change or erase an earlier alias's
+    already-defined vocabulary.
     """
     aliases: dict[str, ast.expr] = {}
+    values: dict[str, set[str]] = {}
     for node in _scope_nodes(tree):
         if _rebind_non_alias(node, aliases):
             continue
@@ -369,7 +447,8 @@ def _literal_aliases(tree: ast.AST) -> dict[str, ast.expr]:
         for target in targets:
             if isinstance(target, ast.Name):
                 aliases[target.id] = value
-    return aliases
+                values[target.id] = _literal_values(value, aliases, typing_names, inherited)
+    return aliases, values
 
 
 def _uses_named_vocabulary(
@@ -425,14 +504,10 @@ def _literal_scope_vocabularies(
     inherited_typing: dict[str, str],
 ) -> dict[str, set[str]]:
     """Give each alias its lexical identity rather than flattening sibling scopes."""
-    aliases = _literal_aliases(tree)
     imported = _imported_type_values(tree)
     inherited = {**inherited, **imported}
     typing_names = _typing_names(tree, inherited_typing)
-    values = {
-        name: _literal_values(value, aliases, typing_names, inherited)
-        for name, value in aliases.items()
-    }
+    aliases, values = _resolve_aliases(tree, typing_names, inherited)
     named = {
         name: _work_vocabulary(value)
         for name, value in values.items()
@@ -453,6 +528,14 @@ def _literal_scope_vocabularies(
             tree, aliases, typing_names, inherited, visible_named, identity_prefix
         )
     )
+    # A class body is not part of the lexical enclosing-scope chain for its own
+    # nested classes/methods -- Python resolves a bare name inside them by
+    # skipping straight past the class body to the nearest enclosing function
+    # or module scope. Only propagate this scope's own aliases into children
+    # when `tree` is itself such an enclosing scope; a ClassDef's `values`
+    # would otherwise let an unrelated same-named class attribute shadow the
+    # real (module- or function-level) vocabulary a nested reference means.
+    child_inherited = inherited if isinstance(tree, ast.ClassDef) else {**inherited, **values}
     for child in _scope_nodes(tree):
         if isinstance(child, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             found.update(
@@ -460,7 +543,7 @@ def _literal_scope_vocabularies(
                     child,
                     module,
                     f"{prefix}{child.name}.",
-                    {**inherited, **values},
+                    child_inherited,
                     visible_named,
                     typing_names,
                 )

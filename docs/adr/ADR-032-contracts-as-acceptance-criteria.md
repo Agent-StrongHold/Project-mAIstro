@@ -168,8 +168,9 @@ Regression evidence is in
 [`test_check_execution_lifecycle_review.py`](../../tests/test_check_execution_lifecycle_review.py),
 [`test_check_execution_lifecycles_imported.py`](../../tests/test_check_execution_lifecycles_imported.py),
 [`test_check_execution_lifecycle_bindings.py`](../../tests/test_check_execution_lifecycle_bindings.py),
+[`test_check_execution_lifecycle_final_review.py`](../../tests/test_check_execution_lifecycle_final_review.py),
 and
-[`test_check_execution_lifecycle_final_review.py`](../../tests/test_check_execution_lifecycle_final_review.py).
+[`test_check_execution_lifecycle_scope_review.py`](../../tests/test_check_execution_lifecycle_scope_review.py).
 These cover detection, bounded negative controls, lexical identity, metadata
 exclusion and rejection of candidate self-authorization. Repository CI must still
 run the full source census and required checks before the implementation is merged.
