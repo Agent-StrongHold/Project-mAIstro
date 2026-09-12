@@ -106,6 +106,16 @@ or placeholder-only section.
 
 ### Fixed
 
+- **A chat turn that crashes after admission but before its first physical
+  Attempt no longer strands its Run RUNNING forever (#338).** Chat admission
+  persists RUNNING durably before dispatch creates the turn's NodeRun; a
+  process crash in that gap left a canonical Run claiming work was in flight
+  that no sweep could see — `recover_abandoned_attempts` reclaims Attempts by
+  expired lease, and there was no Attempt here to carry one. A new operator
+  tick, `Container.recover_stranded_chat_admissions()`, compensates a RUNNING
+  chat Run with no NodeRun after a bounded grace period, recording
+  `execution_never_started` — a new, distinct category from the existing
+  `admission_incomplete` (which covers the earlier CREATED/QUEUED gap).
 - **Project membership is one canonical row per `(project, principal)`, and
   is now explicitly revocable (#1148).** `ProjectScopeStore.set_membership`
   used to mint a fresh `membership_id` on every call, so a re-grant, role

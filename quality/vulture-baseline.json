@@ -887,6 +887,7 @@
         "packages/maistro-core/src/maistro/container.py::unused method 'persona_scorer'",
         "packages/maistro-core/src/maistro/container.py::unused method 'process_durable_events'",
         "packages/maistro-core/src/maistro/container.py::unused method 'recover_abandoned_attempts'",
+        "packages/maistro-core/src/maistro/container.py::unused method 'recover_stranded_chat_admissions'",
         "packages/maistro-core/src/maistro/container.py::unused method 'resume_parked_runs'",
         "packages/maistro-core/src/maistro/container.py::unused method 'select_embedding_model'",
         "packages/maistro-core/src/maistro/container.py::unused method 'select_model'",

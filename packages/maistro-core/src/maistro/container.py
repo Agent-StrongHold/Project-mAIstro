@@ -13,7 +13,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import urlsplit, urlunsplit
 
@@ -43,12 +43,13 @@ from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
 from maistro.runs.chat_admission import (
     ADMISSION_INCOMPLETE,
+    EXECUTION_NEVER_STARTED,
     ChatRunAdmitter,
     chat_turn_outcome,
     failure_category,
 )
 from maistro.runs.chat_execution import ChatAttemptExecutor, ChatDispatch
-from maistro.runs.lifecycle import RUN_TRANSITIONS
+from maistro.runs.lifecycle import RUN_TRANSITIONS, InvalidLifecycleTransition
 from maistro.runs.model import (
     TERMINAL_RUN_STATUSES,
     AttemptStatus,
@@ -142,6 +143,15 @@ logger = logging.getLogger("maistro.container")
 #: WAITING list forever, so a scan bounded by the work limit inspects the same
 #: ineligible rows every tick and never reaches a resumable one (#666 review).
 RESUME_SCAN_LIMIT = 1000
+
+#: How long a chat Run may sit RUNNING with no NodeRun before
+#: `recover_stranded_chat_admissions` treats it as stranded rather than merely
+#: slow. Generous well past any real admission-to-first-Attempt gap -- a
+#: handful of awaits on the same request -- so this only ever catches a
+#: genuine crash between `_admit_chat_turn` returning and
+#: `ChatAttemptExecutor.execute()` persisting the turn's first NodeRun, never
+#: a turn still in flight.
+DEFAULT_STRANDED_ADMISSION_AGE = timedelta(minutes=5)
 
 
 @dataclass
@@ -770,6 +780,83 @@ class Container:
         age = (moment - oldest_created_at).total_seconds() if oldest_created_at else 0.0
         oldest_non_terminal_run_age_seconds.set(max(age, 0.0))
         return len(reclaimed)
+
+    async def recover_stranded_chat_admissions(
+        self, *, now: datetime | None = None, limit: int = 100
+    ) -> int:
+        """Compensate a chat Run that reached RUNNING but never got a NodeRun (#338).
+
+        `_admit_chat_turn` persists RUNNING durably before returning, and only
+        then does `_execute_chat_turn` construct `ChatAttemptExecutor` and call
+        `execute()` -- which is what creates the turn's NodeRun and its first
+        Attempt. A crash in that gap (the process dying, not an exception this
+        request could catch) leaves a RUNNING chat Run with no NodeRun at all.
+        `recover_abandoned_attempts` cannot see it: that sweep reclaims
+        Attempts whose lease expired, and there is no Attempt here to carry
+        one.
+
+        Bounded, idempotent, operator-scheduled -- the same shape as the other
+        two ticks (ADR-019) -- and scoped to `CHAT_SOURCE` alone: a scheduled
+        Run's admission claims its first NodeRun, Attempt and lease atomically
+        with RUNNING (#251), so "RUNNING with no NodeRun" is a defect only
+        chat's two-step admission can produce.
+
+        `limit` bounds recoveries, not visibility into RUNNING, the same
+        contract `execute_admitted_runs` documents for the same reason: a page
+        of RUNNING Runs that are all ineligible must not stall the tick before
+        it reaches the one that is not.
+        """
+        from maistro.runs.store import run_cursor_key
+
+        moment = now if now is not None else datetime.now(UTC)
+        cutoff = moment - DEFAULT_STRANDED_ADMISSION_AGE
+        recovered = 0
+        after = None
+        while recovered < limit:
+            page = await self.run_store.list_by_status(RunStatus.RUNNING, limit=limit, after=after)
+            if not page:
+                break
+            for run in page:
+                after = run_cursor_key(run)
+                if await self._compensate_if_stranded(run, cutoff=cutoff):
+                    recovered += 1
+                    if recovered >= limit:
+                        break
+        return recovered
+
+    async def _compensate_if_stranded(self, run: Run, *, cutoff: datetime) -> bool:
+        """Cancel `run` if it is a stranded chat admission; say whether it did.
+
+        Eligibility is `CHAT_SOURCE`, older than `cutoff`, and no NodeRun --
+        checked twice, once before touching the store and once immediately
+        before the write, which is the only window a turn that starts between
+        the two reads can still close.
+        """
+        from maistro.runs.sources import ADMISSION_SOURCE, CHAT_SOURCE
+
+        if run.provenance.get(ADMISSION_SOURCE) != CHAT_SOURCE:
+            return False
+        if run.updated_at > cutoff:
+            return False
+        if await self.run_store.list_node_runs(run.run_id):
+            return False
+        try:
+            if await self.run_store.list_node_runs(run.run_id):
+                return False
+            await self.run_store.transition_run(
+                run.run_id,
+                RunStatus.CANCELLED,
+                error=EXECUTION_NEVER_STARTED,
+            )
+        except (RunIntegrityError, InvalidLifecycleTransition):
+            # Settled by another path -- the turn finished, or another sweep
+            # got here first -- between the check above and this write. Not
+            # this sweep's to re-litigate.
+            logger.warning(
+                "stranded chat Run %s could not be compensated", run.run_id, exc_info=True
+            )
+            return False
+        return True
 
     async def execute_admitted_runs(self, *, limit: int = 100) -> int:
         """Tick the canonical consumer for admitted Runs (#251). Returns how many ran.
