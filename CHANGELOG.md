@@ -25,6 +25,17 @@ or placeholder-only section.
 
 ### Security
 
+- **Frontend dependency advisories closed (no linked issue: Dependabot
+  security alerts, no tracked issue).** `packages/maistro-canvas/frontend`
+  moves `vitest` (and its `@vitest/*` packages) from 4.1.5 to 4.1.11, the
+  first release past GHSA-82fw-gwwq-j7x9 (path traversal / arbitrary file
+  read via `@vitest/mocker`'s redirect mock), staying on the 4.x line the
+  test suite is written against rather than the 5.0.0 major Dependabot
+  proposed. `packages/hive-conductor/frontend` regenerates its lockfile so the
+  transitive `brace-expansion` (GHSA-rgw5-rvv9-x895, unbounded intermediate
+  arrays) and `nanoid` (GHSA-2v37-7h3g-55p8, zero-size custom generator loop)
+  resolve to patched releases; no direct dependency changes. `npm audit`
+  reports zero findings in both trees.
 - **Bootstrap credential staging is now private, atomic, and never follows a
   link (#809).** `write_bootstrap_credentials` writes secrets to a fresh 0600
   temp file in the same directory and promotes it with `os.replace`, so secret
