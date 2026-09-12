@@ -159,7 +159,7 @@ jobs:
       # does not have them, so every `type=gha` cache reference below would
       # silently fail to authenticate and build with no cache (Codex, #684).
       # Docker's own documented fix: https://docs.docker.com/build/cache/backends/gha/#authentication
-      - uses: crazy-max/ghaction-github-runtime@v3
+      - uses: crazy-max/ghaction-github-runtime@v4
 
       # Buildx's own driver has its own image store, isolated from the host
       # daemon -- no prepull step protects these fetches, so each build
