@@ -34,6 +34,24 @@ from maistro.graph.nodes import (
 _SYNTH_DAG = {"nodes": [{"id": "s", "kind": "agent.synth_dag"}]}
 
 
+def shipped_kinds() -> list[str]:
+    """Every kind the product ships, and only those.
+
+    The registry is global and process-wide, so `list_kinds()` also returns
+    whatever throwaway kinds other test modules have registered by the time
+    this one is collected -- and which of them exist depends on collection
+    order, which differs between a single-file run, the full suite, and each
+    CI job's own selection. One of them, `test.consumer.unbuildable`, raises
+    from its constructor on purpose, so sweeping it in made these guards fail
+    in one job and pass everywhere else.
+
+    The guards are about the nodes the product ships: the next *production*
+    node must not be able to recreate #1193's defect. Test fixtures are not
+    that, and by convention they all carry the `test.` prefix.
+    """
+    return sorted(kind for kind in list_kinds() if not kind.startswith("test."))
+
+
 def _sentinel_authorities() -> dict[str, object]:
     """One distinct object per authority, so identity can be asserted."""
     return {name: object() for name in AUTHORITY_NAMES}
@@ -42,7 +60,7 @@ def _sentinel_authorities() -> dict[str, object]:
 # --- the declarations themselves ----------------------------------------------
 
 
-@pytest.mark.parametrize("kind", list_kinds())
+@pytest.mark.parametrize("kind", shipped_kinds())
 def test_every_declared_authority_is_one_the_resolver_can_supply(kind: str) -> None:
     """A declaration naming an authority nothing supplies would be a
     dependency that is always missing — refused at registration, and pinned
@@ -89,7 +107,7 @@ def test_registration_refuses_a_keyword_the_constructor_does_not_take() -> None:
 # --- composition -------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("kind", list_kinds())
+@pytest.mark.parametrize("kind", shipped_kinds())
 def test_a_fully_wired_resolver_hands_every_kind_its_exact_authorities(
     kind: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -118,7 +136,7 @@ def test_a_fully_wired_resolver_hands_every_kind_its_exact_authorities(
     assert set(received) == set(declared)
 
 
-@pytest.mark.parametrize("kind", list_kinds())
+@pytest.mark.parametrize("kind", shipped_kinds())
 def test_a_bare_resolver_refuses_every_kind_that_requires_an_authority(kind: str) -> None:
     """Generic fallback construction is forbidden for a node that declares a
     required authority: nothing supplied means `NodeCompositionError`, never a
