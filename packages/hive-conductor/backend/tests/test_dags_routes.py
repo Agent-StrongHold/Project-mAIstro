@@ -294,6 +294,7 @@ def test_run_champion_unavailable_is_explicit(
         "status": "unavailable",
         "execution_id": None,
         "run_id": None,
+        "error": "canonical Graph execution is unavailable",
         "result": {
             "status": "unavailable",
             "run_id": None,
@@ -301,6 +302,34 @@ def test_run_champion_unavailable_is_explicit(
             "node_results": {},
         },
     }
+
+
+@pytest.mark.parametrize("status", ["failed", "paused", "cancelled"])
+def test_run_champion_non_completed_run_keeps_the_top_level_error(
+    admin_client: Any, monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    """The same error type carries a Run that ended short of completion. Its
+    diagnostic stays on `error`, where `run_dag` clients already read it,
+    not only nested inside `result`."""
+    import services.graph_runner as graph_runner
+
+    async def ended_short() -> dict[str, Any]:
+        raise graph_runner.CanonicalDagExecutionError(
+            {
+                "status": status,
+                "run_id": "champion-run",
+                "error": f"canonical Run ended {status}",
+                "node_results": {},
+            }
+        )
+
+    monkeypatch.setattr(graph_runner, "execute_champion", ended_short)
+    body = admin_client.post("/v1/dags/run-champion").json()
+    assert body["status"] == status
+    assert body["run_id"] == "champion-run"
+    assert body["execution_id"] == "champion-run"
+    assert body["error"] == f"canonical Run ended {status}"
+    assert body["result"]["error"] == f"canonical Run ended {status}"
 
 
 def test_run_champion_failure(admin_client: Any, monkeypatch: pytest.MonkeyPatch) -> None:

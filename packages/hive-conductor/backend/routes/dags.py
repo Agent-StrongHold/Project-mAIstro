@@ -358,12 +358,18 @@ async def run_champion() -> dict:
         run_id = result.get("run_id")
         return {"execution_id": run_id, "run_id": run_id, "result": result}
     except CanonicalDagExecutionError as exc:
-        logger.warning("Champion Graph execution unavailable: %s", exc)
+        # Unavailable *or* a Run that ended failed/paused/cancelled: the same
+        # error type carries both, so the log and the top-level `error` say
+        # what the canonical result says rather than labelling every case
+        # unavailable. Clients read `error` here exactly as they do on
+        # `run_dag`'s failure shape.
+        logger.warning("Champion Graph execution did not complete: %s", exc)
         run_id = exc.result.get("run_id")
         return {
             "status": exc.result.get("status", "failed"),
             "execution_id": run_id,
             "run_id": run_id,
+            "error": str(exc),
             "result": exc.result,
         }
     except Exception as exc:

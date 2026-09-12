@@ -70,10 +70,22 @@ class HumanAnswer(BaseModel):
 
 
 def _store() -> Any:
-    """The durable graph store holding pending human work."""
-    from services.dag_agents import get_run_store
+    """The durable graph store holding pending human work.
 
-    return get_run_store()
+    Without the canonical execution spine (a stub engine, or a Container
+    missing either persistence half) there is no store to read, and that is
+    an explicit 503 at this boundary rather than an internal error: the
+    capability is disabled, not broken, and a caller can tell the two apart.
+    """
+    from services.dag_agents import GraphExecutionUnavailableError, get_run_store
+
+    try:
+        return get_run_store()
+    except GraphExecutionUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "graph_execution_unavailable", "message": str(exc)},
+        ) from exc
 
 
 def _session_principal(request: Request) -> str:

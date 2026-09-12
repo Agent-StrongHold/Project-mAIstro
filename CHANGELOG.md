@@ -49,6 +49,14 @@ or placeholder-only section.
 
 ### Changed
 
+- **Hive reports Graph execution availability instead of failing on first use
+  (#1113).** `/health` now carries `graph_execution_available` and counts it in
+  `degraded`, and `/health/ready` lists `graph_execution`, so a bridged
+  deployment missing a canonical persistence half is visible before a request
+  fails. `/v1/hitl/*` answers 503 `graph_execution_unavailable` when the
+  execution spine is absent rather than an internal error, and
+  `POST /v1/dags/run-champion` keeps the top-level `error` for a champion Run
+  that ended short of completion.
 - **HALF_OPEN circuit-breaker success is now caller-bound (#828).** `record_success()`
   closes a HALF_OPEN circuit only when called by the thread or asyncio task
   whose `allow_request()` call acquired the current exclusive probe lease;

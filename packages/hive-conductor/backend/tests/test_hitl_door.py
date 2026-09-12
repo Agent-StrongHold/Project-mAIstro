@@ -307,3 +307,28 @@ def test_an_unscoped_principal_cannot_list_pending_work(authed_client) -> None:
     the same scope rather than being readable by anyone authenticated.
     """
     assert authed_client.get("/v1/hitl/pending").status_code == 403
+
+
+def test_hitl_without_the_execution_spine_is_an_explicit_503(admin_client, monkeypatch) -> None:
+    """A stub engine or a Container missing a persistence half has no store to
+    read. That is a disabled capability, answered as 503 with a code, not an
+    internal error the caller has to guess at (#1113 review)."""
+    from services.dag_agents import GraphExecutionUnavailableError
+
+    def _unavailable() -> Any:
+        raise GraphExecutionUnavailableError()
+
+    monkeypatch.setattr("services.dag_agents.get_run_store", _unavailable)
+
+    for method, path in (
+        ("GET", "/v1/hitl/pending"),
+        ("POST", "/v1/hitl/expire"),
+        ("POST", "/v1/hitl/run-1/ask/cancel"),
+        ("POST", "/v1/hitl/run-1/ask/answer"),
+    ):
+        response = admin_client.request(method, path, json={} if method == "POST" else None)
+        assert response.status_code == 503, (method, path, response.text)
+        assert response.json()["detail"] == {
+            "code": "graph_execution_unavailable",
+            "message": "canonical Graph execution is unavailable",
+        }
