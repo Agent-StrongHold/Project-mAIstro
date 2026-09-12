@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 
 from maistro.runs.model import RunStatus
 
+from .fair_scan import ScanContinuation, fair_page_scan
+
 if TYPE_CHECKING:
     from .protocol import DurableRunStore
     from .types import DurableRunRecord
@@ -84,34 +86,64 @@ def settlement_time(at: datetime | None = None) -> datetime:
     return moment.astimezone(UTC)
 
 
+def _expired_hitl_node_id(record: DurableRunRecord, moment: datetime) -> str | None:
+    """The first active node whose durable HITL deadline has elapsed, if any."""
+    for node_id in record.graph_state.active_node_ids:
+        try:
+            hitl_pause(record, node_id)
+        except HitlSettlementError:
+            continue
+        deadline = hitl_deadline(record, node_id)
+        if deadline is not None and deadline <= moment:
+            return node_id
+    return None
+
+
+def _paused_cursor_key(record: DurableRunRecord) -> tuple[str, str]:
+    """The ``(created_at_iso, run_id)`` keyset position of one PAUSED record."""
+    return (record.run.created_at.isoformat(), record.run_id)
+
+
 async def expire_hitl_pauses(
     store: DurableRunStore,
     *,
     now: datetime | None = None,
     limit: int = 100,
+    scan: ScanContinuation[tuple[str, str]] | None = None,
 ) -> list[DurableRunRecord]:
     """Settle at most ``limit`` paused Runs whose persisted deadline elapsed.
 
     This is an operator-scheduled tick, not a background task. It derives no
     deadline from process-local time or node configuration: only the absolute
     timestamp already present in the durable pause is authoritative.
+
+    ``limit`` bounds *expired-HITL* PAUSED Runs settled by this call, not a
+    fixed prefix of every PAUSED Run in the store (#1056). Candidates are
+    discovered by paging the store's PAUSED listing with an advancing keyset
+    cursor and testing each page for an elapsed deadline, so an arbitrarily
+    large run of non-HITL or not-yet-due PAUSED Runs ahead of an expired one
+    cannot hide it forever behind a fixed-size query.
+
+    ``scan`` is the continuation a repeated tick holds across calls: the walk
+    is bounded per call, and a prefix longer than the bound is crossed only by
+    a tick that resumes where the last one stopped (#1127). One per (this
+    seam, this store).
     """
     if limit <= 0:
         return []
     moment = settlement_time(now)
-    candidates = await store.list_by_status(RunStatus.PAUSED, limit=limit)
+    candidates = await fair_page_scan(
+        fetch_page=lambda cursor, page_size: store.list_by_status(
+            RunStatus.PAUSED, limit=page_size, after=cursor
+        ),
+        cursor_of=_paused_cursor_key,
+        eligible=lambda record: _expired_hitl_node_id(record, moment) is not None,
+        limit=limit,
+        continuation=scan,
+    )
     settled: list[DurableRunRecord] = []
     for record in candidates:
-        expired_node_id: str | None = None
-        for node_id in record.graph_state.active_node_ids:
-            try:
-                hitl_pause(record, node_id)
-            except HitlSettlementError:
-                continue
-            deadline = hitl_deadline(record, node_id)
-            if deadline is not None and deadline <= moment:
-                expired_node_id = node_id
-                break
+        expired_node_id = _expired_hitl_node_id(record, moment)
         if expired_node_id is None:
             continue
         try:

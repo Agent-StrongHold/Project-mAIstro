@@ -8,21 +8,26 @@ boundary in :mod:`attempt_executor`.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import asyncio
+import logging
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.runs.model import Run, RunStatus
 from maistro.runs.recovery_events import RecoveryEventSink
-from maistro.runs.store import RunStore
+from maistro.runs.store import RunStore, run_cursor_key
 from maistro.runtime import ExecutionRuntime
 
 from . import executor as traversal
 from .attempt_executor import LiveAttemptOwned, NodeResolver, resume_durable_graph
+from .fair_scan import DEFAULT_MAX_INSPECTED, ScanContinuation, ScanPage, fair_page_scan
 from .launch import launch_state_from_run
 from .protocol import DurableRunStore
 from .types import DurableRunRecord
+
+logger = logging.getLogger(__name__)
 
 QueuedRunPredicate = Callable[[Run], bool]
 QueuedNodeResolverFactory = Callable[[Run], NodeResolver]
@@ -36,6 +41,50 @@ class PersistenceReconciler(Protocol):
 async def _reconcile_if_supported(store: DurableRunStore, *, limit: int) -> None:
     if isinstance(store, PersistenceReconciler):
         await store.reconcile_persistence(limit=limit)
+
+
+@runtime_checkable
+class DuePageScanner(Protocol):
+    """A store that can page its due index without conflating two answers."""
+
+    async def scan_due_page(
+        self,
+        *,
+        now: datetime,
+        limit: int = 100,
+        after: tuple[str, str] | None = None,
+        max_inspected: int = DEFAULT_MAX_INSPECTED,
+    ) -> ScanPage[DurableRunRecord, tuple[str, str]]: ...
+
+
+def _due_page_fetcher(
+    store: DurableRunStore, moment: datetime
+) -> Callable[
+    [tuple[str, str] | None, int],
+    Awaitable[list[DurableRunRecord] | ScanPage[DurableRunRecord, tuple[str, str]]],
+]:
+    """Fetch due candidates the most honest way this store supports.
+
+    A store that filters its own due page -- the canonical one drops ids whose
+    Run has since gone terminal -- returns an empty list both when nothing on
+    the page is due and when the index has ended. Where the store can tell the
+    two apart, take that answer, so a stale prefix is paged past rather than
+    re-read from the top on every tick.
+    """
+    if isinstance(store, DuePageScanner):
+        scanner = store
+
+        async def scan(
+            cursor: tuple[str, str] | None, page_size: int
+        ) -> ScanPage[DurableRunRecord, tuple[str, str]]:
+            return await scanner.scan_due_page(now=moment, limit=page_size, after=cursor)
+
+        return scan
+
+    async def listing(cursor: tuple[str, str] | None, page_size: int) -> list[DurableRunRecord]:
+        return await store.list_due(now=moment, limit=page_size, after=cursor)
+
+    return listing
 
 
 _RESUME_ELIGIBLE_STATUSES = frozenset({RunStatus.WAITING, RunStatus.RUNNING})
@@ -69,6 +118,7 @@ async def resume_due_graph_runs(
     limit: int = 100,
     eligible: QueuedRunPredicate | None = None,
     events: RecoveryEventSink | None = None,
+    scan: ScanContinuation[tuple[str, str]] | None = None,
 ) -> int:
     """Resume elapsed durable Graph waits or expired recovery claims.
 
@@ -85,6 +135,30 @@ async def resume_due_graph_runs(
     reads the Run, and the optimistic continuation version plus the canonical
     Attempt lease/fence still decide admission regardless of what it says.
 
+    ``limit`` bounds *eligible, due* continuations resumed by this call, not a
+    fixed prefix of the ``PAUSED``/``WAITING``/``RUNNING`` rows in the store
+    (#1098). Candidates are discovered by paging the store's due index with an
+    advancing keyset cursor and filtering eligibility as each page is read, so
+    an arbitrarily large run of continuations owned by another consumer ahead
+    of an eligible one cannot hide it forever behind a fixed-size query.
+
+    ``scan`` is the continuation a repeated tick must hold across calls: the
+    walk is bounded per call, so without one a prefix longer than the bound
+    is never crossed, however many ticks run. With one, each tick resumes
+    where the last stopped and restarts from the top only after walking off
+    the end, so every due continuation is reached within a bounded number of
+    ticks. One per (this seam, this store).
+
+    A candidate whose resume raises an unexpected, candidate-local failure
+    (anything but ``LiveAttemptOwned`` or a settled-race ``KeyError``/
+    ``ValueError``) is isolated rather than allowed to abort the whole tick:
+    the failure is logged, the candidate's durable state is left untouched for
+    a later retry, and later independent candidates in this same batch are
+    still attempted (#1143). A failure raised while *listing* candidates —
+    the store/session itself, not one candidate's resume — is never caught
+    here and aborts the tick, because that failure invalidates the whole scan
+    rather than one Run.
+
     ``events`` carries the resume's crash dispositions onto the canonical
     Event stream when the caller provides a sink.
     """
@@ -95,14 +169,22 @@ async def resume_due_graph_runs(
 
     await _reconcile_if_supported(store, limit=limit)
     moment = now if now is not None else datetime.now(UTC)
-    candidates = await store.list_due(now=moment, limit=limit)
+
+    def _combined_eligible(candidate: DurableRunRecord) -> bool:
+        if not _is_resume_due(candidate, moment):
+            return False
+        return eligible is None or eligible(candidate.run)
+
+    candidates = await fair_page_scan(
+        fetch_page=_due_page_fetcher(store, moment),
+        cursor_of=_due_cursor_key,
+        eligible=_combined_eligible,
+        limit=limit,
+        continuation=scan,
+    )
     resumed = 0
 
     for candidate in candidates:
-        if not _is_resume_due(candidate, moment):
-            continue
-        if eligible is not None and not eligible(candidate.run):
-            continue
         try:
             await resume_durable_graph(
                 candidate.run_id,
@@ -114,15 +196,52 @@ async def resume_due_graph_runs(
             )
         except LiveAttemptOwned:
             continue
-        except (KeyError, ValueError):
+        except asyncio.CancelledError:
+            raise
+        except (KeyError, ValueError) as exc:
             # Only a record still due after the failure is a real error; a
             # record another actor already moved on is settled, not resumed.
             if not await _is_still_resume_due(store, candidate.run_id, moment):
                 continue
-            raise
+            _record_candidate_failure(candidate.run_id, seam="resume_due_graph_runs", error=exc)
+            continue
+        except Exception as exc:
+            _record_candidate_failure(candidate.run_id, seam="resume_due_graph_runs", error=exc)
+            continue
         resumed += 1
 
     return resumed
+
+
+def _due_cursor_key(record: DurableRunRecord) -> tuple[str, str]:
+    """The ``(resume_at_iso, run_id)`` keyset position of one due candidate.
+
+    ``store.list_due`` only ever returns records with a non-None ``resume_at``
+    (it filters to exactly that before returning), so this never sees the
+    unset case in practice; the guard exists so a future relaxation of that
+    contract fails loudly here rather than silently mis-paginating.
+    """
+    if record.resume_at is None:
+        raise ValueError(f"due candidate {record.run_id!r} has no resume_at to page by")
+    return (record.resume_at.isoformat(), record.run_id)
+
+
+def _record_candidate_failure(run_id: str, *, seam: str, error: BaseException) -> None:
+    """Log one candidate-local recovery failure without aborting the batch (#1143).
+
+    The failing candidate's durable state is left exactly as the store already
+    has it: not silently dropped, not falsely marked succeeded. It remains
+    eligible and is retried on a later tick. This call is the observability
+    half of that guarantee — the failure must be inspectable, not merely
+    survived.
+    """
+    logger.error(
+        "recovery candidate failed and was isolated: seam=%s run_id=%s error=%s: %s",
+        seam,
+        run_id,
+        type(error).__name__,
+        error,
+    )
 
 
 def _initial_queued_record(run: Run) -> DurableRunRecord:
@@ -188,13 +307,25 @@ async def _resume_queued_candidate(
         )
     except LiveAttemptOwned:
         return False
-    except (KeyError, ValueError):
+    except asyncio.CancelledError:
+        raise
+    except (KeyError, ValueError) as exc:
         latest = await store.get(run.run_id)
         if latest is None:
+            # Not "someone else moved it on" -- the record is gone entirely,
+            # which the initial claim above just proved existed. That is a
+            # persistence-integrity failure, not a candidate-local resolver
+            # bug, and stays raise-worthy rather than isolated.
             raise
         if latest.run.status is not RunStatus.QUEUED:
+            # Another actor already moved this Run on; its committed
+            # disposition is the real outcome, not a failure to isolate.
             return False
-        raise
+        _record_candidate_failure(run.run_id, seam="recover_queued_graph_runs", error=exc)
+        return False
+    except Exception as exc:
+        _record_candidate_failure(run.run_id, seam="recover_queued_graph_runs", error=exc)
+        return False
     return True
 
 
@@ -207,6 +338,7 @@ async def recover_queued_graph_runs(
     runtime: ExecutionRuntime | None = None,
     limit: int = 100,
     events: RecoveryEventSink | None = None,
+    scan: ScanContinuation[tuple[str, str]] | None = None,
 ) -> int:
     """Recover admitted durable Graph Runs around checkpoint 1.
 
@@ -216,6 +348,25 @@ async def recover_queued_graph_runs(
     recovery path never substitutes empty inputs for work the caller actually
     admitted.
 
+    ``limit`` bounds *eligible* QUEUED Runs recovered by this call, not a
+    fixed prefix of every QUEUED Run in the store (#1127, #1098). Candidates
+    are discovered by paging `RunStore.list_by_status` with an advancing
+    keyset cursor and applying ``eligible`` as each page is read, so an
+    arbitrarily large run of foreign-owned QUEUED Runs ahead of an eligible
+    one cannot hide it forever behind a fixed-size query.
+
+    ``scan`` is the continuation a repeated tick must hold across calls, for
+    the reason ``resume_due_graph_runs`` gives: the per-call walk is bounded,
+    and a foreign-owned prefix longer than the bound is crossed only by a
+    tick that resumes where the last one stopped. One per (this seam, this
+    Run store).
+
+    A candidate whose resume raises an unexpected, candidate-local failure is
+    isolated rather than allowed to abort the whole tick: the failure is
+    logged and later independent candidates in this same batch are still
+    attempted (#1143). A failure raised while *listing* candidates aborts the
+    tick, because that failure invalidates the whole scan rather than one Run.
+
     ``events`` carries each recovery's crash dispositions onto the canonical
     Event stream when the caller provides a sink.
     """
@@ -223,10 +374,18 @@ async def recover_queued_graph_runs(
         return 0
 
     await _reconcile_if_supported(store, limit=limit)
-    candidates = await run_store.list_by_status(RunStatus.QUEUED, limit=limit)
+    candidates = await fair_page_scan(
+        fetch_page=lambda cursor, page_size: run_store.list_by_status(
+            RunStatus.QUEUED, limit=page_size, after=cursor
+        ),
+        cursor_of=run_cursor_key,
+        eligible=eligible,
+        limit=limit,
+        continuation=scan,
+    )
     recovered = 0
     for run in candidates:
-        if eligible(run) and await _resume_queued_candidate(
+        if await _resume_queued_candidate(
             run,
             store=store,
             run_store=run_store,

@@ -7,6 +7,7 @@ store would prove only that the route calls the method the test told it to.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -24,7 +25,7 @@ def _paused_node_run(run_id: str, node_id: str, ordinal: int) -> NodeRun:
     return transition_node_run(node_run, RunStatus.PAUSED)
 
 
-def _paused_record(run_id: str, *, kind: str = "hitl") -> Any:
+def _paused_record(run_id: str, *, kind: str = "hitl", created_at: datetime | None = None) -> Any:
     """A Run paused on one node, the way the durable executor leaves one."""
     from maistro.graph.durable_runs.types import DurableRunRecord
 
@@ -40,6 +41,8 @@ def _paused_record(run_id: str, *, kind: str = "hitl") -> Any:
         project_id=graph.project_id,
         graph=GraphSnapshot.from_graph(graph),
     )
+    if created_at is not None:
+        run = run.model_copy(update={"created_at": created_at})
     run = transition_run(run, RunStatus.QUEUED)
     run = transition_run(run, RunStatus.RUNNING)
     run = transition_run(run, RunStatus.PAUSED)
@@ -109,6 +112,28 @@ async def test_a_machine_wait_is_not_offered_to_a_human(seeded) -> None:
     body = client.get("/v1/hitl/pending").json()
 
     assert [item for item in body if item["run_id"] == "hitl-machine-wait"] == []
+
+
+async def test_pending_reaches_a_hitl_pause_behind_a_long_machine_prefix(seeded) -> None:
+    """#1109: more machine-only PAUSED Runs than `limit` ahead of the one real
+    HITL pause must not make `/v1/hitl/pending` return an empty answer. Before
+    the fix, `list_by_status(PAUSED, limit=N)` was queried once and filtered
+    afterward, so a small `limit` could never see past a long enough
+    ineligible prefix -- the route has to actually page past it."""
+    client, _store, seed = seeded
+    base = datetime(2026, 8, 30, 12, tzinfo=UTC)
+    for i in range(120):
+        await seed(f"hitl-machine-{i}", kind="timer", created_at=base + timedelta(seconds=i))
+    await seed(
+        "hitl-behind-the-prefix",
+        kind="hitl",
+        created_at=base + timedelta(seconds=1000),
+    )
+
+    body = client.get("/v1/hitl/pending", params={"limit": 5}).json()
+
+    mine = [item for item in body if item["run_id"] == "hitl-behind-the-prefix"]
+    assert len(mine) == 1
 
 
 async def test_answering_resumes_the_run_and_the_answer_is_readable(seeded) -> None:

@@ -160,6 +160,46 @@ or placeholder-only section.
   the same stored row would decode to a different instant depending on which
   host read it.
 
+- **Bounded recovery and HITL scans can no longer be starved by an ineligible
+  prefix ahead of the eligible work behind it (#1098, #1056, #1109, #1127).**
+  `recover_queued_graph_runs`, `resume_due_graph_runs`, `expire_hitl_pauses`,
+  and `GET /v1/hitl/pending` previously queried a fixed-size page and filtered
+  eligibility afterward: if more rows than the tick's `limit`/the caller's
+  page ahead of the eligible ones belonged to another consumer, had no
+  deadline yet, or were machine-only pauses, every tick re-read the same
+  prefix and the eligible work behind it was never reached, even though it
+  was durably correct and its deadline had passed. All four now page the
+  underlying store with an advancing keyset cursor and filter as they walk,
+  bounded by a fixed inspection ceiling per call so one pathological prefix
+  cannot turn a single tick into an unbounded scan — and the three recovery
+  ticks (`recover_queued_graph_runs`, `resume_due_graph_runs`,
+  `expire_hitl_pauses`) take a `ScanContinuation` the caller holds across
+  ticks, so each tick resumes after the last row the previous one inspected
+  and restarts from the top only once it has walked off the end: a prefix
+  longer than the per-tick ceiling is crossed within a bounded number of
+  ticks instead of never. Hive's recovery runner and HITL expiry route hold
+  one per (seam, store). `DurableRunStore` and `GraphContinuationStore`
+  (memory, SQLite, PostgreSQL) gained an `after` keyset-cursor parameter on
+  their status/due listings to support this. A store that filters its own
+  page reports progress and results separately, so a page that yields nothing
+  is no longer mistaken for the end of the index: `CanonicalDurableRunStore`
+  drops due-index rows whose canonical Run has since gone terminal, and a
+  settled prefix longer than one page previously reset the scan to the top on
+  every tick and hid the live Run behind it.
+
+- **A candidate-local failure during Graph recovery no longer aborts the
+  whole tick (#1143).** `recover_queued_graph_runs` and
+  `resume_due_graph_runs` previously let any exception other than
+  `LiveAttemptOwned` (and a narrow already-settled `KeyError`/`ValueError`
+  recheck) escape the per-candidate loop, so one Run whose resume path
+  raised — a resolver bug, a downstream API error — silently abandoned every
+  other due/queued candidate in the same batch. An unexpected failure tied to
+  one candidate is now logged and isolated: the candidate's durable state is
+  left untouched for a later retry, and later independent candidates in the
+  same tick are still attempted. A failure raised while listing candidates
+  (the store/session itself) still aborts the tick, since that failure
+  invalidates the whole scan rather than one Run.
+
 - **A resumed scheduled Attempt now carries the same crash-recovery lease as
   its first physical try (#1112, #1124).** `ScheduleAttemptExecutor`'s resume
   path built its `RunExecutionService` without `lease_ttl`, so a fresh Attempt

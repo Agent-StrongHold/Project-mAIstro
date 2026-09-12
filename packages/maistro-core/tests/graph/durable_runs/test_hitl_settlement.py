@@ -511,6 +511,41 @@ async def test_expiry_tick_ignores_nonhuman_pauses_and_lost_races() -> None:
     assert await expire_hitl_pauses(losing_store, now=_AFTER) == []
 
 
+async def test_expiry_scan_pages_past_a_long_ineligible_prefix() -> None:
+    """#1056: a run of ineligible PAUSED Runs longer than both the caller's
+    ``limit`` and the scan's own page size must not hide an expired HITL pause
+    ordered behind them. Before the fix, ``list_by_status(..., limit=N)`` was
+    applied directly at the store, so a small ``limit`` alone could never see
+    past an ineligible prefix that long -- the scan had to actually advance a
+    cursor across more than one page to find it."""
+    store = InMemoryDurableRunStore()
+    base = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+
+    def _created_at(record: DurableRunRecord, moment: datetime) -> DurableRunRecord:
+        return record.model_copy(
+            update={"run": record.run.model_copy(update={"created_at": moment})}
+        )
+
+    # More than the scan's own default page size (100), so finding the
+    # expired pause requires walking multiple pages, not just decoupling
+    # `limit` from a single larger fetch.
+    for i in range(120):
+        machine_wait = _with_pause_entry(
+            _paused_record(f"machine-{i}"),
+            {"kind": "wait", "metadata": {}, "resume_at": _DEADLINE.isoformat()},
+        )
+        await store.create(_created_at(machine_wait, base + timedelta(seconds=i)))
+
+    expired = _created_at(
+        _paused_record("expired-behind-the-prefix"), base + timedelta(seconds=500)
+    )
+    await store.create(expired)
+
+    settled = await expire_hitl_pauses(store, now=_AFTER, limit=5)
+
+    assert [record.run_id for record in settled] == ["expired-behind-the-prefix"]
+
+
 # --- #1097: a malformed answer must not rewrite the durable deadline -------
 
 
