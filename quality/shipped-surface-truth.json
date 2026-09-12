@@ -369,6 +369,16 @@
       "effect_owner": "credential vault store + audit log"
     },
     {
+      "source": "packages/hive-conductor/backend/routes/dag_runs.py",
+      "method": "POST",
+      "route": "/{run_id}/cancel",
+      "handler": "cancel_run",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "cancels a visible DAG run by delegating to RunExecutionService.cancel_run on the durable Run spine, preferring the projection's canonical_run_id mapping",
+      "effect_owner": "maistro.runs.service.RunExecutionService.cancel_run (Run transition + physical Attempt cancellation)"
+    },
+    {
       "source": "packages/hive-conductor/backend/routes/dags.py",
       "method": "DELETE",
       "route": "/{dag_id}",
@@ -1737,6 +1747,16 @@
       "production_enabled": true,
       "reason": "updates project defaults (owner-only)",
       "effect_owner": "project scope store"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/runs.py",
+      "method": "POST",
+      "route": "/{run_id}/cancel",
+      "handler": "cancel_run",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "cancels one owner-visible Run through the canonical physical execution seam (RunExecutionService.cancel_run)",
+      "effect_owner": "maistro.runs.service.RunExecutionService.cancel_run (Run transition + physical Attempt cancellation)"
     },
     {
       "source": "packages/maistro-server/src/maistro_server/api/tasks.py",
