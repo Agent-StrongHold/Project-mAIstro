@@ -125,13 +125,10 @@ class JsonStore:
         self._data: dict[str, Any] = {}
         self._persisted = persisted
         # Serializes `put_if_absent`'s check-then-insert (#1126). The durable
-        # half was already single-winner — SQLite's primary key decides — but
-        # the Foundation fallback (`State unavailable (...) — using in-memory
-        # stores`) serves the synchronous register route from FastAPI worker
-        # threads, and an unlocked check-then-set let two concurrent
-        # presentations of one invitation both observe the redemption key
-        # absent and both spend it. The guarantee now rests on this lock, not
-        # on CPython dict/GIL timing.
+        # half is already single-winner — SQLite's primary key decides. When no
+        # persisted backend is bound, this lock is the only guard preventing
+        # concurrent callers from observing the key as absent and spending it
+        # twice; it does not depend on CPython dict/GIL timing.
         self._if_absent_lock = threading.Lock()
 
     def initialize(self) -> None:

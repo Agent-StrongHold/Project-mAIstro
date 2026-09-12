@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from config import Settings
@@ -100,14 +100,14 @@ class Foundation:
 
     def _init_state(self, settings: Settings, data_dir: Path) -> None:
         db_path = settings.conductor_state_db or str(data_dir / "state.db")
+        state: Any | None = None
         try:
             from maistro.state import PersistedStore, State
 
-            self.state = State(db_path=db_path)
-            self.state_available = True
+            state = State(db_path=db_path)
             logger.info("State initialised: %s", db_path)
 
-            persisted = PersistedStore(self.state)
+            persisted = PersistedStore(state)
             persisted.initialize()
 
             import stores
@@ -117,7 +117,7 @@ class Foundation:
 
             stores.configure_persistence(persisted)
             stores.initialize_stores()
-            configure_settings(PersistedSettingsRecordStore(persisted, self.state.flush))
+            configure_settings(PersistedSettingsRecordStore(persisted, state.flush))
 
             # After `initialize_stores()`, which is what fills `stores.dag_runs`
             # from SQLite. Building the run store before that would rehydrate
@@ -130,7 +130,7 @@ class Foundation:
             from services.profile_store import PersistedProfileRecordStore
             from services.profile_store import configure as configure_profiles
 
-            configure_profiles(PersistedProfileRecordStore(persisted, self.state.flush))
+            configure_profiles(PersistedProfileRecordStore(persisted, state.flush))
             _warn_if_postgrest_profiles_are_being_left_behind()
 
             # The registration policy record rides the same acknowledgement
@@ -140,38 +140,25 @@ class Foundation:
             from services.registration_policy import PersistedRegistrationRecordStore
             from services.registration_policy import configure as configure_registration_policy
 
-            configure_registration_policy(
-                PersistedRegistrationRecordStore(persisted, self.state.flush)
-            )
+            configure_registration_policy(PersistedRegistrationRecordStore(persisted, state.flush))
 
-            self.state.flush()
+            state.flush()
+            self.state = state
+            self.state_available = True
             logger.info("Stores wired to SQLite persistence")
         except Exception as exc:
-            logger.warning("State unavailable (%s) — using in-memory stores", exc)
-            import stores
-
-            from services.settings_store import EphemeralSettingsRecordStore
-            from services.settings_store import configure as configure_settings
-
-            stores.initialize_stores()
-            # Explicitly, so the settings surface reports `durable: false`
-            # rather than letting an in-memory write wear the shape of a
-            # durable one (#334). Whether reaching this branch at all should be
-            # allowed is #333.
-            configure_settings(EphemeralSettingsRecordStore())
-            # Same rule for profiles, and a fresh store rather than an early
-            # return: a second Foundation built in one process would otherwise
-            # inherit the previous one's records (#699, and the same shape as
-            # the fallback outcome store #700 had to fix).
-            from services.profile_store import reset as reset_profiles
-
-            reset_profiles()
-            # Same rule for the registration policy: an ephemeral record, and
-            # `durable: false` in the admin view rather than an in-memory
-            # write wearing the shape of a durable one.
-            from services.registration_policy import reset as reset_registration_policy
-
-            reset_registration_policy()
+            # State holds accounts, sessions, settings, and registration policy.
+            # Serving an empty registry would turn a storage outage into a
+            # public first-run window, so startup must fail closed (ADR-072).
+            logger.error("STATE_UNAVAILABLE: persistence initialization failed (%s)", exc)
+            if state is not None:
+                try:
+                    state.close()
+                except Exception as close_exc:
+                    logger.error("STATE_UNAVAILABLE: failed to close state (%s)", close_exc)
+            raise RuntimeError(
+                f"STATE_UNAVAILABLE: persistence initialization failed ({exc})"
+            ) from exc
 
     def _init_privilege(self, settings: Settings, data_dir: Path) -> None:
         if not settings.conductor_admin_public_key:
