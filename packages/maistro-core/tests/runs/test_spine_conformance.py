@@ -1903,3 +1903,25 @@ async def test_an_unleased_attempt_is_never_reclaimed_in_memory(memory_spine: An
 @pytest.mark.ac("ADR-082526-b36a/AC-6")
 async def test_a_stale_token_cannot_renew_in_memory(memory_spine: Any) -> None:
     await _assert_a_stale_token_cannot_renew(memory_spine)
+
+
+# ── workspace-scoped status listing (#1240) ─────────────────────────
+
+
+async def test_status_listing_honors_the_workspace_boundary(spine: Any) -> None:
+    """A workspace-scoped listing returns only that Workspace's runs.
+
+    `workspace_id` exists so scoped callers (the HITL backlog) filter before
+    paging. The boundary only means something if a principal scoped to one
+    Workspace cannot enumerate another's rows — on every backend, including
+    the two that are systems of record.
+    """
+    store, workspace, project_id = spine
+    run = await store.create_run(_graph(workspace, project_id))
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+    await store.transition_run(run.run_id, RunStatus.FAILED)
+
+    mine = await store.list_by_status(RunStatus.FAILED, workspace_id=workspace)
+    assert [item.run_id for item in mine] == [run.run_id]
+    assert await store.list_by_status(RunStatus.FAILED, workspace_id="workspace-nobody") == []

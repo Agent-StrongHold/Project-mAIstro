@@ -242,5 +242,17 @@
       "issue": "#329",
       "reason": "ADR-090726-9a4e is an accepted-decision ADR (operator ratification d5, 2026-09-07) that ratifies the Hybrid crypto-bound approvals decision (WebAuthn + Biscuit + hash chain). Its behavioral contract evidence is the crypto-bound machinery of Phases 2-4, which remain open under #329; the Phase 0 document deliberately records the accepted decision ahead of the contract-marked tests that will implement it. Banking the declared-kind-unproven state follows the accepted-decision-ADR precedent (~40 ADRs banked in this category, e.g. ADR-082926-d0dc). Expected to leave the ledger when Phases 2-4 add contract-marked behavioral tests for the ratified decision."
     }
+  },
+  "execution-lifecycles": {
+    "services.rsi::RunStatus": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1136",
+      "reason": "Pre-existing code, not new: `services.rsi.RunStatus = Literal[\"pending\", \"running\", \"completed\", \"errored\", \"stopped\"]` has driven hive-conductor's RSI run-tracking dataclass since RSI was wired into the product. #1136 widens check-execution-lifecycles.py to discover Literal-backed status vocabularies (previously Enum-only), which makes this pre-existing lifecycle visible to the ratchet for the first time rather than introducing it. This grant authorizes exactly that one newly-visible, pre-existing entry; the follow-up PR that lands the widened scanner also classifies it in quality/execution-lifecycles.json (expected CONVERGE, tracked under the RSI canonical-convergence epics, M4-A/M5-B) rather than banking it as CANONICAL. It does not authorize any other new execution-lifecycle debt."
+    },
+    "maistro.graph.nodes.agent_delegate_remote::DelegationStatus": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1136",
+      "reason": "Pre-existing code, not new: `DelegationStatus = Literal[\"completed\", \"failed\", \"rejected\", \"timed_out\"]` is the outcome vocabulary a remote/in-process delegate answers `agent.delegate_remote` with, immediately translated onto the canonical child Run's RunStatus via the module's `_CHILD_OUTCOME` map -- it is an input shape, not a second execution authority. #1136 widens check-execution-lifecycles.py to discover Literal-backed status vocabularies (previously Enum-only), which makes this pre-existing vocabulary visible to the ratchet for the first time rather than introducing it. This grant authorizes exactly that one newly-visible, pre-existing entry; the follow-up PR that lands the widened scanner also classifies it in quality/execution-lifecycles.json (expected DOMAIN, since it maps onto canonical RunStatus rather than competing with it) rather than banking it as CANONICAL. It does not authorize any other new execution-lifecycle debt."
+    }
   }
 }
