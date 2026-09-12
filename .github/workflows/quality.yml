@@ -218,7 +218,7 @@ jobs:
           echo "::error::MinIO did not become ready within 60s"
           docker logs minio
           exit 1
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
@@ -307,7 +307,7 @@ jobs:
       MAISTRO_DRY_RUN: "1"
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
