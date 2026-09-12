@@ -27,6 +27,7 @@ from maistro.capabilities.binding import Binding, ResolvedCapabilityProvider
 from maistro.capabilities.invocation import (
     Invocation,
     InvocationUsage,
+    ProviderExecutor,
     ProviderResolver,
 )
 from maistro.capabilities.providers.llm_gateway import (
@@ -94,6 +95,14 @@ def resolve_model_chat_provider(
             try:
                 metadata: ModelMetadata = await registry.get_model(selection)
             except ModelNotFoundError:
+                if not await registry.list_models():
+                    # No local metadata at all: this deployment relies on the
+                    # gateway's own catalogue (both shipped applications start
+                    # this way unless `provider_config_path` is set), so the
+                    # alias passes through as it always has. Once metadata is
+                    # registered it is authoritative and an unknown alias is a
+                    # refusal, not a bypass.
+                    return LlmGatewayProvider(None, model=selection)
                 return Unavailable(
                     slot=MODEL_CHAT_CAPABILITY,
                     reason=f"selected model {selection!r} is not registered",
@@ -173,6 +182,17 @@ class ModelChatEgress:
                 return None
             return _gateway_usage(selected[0], body)
 
+        resolve: ProviderResolver = tracked_resolve
+        run_call: ProviderExecutor = execute
+        if binding.credential_refs:
+            # The Binding names the credentials it may use, so the call must
+            # authenticate with one of them, acquired in the Binding's own
+            # scope, and the pool must learn the outcome. A Binding that names
+            # none keeps the endpoint's key: there is no restriction to honour.
+            routing = self._effects.credential_routing()
+            resolve = routing.resolver(tracked_resolve)
+            run_call = routing.executor(execute)
+
         invocation: Invocation = await self._effects.invocations.invoke(
             binding=binding,
             run_id=run_id,
@@ -180,8 +200,8 @@ class ModelChatEgress:
             attempt_id=attempt_id,
             effect_key=effect_key,
             request=request,
-            resolver=tracked_resolve,
-            executor=execute,
+            resolver=resolve,
+            executor=run_call,
             usage_from=usage_from,
         )
         body = invocation.result if isinstance(invocation.result, dict) else {}

@@ -77,3 +77,34 @@ class TestAgentConfigBoundaryValidation:
                     }
                 ],
             )
+
+
+class TestUnknownFieldsAreRefused:
+    """A misspelled restriction must refuse the declaration (#1079 review).
+
+    With Pydantic's default `extra="ignore"`, `provider_nam` or `nodeid` was
+    discarded and the field fell back to "", producing an unpinned or
+    project-wide Binding: a typo silently *widened* what was authorized.
+    """
+
+    @pytest.mark.parametrize("typo", ["provider_nam", "nodeid", "credential_ref"])
+    def test_a_misspelled_restriction_is_refused_directly(self, typo: str) -> None:
+        from pydantic import ValidationError
+
+        from maistro.types.config import ModelBindingConfig
+
+        with pytest.raises(ValidationError, match=typo):
+            ModelBindingConfig.model_validate(
+                {"binding_id": "b", "project_id": "p", typo: "model-a"}
+            )
+
+    def test_a_misspelled_restriction_is_refused_at_the_agent_config_boundary(self) -> None:
+        from pydantic import ValidationError
+
+        from maistro.types.config import AgentConfig
+
+        with pytest.raises(ValidationError, match="provider_nam"):
+            AgentConfig(
+                router_api_key="k",
+                model_bindings=[{"binding_id": "b", "project_id": "p", "provider_nam": "x"}],
+            )

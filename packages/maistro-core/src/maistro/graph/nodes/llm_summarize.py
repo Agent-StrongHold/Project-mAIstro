@@ -101,6 +101,7 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
         effect_context: CapabilityEffectContext | None = None,
         registry: LLMProviderRegistry | None = None,
         router: LLMRouter | None = None,
+        endpoint: GatewayEndpoint | None = None,
     ) -> None:
         # The container passes its own capability_effects so resolver-built
         # nodes resolve the same Binding/Invocation authorities (#55 wiring
@@ -109,8 +110,14 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
         self._effects = effect_context or default_effect_context()
         self._registry = registry if registry is not None else InMemoryProviderRegistry()
         self._router = router if router is not None else CostAwareRouter(self._registry)
+        # The Container's configured gateway (`AgentConfig.litellm_url` /
+        # `litellm_key`), when a wired resolver built this node. A bare node
+        # reads the environment, as it always did.
+        self._endpoint = endpoint
 
-    async def _execute(self, inputs: LlmSummarizeIn, ctx: NodeContext) -> LlmSummarizeOut:
+    def _gateway(self, timeout_s: float) -> GatewayEndpoint:
+        if self._endpoint is not None and self._endpoint.base_url.strip():
+            return self._endpoint.model_copy(update={"timeout_s": timeout_s})
         # LLM gateway endpoint + key — pulled from env (maistro config layer
         # already loads these). The node never hardcodes credentials.
         base_url = (
@@ -127,6 +134,10 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
         )
         if not base_url:
             raise RuntimeError("llm.summarize: no LLM base URL configured")
+        return GatewayEndpoint(base_url=base_url, api_key=api_key, timeout_s=timeout_s)
+
+    async def _execute(self, inputs: LlmSummarizeIn, ctx: NodeContext) -> LlmSummarizeOut:
+        gateway = self._gateway(inputs.timeout_s)
 
         if not inputs.binding_id.strip():
             raise BindingNotFound(
@@ -158,9 +169,7 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
             self._effects,
             registry=self._registry,
             router=self._router,
-            endpoint=GatewayEndpoint(
-                base_url=base_url, api_key=api_key, timeout_s=inputs.timeout_s
-            ),
+            endpoint=gateway,
         )
         result = await egress.complete(
             binding=binding,

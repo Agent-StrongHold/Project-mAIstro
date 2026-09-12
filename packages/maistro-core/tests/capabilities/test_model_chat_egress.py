@@ -561,3 +561,145 @@ async def test_usage_from_without_tracked_provider_returns_none() -> None:
     assert usage is not None
     assert usage.input_units == 100
     assert usage.provider == "test-gw"
+
+
+def _capture_gateway(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Fake the gateway and record every request's headers and payload."""
+    calls: list[dict[str, Any]] = []
+
+    class _Resp:
+        status_code = 200
+
+        def json(self) -> Any:
+            return _OK_BODY
+
+    class _Client:
+        def __init__(self, *a: Any, **kw: Any) -> None: ...
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *a: Any) -> None: ...
+
+        async def post(self, url: str, *, headers: Any = None, json: Any = None) -> _Resp:
+            calls.append({"url": url, "headers": dict(headers or {}), "json": json})
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    return calls
+
+
+async def test_an_alias_passes_through_when_no_model_metadata_is_registered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both shipped applications start with an empty registry and rely on the
+    gateway's own catalogue; refusing every alias there would refuse every
+    call. Once metadata exists it is authoritative (the test above)."""
+    calls = _capture_gateway(monkeypatch)
+    effects = new_in_memory_effect_context()
+    registry = InMemoryProviderRegistry()
+    egress = ModelChatEgress(
+        effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+        endpoint=GatewayEndpoint(base_url="http://gw", api_key="process-key"),
+    )
+
+    result = await egress.complete(
+        binding=_binding(),
+        run_id="r-alias",
+        node_run_id="nr-alias",
+        attempt_id="a-alias",
+        effect_key="test:passthrough",
+        request=ModelChatRequest(
+            model="gemini-3.1-flash-lite", messages=[{"role": "user", "content": "hi"}]
+        ),
+    )
+
+    assert result.body == _OK_BODY
+    assert [call["json"]["model"] for call in calls] == ["gemini-3.1-flash-lite"]
+    assert calls[0]["headers"]["Authorization"] == "Bearer process-key"
+    # No metadata means no cost attribution, but the call and its usage counts stand.
+    assert result.usage is not None and result.usage.cost_cents is None
+
+
+async def test_a_binding_that_declares_credential_refs_authenticates_with_them(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The declared restriction is enforced at egress: the Binding's own
+    credential signs the call, not the process-wide gateway key."""
+    from maistro.credentials.router import CredentialRouter
+    from maistro.credentials.types import CredentialRecord
+
+    calls = _capture_gateway(monkeypatch)
+    credentials = CredentialRouter()
+    credentials.add(
+        workspace_id="ws1",
+        project_id="p1",
+        record=CredentialRecord(key_id="key-a", provider="test-gw", api_key="scoped-key"),
+    )
+    effects = new_in_memory_effect_context(credentials=credentials)
+    registry = _registry()
+    egress = ModelChatEgress(
+        effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+        endpoint=GatewayEndpoint(base_url="http://gw", api_key="process-key"),
+    )
+    binding = Binding(
+        workspace_id="ws1",
+        project_id="p1",
+        capability=MODEL_CHAT_CAPABILITY,
+        provider_name="fast-model",
+        credential_refs=("key-a",),
+    )
+
+    result = await egress.complete(
+        binding=binding,
+        run_id="r-cred",
+        node_run_id="nr-cred",
+        attempt_id="a-cred",
+        effect_key="test:credential",
+        request=ModelChatRequest(messages=[{"role": "user", "content": "hi"}]),
+    )
+
+    assert result.model == "fast-model"
+    assert calls[0]["headers"]["Authorization"] == "Bearer scoped-key"
+    invocation = await effects.invocation_store.get(result.invocation_id)
+    assert invocation is not None and invocation.status is InvocationStatus.COMPLETED
+    # The pool learned the outcome; the secret itself never reached the record.
+    assert "scoped-key" not in invocation.model_dump_json()
+
+
+async def test_a_binding_with_credential_refs_but_no_scoped_credential_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maistro.credentials.router import CredentialScopeError
+
+    calls = _capture_gateway(monkeypatch)
+    effects = new_in_memory_effect_context()
+    registry = _registry()
+    egress = ModelChatEgress(
+        effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+        endpoint=GatewayEndpoint(base_url="http://gw", api_key="process-key"),
+    )
+    binding = Binding(
+        workspace_id="ws1",
+        project_id="p1",
+        capability=MODEL_CHAT_CAPABILITY,
+        provider_name="fast-model",
+        credential_refs=("key-missing",),
+    )
+
+    with pytest.raises(CredentialScopeError):
+        await egress.complete(
+            binding=binding,
+            run_id="r-nocred",
+            node_run_id="nr-nocred",
+            attempt_id="a-nocred",
+            effect_key="test:no-credential",
+            request=ModelChatRequest(messages=[{"role": "user", "content": "hi"}]),
+        )
+    assert calls == []

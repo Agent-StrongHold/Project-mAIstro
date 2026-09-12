@@ -116,6 +116,7 @@ def _resolve_nodes_with() -> Callable[[str, Any], Any]:
         effect_context=container.capability_effects,
         provider_registry=container.provider_registry,
         llm_router=container.llm_router,
+        gateway_endpoint=container.gateway_endpoint,
     )
 
 

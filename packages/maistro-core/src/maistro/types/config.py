@@ -5,7 +5,7 @@ Pydantic-validated config loaded from YAML.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class RoutingConfig(BaseModel):
@@ -138,6 +138,10 @@ class ModelBindingConfig(BaseModel):
     ``project_id`` and ``binding_id`` remain explicit so a Graph cannot authorize
     itself merely by choosing a model name.
     """
+
+    # A misspelled restriction (`provider_nam`, `nodeid`) must refuse the
+    # declaration, not fall back to "" and quietly widen what is authorized.
+    model_config = ConfigDict(extra="forbid")
 
     binding_id: str
     project_id: str

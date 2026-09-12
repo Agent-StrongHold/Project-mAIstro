@@ -416,3 +416,153 @@ async def test_synth_dag_child_resolver_carries_the_container_authorities() -> N
     assert child._effects is container.capability_effects
     assert child._registry is container.provider_registry
     assert child._router is container.llm_router
+
+
+async def test_container_resolved_summarize_uses_the_configured_gateway_not_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`AgentConfig.litellm_url`/`litellm_key` reach the wired node (#1079 review).
+
+    The node used to read only the environment, so a Container configured
+    programmatically held a valid endpoint its own nodes could not see.
+    """
+    for name in (
+        "MAISTRO_LLM_BASE_URL",
+        "LITELLM_URL",
+        "LITELLM_API_BASE",
+        "MAISTRO_LLM_API_KEY",
+        "LITELLM_API_KEY",
+        "LITELLM_MASTER_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    container = await _container(
+        workspace_id="ws-cfg",
+        litellm_url="https://configured.gateway.test",
+        litellm_key="configured-key",
+        model_bindings=[{"binding_id": "model-cfg", "project_id": "project-cfg"}],
+    )
+    resolver = build_node_resolver(
+        effect_context=container.capability_effects,
+        provider_registry=container.provider_registry,
+        llm_router=container.llm_router,
+        gateway_endpoint=container.gateway_endpoint,
+    )
+    node = resolver("summarize", {"nodes": [{"id": "summarize", "kind": "llm.summarize"}]})
+    assert isinstance(node, LlmSummarizeNode)
+    assert node._endpoint is container.gateway_endpoint
+    seen: list[Any] = []
+
+    async def fake_execute_model_chat(
+        provider: Any, payload: Any, *, endpoint: Any
+    ) -> dict[str, Any]:
+        del payload
+        seen.append((provider.name, endpoint))
+        return {
+            "model": "gw-alias",
+            "choices": [{"message": {"content": "A configured summary."}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        }
+
+    import maistro.capabilities.model_chat as model_chat
+
+    monkeypatch.setattr(model_chat, "execute_model_chat", fake_execute_model_chat)
+
+    result = await node.run(
+        {"text": "Long source text", "model": "gw-alias", "binding_id": "model-cfg"},
+        NodeContext(
+            run_id="run-cfg",
+            dag_id="graph-cfg",
+            node_id="summarize",
+            node_run_id="node-run-cfg",
+            attempt_id="attempt-cfg",
+            workspace_id="ws-cfg",
+            project_id="project-cfg",
+        ),
+    )
+
+    assert result.status == "completed", result.error_message
+    ((model, endpoint),) = seen
+    # No registry metadata: the gateway alias passed through as the model.
+    assert model == "gw-alias"
+    assert endpoint.base_url == "https://configured.gateway.test"
+    assert endpoint.api_key == "configured-key"
+    await container.aclose()
+
+
+async def test_sqlite_container_keeps_the_invocation_ledger_across_a_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A durable backend gets a durable ledger (#1079 review): after a restart
+    the same Invocation row is found, so recovery can deduplicate rather than
+    charge the same logical model call twice."""
+    import httpx
+
+    from maistro.capabilities.binding import Binding
+    from maistro.capabilities.invocation import InvocationStatus
+    from maistro.capabilities.invocation_store import SqliteInvocationStore
+    from maistro.capabilities.model_chat import ModelChatEgress, ModelChatRequest
+    from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
+    from maistro.events.envelope import SqliteEventStore
+
+    class _Resp:
+        status_code = 200
+
+        def json(self) -> Any:
+            return {
+                "model": "gw-alias",
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            }
+
+    class _Client:
+        def __init__(self, *a: Any, **kw: Any) -> None: ...
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *a: Any) -> None: ...
+
+        async def post(self, *a: Any, **kw: Any) -> _Resp:
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    database_url = f"sqlite:///{tmp_path / 'ledger.db'}"
+    container = await _container(workspace_id="ws-ledger", database_url=database_url)
+    try:
+        assert isinstance(container.capability_effects.invocation_store, SqliteInvocationStore)
+        assert isinstance(container.capability_effects.event_store, SqliteEventStore)
+        binding = await container.capability_effects.bindings.put(
+            Binding(
+                binding_id="model-ledger",
+                workspace_id="ws-ledger",
+                project_id="project-ledger",
+                capability=MODEL_CHAT_CAPABILITY,
+            )
+        )
+        egress = ModelChatEgress(
+            container.capability_effects,
+            registry=container.provider_registry,
+            router=container.llm_router,
+            endpoint=GatewayEndpoint(base_url="http://gw"),
+        )
+        result = await egress.complete(
+            binding=binding,
+            run_id="run-ledger",
+            node_run_id="node-run-ledger",
+            attempt_id="attempt-ledger",
+            effect_key="llm.summarize.complete:gw-alias",
+            request=ModelChatRequest(
+                model="gw-alias", messages=[{"role": "user", "content": "hi"}]
+            ),
+        )
+    finally:
+        await container.aclose()
+
+    reopened = await _container(workspace_id="ws-ledger", database_url=database_url)
+    try:
+        durable = await reopened.capability_effects.invocation_store.get(result.invocation_id)
+        assert durable is not None
+        assert durable.status is InvocationStatus.COMPLETED
+        assert durable.effect_key == "llm.summarize.complete:gw-alias"
+    finally:
+        await reopened.aclose()

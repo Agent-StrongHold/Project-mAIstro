@@ -94,6 +94,7 @@ class _StubContainer:
         effects=None,
         registry=None,
         router=None,
+        endpoint=None,
     ) -> None:
         # Distinct sentinels, built here rather than in the signature: the tests
         # assert identity, so each field must be its own object.
@@ -110,6 +111,9 @@ class _StubContainer:
         self.capability_effects = effects if effects is not None else object()
         self.provider_registry = registry if registry is not None else object()
         self.llm_router = router if router is not None else object()
+        # The configured gateway endpoint (#1079 review), handed to the node
+        # so programmatic configuration reaches it without the environment.
+        self.gateway_endpoint = endpoint if endpoint is not None else object()
 
 
 def _with_container(monkeypatch, container) -> None:
@@ -247,6 +251,7 @@ def test_the_summarize_node_gets_the_containers_model_egress_authorities(
     assert node._effects is container.capability_effects
     assert node._registry is container.provider_registry
     assert node._router is container.llm_router
+    assert node._endpoint is container.gateway_endpoint
 
 
 @pytest.mark.ac("ADR-082826-d9f5/AC-1")
