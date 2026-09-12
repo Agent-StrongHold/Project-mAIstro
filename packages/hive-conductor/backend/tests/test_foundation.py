@@ -6,7 +6,7 @@ Covers:
 - Foundation.__init__: every flag starts False, every ref starts None
 - _init_vault: success path + exception swallowed → vault_available=False
 - _init_state: success path with PersistedStore + flush
-- _init_state: exception fallback → in-memory stores initialized
+- _init_state: exception fails closed without binding in-memory stores
 - _init_privilege: skipped when admin_public_key empty
 - _init_privilege: success path
 - _init_privilege: exception swallowed
@@ -35,14 +35,22 @@ if str(_BACKEND) not in sys.path:
 def _reset_singleton():
     import services.foundation as f
     import stores
+    from services import profile_store, registration_policy, settings_store
 
     prev = f._singleton
     f._singleton = None
     # Snapshot the stores singleton state so foundation tests don't leak
     # their stub PersistedStore into the rest of the suite.
     prev_persisted = stores._persisted
+    prev_users = stores.users
+    prev_initialize_stores = stores.initialize_stores
     # Snapshot user data so we don't wipe the conftest's seeded testuser
     user_snapshot = dict(stores.users._data)
+    # Foundation also configures these service-level singletons. Reset both
+    # boundaries so a later setup/policy test cannot inherit a test double.
+    settings_store.reset()
+    profile_store.reset()
+    registration_policy.reset()
     yield
     f._singleton = prev
     # Restore persistence binding so subsequent tests see in-memory stores.
@@ -52,8 +60,13 @@ def _reset_singleton():
     for store in stores._all_json_stores:
         store._persisted = prev_persisted
     # Restore seeded users (foundation init may have reset the dict).
+    stores.users = prev_users
+    stores.initialize_stores = prev_initialize_stores
     stores.users._data.clear()
     stores.users._data.update(user_snapshot)
+    settings_store.reset()
+    profile_store.reset()
+    registration_policy.reset()
 
 
 # --- singleton lifecycle -------------------------------------------------
@@ -122,6 +135,8 @@ def _StubSettings(tmp_path: Path) -> Any:
         conductor_state_db="",
         conductor_admin_public_key="",
         conductor_user_public_key="",
+        session_cookie_secure=True,
+        allow_insecure_transport=False,
     )
 
 
@@ -259,25 +274,121 @@ def test_init_state_success_wires_persisted_store(
     assert _state_flush_count[0] == 1
 
 
-def test_init_state_exception_falls_back_to_in_memory(
+def test_init_state_database_open_failure_fails_closed_without_memory_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    import stores
+    from models.schemas import HiveUser
+    from services.foundation import Foundation
+    from services.model_store import ModelStore
+
+    from maistro import state as state_mod
+
+    state_path = tmp_path / "state.db"
+    state_path.mkdir()
+    settings = _StubSettings(tmp_path)
+    settings.conductor_state_db = str(state_path)
+
+    def fail_close(_state: Any) -> None:
+        raise RuntimeError("close failed")
+
+    monkeypatch.setattr(state_mod.State, "close", fail_close)
+    monkeypatch.setattr(stores, "_persisted", None)
+    monkeypatch.setattr(stores, "users", ModelStore("users", HiveUser))
+
+    initialize_calls: list[None] = []
+    monkeypatch.setattr(stores, "initialize_stores", lambda: initialize_calls.append(None))
+
+    fnd = Foundation()
+    with pytest.raises(RuntimeError, match="STATE_UNAVAILABLE: persistence initialization failed"):
+        fnd._init_state(settings, tmp_path)
+
+    assert fnd.state is None
+    assert fnd.state_available is False
+    assert stores._persisted is None
+    assert len(stores.users) == 0
+    assert initialize_calls == []
+    assert any(
+        record.levelno == logging.ERROR
+        and "failed to close state (close failed)" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_init_state_constructor_failure_fails_closed_without_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import types
-
+    import stores
+    from models.schemas import HiveUser
     from services.foundation import Foundation
+    from services.model_store import ModelStore
 
-    broken = types.ModuleType("maistro.state")
+    from maistro import state as state_mod
 
-    def _broken_attr(name: str) -> Any:
-        raise ImportError(f"synthetic no {name}")
+    class _FailingState:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("state constructor failed")
 
-    broken.__getattr__ = _broken_attr  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "maistro.state", broken)
+    settings = _StubSettings(tmp_path)
+    monkeypatch.setattr(state_mod, "State", _FailingState)
+    monkeypatch.setattr(stores, "_persisted", None)
+    monkeypatch.setattr(stores, "users", ModelStore("users", HiveUser))
+
+    initialize_calls: list[None] = []
+    monkeypatch.setattr(stores, "initialize_stores", lambda: initialize_calls.append(None))
 
     fnd = Foundation()
-    fnd._init_state(_StubSettings(tmp_path), tmp_path)
+    with pytest.raises(
+        RuntimeError,
+        match=r"STATE_UNAVAILABLE: persistence initialization failed \(state constructor failed\)",
+    ):
+        fnd._init_state(settings, tmp_path)
+
+    assert fnd.state is None
     assert fnd.state_available is False
+    assert stores._persisted is None
+    assert len(stores.users) == 0
+    assert initialize_calls == []
+
+
+async def test_lifespan_does_not_replace_failed_state_with_memory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import main as main_mod
+    import stores
+
+    settings = _StubSettings(tmp_path)
+    initialize_calls: list[None] = []
+
+    def fail_start(settings: Any) -> None:
+        raise RuntimeError(
+            "STATE_UNAVAILABLE: persistence initialization failed (database unavailable)"
+        )
+
+    async def noop(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(main_mod, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_mod, "_seed_outbound_policy", lambda *_args: None)
+    monkeypatch.setattr("settings_defaults.apply_default_settings_if_needed", lambda: None)
+    monkeypatch.setattr(main_mod.foundation_service, "start_foundation", fail_start)
+    monkeypatch.setattr(main_mod.engine_service, "start_engine", noop)
+    monkeypatch.setattr(main_mod.engine_service, "stop_engine", noop)
+    monkeypatch.setattr(stores, "initialize_stores", lambda: initialize_calls.append(None))
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"STATE_UNAVAILABLE: persistence initialization failed \(database unavailable\)",
+    ):
+        await main_mod.lifespan(main_mod.app).__aenter__()
+
+    assert initialize_calls == []
 
 
 # --- _init_privilege ---------------------------------------------------
