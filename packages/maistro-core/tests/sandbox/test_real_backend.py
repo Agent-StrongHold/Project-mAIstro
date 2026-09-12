@@ -517,6 +517,74 @@ def test_an_eagain_namespace_failure_is_reported_as_an_absent_tier(
     assert "Resource temporarily unavailable" in caps.notes["bubblewrap"]
 
 
+def test_the_probe_applies_the_configured_budgets_not_the_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The disagreement the review caught (#1328): `SandboxConfig()` defaults
+    let the probe budget itself at `max_processes=128`, so on a host whose UID
+    task count fits that but not a configured `max_processes=1`, detection
+    evidenced Tier 3 the workload could not reproduce -- EAGAIN at spawn, after
+    the policy check. A caller that knows the config execution will run under
+    must be able to hand it to detection, and the probe must budget itself
+    with exactly those limits."""
+    import subprocess
+
+    from maistro.sandbox import detect
+    from maistro.sandbox.backends import bubblewrap as bwrap_module
+    from maistro.sandbox.backends.bubblewrap import resource_limits
+
+    tight = SandboxConfig(memory_mb=16, cpu_cores=0.1, max_processes=1)
+    applied: dict[int, tuple[int, int]] = {}
+
+    def _record_setrlimit(which: int, limits: tuple[int, int]) -> None:
+        applied[which] = limits
+
+    def _fake_run(*_args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        preexec = kwargs.get("preexec_fn")
+        assert callable(preexec)
+        # Resolves through the monkeypatched setrlimit, so nothing real is
+        # applied to the test process -- only recorded.
+        preexec()
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(detect, "_which", lambda binary: "/usr/bin/bwrap")
+    monkeypatch.setattr(detect.subprocess, "run", _fake_run)
+    monkeypatch.setattr(bwrap_module.resource, "setrlimit", _record_setrlimit)
+
+    caps = detect.detect_host_capabilities(tight)
+
+    assert caps.supports("bubblewrap")
+    assert applied == resource_limits(tight)
+    # The tight config's budgets, not the defaults -- the disagreement the
+    # review flagged is exactly `applied == resource_limits(SandboxConfig())`.
+    assert applied != resource_limits(SandboxConfig())
+
+
+def test_an_unsupported_preexec_hook_reads_as_absent_not_an_abort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The subinterpreter case the review caught (#1328): CPython raises
+    `RuntimeError: preexec_fn not supported within subinterpreters` out of
+    `subprocess` before bwrap ever starts -- an embedded server worker is the
+    realistic host. A handler catching only OSError/SubprocessError let that
+    propagate out of `detect_host_capabilities` and abort selector
+    construction, instead of reporting Tier 3 absent with the reason the way
+    ADR-093's evidence contract requires."""
+    from maistro.sandbox import detect
+
+    def _no_subinterpreter_support(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("preexec_fn not supported within subinterpreters")
+
+    monkeypatch.setattr(detect, "_which", lambda binary: "/usr/bin/bwrap")
+    monkeypatch.setattr(detect.subprocess, "run", _no_subinterpreter_support)
+
+    caps = detect.detect_host_capabilities()
+
+    assert not caps.supports("bubblewrap")
+    assert "could not run" in caps.notes["bubblewrap"]
+    assert "subinterpreters" in caps.notes["bubblewrap"]
+
+
 # --- the operator entry point -------------------------------------------------
 
 

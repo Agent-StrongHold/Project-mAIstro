@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +3
+  packages/maistro-core/tests: +5
 ---
 
 # #1235 sandbox rlimit-aware capability probe coverage
@@ -15,6 +15,15 @@ Three new collected maistro-core cases, all in `test_real_backend.py`:
 3. `test_an_eagain_namespace_failure_is_reported_as_an_absent_tier` — bwrap EAGAIN at
    namespace clone under the enforced budgets reads as Tier-3 absent with the probe stderr
    in `HostCapabilities.notes`, the unitized form of the #1235 reproduction.
+4. `test_the_probe_applies_the_configured_budgets_not_the_defaults` — a non-default
+   `SandboxConfig` handed to `detect_host_capabilities` reaches the probe: the recorded
+   `setrlimit` calls equal `resource_limits(tight)` and differ from the `SandboxConfig()`
+   defaults, the #1328 review case where a host fits `max_processes=128` but not a
+   configured `max_processes=1`.
+5. `test_an_unsupported_preexec_hook_reads_as_absent_not_an_abort` — a `RuntimeError` from
+   `subprocess` (CPython raises "preexec_fn not supported within subinterpreters" before
+   bwrap starts) reads as Tier-3 absent with the reason, not an abort of detection —
+   the second #1328 review case.
 
 Also updated: the `requires_bwrap` skip reason now carries the probe's own note, so a host
 that fails under the enforced rlimits reports *why*.

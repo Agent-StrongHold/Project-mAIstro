@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from maistro.sandbox.policy import _TIER_ORDER, IsolationTier
+from maistro.sandbox.protocol import SandboxConfig
 
 logger = logging.getLogger("maistro.sandbox.detect")
 
@@ -89,7 +90,10 @@ def _which(binary: str) -> str | None:
 PROBE_TIMEOUT_S = 5
 
 
-def _bubblewrap_isolates(bwrap: str) -> tuple[bool, str]:
+def _bubblewrap_isolates(
+    bwrap: str,
+    config: SandboxConfig,
+) -> tuple[bool, str]:
     """Whether `bwrap` can build the namespace this backend needs, here.
 
     A `which` check is not enough, and the gap is not theoretical: on a host
@@ -112,6 +116,18 @@ def _bubblewrap_isolates(bwrap: str) -> tuple[bool, str]:
     probe that ran un-budgeted would evidence a tier the spawn cannot
     reproduce -- the exact claim-a-boundary-you-cannot-build failure this
     probe exists to prevent.
+
+    The budgets are `config`'s, not a hard-coded default's: a host can sit
+    under the `max_processes=128` default while a workload configured
+    `max_processes=1` cannot reproduce the probe's namespace (#1328). A
+    survey caller with no config in mind passes the `SandboxConfig()`
+    defaults; a caller that knows the config execution will run under passes
+    that, and the probe answers for *it*.
+
+    Every way the probe itself cannot run -- including a `RuntimeError` out
+    of `subprocess`, which is what CPython raises from `preexec_fn` inside a
+    subinterpreter before bwrap ever starts (#1328) -- reads as Tier 3
+    absent with the reason, never as an abort of detection.
     """
     truth = shutil.which("true")
     if truth is None:  # pragma: no cover - a host without coreutils
@@ -137,12 +153,12 @@ def _bubblewrap_isolates(bwrap: str) -> tuple[bool, str]:
     # Imported here rather than at module level: the backend imports this
     # module's `BUBBLEWRAP_BINARY`, so a module-level edge would be a cycle.
     from maistro.sandbox.backends.bubblewrap import preexec_for, resource_limits
-    from maistro.sandbox.protocol import SandboxConfig
 
-    # Same budgets spawn enforces, so the probe's "yes" is one the sandbox
-    # can reproduce. Nothing else about the probe changes: still fixed argv,
-    # no shell, no user input, still bounded by the wall-clock timeout.
-    preexec = preexec_for(resource_limits(SandboxConfig()))
+    # The budgets spawn will enforce for *this* config, so the probe's "yes"
+    # is one the sandbox can reproduce under the config it was asked about.
+    # Nothing else about the probe changes: still fixed argv, no shell, no
+    # user input, still bounded by the wall-clock timeout.
+    preexec = preexec_for(resource_limits(config))
 
     try:
         completed = subprocess.run(  # nosec B603 — fixed argv, no shell, no user input
@@ -152,7 +168,12 @@ def _bubblewrap_isolates(bwrap: str) -> tuple[bool, str]:
             check=False,
             preexec_fn=preexec,
         )
-    except (OSError, subprocess.SubprocessError) as exc:
+    except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+        # `RuntimeError` is not exotic here: it is what CPython raises from
+        # `preexec_fn` when detection runs in a subinterpreter (an embedded
+        # server worker), before bwrap starts. Reporting it as absent-with-
+        # reason is the contract; propagating would abort detection and the
+        # selector construction that asked the question (#1328).
         return False, f"bubblewrap probe could not run: {exc}"
 
     if completed.returncode == 0:
@@ -164,7 +185,7 @@ def _bubblewrap_isolates(bwrap: str) -> tuple[bool, str]:
     )
 
 
-def _probe_vm() -> tuple[bool, str]:
+def _probe_vm(_config: SandboxConfig) -> tuple[bool, str]:
     """Tier 1 needs KVM this process can open *and* a VMM to drive it."""
     kvm_ok, kvm_note = _kvm_usable()
     if not kvm_ok:
@@ -174,35 +195,47 @@ def _probe_vm() -> tuple[bool, str]:
     return True, ""
 
 
-def _probe_gvisor() -> tuple[bool, str]:
+def _probe_gvisor(_config: SandboxConfig) -> tuple[bool, str]:
     if _which(GVISOR_BINARY) is None:
         return False, f"{GVISOR_BINARY!r} is not on PATH"
     return True, ""
 
 
-def _probe_bubblewrap() -> tuple[bool, str]:
+def _probe_bubblewrap(config: SandboxConfig) -> tuple[bool, str]:
     bwrap = _which(BUBBLEWRAP_BINARY)
     if bwrap is None:
         return False, f"{BUBBLEWRAP_BINARY!r} is not on PATH"
-    return _bubblewrap_isolates(bwrap)
+    return _bubblewrap_isolates(bwrap, config)
 
 
 #: One probe per tier, strongest first. A tier is present only when its probe
-#: says so, and absent tiers carry the probe's own reason.
-_PROBES: tuple[tuple[IsolationTier, Callable[[], tuple[bool, str]]], ...] = (
+#: says so, and absent tiers carry the probe's own reason. Every probe takes
+#: the config execution is expected to run under -- Tier 1 and 2 ignore it
+#: today; the bubblewrap probe budgets itself with it (#1328).
+_PROBES: tuple[tuple[IsolationTier, Callable[[SandboxConfig], tuple[bool, str]]], ...] = (
     ("vm", _probe_vm),
     ("gvisor", _probe_gvisor),
     ("bubblewrap", _probe_bubblewrap),
 )
 
 
-def detect_host_capabilities() -> HostCapabilities:
-    """Probe the host once and report the tiers it can really provide."""
+def detect_host_capabilities(config: SandboxConfig | None = None) -> HostCapabilities:
+    """Probe the host once and report the tiers it can really provide.
+
+    `config` is the SandboxConfig execution will actually run under. The
+    bubblewrap probe budgets itself with it, so a "yes" is reproducible at
+    spawn for *that* config -- a host that fits the default
+    `max_processes=128` but not a configured `max_processes=1` answers "no"
+    with the probe's reason when asked about the tight one (#1328). Omit it
+    and the probe uses the `SandboxConfig()` defaults, which is what a
+    config-less capability survey wants and what earlier callers got.
+    """
+    effective = SandboxConfig() if config is None else config
     tiers: list[IsolationTier] = []
     notes: dict[IsolationTier, str] = {}
 
     for tier, probe in _PROBES:
-        available, why = probe()
+        available, why = probe(effective)
         if available:
             tiers.append(tier)
         else:
