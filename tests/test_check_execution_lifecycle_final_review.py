@@ -107,7 +107,7 @@ class Job:
     status: 'RunStatus | Literal["cancelled"]'
 """
     assert gate.work_state_literals(source, "pkg.worker") == {
-        "pkg.worker::Job.status": {"CANCELLED", "<imported-type:.base.RunStatus>"}
+        "pkg.worker::Job.status": {"CANCELLED", "<imported-type:.base.RunStatus>"},
     }
 
 
@@ -122,9 +122,10 @@ class Job:
     ],
 )
 def test_quoted_annotations_never_execute_or_reinterpret_metadata(gate, annotation: str) -> None:
-    source = (
-        "from typing import Literal, Annotated\n" f"class Job:\n    status: {annotation.strip()}\n"
-    )
+    source = f"""from typing import Literal, Annotated
+class Job:
+    status: {annotation.strip()}
+"""
     assert gate.work_state_literals(source, "pkg.worker") == {}
 
 
