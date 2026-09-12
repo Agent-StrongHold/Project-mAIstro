@@ -90,7 +90,6 @@ async def list_visible_runs(user_id: str, *, limit: int = 25) -> list[dict[str, 
     return visible[:limit]
 
 
-
 async def can_inspect_run(user_id: str, run_id: str) -> bool:
     """May `user_id` open this run's detail/event stream?
 
