@@ -64,6 +64,7 @@ from maistro.runs.wiring import (
 )
 from maistro.scheduling.admission import ScheduleRunAdmitter
 from maistro.scheduling.store import ScheduleStore
+from maistro.security._types import ANONYMOUS_AUTH
 from maistro.security.gate import Gate
 from maistro.security.outbound import configure_outbound_policy, configured_endpoints
 from maistro.security.warden.detector import Warden
@@ -451,6 +452,16 @@ class Container:
                 "Pass an AuthContext, or disable them in config.security."
             )
             raise AgentError(msg)
+        if auth is None:
+            # The fail-closed table (ADR-072726-0d6b, #1165) is armed even when
+            # it is empty -- it denies -- but the ReAct and Artificer
+            # strategies only consult Sentinel when `auth is not None`, so a
+            # request that carried no identity used to walk past the table and
+            # execute every tool. It is evaluated as the role-less anonymous
+            # principal instead: every tool it reaches for is denied, and a
+            # configured table keyed on roles still needs a real identity (the
+            # refusal above), because roles cannot be evaluated for nobody.
+            auth = ANONYMOUS_AUTH
 
         if run is None:
             run = await self._admit_chat_turn(
@@ -1389,8 +1400,9 @@ async def create_container(
         preset=config.security.permission_preset,
         permissions=config.security.permissions,
     )
-    # Recovery is an administrative capability, unlike ordinary tools whose
-    # absent permission-table entries intentionally remain open for compatibility.
+    # Recovery is an administrative capability; its capability check goes
+    # through the same fail-closed table below, so a deployment that arms
+    # nothing denies recovery actions too until it configures permissions.
     tier_policy = _configure_strike_recovery_policy()
     logger.info("Sentinel permission table: %s", describe_permission_table(permission_table))
     # SPEC-247 / ADR-068 §D. Without this, Sentinel._check_elevation_grant is a
@@ -1400,9 +1412,21 @@ async def create_container(
     # can therefore never flip authorized False -> True, only needs
     # "self_elevation"/"scoped_2fa" -> "none".
     elevation_store = InMemoryElevationStore()
+    # Canonical capability state is created BEFORE Sentinel so the permission
+    # source can hold the same registry the container exposes (#1165,
+    # ADR-072726-0d6b): a runtime capability disable (set_enabled) must reach
+    # Sentinel's next decision through this live source, without a restart.
+    from maistro.capabilities.bootstrap import default_capability_registry
+    from maistro.security.sentinel.permission_source import CapabilityPermissionSource
+
+    capabilities = default_capability_registry()
     sentinel = Sentinel(
         warden=warden,
         permission_table=permission_table,
+        permission_source=CapabilityPermissionSource(
+            base=permission_table,
+            capabilities=capabilities,
+        ),
         audit_log=audit_log,
         tier_policy=tier_policy,
         elevation_store=elevation_store,
@@ -1412,10 +1436,6 @@ async def create_container(
         sentinel=sentinel,
         audit_log=audit_log,
     )
-
-    from maistro.capabilities.bootstrap import default_capability_registry
-
-    capabilities = default_capability_registry()
 
     # --- P1 resilience policies (ADR-066) --------------------------------
     from maistro.resilience.p1 import InMemoryResiliencePolicyStore, default_policies

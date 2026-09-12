@@ -3,8 +3,9 @@ id: ADR-072726-0d6b
 title: "Sentinel permission table: fail-closed default"
 repo: maistro-engine
 kind: adr
-status: Proposed
+status: Accepted
 created: 2026-07-27
+accepted: 2026-09-09
 substrate: []
 implements: []
 related: []
@@ -57,11 +58,18 @@ default was not inverted.
 
 ## Decision
 
-**Proposed, not taken.** Invert `can_use_tool` so an absent entry denies, behind a configuration
-flag and a deprecation window.
+**Accepted 2026-09-09** (issue #1165), with the scope honestly bounded in the
+implementation reconciliation below. The fail-closed direction is taken: an
+absent permission-table entry now denies, at the shared Sentinel boundary, and
+allow-on-miss survives only as an explicit compatibility mode for
+non-production/test/demo wiring. What remains consciously deferred is stated
+there — this acceptance does NOT claim the preconditions below are all met.
 
-This ADR exists to record what must be true before that inversion is safe, and to make the
-sequencing explicit for whoever picks it up.
+The original (2026-07-27) proposal record, kept for the sequencing precedent
+it set: invert `can_use_tool` so an absent entry denies, behind a configuration
+flag and a deprecation window. This ADR existed to record what must be true
+before that inversion is safe, and to make the sequencing explicit for whoever
+picked it up.
 
 ## What must change first
 
@@ -110,3 +118,87 @@ so adopting this ADR later requires no further config migration. The `dangerous_
 preset added there is the natural seed for a future default table: it maps the already-reviewed
 `DANGEROUS_TOOL_NAMES` set to `admin`, and can be exercised in shadow mode under precondition 4
 before anything is enforced.
+
+## Implementation reconciliation (2026-09-09, issue #1165)
+
+Implemented on branch `m2-1165-a1`, following this ADR's own sequencing rule:
+
+1. **Invariant I6 was amended first, in its own commit** (`3d593b17`). The three
+   allow-on-miss properties in `formal/models/test_sentinel_policy.py`
+   (`test_can_use_tool_no_entry`, `test_no_permission_entry_means_allowed`,
+   `test_pre_call_open_by_default`) were amended to assert deny, and a new
+   property pins the explicit compatibility mode. The semantic flip landed in
+   a separate following commit, exactly as this ADR requires.
+2. **The deny direction is taken at the shared boundary, not at callers.**
+   `AuthContext.can_use_tool` returns False on a table miss — the primitive
+   carries no permissive switch. `check_permission` / `Sentinel` gained a
+   keyword-only `allow_on_miss` flag defaulting to False; arming it logs a
+   warning. Every Sentinel construction inherits deny-on-miss. The two known
+   empty-table production sites now fail closed through the shared semantics:
+   `orchestrator/output_security.py`'s gate performs only post-call output
+   processing (no permission lookups; any future pre_call/authorize against it
+   denies), and a bare-constructed `agent.synth_dag` node refuses to approve
+   (and therefore dispatch) synthesized sub-graphs until it is wired with a
+   Sentinel whose governed table grants the action. Wiring that grant is
+   #804's governed tool-use work, not an empty-table default.
+3. **The compatibility mode is explicit and non-production-reachable.** The
+   only way to arm allow-on-miss is `Sentinel(allow_on_miss=True)` in
+   non-production/test/demo wiring; each such construction in the test suite
+   is marked `COMPATIBILITY (#1165)`. No configuration field routes to it:
+   `SecurityConfig` has no such field and a test pins that absence, so no
+   production profile can express allow-on-miss. This is deliberately stricter
+   than the original "configuration flag + deprecation window" shape: the
+   shipped config schema cannot weaken the default at all.
+4. **Mutation resistance.** Flipping the miss branch back to allow fails the
+   suite at four independent layers: the amended formal I6 properties, the
+   core `can_use_tool`/`check_permission` units, Sentinel `pre_call` /
+   `authorize` on empty and governed tables, and the container wiring test
+   asserting the default production Sentinel denies unlisted tools.
+5. **Reconciliation with canonical capability state, and runtime revoke
+   without restart (2026-09-10 repair, criteria 4-5 of #1165).** Sentinel now
+   accepts a decision-time `PermissionSource`
+   (`security/sentinel/permission_source.py`): a source is resolved on every
+   `pre_call` / `authorize`, so authority is read at the moment it is
+   exercised, not from a construction-time snapshot. The shipped production
+   adapter, `CapabilityPermissionSource`, projects the canonical
+   `CapabilityRegistry`'s live enable state over the deployment table: for a
+   tool whose name is a defined capability slot, a disabled slot removes the
+   authorization at the very next decision (`CapabilityRegistry.set_enabled`
+   is the runtime revoke gesture), and re-enabling restores exactly the
+   base table's decision, never more — the adapter can only remove authority.
+   The gating is derived from the registry itself (a tool name that is a
+   defined slot), not from a hand-maintained tool-to-slot mapping, so this is
+   not a second universal tool authority. `create_container` and the test
+   harness (the second composition path) both wire the source against the
+   same registry instance each exposes. Fail-closed carries over: a source
+   that raises or returns nothing yields a denial — the static table is
+   never used to rescue an unavailable source, because a stale snapshot must
+   not outvote a revoke.
+
+**Consciously deferred (not done here — do not assume otherwise):**
+
+- Precondition 2 (complete tool inventory) and precondition 3 (documented role
+  model) remain open. Deny-by-default at shipped config means an un-configured
+  deployment authorizes nothing; operators must configure
+  `security.permissions` or a preset explicitly. There is still no central
+  tool registry that would let a default table be *generated* rather than
+  hand-maintained.
+- Precondition 4 (shadow mode) was not built: there is no audit-only mode that
+  logs what a richer table *would* have denied before enforcement. The
+  compatibility mode's warning log is the only soft signal.
+- Binding-scoped tool authorization is still open: the `PermissionSource`
+  seam above reconciles Sentinel with the canonical *capability* state, but
+  resolving Workspace/Project/Node-scoped Bindings at Sentinel's boundary
+  needs execution identity the lookup does not carry — that is #804's
+  governed tool-use work, and it plugs in as another `PermissionSource`
+  without touching Sentinel. The canonical machinery likewise has no binding
+  *revoke* gesture yet (`InMemoryBindingStore` has no delete; bindings are
+  immutable), so runtime revocation ships for capability enable-state only.
+- Provider health/activation deliberately does NOT feed Sentinel decisions:
+  the source gates on the registry's enable state (authority), while
+  availability remains the registry's own `resolve()` concern.
+- Message precision follow-up: a denied `agent.synth_dag` authorization
+  surfaces as a generic needs-revision verdict whose revision text mentions
+  budget. The refusal is correct and fail-closed; the wording is not.
+- The captured-provider and AllowAllGate bypasses on live harness/effect paths
+  remain #846's scope, untouched here.

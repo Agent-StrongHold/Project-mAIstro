@@ -17,7 +17,7 @@ import logging
 import pytest  # type: ignore[import-not-found]
 
 from maistro.container import Container, create_container
-from maistro.security._types import AuthContext, WardenVerdict
+from maistro.security._types import ANONYMOUS_AUTH, AuthContext, WardenVerdict
 from maistro.security.patterns import DANGEROUS_TOOL_NAMES
 from maistro.security.sentinel.authz_types import Principal, Tier
 from maistro.security.strikes import InMemoryStrikeTracker
@@ -96,13 +96,98 @@ async def test_wired_sentinel_denies_dangerous_tool_for_non_admin() -> None:
 
 @pytest.mark.contract("behavioral")
 @pytest.mark.scope("integration")
-async def test_wired_sentinel_permits_unlisted_tool() -> None:
+async def test_wired_sentinel_denies_unlisted_tool() -> None:
+    """Fail-closed production wiring (#1165, ADR-072726-0d6b): even with a
+    preset armed, a tool the governed table does not name is denied. Mutation-
+    kill: reverting the shared table-miss semantics to allow fails here."""
     container = await _container(permission_preset="dangerous_tools_admin")
 
     verdict = await container.sentinel.pre_call(
         "read_file", {}, AuthContext(user_id="u1", roles=frozenset({"user"})), {}
     )
-    assert verdict.allowed is True
+    assert verdict.allowed is False
+    assert verdict.violations[0].rule == "permission_denied"
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("integration")
+async def test_wired_sentinel_with_default_config_denies_everything() -> None:
+    """The previously-allow-all case (#1165): at shipped defaults the governed
+    table is empty, and an empty production table cannot authorize any tool."""
+    container = await _container()
+
+    assert container.sentinel._permission_table == {}
+    for tool in ("read_file", "exec", "anything_at_all"):
+        verdict = await container.sentinel.pre_call(
+            tool, {}, AuthContext(user_id="u1", roles=frozenset({"admin"})), {}
+        )
+        assert verdict.allowed is False, tool
+
+
+@pytest.mark.contract("boundary")
+@pytest.mark.scope("unit")
+def test_security_config_cannot_arm_allow_on_miss() -> None:
+    """The compatibility mode is code-level, non-production only (#1165): no
+    configuration field routes allow-on-miss to the container's Sentinel, so
+    no production profile can express it. Pin the absence so a field cannot
+    appear silently."""
+    assert "allow_on_miss" not in SecurityConfig.model_fields
+    assert "permission_allow_on_miss" not in SecurityConfig.model_fields
+
+
+# --- Live capability reconciliation (criteria 4-5, #1165) -------------------
+# The container's Sentinel must reconcile with canonical capability state via a
+# decision-time source, not a static snapshot: a runtime capability disable is
+# reflected in the very next decision, without a process restart.
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("integration")
+async def test_container_wires_live_capability_permission_source() -> None:
+    container = await _container()
+
+    source = container.sentinel._permission_source
+    assert source is not None
+    # The same registry the container exposes: a disable through one is a deny
+    # through the other. A second registry would look wired and decide stale.
+    assert source._capabilities is container.capabilities
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("integration")
+async def test_container_capability_disable_revokes_tool_without_restart() -> None:
+    """Criterion 5 on the real production composition: ``set_enabled`` is the
+    canonical runtime revoke gesture, and Sentinel's next decision honors it."""
+    container = await _container(permissions={"approval": ["admin"]})
+    auth = AuthContext(user_id="u1", roles=frozenset({"admin"}))
+    assert (await container.sentinel.pre_call("approval", {}, auth, {})).allowed is True
+
+    container.capabilities.set_enabled("approval", False)
+
+    revoked = await container.sentinel.pre_call("approval", {}, auth, {})
+    assert revoked.allowed is False
+    assert revoked.violations[0].rule == "permission_denied"
+
+    # Re-enabling restores exactly the governed table's decision.
+    container.capabilities.set_enabled("approval", True)
+    assert (await container.sentinel.pre_call("approval", {}, auth, {})).allowed is True
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("integration")
+async def test_container_capability_disable_never_grants_unnamed_tools() -> None:
+    """The live source only removes authority: disabling a slot cannot make a
+    tool the deployment table never named become allowed (and at shipped
+    defaults canonical slot names are still not tools)."""
+    container = await _container()
+    auth = AuthContext(user_id="u1", roles=frozenset({"admin"}))
+    for tool in ("read_file", "exec", "approval", "infra_action"):
+        verdict = await container.sentinel.pre_call(tool, {}, auth, {})
+        assert verdict.allowed is False, tool
+
+    container.capabilities.set_enabled("infra_action", False)
+
+    assert (await container.sentinel.pre_call("infra_action", {}, auth, {})).allowed is False
 
 
 # --- Strike tracker wiring (H3) ----------------------------------------------
@@ -356,8 +441,34 @@ def test_test_harness_defaults_match_create_container() -> None:
     container = create_test_environment().container
 
     assert container.sentinel._permission_table == {}
+    assert container.sentinel._permission_source is not None
     assert container.strike_tracker is None
     assert container.gate._strike_tracker is None
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("integration")
+async def test_test_harness_wires_the_same_live_capability_source() -> None:
+    """The harness is a second composition path; it drifted from the real
+    Sentinel wiring once already. Pin that it mirrors the container's live
+    capability reconciliation, on the same registry instance."""
+    from maistro.testing import create_test_environment
+
+    container = create_test_environment(
+        config=AgentConfig(
+            router_api_key="test-key",
+            security=SecurityConfig(permissions={"approval": ["admin"]}),
+        )
+    ).container
+
+    source = container.sentinel._permission_source
+    assert source is not None
+    assert source._capabilities is container.capabilities
+
+    auth = AuthContext(user_id="u1", roles=frozenset({"admin"}))
+    assert (await container.sentinel.pre_call("approval", {}, auth, {})).allowed is True
+    container.capabilities.set_enabled("approval", False)
+    assert (await container.sentinel.pre_call("approval", {}, auth, {})).allowed is False
 
 
 # ---------------------------------------------------------------------------
@@ -405,6 +516,44 @@ async def test_route_request_allows_no_auth_at_shipped_defaults() -> None:
         await container.route_request([{"role": "user", "content": "hi"}])
 
 
+@pytest.mark.contract("boundary")
+@pytest.mark.scope("integration")
+async def test_route_request_without_auth_is_evaluated_as_the_anonymous_principal() -> None:
+    """The fail-closed table must reach a turn that carried no identity.
+
+    The strategies consult Sentinel only when `auth is not None`, so passing
+    `None` through would let an unauthenticated turn execute every tool the
+    empty table is supposed to deny (#1165 review). The turn is routed as the
+    role-less anonymous principal instead.
+    """
+    container = await _container()
+    captured: dict[str, object] = {}
+
+    async def capture(messages, **kwargs):
+        captured.update(kwargs)
+        return {"content": "ok", "finish_reason": "stop"}
+
+    container.conduit.route_request = capture  # type: ignore[method-assign]
+    with contextlib.suppress(Exception):
+        await container.route_request([{"role": "user", "content": "hi"}])
+
+    assert captured["auth"] is ANONYMOUS_AUTH
+    assert ANONYMOUS_AUTH.roles == frozenset()
+    assert ANONYMOUS_AUTH.user_id == ""
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("integration")
+@pytest.mark.parametrize("preset", ["none", "dangerous_tools_admin"])
+async def test_the_anonymous_principal_holds_no_tool_authority(preset: str) -> None:
+    """Denied by the empty table and by a configured one alike: no roles, no grant."""
+    container = await _container(permission_preset=preset)
+
+    for tool_name in ("shell", *sorted(DANGEROUS_TOOL_NAMES)[:2]):
+        verdict = await container.sentinel.pre_call(tool_name, {}, ANONYMOUS_AUTH, {})
+        assert verdict.allowed is False, (preset, tool_name)
+
+
 # --- Elevation store wiring (issue #346) -------------------------------------
 #
 # Sentinel._check_elevation_grant short-circuits on `self._elevation_store is
@@ -429,13 +578,15 @@ async def test_container_wires_an_elevation_store_into_sentinel() -> None:
 @pytest.mark.contract("behavioral")
 @pytest.mark.scope("integration")
 async def test_elevation_check_is_reachable_in_a_wired_container() -> None:
-    """End-to-end proof the branch runs: a stored grant changes the decision."""
+    """End-to-end proof the branch runs: a stored grant changes the decision.
+    The container is armed with an explicit governed grant for the action
+    (#1165): deny-on-miss would otherwise short-circuit before elevation."""
     from datetime import UTC, datetime
 
     from maistro.security.sentinel.elevation import ElevationGrant
 
-    container = await _container()
-    principal = Principal(id="human1", kind="human")
+    container = await _container(permissions={"delete_prod_db": ["user"]})
+    principal = Principal(id="human1", kind="human", roles=("user",))
 
     before = await container.sentinel.authorize(
         "delete_prod_db", principal, reversibility="irreversible"
@@ -465,10 +616,12 @@ async def test_elevation_check_is_reachable_in_a_wired_container() -> None:
 @pytest.mark.scope("integration")
 async def test_empty_elevation_store_is_behaviourally_identical_to_unwired() -> None:
     """The wiring must be a no-op until someone actually clears a grant."""
-    container = await _container()
+    container = await _container(permissions={"delete_prod_db": ["user"]})
 
     decision = await container.sentinel.authorize(
-        "delete_prod_db", Principal(id="human1", kind="human"), reversibility="irreversible"
+        "delete_prod_db",
+        Principal(id="human1", kind="human", roles=("user",)),
+        reversibility="irreversible",
     )
     assert decision.needs == "self_elevation"
     assert decision.reason == ""
@@ -488,7 +641,10 @@ async def test_elevation_grant_cannot_clear_a_denied_capability() -> None:
 
     from maistro.security.sentinel.elevation import ElevationGrant
 
-    container = await _container(permission_preset="dangerous_tools_admin")
+    container = await _container(
+        permission_preset="dangerous_tools_admin",
+        permissions={"some_unlisted_action": ["user"]},
+    )
     principal = Principal(id="human1", kind="human", roles=("user",))
     action = next(iter(DANGEROUS_TOOL_NAMES))
 

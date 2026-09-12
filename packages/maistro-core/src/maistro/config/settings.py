@@ -366,13 +366,27 @@ class SecurityConfig(BaseModel):
             raise ValueError(msg)
         return value
 
-    # NOTE: permission_preset / permissions / strike_tracking_enabled are
-    # deliberately NOT mirrored here. They live on maistro.types.config
-    # SecurityConfig, which is what create_container actually receives.
-    # Nothing reads MaistroYamlConfig.security -- the four fields above are
-    # already declared-but-inert -- so adding security knobs here would ship
-    # settings an operator could set in maistro.yaml and watch do nothing.
-    # Wire MaistroYamlConfig -> AgentConfig first; then mirror them.
+    # The Sentinel permission table (ADR-072726-0d6b, #1165). Fail-closed: at
+    # the shipped defaults the table is empty and denies every tool, so a
+    # deployment that wants tool authority states it here. `maistro-server`
+    # copies both onto `AgentConfig.security`, which is what
+    # `create_container` builds the table from -- unlike the four knobs above,
+    # these two are read. `strike_tracking_enabled` is deliberately still not
+    # mirrored: it has no unlock path and would lock an operator out.
+    permission_preset: str = "none"
+    permissions: dict[str, list[str]] = Field(default_factory=dict)
+
+    @field_validator("permission_preset")
+    @classmethod
+    def _known_preset(cls, value: str) -> str:
+        """Refuse a preset name nothing defines, at load rather than at boot."""
+        from maistro.security.permission_policy import VALID_PRESETS
+
+        if value not in VALID_PRESETS:
+            valid = ", ".join(sorted(VALID_PRESETS))
+            msg = f"Unknown permission preset '{value}'. Valid values: {valid}."
+            raise ValueError(msg)
+        return value
 
 
 class CORSConfig(BaseModel):

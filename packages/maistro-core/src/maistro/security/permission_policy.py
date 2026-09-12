@@ -1,14 +1,16 @@
 """Builds the ``PermissionTable`` consumed by ``Sentinel.pre_call`` / ``authorize``.
 
-An absent entry means *permitted* by design (formal invariant I6,
-``formal/models/test_sentinel_policy.py:221-223``). This module therefore
-only *adds* entries and never inverts that default -- see
-``docs/adr/ADR-072726-0d6b-sentinel-permission-table-fail-closed.md`` for the
-(proposed, not implemented) fail-closed alternative and its preconditions.
+Table-miss semantics are FAIL-CLOSED (ADR-072726-0d6b, implemented for #1165,
+as amended formal invariant I6): an absent entry denies, so a deployment that
+configures nothing denies every permission-table lookup instead of authorizing
+every tool. This module therefore only *adds* explicit decisions; it never
+reopens the default -- the only permissive path is Sentinel's explicit
+``allow_on_miss=True`` compatibility mode, which no production wiring passes.
 
-At the shipped defaults (``preset="none"``, ``permissions={}``) this returns an
-empty table, so ``Sentinel.pre_call`` authorizes exactly what it authorized
-before this module existed. The mechanism becomes *armable*, not armed.
+At the shipped defaults (``preset="none"``, ``permissions={}``) the table is
+empty, so every Sentinel authorization now denies until an operator configures
+explicit permissions (or a preset). That is the #1165 invariant: an empty
+production permission table cannot authorize every tool.
 """
 
 from __future__ import annotations
@@ -48,8 +50,10 @@ def build_permission_table(
 ) -> PermissionTable:
     """Build a ``PermissionTable`` from an optional preset plus explicit overrides.
 
-    - ``preset="none"`` (the default) yields an empty table: every tool is
-      permitted for every role, identical to today's behavior.
+    - ``preset="none"`` (the default) yields an empty table. Under the
+      fail-closed default (ADR-072726-0d6b, #1165) an empty table denies
+      every permission-table lookup, so tool authority must be configured
+      explicitly here -- see the module docstring.
     - A known preset seeds every tool name in that preset's set to
       ``frozenset({"admin"})``.
     - An unknown preset (not ``"none"`` and not a ``PERMISSION_PRESETS`` key)

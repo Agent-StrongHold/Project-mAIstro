@@ -563,8 +563,16 @@ def _genuinely_dispatching_synth(
     max_depth: int = 3,
 ) -> BaseNode:
     from maistro.graph.nodes.agent_synth_dag import AgentSynthDagNode
+    from maistro.security.sentinel.policy import Sentinel
+    from maistro.security.warden.detector import Warden
+
+    # COMPATIBILITY (#1165): these walks exercise synth_depth propagation and
+    # child-Run bookkeeping, not permission-table misses. The bare node's
+    # fail-closed default would refuse the synth action before dispatch.
+    sentinel = Sentinel(warden=Warden(), permission_table={}, allow_on_miss=True)
 
     return AgentSynthDagNode(
+        sentinel=sentinel,
         synthesizer=_SynthDepthChildSynthesizer(),
         proportionality_judge=_AlwaysJustifySynthDepthChild(),
         max_depth=max_depth,
@@ -791,7 +799,13 @@ async def test_synth_dag_with_failed_subgraph_still_increments_depth_for_the_nex
 
     def _local_resolver(node_id: str, dag: dict[str, Any]) -> BaseNode:
         if node_id == "n1":
+            from maistro.security.sentinel.policy import Sentinel
+            from maistro.security.warden.detector import Warden
+
             return AgentSynthDagNode(
+                # COMPATIBILITY (#1165): the walk targets failed-subgraph depth
+                # accounting, not permission-table misses.
+                sentinel=Sentinel(warden=Warden(), permission_table={}, allow_on_miss=True),
                 synthesizer=_FailingChildSynthesizer(),
                 proportionality_judge=_AlwaysJustified(),
                 run_store=InMemoryDurableRunStore(),

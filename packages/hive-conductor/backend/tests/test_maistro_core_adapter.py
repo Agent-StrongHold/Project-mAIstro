@@ -225,3 +225,57 @@ async def test_start_registers_the_runtime_materialization_source(monkeypatch):
     assert source.llm is not None
     # The real shipped PREAMBLE template, not an empty stand-in.
     assert "governed dispatch and policy controls" in source.preamble
+
+
+@pytest.mark.asyncio
+async def test_start_carries_the_permission_grants_onto_the_container_config(monkeypatch):
+    """The fail-closed Sentinel table (#1165) needs the operator's grants to
+    reach `AgentConfig.security`, or no Conductor can ever authorize a tool."""
+    container = _fake_container()
+    captured: dict[str, object] = {}
+
+    async def fake_create_container(config):
+        captured["config"] = config
+        return container
+
+    async def fake_create_agents(**kwargs):
+        return {"wired-agent": SimpleNamespace(identity=None)}
+
+    monkeypatch.setattr("maistro.container.create_container", fake_create_container)
+    monkeypatch.setattr("maistro.agents.factory.create_agents", fake_create_agents)
+    monkeypatch.setattr("services.secrets.maistro_llm_api_key", lambda _settings: "")
+
+    await MaistroCoreBridge().start(
+        Settings(
+            maistro_agents_dir="agents",
+            maistro_permission_preset="dangerous_tools_admin",
+            maistro_permissions={"shell": ["admin"]},
+        )
+    )
+
+    config = captured["config"]
+    assert config.security.permission_preset == "dangerous_tools_admin"
+    assert config.security.permissions == {"shell": ["admin"]}
+
+
+@pytest.mark.asyncio
+async def test_route_passes_the_caller_identity_through_to_the_container() -> None:
+    """A caller's principal reaches `Container.route_request`; nothing else is
+    invented on the way (the Container itself substitutes anonymous for None)."""
+    captured: dict[str, object] = {}
+
+    class _Container:
+        async def route_request(self, messages, **kwargs):
+            captured.update(kwargs)
+            return {"content": "ok"}
+
+    bridge = MaistroCoreBridge()
+    bridge._container = _Container()
+    principal = object()
+
+    assert await bridge.route([{"role": "user", "content": "hi"}], auth=principal) == {
+        "content": "ok"
+    }
+    assert captured["auth"] is principal
+    assert await bridge.route([{"role": "user", "content": "hi"}]) == {"content": "ok"}
+    assert captured["auth"] is None

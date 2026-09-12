@@ -29,9 +29,18 @@ class AuthContext:
     on_behalf_of: str = ""
 
     def can_use_tool(self, tool_name: str, permission_table: PermissionTable) -> bool:
+        """Fail-closed permission lookup (ADR-072726-0d6b, implemented for #1165).
+
+        An absent entry DENIES: absence of an explicit permission decision must
+        not grant tool authority, so an omitted or empty deployment table can
+        never authorize every tool. The permissive compatibility mode (allow on
+        miss) is not reachable through this primitive -- it exists only as an
+        explicit ``Sentinel(allow_on_miss=True)`` construction, intended for
+        non-production/test/demo wiring, and no configuration surface arms it.
+        """
         allowed_roles = permission_table.get(tool_name)
         if allowed_roles is None:
-            return True
+            return False
         return bool(self.roles & allowed_roles)
 
 
@@ -42,6 +51,17 @@ SYSTEM_AUTH = AuthContext(
     kind=IdentityKind.SYSTEM,
     auth_method="system",
 )
+
+#: The identity a request that carried none is evaluated as (#1165 review).
+#:
+#: Role-less, so a fail-closed permission table denies it every tool: an
+#: absent identity is not a grant, and the strategies that gate
+#: ``Sentinel.pre_call`` on ``auth is not None`` must reach the table rather
+#: than skip it. ``user_id`` stays empty on purpose -- the strike paths key on
+#: it and skip when it is empty, exactly as they did for ``auth=None``, and
+#: `Container.route_request` refuses to arm strike tracking without a real
+#: identity in the first place.
+ANONYMOUS_AUTH = AuthContext(username="anonymous", auth_method="anonymous")
 
 PermissionTable = dict[str, frozenset[str]]
 
