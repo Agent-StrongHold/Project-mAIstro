@@ -33,6 +33,24 @@ or placeholder-only section.
   longer leave truncated JSON at the staged path. A pre-existing file is
   reused only after parse-validation — existence alone is no longer treated
   as staged input by the CLI's "already staged" skip either.
+
+- **Canonical `EventEnvelope` payloads are now structurally bounded (#1164).**
+  `payload`/`provenance` are checked for serialized byte size (256 KiB) and
+  container nesting depth (32 levels) in the envelope's own constructor, so
+  every backend (in-memory, SQLite, PostgreSQL, outbox) rejects an oversize or
+  pathologically nested event before it is ever materialized in persistence,
+  rather than each needing its own copy of the check. A non-JSON-encodable
+  field is rejected the same way. Violations raise the new, typed
+  `EventPayloadTooLarge` rather than failing later inside a store's own
+  serialization call. Current emitters are all well under the ceiling, so this
+  changes no observed behavior today; it bounds a future caller that isn't
+  written yet. A row persisted before this ceiling existed stays readable —
+  `SqliteEventStore`/`PgEventStore` reconstruct stored rows without
+  re-imposing the new size/depth bound, so upgrading does not turn a
+  previously valid event into a read-time crash. Routing an oversize artifact
+  through the canonical object store by reference, and scrubbing secrets from
+  payloads before persistence (#1159), remain open follow-up work this issue
+  explicitly does not claim.
 ### Added
 
 - **Browser sessions are governed at the Playwright boundary (#855).** Every

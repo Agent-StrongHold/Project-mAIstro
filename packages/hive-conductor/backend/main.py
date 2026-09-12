@@ -165,7 +165,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
     import logging as _logging
 
-    import stores
     from settings_defaults import apply_default_settings_if_needed
 
     from maistro.security.transport import assert_session_transport_is_safe
@@ -193,11 +192,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         profile="hive-conductor",
     )
 
-    try:
-        await foundation_service.start_foundation(get_settings())
-    except Exception as exc:
-        _lifespan_log.warning("foundation_start_failed: %s", exc, exc_info=True)
-        stores.initialize_stores()
+    # The state database owns provisioned accounts, sessions, settings, and
+    # registration policy. A startup failure must stop the API rather than
+    # rebinding those security-critical surfaces to a fresh in-memory registry.
+    await foundation_service.start_foundation(get_settings())
     apply_default_settings_if_needed()
     try:
         await engine_service.start_engine(get_settings())
