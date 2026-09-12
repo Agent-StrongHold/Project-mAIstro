@@ -9,6 +9,8 @@ reads exactly as it did before.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from maistro.agents.types import CodeOutput, ConductorOutput
@@ -260,6 +262,35 @@ async def test_the_adapter_returns_the_full_output_not_the_stored_summary(wired)
 # --- cancellation and shutdown --------------------------------------------
 
 
+async def test_queue_cancellation_signals_the_canonical_attempt(wired) -> None:
+    queue, runs = wired
+    started = asyncio.Event()
+    stopped = asyncio.Event()
+
+    async def slow(_request: TaskCreate) -> ConductorOutput:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+        return _ok()
+
+    task = await queue.submit(TaskCreate(description="long task"))
+    running = asyncio.create_task(_runner(queue, runs, slow)._execute_task(task.task_id))
+    await started.wait()
+
+    assert await queue.cancel(task.task_id) is True
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    assert stopped.is_set()
+    receipt = queue.get(task.task_id)
+    assert receipt is not None and receipt.status is TaskStatus.CANCELLED
+    node_run = (await runs.list_node_runs(task.run_id or ""))[0]
+    attempt = (await runs.list_attempts(node_run.node_run_id))[0]
+    assert attempt.status is AttemptStatus.CANCELLED
+    assert (await runs.get_run(task.run_id or "")).status is RunStatus.CANCELLED
+
+
 async def test_an_in_flight_attempt_is_cancellable_by_canonical_identity(wired) -> None:
     import asyncio
 
@@ -500,3 +531,51 @@ async def test_a_task_worker_without_a_ttl_is_unchanged(wired) -> None:
     assert attempts[0].execution_lease is not None
     assert attempts[0].execution_lease.expires_at is None
     assert await runs.reclaim_expired_attempts() == []
+
+
+# --- cancelling through the queue's canonical seam -------------------------
+
+
+async def test_cancelling_an_unknown_task_id_is_not_a_cancellation(wired) -> None:
+    queue, _runs = wired
+
+    assert await queue.cancel("task-never-was") is False
+
+
+async def test_cancelling_a_task_whose_run_already_completed_is_refused(wired) -> None:
+    """The receipt is a projection; a finished Run is not cancellable.
+
+    When the canonical Run already reached a successful terminal state, the
+    queue must not mark the task CANCELLED — that would contradict the Run
+    the receipt projects.
+    """
+    queue, runs = wired
+    task = await queue.submit(TaskCreate(description="Fix the parser"))
+    run_id = task.run_id or ""
+    await runs.transition_run(run_id, RunStatus.RUNNING)
+    await runs.transition_run(run_id, RunStatus.COMPLETED, result="done")
+
+    assert await queue.cancel(task.task_id) is False
+    receipt = queue.get(task.task_id)
+    assert receipt is not None
+    assert receipt.status is not TaskStatus.CANCELLED
+
+
+async def test_a_queue_without_an_admitter_cancels_only_the_receipt() -> None:
+    queue = TaskQueue()
+
+    task = await queue.submit(TaskCreate(description="Fix the parser"))
+
+    assert await queue.cancel(task.task_id) is True
+    receipt = queue.get(task.task_id)
+    assert receipt is not None
+    assert receipt.status is TaskStatus.CANCELLED
+
+
+async def test_the_admitter_reports_a_run_that_never_existed(wired) -> None:
+    _queue, runs = wired
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("w1")
+    admitter = TaskRunAdmitter(runs, workspace_id="w1", project_id=root.project_id)
+
+    assert await admitter.cancel_run("run-never-was") is False
