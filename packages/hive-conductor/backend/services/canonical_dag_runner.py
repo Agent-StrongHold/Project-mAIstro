@@ -427,6 +427,7 @@ async def recover_stranded_dag_runs(*, limit: int = 100) -> int:
         run_store=container.run_store,
         node_resolver_factory=_recovery_resolver,
         eligible=lambda run: run.provenance.get("admission_source") == "hive_legacy_dag",
+        admission_source="hive_legacy_dag",
         events=container.event_bus,
         limit=limit,
     )
@@ -451,6 +452,7 @@ async def wake_due_dag_runs(*, limit: int = 100) -> int:
         run_store=container.run_store,
         node_resolver_factory=_recovery_resolver,
         eligible=lambda run: run.provenance.get("admission_source") == "hive_legacy_dag",
+        admission_source="hive_legacy_dag",
         events=container.event_bus,
         limit=limit,
     )

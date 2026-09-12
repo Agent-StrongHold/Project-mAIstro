@@ -15,7 +15,7 @@ from typing import Protocol, runtime_checkable
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.runs.model import Run, RunStatus
 from maistro.runs.recovery_events import RecoveryEventSink
-from maistro.runs.store import RunStore
+from maistro.runs.store import RunStore, run_cursor_key
 from maistro.runtime import ExecutionRuntime
 
 from . import executor as traversal
@@ -58,6 +58,42 @@ async def _is_still_resume_due(
     return current is not None and _is_resume_due(current, moment)
 
 
+async def _resume_due_candidate(
+    candidate: DurableRunRecord,
+    *,
+    moment: datetime,
+    eligible: QueuedRunPredicate | None,
+    resolver_for: Callable[[Run], NodeResolver],
+    store: DurableRunStore,
+    run_store: RunStore,
+    runtime: ExecutionRuntime | None,
+    events: RecoveryEventSink | None,
+) -> bool:
+    """Resume one candidate, yielding cleanly to races and live attempts."""
+    if not _is_resume_due(candidate, moment):
+        return False
+    if eligible is not None and not eligible(candidate.run):
+        return False
+    try:
+        await resume_durable_graph(
+            candidate.run_id,
+            store=store,
+            node_resolver=resolver_for(candidate.run),
+            runtime=runtime,
+            run_store=run_store,
+            events=events,
+        )
+    except LiveAttemptOwned:
+        return False
+    except (KeyError, ValueError):
+        # Only a record still due after the failure is a real error; a record
+        # another actor already moved on is settled, not resumed.
+        if not await _is_still_resume_due(store, candidate.run_id, moment):
+            return False
+        raise
+    return True
+
+
 async def resume_due_graph_runs(
     *,
     store: DurableRunStore,
@@ -68,6 +104,7 @@ async def resume_due_graph_runs(
     now: datetime | None = None,
     limit: int = 100,
     eligible: QueuedRunPredicate | None = None,
+    admission_source: str | None = None,
     events: RecoveryEventSink | None = None,
 ) -> int:
     """Resume elapsed durable Graph waits or expired recovery claims.
@@ -85,42 +122,64 @@ async def resume_due_graph_runs(
     reads the Run, and the optimistic continuation version plus the canonical
     Attempt lease/fence still decide admission regardless of what it says.
 
+    ``admission_source`` is applied by the durable continuation query before
+    its limit. It is nullable for compatibility with historical/unclassified
+    records; callers using that mode must provide ``eligible`` and the tick
+    advances a deterministic deadline/run-id cursor across skipped records.
+    Supplying neither disposition is rejected rather than capturing historical
+    or another consumer's work by default.
+    ``limit`` bounds owned resume progress, not a global candidate prefix.
+
     ``events`` carries the resume's crash dispositions onto the canonical
     Event stream when the caller provides a sink.
     """
     if limit <= 0:
         return 0
     _require_resolver_choice(node_resolver, node_resolver_factory)
+    if admission_source is None and eligible is None:
+        raise ValueError(
+            "resume_due_graph_runs requires admission_source or eligible ownership guard"
+        )
     resolver_for = _per_run_resolver(node_resolver, node_resolver_factory)
 
     await _reconcile_if_supported(store, limit=limit)
     moment = now if now is not None else datetime.now(UTC)
-    candidates = await store.list_due(now=moment, limit=limit)
     resumed = 0
+    after: tuple[datetime, str] | None = None
 
-    for candidate in candidates:
-        if not _is_resume_due(candidate, moment):
-            continue
-        if eligible is not None and not eligible(candidate.run):
-            continue
-        try:
-            await resume_durable_graph(
-                candidate.run_id,
+    # Ownership filtering belongs inside list_due, before LIMIT. The cursor is
+    # still needed for compatibility predicates that reject a durable source;
+    # without it, a standing foreign prefix would be reread forever.
+    while resumed < limit:
+        page_limit = limit - resumed
+        candidates = await store.list_due(
+            now=moment,
+            limit=page_limit,
+            admission_source=admission_source,
+            after=after,
+        )
+        if not candidates:
+            break
+        advanced = False
+        for candidate in candidates:
+            if candidate.resume_at is not None:
+                after = (candidate.resume_at, candidate.run_id)
+                advanced = True
+            if await _resume_due_candidate(
+                candidate,
+                moment=moment,
+                eligible=eligible,
+                resolver_for=resolver_for,
                 store=store,
-                node_resolver=resolver_for(candidate.run),
-                runtime=runtime,
                 run_store=run_store,
+                runtime=runtime,
                 events=events,
-            )
-        except LiveAttemptOwned:
-            continue
-        except (KeyError, ValueError):
-            # Only a record still due after the failure is a real error; a
-            # record another actor already moved on is settled, not resumed.
-            if not await _is_still_resume_due(store, candidate.run_id, moment):
-                continue
-            raise
-        resumed += 1
+            ):
+                resumed += 1
+            if resumed >= limit:
+                break
+        if len(candidates) < page_limit or not advanced:
+            break
 
     return resumed
 
@@ -206,6 +265,7 @@ async def recover_queued_graph_runs(
     eligible: QueuedRunPredicate,
     runtime: ExecutionRuntime | None = None,
     limit: int = 100,
+    admission_source: str | None = None,
     events: RecoveryEventSink | None = None,
 ) -> int:
     """Recover admitted durable Graph Runs around checkpoint 1.
@@ -216,6 +276,12 @@ async def recover_queued_graph_runs(
     recovery path never substitutes empty inputs for work the caller actually
     admitted.
 
+    ``admission_source`` is applied by the canonical Run query before LIMIT.
+    It is nullable for historical/unclassified compatibility; in that mode
+    ``eligible`` remains the ownership guard and the deterministic Run cursor
+    advances over skipped records. ``limit`` bounds owned recovery progress,
+    rather than a global queue prefix.
+
     ``events`` carries each recovery's crash dispositions onto the canonical
     Event stream when the caller provides a sink.
     """
@@ -223,18 +289,39 @@ async def recover_queued_graph_runs(
         return 0
 
     await _reconcile_if_supported(store, limit=limit)
-    candidates = await run_store.list_by_status(RunStatus.QUEUED, limit=limit)
     recovered = 0
-    for run in candidates:
-        if eligible(run) and await _resume_queued_candidate(
-            run,
-            store=store,
-            run_store=run_store,
-            node_resolver_factory=node_resolver_factory,
-            runtime=runtime,
-            events=events,
-        ):
-            recovered += 1
+    after: tuple[str, str] | None = None
+
+    # A source-specific query is the indexed fast path. If a legacy caller
+    # supplies only ``eligible``, walk every deterministic page so skipped
+    # ownership classes cannot hide a later eligible Run after restart.
+    while recovered < limit:
+        page_limit = limit - recovered
+        candidates = await run_store.list_by_status(
+            RunStatus.QUEUED,
+            limit=page_limit,
+            after=after,
+            admission_source=admission_source,
+        )
+        if not candidates:
+            break
+        advanced = False
+        for run in candidates:
+            after = run_cursor_key(run)
+            advanced = True
+            if eligible(run) and await _resume_queued_candidate(
+                run,
+                store=store,
+                run_store=run_store,
+                node_resolver_factory=node_resolver_factory,
+                runtime=runtime,
+                events=events,
+            ):
+                recovered += 1
+                if recovered >= limit:
+                    break
+        if len(candidates) < page_limit or not advanced:
+            break
     return recovered
 
 

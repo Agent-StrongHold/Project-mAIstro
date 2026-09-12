@@ -61,7 +61,7 @@ from maistro.runs.model import (
     Run,
     RunStatus,
 )
-from maistro.runs.sources import occurrence_key
+from maistro.runs.sources import ADMISSION_SOURCE, occurrence_key
 from maistro.runs.store import (
     DEFAULT_ARCHIVE_AFTER,
     DEFAULT_PURGE_BATCH,
@@ -187,14 +187,15 @@ class PgRunStore:
                 await conn.execute(
                     """INSERT INTO canonical_runs
                    (run_id, workspace_id, project_id, parent_run_id,
-                    parent_node_run_id, status, payload, retention_expires_at)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7::text::jsonb, $8)""",
+                    parent_node_run_id, status, admission_source, payload, retention_expires_at)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text::jsonb, $9)""",
                     run.run_id,
                     run.workspace_id,
                     run.project_id,
                     run.parent_run_id,
                     run.parent_node_run_id,
                     run.status.value,
+                    run.provenance.get(ADMISSION_SOURCE),
                     json_of(run),
                     # Duplicated out of the payload so the retention sweep can use
                     # an index (migration 012). Written once at creation and never
@@ -472,6 +473,7 @@ class PgRunStore:
         offset: int = 0,
         project_id: str | None = None,
         after: tuple[str, str] | None = None,
+        admission_source: str | None = None,
     ) -> list[Run]:
         """Runs currently in ``status``, oldest first (#251).
 
@@ -480,10 +482,10 @@ class PgRunStore:
         drains a backlog fairly. Non-terminal payloads are never offloaded to
         the archive, so the rows read back whole.
 
-        A caller that needs to see *every* row eventually, rather than only the
-        oldest page, passes ``offset`` and walks it: the resume tick does, because
-        its filter is applied after the query and a standing prefix of ineligible
-        rows would otherwise hide everything behind it forever (#666 review).
+        ``admission_source`` is an indexed ownership filter applied before
+        ``limit``. A caller using a broader compatibility predicate can walk
+        every row with the exclusive ``after`` cursor, so an ineligible prefix
+        cannot hide eligible work forever (#666 review).
         """
         if limit <= 0:
             raise ValueError("limit must be positive")
@@ -494,6 +496,9 @@ class PgRunStore:
         if project_id is not None:
             sql += f" AND project_id = ${len(params) + 1}"
             params.append(project_id)
+        if admission_source is not None:
+            sql += f" AND admission_source = ${len(params) + 1}"
+            params.append(admission_source)
         if after is not None:
             cursor_param = len(params) + 1
             sql += f" AND (payload->>'created_at', run_id) > (${cursor_param}, ${cursor_param + 1})"

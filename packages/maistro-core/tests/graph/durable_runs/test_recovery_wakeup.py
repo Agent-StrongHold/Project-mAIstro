@@ -17,9 +17,29 @@ class _Store:
     def __init__(self, *records) -> None:
         self.records = {record.run_id: record for record in records}
 
-    async def list_due(self, *, now: datetime, limit: int = 100):
+    async def list_due(
+        self,
+        *,
+        now: datetime,
+        limit: int = 100,
+        admission_source: str | None = None,
+        after: tuple[datetime, str] | None = None,
+    ):
         del now
-        return list(self.records.values())[:limit]
+        records = list(self.records.values())
+        if admission_source is not None:
+            records = [
+                record
+                for record in records
+                if getattr(record.run, "provenance", {}).get("admission_source") == admission_source
+            ]
+        if after is not None:
+            records = [
+                record
+                for record in records
+                if record.resume_at is not None and (record.resume_at, record.run_id) > after
+            ]
+        return records[:limit]
 
     async def get(self, run_id: str):
         return self.records.get(run_id)
@@ -52,13 +72,23 @@ class _RunStore:
         offset: int = 0,
         project_id: str | None = None,
         after=None,
+        admission_source: str | None = None,
     ) -> list[Run]:
-        del offset, after
-        return [
+        del offset
+        runs = [
             run
             for run in self.runs.values()
-            if run.status is status and (project_id is None or run.project_id == project_id)
-        ][:limit]
+            if run.status is status
+            and (project_id is None or run.project_id == project_id)
+            and (
+                admission_source is None
+                or run.provenance.get("admission_source") == admission_source
+            )
+        ]
+        runs.sort(key=lambda run: (run.created_at, run.run_id))
+        if after is not None:
+            runs = [run for run in runs if (run.created_at.isoformat(), run.run_id) > after]
+        return runs[:limit]
 
 
 def _record(run_id: str, status: RunStatus, resume_at: datetime | None):
@@ -106,6 +136,7 @@ async def test_wakeup_executes_due_waiting_graphs_but_never_hitl_pauses(monkeypa
         store=store,
         run_store=object(),
         node_resolver=lambda _node_id, _graph: None,
+        eligible=lambda _candidate: True,
         now=now,
     )
 
@@ -131,6 +162,7 @@ async def test_losing_a_cross_replica_resume_race_is_idempotent(monkeypatch) -> 
             store=store,
             run_store=object(),
             node_resolver=lambda _node_id, _graph: None,
+            eligible=lambda _candidate: True,
             now=now,
         )
         == 0
@@ -154,6 +186,7 @@ async def test_resume_failure_stays_visible_when_the_record_is_still_eligible(mo
             store=store,
             run_store=object(),
             node_resolver=lambda _node_id, _graph: None,
+            eligible=lambda _candidate: True,
             now=now,
         )
 
@@ -184,6 +217,67 @@ async def test_queued_run_without_continuation_is_claimed_then_resumed(monkeypat
     assert initial is not None
     assert initial.version == 1
     assert initial.graph_state.active_node_ids == ("node-1",)
+
+
+@pytest.mark.asyncio
+async def test_queued_recovery_skips_a_foreign_prefix_without_starving_owned_work(
+    monkeypatch,
+) -> None:
+    """The owned Run is not trapped behind a global page of foreign Runs."""
+    runs = [_queued_run(f"foreign-{index}", source="other") for index in range(3)]
+    owned = _queued_run("owned-after-foreign", source="owned")
+    calls: list[str] = []
+
+    async def _resume(run_id: str, **kwargs) -> None:
+        del kwargs
+        calls.append(run_id)
+
+    monkeypatch.setattr(recovery, "resume_durable_graph", _resume)
+
+    recovered = await recovery.recover_queued_graph_runs(
+        store=_BootstrapStore(),
+        run_store=_RunStore(*runs, owned),
+        eligible=lambda candidate: candidate.provenance.get("admission_source") == "owned",
+        node_resolver_factory=lambda _run: lambda _node_id, _graph: None,
+        limit=1,
+    )
+
+    assert recovered == 1
+    assert calls == [owned.run_id]
+
+
+@pytest.mark.asyncio
+async def test_queued_recovery_applies_owner_filter_before_limit(monkeypatch) -> None:
+    run = _queued_run("owned-query", source="owned")
+    store = _BootstrapStore()
+    run_store = _RunStore(
+        *[_queued_run(f"foreign-query-{i}", source="other") for i in range(3)], run
+    )
+    seen: list[str | None] = []
+    original = run_store.list_by_status
+
+    async def _list(*args, **kwargs):
+        seen.append(kwargs.get("admission_source"))
+        return await original(*args, **kwargs)
+
+    run_store.list_by_status = _list
+
+    async def _resume(*args, **kwargs) -> None:
+        del args, kwargs
+
+    monkeypatch.setattr(recovery, "resume_durable_graph", _resume)
+
+    recovered = await recovery.recover_queued_graph_runs(
+        store=store,
+        run_store=run_store,
+        eligible=lambda candidate: candidate.provenance.get("admission_source") == "owned",
+        admission_source="owned",
+        node_resolver_factory=lambda _run: lambda _node_id, _graph: None,
+        limit=1,
+    )
+
+    assert recovered == 1
+    assert seen == ["owned"]
 
 
 @pytest.mark.asyncio
@@ -336,6 +430,7 @@ async def test_wakeup_ignores_a_due_record_the_due_query_still_returned(monkeypa
             store=store,
             run_store=object(),
             node_resolver=lambda _node_id, _graph: None,
+            eligible=lambda _candidate: True,
             now=now,
         )
         == 0
@@ -362,6 +457,7 @@ async def test_wakeup_tick_yields_to_a_live_attempt_that_still_owns_the_run(
             store=store,
             run_store=object(),
             node_resolver=lambda _node_id, _graph: None,
+            eligible=lambda _candidate: True,
             now=now,
         )
         == 0
@@ -388,6 +484,7 @@ async def test_a_resume_race_that_vanished_the_record_is_not_reraised(monkeypatc
             store=store,
             run_store=object(),
             node_resolver=lambda _node_id, _graph: None,
+            eligible=lambda _candidate: True,
             now=now,
         )
         == 0
@@ -424,6 +521,7 @@ async def test_a_tick_reconciles_persistence_before_reading_due_work(monkeypatch
             store=store,
             run_store=object(),
             node_resolver=lambda _node_id, _graph: None,
+            eligible=lambda _candidate: True,
             now=now,
             limit=7,
         )
@@ -609,11 +707,93 @@ async def test_wakeup_rebuilds_the_resolver_from_each_candidates_own_run(monkeyp
         store=store,
         run_store=object(),
         node_resolver_factory=_factory,
+        eligible=lambda _candidate: True,
         now=now,
     )
 
     assert count == 1
     assert seen_runs == [waiting.run_id]
+
+
+@pytest.mark.asyncio
+async def test_wakeup_skips_a_foreign_prefix_without_starving_owned_work(monkeypatch) -> None:
+    now = datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
+    foreign = [
+        _due_record(
+            _queued_run(f"due-foreign-{index}", source="other").model_copy(
+                update={"status": RunStatus.WAITING}
+            ),
+            resume_at=now - timedelta(seconds=10 - index),
+        )
+        for index in range(3)
+    ]
+    owned_run = _queued_run("due-owned-after-foreign", source="owned").model_copy(
+        update={"status": RunStatus.WAITING}
+    )
+    owned = _due_record(owned_run, resume_at=now - timedelta(seconds=1))
+    store = _Store(*foreign, owned)
+    calls: list[str] = []
+
+    async def _resume(run_id: str, **kwargs) -> None:
+        del kwargs
+        calls.append(run_id)
+
+    monkeypatch.setattr(recovery, "resume_durable_graph", _resume)
+
+    resumed = await recovery.resume_due_graph_runs(
+        store=store,
+        run_store=object(),
+        node_resolver_factory=lambda _run: lambda _node_id, _graph: None,
+        eligible=lambda candidate: candidate.provenance.get("admission_source") == "owned",
+        now=now,
+        limit=1,
+    )
+
+    assert resumed == 1
+    assert calls == [owned_run.run_id]
+
+
+@pytest.mark.asyncio
+async def test_wakeup_applies_owner_filter_before_limit(monkeypatch) -> None:
+    now = datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
+    owned_run = _queued_run("due-owned-query", source="owned").model_copy(
+        update={"status": RunStatus.WAITING}
+    )
+    store = _Store(
+        _due_record(
+            _queued_run("due-foreign-query", source="other").model_copy(
+                update={"status": RunStatus.WAITING}
+            ),
+            resume_at=now - timedelta(seconds=2),
+        ),
+        _due_record(owned_run, resume_at=now - timedelta(seconds=1)),
+    )
+    seen: list[str | None] = []
+    original = store.list_due
+
+    async def _list(*args, **kwargs):
+        seen.append(kwargs.get("admission_source"))
+        return await original(*args, **kwargs)
+
+    store.list_due = _list
+
+    async def _resume(*args, **kwargs) -> None:
+        del args, kwargs
+
+    monkeypatch.setattr(recovery, "resume_durable_graph", _resume)
+
+    resumed = await recovery.resume_due_graph_runs(
+        store=store,
+        run_store=object(),
+        node_resolver_factory=lambda _run: lambda _node_id, _graph: None,
+        eligible=lambda candidate: candidate.provenance.get("admission_source") == "owned",
+        admission_source="owned",
+        now=now,
+        limit=1,
+    )
+
+    assert resumed == 1
+    assert seen == ["owned"]
 
 
 @pytest.mark.asyncio
@@ -665,6 +845,16 @@ async def test_wakeup_requires_exactly_one_resolver_shape() -> None:
 
 
 @pytest.mark.asyncio
+async def test_wakeup_requires_an_explicit_ownership_disposition() -> None:
+    with pytest.raises(ValueError, match="admission_source or eligible"):
+        await recovery.resume_due_graph_runs(
+            store=_Store(),
+            run_store=object(),
+            node_resolver=lambda _node_id, _graph: None,
+        )
+
+
+@pytest.mark.asyncio
 async def test_wakeup_threads_the_recovery_event_sink_into_the_resume(monkeypatch) -> None:
     """The tick's crash dispositions must land on the canonical Event stream
     through the same sink the abandoned-Attempt sweep uses (#62)."""
@@ -685,6 +875,7 @@ async def test_wakeup_threads_the_recovery_event_sink_into_the_resume(monkeypatc
         store=store,
         run_store=object(),
         node_resolver=lambda _node_id, _graph: None,
+        eligible=lambda _candidate: True,
         events=sink,
         now=now,
     )
