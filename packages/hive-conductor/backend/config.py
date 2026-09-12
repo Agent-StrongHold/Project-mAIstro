@@ -22,6 +22,7 @@ from pydantic import (
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from maistro.config.settings import validate_cors_origins
+from maistro.types.config import ModelBindingConfig
 
 _BACKEND_DIR = Path(__file__).resolve().parent
 # Repo root `.env` (PM POC flags) — uvicorn cwd is usually `backend/`.
@@ -204,6 +205,9 @@ class Settings(BaseSettings):
     maistro_agents_dir: str = "agents"
     maistro_llm_api_key: SecretStr | None = None
     maistro_model: str = "mistral-large"
+    # Canonical model.chat authorization declarations consumed by the embedded
+    # core Container. Empty remains fail-closed for model effects.
+    model_bindings: list[ModelBindingConfig] = Field(default_factory=list)
 
     conductor_data_dir: str = "~/.conductor"
     conductor_vault_path: str | None = None

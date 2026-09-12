@@ -10,8 +10,8 @@ Covers:
 - run_loop: _run_one_cycle exception captured into _last_cycle_error
 - _run_one_cycle: dispatches to canonical graph runner + increments counter
 - _run_one_cycle: failed canonical Run is surfaced and not counted as a cycle
-- _build_llm_call: no settings -> None; with settings -> callable
-- _build_llm_call inner call: posts to base_url + parses content
+- _build_llm_call: no settings -> None; with canonical container -> governed callable
+- _build_llm_call inner call: creates a correlated canonical Invocation
 - status: returns running, cycle_count, canonical run id, population, error, tournament
 """
 
@@ -330,31 +330,54 @@ def test_build_llm_call_swallows_exceptions(
     assert s._build_llm_call() is None
 
 
-async def test_build_llm_call_real_call_posts_and_extracts_content(
+async def test_build_llm_call_uses_canonical_egress_and_correlates_invocation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When settings have a base URL, _build_llm_call posts and returns content."""
+    """The shipped service adapter records model work on the canonical spine."""
     import httpx
+    import services.evolution_graph as evolution_graph
     from services.evolution import _EvolutionService
+
+    from maistro.container import create_container
+    from maistro.graph.nodes.base import NodeContext
+    from maistro.types.config import AgentConfig
+
+    config_model = AgentConfig(
+        router_api_key="test-router-key",
+        workspace_id="ws-evolve",
+        model_bindings=[
+            {
+                "binding_id": "evolve-model",
+                "project_id": "project-evolve",
+                "provider_name": "model",
+            }
+        ],
+    )
+    owner = await create_container(config_model)
+    effects = owner.capability_effects
+    monkeypatch.setattr(evolution_graph, "_engine_container", lambda: owner)
+    import services.secrets as secrets
+
+    monkeypatch.setattr(secrets, "maistro_llm_api_key", lambda _: "test-key")
+    monkeypatch.setattr(secrets, "litellm_api_key", lambda _: "")
 
     class _Settings:
         litellm_api_base = "http://test.example/api"
-        maistro_llm_api_key = "test-key"
-        litellm_api_key = ""
-        chat_default_model = "test-model"
+        chat_default_model = "model"
 
     import config
 
     monkeypatch.setattr(config, "get_settings", lambda: _Settings())
 
-    captured: dict[str, Any] = {}
-
     class _Resp:
-        def raise_for_status(self) -> None:
-            pass
+        status_code = 200
 
         def json(self) -> Any:
-            return {"choices": [{"message": {"content": "the answer"}}]}
+            return {
+                "model": "model-v2",
+                "choices": [{"message": {"content": "the answer"}}],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 3},
+            }
 
     class _Client:
         def __init__(self, *a: Any, **kw: Any) -> None: ...
@@ -364,20 +387,205 @@ async def test_build_llm_call_real_call_posts_and_extracts_content(
 
         async def __aexit__(self, *a: Any) -> None: ...
 
-        async def post(self, url: str, *, json: Any, headers: Any) -> _Resp:
-            captured["url"] = url
-            captured["headers"] = headers
-            captured["json"] = json
+        async def post(self, *a: Any, **kw: Any) -> _Resp:
             return _Resp()
 
     monkeypatch.setattr(httpx, "AsyncClient", _Client)
-    s = _EvolutionService()
-    llm = s._build_llm_call()
-    assert llm is not None
-    out = await llm([{"role": "user", "content": "hi"}])
-    assert out == "the answer"
-    assert captured["url"] == "http://test.example/api/v1/chat/completions"
-    assert captured["headers"]["Authorization"] == "Bearer test-key"
+    call = _EvolutionService()._build_llm_call()
+    assert call is not None
+    contextual = call.for_context(
+        NodeContext(
+            run_id="run-evolve",
+            dag_id="graph-evolve",
+            node_id="evolve-evaluate-1",
+            node_run_id="node-evaluate-1",
+            attempt_id="attempt-evaluate-1",
+            workspace_id="ws-evolve",
+            project_id="project-evolve",
+        )
+    )
+    assert await contextual([{"role": "user", "content": "hi"}]) == "the answer"
+
+    invocations = list(effects.invocation_store._items.values())
+    assert len(invocations) == 1
+    invocation = invocations[0]
+    assert invocation.run_id == "run-evolve"
+    assert invocation.node_run_id == "node-evaluate-1"
+    assert invocation.attempt_id == "attempt-evaluate-1"
+    assert invocation.binding.binding_id == "evolve-model"
+    binding = await effects.bindings.get("evolve-model")
+    assert binding is not None
+    assert binding.workspace_id == "ws-evolve"
+    assert binding.project_id == "project-evolve"
+    assert invocation.result["choices"][0]["message"]["content"] == "the answer"
+    await owner.aclose()
+
+
+@pytest.mark.asyncio
+async def test_run_one_cycle_shipped_path_records_governed_invocation(  # noqa: C901
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The service cycle, not a test-only provider, creates model evidence."""
+    import httpx
+    import services.evolution_graph as evolution_graph
+    import services.secrets as secrets
+    from services.evolution import _EvolutionService
+
+    import maistro_evolve.cycle as cycle_module
+    import maistro_evolve.harness as harness_module
+    from maistro.container import create_container
+    from maistro.runs.model import RunStatus
+    from maistro.types.config import AgentConfig
+
+    graph_owner = await create_container(
+        AgentConfig(router_api_key="test-router-key", workspace_id="ws-service")
+    )
+    project = await graph_owner.project_scope_store.root_for_workspace("ws-service")
+    effects_owner = await create_container(
+        AgentConfig(
+            router_api_key="test-router-key",
+            workspace_id="ws-service",
+            model_bindings=[
+                {
+                    "binding_id": "service-model",
+                    "project_id": project.project_id,
+                    "provider_name": "model",
+                }
+            ],
+        )
+    )
+    # The production adapter obtains all of these collaborators from the
+    # embedded Container; the test only composes two real containers so the
+    # generated canonical root Project can be named in the declaration.
+    graph_owner.config = effects_owner.config
+    graph_owner.capability_effects = effects_owner.capability_effects
+    effects = graph_owner.capability_effects
+    monkeypatch.setattr(evolution_graph, "_engine_container", lambda: graph_owner)
+
+    class _Response:
+        status_code = 200
+
+        def json(self) -> Any:
+            return {
+                "model": "model-v2",
+                "choices": [{"message": {"content": "service answer"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            }
+
+    class _Client:
+        def __init__(self, *args: Any, **kwargs: Any) -> None: ...
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *args: Any) -> None: ...
+
+        async def post(self, *args: Any, **kwargs: Any) -> _Response:
+            return _Response()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(secrets, "maistro_llm_api_key", lambda _: "test-key")
+    monkeypatch.setattr(secrets, "litellm_api_key", lambda _: "")
+
+    class _Settings:
+        litellm_api_base = "http://test.example/api"
+        chat_default_model = "model"
+
+    import config
+
+    monkeypatch.setattr(config, "get_settings", lambda: _Settings())
+
+    genome = SimpleNamespace(
+        id="service-genome",
+        fitness_score=None,
+        eval_scores={},
+        harness_params={},
+        updated_at="",
+        parent_a_id=None,
+        parent_b_id=None,
+    )
+
+    class _Population:
+        def __init__(self) -> None:
+            self.item = genome
+
+        def get(self, genome_id: str) -> Any:
+            return self.item if genome_id == self.item.id else None
+
+        def list_all(self) -> list[Any]:
+            return [self.item]
+
+        def add(self, value: Any) -> None:
+            self.item = value
+
+        def cull_bottom(self, _pct: float) -> int:
+            return 0
+
+    class _Tournament:
+        def get_avg_elo(self, _genome_id: str) -> float:
+            return 1000.0
+
+    class _Harness:
+        fidelity = "proxy"
+
+        async def evaluate_genome(
+            self, _genome: Any, benchmarks: list[str], llm_call: Any
+        ) -> list[Any]:
+            await llm_call([{"role": "user", "content": "service"}])
+            return [
+                SimpleNamespace(
+                    benchmark=benchmarks[0],
+                    score=0.5,
+                    cost_usd=0.0,
+                    duration_seconds=0.0,
+                    metadata={},
+                )
+            ]
+
+    class _Cycle:
+        def __init__(self, harness: Any, tournament: Any) -> None:
+            self.harness = harness
+            self.tournament = tournament
+            self._island_pop = None
+            self._cycle_count = 0
+
+        @staticmethod
+        def _fold_score(
+            genome: Any, benchmark: str, score: float, _stub: bool, _alpha: float
+        ) -> None:
+            genome.eval_scores[benchmark] = score
+
+        def _compute_all_fitness(self, population: Any) -> None:
+            for item in population.list_all():
+                item.fitness_score = sum(item.eval_scores.values())
+
+        def _breed_island(self, *_args: Any) -> None:
+            return None
+
+        async def _self_improve_top(self, *_args: Any) -> None:
+            return None
+
+    monkeypatch.setattr(cycle_module, "EvolutionCycle", _Cycle)
+    monkeypatch.setattr(harness_module, "EvalHarness", lambda benchmark_fidelity: _Harness())
+
+    service = _EvolutionService()
+    service._population = _Population()
+    service._tournament = _Tournament()
+    run_id = await service._run_one_cycle()
+
+    assert service.last_run_id == run_id
+    run = await graph_owner.run_store.get_run(run_id)
+    assert run is not None
+    assert run.status is RunStatus.COMPLETED
+    invocations = list(effects.invocation_store._items.values())
+    assert len(invocations) == 1
+    invocation = invocations[0]
+    assert invocation.run_id == run_id
+    assert invocation.node_run_id
+    assert invocation.attempt_id
+    assert invocation.binding.binding_id == "service-model"
+    await graph_owner.aclose()
+    await effects_owner.aclose()
 
 
 # --- status -------------------------------------------------------------

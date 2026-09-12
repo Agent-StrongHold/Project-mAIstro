@@ -98,14 +98,17 @@ def _resolve_nodes_with() -> Callable[[str, Any], Any]:
     if container is None:
         return _fallback_node_resolver
     # Read as attributes rather than through getattr(): the Container dataclass
-    # always defines all three, and check-wiring-reads.py (#236) walks attribute
-    # loads, so a getattr("name") read is invisible to it and the fields would
-    # report as wired-but-unread. Naming them here is what makes the gate able
-    # to hold this wiring in place.
+    # always defines these collaborators, and check-wiring-reads.py (#236)
+    # walks attribute loads, so a getattr("name") read is invisible to it and
+    # the fields would report as wired-but-unread. Naming them here is what
+    # makes the gate able to hold this wiring in place.
     return build_node_resolver(
         a2a_delegator=container.a2a_delegator,
         guest_peers=container.guest_peers,
         run_store=container.run_store,
+        effect_context=container.capability_effects,
+        provider_registry=container.provider_registry,
+        llm_router=container.llm_router,
     )
 
 

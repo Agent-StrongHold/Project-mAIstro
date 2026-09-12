@@ -95,6 +95,9 @@ class _StubContainer:
         # `run_store` on purpose: the whole point of the test below is that the
         # two are one line apart and must not be swapped.
         self.graph_run_store = graph_runs if graph_runs is not None else object()
+        self.capability_effects = object()
+        self.provider_registry = object()
+        self.llm_router = object()
 
 
 def _with_container(monkeypatch, container) -> None:
