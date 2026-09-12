@@ -21,6 +21,7 @@ from maistro.runs.model import Attempt, NodeRun, RunStatus
 from maistro.runs.store import RunIntegrityError, RunStore
 
 from .continuation import GraphContinuation, GraphContinuationStore
+from .fair_scan import DEFAULT_MAX_INSPECTED, ScanPage
 from .spine import mirror_lifecycle
 from .stores import answer_record, settle_hitl_record
 from .types import DurableRunRecord
@@ -163,6 +164,62 @@ class CanonicalDurableRunStore:
             and record.resume_at is not None
             and record.resume_at <= now
         ][:limit]
+
+    async def scan_due_page(
+        self,
+        *,
+        now: datetime,
+        limit: int = 100,
+        after: tuple[str, str] | None = None,
+        max_inspected: int = DEFAULT_MAX_INSPECTED,
+    ) -> ScanPage[DurableRunRecord, tuple[str, str]]:
+        """Page the due index, reporting progress apart from what is due.
+
+        ``list_due`` cannot answer a fair scan honestly. It reads a page of
+        due-index ids, assembles them, and drops the ones whose canonical Run
+        has since gone terminal -- so a page of stale ids comes back empty
+        while having moved through the index, and an empty list is also what
+        the end of the index looks like. A scan that reads the two as the same
+        thing resets to the top on every tick and never gets past a stale
+        prefix longer than one page (the starvation #1098/#1127 describe,
+        one layer down from where they describe it).
+
+        This returns both facts. It keeps walking index pages past ids that
+        assemble into Runs no longer due, up to ``max_inspected`` rows, and
+        reports where it got to whether or not anything was eligible.
+        ``exhausted`` is set only when the index itself ran out, which is the
+        one case where restarting from the top is right.
+
+        An id that no longer assembles at all -- its continuation was deleted
+        between the index read and this read -- contributes no position, since
+        there is no row left to page past. The rows after it in the same page
+        do, so this costs position only when such a row is last in the page,
+        and only until the next tick re-reads it.
+        """
+        if limit <= 0 or max_inspected <= 0:
+            return ScanPage(items=[], resume_after=after, inspected=0)
+
+        due: list[DurableRunRecord] = []
+        cursor = after
+        inspected = 0
+        while len(due) < limit and inspected < max_inspected:
+            page_size = min(limit, max_inspected - inspected)
+            run_ids = await self._continuations.list_due_run_ids(
+                now=now, limit=page_size, after=cursor
+            )
+            if not run_ids:
+                return ScanPage(items=due, resume_after=cursor, inspected=inspected, exhausted=True)
+            for run_id in run_ids:
+                inspected += 1
+                record = await self.get(run_id)
+                if record is None or record.resume_at is None:
+                    continue
+                cursor = (record.resume_at.isoformat(), record.run_id)
+                if record.run.status in _RECOVERY_VISIBLE_STATUSES and record.resume_at <= now:
+                    due.append(record)
+                    if len(due) >= limit:
+                        break
+        return ScanPage(items=due, resume_after=cursor, inspected=inspected)
 
     async def list_for_project(
         self,

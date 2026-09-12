@@ -118,7 +118,12 @@ or placeholder-only section.
   ticks instead of never. Hive's recovery runner and HITL expiry route hold
   one per (seam, store). `DurableRunStore` and `GraphContinuationStore`
   (memory, SQLite, PostgreSQL) gained an `after` keyset-cursor parameter on
-  their status/due listings to support this.
+  their status/due listings to support this. A store that filters its own
+  page reports progress and results separately, so a page that yields nothing
+  is no longer mistaken for the end of the index: `CanonicalDurableRunStore`
+  drops due-index rows whose canonical Run has since gone terminal, and a
+  settled prefix longer than one page previously reset the scan to the top on
+  every tick and hid the live Run behind it.
 
 - **A candidate-local failure during Graph recovery no longer aborts the
   whole tick (#1143).** `recover_queued_graph_runs` and

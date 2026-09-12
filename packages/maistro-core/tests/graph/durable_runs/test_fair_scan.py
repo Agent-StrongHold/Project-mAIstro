@@ -12,6 +12,7 @@ import pytest
 from maistro.graph.durable_runs.fair_scan import (
     DEFAULT_MAX_INSPECTED,
     ScanContinuation,
+    ScanPage,
     fair_page_scan,
 )
 
@@ -327,3 +328,131 @@ async def test_a_failure_fetching_a_page_propagates_uncaught() -> None:
         await fair_page_scan(
             fetch_page=fetch_page, cursor_of=lambda item: item, eligible=lambda _item: True, limit=1
         )
+
+
+class TestAPageThatFiltersItsOwnRows:
+    """A fetcher that drops rows reports progress separately from results.
+
+    `CanonicalDurableRunStore.list_due` reads a page of due-index ids and then
+    removes the ones whose canonical Run has gone terminal. A page of stale
+    ids therefore comes back empty while having moved through the index, and
+    an empty list is also what the end of the index looks like. Read as the
+    same thing, the walk resets to the top on every tick and never gets past
+    a stale prefix longer than one page.
+    """
+
+    async def test_an_empty_page_that_moved_does_not_end_the_walk(self) -> None:
+        """The review's repro: 100 stale rows ahead of one live row."""
+        pages: list[tuple[int | None, int]] = []
+
+        async def fetch_page(cursor, page_size):
+            pages.append((cursor, page_size))
+            if cursor is None:
+                # Every id on this page assembled into a terminal Run.
+                return ScanPage(items=[], resume_after=100, inspected=100)
+            return ScanPage(items=[101], resume_after=101, inspected=1)
+
+        scan: ScanContinuation[int] = ScanContinuation()
+        found = await fair_page_scan(
+            fetch_page=fetch_page,
+            cursor_of=lambda item: item,
+            eligible=lambda _item: True,
+            limit=1,
+            continuation=scan,
+        )
+
+        assert found == [101]
+        assert [cursor for cursor, _size in pages] == [None, 100]
+        assert scan.resume_after == 101
+
+    async def test_the_inspection_ceiling_still_counts_dropped_rows(self) -> None:
+        """A dropped row is work done. Counting only yielded rows would let
+        one tick walk an unbounded number of stale rows."""
+        fetched = 0
+
+        async def fetch_page(cursor, page_size):
+            nonlocal fetched
+            fetched += 1
+            start = 0 if cursor is None else cursor
+            return ScanPage(items=[], resume_after=start + page_size, inspected=page_size)
+
+        scan: ScanContinuation[int] = ScanContinuation()
+        assert (
+            await fair_page_scan(
+                fetch_page=fetch_page,
+                cursor_of=lambda item: item,
+                eligible=lambda _item: True,
+                limit=1,
+                page_size=100,
+                max_inspected=250,
+                continuation=scan,
+            )
+            == []
+        )
+
+        assert fetched == 3
+        assert scan.resume_after == 250
+
+    async def test_an_exhausted_page_restarts_from_the_top(self) -> None:
+        """Only the index actually ending means start over next tick."""
+        scan: ScanContinuation[int] = ScanContinuation(resume_after=40)
+
+        async def fetch_page(_cursor, _page_size):
+            return ScanPage(items=[], resume_after=55, inspected=15, exhausted=True)
+
+        assert (
+            await fair_page_scan(
+                fetch_page=fetch_page,
+                cursor_of=lambda item: item,
+                eligible=lambda _item: True,
+                limit=1,
+                continuation=scan,
+            )
+            == []
+        )
+        assert scan.resume_after is None
+
+    async def test_a_page_that_yields_but_cannot_place_itself_still_ends(self) -> None:
+        """A fetcher that yields nothing and reports no position cannot be
+        paged past; ending the walk restarts from the top rather than spinning
+        on the same cursor."""
+        calls = 0
+
+        async def fetch_page(_cursor, _page_size):
+            nonlocal calls
+            calls += 1
+            return ScanPage(items=[], resume_after=None, inspected=3)
+
+        scan: ScanContinuation[int] = ScanContinuation(resume_after=9)
+        assert (
+            await fair_page_scan(
+                fetch_page=fetch_page,
+                cursor_of=lambda item: item,
+                eligible=lambda _item: True,
+                limit=1,
+                continuation=scan,
+            )
+            == []
+        )
+        assert calls == 1
+        assert scan.resume_after is None
+
+    async def test_a_page_position_past_its_last_kept_row_is_taken(self) -> None:
+        """Rows dropped *after* the last one kept are still paged past."""
+        seen: list[int | None] = []
+
+        async def fetch_page(cursor, _page_size):
+            seen.append(cursor)
+            if cursor is None:
+                return ScanPage(items=[3], resume_after=50, inspected=50)
+            return ScanPage(items=[], resume_after=None, inspected=0, exhausted=True)
+
+        scan: ScanContinuation[int] = ScanContinuation()
+        assert await fair_page_scan(
+            fetch_page=fetch_page,
+            cursor_of=lambda item: item,
+            eligible=lambda _item: True,
+            limit=2,
+            continuation=scan,
+        ) == [3]
+        assert seen == [None, 50]

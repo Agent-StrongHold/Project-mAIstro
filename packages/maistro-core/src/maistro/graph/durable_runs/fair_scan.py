@@ -78,6 +78,34 @@ class ScanContinuation(Generic[C]):
 
 
 @dataclass(frozen=True)
+class ScanPage(Generic[T, C]):
+    """One physical page, for a fetcher that filters rows out of its own read.
+
+    Most fetchers hand back exactly the rows the store returned, so a plain
+    list says everything: its last row is the position, and an empty one means
+    the ordering is exhausted. A fetcher that drops rows of its own cannot say
+    that much. ``CanonicalDurableRunStore.list_due`` reads a page of due-index
+    ids and then removes the ones whose canonical Run has since gone terminal,
+    so a page of a hundred stale ids yields nothing at all while having moved a
+    hundred rows through the index. Read as a plain list that is
+    indistinguishable from end-of-index, and a walk that resets to the top on
+    it re-reads the same stale prefix on every tick forever -- the starvation
+    this module exists to remove, reintroduced one layer down.
+
+    So such a fetcher returns this instead: what the page yielded, how far the
+    read actually got (``resume_after``), how many rows it looked at
+    (``inspected``, which may exceed ``len(items)``), and whether it reached
+    the end of the ordering (``exhausted``). Progress and eligibility are then
+    separate facts rather than one ambiguous list.
+    """
+
+    items: list[T]
+    resume_after: C | None = None
+    inspected: int | None = None
+    exhausted: bool = False
+
+
+@dataclass(frozen=True)
 class _Walk(Generic[T, C]):
     items: list[T]
     resume_after: C | None
@@ -85,7 +113,7 @@ class _Walk(Generic[T, C]):
 
 async def fair_page_scan(
     *,
-    fetch_page: Callable[[C | None, int], Awaitable[list[T]]],
+    fetch_page: Callable[[C | None, int], Awaitable[list[T] | ScanPage[T, C]]],
     cursor_of: Callable[[T], C],
     eligible: Callable[[T], bool],
     limit: int,
@@ -141,7 +169,7 @@ async def fair_page_scan(
 
 
 async def _walk(
-    fetch_page: Callable[[C | None, int], Awaitable[list[T]]],
+    fetch_page: Callable[[C | None, int], Awaitable[list[T] | ScanPage[T, C]]],
     cursor_of: Callable[[T], C],
     eligible: Callable[[T], bool],
     *,
@@ -154,12 +182,22 @@ async def _walk(
     cursor = start
     inspected = 0
     while len(found) < limit and inspected < max_inspected:
-        page = await fetch_page(cursor, min(page_size, max_inspected - inspected))
-        if not page:
-            # Walked off the end: the next tick starts from the top, so the
-            # rows before `start` get their turn.
-            return _Walk(found, None)
-        for item in page:
+        page = _as_page(await fetch_page(cursor, min(page_size, max_inspected - inspected)))
+        if not page.items:
+            if page.exhausted or page.resume_after is None:
+                # Walked off the end -- or a filtering fetcher that yielded
+                # nothing and could not say where it got to, which cannot be
+                # distinguished from the end and must not spin on the same
+                # cursor. Either way the next tick starts from the top, so the
+                # rows before `start` get their turn.
+                return _Walk(found, None)
+            # Yielded nothing but moved: a filtering fetcher paged over rows
+            # it dropped. That is progress, and resetting to the top here is
+            # exactly how a stale prefix starves the live work behind it.
+            inspected += max(1, page.inspected if page.inspected is not None else 0)
+            cursor = page.resume_after
+            continue
+        for item in page.items:
             inspected += 1
             # Advanced per row, not per page: a stop at `limit` mid-page must
             # resume after the last row *inspected*, or the rest of that page
@@ -169,7 +207,33 @@ async def _walk(
                 found.append(item)
                 if len(found) >= limit:
                     return _Walk(found, cursor)
+        # The whole page was consumed, so the fetcher's own position is at
+        # least as far along as its last yielded row and may be further, past
+        # rows it dropped after the last one it kept.
+        if page.resume_after is not None:
+            cursor = page.resume_after
+        if page.inspected is not None and page.inspected > len(page.items):
+            inspected += page.inspected - len(page.items)
+        if page.exhausted:
+            return _Walk(found, None)
     return _Walk(found, cursor)
 
 
-__all__ = ["DEFAULT_MAX_INSPECTED", "DEFAULT_PAGE_SIZE", "ScanContinuation", "fair_page_scan"]
+def _as_page(result: list[T] | ScanPage[T, C]) -> ScanPage[T, C]:
+    """Read a fetcher's return as a page, whichever shape it used.
+
+    A plain list is the unambiguous case: it was not filtered, so its rows are
+    its progress and an empty one means the ordering is exhausted.
+    """
+    if isinstance(result, ScanPage):
+        return result
+    return ScanPage(items=result, exhausted=not result)
+
+
+__all__ = [
+    "DEFAULT_MAX_INSPECTED",
+    "DEFAULT_PAGE_SIZE",
+    "ScanContinuation",
+    "ScanPage",
+    "fair_page_scan",
+]

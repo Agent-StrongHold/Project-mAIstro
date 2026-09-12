@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
@@ -22,7 +22,7 @@ from maistro.runtime import ExecutionRuntime
 
 from . import executor as traversal
 from .attempt_executor import LiveAttemptOwned, NodeResolver, resume_durable_graph
-from .fair_scan import ScanContinuation, fair_page_scan
+from .fair_scan import DEFAULT_MAX_INSPECTED, ScanContinuation, ScanPage, fair_page_scan
 from .launch import launch_state_from_run
 from .protocol import DurableRunStore
 from .types import DurableRunRecord
@@ -41,6 +41,50 @@ class PersistenceReconciler(Protocol):
 async def _reconcile_if_supported(store: DurableRunStore, *, limit: int) -> None:
     if isinstance(store, PersistenceReconciler):
         await store.reconcile_persistence(limit=limit)
+
+
+@runtime_checkable
+class DuePageScanner(Protocol):
+    """A store that can page its due index without conflating two answers."""
+
+    async def scan_due_page(
+        self,
+        *,
+        now: datetime,
+        limit: int = 100,
+        after: tuple[str, str] | None = None,
+        max_inspected: int = DEFAULT_MAX_INSPECTED,
+    ) -> ScanPage[DurableRunRecord, tuple[str, str]]: ...
+
+
+def _due_page_fetcher(
+    store: DurableRunStore, moment: datetime
+) -> Callable[
+    [tuple[str, str] | None, int],
+    Awaitable[list[DurableRunRecord] | ScanPage[DurableRunRecord, tuple[str, str]]],
+]:
+    """Fetch due candidates the most honest way this store supports.
+
+    A store that filters its own due page -- the canonical one drops ids whose
+    Run has since gone terminal -- returns an empty list both when nothing on
+    the page is due and when the index has ended. Where the store can tell the
+    two apart, take that answer, so a stale prefix is paged past rather than
+    re-read from the top on every tick.
+    """
+    if isinstance(store, DuePageScanner):
+        scanner = store
+
+        async def scan(
+            cursor: tuple[str, str] | None, page_size: int
+        ) -> ScanPage[DurableRunRecord, tuple[str, str]]:
+            return await scanner.scan_due_page(now=moment, limit=page_size, after=cursor)
+
+        return scan
+
+    async def listing(cursor: tuple[str, str] | None, page_size: int) -> list[DurableRunRecord]:
+        return await store.list_due(now=moment, limit=page_size, after=cursor)
+
+    return listing
 
 
 _RESUME_ELIGIBLE_STATUSES = frozenset({RunStatus.WAITING, RunStatus.RUNNING})
@@ -132,9 +176,7 @@ async def resume_due_graph_runs(
         return eligible is None or eligible(candidate.run)
 
     candidates = await fair_page_scan(
-        fetch_page=lambda cursor, page_size: store.list_due(
-            now=moment, limit=page_size, after=cursor
-        ),
+        fetch_page=_due_page_fetcher(store, moment),
         cursor_of=_due_cursor_key,
         eligible=_combined_eligible,
         limit=limit,
