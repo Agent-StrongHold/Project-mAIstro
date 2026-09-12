@@ -67,12 +67,14 @@ WorkerStatus = {expression} | Literal["cancelled"]
 
 
 def test_parameter_can_be_rebound_by_a_local_import(gate) -> None:
-    source = IMPORTS + """
+    source = f"""{IMPORTS}
 def make(Shared):
     from pkg.base import RunStatus as Shared
     WorkerStatus = Shared | Literal["cancelled"]
 """
-    assert gate.work_state_literals(source, "pkg.worker") == {"pkg.worker::make.WorkerStatus": EVIDENCE}
+    assert gate.work_state_literals(source, "pkg.worker") == {
+        "pkg.worker::make.WorkerStatus": EVIDENCE,
+    }
 
 
 def test_relative_typing_module_is_not_the_standard_library(gate) -> None:
@@ -87,7 +89,7 @@ WorkerStatus = RunStatus | Literal["cancelled"]
 
 
 def test_an_assignment_after_an_import_still_masks_it(gate) -> None:
-    source = IMPORTS + """
+    source = f"""{IMPORTS}
 Shared = None
 WorkerStatus = Shared | Literal["cancelled"]
 """
