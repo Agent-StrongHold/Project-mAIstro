@@ -332,6 +332,12 @@ class RunStore(Protocol):
 
     async def get_run(self, run_id: str) -> Run | None: ...
 
+    async def find_delegation_run(self, delegation_key: str) -> Run | None: ...
+
+    async def attach_delegation_receipt(
+        self, run_id: str, task_id: str, *, target_agent: str | None = None
+    ) -> Run: ...
+
     async def transition_run(
         self,
         run_id: str,
@@ -405,7 +411,7 @@ class RunStore(Protocol):
 
     async def repair_attempt_result(self, attempt_id: str, *, result: object) -> Attempt: ...
 
-    async def delete_run(self, run_id: str) -> bool: ...
+    async def delete_run(self, run_id: str, *, force: bool = False) -> bool: ...
 
 
 #: Retention bound for the in-memory store. Not a tuning knob so much as an
@@ -768,6 +774,27 @@ class InMemoryRunStore:
     async def get_run(self, run_id: str) -> Run | None:
         run = self._runs.get(run_id)
         return run.model_copy(deep=True) if run is not None else None
+
+    async def find_delegation_run(self, delegation_key: str) -> Run | None:
+        for run in self._runs.values():
+            if run.provenance.get("delegation_key") == delegation_key:
+                return run.model_copy(deep=True)
+        return None
+
+    async def attach_delegation_receipt(
+        self, run_id: str, task_id: str, *, target_agent: str | None = None
+    ) -> Run:
+        run = self._require_run(run_id)
+        existing = str(run.provenance.get("a2a_task_id") or "")
+        if existing and existing != task_id:
+            raise RunIntegrityError("delegation receipt conflicts with canonical receipt")
+        provenance = dict(run.provenance)
+        provenance["a2a_task_id"] = task_id
+        if target_agent:
+            provenance["target_agent"] = target_agent
+        updated = run.model_copy(update={"provenance": provenance})
+        self._runs[run_id] = updated
+        return updated.model_copy(deep=True)
 
     async def transition_run(
         self,
