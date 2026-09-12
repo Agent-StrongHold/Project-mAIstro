@@ -14,7 +14,10 @@ blocks: []
 blocked-by: []
 contracts:
   - behavioral
-tests: []
+tests:
+  - packages/maistro-core/tests/test_container_security_wiring.py
+ac-modules:
+  AC-1: maistro.security.sentinel.policy
 layer: Governance
 owners:
   - '@BlakeMatthews-dev'
@@ -118,6 +121,12 @@ so adopting this ADR later requires no further config migration. The `dangerous_
 preset added there is the natural seed for a future default table: it maps the already-reviewed
 `DANGEROUS_TOOL_NAMES` set to `admin`, and can be exercised in shadow mode under precondition 4
 before anything is enforced.
+
+## Acceptance criteria
+
+- [x] **AC-1** The production Sentinel boundary denies permission-table misses,
+      and a live capability disable is reflected in the next authorization
+      decision without a restart.
 
 ## Implementation reconciliation (2026-09-09, issue #1165)
 

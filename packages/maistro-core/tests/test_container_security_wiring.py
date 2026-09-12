@@ -109,6 +109,7 @@ async def test_wired_sentinel_denies_unlisted_tool() -> None:
     assert verdict.violations[0].rule == "permission_denied"
 
 
+@pytest.mark.ac("ADR-072726-0d6b/AC-1")
 @pytest.mark.contract("behavioral")
 @pytest.mark.scope("integration")
 async def test_wired_sentinel_with_default_config_denies_everything() -> None:
