@@ -88,6 +88,15 @@ or placeholder-only section.
 
 ### Fixed
 
+- **A scheduled Run whose resumed Attempt died is resumed again by the
+  ordinary tick (#1112).** `recover_abandoned_attempts` reclaims a crashed
+  resume's Attempt as CANCELLED and parks the Run WAITING, but
+  `resumable_pause` read only the newest Attempt, so every later
+  `resume_parked_runs` tick skipped the Run and the schedule stayed parked
+  forever. The pause is now read past Attempts the recovery sweep reclaimed
+  (recognised by the sweep's own error text via `is_reclaimed_attempt`);
+  FAILED, TIMED_OUT, and requested-CANCELLED rows still park the Run for
+  whoever owns retries.
 - **Project membership is one canonical row per `(project, principal)`, and
   is now explicitly revocable (#1148).** `ProjectScopeStore.set_membership`
   used to mint a fresh `membership_id` on every call, so a re-grant, role
