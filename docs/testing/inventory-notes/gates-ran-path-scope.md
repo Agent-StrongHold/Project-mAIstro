@@ -1,7 +1,6 @@
 ---
 inventory-delta:
-  tests/test_check_gates_ran.py: +3
-  tests/test_gates_ran_publisher_contract.py: +1
+  tests/: +4
 ---
 
 # Gates-ran path-scoped execution evidence
