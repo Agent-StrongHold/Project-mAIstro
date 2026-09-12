@@ -120,6 +120,60 @@ Targets ramp from current baseline in monthly steps. Each repo's ROADMAP names i
 
 `stronghold`'s existing `Spec` type and `mutmut` configuration are the implementation reference. The engine adopts them; the three products inherit via Copier templates (ADR-033).
 
+### 7. Static lifecycle-discovery contract (#1136)
+
+The lifecycle gate is a behavioral architecture contract: changing a work-state
+vocabulary from an Enum to a Literal must not make a competing execution owner
+invisible. `scripts/check-execution-lifecycles.py` remains the single detector and
+`quality/execution-lifecycles.json` remains its classification authority; this
+extension introduces neither a second gate nor a new execution owner.
+
+The supported static family includes Enum members, status-shaped Literal aliases
+and class fields, local helper aliases, PEP 604 unions, PEP 695 declarations, and
+Optional/Union/Annotated type operands. Explicitly quoted field annotations and
+quoted type operands are parsed as expressions, never evaluated. Literal strings
+and Annotated metadata remain data. Enum and Literal identities both retain their
+module and enclosing class/function scopes so distinct owners cannot share a
+ledger entry accidentally. Top-level Enum identities remain stable.
+
+The bounded signal is the existing known-work-state vocabulary, normally requiring
+three distinct states and a status-shaped alias/field name. An unresolved imported
+type extended with a known work state is conservatively visible with symbolic
+`<imported-type:...>` evidence. That marker is uncertainty about a type, not an
+invented state. Pure imported-type reuse does not create another lifecycle. Local
+assignments, imports, definitions and parameters must not leak a shadowed helper's
+evidence into another lexical scope.
+
+The shared dispositions are CANONICAL (the execution spine), DOMAIN (a different
+domain lifecycle), PROJECTION (a non-authoritative view), RECEIPT (an admission
+record), and CONVERGE (execution debt naming its retirement owner). PROJECTION and
+RECEIPT describe why an observed vocabulary is not a new authority; neither is an
+exception to discovery or prior authorization. Newly exposed RSI and delegation
+vocabularies remain CONVERGE debt rather than being promoted to CANONICAL.
+
+The combined scanner/ledger measurement is version `3`, distinct from the prior
+enum-only version `1`. Expansion requires source remeasurement, not comparison of
+incomparable counts. The same detector runs against trusted-base source to identify
+pre-existing debt. A candidate-only identity still needs an already-landed grant;
+adding a candidate ledger entry cannot authorize it. The ratchet provenance and
+authorization evaluator are not relaxed by the syntax expansion.
+
+This is finite, source-only discovery, not Python execution or a full type checker.
+Dynamic type construction, wildcard-import resolution, free-text status writes and
+database-column lifecycles remain separate audit work. A green syntax gate is not
+proof that every reachable product path uses the canonical execution spine.
+
+Regression evidence is in
+[`test_check_execution_lifecycles.py`](../../tests/test_check_execution_lifecycles.py),
+[`test_check_execution_lifecycle_review.py`](../../tests/test_check_execution_lifecycle_review.py),
+[`test_check_execution_lifecycles_imported.py`](../../tests/test_check_execution_lifecycles_imported.py),
+[`test_check_execution_lifecycle_bindings.py`](../../tests/test_check_execution_lifecycle_bindings.py),
+and
+[`test_check_execution_lifecycle_final_review.py`](../../tests/test_check_execution_lifecycle_final_review.py).
+These cover detection, bounded negative controls, lexical identity, metadata
+exclusion and rejection of candidate self-authorization. Repository CI must still
+run the full source census and required checks before the implementation is merged.
+
 ## Consequences
 
 - Specs with behavioral AC must commit to pre/post/invariant before being marked `Accepted`. This is a higher bar than the current free-form checklist.

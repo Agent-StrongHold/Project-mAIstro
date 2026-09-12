@@ -132,10 +132,11 @@ def _typing_names(tree: ast.AST, inherited: dict[str, str]) -> dict[str, str]:
     """Resolve supported typing spellings without importing production code."""
     names = {**{name: name for name in _TYPING_FORMS}, **inherited}
     for node in _scope_nodes(tree):
-        if not isinstance(node, ast.ImportFrom) or node.module not in {
-            "typing",
-            "typing_extensions",
-        }:
+        if (
+            not isinstance(node, ast.ImportFrom)
+            or node.level != 0
+            or node.module not in {"typing", "typing_extensions"}
+        ):
             continue
         for imported in node.names:
             if imported.name in _TYPING_FORMS:
@@ -155,7 +156,7 @@ def _imported_type_values(tree: ast.AST) -> dict[str, set[str]]:
     found: dict[str, set[str]] = {}
     for node in _scope_nodes(tree):
         if isinstance(node, ast.ImportFrom):
-            if node.module in {"typing", "typing_extensions"}:
+            if node.level == 0 and node.module in {"typing", "typing_extensions"}:
                 continue
             origin = "." * node.level + (node.module or "")
             for item in node.names:
@@ -187,6 +188,23 @@ def _work_vocabulary(values: set[str]) -> set[str]:
     return set()
 
 
+def _type_expression(node: ast.expr) -> ast.expr:
+    """Parse explicitly postponed annotations without evaluating production code.
+
+    Only type-bearing positions call this helper. Literal values and Annotated
+    metadata are data, not expressions. The small bound also terminates nested
+    quotes and self-referential string spellings without executing any of them.
+    """
+    for _ in range(8):
+        if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+            return node
+        try:
+            node = ast.parse(node.value, mode="eval").body
+        except (SyntaxError, ValueError):
+            break
+    return ast.Constant(value=None)
+
+
 def _typing_arguments(
     node: ast.Subscript, typing_names: dict[str, str]
 ) -> tuple[str | None, list[ast.expr]]:
@@ -195,7 +213,11 @@ def _typing_arguments(
     if form not in _TYPING_FORMS:
         return None, []
     arguments = node.slice.elts if isinstance(node.slice, ast.Tuple) else [node.slice]
-    return form, arguments[:1] if form == "Annotated" else arguments
+    if form == "Literal":
+        return form, arguments
+    if form == "Annotated":
+        arguments = arguments[:1]
+    return form, [_type_expression(argument) for argument in arguments]
 
 
 def _literal_values(
@@ -262,35 +284,62 @@ def _normalized_work_states(values: set[str]) -> set[str]:
     }
 
 
-def _enum_vocabularies(tree: ast.AST, module: str) -> dict[str, set[str]]:
+def _enum_member_values(node: ast.ClassDef) -> set[str]:
+    """Collect member names and literal string values without executing an Enum."""
+    values: set[str] = set()
+    for statement in node.body:
+        if isinstance(statement, ast.Assign):
+            targets = statement.targets
+            value = statement.value
+        elif isinstance(statement, ast.AnnAssign):
+            targets = (statement.target,)
+            value = statement.value
+        else:
+            continue
+        for target in targets:
+            if not isinstance(target, ast.Name):
+                continue
+            values.add(target.id)
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                values.add(value.value)
+    return values
+
+
+def _enum_vocabularies(tree: ast.AST, module: str, prefix: str = "") -> dict[str, set[str]]:
+    """Preserve lexical identity for Enums just as for Literal vocabularies."""
     found: dict[str, set[str]] = {}
-    for node in ast.walk(tree):
+    for node in _scope_nodes(tree):
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            found.update(_enum_vocabularies(node, module, f"{prefix}{node.name}."))
         if not isinstance(node, ast.ClassDef) or not _is_enum(node):
             continue
-        values: set[str] = set()
-        for statement in node.body:
-            if isinstance(statement, ast.Assign):
-                targets = statement.targets
-                value = statement.value
-            elif isinstance(statement, ast.AnnAssign):
-                targets = (statement.target,)
-                value = statement.value
-            else:
-                continue
-            for target in targets:
-                if not isinstance(target, ast.Name):
-                    continue
-                values.add(target.id)
-                if (
-                    value is not None
-                    and isinstance(value, ast.Constant)
-                    and isinstance(value.value, str)
-                ):
-                    values.add(value.value)
-        states = _normalized_work_states(values)
+        states = _normalized_work_states(_enum_member_values(node))
         if len(states) >= _MIN_WORK_STATES:
-            found[f"{module}::{node.name}"] = states
+            found[f"{module}::{prefix}{node.name}"] = states
     return found
+
+
+def _rebind_non_alias(node: ast.AST, aliases: dict[str, ast.expr]) -> bool:
+    """Respect bindings that replace an imported or locally assigned helper.
+
+    A later import replaces an earlier assignment. Definitions and parameters
+    instead mask inherited import evidence without becoming literal aliases.
+    Scope boundaries are still enforced by the caller's lexical walk.
+    """
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        for item in node.names:
+            name = item.asname or item.name
+            if isinstance(node, ast.Import):
+                name = item.asname or item.name.split(".")[0]
+            aliases.pop(name, None)
+        return True
+    if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+        aliases[node.name] = ast.Constant(value=None)
+        return True
+    if isinstance(node, ast.arg):
+        aliases[node.arg] = ast.Constant(value=None)
+        return True
+    return False
 
 
 def _literal_aliases(tree: ast.AST) -> dict[str, ast.expr]:
@@ -302,6 +351,8 @@ def _literal_aliases(tree: ast.AST) -> dict[str, ast.expr]:
     """
     aliases: dict[str, ast.expr] = {}
     for node in _scope_nodes(tree):
+        if _rebind_non_alias(node, aliases):
+            continue
         if isinstance(node, ast.Assign):
             targets = node.targets
             value = node.value
@@ -353,14 +404,13 @@ def _literal_field_vocabularies(
             continue
         if not _looks_like_status_alias(node.target.id):
             continue
-        states = _work_vocabulary(
-            _literal_values(node.annotation, aliases, typing_names, inherited)
-        )
+        annotation = _type_expression(node.annotation)
+        states = _work_vocabulary(_literal_values(annotation, aliases, typing_names, inherited))
         if not states:
             continue
         # Reusing a named vocabulary adds no authority. Extending it with new
         # states does, so a union containing an alias must not hide the field.
-        if _uses_named_vocabulary(node.annotation, states, named, typing_names):
+        if _uses_named_vocabulary(annotation, states, named, typing_names):
             continue
         found[f"{identity_prefix}{node.target.id}"] = states
     return found
