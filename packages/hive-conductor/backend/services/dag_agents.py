@@ -149,6 +149,11 @@ def get_registry() -> DagRegistry:
     return _registry
 
 
+def get_node_resolver() -> Callable[[str, Any], Any]:
+    """Return the production resolver for a registered Graph execution."""
+    return _resolve_nodes_with()
+
+
 async def run_registered_dag(
     dag_id: str,
     *,
@@ -156,6 +161,7 @@ async def run_registered_dag(
     project_id: str,
     user_id: str | None = None,
     configure: Callable[[Graph], None] | None = None,
+    node_resolver: Callable[[str, Any], Any] | None = None,
     parent_run_id: str | None = None,
     parent_node_run_id: str | None = None,
     provenance: Mapping[str, Any] | None = None,
@@ -166,7 +172,10 @@ async def run_registered_dag(
     is not registered. ``configure`` runs against the *instantiated* Graph —
     after provenance is stamped — which is where per-request runtime inputs
     such as credentials belong; the registered template stays secret-free.
-    A caller that is itself executing canonical work passes its Run/NodeRun
+    ``node_resolver`` is an optional product node implementation seam; Run
+    admission and graph traversal remain owned here and the default resolver
+    is used when it is omitted. A caller that is itself executing canonical
+    work passes its Run/NodeRun
     identity via ``parent_run_id``/``parent_node_run_id`` so the launched
     work is a child Run rather than a disconnected sibling. Returns the
     instantiated Graph (callers key node lookups on its stable node names)
@@ -205,7 +214,7 @@ async def run_registered_dag(
     record = await run_durable_graph(
         graph,
         store=get_run_store(),
-        node_resolver=_resolve_nodes_with(),
+        node_resolver=node_resolver or _resolve_nodes_with(),
         actor_principal_id=user_id,
         run_id=admitted_run_id,
         run_store=run_store,

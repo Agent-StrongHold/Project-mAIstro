@@ -54,6 +54,8 @@ MAX_RESULT_CHARS = 2000
 #: that run's events under their own cap.
 MAX_RESULT_CHARS_PER_RUN = 50 * MAX_RESULT_CHARS
 
+_NON_TERMINAL_STATUSES = frozenset({"created", "queued", "running", "waiting", "paused"})
+
 
 def _bounded(result: dict[str, Any] | None) -> dict[str, Any] | None:
     """A run result with its node responses truncated to `MAX_RESULT_CHARS`.
@@ -121,11 +123,9 @@ class DagRun:
     result: dict[str, Any] | None = None
     #: The canonical `Run` this execution is, when the caller has one.
     #:
-    #: `POST /v1/dags/{id}/run` does not: it calls `execute_dag`, which mints
-    #: no canonical Run at all, so the id here stays empty on that path. That
-    #: convergence is #53's, not this change's -- the field exists so the run
-    #: record has somewhere to carry the identity the moment the execution
-    #: path produces one, rather than needing a schema change then.
+    #: Canonical producers copy the admitted Run id here. The field remains
+    #: optional for older product projections and for bookkeeping rows that
+    #: were opened before an execution was admitted.
     canonical_run_id: str = ""
 
     @classmethod
@@ -148,9 +148,10 @@ class DagRun:
     def to_record(self) -> dict[str, Any]:
         """The stored form: everything `from_record` needs, and nothing else.
 
-        `result` is stored as a summary, not verbatim. `execute_dag` returns
-        every node's full response, and the route already truncates the copy it
-        puts in each event to `MAX_RESULT_CHARS` -- so persisting the raw result
+        `result` is stored as a summary, not verbatim. Canonical graph
+        execution can return every node's full response, and the route already
+        truncates the copy it puts in each event to `MAX_RESULT_CHARS` -- so
+        persisting the raw result
         would grow the SQLite state without bound and retain more output than
         the history API ever exposes (Codex, #697).
         """
@@ -301,10 +302,8 @@ class DagRunStore:
         """Begin a new run (correlation key). Returns the DagRun object.
 
         `workspace_id`/`project_id` carry the canonical scope the execution
-        was admitted into, resolved by the caller from the same authority
-        `execute_dag` uses (`resolve_execution_scope`) -- the projection never
-        derives scope itself, it only records what the canonical Run already
-        carries (#1174).
+        was admitted into. The projection never derives scope or lifecycle; it
+        only records what the canonical Run producer already carries (#1174).
 
         Evicts the oldest run from `_runs` dict + `_subscribers` map when the
         ring buffer is full. The deque itself silently drops the oldest entry
@@ -382,7 +381,11 @@ class DagRunStore:
         """
         run = self._runs.get(run_id)
         if run and run.finished_at is None:
-            run.finished_at = time.time()
+            # A canonical wait/pause is still live work. Keep the product
+            # projection's status and result current, but do not claim it
+            # finished; a later resume can terminalize the same row.
+            if status not in _NON_TERMINAL_STATUSES:
+                run.finished_at = time.time()
             run.status = status
             if result is not None:
                 run.result = result
