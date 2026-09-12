@@ -106,6 +106,22 @@ or placeholder-only section.
 
 ### Fixed
 
+- **A chat turn whose canonical record fails *after* the model answered is no
+  longer asked again (#1108).** `Container._execute_chat_turn` fell
+  back to a fresh `dispatch()` on any `RunIntegrityError` without knowing
+  which side of the model call it came from, so a store failure while
+  persisting the completed Attempt or reconciling its NodeRun re-ran the
+  turn — a second model charge, a second set of agent side effects, a second
+  assistant message — while the first answer's evidence sat on disk.
+  `ChatAttemptExecutor` now raises `ChatDispatchUnrecorded`, carrying the
+  answer it already obtained, for any integrity failure past the dispatch
+  boundary; the container hands that answer back and leaves the durable
+  Attempt/NodeRun to the existing lease-reclaim and reconciliation paths. A
+  dispatch that itself failed and then could not be recorded arrives as its
+  own exception rather than the recording error. The pre-dispatch fallback —
+  answering a turn whose spine could not be written before the model was
+  called — is unchanged; #1108's other half (refusing a turn outright when no
+  canonical spine is wired) is not addressed here.
 - **Project membership is one canonical row per `(project, principal)`, and
   is now explicitly revocable (#1148).** `ProjectScopeStore.set_membership`
   used to mint a fresh `membership_id` on every call, so a re-grant, role
