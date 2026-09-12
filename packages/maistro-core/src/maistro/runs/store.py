@@ -332,6 +332,10 @@ class RunStore(Protocol):
 
     async def get_run(self, run_id: str) -> Run | None: ...
 
+    async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
+        """Resolve the canonical Run claiming one scheduled occurrence."""
+        ...
+
     async def transition_run(
         self,
         run_id: str,
@@ -768,6 +772,11 @@ class InMemoryRunStore:
     async def get_run(self, run_id: str) -> Run | None:
         run = self._runs.get(run_id)
         return run.model_copy(deep=True) if run is not None else None
+
+    async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
+        """Resolve an occurrence through its claim index, never by scanning Runs."""
+        run_id = self._occurrences.get((schedule_id, scheduled_for))
+        return await self.get_run(run_id) if run_id is not None else None
 
     async def transition_run(
         self,

@@ -464,6 +464,18 @@ class PgRunStore:
         )
         return Run.model_validate(payload) if payload is not None else None
 
+    async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
+        """Resolve the unique occurrence claim through its expression index."""
+        payload = await self._payload(
+            """SELECT run_id, payload, archive_key FROM canonical_runs
+               WHERE (payload -> 'provenance' ->> 'schedule_id') = $1
+                 AND (payload -> 'provenance' ->> 'scheduled_for') = $2
+               LIMIT 1""",
+            schedule_id,
+            scheduled_for,
+        )
+        return Run.model_validate(payload) if payload is not None else None
+
     async def list_by_status(
         self,
         status: RunStatus,
