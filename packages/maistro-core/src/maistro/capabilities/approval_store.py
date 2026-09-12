@@ -108,6 +108,8 @@ class DurableApproval(BaseModel):
             legacy_payload = self.request.params.get("request", self.request.params)
             self.request_digest = approval_request_digest(legacy_payload)
         terminal = self.status in {ApprovalStatus.APPROVED, ApprovalStatus.DENIED}
+        if terminal and not self.actor.strip():
+            raise ValueError("resolved approval requires a non-empty actor")
         if terminal and self.resolved_at is None:
             raise ValueError("resolved approval requires resolved_at")
         if not terminal and self.resolved_at is not None:
@@ -145,6 +147,12 @@ class ApprovalStore(Protocol):
         # threads the actor explicitly.
         actor: str,
     ) -> DurableApproval: ...
+
+
+def _require_actor(actor: str) -> None:
+    """Reject decisions that cannot be attributed to a verified principal."""
+    if not isinstance(actor, str) or not actor.strip():
+        raise ValueError("actor must be a non-empty verified principal")
 
 
 class InMemoryApprovalStore:
@@ -191,6 +199,7 @@ class InMemoryApprovalStore:
         # ApprovalStore protocol.
         actor: str,
     ) -> DurableApproval:
+        _require_actor(actor)
         async with self._lock:
             existing = self._items.get(request_id)
             if existing is None:
@@ -307,6 +316,7 @@ class SqliteApprovalStore:
         # ApprovalStore protocol.
         actor: str,
     ) -> DurableApproval:
+        _require_actor(actor)
         async with self._lock:
             await self._conn.execute("BEGIN IMMEDIATE")
             try:
@@ -339,11 +349,112 @@ class SqliteApprovalStore:
                 raise
 
 
+class PgApprovalStore:
+    """PostgreSQL approval persistence with database-enforced effect identity."""
+
+    def __init__(self, pool: Any) -> None:
+        self._pool = pool
+
+    async def ensure_schema(self) -> None:
+        from maistro.capabilities.durable_schema import ensure_capability_schema
+
+        await ensure_capability_schema(self._pool)
+
+    async def create(self, approval: DurableApproval) -> DurableApproval:
+        row = await self._pool.fetchrow(
+            """INSERT INTO capability_approvals
+               (request_id, run_id, node_run_id, binding_id, effect_key, payload)
+               VALUES ($1,$2,$3,$4,$5,$6::jsonb)
+               ON CONFLICT (run_id, node_run_id, binding_id, effect_key) DO NOTHING
+               RETURNING payload""",
+            approval.request.request_id,
+            approval.run_id,
+            approval.node_run_id,
+            approval.binding_id,
+            approval.effect_key,
+            approval.model_dump_json(),
+        )
+        if row is not None:
+            return approval.model_copy(deep=True)
+        existing = await self.find_effect(
+            run_id=approval.run_id,
+            node_run_id=approval.node_run_id,
+            binding_id=approval.binding_id,
+            effect_key=approval.effect_key,
+        )
+        if existing is not None:
+            return existing
+        raise ValueError(f"approval request {approval.request.request_id!r} already exists")
+
+    async def get(self, request_id: str) -> DurableApproval | None:
+        row = await self._pool.fetchrow(
+            "SELECT payload FROM capability_approvals WHERE request_id=$1", request_id
+        )
+        return _approval_from_payload(row["payload"]) if row is not None else None
+
+    async def find_effect(
+        self,
+        *,
+        run_id: str,
+        node_run_id: str,
+        binding_id: str,
+        effect_key: str,
+    ) -> DurableApproval | None:
+        row = await self._pool.fetchrow(
+            """SELECT payload FROM capability_approvals
+               WHERE run_id=$1 AND node_run_id=$2 AND binding_id=$3 AND effect_key=$4""",
+            run_id,
+            node_run_id,
+            binding_id,
+            effect_key,
+        )
+        return _approval_from_payload(row["payload"]) if row is not None else None
+
+    async def resolve(
+        self,
+        request_id: str,
+        *,
+        approved: bool,
+        actor: str,
+    ) -> DurableApproval:
+        _require_actor(actor)
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT payload FROM capability_approvals WHERE request_id=$1 FOR UPDATE",
+                request_id,
+            )
+            if row is None:
+                raise KeyError(f"approval request {request_id!r} does not exist")
+            existing = _approval_from_payload(row["payload"])
+            if existing.status is not ApprovalStatus.PENDING:
+                return existing
+            resolved = existing.model_copy(
+                update={
+                    "status": ApprovalStatus.APPROVED if approved else ApprovalStatus.DENIED,
+                    "actor": actor,
+                    "resolved_at": datetime.now(UTC),
+                }
+            )
+            await conn.execute(
+                "UPDATE capability_approvals SET payload=$1::jsonb WHERE request_id=$2",
+                resolved.model_dump_json(),
+                request_id,
+            )
+            return resolved
+
+
+def _approval_from_payload(payload: Any) -> DurableApproval:
+    if isinstance(payload, str):
+        return DurableApproval.model_validate_json(payload)
+    return DurableApproval.model_validate(json.loads(json.dumps(payload)))
+
+
 __all__ = [
     "ApprovalStatus",
     "ApprovalStore",
     "DurableApproval",
     "InMemoryApprovalStore",
+    "PgApprovalStore",
     "SqliteApprovalStore",
     "approval_request_digest",
     "redact_approval_value",

@@ -24,7 +24,9 @@ from maistro.agents.intents import IntentRegistry, build_intent_registry
 from maistro.archive.wiring import build_archive_store
 from maistro.capabilities.effect_context import (
     CapabilityEffectContext,
-    new_in_memory_effect_context,
+    build_effect_context,
+    clear_default_effect_context,
+    configure_default_effect_context,
 )
 from maistro.classifier.engine import ClassifierEngine
 from maistro.graph.durable_runs.canonical_store import CanonicalDurableRunStore
@@ -399,6 +401,7 @@ class Container:
             self.db_pool = None
             self.session_conn = None
             self.holds_db_pool = False
+        clear_default_effect_context(self.capability_effects)
 
     async def route_request(
         self,
@@ -1453,17 +1456,6 @@ async def create_container(
         durable_event_log = InMemoryEventLog()
         trigger_store = InMemoryTriggerStore()
         invocation_store = InMemoryInvocationStore()
-        if pg_pool is not None:
-            # The durable-event stores (ADR-086) have a SQLite implementation
-            # and no PostgreSQL one, so a PostgreSQL deployment gets in-memory
-            # here even though it configured a durable database. Saying so is
-            # the whole point of #122: the operator learns it now rather than
-            # after a restart drops the event log, triggers and invocations.
-            logger.warning(
-                "Durable events are in-memory despite a PostgreSQL backend: the event log, "
-                "triggers and invocations are lost on restart. No PostgreSQL implementation "
-                "exists yet (#135)."
-            )
     handler_caller = HTTPHandlerCaller()
 
     event_bus = EventBus()
@@ -1518,9 +1510,15 @@ async def create_container(
     # --- Hierarchical orchestration (ADR-101) ------------------------------
     harness_registry, hierarchy = _wire_hierarchy(agents, skill_registry)
 
+    # --- Canonical governed capability effects (#55 / #1133) --------------
+    capability_effects = await _wire_capability_effects(
+        pg_pool=pg_pool,
+        db_pool=db_pool,
+    )
+    configure_default_effect_context(capability_effects)
+
     # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) -----------
     wired_harness_adapters = _wire_harness_adapters(harness_adapters)
-    capability_effects = new_in_memory_effect_context()
     spawn_harness_node = AgentSpawnHarnessNode(
         adapters=wired_harness_adapters, effect_context=capability_effects
     )
@@ -1838,6 +1836,11 @@ _REQUIRED_PG_TABLES: Final = (
     # `postgresql://` deployment that skipped `alembic upgrade head` should hear
     # about it once, at startup, naming every table it lacks.
     *WORKSPACE_PG_TABLES,
+    # Canonical capability effect authority and its event stream (#1133).
+    "canonical_event_log",
+    "capability_bindings",
+    "capability_invocations",
+    "capability_approvals",
 )
 
 
@@ -2162,6 +2165,58 @@ async def _wire_sqlite_durable_events(
     return sqlite_event_log, sqlite_trigger_store, sqlite_invocation_store
 
 
+async def _wire_capability_effects(
+    *,
+    pg_pool: Any,
+    db_pool: Any,
+) -> CapabilityEffectContext:
+    """Compose the sole governed effect context from the selected backend."""
+    from maistro.capabilities.approval_store import (
+        ApprovalStore,
+        InMemoryApprovalStore,
+        PgApprovalStore,
+        SqliteApprovalStore,
+    )
+    from maistro.capabilities.binding_store import (
+        BindingStore,
+        InMemoryBindingStore,
+        PgBindingStore,
+        SqliteBindingStore,
+    )
+    from maistro.capabilities.invocation import InMemoryInvocationStore
+    from maistro.capabilities.invocation_store import PgInvocationStore, SqliteInvocationStore
+    from maistro.events.envelope import EventStore
+    from maistro.events.wiring import wire_canonical_events
+
+    # Event sequencing has one selector. The governed effect context consumes
+    # its store directly rather than constructing a parallel event authority.
+    canonical_events = await wire_canonical_events(pg_pool=pg_pool, db_pool=db_pool)
+    events: EventStore = canonical_events.store
+
+    if pg_pool is not None:
+        bindings: BindingStore = PgBindingStore(pg_pool)
+        invocations = PgInvocationStore(pg_pool)
+        approvals: ApprovalStore = PgApprovalStore(pg_pool)
+    elif db_pool is not None:
+        bindings = SqliteBindingStore(db_pool)
+        invocations = SqliteInvocationStore(db_pool)
+        approvals = SqliteApprovalStore(db_pool)
+        await bindings.ensure_schema()
+        await invocations.ensure_schema()
+        await approvals.ensure_schema()
+    else:
+        bindings = InMemoryBindingStore()
+        invocations = InMemoryInvocationStore()
+        approvals = InMemoryApprovalStore()
+
+    return build_effect_context(
+        bindings=bindings,
+        invocation_store=invocations,
+        approval_store=approvals,
+        event_store=events,
+    )
+
+
 async def _wire_pg_durable_events(
     pool: Any,
 ) -> tuple[EventLogStore, TriggerStore, InvocationStore]:
@@ -2263,9 +2318,18 @@ def _di_node(
 
     from maistro.graph.nodes.agent_delegate_remote import AgentDelegateRemoteNode
     from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
+    from maistro.graph.nodes.airtable_poll import AirtablePollNode
+    from maistro.graph.nodes.jira_poll import JiraPollNode
+    from maistro.graph.nodes.jira_wait_for_subtasks import JiraWaitForSubtasksNode
     from maistro.graph.nodes.llm_summarize import LlmSummarizeNode
     from maistro.graph.nodes.rsi_quota_pace_trigger import RsiQuotaPaceTriggerNode
 
+    if kind == "airtable.poll":
+        return AirtablePollNode(effect_context=effect_context)
+    if kind == "jira.poll":
+        return JiraPollNode(effect_context=effect_context)
+    if kind == "jira.wait_for_subtasks":
+        return JiraWaitForSubtasksNode(effect_context=effect_context)
     if kind == "agent.spawn_harness":
         return AgentSpawnHarnessNode(adapters=harness_adapters, effect_context=effect_context)
     if kind == "llm.summarize":

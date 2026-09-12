@@ -9,23 +9,17 @@ than retryable failure: an exception can arrive after the remote system has
 already committed the side effect. A provider/adapter may raise
 :class:`EffectNotApplied` only when it can prove no external effect occurred.
 
-**Nothing in this repository constructs an Invocation outside tests.** Neither
-:class:`InvocationExecutionService` nor its governed wrapper is instantiated by
-the container, a route, or a node; the one caller of the seam,
-``HarnessSessionManager.send_invocation``, is itself unreached. This layer is the
-boundary #55 is going to route provider calls through, and it is written and
-tested ahead of that. Read it as a specification with a conformance suite, not
-as a description of what runs today: an id here does not appear in a log line,
-and no stored Invocation row exists in any deployment.
-
-Stating that is the point of the paragraph. A reader who finds a persisted
-effect-key ledger reasonably assumes retries are already deduplicated by it,
-and would then be wrong about how the running system recovers.
+The Container composes this service for the shipped effect path. In particular,
+``agent.spawn_harness`` and the scheduled-attempt executor resolve Bindings and
+call the governed service through ``CapabilityEffectContext``. Durable stores
+are selected by the Container backend; direct in-memory construction remains
+available for tests and explicitly ephemeral deployments.
 """
 
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -90,8 +84,11 @@ class InvocationUsage(BaseModel):
             raise ValueError("units must be a non-empty string")
         if self.input_units < 0 or self.output_units < 0:
             raise ValueError("usage units cannot be negative")
-        if self.cost_cents is not None and self.cost_cents < 0:
-            raise ValueError("cost_cents cannot be negative")
+        if self.cost_cents is not None:
+            if self.cost_cents < 0:
+                raise ValueError("cost_cents cannot be negative")
+            if not math.isfinite(self.cost_cents):
+                raise ValueError("cost_cents must be finite")
         return self
 
 
@@ -142,6 +139,8 @@ class InvocationStore(Protocol):
 
     async def create(self, invocation: Invocation) -> Invocation: ...
 
+    async def reopen_failed(self, existing: Invocation, replacement: Invocation) -> Invocation: ...
+
     async def get(self, invocation_id: str) -> Invocation | None: ...
 
     async def save(self, invocation: Invocation) -> Invocation: ...
@@ -170,6 +169,18 @@ class InMemoryInvocationStore:
             persisted = invocation.model_copy(deep=True)
             self._items[persisted.invocation_id] = persisted
             return persisted.model_copy(deep=True)
+
+    async def reopen_failed(self, existing: Invocation, replacement: Invocation) -> Invocation:
+        async with self._lock:
+            current = self._items.get(existing.invocation_id)
+            if current is None or current.status is not InvocationStatus.FAILED:
+                raise UnsafeEffectRetry(
+                    f"effect {replacement.effect_key!r} is no longer eligible for retry"
+                )
+            # In-memory keeps physical retry history for diagnostics; durable
+            # stores replace the single logical-effect row under their unique key.
+            self._items[replacement.invocation_id] = replacement.model_copy(deep=True)
+            return replacement.model_copy(deep=True)
 
     async def get(self, invocation_id: str) -> Invocation | None:
         item = self._items.get(invocation_id)
@@ -219,15 +230,31 @@ ProviderExecutor = Callable[[ResolvedCapabilityProvider, Any], Awaitable[Any]]
 UsageExtractor = Callable[[Any], "InvocationUsage | None"]
 
 
+class InvocationQuota(Protocol):
+    """Accounting collaborator at the sole physical Invocation boundary.
+
+    A reservation must commit before dispatch. Observation is idempotent and
+    preserves holds for missing usage/unknown outcomes. Implementations must
+    finish an in-flight reservation transaction before propagating cancellation.
+    """
+
+    async def reserve(self, invocation: Invocation, binding: Binding) -> None: ...
+
+    async def observe(self, invocation: Invocation) -> None: ...
+
+
 class InvocationExecutionService:
     """Resolve one Binding, persist one provider call, and guard effect retries.
 
-    Unreached in production: nothing constructs this outside tests, and the
-    effect-retry guard below therefore protects no live call yet (#55).
+    The Container constructs this service for governed capability effects; the
+    in-memory store remains the explicit local/test composition.
     """
 
-    def __init__(self, *, store: InvocationStore) -> None:
+    def __init__(self, *, store: InvocationStore, quota: InvocationQuota | None = None) -> None:
         self._store = store
+        # Opt-in until canonical backend composition is migrated. No per-call
+        # quota override: alternative Agent/router strategies share this hook.
+        self._quota = quota
         self._effect_lock = asyncio.Lock()
 
     async def latest_effect(
@@ -248,7 +275,7 @@ class InvocationExecutionService:
         )
         return history[-1] if history else None
 
-    async def invoke(
+    async def invoke(  # noqa: C901 - admission, dispatch, and terminal accounting share one lock
         self,
         *,
         binding: Binding,
@@ -264,10 +291,12 @@ class InvocationExecutionService:
         """Execute one effect, deduplicating or blocking unsafe recovery.
 
         A completed prior Invocation for the same logical effect is returned
-        without another provider call. ``CREATED``, ``RUNNING``, or ``UNKNOWN``
+        without another provider call. Durable stores also enforce the logical
+        identity at insert time, so racing replicas cannot both create rows.
+        ``CREATED``, ``RUNNING``, or ``UNKNOWN``
         history blocks repetition because the remote outcome cannot be proven
-        absent. Only a prior ``FAILED`` record, produced by ``EffectNotApplied``,
-        is eligible for a new physical Invocation under a later Attempt.
+        absent. Only a prior ``FAILED`` record, produced by ``EffectNotApplied``
+        or proof that provider dispatch never started, permits another attempt.
         """
 
         _require(effect_key, "effect_key")
@@ -278,11 +307,21 @@ class InvocationExecutionService:
                 binding_id=binding.binding_id,
                 effect_key=effect_key,
             )
+            failed_effect: Invocation | None = None
             if history:
                 latest = history[-1]
+                if (
+                    latest.status in {InvocationStatus.COMPLETED, InvocationStatus.FAILED}
+                    and self._quota is not None
+                ):
+                    # Repair the terminal-save/accounting-write crash window.
+                    # This is an absolute observation, not another usage charge.
+                    await self._quota.observe(latest)
                 if latest.status is InvocationStatus.COMPLETED:
                     return latest
-                if latest.status in {
+                if latest.status is InvocationStatus.FAILED:
+                    failed_effect = latest
+                elif latest.status in {
                     InvocationStatus.CREATED,
                     InvocationStatus.RUNNING,
                     InvocationStatus.UNKNOWN,
@@ -298,23 +337,38 @@ class InvocationExecutionService:
                     f"capability {binding.capability!r} unavailable: {provider.reason}"
                 )
             resolved = ResolvedBinding.from_provider(binding, provider)
-            invocation = await self._store.create(
-                Invocation(
-                    run_id=run_id,
-                    node_run_id=node_run_id,
-                    attempt_id=attempt_id,
-                    binding=resolved,
-                    effect_key=effect_key,
-                    request=request,
+            candidate = Invocation(
+                run_id=run_id,
+                node_run_id=node_run_id,
+                attempt_id=attempt_id,
+                binding=resolved,
+                effect_key=effect_key,
+                request=request,
+            )
+            invocation = (
+                await self._store.reopen_failed(failed_effect, candidate)
+                if failed_effect is not None
+                else await self._store.create(candidate)
+            )
+            try:
+                if self._quota is not None:
+                    await self._quota.reserve(invocation, binding)
+                running = invocation.model_copy(
+                    update={
+                        "status": InvocationStatus.RUNNING,
+                        "started_at": datetime.now(UTC),
+                    }
                 )
-            )
-            running = invocation.model_copy(
-                update={
-                    "status": InvocationStatus.RUNNING,
-                    "started_at": datetime.now(UTC),
-                }
-            )
-            invocation = await self._store.save(running)
+                invocation = await self._store.save(running)
+            except (Exception, asyncio.CancelledError):
+                # The physical executor has not been entered. Persist proof of
+                # non-dispatch before releasing any quota reservation.
+                await self._terminalize(
+                    invocation,
+                    InvocationStatus.FAILED,
+                    error="provider dispatch did not start",
+                )
+                raise
 
         try:
             result = await executor(provider, request)
@@ -342,7 +396,20 @@ class InvocationExecutionService:
             )
             raise
 
-        usage = usage_from(result) if usage_from is not None else None
+        try:
+            usage = usage_from(result) if usage_from is not None else None
+            if usage is not None and not isinstance(usage, InvocationUsage):
+                raise TypeError("usage extractor must return InvocationUsage or None")
+        except (Exception, asyncio.CancelledError):
+            # A broken usage parser cannot make a completed physical effect
+            # retryable. Preserve the result; unmeasured quota stays held.
+            await self._terminalize(
+                invocation,
+                InvocationStatus.COMPLETED,
+                result=result,
+                error="provider completed but usage extraction failed",
+            )
+            raise
 
         return await self._terminalize(
             invocation,
@@ -369,7 +436,10 @@ class InvocationExecutionService:
                 "finished_at": datetime.now(UTC),
             }
         )
-        return await self._store.save(terminal)
+        persisted = await self._store.save(terminal)
+        if self._quota is not None:
+            await self._quota.observe(persisted)
+        return persisted
 
 
 __all__ = [
@@ -378,6 +448,7 @@ __all__ = [
     "InMemoryInvocationStore",
     "Invocation",
     "InvocationExecutionService",
+    "InvocationQuota",
     "InvocationStatus",
     "InvocationStore",
     "InvocationUsage",

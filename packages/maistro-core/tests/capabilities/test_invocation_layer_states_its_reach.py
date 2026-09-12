@@ -3,8 +3,7 @@
 The layer is no longer specification-only. `agent.spawn_harness` is the first
 canonical Run consumer that resolves a scoped Binding and crosses the governed
 Invocation boundary before a provider-specific physical effect. These tests
-pin that reach while continuing to state the narrower truth that the standalone
-SQLite capability-Invocation store has not yet been wired or migrated.
+pin that reach and the backend-selected durable composition.
 """
 
 from __future__ import annotations
@@ -14,7 +13,12 @@ from pathlib import Path
 import pytest
 
 from maistro.capabilities import invocation_store
-from maistro.capabilities.binding_store import BindingStore, InMemoryBindingStore
+from maistro.capabilities.binding_store import (
+    BindingStore,
+    InMemoryBindingStore,
+    PgBindingStore,
+    SqliteBindingStore,
+)
 from maistro.capabilities.effect_context import (
     CapabilityEffectContext,
     default_effect_context,
@@ -48,7 +52,10 @@ class TestTheInvocationLayerStatesItsReach:
     def test_production_composition_owns_one_canonical_binding_store(self) -> None:
         effects = default_effect_context()
         assert isinstance(effects.bindings, BindingStore)
-        assert isinstance(effects.bindings, InMemoryBindingStore)
+        assert isinstance(
+            effects.bindings,
+            (InMemoryBindingStore, SqliteBindingStore, PgBindingStore),
+        )
 
     @pytest.mark.ac("SPEC-083026-6cef/AC-1")
     def test_reachable_agent_harness_node_calls_governed_invocation(self) -> None:
@@ -64,27 +71,21 @@ class TestTheInvocationLayerStatesItsReach:
 
 class TestTheStoreStatesItsReachAndItsTable:
     @pytest.mark.ac("SPEC-083026-6cef/AC-2")
-    def test_the_sqlite_store_still_says_nothing_wires_it(self) -> None:
-        doc = (invocation_store.__doc__ or "").lower()
-        assert "unreached" in doc or "nothing constructs" in doc
+    def test_the_capability_store_names_its_distinct_table(self) -> None:
+        assert "capability_invocations" in (invocation_store.__doc__ or "")
 
     @pytest.mark.ac("SPEC-083026-6cef/AC-2")
     def test_it_disambiguates_itself_from_the_store_the_container_does_wire(self) -> None:
         assert "maistro.events.invocations" in (invocation_store.__doc__ or "")
 
     @pytest.mark.ac("SPEC-083026-6cef/AC-2")
-    def test_it_says_its_table_has_no_migration(self) -> None:
-        doc = (invocation_store.__doc__ or "").lower()
-        assert "no migration" in doc
-
-    @pytest.mark.ac("SPEC-083026-6cef/AC-2")
-    def test_the_claim_about_the_migration_is_true(self) -> None:
+    def test_the_capability_invocation_migration_exists(self) -> None:
         creating = [
             path.name
             for path in sorted(_MIGRATIONS.glob("*.py"))
             if "capability_invocations" in path.read_text()
         ]
-        assert creating == []
+        assert creating == ["033_capability_effect_stores.py"]
 
     def test_the_migration_scan_has_a_corpus(self) -> None:
         assert len(list(_MIGRATIONS.glob("*.py"))) > 10
