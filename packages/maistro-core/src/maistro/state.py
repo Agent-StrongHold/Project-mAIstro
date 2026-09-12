@@ -280,6 +280,22 @@ _KV_MIGRATION = (
     "updated_at TEXT NOT NULL, PRIMARY KEY (store_name, key))"
 )
 
+# A durable uniqueness boundary for model fields. The KV row remains the
+# canonical record; this table only makes a uniqueness claim transactional.
+_UNIQUE_FIELDS_MIGRATION = (
+    "CREATE TABLE IF NOT EXISTS unique_fields "
+    "(store_name TEXT NOT NULL, field_name TEXT NOT NULL, "
+    "normalized_value TEXT NOT NULL, record_key TEXT NOT NULL, "
+    "PRIMARY KEY (store_name, field_name, normalized_value));"
+    "CREATE UNIQUE INDEX IF NOT EXISTS unique_fields_record "
+    "ON unique_fields (store_name, field_name, record_key);"
+    "INSERT OR IGNORE INTO unique_fields "
+    "(store_name, field_name, normalized_value, record_key) "
+    "SELECT 'users', 'username', lower(json_extract(value, '$.username')), key "
+    "FROM kv_store WHERE store_name = 'users' "
+    "AND json_extract(value, '$.username') IS NOT NULL"
+)
+
 
 class PersistedStore:
     """Dict-like persistence for Pydantic models over SQLite via State.
@@ -296,6 +312,7 @@ class PersistedStore:
         if not self._state._writer_open:
             self._state.open_writer()
         self._state.run_migration("kv_store_001", _KV_MIGRATION)
+        self._state.run_migration("kv_unique_fields_001", _UNIQUE_FIELDS_MIGRATION)
 
     def put(self, store_name: str, key: str, model: BaseModel) -> None:
         data = model.model_dump_json()
@@ -312,6 +329,122 @@ class PersistedStore:
 
         self._state.submit(_upsert)
 
+    def put_model_unique(
+        self,
+        store_name: str,
+        key: str,
+        model: BaseModel,
+        unique_fields: tuple[str, ...],
+    ) -> bool:
+        """Upsert a model while preserving its durable uniqueness claims.
+
+        Existing records may be updated under the same key, but a claim held
+        by another record rejects the whole transaction. This keeps ordinary
+        user updates from losing the username claim created at registration.
+        """
+        data = model.model_dump_json()
+        now = datetime.now(UTC).isoformat()
+        completed = threading.Event()
+        inserted: list[bool] = []
+        errors: list[Exception] = []
+
+        def _upsert(conn: sqlite3.Connection) -> None:
+            try:
+                for field_name in unique_fields:
+                    value = str(getattr(model, field_name)).casefold()
+                    existing = conn.execute(
+                        "SELECT record_key FROM unique_fields "
+                        "WHERE store_name = ? AND field_name = ? AND normalized_value = ?",
+                        (store_name, field_name, value),
+                    ).fetchone()
+                    if existing is not None and existing[0] != key:
+                        inserted.append(False)
+                        return
+                conn.execute(
+                    "DELETE FROM unique_fields WHERE store_name = ? AND record_key = ?",
+                    (store_name, key),
+                )
+                for field_name in unique_fields:
+                    value = str(getattr(model, field_name)).casefold()
+                    conn.execute(
+                        "INSERT INTO unique_fields "
+                        "(store_name, field_name, normalized_value, record_key) "
+                        "VALUES (?, ?, ?, ?)",
+                        (store_name, field_name, value, key),
+                    )
+                conn.execute(
+                    "INSERT INTO kv_store (store_name, key, value, updated_at) "
+                    "VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(store_name, key) DO UPDATE "
+                    "SET value = excluded.value, updated_at = excluded.updated_at",
+                    (store_name, key, data, now),
+                )
+                conn.commit()
+                inserted.append(True)
+            except Exception as exc:
+                with contextlib.suppress(Exception):
+                    conn.rollback()
+                errors.append(exc)
+            finally:
+                completed.set()
+
+        self._state.submit(_upsert)
+        if not completed.wait(timeout=30.0):
+            raise TimeoutError("timed out waiting for unique model write")
+        if errors:
+            raise RuntimeError("unique model write failed") from errors[0]
+        return inserted == [True]
+
+    def put_model_if_unique(
+        self,
+        store_name: str,
+        key: str,
+        model: BaseModel,
+        field_name: str,
+    ) -> bool:
+        """Insert a model only if its field claim is still available.
+
+        The claim and model row commit together, so two independent process
+        writers cannot both publish UUID-keyed records for one field value.
+        """
+        data = model.model_dump_json()
+        now = datetime.now(UTC).isoformat()
+        value = str(getattr(model, field_name)).casefold()
+        completed = threading.Event()
+        inserted: list[bool] = []
+        errors: list[Exception] = []
+
+        def _insert_once(conn: sqlite3.Connection) -> None:
+            try:
+                cursor = conn.execute(
+                    "INSERT INTO unique_fields "
+                    "(store_name, field_name, normalized_value, record_key) "
+                    "VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
+                    (store_name, field_name, value, key),
+                )
+                if cursor.rowcount != 1:
+                    inserted.append(False)
+                    return
+                conn.execute(
+                    "INSERT INTO kv_store (store_name, key, value, updated_at) VALUES (?, ?, ?, ?)",
+                    (store_name, key, data, now),
+                )
+                conn.commit()
+                inserted.append(True)
+            except Exception as exc:
+                with contextlib.suppress(Exception):
+                    conn.rollback()
+                errors.append(exc)
+            finally:
+                completed.set()
+
+        self._state.submit(_insert_once)
+        if not completed.wait(timeout=30.0):
+            raise TimeoutError("timed out waiting for unique model insert")
+        if errors:
+            raise RuntimeError("unique model insert failed") from errors[0]
+        return inserted == [True]
+
     def get(self, store_name: str, key: str, model_class: type[T]) -> T | None:
         reader = self._state.open_reader()
         try:
@@ -327,6 +460,10 @@ class PersistedStore:
 
     def delete(self, store_name: str, key: str) -> None:
         def _delete(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "DELETE FROM unique_fields WHERE store_name = ? AND record_key = ?",
+                (store_name, key),
+            )
             conn.execute(
                 "DELETE FROM kv_store WHERE store_name = ? AND key = ?",
                 (store_name, key),

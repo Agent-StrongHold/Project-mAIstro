@@ -27,6 +27,11 @@ class Widget(BaseModel):
     count: int
 
 
+class UserRecord(BaseModel):
+    username: str
+    value: int
+
+
 class TestSubmitGuard:
     def test_submit_before_open_writer_raises(self, db_path: Path) -> None:
         state = State(db_path=str(db_path))
@@ -154,7 +159,8 @@ class TestPersistedStore:
 
         assert state._writer is not None
         assert state._writer.execute("SELECT name FROM schema_migrations").fetchall() == [
-            ("kv_store_001",)
+            ("kv_store_001",),
+            ("kv_unique_fields_001",),
         ]
         state.close()
 
@@ -251,6 +257,24 @@ class TestPersistedStore:
         assert store.put_raw_if_absent("raws", "r1", '{"owner": "first"}') is True
         assert store.put_raw_if_absent("raws", "r1", '{"owner": "second"}') is False
         assert store.get_raw("raws", "r1") == '{"owner": "first"}'
+        state.close()
+
+    def test_unique_model_insert_releases_claim_on_delete(self, db_path: Path) -> None:
+        state = State(db_path=str(db_path))
+        store = PersistedStore(state)
+        store.initialize()
+
+        assert store.put_model_if_unique(
+            "users", "first", UserRecord(username="Claimed", value=1), "username"
+        )
+        assert not store.put_model_if_unique(
+            "users", "second", UserRecord(username="claimed", value=2), "username"
+        )
+        store.delete("users", "first")
+        state.flush()
+        assert store.put_model_if_unique(
+            "users", "second", UserRecord(username="claimed", value=2), "username"
+        )
         state.close()
 
     def test_put_raw_if_absent_times_out(
