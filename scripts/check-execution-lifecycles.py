@@ -23,7 +23,7 @@ import importlib.util
 import json
 import subprocess
 import sys
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
@@ -38,6 +38,8 @@ METRIC_DEFINITION_VERSION = "3"
 CLASSIFICATIONS = frozenset({"CANONICAL", "DOMAIN", "PROJECTION", "RECEIPT", "CONVERGE"})
 _ENUM_BASES = frozenset({"Enum", "StrEnum", "IntEnum", "IntFlag", "Flag"})
 _TYPING_FORMS = frozenset({"Literal", "Optional", "Union", "Annotated"})
+_TYPE_ALIAS_MARKER = "TypeAlias"
+_TYPING_NAMES = _TYPING_FORMS | {_TYPE_ALIAS_MARKER}
 _SCOPE_BOUNDARIES = (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 _ALIAS_HINTS = frozenset({"lifecycle", "phase", "stage", "state", "status"})
 _WORK_STATES = frozenset(
@@ -233,11 +235,26 @@ def _type_binding(
     owner = _binding_origin(_type_binding(node.value, environment, resolving), resolving)
     if owner.namespace is not None:
         return owner.namespace.get(node.attr, _TypeBinding())
-    if owner.typing_form == "module" and node.attr in _TYPING_FORMS:
+    if owner.typing_form == "module" and node.attr in _TYPING_NAMES:
         return _TypeBinding(typing_form=node.attr)
     if owner.imported is not None:
         return _TypeBinding(imported=f"{owner.imported}.{node.attr}")
     return _TypeBinding()
+
+
+def _mask_type_params(
+    environment: dict[str, _TypeBinding], type_params: Iterable[ast.type_param]
+) -> None:
+    """Shadow PEP 695 type parameters so they never resolve to an outer binding.
+
+    `type X[T] = T` and `class Foo[T]: ...`/`def foo[T](): ...` introduce `T` as
+    a fresh binding local to the alias/definition; the outer scope's own `T`
+    (if any) must not leak into resolution of the parameterized body.
+    """
+    for param in type_params:
+        name = getattr(param, "name", None)
+        if name:
+            environment[name] = _TypeBinding()
 
 
 def _binding_origin(binding: _TypeBinding, resolving: frozenset[int] = frozenset()) -> _TypeBinding:
@@ -367,7 +384,7 @@ def _import_bindings(node: ast.Import | ast.ImportFrom) -> dict[str, _TypeBindin
             origin = "." * node.level + (node.module or "")
             target = f"{origin}.{item.name}" if node.module else f"{origin}{item.name}"
             standard = node.level == 0 and node.module in {"typing", "typing_extensions"}
-            form = item.name if standard and item.name in _TYPING_FORMS else None
+            form = item.name if standard and item.name in _TYPING_NAMES else None
             found[item.asname or item.name] = _TypeBinding(
                 typing_form=form, imported=None if standard else target
             )
@@ -388,6 +405,7 @@ class _LiteralCollector:
         node: ast.Assign | ast.AnnAssign | ast.TypeAlias,
         prefix: str,
         environment: dict[str, _TypeBinding],
+        global_names: frozenset[str] = frozenset(),
     ) -> None:
         """Capture RHS names before changing any assignment target."""
         if isinstance(node, ast.TypeAlias):
@@ -396,15 +414,32 @@ class _LiteralCollector:
             targets, expression = node.targets, node.value
         else:
             targets, expression = [node.target], node.value
+            if (
+                isinstance(expression, ast.Constant)
+                and isinstance(expression.value, str)
+                and _binding_origin(_type_binding(node.annotation, environment)).typing_form
+                == _TYPE_ALIAS_MARKER
+            ):
+                # `x: TypeAlias = "Literal[...]"` is a PEP 613 explicit alias:
+                # the quoted RHS is type syntax, not a runtime string value.
+                expression = _type_expression(expression)
         if expression is None:
             return
         snapshot = environment if isinstance(node, ast.TypeAlias) else dict(environment)
+        if isinstance(node, ast.TypeAlias) and node.type_params:
+            snapshot = dict(snapshot)
+            _mask_type_params(snapshot, node.type_params)
         for target in targets:
             for name in _assigned_names(target):
                 # Destructuring is a binding but is not itself a type expression.
                 value = expression if isinstance(target, ast.Name) else None
+                # `global NAME` makes this assignment land in the module scope,
+                # not the function-qualified identity it would otherwise get.
+                effective_prefix = "" if name in global_names else prefix
                 identity = (
-                    f"{self.module}::{prefix}{name}" if _looks_like_status_alias(name) else None
+                    f"{self.module}::{effective_prefix}{name}"
+                    if _looks_like_status_alias(name)
+                    else None
                 )
                 binding = _TypeBinding(value, snapshot, identity=identity)
                 environment[name] = binding
@@ -464,6 +499,7 @@ class _LiteralCollector:
         enclosing: dict[str, _TypeBinding],
         *,
         in_class: bool,
+        global_names: frozenset[str] = frozenset(),
     ) -> None:
         """Process one statement; nested lexical bodies have their own walk."""
         if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -473,7 +509,7 @@ class _LiteralCollector:
         elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.TypeAlias)):
             if in_class:
                 self._field(node, prefix, environment)
-            self._assignment(node, prefix, environment)
+            self._assignment(node, prefix, environment, global_names)
         else:
             self._mask_target(node, environment)
 
@@ -482,9 +518,23 @@ class _LiteralCollector:
     ) -> dict[str, _TypeBinding]:
         """Snapshot eager assignments while sharing only real lexical closures."""
         environment = dict(enclosing)
+        _mask_type_params(environment, getattr(tree, "type_params", ()))
+        # `global NAME` can appear anywhere in a function body but applies to
+        # the whole function, so it is collected once up front.
+        global_names = frozenset(
+            name
+            for node in _scope_nodes(tree)
+            if isinstance(node, ast.Global)
+            for name in node.names
+        )
         for node in _scope_nodes(tree):
             self._statement(
-                node, prefix, environment, enclosing, in_class=isinstance(tree, ast.ClassDef)
+                node,
+                prefix,
+                environment,
+                enclosing,
+                in_class=isinstance(tree, ast.ClassDef),
+                global_names=global_names,
             )
         return environment
 
