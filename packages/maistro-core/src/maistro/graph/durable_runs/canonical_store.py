@@ -137,13 +137,27 @@ class CanonicalDurableRunStore:
         *,
         limit: int = 100,
         project_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> list[DurableRunRecord]:
-        run_ids = await self._continuations.list_run_ids_by_status(
-            status,
-            limit=limit,
-            project_id=project_id,
-        )
-        return await self._assemble_all(run_ids)
+        if workspace_id is None:
+            run_ids = await self._continuations.list_run_ids_by_status(
+                status,
+                limit=limit,
+                project_id=project_id,
+            )
+        else:
+            # Continuations carry project scope, while Workspace scope belongs
+            # to the canonical Run. Query the spine first so the page limit is
+            # applied after the caller's Workspace boundary, not before it.
+            runs = await self._run_store.list_by_status(
+                status,
+                limit=limit,
+                project_id=project_id,
+                workspace_id=workspace_id,
+            )
+            run_ids = [run.run_id for run in runs]
+        records = await self._assemble_all(run_ids)
+        return [record for record in records if record.run.status is status]
 
     async def list_due(
         self,

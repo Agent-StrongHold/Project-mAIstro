@@ -28,6 +28,7 @@ class DurableRunStore(Protocol):
         *,
         limit: int = 100,
         project_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> list[DurableRunRecord]: ...
 
     async def list_due(self, *, now: datetime, limit: int = 100) -> list[DurableRunRecord]:
