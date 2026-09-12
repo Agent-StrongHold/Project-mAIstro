@@ -33,6 +33,24 @@ or placeholder-only section.
   longer leave truncated JSON at the staged path. A pre-existing file is
   reused only after parse-validation — existence alone is no longer treated
   as staged input by the CLI's "already staged" skip either.
+
+- **Canonical `EventEnvelope` payloads are now structurally bounded (#1164).**
+  `payload`/`provenance` are checked for serialized byte size (256 KiB) and
+  container nesting depth (32 levels) in the envelope's own constructor, so
+  every backend (in-memory, SQLite, PostgreSQL, outbox) rejects an oversize or
+  pathologically nested event before it is ever materialized in persistence,
+  rather than each needing its own copy of the check. A non-JSON-encodable
+  field is rejected the same way. Violations raise the new, typed
+  `EventPayloadTooLarge` rather than failing later inside a store's own
+  serialization call. Current emitters are all well under the ceiling, so this
+  changes no observed behavior today; it bounds a future caller that isn't
+  written yet. A row persisted before this ceiling existed stays readable —
+  `SqliteEventStore`/`PgEventStore` reconstruct stored rows without
+  re-imposing the new size/depth bound, so upgrading does not turn a
+  previously valid event into a read-time crash. Routing an oversize artifact
+  through the canonical object store by reference, and scrubbing secrets from
+  payloads before persistence (#1159), remain open follow-up work this issue
+  explicitly does not claim.
 ### Added
 
 - **Browser sessions are governed at the Playwright boundary (#855).** Every
@@ -78,8 +96,52 @@ or placeholder-only section.
   (no production embedding client is constructed, so the column stays NULL);
   the matrix no longer claims scoped pgvector recall is live.
 
+- **`derive_run_terminal_status`'s `work_owed` is now a required keyword
+  argument (#1188).** The previous `work_owed: bool = False` default let a
+  caller that forgot to pass it derive `COMPLETED` from an empty NodeRun
+  collection, silently treating "no observations yet" as "there was never any
+  work to observe." Both current production callers already passed it
+  explicitly and are unaffected; a caller that omits it now gets a
+  `TypeError` at the call site instead of a wrong terminal status at runtime.
+
 ### Fixed
 
+- **Project membership is one canonical row per `(project, principal)`, and
+  is now explicitly revocable (#1148).** `ProjectScopeStore.set_membership`
+  used to mint a fresh `membership_id` on every call, so a re-grant, role
+  change, or explicit deny accumulated a second, independent row instead of
+  replacing the first — `resolve_project_authorization` unions every row it
+  finds, so a stale grant a later deny was meant to narrow stayed live
+  forever, and there was no way to retract a grant outright. `set_membership`
+  now upserts keyed on `(project_id, principal_id)` across all three
+  backends, and a new `remove_membership` revokes a membership durably. A
+  migration (`033`) deduplicates existing PostgreSQL rows (keeping the most
+  recent per pair) before adding the new primary key; a homelab SQLite
+  database created by an older release upgrades its
+  `canonical_project_memberships` table the same way the first time
+  `ensure_schema()` runs against it.
+- **A delegated re-grant can no longer silently clear an existing Project
+  deny (#1148).** `add_project_membership`'s non-owner path only rejected a
+  request that explicitly repeated `denies`, not one that simply omitted
+  them — since `set_membership` now replaces the canonical row wholesale
+  rather than accumulating a second one, a non-owner's ordinary grant-only
+  re-grant would have overwritten an owner-issued deny by omission. The
+  route now carries an existing deny forward when the requester cannot
+  administer the Workspace.
+- **SQLite `move_project` now serializes the cycle check with the reparent
+  write (#1147).** PostgreSQL already locked a Workspace's Projects with
+  `FOR UPDATE` before checking ancestry; the SQLite twin did a plain
+  read-then-write, so two concurrent opposite moves (A under B, B under A)
+  could both pass their independent checks and both commit, leaving a cycle
+  `lineage()` can never resolve again. `move_project` now takes SQLite's
+  write lock (`BEGIN IMMEDIATE`) before reading the tree, matching
+  `workspaces.sqlite_store`'s existing pattern; a forced-interleaving
+  conformance test (two connections to the same file) proves one of the two
+  concurrent moves is refused as a cycle rather than both landing. Every
+  other writer on the shared connection (`create`, `update_defaults`,
+  `delete`, `put_resource`) now takes the same write-critical section, so an
+  unlocked writer left mid-transaction can no longer make a locked writer's
+  `BEGIN IMMEDIATE` raise outright.
 - **Successful NodeRuns require accepted physical evidence (#1153).** New
   completion transitions reject a missing `AcceptedNodeOutcome`, including for
   no-output work. The historical durable-Graph execution entry points delegate

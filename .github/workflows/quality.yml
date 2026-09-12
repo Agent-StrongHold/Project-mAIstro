@@ -186,6 +186,11 @@ jobs:
   # of this job named `bitnami/minio:latest`, which does not resolve: Bitnami
   # retired their public tags, so every run died on `manifest unknown` before
   # reaching a single test. An image name is not verified by being plausible.
+  # The move to the upstream image was not the end of it either: `minio/minio`
+  # on Docker Hub stopped serving anonymous pulls (`pull access denied`), so
+  # the image below names quay.io — where MinIO publishes the same RELEASE tag
+  # ci.yml pins — rather than `:latest`, so this job and ci.yml's conformance
+  # job exercise the same server build.
   coverage-archive:
     name: coverage (MinIO)
     runs-on: ubuntu-latest
@@ -198,7 +203,7 @@ jobs:
           docker run -d --name minio -p 9000:9000 \
             -e MINIO_ROOT_USER=minioadmin \
             -e MINIO_ROOT_PASSWORD=minioadmin \
-            minio/minio:latest server /data
+            quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z server /data
           # Poll the health endpoint rather than sleeping a fixed amount: a
           # fixed sleep is either slower than it needs to be or racy, and the
           # race surfaces as a connection error that reads exactly like the
