@@ -222,6 +222,7 @@ class TestAgainstTheRealWorkflows:
             ("CodeQL Advanced", "Analyze (python)"),
             ("DevSkim", "DevSkim"),
             ("security", "Container scan + SBOM + cosign"),
+            ("DevSkim", "DevSkim"),
         }
 
     def test_advisory_devskim_is_not_required_on_either_branch(self, gate) -> None:

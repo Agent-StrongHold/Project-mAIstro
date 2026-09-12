@@ -27,13 +27,13 @@ on:
       - "quality"
       - "security"
       - "CodeQL Advanced"
+      - "DevSkim"
       - "Formal Conformance"
       - "Gate C"
       - "Registry CI"
       - "Vulture Ratchet"
       - "Cage Guard — Auto-reject PRs touching cage/ or eval/"
       - "Autonomous Merge Safety"
-      - "DevSkim"
     types: [completed]
 
 concurrency:
