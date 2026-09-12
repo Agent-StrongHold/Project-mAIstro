@@ -12,7 +12,7 @@ from maistro.runs.execution import (
     AttemptExecutionService,
     AttemptReconciler,
 )
-from maistro.runs.model import AcceptedNodeOutcome, Attempt, NodeRun, Run
+from maistro.runs.model import AcceptedNodeOutcome, Attempt, NodeRun, Run, RunStatus
 from maistro.runs.store import RunStore
 from maistro.runtime import ExecutionCallable, ExecutionRuntime
 
@@ -64,6 +64,7 @@ class RunExecutionService:
         persona_id: str | None = None,
         actor_principal_id: str | None = None,
         provenance: dict[str, Any] | None = None,
+        initial_status: RunStatus = RunStatus.CREATED,
     ) -> Run:
         """Create one canonical logical Run from an immutable Graph snapshot."""
 
@@ -75,6 +76,7 @@ class RunExecutionService:
             persona_id=persona_id,
             actor_principal_id=actor_principal_id,
             provenance=provenance,
+            initial_status=initial_status,
         )
 
     async def execute_node(

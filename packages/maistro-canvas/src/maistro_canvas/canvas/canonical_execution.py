@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Awaitable, Callable
-from typing import TypeVar, cast
+from datetime import UTC, datetime
+from typing import Any, TypeVar, cast
 
 from maistro.graph.definitions import Edge, Graph, Node
 from maistro.runs.lifecycle import transition_path
@@ -33,6 +34,9 @@ from maistro.runtime import ExecutionRuntime, PythonExecutionRuntime
 _CANONICAL_RUN_PARAM = "canonical_run_id"
 _CANVAS_SOURCE = "canvas_generation"
 _CANVAS_EXECUTOR_ID = "canvas_job_runner"
+_CANVAS_OPERATION_KEY = "canvas_operation_id"
+_CANVAS_RECEIPT = "canvas_receipt"
+_CANVAS_ORG = "canvas_org_id"
 
 T = TypeVar("T")
 
@@ -105,8 +109,26 @@ class CanvasCanonicalExecution:
         layer_id: str,
         action: str,
         actor_principal_id: str | None,
+        operation_id: str | None = None,
+        receipt: dict[str, Any] | None = None,
     ) -> str:
-        """Create exactly one canonical Run for one accepted Canvas job."""
+        """Create or recover exactly one canonical Run for one Canvas operation.
+
+        The Run is the durable admission intent. It is inserted directly in
+        ``QUEUED`` state, so there is no second lifecycle commit between Run
+        admission and receipt creation. The receipt is a separate projection;
+        if the process dies before it is written, ``reconcile_admissions``
+        rebuilds it from this durable provenance.
+        """
+
+        existing = await self._find_admitted(job_id=job_id, operation_id=operation_id)
+        if existing is not None:
+            recorded = existing.provenance.get(_CANVAS_RECEIPT)
+            if receipt is not None and recorded is not None and recorded != receipt:
+                raise RunIntegrityError(
+                    f"Canvas operation {operation_id or job_id!r} was retried with different inputs"
+                )
+            return existing.run_id
 
         stages = _stages(action)
         nodes = [
@@ -132,25 +154,205 @@ class CanvasCanonicalExecution:
             edges=edges,
             metadata={"canvas_job_id": job_id},
         )
+        provenance: dict[str, Any] = {
+            ADMISSION_SOURCE: _CANVAS_SOURCE,
+            "canvas_job_id": job_id,
+            "canvas_id": canvas_id,
+            "layer_id": layer_id,
+            "canvas_action": action,
+        }
+        if operation_id is not None:
+            provenance[_CANVAS_OPERATION_KEY] = operation_id
+        receipt_org = provenance.get(_CANVAS_ORG)
+        if receipt_org is None and isinstance(receipt, dict):
+            candidate_org = receipt.get("org_id")
+            if isinstance(candidate_org, str):
+                provenance[_CANVAS_ORG] = candidate_org
+        if receipt is not None:
+            # This is the recovery record, not an execution result. Keeping
+            # admission inputs in canonical provenance makes the Run alone
+            # sufficient to reconstruct a missing Canvas receipt.
+            provenance[_CANVAS_RECEIPT] = dict(receipt)
         run = await self._service.create_run(
             graph,
             actor_principal_id=actor_principal_id,
-            provenance={
-                ADMISSION_SOURCE: _CANVAS_SOURCE,
-                "canvas_job_id": job_id,
-                "canvas_id": canvas_id,
-                "layer_id": layer_id,
-                "canvas_action": action,
-            },
+            provenance=provenance,
+            initial_status=RunStatus.QUEUED,
         )
-        try:
-            await self._runs.transition_run(run.run_id, RunStatus.QUEUED)
-        except BaseException:
-            with contextlib.suppress(Exception):
-                await self._runs.transition_run(run.run_id, RunStatus.CANCELLED)
-                await self._runs.delete_run(run.run_id)
-            raise
         return run.run_id
+
+    async def _find_admitted(
+        self,
+        *,
+        job_id: str,
+        operation_id: str | None,
+    ) -> Run | None:
+        """Find an earlier durable admission without an in-memory index."""
+        candidates: list[Run] = []
+        for status in RunStatus:
+            candidates.extend(
+                await self._runs.list_by_status(status, limit=10_000, project_id=self._project_id)
+            )
+        for run in candidates:
+            provenance = run.provenance
+            if provenance.get(ADMISSION_SOURCE) != _CANVAS_SOURCE:
+                continue
+            if provenance.get("canvas_job_id") == job_id:
+                return run
+            if operation_id is not None and provenance.get(_CANVAS_OPERATION_KEY) == operation_id:
+                return run
+        return None
+
+    async def reconcile_admissions(self, canvas_store: Any, *, limit: int = 100) -> list[Any]:
+        """Repair Canvas receipts from canonical admission facts after restart.
+
+        The canonical Run is deliberately scanned, not a process-local map. A
+        missing receipt is recreated only from immutable admission provenance;
+        a completed Run is projected as successful only when completed Attempt
+        evidence supplies its result paths. Thus a recovery tick cannot invent
+        a successful Canvas result.
+        """
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        seen: set[str] = set()
+        repaired: list[Any] = []
+        for status in RunStatus:
+            runs = await self._runs.list_by_status(status, limit=limit, project_id=self._project_id)
+            for run in runs:
+                if run.run_id in seen or run.provenance.get(ADMISSION_SOURCE) != _CANVAS_SOURCE:
+                    continue
+                seen.add(run.run_id)
+                job = await self._reconcile_admission(run, canvas_store)
+                if job is not None:
+                    repaired.append(job)
+        return repaired
+
+    async def _reconcile_admission(self, run: Run, canvas_store: Any) -> Any | None:
+        """Rebuild or terminally project one receipt named by a canonical Run."""
+        from maistro_canvas.types import GenerationJobRecord, JobStatus
+
+        provenance = run.provenance
+        job_id = provenance.get("canvas_job_id")
+        org_id = provenance.get(_CANVAS_ORG)
+        receipt = provenance.get(_CANVAS_RECEIPT)
+        if not isinstance(job_id, str) or not isinstance(org_id, str):
+            # Old Canvas Runs predate the recovery payload. They remain visible
+            # to canonical recovery, but cannot be safely fabricated as a job.
+            return None
+        job = await canvas_store.get_job(job_id, org_id=org_id)
+        if job is None:
+            if not isinstance(receipt, dict):
+                return None
+            params = dict(receipt.get("params", {}))
+            correlate_run(params, run.run_id)
+            job = GenerationJobRecord(
+                id=job_id,
+                layer_id=str(provenance.get("layer_id", "")),
+                canvas_id=str(provenance.get("canvas_id", "")),
+                action=str(receipt.get("action", provenance.get("canvas_action", "generate"))),
+                status=JobStatus.PENDING,
+                model_id=str(receipt.get("model_id", "")),
+                prompt=str(receipt.get("prompt", "")),
+                params=params,
+                org_id=org_id,
+            )
+            if run.status in {RunStatus.FAILED, RunStatus.TIMED_OUT}:
+                job.status = JobStatus.FAILED
+                job.error_message = run.error or "Canonical Canvas Run failed during admission"
+            elif run.status is RunStatus.CANCELLED:
+                job.status = JobStatus.CANCELLED
+            elif run.status is RunStatus.COMPLETED:
+                # A missing receipt cannot prove the domain result. Retire the
+                # projection as failed rather than claiming Canvas succeeded.
+                job.status = JobStatus.FAILED
+                job.error_message = "Canvas receipt was missing after canonical completion"
+            try:
+                return await canvas_store.create_job(job, org_id=org_id)
+            except Exception:
+                # Another recovery worker may have won the insert. Re-read the
+                # durable identity and let the next branch reconcile it.
+                job = await canvas_store.get_job(job_id, org_id=org_id)
+                if job is None:
+                    raise
+
+        correlated = canonical_run_id(job.params)
+        if correlated != run.run_id:
+            raise RunIntegrityError(
+                f"Canvas job {job.id!r} correlates {correlated!r}, expected {run.run_id!r}"
+            )
+        return await self._project_receipt(job, run, canvas_store)
+
+    async def _project_receipt(  # noqa: C901 - terminal projection is an explicit state table
+        self, job: Any, run: Run, canvas_store: Any
+    ) -> Any:
+        from maistro_canvas.types import JobStatus
+
+        changed = False
+        if run.status in {RunStatus.FAILED, RunStatus.TIMED_OUT}:
+            target = JobStatus.FAILED
+            if job.error_message != (run.error or "Canonical Canvas Run failed"):
+                job.error_message = run.error or "Canonical Canvas Run failed"
+                changed = True
+        elif run.status is RunStatus.CANCELLED:
+            target = JobStatus.CANCELLED
+        elif run.status is RunStatus.COMPLETED:
+            paths = await self._completed_paths(run.run_id)
+            if paths is None:
+                target = JobStatus.FAILED
+                job.error_message = "Canonical completion has no completed Canvas Attempt evidence"
+            else:
+                target = JobStatus.DONE
+                if job.result_paths != paths:
+                    job.result_paths = paths
+                    changed = True
+        else:
+            # Only CREATED/QUEUED are admission states. Once canonical work is
+            # RUNNING, recovery must not turn an owned Canvas lease back into
+            # PENDING and create a duplicate provider dispatch.
+            target = (
+                JobStatus.PENDING
+                if run.status in {RunStatus.CREATED, RunStatus.QUEUED}
+                else job.status
+            )
+            if run.status is RunStatus.QUEUED and job.status is JobStatus.RUNNING:
+                changed = True
+        if job.status != target:
+            job.status = target
+            changed = True
+        if target in {JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED}:
+            if job.completed_at is None:
+                job.completed_at = datetime.now(UTC)
+                changed = True
+            if job.leased_by is not None or job.lease_expires_at is not None:
+                job.leased_by = None
+                job.lease_expires_at = None
+                changed = True
+        if changed:
+            return await canvas_store.update_job(job, org_id=job.org_id)
+        return job
+
+    async def _completed_paths(self, run_id: str) -> list[str] | None:
+        """Read result paths only from completed canonical Attempts."""
+        paths: list[str] = []
+        node_runs = await self._runs.list_node_runs(run_id)
+        if not node_runs:
+            return None
+        for node_run in node_runs:
+            attempts = await self._runs.list_attempts(node_run.node_run_id)
+            completed = next(
+                (
+                    attempt
+                    for attempt in reversed(attempts)
+                    if attempt.status is AttemptStatus.COMPLETED
+                ),
+                None,
+            )
+            if completed is None or not isinstance(completed.result, list):
+                return None
+            if not all(isinstance(path, str) for path in completed.result):
+                return None
+            paths.extend(completed.result)
+        return paths
 
     async def execute_stage(
         self,

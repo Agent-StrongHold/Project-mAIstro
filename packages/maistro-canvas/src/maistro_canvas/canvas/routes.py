@@ -42,7 +42,7 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import JSONResponse, Response
 
 from maistro_canvas.auth import CurrentUser, get_current_user
@@ -531,6 +531,7 @@ def _register_job_routes(  # noqa: C901  route-registration closure: independent
         layer_id: str,
         body: dict[str, Any],
         auth: CurrentUser = Depends(get_current_user),
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     ) -> JSONResponse:
         await _require_canvas(store, canvas_id, auth.org_id)
         await _require_layer(store, canvas_id, layer_id, auth.org_id)
@@ -555,6 +556,11 @@ def _register_job_routes(  # noqa: C901  route-registration closure: independent
                 negative_prompt=str(body.get("negative_prompt", "")),
                 region=str(body.get("region", "full")),
                 strength=float(body.get("strength", 0.6)),
+                idempotency_key=(
+                    str(body.get("idempotency_key", idempotency_key))
+                    if body.get("idempotency_key", idempotency_key) is not None
+                    else None
+                ),
             )
         except (
             TextLayerNoGenError,
