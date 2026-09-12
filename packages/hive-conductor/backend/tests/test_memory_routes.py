@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pathlib
 import sys
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -13,6 +14,7 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 import stores  # noqa: E402
+from models.schemas import MemoryEntry  # noqa: E402
 
 
 def _clear(store) -> None:
@@ -83,6 +85,43 @@ def test_create_entry_with_tags(authed_client: Any) -> None:
     )
     assert r.json()["tags"] == ["t1", "t2"]
     assert r.json()["namespace"] == "ns"
+
+
+def test_memory_operations_are_scoped_to_authenticated_owner(authed_client: Any) -> None:
+    """A guessed body owner cannot make a global entry visible or mutable."""
+    created = authed_client.post(
+        "/v1/memory/entries",
+        json={"key": "mine", "value": "mine", "user_id": "other-user"},
+    )
+    assert created.status_code == 200
+    assert created.json()["user_id"] == "user"
+
+    now = datetime.now(UTC)
+    stores.memory_entries["foreign"] = MemoryEntry(
+        id="foreign",
+        user_id="other-user",
+        key="foreign",
+        value="private",
+        created_at=now,
+        updated_at=now,
+    )
+
+    listed = authed_client.get("/v1/memory/entries")
+    assert [entry["id"] for entry in listed.json()] == [created.json()["id"]]
+    assert authed_client.get("/v1/memory/entries/foreign").status_code == 404
+
+    for method, path, kwargs in (
+        ("put", "/v1/memory/entries/foreign", {"json": {"value": "changed"}}),
+        ("delete", "/v1/memory/entries/foreign", {}),
+        ("post", "/v1/memory/entries/foreign/reinforce", {}),
+        ("post", "/v1/memory/entries/foreign/decay", {}),
+        ("post", "/v1/memory/entries/foreign/contradict", {}),
+    ):
+        assert getattr(authed_client, method)(path, **kwargs).status_code == 404
+
+    stats = authed_client.get("/v1/memory/stats")
+    assert stats.json()["total"] == 1
+    assert stores.memory_entries["foreign"].value == "private"
 
 
 # --------------------------------------------------------------------------- #

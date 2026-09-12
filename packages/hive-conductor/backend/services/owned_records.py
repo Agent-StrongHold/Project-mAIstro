@@ -125,16 +125,30 @@ class OwnedStore:
         self._store[key] = stamped
         return stamped
 
-    def discard(self, key: str) -> None:
+    def update(self, key: str, record: Any) -> Any:
+        """Replace one of this owner's records, preserving the owner boundary."""
+        self.require(key)
+        return self.create(key, record)
+
+    def delete(self, key: str) -> Any:
+        """Remove one of this owner's records, or raise the scoped 404."""
+        record = self.require(key)
+        self._store.pop(key)
+        return record
+
+    def discard(self, key: str) -> bool:
         """Remove the record if it is this owner's; otherwise do nothing.
 
         Silence in both directions, for the same reason `require` raises the
         same 404: a delete that reported whether something was there is an
-        oracle even when it refuses to act.
+        oracle even when it refuses to act. The boolean lets non-HTTP callers
+        retain the old success/error result without reaching around this view.
         """
         record = self._store.get(key)
         if record is not None and self.owns(record):
             self._store.pop(key, None)
+            return True
+        return False
 
     def persist(self, key: str) -> None:
         """Flush a record this owner holds; 404 if they do not hold it."""
@@ -162,3 +176,15 @@ def owned_chat_sessions(owner: Owner) -> OwnedStore:
 def chat_sessions_for(request: Any) -> OwnedStore:
     """The chat store, scoped to whoever is making this request."""
     return owned_chat_sessions(owner_of(request))
+
+
+def owned_memory_entries(owner: Owner) -> OwnedStore:
+    """The memory-entry store, scoped to one authenticated owner."""
+    import stores
+
+    return OwnedStore(stores.memory_entries, owner)
+
+
+def memory_entries_for(request: Any) -> OwnedStore:
+    """The memory-entry store, scoped to whoever is making this request."""
+    return owned_memory_entries(owner_of(request))
