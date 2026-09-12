@@ -17,7 +17,7 @@ import logging
 import pytest  # type: ignore[import-not-found]
 
 from maistro.container import Container, create_container
-from maistro.security._types import AuthContext, WardenVerdict
+from maistro.security._types import ANONYMOUS_AUTH, AuthContext, WardenVerdict
 from maistro.security.patterns import DANGEROUS_TOOL_NAMES
 from maistro.security.sentinel.authz_types import Principal, Tier
 from maistro.security.strikes import InMemoryStrikeTracker
@@ -514,6 +514,44 @@ async def test_route_request_allows_no_auth_at_shipped_defaults() -> None:
     # itself needs no agents for this call to get past the guard.
     with contextlib.suppress(Exception):
         await container.route_request([{"role": "user", "content": "hi"}])
+
+
+@pytest.mark.contract("boundary")
+@pytest.mark.scope("integration")
+async def test_route_request_without_auth_is_evaluated_as_the_anonymous_principal() -> None:
+    """The fail-closed table must reach a turn that carried no identity.
+
+    The strategies consult Sentinel only when `auth is not None`, so passing
+    `None` through would let an unauthenticated turn execute every tool the
+    empty table is supposed to deny (#1165 review). The turn is routed as the
+    role-less anonymous principal instead.
+    """
+    container = await _container()
+    captured: dict[str, object] = {}
+
+    async def capture(messages, **kwargs):
+        captured.update(kwargs)
+        return {"content": "ok", "finish_reason": "stop"}
+
+    container.conduit.route_request = capture  # type: ignore[method-assign]
+    with contextlib.suppress(Exception):
+        await container.route_request([{"role": "user", "content": "hi"}])
+
+    assert captured["auth"] is ANONYMOUS_AUTH
+    assert ANONYMOUS_AUTH.roles == frozenset()
+    assert ANONYMOUS_AUTH.user_id == ""
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("integration")
+@pytest.mark.parametrize("preset", ["none", "dangerous_tools_admin"])
+async def test_the_anonymous_principal_holds_no_tool_authority(preset: str) -> None:
+    """Denied by the empty table and by a configured one alike: no roles, no grant."""
+    container = await _container(permission_preset=preset)
+
+    for tool_name in ("shell", *sorted(DANGEROUS_TOOL_NAMES)[:2]):
+        verdict = await container.sentinel.pre_call(tool_name, {}, ANONYMOUS_AUTH, {})
+        assert verdict.allowed is False, (preset, tool_name)
 
 
 # --- Elevation store wiring (issue #346) -------------------------------------

@@ -52,6 +52,17 @@ SYSTEM_AUTH = AuthContext(
     auth_method="system",
 )
 
+#: The identity a request that carried none is evaluated as (#1165 review).
+#:
+#: Role-less, so a fail-closed permission table denies it every tool: an
+#: absent identity is not a grant, and the strategies that gate
+#: ``Sentinel.pre_call`` on ``auth is not None`` must reach the table rather
+#: than skip it. ``user_id`` stays empty on purpose -- the strike paths key on
+#: it and skip when it is empty, exactly as they did for ``auth=None``, and
+#: `Container.route_request` refuses to arm strike tracking without a real
+#: identity in the first place.
+ANONYMOUS_AUTH = AuthContext(username="anonymous", auth_method="anonymous")
+
 PermissionTable = dict[str, frozenset[str]]
 
 

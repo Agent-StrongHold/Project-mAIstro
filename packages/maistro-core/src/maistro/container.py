@@ -64,6 +64,7 @@ from maistro.runs.wiring import (
 )
 from maistro.scheduling.admission import ScheduleRunAdmitter
 from maistro.scheduling.store import ScheduleStore
+from maistro.security._types import ANONYMOUS_AUTH
 from maistro.security.gate import Gate
 from maistro.security.outbound import configure_outbound_policy, configured_endpoints
 from maistro.security.warden.detector import Warden
@@ -451,6 +452,16 @@ class Container:
                 "Pass an AuthContext, or disable them in config.security."
             )
             raise AgentError(msg)
+        if auth is None:
+            # The fail-closed table (ADR-072726-0d6b, #1165) is armed even when
+            # it is empty -- it denies -- but the ReAct and Artificer
+            # strategies only consult Sentinel when `auth is not None`, so a
+            # request that carried no identity used to walk past the table and
+            # execute every tool. It is evaluated as the role-less anonymous
+            # principal instead: every tool it reaches for is denied, and a
+            # configured table keyed on roles still needs a real identity (the
+            # refusal above), because roles cannot be evaluated for nobody.
+            auth = ANONYMOUS_AUTH
 
         if run is None:
             run = await self._admit_chat_turn(
