@@ -168,7 +168,8 @@
     "$comment": [
       "Checks deliberately non-required must be named here with a reason."
     ],
-    "pr-base": "PR-only branch-policy check (#383): reports on pull_request events only, so it cannot be a required check that the merge queue waits on (merge_group); the correction is to rebase onto develop."
+    "pr-base": "PR-only branch-policy check (#383): reports on pull_request events only, so it cannot be a required check that the merge queue waits on (merge_group); the correction is to rebase onto develop.",
+    "DevSkim": "Owner-added base-develop scanner: runs and reports on every develop PR, but remains advisory until the owner explicitly adds it to the required merge contract."
   },
   "repository": {
     "allow_auto_merge": true,
