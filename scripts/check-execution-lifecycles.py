@@ -41,6 +41,16 @@ _TYPING_FORMS = frozenset({"Literal", "Optional", "Union", "Annotated"})
 _TYPE_ALIAS_MARKER = "TypeAlias"
 _TYPING_NAMES = _TYPING_FORMS | {_TYPE_ALIAS_MARKER}
 _SCOPE_BOUNDARIES = (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+_CONDITIONAL_NODES = (
+    ast.If,
+    ast.Try,
+    ast.TryStar,
+    ast.While,
+    ast.For,
+    ast.AsyncFor,
+    ast.With,
+    ast.AsyncWith,
+)
 _ALIAS_HINTS = frozenset({"lifecycle", "phase", "stage", "state", "status"})
 _WORK_STATES = frozenset(
     {
@@ -114,12 +124,20 @@ def _looks_like_status_alias(name: str) -> bool:
     return bool(parts & _ALIAS_HINTS or any(normalized.endswith(hint) for hint in _ALIAS_HINTS))
 
 
-def _scope_nodes(tree: ast.AST) -> Iterator[ast.AST]:
-    """Walk one lexical scope, exposing but not entering its child scopes."""
+def _scope_nodes(tree: ast.AST, *, conditional: bool = False) -> Iterator[tuple[ast.AST, bool]]:
+    """Walk one lexical scope, exposing but not entering its child scopes.
+
+    Each node carries whether it is only reachable through a conditional
+    construct (if/try/while/for/with) rather than the scope's unconditional
+    statement sequence -- real control flow runs at most one branch, but
+    every branch is walked here as though it always executes.
+    """
     for node in ast.iter_child_nodes(tree):
-        yield node
+        yield node, conditional
         if not isinstance(node, _SCOPE_BOUNDARIES):
-            yield from _scope_nodes(node)
+            yield from _scope_nodes(
+                node, conditional=conditional or isinstance(node, _CONDITIONAL_NODES)
+            )
 
 
 def _work_vocabulary(values: set[str]) -> set[str]:
@@ -194,7 +212,7 @@ def _enum_member_values(node: ast.ClassDef) -> set[str]:
 def _enum_vocabularies(tree: ast.AST, module: str, prefix: str = "") -> dict[str, set[str]]:
     """Preserve lexical identity for Enums just as for Literal vocabularies."""
     found: dict[str, set[str]] = {}
-    for node in _scope_nodes(tree):
+    for node, _ in _scope_nodes(tree):
         if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             found.update(_enum_vocabularies(node, module, f"{prefix}{node.name}."))
         if not isinstance(node, ast.ClassDef) or not _is_enum(node):
@@ -366,6 +384,34 @@ def _assigned_names(target: ast.AST) -> Iterator[str]:
         yield from _assigned_names(target.value)
 
 
+def _is_meaningful(binding: _TypeBinding) -> bool:
+    """A binding worth not silently losing: a recognized typing form or import."""
+    return binding.typing_form is not None or binding.imported is not None
+
+
+def _rebind(
+    environment: dict[str, _TypeBinding], name: str, binding: _TypeBinding, conditional: bool
+) -> None:
+    """Apply one binding, unless a conditional branch would erase a meaningful one.
+
+    `_scope_nodes` walks every branch of an `if`/`try`/`while`/`for`/`with`
+    as though it always executes, but real control flow runs at most one of
+    them. A branch-local rebinding that downgrades an already-meaningful
+    typing form or import to a plain value must not permanently erase that
+    meaning for the rest of the scope's resolution -- the branch that keeps
+    it could be the one that actually runs. A rebinding to another
+    meaningful value, or one outside a conditional construct, still applies
+    normally.
+    """
+    if (
+        conditional
+        and _is_meaningful(environment.get(name, _TypeBinding()))
+        and not _is_meaningful(binding)
+    ):
+        return
+    environment[name] = binding
+
+
 def _import_bindings(node: ast.Import | ast.ImportFrom) -> dict[str, _TypeBinding]:
     """An import replaces a previous typing or value binding at that statement."""
     found: dict[str, _TypeBinding] = {}
@@ -406,6 +452,7 @@ class _LiteralCollector:
         prefix: str,
         environment: dict[str, _TypeBinding],
         global_names: frozenset[str] = frozenset(),
+        conditional: bool = False,
     ) -> None:
         """Capture RHS names before changing any assignment target."""
         if isinstance(node, ast.TypeAlias):
@@ -442,7 +489,7 @@ class _LiteralCollector:
                     else None
                 )
                 binding = _TypeBinding(value, snapshot, identity=identity)
-                environment[name] = binding
+                _rebind(environment, name, binding, conditional)
                 if identity:
                     self.aliases.append(binding)
 
@@ -500,16 +547,18 @@ class _LiteralCollector:
         *,
         in_class: bool,
         global_names: frozenset[str] = frozenset(),
+        conditional: bool = False,
     ) -> None:
         """Process one statement; nested lexical bodies have their own walk."""
         if isinstance(node, (ast.Import, ast.ImportFrom)):
-            environment.update(_import_bindings(node))
+            for name, binding in _import_bindings(node).items():
+                _rebind(environment, name, binding, conditional)
         elif isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             self._definition(node, prefix, environment, enclosing, in_class=in_class)
         elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.TypeAlias)):
             if in_class:
                 self._field(node, prefix, environment)
-            self._assignment(node, prefix, environment, global_names)
+            self._assignment(node, prefix, environment, global_names, conditional)
         else:
             self._mask_target(node, environment)
 
@@ -523,16 +572,17 @@ class _LiteralCollector:
         # the whole function, so it is collected once up front.
         global_names = frozenset(
             name
-            for node in _scope_nodes(tree)
+            for node, _ in _scope_nodes(tree)
             if isinstance(node, ast.Global)
             for name in node.names
         )
-        for node in _scope_nodes(tree):
+        for node, conditional in _scope_nodes(tree):
             self._statement(
                 node,
                 prefix,
                 environment,
                 enclosing,
+                conditional=conditional,
                 in_class=isinstance(tree, ast.ClassDef),
                 global_names=global_names,
             )
