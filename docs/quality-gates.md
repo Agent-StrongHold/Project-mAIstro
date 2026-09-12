@@ -32,8 +32,15 @@ A **floor** is a fixed minimum/maximum threshold. A **ratchet** records reviewed
 | version consistency | floor | exact match | any version site disagreeing with `VERSION` |
 | benchmark provenance | floor | pinned digests | a vendored IFEval/BFCL grader or corpus changing unnoticed |
 | architecture fitness | floor | zero violations | a forbidden cross-layer dependency |
-| execution lifecycles | identity ratchet | `quality/execution-lifecycles.json` | a new work-state enum nobody classified, or an entry left behind after its enum was deleted |
+| execution lifecycles | identity ratchet | `quality/execution-lifecycles.json` | a new work-state Enum or status-shaped Literal alias/field vocabulary nobody classified, or an entry left behind after its identity was deleted |
 | model egress | identity ratchet | `quality/model-egress.json` | a new module calling a model endpoint directly, or an entry left behind after one was migrated |
+
+The lifecycle-discovery contract, shared dispositions, metric version, prior-authorization
+boundary and explicit static-analysis limits are recorded in
+[ADR-032 section 7](adr/ADR-032-contracts-as-acceptance-criteria.md#7-static-lifecycle-discovery-contract-1136).
+Nested Enum and Literal identities retain lexical scope; quoted field annotations are
+parsed without evaluating source. Free-text and database-column lifecycle audits remain
+separate from this syntax gate.
 
 The blocking Vulture workflow pins Vulture 2.16 and scans `packages/*/src` at confidence 60 while excluding `*/third_party/*`; `quality/vulture-baseline.json` is banked from that exact command so a different analyzer version or scan scope cannot silently redefine the reviewed identity set.
 
