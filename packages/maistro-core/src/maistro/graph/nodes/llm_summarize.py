@@ -15,7 +15,7 @@ outranks it.
 from __future__ import annotations
 
 import os
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel, Field
 
@@ -34,6 +34,9 @@ from maistro.providers.router import CostAwareRouter
 
 from . import register_node
 from .base import BaseNode, NodeContext
+
+if TYPE_CHECKING:
+    from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
 
 
 class LlmSummarizeIn(BaseModel):
@@ -96,8 +99,8 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
         self,
         *,
         effect_context: CapabilityEffectContext | None = None,
-        registry: InMemoryProviderRegistry | None = None,
-        router: CostAwareRouter | None = None,
+        registry: LLMProviderRegistry | None = None,
+        router: LLMRouter | None = None,
     ) -> None:
         # The container passes its own capability_effects so resolver-built
         # nodes resolve the same Binding/Invocation authorities (#55 wiring

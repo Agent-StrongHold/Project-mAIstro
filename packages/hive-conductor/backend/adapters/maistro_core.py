@@ -151,6 +151,8 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         # default Workspace and a core that did not would then disagree
         # about where unscoped Runs live, silently.
         workspace_id=settings.hive_default_workspace_id,
+        model_bindings=settings.model_bindings,
+        provider_config_path=settings.provider_config_path,
         # Without this the container took the ephemeral branch and built
         # in-memory stores, however the deployment was configured -- the
         # bridge constructs `AgentConfig` directly, so it never passed

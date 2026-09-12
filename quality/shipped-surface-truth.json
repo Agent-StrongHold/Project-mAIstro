@@ -176,7 +176,7 @@
       "disposition": "canonical",
       "production_enabled": true,
       "reason": "runs the visual quality evaluation",
-      "effect_owner": "services visual_quality_eval"
+      "effect_owner": "maistro.capabilities ModelChatEgress -> canonical Invocation"
     },
     {
       "source": "packages/hive-conductor/backend/routes/capabilities.py",

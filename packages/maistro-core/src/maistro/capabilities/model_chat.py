@@ -92,10 +92,13 @@ def resolve_model_chat_provider(
         selection = binding.provider_name or alias
         if selection:
             try:
-                metadata: ModelMetadata | None = await registry.get_model(selection)
+                metadata: ModelMetadata = await registry.get_model(selection)
             except ModelNotFoundError:
-                metadata = None
-            if metadata is not None and not registry.is_available(metadata.name):
+                return Unavailable(
+                    slot=MODEL_CHAT_CAPABILITY,
+                    reason=f"selected model {selection!r} is not registered",
+                )
+            if not registry.is_available(metadata.name):
                 return Unavailable(
                     slot=MODEL_CHAT_CAPABILITY,
                     reason=(
