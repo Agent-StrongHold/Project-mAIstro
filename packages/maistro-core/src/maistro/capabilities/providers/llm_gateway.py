@@ -28,6 +28,11 @@ from maistro.providers.types import ModelMetadata
 
 #: The canonical capability every governed model call requests.
 MODEL_CHAT_CAPABILITY = "model.chat"
+#: The physical credential pool used by the approved LiteLLM gateway Provider.
+MODEL_GATEWAY_CREDENTIAL_PROVIDER = "litellm"
+#: Default key identity for AgentConfig.litellm_key when a Binding names no
+#: narrower credential refs. It is an authorization reference, never a secret.
+DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF = "litellm-gateway"
 
 _GATEWAY_TRUST_TIER = "t1"
 
@@ -37,7 +42,9 @@ class GatewayEndpoint(BaseModel):
 
     ``base_url`` is the gateway root (a ``/v1`` suffix is appended when absent,
     matching the shipped LiteLLM gateway convention). The API key never enters
-    a Binding, Invocation request, or persisted result.
+    a Binding, Invocation request, or persisted result. Governed production
+    model egress replaces ``api_key`` with the scoped credential selected from
+    the resolved Binding before it crosses the physical executor seam.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -63,7 +70,9 @@ class LlmGatewayProvider:
 
     ``name`` is the selected model alias (or the Binding's pinned provider
     name), so the persisted :class:`ResolvedBinding` records exactly which
-    model the governed call used.
+    model the governed call used. ``credential_provider`` names the physical
+    gateway pool instead of the upstream model vendor: MAIstro authenticates to
+    LiteLLM, while LiteLLM owns the OpenAI/Anthropic/etc. credentials behind it.
     """
 
     def __init__(self, metadata: ModelMetadata | None, *, model: str) -> None:
@@ -81,6 +90,10 @@ class LlmGatewayProvider:
     @property
     def trust_tier(self) -> str:
         return _GATEWAY_TRUST_TIER
+
+    @property
+    def credential_provider(self) -> str:
+        return MODEL_GATEWAY_CREDENTIAL_PROVIDER
 
     @property
     def metadata(self) -> ModelMetadata | None:
@@ -161,7 +174,9 @@ async def execute_model_chat(
 
 
 __all__ = [
+    "DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF",
     "MODEL_CHAT_CAPABILITY",
+    "MODEL_GATEWAY_CREDENTIAL_PROVIDER",
     "GatewayEndpoint",
     "LlmGatewayProvider",
     "ModelChatRequest",

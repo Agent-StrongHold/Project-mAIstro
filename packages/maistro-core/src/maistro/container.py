@@ -815,6 +815,8 @@ class Container:
                 guest_peers=self.guest_peers,
                 run_store=self.run_store,
                 effect_context=self.capability_effects,
+                provider_registry=self.provider_registry,
+                llm_router=self.llm_router,
             ),
         )
         executed = 0
@@ -891,6 +893,8 @@ class Container:
                 guest_peers=self.guest_peers,
                 run_store=self.run_store,
                 effect_context=self.capability_effects,
+                provider_registry=self.provider_registry,
+                llm_router=self.llm_router,
             ),
         )
         resumed = 0
@@ -1521,6 +1525,9 @@ async def create_container(
     # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) -----------
     wired_harness_adapters = _wire_harness_adapters(harness_adapters)
     capability_effects = new_in_memory_effect_context()
+    from maistro.capabilities.model_binding_bootstrap import bootstrap_model_bindings
+
+    await bootstrap_model_bindings(config, capability_effects)
     spawn_harness_node = AgentSpawnHarnessNode(
         adapters=wired_harness_adapters, effect_context=capability_effects
     )
@@ -2252,6 +2259,8 @@ def _di_node(
     guest_peers: Any,
     run_store: RunStore | None,
     effect_context: CapabilityEffectContext | None,
+    provider_registry: LLMProviderRegistry | None,
+    llm_router: LLMRouter | None,
 ) -> Any:
     """Construct a dependency-injected node kind, or None for registry kinds.
 
@@ -2269,10 +2278,13 @@ def _di_node(
     if kind == "agent.spawn_harness":
         return AgentSpawnHarnessNode(adapters=harness_adapters, effect_context=effect_context)
     if kind == "llm.summarize":
-        # The shipped model path crosses the governed model egress (#56):
-        # the node resolves Bindings and files Invocations against the same
-        # authorities the container's own effect nodes use.
-        return LlmSummarizeNode(effect_context=effect_context)
+        # Production callers pass the exact Container collaborators; bare/test
+        # resolvers may omit them and remain fail-closed on empty defaults.
+        return LlmSummarizeNode(
+            effect_context=effect_context,
+            registry=provider_registry,
+            router=llm_router,
+        )
     if kind == "rsi.quota_pace_trigger":
         return RsiQuotaPaceTriggerNode(usage_log)
     if kind == "agent.delegate_remote":
@@ -2297,6 +2309,8 @@ def build_node_resolver(
     guest_peers: Any = None,
     run_store: RunStore | None = None,
     effect_context: CapabilityEffectContext | None = None,
+    provider_registry: LLMProviderRegistry | None = None,
+    llm_router: LLMRouter | None = None,
 ) -> Callable[[str, Any], Any]:
     """Build the production durable-executor node resolver.
 
@@ -2323,9 +2337,9 @@ def build_node_resolver(
     resolved_adapters = harness_adapters if harness_adapters is not None else {}
     resolved_usage_log = usage_log if usage_log is not None else get_default_usage_log()
     # The container passes its own capability_effects so resolver-built
-    # spawn_harness nodes resolve the same Binding/Invocation authorities the
-    # container's own node does (#55). Bare callers keep the process default,
-    # which registers no Bindings and therefore authorizes nothing.
+    # effect nodes resolve the same Binding/Invocation authorities the
+    # container's own node does (#55). Bare callers keep no populated model
+    # collaborators and therefore authorize/route nothing implicitly.
     resolved_effect_context = effect_context
 
     def _resolver(node_id: str, graph: Any) -> Any:
@@ -2353,6 +2367,8 @@ def build_node_resolver(
             guest_peers=guest_peers,
             run_store=run_store,
             effect_context=resolved_effect_context,
+            provider_registry=provider_registry,
+            llm_router=llm_router,
         )
         return injected if injected is not None else get_node(kind)()
 
