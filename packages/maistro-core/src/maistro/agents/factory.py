@@ -510,6 +510,9 @@ async def create_agents(
     rca_extractor: Any = None,
     learning_promoter: Any = None,
     tool_registry: Any = None,
+    effect_context: Any = None,
+    workspace_id: str = "",
+    project_id: str = "",
     require_agents: bool = False,
 ) -> dict[str, Agent]:
     _register_custom_strategies()
@@ -532,6 +535,9 @@ async def create_agents(
         "rca_extractor": rca_extractor,
         "learning_promoter": learning_promoter,
         "tool_registry": tool_registry,
+        "effect_context": effect_context,
+        "workspace_id": workspace_id,
+        "project_id": project_id,
     }
 
     if sa_engine:

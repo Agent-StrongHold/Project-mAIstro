@@ -9,24 +9,18 @@ than retryable failure: an exception can arrive after the remote system has
 already committed the side effect. A provider/adapter may raise
 :class:`EffectNotApplied` only when it can prove no external effect occurred.
 
-**Nothing in this repository constructs an Invocation outside tests.** Neither
-:class:`InvocationExecutionService` nor its governed wrapper is instantiated by
-the container, a route, or a node; the one caller of the seam,
-``HarnessSessionManager.send_invocation``, is itself unreached. This layer is the
-boundary #55 is going to route provider calls through, and it is written and
-tested ahead of that. Read it as a specification with a conformance suite, not
-as a description of what runs today: an id here does not appear in a log line,
-and no stored Invocation row exists in any deployment.
-
-Stating that is the point of the paragraph. A reader who finds a persisted
-effect-key ledger reasonably assumes retries are already deduplicated by it,
-and would then be wrong about how the running system recovers.
+The composition root constructs this service for governed effect consumers.
+Provider selection, quota reservation, physical dispatch, usage settlement and
+retry safety therefore meet here; router and Agent quota arguments are retained
+only for legacy selection/reporting compatibility. Durable deployments may
+provide a shared ``QuotaAdmission`` implementation, while ephemeral contexts
+use the explicitly process-local implementation from ``quota.invocation``.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
@@ -36,6 +30,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from maistro.capabilities.binding import Binding, ResolvedBinding, ResolvedCapabilityProvider
 from maistro.capabilities.types import Unavailable
+from maistro.quota.invocation import (
+    QuotaAdmission,
+    QuotaAmount,
+    QuotaOutcome,
+    QuotaReservation,
+    QuotaSettlement,
+)
 
 
 def _id() -> str:
@@ -95,6 +96,23 @@ class InvocationUsage(BaseModel):
         return self
 
 
+class InvocationQuotaEvidence(BaseModel):
+    """Secret-free admission and accounting evidence for one Invocation."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    scope_key: str
+    workspace_id: str
+    project_id: str
+    principal_id: str = ""
+    provider: str
+    capability: str
+    state: str
+    reserved: dict[str, int | float] = Field(default_factory=dict)
+    final: dict[str, int | float] | None = None
+    reason: str | None = None
+
+
 class Invocation(BaseModel):
     """One actual provider call beneath one physical Attempt."""
 
@@ -104,9 +122,11 @@ class Invocation(BaseModel):
     run_id: str
     node_run_id: str
     attempt_id: str
+    principal_id: str = ""
     binding: ResolvedBinding
     effect_key: str
     status: InvocationStatus = InvocationStatus.CREATED
+    quota: InvocationQuotaEvidence | None = None
     request: Any | None = None
     result: Any | None = None
     usage: InvocationUsage | None = None
@@ -222,12 +242,18 @@ UsageExtractor = Callable[[Any], "InvocationUsage | None"]
 class InvocationExecutionService:
     """Resolve one Binding, persist one provider call, and guard effect retries.
 
-    Unreached in production: nothing constructs this outside tests, and the
-    effect-retry guard below therefore protects no live call yet (#55).
+    The composition root supplies this service to governed effect consumers;
+    no caller may dispatch around its reservation and accounting seam (#55).
     """
 
-    def __init__(self, *, store: InvocationStore) -> None:
+    def __init__(
+        self,
+        *,
+        store: InvocationStore,
+        quota_admission: QuotaAdmission | None = None,
+    ) -> None:
         self._store = store
+        self._quota = quota_admission
         self._effect_lock = asyncio.Lock()
 
     async def latest_effect(
@@ -260,6 +286,8 @@ class InvocationExecutionService:
         resolver: ProviderResolver,
         executor: ProviderExecutor,
         usage_from: UsageExtractor | None = None,
+        principal_id: str = "",
+        quota_estimate: QuotaAmount | None = None,
     ) -> Invocation:
         """Execute one effect, deduplicating or blocking unsafe recovery.
 
@@ -303,6 +331,7 @@ class InvocationExecutionService:
                     run_id=run_id,
                     node_run_id=node_run_id,
                     attempt_id=attempt_id,
+                    principal_id=principal_id,
                     binding=resolved,
                     effect_key=effect_key,
                     request=request,
@@ -316,39 +345,144 @@ class InvocationExecutionService:
             )
             invocation = await self._store.save(running)
 
+        invocation, reservation = await self._admit_quota(
+            invocation,
+            binding=binding,
+            provider=provider,
+            principal_id=principal_id,
+            quota_estimate=quota_estimate,
+        )
+
         try:
             result = await executor(provider, request)
         except EffectNotApplied as exc:
+            settlement = await self._settle(reservation, QuotaOutcome.FAILED)
             await self._terminalize(
                 invocation,
                 InvocationStatus.FAILED,
                 error=str(exc),
+                quota=_settled_evidence(invocation.quota, settlement),
             )
             raise
         except asyncio.CancelledError:
-            # Cancellation after provider dispatch has indeterminate external
-            # outcome unless the slot-specific adapter proves otherwise.
+            # Cancellation after provider dispatch is indeterminate. Keep the
+            # reservation until a verifier explicitly reconciles the outcome.
+            settlement = await self._settle(reservation, QuotaOutcome.UNKNOWN)
             await self._terminalize(
                 invocation,
                 InvocationStatus.UNKNOWN,
                 error="provider invocation cancelled with unknown external outcome",
+                quota=_settled_evidence(invocation.quota, settlement),
             )
             raise
         except Exception as exc:
+            settlement = await self._settle(reservation, QuotaOutcome.UNKNOWN)
             await self._terminalize(
                 invocation,
                 InvocationStatus.UNKNOWN,
                 error=str(exc) or type(exc).__name__,
+                quota=_settled_evidence(invocation.quota, settlement),
             )
             raise
 
-        usage = usage_from(result) if usage_from is not None else None
+        try:
+            usage = usage_from(result) if usage_from is not None else None
+        except Exception as exc:
+            # The provider succeeded but its report could not be interpreted;
+            # retain the reservation until delayed usage evidence reconciles it.
+            settlement = await self._settle(reservation, QuotaOutcome.UNKNOWN)
+            await self._terminalize(
+                invocation,
+                InvocationStatus.UNKNOWN,
+                error=f"provider usage could not be recorded: {exc}",
+                quota=_settled_evidence(invocation.quota, settlement),
+            )
+            raise
+        settlement = await self._settle(reservation, QuotaOutcome.COMPLETED, usage)
 
         return await self._terminalize(
             invocation,
             InvocationStatus.COMPLETED,
             result=result,
             usage=usage,
+            quota=_settled_evidence(invocation.quota, settlement),
+        )
+
+    async def _admit_quota(
+        self,
+        invocation: Invocation,
+        *,
+        binding: Binding,
+        provider: ResolvedCapabilityProvider,
+        principal_id: str,
+        quota_estimate: QuotaAmount | None,
+    ) -> tuple[Invocation, QuotaReservation | None]:
+        if self._quota is None:
+            return invocation, None
+        try:
+            reservation = await self._quota.reserve(
+                invocation_id=invocation.invocation_id,
+                binding=binding,
+                provider=provider.name,
+                principal_id=principal_id,
+                capability=binding.capability,
+                amount=quota_estimate or QuotaAmount(),
+            )
+        except Exception as exc:
+            denied = invocation.model_copy(
+                update={
+                    "quota": InvocationQuotaEvidence(
+                        scope_key="",
+                        workspace_id=binding.workspace_id,
+                        project_id=binding.project_id,
+                        principal_id=principal_id,
+                        provider=provider.name,
+                        capability=binding.capability,
+                        state="denied",
+                        reason=str(exc) or type(exc).__name__,
+                    )
+                }
+            )
+            await self._terminalize(
+                denied,
+                InvocationStatus.FAILED,
+                error=str(exc) or type(exc).__name__,
+            )
+            raise
+        admitted = await self._store.save(
+            invocation.model_copy(update={"quota": _reserved_evidence(reservation)})
+        )
+        return admitted, reservation
+
+    async def reconcile_unknown(
+        self,
+        invocation_id: str,
+        *,
+        usage: InvocationUsage | None = None,
+        error: str | None = None,
+    ) -> Invocation:
+        """Apply delayed provider evidence to an UNKNOWN Invocation.
+
+        A positive usage report commits the held reservation; an explicit
+        ``usage=None`` report proves the effect did not consume quota and rolls
+        it back. This is intentionally a method on the canonical service, not
+        a router/Agent recovery hook.
+        """
+        invocation = await self._store.get(invocation_id)
+        if invocation is None:
+            raise KeyError(f"Invocation {invocation_id!r} does not exist")
+        if invocation.status is not InvocationStatus.UNKNOWN:
+            raise ValueError("only UNKNOWN Invocations can be reconciled")
+        if self._quota is None:
+            raise ValueError("Invocation has no quota admission authority")
+        settlement = await self._quota.reconcile(invocation_id, usage)
+        status = InvocationStatus.COMPLETED if usage is not None else InvocationStatus.FAILED
+        return await self._terminalize(
+            invocation,
+            status,
+            usage=usage,
+            error=error or (None if usage is not None else "provider proved no effect occurred"),
+            quota=_settled_evidence(invocation.quota, settlement),
         )
 
     async def _terminalize(
@@ -359,6 +493,7 @@ class InvocationExecutionService:
         result: Any | None = None,
         error: str | None = None,
         usage: InvocationUsage | None = None,
+        quota: InvocationQuotaEvidence | None = None,
     ) -> Invocation:
         terminal = invocation.model_copy(
             update={
@@ -367,17 +502,193 @@ class InvocationExecutionService:
                 "usage": usage,
                 "error": error,
                 "finished_at": datetime.now(UTC),
+                **({"quota": quota} if quota is not None else {}),
             }
         )
         return await self._store.save(terminal)
+
+    async def _settle(
+        self,
+        reservation: QuotaReservation | None,
+        outcome: QuotaOutcome,
+        usage: InvocationUsage | None = None,
+    ) -> QuotaSettlement | None:
+        if self._quota is None or reservation is None:
+            return None
+        return await self._quota.settle(reservation.invocation_id, outcome, usage)
+
+
+def _reserved_evidence(reservation: QuotaReservation) -> InvocationQuotaEvidence:
+    return InvocationQuotaEvidence(
+        scope_key=reservation.scope_key,
+        workspace_id=reservation.workspace_id,
+        project_id=reservation.project_id,
+        principal_id=reservation.principal_id,
+        provider=reservation.provider,
+        capability=reservation.capability,
+        state="reserved",
+        reserved=reservation.amount.as_dict(),
+    )
+
+
+def _settled_evidence(
+    prior: InvocationQuotaEvidence | None,
+    settlement: QuotaSettlement | None,
+) -> InvocationQuotaEvidence | None:
+    if settlement is None:
+        return prior
+    if prior is None:
+        return None
+    state = {
+        QuotaOutcome.COMPLETED: "committed",
+        QuotaOutcome.FAILED: "rolled_back",
+        QuotaOutcome.UNKNOWN: "uncertain",
+    }[settlement.outcome]
+    return prior.model_copy(
+        update={
+            "state": state,
+            "final": settlement.final.as_dict() if settlement.final is not None else None,
+        }
+    )
+
+
+class _LlmClientProvider:
+    """Provider handle for an existing LLM client at the Agent seam."""
+
+    slot = "model.chat"
+    trust_tier = "t1"
+
+    def __init__(self, name: str) -> None:
+        self.name = name or "configured-llm"
+
+
+class GovernedLLMClient:
+    """Adapt the legacy Agent LLM protocol onto canonical Invocation.
+
+    Strategies remain interchangeable: Direct, ReAct, and custom strategies
+    receive this adapter instead of a raw client, so no strategy can dispatch
+    around reservation and usage settlement.
+    """
+
+    def __init__(
+        self,
+        client: Any,
+        *,
+        invocation_service: Any,
+        workspace_id: str,
+        project_id: str,
+        principal_id: str = "",
+        agent_id: str = "agent",
+        run_id: str = "",
+        node_run_id: str = "",
+        attempt_id: str = "",
+    ) -> None:
+        self._client = client
+        self._invocations = invocation_service
+        self._workspace_id = workspace_id or "default"
+        self._project_id = project_id or "default"
+        self._principal_id = principal_id
+        self._agent_id = agent_id
+        self._run_id = run_id
+        self._node_run_id = node_run_id
+        self._attempt_id = attempt_id
+        self._sequence = 0
+
+    async def complete(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
+        stream: bool = False,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        from maistro.observability.correlation import current_execution_context
+
+        context = current_execution_context()
+        self._sequence += 1
+        run_id = context.run_id or self._run_id or f"agent-turn:{uuid4().hex}"
+        node_run_id = context.node_run_id or self._node_run_id or self._agent_id
+        attempt_id = context.attempt_id or self._attempt_id or run_id
+        workspace_id = context.workspace_id or self._workspace_id
+        project_id = context.project_id or self._project_id
+        provider = _LlmClientProvider(model)
+        binding = Binding(
+            binding_id=f"agent-llm:{self._agent_id}:{workspace_id}:{project_id}:{model or 'auto'}",
+            workspace_id=workspace_id,
+            project_id=project_id,
+            capability="model.chat",
+            provider_name=provider.name,
+        )
+        request = {
+            "messages": messages,
+            "model": model,
+            "tools": tools,
+            "tool_choice": tool_choice,
+            "stream": stream,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "metadata": metadata,
+        }
+
+        async def resolve(_binding: Binding) -> _LlmClientProvider:
+            return provider
+
+        async def execute(_provider: _LlmClientProvider, payload: dict[str, Any]) -> Any:
+            return await self._client.complete(**payload)
+
+        def usage_from(body: Any) -> InvocationUsage | None:
+            if not isinstance(body, dict) or not isinstance(body.get("usage"), dict):
+                return None
+            usage = body["usage"]
+            return InvocationUsage(
+                input_units=int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0),
+                output_units=int(usage.get("completion_tokens") or usage.get("output_tokens") or 0),
+                model=str(body.get("model") or provider.name),
+                provider=provider.name,
+            )
+
+        estimate = max(1, (len(str(messages)) + 3) // 4)
+        invocation = await self._invocations.invoke(
+            binding=binding,
+            run_id=run_id,
+            node_run_id=node_run_id,
+            attempt_id=attempt_id,
+            effect_key=f"llm-completion:{self._sequence}",
+            request=request,
+            resolver=resolve,
+            executor=execute,
+            usage_from=usage_from,
+            principal_id=self._principal_id,
+            quota_estimate=QuotaAmount(input_tokens=estimate, output_tokens=max_tokens or 0),
+        )
+        if not isinstance(invocation.result, dict):
+            raise TypeError("governed LLM Invocation returned a non-object response")
+        return invocation.result
+
+    async def stream(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        **kwargs: Any,
+    ) -> AsyncIterator[str]:
+        response = await self.complete(messages, model, **kwargs)
+        choices = response.get("choices", [])
+        content = choices[0].get("message", {}).get("content", "") if choices else ""
+        yield str(content or "")
 
 
 __all__ = [
     "CapabilityUnavailable",
     "EffectNotApplied",
+    "GovernedLLMClient",
     "InMemoryInvocationStore",
     "Invocation",
     "InvocationExecutionService",
+    "InvocationQuotaEvidence",
     "InvocationStatus",
     "InvocationStore",
     "InvocationUsage",

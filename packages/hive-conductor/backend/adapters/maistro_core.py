@@ -30,10 +30,11 @@ class StubAgentPort:
         self,
         messages: list[dict[str, Any]],
         *,
+        auth: Any = None,
         session_id: str | None = None,
         intent_hint: str = "",
     ) -> dict[str, Any]:
-        del messages, session_id, intent_hint
+        del messages, auth, session_id, intent_hint
         raise RuntimeError("maistro-core Agent runtime is unavailable")
 
 
@@ -205,6 +206,11 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         # react's un-guarded branch. ADR-082526-3ca6: the runtime that owns
         # the agents owns their delegation dependencies.
         tool_executor=dispatch_tool,
+        effect_context=getattr(container, "capability_effects", None),
+        workspace_id=getattr(
+            getattr(container, "config", None), "workspace_id", config.workspace_id
+        ),
+        project_id="default",
         require_agents=True,
     )
     # The template for runtime materialization. Tolerant on purpose: with
@@ -281,6 +287,7 @@ class MaistroCoreBridge:
         self,
         messages: list[dict[str, Any]],
         *,
+        auth: Any = None,
         session_id: str | None = None,
         intent_hint: str = "",
     ) -> dict[str, Any]:
@@ -288,6 +295,7 @@ class MaistroCoreBridge:
             raise RuntimeError("MaistroCoreBridge.start() was not called")
         return await self._container.route_request(
             messages,
+            auth=auth,
             session_id=session_id,
             intent_hint=intent_hint,
         )
