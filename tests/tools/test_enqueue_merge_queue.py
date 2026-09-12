@@ -253,9 +253,12 @@ def test_queue_request_is_sha_bound_squash_only(enqueue: ModuleType) -> None:
 
     assert payload == {
         "sha": "deadbeef",
-        "merge_method": "squash",
         "merge_action": "merge_queue",
     }
+    # The queue mutation takes the head SHA + merge_action only: echoing
+    # merge_method (SQUASH lives in .github/merge-queue.json, not here) is
+    # rejected with HTTP 422 and burst-failed the 09-02 enqueues.
+    assert "merge_method" not in payload
     assert "direct_merge" not in payload.values()
 
 
