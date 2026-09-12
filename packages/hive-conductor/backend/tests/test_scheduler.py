@@ -13,6 +13,7 @@ import asyncio
 import pathlib
 import sys
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any, ClassVar
 
 import pytest
@@ -998,6 +999,244 @@ def test_a_manual_run_of_an_unknown_schedule_is_refused() -> None:
 
     with pytest.raises(ScheduleNotFireable, match="does not exist"):
         asyncio.run(fire_now("s-nope"))
+
+
+# --- #1119: manual fire enters the canonical admitter ------------------------
+
+
+async def _canonical_manual_fixture(*, template: bool = True) -> tuple[Any, Any]:
+    """A wired Container shape (the attribute surface the runner reads) plus
+    the canonical Root Project its scope resolution targets."""
+    from maistro.graph.definitions import GraphTemplate, Node
+    from maistro.graph.templates import InMemoryGraphTemplateStore
+    from maistro.projects.scope_store import InMemoryProjectScopeStore
+    from maistro.runs.store import InMemoryRunStore
+    from maistro.scheduling.admission import ScheduleRunAdmitter
+    from maistro.scheduling.store import InMemoryScheduleStore
+
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("ws-1")
+    run_store = InMemoryRunStore(project_store=projects)
+    template_store = InMemoryGraphTemplateStore()
+    schedule_store = InMemoryScheduleStore()
+    container = SimpleNamespace(
+        run_store=run_store,
+        template_store=template_store,
+        schedule_store=schedule_store,
+        schedule_admitter=ScheduleRunAdmitter(run_store, template_store, schedule_store),
+        project_scope_store=projects,
+    )
+    if template:
+        await container.template_store.put(
+            GraphTemplate(
+                template_id="sched-canonical-manual",
+                workspace_id="ws-1",
+                version=1,
+                name="Canonical manual",
+                nodes=[
+                    Node(
+                        node_id="only",
+                        node_type="transform.alias_keys",
+                        parameters={"mapping": {}},
+                    )
+                ],
+                edges=[],
+                metadata={"entry_node": "only"},
+            )
+        )
+    return container, root
+
+
+def _canonical_row(sid: str = "s-canonical-manual", max_runs: int | None = None) -> Any:
+    row = _bounded_stub(sid, "sched-canonical-manual", max_runs=max_runs)
+    row.workspace_id = "ws-1"
+    return row
+
+
+def _with_container(monkeypatch: pytest.MonkeyPatch, container: Any) -> None:
+    from services.scheduler import _ScheduleRunner
+
+    monkeypatch.setattr(_ScheduleRunner, "_canonical_container", staticmethod(lambda: container))
+
+
+def test_a_manual_fire_in_production_enters_the_canonical_admitter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1119: the configured route resolves the real scope through the
+    admitter — the recurring loop's authority, no synthetic identities, and no
+    compatibility execution beside the canonical Run."""
+    import stores
+    from services.scheduler import fire_now
+
+    async def scenario() -> None:
+        container, root = await _canonical_manual_fixture()
+        _with_container(monkeypatch, container)
+        canonical_admitter = container.schedule_admitter
+        calls: list[Any] = []
+
+        class _AdmitterSpy:
+            async def admit_due(self, *args: Any, **kwargs: Any) -> Any:
+                calls.append(self)
+                return await canonical_admitter.admit_due(*args, **kwargs)
+
+        container.schedule_admitter = _AdmitterSpy()
+
+        import services.dag_agents as dag_agents
+
+        def _registry_must_not_be_read() -> None:
+            raise AssertionError("compatibility registry must not be consulted")
+
+        monkeypatch.setattr(dag_agents, "get_registry", _registry_must_not_be_read)
+        row = _canonical_row()
+        stores.schedules._data[row.id] = row  # type: ignore[attr-defined]
+        try:
+            run_id = await fire_now("s-canonical-manual")
+            assert run_id
+            assert calls == [container.schedule_admitter]
+
+            assert len(container.run_store._runs) == 1  # type: ignore[attr-defined]
+            run = await container.run_store.get_run(run_id)
+            assert run is not None
+            assert run.workspace_id == "ws-1"
+            assert run.project_id == root.project_id
+            assert run.project_id != "hive:schedule:s-canonical-manual"
+            assert run.actor_principal_id == "u1"
+            assert run.provenance["admission_source"] == "schedule"
+            assert run.provenance["schedule_id"] == "s-canonical-manual"
+            assert run.provenance["catchup"] is False
+
+            recorded = await container.schedule_store.get("s-canonical-manual")
+            assert recorded is not None
+            assert recorded.last_run_id == run_id
+            assert recorded.runs_so_far == 1
+            assert row.last_run_id == run_id, "the product row mirrors the canonical cursor"
+        finally:
+            stores.schedules._data.pop(row.id, None)  # type: ignore[attr-defined]
+
+    asyncio.run(scenario())
+
+
+def test_a_manual_fire_primes_the_durable_template_from_the_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A template not yet in the store is migrated from the registry exactly as
+    a recurring tick would prime it — the registry is a migration source, never
+    the execution authority."""
+    import stores
+    from services.dag_agents import get_registry
+    from services.scheduler import fire_now
+
+    async def scenario() -> None:
+        container, _root = await _canonical_manual_fixture(template=False)
+        _with_container(monkeypatch, container)
+        row = _canonical_row()
+        stores.schedules._data[row.id] = row  # type: ignore[attr-defined]
+        registry = get_registry()
+        registry.register(
+            {
+                "id": "sched-canonical-manual",
+                "name": "Canonical manual",
+                "entry_node": "only",
+                "nodes": [
+                    {"id": "only", "kind": "transform.alias_keys", "config": {"mapping": {}}}
+                ],
+                "edges": [],
+            }
+        )
+        try:
+            run_id = await fire_now("s-canonical-manual")
+            assert run_id
+            template = await container.template_store.get("sched-canonical-manual")
+            assert template is not None, "the durable template now exists"
+            assert template.workspace_id == "ws-1"
+            assert len(container.run_store._runs) == 1  # type: ignore[attr-defined]
+        finally:
+            stores.schedules._data.pop(row.id, None)  # type: ignore[attr-defined]
+            registry.deregister("sched-canonical-manual")
+
+    asyncio.run(scenario())
+
+
+def test_a_manual_fire_with_no_durable_template_refuses_and_keeps_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Neither the store nor the registry names the target: the product refusal,
+    with cursor and row exactly as they were."""
+    import stores
+    from services.scheduler import ScheduleNotFireable, fire_now
+
+    async def scenario() -> None:
+        container, _root = await _canonical_manual_fixture(template=False)
+        _with_container(monkeypatch, container)
+        row = _canonical_row()
+        stores.schedules._data[row.id] = row  # type: ignore[attr-defined]
+        try:
+            with pytest.raises(ScheduleNotFireable, match="may not be registered"):
+                await fire_now("s-canonical-manual")
+            recorded = await container.schedule_store.get("s-canonical-manual")
+            assert recorded is not None
+            assert recorded.last_fired_at is None
+            assert recorded.last_run_id is None
+            assert recorded.runs_so_far == 0
+            assert row.last_run_id is None and row.last_run is None
+        finally:
+            stores.schedules._data.pop(row.id, None)  # type: ignore[attr-defined]
+
+    asyncio.run(scenario())
+
+
+def test_a_half_wired_container_fails_closed_instead_of_degrading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Container missing a collaborator must not silently fire through the
+    compatibility path — that is the second authority #1119 retires."""
+    import stores
+    from services.scheduler import ScheduleAdmissionUnavailable, fire_now
+
+    async def scenario() -> None:
+        container, _root = await _canonical_manual_fixture()
+        container.schedule_admitter = None  # the canonical seam that went missing
+        _with_container(monkeypatch, container)
+        row = _canonical_row()
+        stores.schedules._data[row.id] = row  # type: ignore[attr-defined]
+        try:
+            with pytest.raises(ScheduleAdmissionUnavailable):
+                await fire_now("s-canonical-manual")
+            assert len(container.run_store._runs) == 0  # type: ignore[attr-defined]
+            assert row.last_run_id is None and row.last_run is None
+        finally:
+            stores.schedules._data.pop(row.id, None)  # type: ignore[attr-defined]
+
+    asyncio.run(scenario())
+
+
+def test_a_manual_fire_spends_the_bound_on_the_canonical_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`max_runs` binds manual fires on the canonical store, and the disable
+    reaches both the canonical definition and the product row."""
+    import stores
+    from services.scheduler import ScheduleNotFireable, fire_now
+
+    async def scenario() -> None:
+        container, _root = await _canonical_manual_fixture()
+        _with_container(monkeypatch, container)
+        row = _canonical_row(max_runs=1)
+        stores.schedules._data[row.id] = row  # type: ignore[attr-defined]
+        try:
+            run_id = await fire_now("s-canonical-manual")
+            assert run_id
+            assert row.enabled is False
+            with pytest.raises(ScheduleNotFireable, match="all 1 of its runs"):
+                await fire_now("s-canonical-manual")
+            assert len(container.run_store._runs) == 1  # type: ignore[attr-defined]
+            recorded = await container.schedule_store.get("s-canonical-manual")
+            assert recorded is not None
+            assert recorded.runs_so_far == 1 and recorded.enabled is False
+        finally:
+            stores.schedules._data.pop(row.id, None)  # type: ignore[attr-defined]
+
+    asyncio.run(scenario())
 
 
 # --- #265: the HTTP surface --------------------------------------------------

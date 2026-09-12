@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.runs.evidence_json import json_of, model_of
 from maistro.scheduling.model import Schedule
-from maistro.scheduling.store import _advance
+from maistro.scheduling.store import FireReservation, _advance, _reserve, _settle
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import asyncpg
@@ -142,6 +142,47 @@ class PgScheduleStore:
                 json_of(advanced),
             )
         return advanced
+
+    async def reserve_fire(
+        self, schedule_id: str, *, fires: int = 1
+    ) -> tuple[Schedule, FireReservation] | None:
+        """Claim under the row lock, so two manual fires cannot both take the last run."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            payload = await conn.fetchval(
+                "SELECT payload FROM schedules WHERE schedule_id = $1 FOR UPDATE",
+                schedule_id,
+            )
+            if payload is None:
+                return None
+            reserved, reservation = _reserve(_schedule_of(payload), fires=fires)
+            await self._write(conn, reserved)
+        return reserved, reservation
+
+    async def settle_fire(
+        self, schedule_id: str, reservation: FireReservation, *, run_id: str | None
+    ) -> Schedule | None:
+        async with self._pool.acquire() as conn, conn.transaction():
+            payload = await conn.fetchval(
+                "SELECT payload FROM schedules WHERE schedule_id = $1 FOR UPDATE",
+                schedule_id,
+            )
+            if payload is None:
+                return None
+            settled = _settle(_schedule_of(payload), reservation, run_id=run_id)
+            await self._write(conn, settled)
+        return settled
+
+    @staticmethod
+    async def _write(conn: Any, schedule: Schedule) -> None:
+        await conn.execute(
+            """UPDATE schedules
+                   SET enabled = $2, next_due_at = $3, payload = $4::text::jsonb
+               WHERE schedule_id = $1""",
+            schedule.schedule_id,
+            schedule.enabled,
+            schedule.next_due_at,
+            json_of(schedule),
+        )
 
 
 __all__ = ["PgScheduleStore"]

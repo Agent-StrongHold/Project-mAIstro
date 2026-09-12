@@ -15,6 +15,7 @@ called by nobody.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -32,7 +33,11 @@ from maistro.runs.sources import (
     SCHEDULED_FOR_KEY,
 )
 from maistro.runs.store import InMemoryRunStore
-from maistro.scheduling.admission import ScheduleRunAdmitter
+from maistro.scheduling.admission import (
+    ManualFireRefused,
+    ScheduleAdmission,
+    ScheduleRunAdmitter,
+)
 from maistro.scheduling.model import OverlapPolicy, Schedule
 from maistro.scheduling.store import InMemoryScheduleStore
 
@@ -605,3 +610,225 @@ class TestAdmissionState:
         run = await runs.get_run(result.run_ids[0])
         assert run is not None
         assert run.status is RunStatus.QUEUED
+
+
+class TestManualFire:
+    """`admit_due(manual=True)` (#1119): the recurring authority, one occurrence wide.
+
+    A product "run this schedule now" is not an occurrence the cron
+    enumerated, so `evaluate()` has nothing to say about it — but everything
+    after that decision must be the recurring path's, or the same persisted
+    schedule stays reachable through two different firing semantics.
+    """
+
+    async def test_a_manual_fire_is_one_run_with_the_schedule_on_it(self, harness) -> None:
+        """Provenance, claim, and cursor behave exactly as `admit_due`'s."""
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id)
+        now = NOON + timedelta(minutes=7)
+
+        result = await admitter.admit_due(schedule, now=now, manual=True)
+
+        assert len(result.run_ids) == 1
+        assert not result.failures and result.already_fired == ()
+        run = await runs.get_run(result.run_ids[0])
+        assert run is not None
+        assert run.status is RunStatus.QUEUED
+        assert run.workspace_id == "w1"
+        assert run.project_id == project_id
+        assert run.provenance[ADMISSION_SOURCE] == SCHEDULE_SOURCE
+        assert run.provenance[SCHEDULE_ID_KEY] == schedule.schedule_id
+        assert run.provenance[SCHEDULED_FOR_KEY] == now.isoformat()
+        # The caller asked for a fire *now*; it is on-time by definition.
+        assert run.provenance[SCHEDULE_CATCHUP_KEY] is False
+
+        recorded = await schedules.get(schedule.schedule_id)
+        assert recorded is not None
+        assert recorded.last_run_id == run.run_id
+        assert recorded.runs_so_far == 1
+        # The recurrence cursor is the cron's, and a manual fire is not one of
+        # its occurrences: it stays exactly where the schedule left it.
+        assert recorded.last_fired_at == schedule.last_fired_at
+        assert recorded.next_due_at == schedule.next_due_at
+
+    async def test_a_manual_fire_does_not_carry_the_cursor_past_an_owed_occurrence(
+        self, harness
+    ) -> None:
+        """Cursor at 11:00, the 12:00 occurrence due, a manual fire at 12:00:30.
+
+        Stamping the fire on `last_fired_at` would start the next evaluation
+        after 12:00:30 and silently drop 12:00, although the manual Run claims
+        a different instant. The tick that follows must still admit 12:00.
+        """
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(
+            schedules, project_id, last_fired_at=NOON - timedelta(hours=1), next_due_at=NOON
+        )
+        moment = NOON + timedelta(seconds=30)
+
+        manual = await admitter.admit_due(schedule, now=moment, manual=True)
+        assert len(manual.run_ids) == 1
+        current = await schedules.get(schedule.schedule_id)
+        assert current is not None
+        assert current.last_fired_at == NOON - timedelta(hours=1)
+        assert current.next_due_at == NOON
+
+        ticked = await admitter.admit_due(current, now=moment)
+
+        assert len(ticked.run_ids) == 1
+        owed = await runs.get_run(ticked.run_ids[0])
+        assert owed is not None
+        assert owed.provenance[SCHEDULED_FOR_KEY] == NOON.isoformat()
+        recorded = await schedules.get(schedule.schedule_id)
+        assert recorded is not None
+        assert recorded.last_fired_at == NOON
+        assert recorded.runs_so_far == 2
+
+    async def test_concurrent_manual_fires_cannot_exceed_max_runs(
+        self, harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two requests on the last run, both past the snapshot check: one Run.
+
+        The quota is claimed before the Run exists, under the store's lock, so
+        the second caller is refused rather than counted after the fact.
+        """
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, max_runs=1)
+        release = asyncio.Event()
+        real_create = runs.create_run
+
+        async def _slow_create(*args: object, **kwargs: object) -> object:
+            await release.wait()
+            return await real_create(*args, **kwargs)
+
+        monkeypatch.setattr(runs, "create_run", _slow_create)
+        first = asyncio.create_task(admitter.admit_due(schedule, now=NOON, manual=True))
+        second = asyncio.create_task(
+            admitter.admit_due(schedule, now=NOON + timedelta(seconds=1), manual=True)
+        )
+        await asyncio.sleep(0)
+        release.set()
+        outcomes = await asyncio.gather(first, second, return_exceptions=True)
+
+        admitted = [item for item in outcomes if isinstance(item, ScheduleAdmission)]
+        refused = [item for item in outcomes if isinstance(item, ManualFireRefused)]
+        assert len(admitted) == 1 and len(refused) == 1
+        assert len(runs._runs) == 1  # type: ignore[attr-defined]
+        recorded = await schedules.get(schedule.schedule_id)
+        assert recorded is not None
+        assert recorded.runs_so_far == 1
+        assert recorded.enabled is False
+
+    async def test_a_run_that_exists_is_counted_even_if_recording_it_fails(
+        self, harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The slot is claimed before the Run, so a failure after creation
+        cannot leave a Run the count does not admit to: the next request is
+        refused instead of duplicating the work."""
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, max_runs=1)
+        real_settle = schedules.settle_fire
+
+        async def _settle_fails(schedule_id: str, reservation: object, *, run_id: str | None):
+            if run_id is not None:
+                raise RuntimeError("synthetic store outage after the Run exists")
+            return await real_settle(schedule_id, reservation, run_id=run_id)
+
+        monkeypatch.setattr(schedules, "settle_fire", _settle_fails)
+        with pytest.raises(RuntimeError, match="after the Run exists"):
+            await admitter.admit_due(schedule, now=NOON, manual=True)
+
+        assert len(runs._runs) == 1  # type: ignore[attr-defined]
+        recorded = await schedules.get(schedule.schedule_id)
+        assert recorded is not None
+        assert recorded.runs_so_far == 1
+        assert recorded.last_run_id is None, "the pointer is what the outage lost"
+        monkeypatch.setattr(schedules, "settle_fire", real_settle)
+        with pytest.raises(ManualFireRefused):
+            await admitter.admit_due(recorded, now=NOON + timedelta(minutes=1), manual=True)
+        assert len(runs._runs) == 1  # type: ignore[attr-defined]
+
+    async def test_a_manual_fire_counts_against_max_runs_and_disables(self, harness) -> None:
+        """A manual fire is a fire: it spends the bound and disables.
+
+        The compatibility path this replaces counted the fire but only on its
+        own cursor; the bound must bind on the canonical one either way.
+        """
+        admitter, _runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, max_runs=2)
+
+        first = await admitter.admit_due(schedule, now=NOON, manual=True)
+        assert not first.disabled
+        # The caller owes the admitter a current cursor — the hive layer
+        # re-reads the definition before every fire, as `_definition_for` does
+        # for the tick. Firing again on the stale pre-fire copy would undercount.
+        current = await schedules.get(schedule.schedule_id)
+        assert current is not None
+        second = await admitter.admit_due(current, now=NOON + timedelta(hours=1), manual=True)
+        assert second.disabled
+
+        recorded = await schedules.get(schedule.schedule_id)
+        assert recorded is not None
+        assert recorded.runs_so_far == 2
+        assert recorded.enabled is False
+        assert recorded.next_due_at is None
+
+    async def test_an_exhausted_schedule_refuses_and_changes_nothing(self, harness) -> None:
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, max_runs=1, runs_so_far=1)
+        before = await schedules.get(schedule.schedule_id)
+
+        with pytest.raises(ManualFireRefused, match="all 1 of its runs"):
+            await admitter.admit_due(schedule, now=NOON, manual=True)
+
+        after = await schedules.get(schedule.schedule_id)
+        assert after == before
+        assert len(runs._runs) == 0  # type: ignore[attr-defined]
+
+    async def test_an_unresolvable_template_refuses_and_keeps_the_schedule_unchanged(
+        self, harness
+    ) -> None:
+        """The durable template is the authority; refusing touches nothing."""
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, graph_template_id="nope")
+        before = await schedules.get(schedule.schedule_id)
+
+        with pytest.raises(GraphTemplateNotFound):
+            await admitter.admit_due(schedule, now=NOON, manual=True)
+
+        after = await schedules.get(schedule.schedule_id)
+        assert after == before
+        assert len(runs._runs) == 0  # type: ignore[attr-defined]
+
+    async def test_a_failed_run_creation_keeps_the_schedule_unchanged(
+        self, harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id)
+        before = await schedules.get(schedule.schedule_id)
+
+        async def _fail(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("synthetic create failure")
+
+        monkeypatch.setattr(runs, "create_run", _fail)
+        with pytest.raises(RuntimeError):
+            await admitter.admit_due(schedule, now=NOON, manual=True)
+
+        after = await schedules.get(schedule.schedule_id)
+        assert after == before
+
+    async def test_a_claimed_occurrence_is_reported_not_recreated(self, harness) -> None:
+        """Two fires racing on the same instant produce one Run (#220)."""
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id)
+
+        first = await admitter.admit_due(schedule, now=NOON, manual=True)
+        second = await admitter.admit_due(schedule, now=NOON, manual=True)
+
+        assert len(first.run_ids) == 1
+        assert second.run_ids == ()
+        assert second.already_fired == (NOON,)
+        assert len(runs._runs) == 1  # type: ignore[attr-defined]
+        recorded = await schedules.get(schedule.schedule_id)
+        assert recorded is not None
+        assert recorded.runs_so_far == 1, "a fire that already happened counts once"
