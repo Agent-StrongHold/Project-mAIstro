@@ -71,6 +71,7 @@ from maistro.runs.store import (
     AttemptNotFound,
     DuplicateOccurrence,
     NodeRunNotFound,
+    RunEffectClaim,
     RunIntegrityError,
     RunNotFound,
     StaleExecutionFence,
@@ -463,6 +464,128 @@ class PgRunStore:
             "SELECT run_id, payload, archive_key FROM canonical_runs WHERE run_id = $1", run_id
         )
         return Run.model_validate(payload) if payload is not None else None
+
+    async def find_child_run_by_effect(
+        self,
+        parent_run_id: str,
+        effect_key: str,
+    ) -> Run | None:
+        payload = await self._payload(
+            """SELECT run_id, payload, archive_key FROM canonical_runs
+               WHERE parent_run_id = $1
+                 AND payload -> 'provenance' ->> 'effect_key' = $2
+               ORDER BY payload ->> 'created_at', run_id LIMIT 1""",
+            parent_run_id,
+            effect_key,
+        )
+        return Run.model_validate(payload) if payload is not None else None
+
+    async def claim_run_by_effect(
+        self,
+        graph: Graph,
+        *,
+        effect_key: str,
+        parent_run_id: str | None = None,
+        parent_node_run_id: str | None = None,
+        allow_cross_project: bool = False,
+        persona_id: str | None = None,
+        actor_principal_id: str | None = None,
+        provenance: dict[str, Any] | None = None,
+        retention_expires_at: datetime | None = None,
+        initial_status: RunStatus = RunStatus.CREATED,
+    ) -> RunEffectClaim:
+        """Atomically insert or recover one logical effect."""
+        if not effect_key:
+            raise ValueError("effect_key must be non-empty")
+        await self._validate_graph_scope(graph)
+        if parent_node_run_id is not None and parent_run_id is None:
+            raise RunIntegrityError("parent_node_run_id requires parent_run_id")
+        run = Run(
+            workspace_id=graph.workspace_id,
+            project_id=graph.project_id,
+            graph=GraphSnapshot.from_graph(graph.model_copy(deep=True)),
+            parent_run_id=parent_run_id,
+            parent_node_run_id=parent_node_run_id,
+            persona_id=persona_id,
+            actor_principal_id=actor_principal_id,
+            provenance={**dict(provenance or {}), "effect_key": effect_key},
+            retention_expires_at=retention_expires_at,
+        )
+        run = admit_in_state(run, initial_status)
+        async with self._pool.acquire() as conn, conn.transaction():
+            existing_payload = await conn.fetchval(
+                """SELECT payload FROM canonical_runs
+                   WHERE payload -> 'provenance' ->> 'effect_key' = $1
+                   LIMIT 1""",
+                effect_key,
+            )
+            if existing_payload is not None:
+                return RunEffectClaim(
+                    Run.model_validate(decode_evidence(decode_payload(existing_payload))), False
+                )
+            if parent_run_id is not None:
+                parent_payload = await self._locked(conn, "canonical_runs", "run_id", parent_run_id)
+                parent = Run.model_validate(parent_payload)
+                validate_child_scope(
+                    parent,
+                    workspace_id=graph.workspace_id,
+                    project_id=graph.project_id,
+                    allow_cross_project=allow_cross_project,
+                )
+                if parent_node_run_id is not None:
+                    parent_node_run = NodeRun.model_validate(
+                        await self._locked(
+                            conn, "canonical_node_runs", "node_run_id", parent_node_run_id
+                        )
+                    )
+                    if parent_node_run.run_id != parent_run_id:
+                        raise RunIntegrityError(
+                            "parent_node_run_id does not belong to parent_run_id"
+                        )
+            inserted = await conn.fetchrow(
+                """INSERT INTO canonical_runs
+                   (run_id, workspace_id, project_id, parent_run_id,
+                    parent_node_run_id, status, payload, retention_expires_at)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7::text::jsonb, $8)
+                   ON CONFLICT DO NOTHING
+                   RETURNING run_id""",
+                run.run_id,
+                run.workspace_id,
+                run.project_id,
+                run.parent_run_id,
+                run.parent_node_run_id,
+                run.status.value,
+                json_of(run),
+                run.retention_expires_at,
+            )
+            if inserted is not None:
+                return RunEffectClaim(run, True)
+            existing_payload = await conn.fetchval(
+                """SELECT payload FROM canonical_runs
+                   WHERE payload -> 'provenance' ->> 'effect_key' = $1
+                   LIMIT 1""",
+                effect_key,
+            )
+            if existing_payload is None:
+                raise RunIntegrityError("logical effect claim conflicted with another constraint")
+            return RunEffectClaim(
+                Run.model_validate(decode_evidence(decode_payload(existing_payload))), False
+            )
+
+    async def find_run_by_effect(self, effect_key: str) -> Run | None:
+        payload = await self._payload(
+            """SELECT run_id, payload, archive_key FROM canonical_runs
+               WHERE payload -> 'provenance' ->> 'effect_key' = $1 LIMIT 1""",
+            effect_key,
+        )
+        return Run.model_validate(payload) if payload is not None else None
+
+    async def update_run_provenance(self, run_id: str, updates: dict[str, Any]) -> Run:
+        async with self._pool.acquire() as conn, conn.transaction():
+            run = Run.model_validate(await self._locked(conn, "canonical_runs", "run_id", run_id))
+            updated = run.model_copy(update={"provenance": {**run.provenance, **updates}})
+            await self._write(conn, "canonical_runs", "run_id", run_id, updated)
+            return updated
 
     async def list_by_status(
         self,

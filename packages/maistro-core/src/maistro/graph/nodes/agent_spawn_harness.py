@@ -26,6 +26,7 @@ from .base import (
     PAUSE_AWAITING_HARNESS,
     BaseNode,
     NodeContext,
+    ReplaySemantics,
     pause_until,
 )
 from .capability_effect import invoke_capability_effect
@@ -76,7 +77,7 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
     input_schema: ClassVar[type[BaseModel]] = SpawnHarnessIn
     output_schema: ClassVar[type[BaseModel]] = SpawnHarnessOut
     cost_hint: ClassVar[float] = 5.0
-    idempotent: ClassVar[bool] = False
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.EFFECT_KEY
     external_io: ClassVar[bool] = True
     display_name: ClassVar[str] = "Agent: spawn harness"
     description: ClassVar[str] = (

@@ -71,12 +71,21 @@ class InMemoryAuditLogger:
         )
 
 
+class DelegationMessages(list[dict[str, str]]):
+    """JSON-compatible messages carrying transport idempotency metadata."""
+
+    def __init__(self, messages: list[dict[str, str]], *, effect_key: str = "") -> None:
+        super().__init__(messages)
+        self.effect_key = effect_key
+
+
 class GuestPeerManager:
     """Registry of trusted external A2A peers with secure delegation."""
 
     def __init__(self, audit: AuditLogger | None = None) -> None:
         self._peers: dict[str, PeerTrust] = {}
         self._audit = audit or InMemoryAuditLogger()
+        self._delegations_by_effect: dict[tuple[str, str], DelegationResult] = {}
 
     def register_peer(self, peer: PeerTrust) -> None:
         self._peers[peer.peer_name] = peer
@@ -95,8 +104,25 @@ class GuestPeerManager:
         peer_name: str,
         agent_id: str,
         messages: list[dict[str, str]],
+        *,
+        idempotency_key: str = "",
     ) -> DelegationResult:
-        """Delegate a task to an external A2A peer."""
+        """Delegate a task to an external A2A peer.
+
+        The key is sent at the transport boundary so a remote admission service
+        can deduplicate a request whose caller lost its lease after dispatch.
+        """
+        idempotency_key = idempotency_key or str(getattr(messages, "effect_key", ""))
+        if idempotency_key:
+            cached = self._delegations_by_effect.get((peer_name, idempotency_key))
+            if cached is not None:
+                return DelegationResult(
+                    task_id=cached.task_id,
+                    peer_name=cached.peer_name,
+                    status=cached.status,
+                    result=cached.result,
+                    error=cached.error,
+                )
         peer = self.get_peer(peer_name)
         if not peer:
             await self._audit.log_delegation(
@@ -138,6 +164,8 @@ class GuestPeerManager:
             )
 
         headers: dict[str, str] = {"Content-Type": "application/json"}
+        if idempotency_key:
+            headers["Idempotency-Key"] = idempotency_key
         if peer.auth_method == "api_token" and peer.auth_credential:
             headers["Authorization"] = f"Bearer {peer.auth_credential}"
 
@@ -145,7 +173,11 @@ class GuestPeerManager:
             async with shared_client(timeout=30.0) as client:
                 resp = await client.post(
                     f"{peer.peer_url.rstrip('/')}/a2a/tasks/create",
-                    json={"agent_id": agent_id, "messages": messages},
+                    json={
+                        "agent_id": agent_id,
+                        "messages": messages,
+                        "idempotency_key": idempotency_key,
+                    },
                     headers=headers,
                 )
                 resp.raise_for_status()
@@ -156,11 +188,14 @@ class GuestPeerManager:
                 agent_id,
                 f"task_id={data.get('task_id', '')}",
             )
-            return DelegationResult(
+            result = DelegationResult(
                 task_id=data.get("task_id", ""),
                 peer_name=peer_name,
                 status="submitted",
             )
+            if idempotency_key and result.task_id:
+                self._delegations_by_effect[(peer_name, idempotency_key)] = result
+            return result
         except Exception as exc:
             await self._audit.log_delegation(
                 peer_name,

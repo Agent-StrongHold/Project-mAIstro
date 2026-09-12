@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from maistro.http import shared_client
 
 from . import register_node
-from .base import BaseNode, NodeContext
+from .base import BaseNode, NodeContext, ReplaySemantics
 
 
 class AirtablePollIn(BaseModel):
@@ -52,7 +52,7 @@ class AirtablePollNode(BaseNode[AirtablePollIn, AirtablePollOut]):
     input_schema: ClassVar[type[BaseModel]] = AirtablePollIn
     output_schema: ClassVar[type[BaseModel]] = AirtablePollOut
     cost_hint: ClassVar[float] = 1.0
-    idempotent: ClassVar[bool] = True
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.IDEMPOTENT
     external_io: ClassVar[bool] = True
     display_name: ClassVar[str] = "Airtable: poll table"
     description: ClassVar[str] = (
