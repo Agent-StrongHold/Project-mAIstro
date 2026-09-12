@@ -163,7 +163,7 @@ def _route_path(expr: ast.expr, *, dynamic_at: ast.expr) -> str:
     # The expression's digest is part of the identity, not only its line:
     # rewriting `f"{PREFIX}/safe"` to `f"{PREFIX}/admin"` on the same line is
     # a different shipped route and must not inherit the old disposition.
-    digest = hashlib.sha1(ast.unparse(expr).encode("utf-8")).hexdigest()[:8]
+    digest = hashlib.sha256(ast.unparse(expr).encode("utf-8")).hexdigest()[:8]
     return f"<dynamic-route:{dynamic_at.lineno}:{digest}>"
 
 
