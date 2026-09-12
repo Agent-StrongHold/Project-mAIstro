@@ -594,6 +594,33 @@ class TestWhatTheTickRefusesToTouch:
 
         assert resumable_pause(node_run, [failed], now=datetime.now(UTC)) is None
 
+    async def test_a_run_whose_every_attempt_was_reclaimed_stays_parked(self) -> None:
+        """Looking past reclaimed Attempts can run out of Attempts.
+
+        Reading past a recovery artefact only works because a real pause was
+        recorded before it. A NodeRun whose every physical try was reclaimed
+        has no recorded pause at all, so there is nothing to re-enter and it
+        must stay parked rather than be resumed on an invented one.
+        """
+        from maistro.runs.consumption import resumable_pause
+        from maistro.runs.lifecycle import reclaimed_attempt_error
+        from maistro.runs.model import Attempt, NodeRun
+
+        node_run = NodeRun(run_id="r", node_id="n1", ordinal=1, status=RunStatus.WAITING)
+        reclaimed = [
+            Attempt(
+                node_run_id=node_run.node_run_id,
+                ordinal=ordinal,
+                status=AttemptStatus.CANCELLED,
+                error=reclaimed_attempt_error(f"worker-{ordinal}"),
+                finished_at=datetime.now(UTC),
+            )
+            for ordinal in (1, 2)
+        ]
+
+        assert resumable_pause(node_run, reclaimed, now=datetime.now(UTC)) is None
+        assert resumable_pause(node_run, [], now=datetime.now(UTC)) is None
+
 
 class TestThePollDeadlineCanNowBeReached:
     @pytest.mark.ac("SPEC-082926-a44e/AC-6")
