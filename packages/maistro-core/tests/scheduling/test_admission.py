@@ -162,6 +162,27 @@ class TestRequestCorrelation:
         assert run is not None
         assert run.provenance.get(REQUEST_ID_KEY)
 
+    async def test_admitting_directly_with_no_context_omits_the_key(self, harness) -> None:
+        """`_admit_one` only ever runs inside `admit_due`'s own
+        `detached_execution_context()`, which always has a request_id bound
+        -- but the method itself must not assume that; called with nothing
+        bound (as it would be if some future caller admitted directly), the
+        key is absent rather than blank, same discipline as `schedule_inputs`."""
+        from maistro.graph.templates import require_template
+        from maistro.scheduling.engine import FireDecision
+
+        admitter, runs, templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id)
+        template = await require_template(templates, TEMPLATE_ID)
+
+        run_id = await admitter._admit_one(
+            schedule, template, FireDecision(scheduled_for=NOON, catchup=False)
+        )
+
+        run = await runs.get_run(run_id)
+        assert run is not None
+        assert REQUEST_ID_KEY not in run.provenance
+
     async def test_it_does_not_leak_a_stray_ambient_context(self, harness) -> None:
         """The tick loop shares an event loop with whatever else is running;
         an unrelated Attempt's ids left bound on this tick must not become

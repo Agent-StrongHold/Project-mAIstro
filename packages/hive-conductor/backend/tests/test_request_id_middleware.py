@@ -98,3 +98,22 @@ class TestRequestIDPresence:
         r = c.get("/boom")
         assert r.status_code == 500
         assert r.headers["X-Request-ID"]
+
+    def test_the_handler_does_not_crash_with_no_id_bound(self) -> None:
+        """`request.state.request_id` is only ever set by `RequestIDMiddleware`
+        -- the handler itself must not assume it's always present, since a
+        future caller could register it without that middleware."""
+        from fastapi import FastAPI
+        from main import unhandled_exception_handler
+
+        test_app = FastAPI()
+        test_app.add_exception_handler(Exception, unhandled_exception_handler)
+
+        @test_app.get("/boom")
+        async def _boom() -> None:
+            raise RuntimeError("synthetic failure for this test")
+
+        c = TestClient(test_app, raise_server_exceptions=False)
+        r = c.get("/boom")
+        assert r.status_code == 500
+        assert "X-Request-ID" not in r.headers
