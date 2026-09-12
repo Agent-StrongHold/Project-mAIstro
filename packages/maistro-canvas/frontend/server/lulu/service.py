@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -217,10 +218,23 @@ class CoverPreflightRequest(BaseModel):
     interior_page_count: int = 32
 
 
+#: Where a caller may point preflight at. The export pipeline writes PDFs
+#: under the platform temp directory; anything outside it is not a print job.
+PREFLIGHT_ROOT = os.path.normpath(os.environ.get("LULU_PREFLIGHT_ROOT") or tempfile.gettempdir())
+
+
+def _preflight_path(raw: str) -> str:
+    """Contain a caller-supplied PDF path to ``PREFLIGHT_ROOT`` or refuse."""
+    candidate = os.path.normpath(raw)
+    if candidate != PREFLIGHT_ROOT and not candidate.startswith(PREFLIGHT_ROOT + os.sep):
+        raise HTTPException(400, detail="pdf_path must be inside the preflight directory")
+    return candidate
+
+
 @app.post("/preflight/interior")
 def preflight_interior_endpoint(req: PreflightRequest):
     result = preflight_interior(
-        pdf_path=req.pdf_path,
+        pdf_path=_preflight_path(req.pdf_path),
         pod_package_id=req.pod_package_id,
         expected_page_count=req.page_count,
     )
@@ -237,7 +251,7 @@ def preflight_interior_endpoint(req: PreflightRequest):
 @app.post("/preflight/cover")
 def preflight_cover_endpoint(req: CoverPreflightRequest):
     result = preflight_cover(
-        pdf_path=req.pdf_path,
+        pdf_path=_preflight_path(req.pdf_path),
         pod_package_id=req.pod_package_id,
         page_count=req.interior_page_count,
     )

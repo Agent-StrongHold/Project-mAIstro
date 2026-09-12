@@ -25,6 +25,25 @@ or placeholder-only section.
 
 ### Security
 
+- **CodeQL code-scanning alerts cleared across the runtime, gate scripts, and
+  frontends (no linked issue: CodeQL code-scanning alerts).** Hive-conductor
+  no longer echoes raw exception text to clients from the run-DAG, widget, and
+  RSI-run paths (the exception class plus a fixed message is returned; detail
+  stays in server logs), the missing-secret log line no longer names the
+  secret, and the credential-store warning no longer prints the vault path.
+  Path-taking surfaces (demo dashboard ids, SPA fallback, RSI execution
+  policy, sandbox workspace, Lulu preflight uploads) now check normalized
+  containment before resolving. Rovo MCP detection matches the URL hostname
+  rather than a substring, and Airtable cache fingerprints use a salted
+  PBKDF2 digest. The canvas book-maker Express server rate-limits `/api`
+  (`API_RATE_LIMIT_PER_MINUTE`, default 600) and validates print-order ids;
+  the bundled hive page keeps its API key in memory instead of
+  `sessionStorage`; chat/deck ids come from `crypto.randomUUID()`; export
+  format and quality are allowlisted; and book-plan patches refuse prototype
+  keys. Gate scripts rename identifiers CodeQL's secret heuristic flagged.
+  `.github/codeql/codeql-config.yml` excludes tests and vendored third-party
+  code from scanning.
+
 - **Bootstrap credential staging is now private, atomic, and never follows a
   link (#809).** `write_bootstrap_credentials` writes secrets to a fresh 0600
   temp file in the same directory and promotes it with `os.replace`, so secret

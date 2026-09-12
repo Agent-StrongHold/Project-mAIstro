@@ -24,6 +24,13 @@ from services.tool_primitives import (
 
 from maistro.http import shared_client
 
+
+def _public_failure(exc: BaseException) -> str:
+    """The exception kind, never its text: messages carry paths, hosts, and
+    provider replies, which belong in the server log with the traceback."""
+    return f"{type(exc).__name__}: request failed; see server logs"
+
+
 router = APIRouter(tags=["widgets"])
 logger = logging.getLogger("hive.widgets")
 
@@ -168,8 +175,8 @@ async def widget_jira(  # noqa: C901  branchy per-display-mode rendering
                 "jql": jql,
             }
     except Exception as e:
-        logger.warning("Jira widget query failed: %s", e)
-        return {"error": str(e)[:200], "total": 0, "issues": [], "statuses": {}}
+        logger.warning("Jira widget query failed", exc_info=e)
+        return {"error": _public_failure(e), "total": 0, "issues": [], "statuses": {}}
 
 
 @router.get("/airtable")
@@ -285,7 +292,8 @@ async def widget_airtable(  # noqa: C901  branchy per-display-mode rendering
                 "table": table,
             }
     except Exception as e:
-        return {"error": str(e)[:200], "records": []}
+        logger.warning("Airtable widget query failed", exc_info=e)
+        return {"error": _public_failure(e), "records": []}
 
 
 @router.get("/metrics")
@@ -432,7 +440,8 @@ async def widget_airtable_tables(
         tables = [{"id": t["id"], "name": t["name"]} for t in data.get("tables", [])]
         return {"tables": tables, "base_id": base_id}
     except Exception as e:
-        return {"tables": [], "error": str(e)[:100]}
+        logger.warning("Airtable table listing failed", exc_info=e)
+        return {"tables": [], "error": _public_failure(e)}
 
 
 @router.post("/screenshot")
@@ -470,4 +479,5 @@ async def capture_screenshot(request: Request) -> dict[str, Any]:
     except ImportError:
         return {"error": "playwright not installed on backend"}
     except Exception as e:
-        return {"error": str(e)[:200]}
+        logger.warning("Dashboard screenshot failed", exc_info=e)
+        return {"error": _public_failure(e)}

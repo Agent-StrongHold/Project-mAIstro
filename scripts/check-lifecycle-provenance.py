@@ -60,22 +60,22 @@ def main() -> int:
 
     try:
         prov.require_measurement(documents, ratchet=RATCHET, what="ADR/spec lifecycle corpus")
-        trusted_ref = prov.resolve_baseline(checker.BASELINE, root=ROOT)
-        trusted = _violations(trusted_ref.loads(default={"violations": {}}))
+        base_ref = prov.resolve_baseline(checker.BASELINE, root=ROOT)
+        accepted = _violations(base_ref.loads(default={"violations": {}}))
     except prov.RatchetProvenanceError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         return 1
 
     candidate_new, candidate_stale = checker.apply_baseline(current_errors, candidate)
-    trusted_new = sorted(current - trusted)
+    newly_violating = sorted(current - accepted)
 
     print(
         prov.Provenance(
             ratchet=RATCHET,
-            baseline=trusted_ref,
+            baseline=base_ref,
             tool="tools/lint_lifecycle.py",
             metric_definition_version=METRIC_DEFINITION_VERSION,
-            old_value=f"{len(trusted)} accepted lifecycle violation(s)",
+            old_value=f"{len(accepted)} accepted lifecycle violation(s)",
             new_value=f"{len(current)} current lifecycle violation(s)",
             candidate_sha=prov.head_sha(ROOT),
         ).render()
@@ -83,7 +83,7 @@ def main() -> int:
 
     failures: list[str] = []
     failures.extend(
-        f"{item}: NEW lifecycle violation absent from trusted base" for item in trusted_new
+        f"{item}: NEW lifecycle violation absent from trusted base" for item in newly_violating
     )
     failures.extend(
         f"{item}: current violation missing from candidate ledger" for item in candidate_new

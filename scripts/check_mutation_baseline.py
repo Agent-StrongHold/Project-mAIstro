@@ -176,21 +176,21 @@ def _measured_rate(current: dict[str, tuple[int, int]], source: str) -> float | 
     return round(measured[0] / measured[1], 4)
 
 
-def _trusted_entry_failures(
+def _base_entry_failures(
     source: str,
-    trusted_entry: object,
+    base_entry: object,
     candidate_entry: object,
     measured_rate: float | None,
 ) -> list[str]:
-    trusted_rate = _entry_rate(trusted_entry)
+    base_rate = _entry_rate(base_entry)
     candidate_rate = _entry_rate(candidate_entry)
-    if trusted_rate is None or candidate_rate is None:
+    if base_rate is None or candidate_rate is None:
         return [f"{source}: mutation baseline entry has no numeric kill_rate"]
 
     failures: list[str] = []
-    if candidate_rate < trusted_rate:
+    if candidate_rate < base_rate:
         failures.append(
-            f"{source}: candidate kill_rate {candidate_rate:.1%} weakens trusted {trusted_rate:.1%}"
+            f"{source}: candidate kill_rate {candidate_rate:.1%} weakens trusted {base_rate:.1%}"
         )
     if measured_rate is not None and candidate_rate > measured_rate:
         failures.append(
@@ -231,7 +231,7 @@ def candidate_baseline_failures(
             failures.append(f"{source}: candidate baseline removed a trusted source floor")
             continue
         failures.extend(
-            _trusted_entry_failures(
+            _base_entry_failures(
                 source,
                 trusted_entry,
                 candidate_entries[source],

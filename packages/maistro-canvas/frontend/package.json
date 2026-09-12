@@ -19,6 +19,7 @@
     "@dnd-kit/utilities": "^3.2.2",
     "cors": "^2.8.6",
     "express": "^5.2.1",
+    "express-rate-limit": "^8.2.1",
     "konva": "^10.2.5",
     "pg": "^8.20.0",
     "react": "^19.2.5",
