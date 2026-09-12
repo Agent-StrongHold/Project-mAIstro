@@ -480,6 +480,28 @@ class TestCreateAgentsFilesystem:
         assert agents["alpha"]._agent_resolver("alpha") is agents["alpha"]
         assert agents["beta"]._agent_resolver("alpha") is agents["alpha"]
 
+    async def test_roster_allow_lists_reach_the_container_delegator(self, tmp_path: Path) -> None:
+        """The production roster must make the wired in-process path admissible."""
+        from maistro.a2a.delegate import A2ADelegator, DelegationMode
+
+        _write_agent_dir(
+            tmp_path,
+            "planner",
+            manifest_extra={"delegation": {"sub_agents": ["researcher"]}},
+        )
+        _write_agent_dir(tmp_path, "researcher")
+        delegator = A2ADelegator()
+
+        await create_agents(**_create_agents_kwargs(tmp_path, a2a_delegator=delegator))
+
+        task_id = delegator.delegate_task(
+            "planner",
+            "research X",
+            "researcher",
+            delegation_mode=DelegationMode.ALLOW_LIST,
+        )
+        assert delegator.get_task_status(task_id) is not None
+
     async def test_persist_registry_invoked_when_engine_present(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

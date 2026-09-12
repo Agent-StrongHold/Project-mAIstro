@@ -284,11 +284,15 @@ class TestCrossInstanceDelegationFilesAChildRun:
     """
 
     @staticmethod
-    def _peers(status: str = "submitted", error: str | None = None) -> GuestPeerManager:
+    def _peers(
+        status: str = "submitted",
+        error: str | None = None,
+        task_id: str = "remote-1",
+    ) -> GuestPeerManager:
         guest_peers = GuestPeerManager()
         guest_peers.delegate = AsyncMock(  # type: ignore[method-assign]
             return_value=DelegationResult(
-                task_id="remote-1", peer_name="hub", status=status, error=error
+                task_id=task_id, peer_name="hub", status=status, error=error
             )
         )
         return guest_peers
@@ -318,6 +322,49 @@ class TestCrossInstanceDelegationFilesAChildRun:
         assert child.parent_node_run_id == parent_node_run.node_run_id
         assert child.workspace_id == parent.workspace_id
         assert child.project_id == parent.project_id
+
+    async def test_the_cross_instance_answer_completes_the_child_attempt(self) -> None:
+        """A peer answer settles canonical evidence, not the Run directly."""
+        store, _projects, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+        node = AgentDelegateRemoteNode(guest_peers=self._peers(), run_store=store)
+        first = await node.run(
+            {"from_agent": "planner", "task": "research X", "peer_name": "hub"},
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+        )
+        child_run_id = first.metadata["run_id"]
+
+        await node.run(
+            {"from_agent": "planner", "task": "research X", "peer_name": "hub"},
+            _ctx(
+                run_id=parent.run_id,
+                node_run_id=parent_node_run.node_run_id,
+            ).model_copy(
+                update={
+                    "metadata": {
+                        "hitl_answers": {
+                            "delegate-1": {
+                                "status": "completed",
+                                "task_id": "remote-1",
+                                "result": "ok",
+                                "_pause": {"run_id": child_run_id},
+                            }
+                        }
+                    }
+                }
+            ),
+        )
+
+        child = await store.get_run(child_run_id)
+        assert child is not None
+        assert child.status.value == "completed"
+        node_runs = await store.list_node_runs(child_run_id)
+        assert len(node_runs) == 1
+        attempts = await store.list_attempts(node_runs[0].node_run_id)
+        assert [attempt.status.value for attempt in attempts] == ["yielded", "completed"]
 
     async def test_the_cross_instance_child_names_the_peer_the_task_and_the_mode(self) -> None:
         """The receipt stays a receipt: the A2A task_id is provenance on the
@@ -363,6 +410,31 @@ class TestCrossInstanceDelegationFilesAChildRun:
 
         assert result.status == "completed"
         assert result.output.status == "rejected"
+        children = [
+            run
+            for run in store._runs.values()  # type: ignore[attr-defined]
+            if run.parent_run_id == parent.run_id
+        ]
+        assert children == []
+
+    async def test_a_submitted_peer_response_without_a_receipt_does_not_pause(self) -> None:
+        """A child without the A2A receipt cannot be resumed or correlated."""
+        store, _projects, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+
+        node = AgentDelegateRemoteNode(guest_peers=self._peers(task_id=""), run_store=store)
+        result = await node.run(
+            {"from_agent": "planner", "task": "research X", "peer_name": "hub"},
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+        )
+
+        assert result.status == "completed"
+        assert result.output.status == "failed"
+        assert "invalid delegation receipt" in (result.output.error or "")
+        assert result.output.run_id == ""
         children = [
             run
             for run in store._runs.values()  # type: ignore[attr-defined]
