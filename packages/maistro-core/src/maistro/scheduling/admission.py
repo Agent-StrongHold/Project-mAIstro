@@ -78,6 +78,7 @@ from maistro.runs.sources import (
 )
 from maistro.runs.store import DuplicateOccurrence
 from maistro.scheduling.engine import FireDecision, SkipReason, evaluate
+from maistro.scheduling.store import ScheduleExhausted
 
 if TYPE_CHECKING:
     from maistro.graph.definitions import GraphTemplate
@@ -314,21 +315,34 @@ class ScheduleRunAdmitter:
 
         The returned `ScheduleAdmission` holds exactly one entry: `run_ids` of
         length one on success, or `already_fired` naming the moment when the
-        occurrence-claim found a Run already standing for it (#220). Cursor and
-        exhaustion semantics are `admit_due`'s, applied to a single fire —
-        `record_fire` advances only after the Run exists, and reaching
-        `max_runs` disables in the same write.
+        occurrence-claim found a Run already standing for it (#220).
+
+        Three things differ from `admit_due`, each because a manual fire is
+        not a cron occurrence:
+
+        * **The quota is claimed first, atomically.** `reserve_fire` counts
+          the run and disables on exhaustion under the store's own lock,
+          *before* the Run exists. Two callers racing on the last run cannot
+          both pass an exhaustion check read from the same snapshot; the
+          loser is refused. The order also fixes what a crash leaves behind:
+          a process that dies between the reservation and the Run loses one
+          slot (visible: `runs_so_far` moved, `last_run_id` did not), never
+          the reverse, where a Run exists that no count admits to and the
+          next request duplicates it.
+        * **The recurrence cursor does not move.** `last_fired_at` and
+          `next_due_at` describe the cron's occurrences; stamping *now* on
+          them would carry the cursor past an occurrence that was already due
+          but not yet ticked, and lose it. `last_run_id` is recorded, so the
+          product row still resolves to the Run.
+        * **Overlap policy is not consulted.** It keeps an automatic
+          recurrence from stacking on its own in-flight Run; a manual fire is
+          a person explicitly asking for another Run *now*.
 
         Refusals raise rather than fill `failures`: `ManualFireRefused` for a
-        schedule already at `max_runs`, the template store's own error for an
+        schedule at `max_runs`, the template store's own error for an
         unresolvable target, and the run store's for a Run that could not be
-        created. In every case the schedule is left exactly as it was.
-
-        Overlap policy is deliberately not consulted. It exists to keep an
-        automatic recurrence from stacking on its own in-flight Run; a manual
-        fire is a person explicitly asking for another Run *now*, and silently
-        doing nothing would turn their explicit request into the exact
-        receipt-for-work-that-never-started this module exists to prevent.
+        created. A refusal before the reservation touches nothing; one after
+        it releases the reservation, so the schedule reads as it did before.
         """
         if schedule.exhausted:
             raise ManualFireRefused(
@@ -349,9 +363,17 @@ class ScheduleRunAdmitter:
             )
             raise
 
+        try:
+            reserved = await self._schedules.reserve_fire(schedule.schedule_id)
+        except ScheduleExhausted as exc:
+            raise ManualFireRefused(str(exc)) from exc
+        if reserved is None:
+            raise ManualFireRefused(f"schedule {schedule.schedule_id} no longer exists")
+        current, reservation = reserved
+
         fire = FireDecision(scheduled_for=now, catchup=False)
         try:
-            run_id = await self._admit_one(schedule, template, fire)
+            run_id = await self._admit_one(current, template, fire)
         except DuplicateOccurrence:
             logger.info(
                 "schedule %s manual occurrence %s was already admitted elsewhere",
@@ -359,21 +381,22 @@ class ScheduleRunAdmitter:
                 now.isoformat(),
             )
             # The firing happened — some other admitter claimed this exact
-            # moment — so there is nothing to create and nothing to advance.
-            # The caller sees `already_fired`, not a Run of ours.
+            # moment — so there is nothing to create; the slot goes back.
+            await self._schedules.settle_fire(schedule.schedule_id, reservation, run_id=None)
             return ScheduleAdmission(already_fired=(now,))
+        except BaseException:
+            await self._schedules.settle_fire(schedule.schedule_id, reservation, run_id=None)
+            raise
 
-        disable = self._exhausted_after(schedule, fires=1)
-        next_due_at = schedule.next_fire_after(now)
-        await self._schedules.record_fire(
-            schedule.schedule_id,
-            fired_at=now,
-            run_id=run_id,
-            next_due_at=next_due_at,
-            fires=1,
-            disable=disable,
+        settled = await self._schedules.settle_fire(
+            schedule.schedule_id, reservation, run_id=run_id
         )
-        return ScheduleAdmission(run_ids=(run_id,), next_due_at=next_due_at, disabled=disable)
+        recorded = settled if settled is not None else current
+        return ScheduleAdmission(
+            run_ids=(run_id,),
+            next_due_at=recorded.next_due_at,
+            disabled=reservation.disabled,
+        )
 
     async def _consume_without_firing(
         self, schedule: Schedule, decision: ScheduleEvaluation

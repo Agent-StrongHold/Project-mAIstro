@@ -14,7 +14,9 @@ second place that believes it knows what is running.
 
 from __future__ import annotations
 
+import asyncio
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -24,10 +26,38 @@ if TYPE_CHECKING:
     import aiosqlite
 
 __all__ = [
+    "FireReservation",
     "InMemoryScheduleStore",
+    "ScheduleExhausted",
     "ScheduleStore",
     "SqliteScheduleStore",
 ]
+
+
+class ScheduleExhausted(Exception):
+    """`reserve_fire` found no run left to claim under `max_runs`."""
+
+
+@dataclass(frozen=True, slots=True)
+class FireReservation:
+    """One claimed run, held between `reserve_fire` and `settle_fire` (#1119).
+
+    A manual fire claims its slot *before* the Run exists, so two callers
+    racing on the last run cannot both pass an exhaustion check they each
+    read from a stale snapshot. The reservation remembers what it changed so
+    a release is a real undo: `disabled` says this reservation is what turned
+    the schedule off (a release turns it back on), `next_due_at_before` is the
+    due cursor the disable cleared, and `stamped_at` is the `updated_at` the
+    reservation wrote, so a release restores `updated_at_before` only when no
+    other writer has touched the row since.
+    """
+
+    schedule_id: str
+    fires: int
+    disabled: bool
+    next_due_at_before: datetime | None
+    updated_at_before: datetime
+    stamped_at: datetime
 
 
 @runtime_checkable
@@ -66,6 +96,74 @@ class ScheduleStore(Protocol):
     ) -> Schedule | None:
         """Advance the cursor after firing, and disable on exhaustion."""
         ...
+
+    async def reserve_fire(
+        self, schedule_id: str, *, fires: int = 1
+    ) -> tuple[Schedule, FireReservation] | None:
+        """Atomically claim `fires` of the remaining runs, before any Run exists.
+
+        Counts the fire and disables on exhaustion, exactly as `record_fire`
+        would, but leaves `last_fired_at` and `last_run_id` alone: the
+        reservation is a quota decision, not a cursor movement. Raises
+        `ScheduleExhausted` when `max_runs` leaves no room; returns None for
+        an unknown schedule. The check and the increment happen under the
+        same lock, so concurrent callers cannot both take the last run.
+        """
+        ...
+
+    async def settle_fire(
+        self, schedule_id: str, reservation: FireReservation, *, run_id: str | None
+    ) -> Schedule | None:
+        """Close a reservation: record the Run it produced, or give it back.
+
+        With a `run_id`, the Run exists and `last_run_id` points at it; the
+        recurrence cursor (`last_fired_at`, `next_due_at`) is not moved, so an
+        occurrence the cron already owes stays owed. With `run_id=None` the
+        reservation is released: the count comes back, and a disable this
+        reservation caused is undone.
+        """
+        ...
+
+
+def _reserve(schedule: Schedule, *, fires: int) -> tuple[Schedule, FireReservation]:
+    """The quota claim, shared by every implementation so they cannot drift."""
+    runs_so_far = schedule.runs_so_far + fires
+    if schedule.max_runs is not None and runs_so_far > schedule.max_runs:
+        raise ScheduleExhausted(
+            f"schedule {schedule.schedule_id} has used all {schedule.max_runs} of its runs"
+        )
+    disable = schedule.max_runs is not None and runs_so_far >= schedule.max_runs
+    stamped_at = datetime.now(UTC)
+    update: dict[str, object] = {"runs_so_far": runs_so_far, "updated_at": stamped_at}
+    if disable:
+        update["enabled"] = False
+        update["next_due_at"] = None
+    reservation = FireReservation(
+        schedule_id=schedule.schedule_id,
+        fires=fires,
+        disabled=disable and schedule.enabled,
+        next_due_at_before=schedule.next_due_at,
+        updated_at_before=schedule.updated_at,
+        stamped_at=stamped_at,
+    )
+    return schedule.model_copy(update=update), reservation
+
+
+def _settle(schedule: Schedule, reservation: FireReservation, *, run_id: str | None) -> Schedule:
+    """Confirm or release a reservation, shared by every implementation."""
+    if run_id is not None:
+        return schedule.model_copy(update={"last_run_id": run_id, "updated_at": datetime.now(UTC)})
+    update: dict[str, object] = {
+        "runs_so_far": max(0, schedule.runs_so_far - reservation.fires),
+        "updated_at": datetime.now(UTC),
+    }
+    if reservation.disabled and not schedule.enabled:
+        update["enabled"] = True
+        update["next_due_at"] = reservation.next_due_at_before
+    if schedule.updated_at == reservation.stamped_at:
+        # Nobody wrote in between: the release leaves no trace at all.
+        update["updated_at"] = reservation.updated_at_before
+    return schedule.model_copy(update=update)
 
 
 def _advance(
@@ -144,6 +242,28 @@ class InMemoryScheduleStore:
         self._schedules[schedule_id] = advanced
         return advanced
 
+    async def reserve_fire(
+        self, schedule_id: str, *, fires: int = 1
+    ) -> tuple[Schedule, FireReservation] | None:
+        schedule = self._schedules.get(schedule_id)
+        if schedule is None:
+            return None
+        # No await between the read and the write: on one event loop the
+        # check and the increment are one step, which is the whole guarantee.
+        reserved, reservation = _reserve(schedule, fires=fires)
+        self._schedules[schedule_id] = reserved
+        return reserved, reservation
+
+    async def settle_fire(
+        self, schedule_id: str, reservation: FireReservation, *, run_id: str | None
+    ) -> Schedule | None:
+        schedule = self._schedules.get(schedule_id)
+        if schedule is None:
+            return None
+        settled = _settle(schedule, reservation, run_id=run_id)
+        self._schedules[schedule_id] = settled
+        return settled
+
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schedules (
@@ -167,6 +287,10 @@ class SqliteScheduleStore:
 
     def __init__(self, conn: aiosqlite.Connection) -> None:
         self._conn = conn
+        # `reserve_fire`'s read and write are two round trips on one
+        # connection; the lock makes them one step for concurrent coroutines,
+        # which is what a quota check needs to mean anything.
+        self._fire_lock = asyncio.Lock()
 
     async def ensure_schema(self) -> None:
         await self._conn.execute(_SCHEMA)
@@ -260,3 +384,23 @@ class SqliteScheduleStore:
                 disable=disable,
             )
         )
+
+    async def reserve_fire(
+        self, schedule_id: str, *, fires: int = 1
+    ) -> tuple[Schedule, FireReservation] | None:
+        async with self._fire_lock:
+            schedule = await self.get(schedule_id)
+            if schedule is None:
+                return None
+            reserved, reservation = _reserve(schedule, fires=fires)
+            await self.put(reserved)
+            return reserved, reservation
+
+    async def settle_fire(
+        self, schedule_id: str, reservation: FireReservation, *, run_id: str | None
+    ) -> Schedule | None:
+        async with self._fire_lock:
+            schedule = await self.get(schedule_id)
+            if schedule is None:
+                return None
+            return await self.put(_settle(schedule, reservation, run_id=run_id))
