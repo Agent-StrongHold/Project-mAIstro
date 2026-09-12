@@ -35,6 +35,17 @@ def _id() -> str:
     return uuid4().hex
 
 
+def _utc(value: datetime) -> datetime:
+    """Read a naive timestamp as UTC; every writer here records UTC.
+
+    Discovery compares persisted timestamps with a caller's cutoff, and a
+    naive value on either side (a caller's ``datetime.now()``, a row an older
+    writer stored without an offset) made that comparison raise instead of
+    returning the ambiguous work it exists to find (#1118 review).
+    """
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
 def _require(value: str, field: str) -> None:
     if not value.strip():
         raise ValueError(f"{field} must be a non-empty string")
@@ -117,12 +128,15 @@ class InvocationReconciliation(BaseModel):
 
     @model_validator(mode="after")
     def _validate_reconciliation(self) -> InvocationReconciliation:
+        # `workspace_id`/`project_id` are deliberately not required: an
+        # Invocation written before scope was persisted (pre-#1118 rows) has
+        # none to give, and refusing its audit record would leave it with no
+        # recovery path at all (#1118 review). The Invocation itself is
+        # backfilled from the operator's scope on manual reconciliation.
         for field in (
             "source",
             "actor",
             "reason",
-            "workspace_id",
-            "project_id",
             "run_id",
             "node_run_id",
             "attempt_id",
@@ -143,6 +157,10 @@ class InvocationReconciliationEvidence(BaseModel):
     reason: str
     evidence: Any | None = None
     result: Any | None = None
+    # Recovered accounting for a call that succeeded before the process died
+    # (#1118 review): without it an APPLIED reconciliation leaves `usage`
+    # unset and downstream cost attribution under-reports a real call.
+    usage: InvocationUsage | None = None
 
     @model_validator(mode="after")
     def _validate_evidence(self) -> InvocationReconciliationEvidence:
@@ -193,6 +211,10 @@ class Invocation(BaseModel):
             raise ValueError("terminal Invocation requires finished_at")
         if not terminal and self.finished_at is not None:
             raise ValueError("non-terminal Invocation cannot have finished_at")
+        for field in ("created_at", "started_at", "finished_at"):
+            value = getattr(self, field)
+            if value is not None and value.tzinfo is None:
+                object.__setattr__(self, field, _utc(value))
         return self
 
     @property
@@ -323,6 +345,22 @@ UsageExtractor = Callable[[Any], "InvocationUsage | None"]
 # Shared across service instances in one worker so a second composition root
 # cannot reconcile a dispatch that is still running in the first one.
 _PROCESS_ACTIVE_DISPATCHES: set[str] = set()
+
+
+def _require_scope(invocation: Invocation, *, workspace_id: str, project_id: str) -> None:
+    """Refuse a caller whose scope is not the Invocation's own.
+
+    The Invocation's persisted scope wins, then its Binding's. A row that
+    carries neither was written before scope was persisted; the caller's
+    scope is accepted for it (and backfilled by the settlement), because the
+    alternative is a row with no recovery path at all.
+    """
+    expected_workspace = invocation.workspace_id or invocation.binding.workspace_id
+    expected_project = invocation.project_id or invocation.binding.project_id
+    if (expected_workspace and workspace_id != expected_workspace) or (
+        expected_project and project_id != expected_project
+    ):
+        raise ValueError("reconciliation scope does not match the Invocation")
 
 
 @runtime_checkable
@@ -496,7 +534,7 @@ class InvocationExecutionService:
     async def discover_ambiguous(self, *, stale_before: datetime) -> list[Invocation]:
         """List evidence-requiring effects without changing their state."""
 
-        return await self._store.list_ambiguous(stale_before=stale_before)
+        return await self._store.list_ambiguous(stale_before=_utc(stale_before))
 
     async def reconcile(
         self,
@@ -511,6 +549,7 @@ class InvocationExecutionService:
         project_id: str,
         result: Any | None = None,
         stale_before: datetime | None = None,
+        usage: InvocationUsage | None = None,
     ) -> Invocation:
         """Apply operator/provider evidence through the Invocation authority.
 
@@ -518,45 +557,24 @@ class InvocationExecutionService:
         by :class:`EffectNotApplied`; the normal effect lock then gates the next
         physical retry. No stale ``RUNNING`` row is changed merely because it is
         old, and absent evidence can only record another blocked state.
+
+        The caller's scope is checked before anything is returned: a terminal
+        Invocation from another Workspace/Project is not disclosed through the
+        idempotent early return (#1118 review).
         """
 
         disposition = ReconciliationDisposition(disposition)
+        cutoff = _utc(stale_before) if stale_before is not None else None
         async with self._effect_lock:
             invocation = await self._store.get(invocation_id)
             if invocation is None:
                 raise KeyError(f"Invocation {invocation_id!r} does not exist")
+            _require_scope(invocation, workspace_id=workspace_id, project_id=project_id)
             if invocation.status is InvocationStatus.COMPLETED:
                 return invocation
             if invocation.status is InvocationStatus.FAILED:
                 return invocation
-            if invocation.invocation_id in _PROCESS_ACTIVE_DISPATCHES:
-                raise UnsafeEffectRetry(
-                    f"Invocation {invocation_id!r} is still being dispatched; "
-                    "reconciliation must wait for physical completion"
-                )
-            if invocation.dispatch_active and (
-                stale_before is None
-                or (invocation.started_at or invocation.created_at) > stale_before
-            ):
-                raise UnsafeEffectRetry(
-                    f"Invocation {invocation_id!r} is still being dispatched; "
-                    "stale evidence is required"
-                )
-            if invocation.status is InvocationStatus.RUNNING and (
-                stale_before is None
-                or (invocation.started_at or invocation.created_at) > stale_before
-            ):
-                raise UnsafeEffectRetry(
-                    f"Invocation {invocation_id!r} is still live; stale evidence is required"
-                )
-            if invocation.status not in {
-                InvocationStatus.CREATED,
-                InvocationStatus.RUNNING,
-                InvocationStatus.UNKNOWN,
-            }:
-                raise UnsafeEffectRetry(
-                    f"Invocation {invocation_id!r} is not reconciliation-eligible"
-                )
+            self._require_reconcilable(invocation, cutoff)
             return await self._reconcile_values_locked(
                 invocation,
                 disposition=disposition,
@@ -567,7 +585,33 @@ class InvocationExecutionService:
                 workspace_id=workspace_id,
                 project_id=project_id,
                 result=result,
+                usage=usage,
             )
+
+    def _require_reconcilable(self, invocation: Invocation, cutoff: datetime | None) -> None:
+        """Refuse to settle a dispatch that may still be running."""
+
+        invocation_id = invocation.invocation_id
+        if invocation_id in _PROCESS_ACTIVE_DISPATCHES:
+            raise UnsafeEffectRetry(
+                f"Invocation {invocation_id!r} is still being dispatched; "
+                "reconciliation must wait for physical completion"
+            )
+        began = invocation.started_at or invocation.created_at
+        if invocation.dispatch_active and (cutoff is None or began > cutoff):
+            raise UnsafeEffectRetry(
+                f"Invocation {invocation_id!r} is still being dispatched; stale evidence is required"
+            )
+        if invocation.status is InvocationStatus.RUNNING and (cutoff is None or began > cutoff):
+            raise UnsafeEffectRetry(
+                f"Invocation {invocation_id!r} is still live; stale evidence is required"
+            )
+        if invocation.status not in {
+            InvocationStatus.CREATED,
+            InvocationStatus.RUNNING,
+            InvocationStatus.UNKNOWN,
+        }:
+            raise UnsafeEffectRetry(f"Invocation {invocation_id!r} is not reconciliation-eligible")
 
     async def reconcile_with_provider(
         self,
@@ -576,42 +620,48 @@ class InvocationExecutionService:
         *,
         stale_before: datetime | None = None,
     ) -> Invocation:
-        """Ask a provider adapter for evidence, retaining lifecycle authority here."""
+        """Ask a provider adapter for evidence, retaining lifecycle authority here.
+
+        The adapter is consulted *outside* the effect lock: a slow or hanging
+        provider endpoint must not block every unrelated Invocation on this
+        service (#1118 review). Eligibility is checked under the lock before
+        the lookup, and the report is applied under the lock only if the row
+        is still at the revision the adapter saw -- anything that moved it in
+        between (a completion, another reconciliation) makes the evidence
+        stale, and stale evidence is refused rather than applied.
+        """
+
+        cutoff = _utc(stale_before) if stale_before is not None else None
+        async with self._effect_lock:
+            snapshot = await self._store.get(invocation_id)
+            if snapshot is None:
+                raise KeyError(f"Invocation {invocation_id!r} does not exist")
+            if snapshot.status in {InvocationStatus.COMPLETED, InvocationStatus.FAILED}:
+                return snapshot
+            self._require_reconcilable(snapshot, cutoff)
+
+        try:
+            report = await adapter.reconcile(snapshot)
+        except Exception as exc:
+            report = InvocationReconciliationEvidence(
+                disposition=ReconciliationDisposition.INDETERMINATE,
+                source="provider-adapter",
+                actor="system",
+                reason=f"reconciliation adapter failed: {type(exc).__name__}",
+            )
 
         async with self._effect_lock:
-            invocation = await self._store.get(invocation_id)
-            if invocation is None:
+            current = await self._store.get(invocation_id)
+            if current is None:
                 raise KeyError(f"Invocation {invocation_id!r} does not exist")
-            if invocation.invocation_id in _PROCESS_ACTIVE_DISPATCHES:
+            if current.status in {InvocationStatus.COMPLETED, InvocationStatus.FAILED}:
+                return current
+            if current.revision != snapshot.revision:
                 raise UnsafeEffectRetry(
-                    f"Invocation {invocation_id!r} is still being dispatched; "
-                    "reconciliation must wait for physical completion"
+                    f"Invocation {invocation_id!r} changed while the provider was consulted; "
+                    "the evidence is stale, reconcile again"
                 )
-            if invocation.dispatch_active and (
-                stale_before is None
-                or (invocation.started_at or invocation.created_at) > stale_before
-            ):
-                raise UnsafeEffectRetry(
-                    f"Invocation {invocation_id!r} is still being dispatched; "
-                    "stale evidence is required"
-                )
-            if invocation.status is InvocationStatus.RUNNING and (
-                stale_before is None
-                or (invocation.started_at or invocation.created_at) > stale_before
-            ):
-                raise UnsafeEffectRetry(
-                    f"Invocation {invocation_id!r} is still live; stale evidence is required"
-                )
-            try:
-                report = await adapter.reconcile(invocation)
-            except Exception as exc:
-                report = InvocationReconciliationEvidence(
-                    disposition=ReconciliationDisposition.INDETERMINATE,
-                    source="provider-adapter",
-                    actor="system",
-                    reason=f"reconciliation adapter failed: {type(exc).__name__}",
-                )
-            return await self._reconcile_locked(invocation, report)
+            return await self._reconcile_locked(current, report)
 
     async def _reconcile_locked(
         self,
@@ -632,6 +682,7 @@ class InvocationExecutionService:
             workspace_id=invocation.workspace_id or invocation.binding.workspace_id,
             project_id=invocation.project_id or invocation.binding.project_id,
             result=report.result,
+            usage=report.usage,
         )
 
     async def _reconcile_values_locked(
@@ -646,6 +697,7 @@ class InvocationExecutionService:
         workspace_id: str,
         project_id: str,
         result: Any | None,
+        usage: InvocationUsage | None = None,
     ) -> Invocation:
         """Shared implementation for provider reports and operator resolutions."""
 
@@ -654,10 +706,7 @@ class InvocationExecutionService:
         disposition = ReconciliationDisposition(disposition)
         if disposition is not ReconciliationDisposition.INDETERMINATE and evidence is None:
             raise ValueError("applied/not_applied reconciliation requires evidence")
-        expected_workspace = invocation.workspace_id or invocation.binding.workspace_id
-        expected_project = invocation.project_id or invocation.binding.project_id
-        if workspace_id != expected_workspace or project_id != expected_project:
-            raise ValueError("reconciliation scope does not match the Invocation")
+        _require_scope(invocation, workspace_id=workspace_id, project_id=project_id)
         audit = InvocationReconciliation(
             disposition=disposition,
             source=source,
@@ -676,6 +725,11 @@ class InvocationExecutionService:
             "reconciliation_history": (*invocation.reconciliation_history, audit),
             "dispatch_active": False,
         }
+        # A pre-scope row learns its scope from the evidence that settles it.
+        if not invocation.workspace_id and workspace_id:
+            update["workspace_id"] = workspace_id
+        if not invocation.project_id and project_id:
+            update["project_id"] = project_id
         if disposition is ReconciliationDisposition.APPLIED:
             update.update(
                 status=InvocationStatus.COMPLETED,
@@ -683,6 +737,8 @@ class InvocationExecutionService:
                 error=None,
                 finished_at=datetime.now(UTC),
             )
+            if usage is not None:
+                update["usage"] = usage
         elif disposition is ReconciliationDisposition.NOT_APPLIED:
             update.update(
                 status=InvocationStatus.FAILED,

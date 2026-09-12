@@ -15,11 +15,12 @@ from maistro.capabilities.approval_store import (
     approval_request_digest,
     redact_approval_value,
 )
-from maistro.capabilities.binding import Binding
+from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import (
     Invocation,
     InvocationExecutionService,
     InvocationStatus,
+    InvocationUsage,
     ProviderExecutor,
     ProviderReconciliationAdapter,
     ProviderResolver,
@@ -129,10 +130,11 @@ class GovernedInvocationExecutionService:
         project_id: str,
         result: Any | None = None,
         stale_before: datetime | None = None,
+        usage: InvocationUsage | None = None,
     ) -> Invocation:
         """Resolve evidence without creating a provider-dispatch bypass."""
 
-        return await self._invocations.reconcile(
+        settled = await self._invocations.reconcile(
             invocation_id,
             disposition=disposition,
             source=source,
@@ -143,7 +145,10 @@ class GovernedInvocationExecutionService:
             project_id=project_id,
             result=result,
             stale_before=stale_before,
+            usage=usage,
         )
+        await self._append_reconciliation_event(settled)
+        return settled
 
     async def reconcile_with_provider(
         self,
@@ -154,8 +159,30 @@ class GovernedInvocationExecutionService:
     ) -> Invocation:
         """Delegate provider evidence while retaining Invocation authority."""
 
-        return await self._invocations.reconcile_with_provider(
+        settled = await self._invocations.reconcile_with_provider(
             invocation_id, adapter, stale_before=stale_before
+        )
+        await self._append_reconciliation_event(settled)
+        return settled
+
+    async def _append_reconciliation_event(self, invocation: Invocation) -> None:
+        """Announce a reconciled terminal state on the event stream (#1118 review).
+
+        Consumers that saw `capability.invocation.unknown` (or nothing, after a
+        process death) would otherwise never learn the canonical row settled.
+        The event id carries the status, so an already-announced state is a
+        no-op and a reconciliation that left the row UNKNOWN announces nothing
+        new.
+        """
+        if invocation.status not in {InvocationStatus.COMPLETED, InvocationStatus.FAILED}:
+            return
+        await self._append_terminal_event(
+            invocation,
+            binding=invocation.binding,
+            causation_id=(
+                f"capability-reconciliation-{invocation.invocation_id}-"
+                f"{len(invocation.reconciliation_history)}"
+            ),
         )
 
     async def invoke(
@@ -512,7 +539,7 @@ class GovernedInvocationExecutionService:
         self,
         invocation: Invocation,
         *,
-        binding: Binding,
+        binding: Binding | ResolvedBinding,
         causation_id: str,
     ) -> None:
         """Append one idempotent terminal audit fact for a persisted Invocation."""
