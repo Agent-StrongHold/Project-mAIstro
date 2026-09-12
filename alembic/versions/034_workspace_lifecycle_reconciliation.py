@@ -44,15 +44,52 @@ def upgrade() -> None:
             name="canonical_workspace_lifecycle_state_check",
         ),
     )
+    # A writer running the previous release inserts Workspace rows without a
+    # journal row. Rolling upgrades run both versions at once, and the new
+    # version reads through an inner join on the journal, so such a row would
+    # be invisible for good once the old replica retires. The database
+    # journals every new Workspace as `active` itself; the new writer's staged
+    # `creating` row overrides that default in its own transaction.
+    op.execute(
+        sa.text(
+            """
+            CREATE OR REPLACE FUNCTION canonical_workspace_lifecycle_default()
+            RETURNS trigger AS $$
+            BEGIN
+                INSERT INTO canonical_workspace_lifecycle (workspace_id, state)
+                VALUES (NEW.workspace_id, 'active')
+                ON CONFLICT (workspace_id) DO NOTHING;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql
+            """
+        )
+    )
+    op.execute(
+        sa.text(
+            """
+            CREATE TRIGGER canonical_workspace_lifecycle_default
+            AFTER INSERT ON canonical_workspaces
+            FOR EACH ROW EXECUTE FUNCTION canonical_workspace_lifecycle_default()
+            """
+        )
+    )
     op.execute(
         sa.text(
             """
             INSERT INTO canonical_workspace_lifecycle (workspace_id, state)
             SELECT workspace_id, 'active' FROM canonical_workspaces
+            ON CONFLICT (workspace_id) DO NOTHING
             """
         )
     )
 
 
 def downgrade() -> None:
+    op.execute(
+        sa.text(
+            "DROP TRIGGER IF EXISTS canonical_workspace_lifecycle_default ON canonical_workspaces"
+        )
+    )
+    op.execute(sa.text("DROP FUNCTION IF EXISTS canonical_workspace_lifecycle_default()"))
     op.drop_table("canonical_workspace_lifecycle")

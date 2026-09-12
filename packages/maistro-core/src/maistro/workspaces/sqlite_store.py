@@ -23,17 +23,29 @@ JSON payload, where pydantic restores the offset.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
+import sqlite3
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, NotRequired, TypedDict
 
-from maistro.projects.scope import ProjectNotFound
+from maistro.projects.scope import ProjectNotFound, ProjectScopeDenied
 from maistro.workspaces.model import (
     Workspace,
     WorkspaceAccessDenied,
     WorkspaceMembership,
     WorkspaceNotFound,
+    WorkspaceRetainsHistory,
     WorkspaceRole,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _purge_refused(exc: BaseException) -> bool:
+    """Whether a purge failed because a foreign key keeps the Project tree."""
+    return isinstance(exc, sqlite3.IntegrityError) and "FOREIGN KEY" in str(exc).upper()
+
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import aiosqlite
@@ -134,23 +146,48 @@ class SqliteWorkspaceStore:
             role=WorkspaceRole.OWNER,
             added_at=workspace.created_at,
         )
+        # A convergence import may name a Workspace whose legacy Project tree
+        # already exists; a rollback must not purge what it did not create.
+        pre_existing_tree = await self._has_root(workspace.workspace_id)
         await self._stage_workspace_create(workspace, owner)
         try:
             await self.project_store.create_root(workspace.workspace_id)
-            await self._set_state(workspace.workspace_id, self._ACTIVE)
+            await self._activate(workspace.workspace_id)
         except BaseException:
             # A host crash skips this compensator; the durable `creating` row
             # is completed by `recover` on the next startup.
-            try:
-                await self.project_store.purge_workspace(workspace.workspace_id)
-                await self._delete_workspace(workspace.workspace_id, self._CREATING)
-            except BaseException:
-                pass
+            with contextlib.suppress(BaseException):
+                await self._compensate_staged_create(
+                    workspace.workspace_id, purge_projects=not pre_existing_tree
+                )
             raise
         return workspace
 
+    async def _has_root(self, workspace_id: str) -> bool:
+        try:
+            await self.project_store.root_for_workspace(workspace_id)
+        except (ProjectNotFound, ProjectScopeDenied):
+            return False
+        return True
+
+    async def _activate(self, workspace_id: str) -> None:
+        """Move a staged row to ``active``; a recovery finishing first is fine."""
+        if await self._transition(workspace_id, self._CREATING, self._ACTIVE):
+            return
+        if await self._state(workspace_id) != self._ACTIVE:
+            raise WorkspaceNotFound(workspace_id)
+
+    async def _compensate_staged_create(self, workspace_id: str, *, purge_projects: bool) -> None:
+        """Roll a staged create back, unless recovery already claimed the row."""
+        if await self._state(workspace_id) != self._CREATING:
+            return
+        if purge_projects:
+            await self.project_store.purge_workspace(workspace_id)
+        await self._delete_workspace(workspace_id, self._CREATING)
+
     async def recover(self) -> None:
         """Complete or roll back lifecycle rows left by an interrupted process."""
+        started = datetime.now(UTC)
         async with self._conn.execute(
             """SELECT workspace_id, state FROM canonical_workspace_lifecycle
                 WHERE state <> ? ORDER BY workspace_id""",
@@ -168,11 +205,9 @@ class SqliteWorkspaceStore:
 
         for workspace_id, state in pending:
             if state == self._CREATING:
-                await self.project_store.create_root(workspace_id)
-                await self._set_state(workspace_id, self._ACTIVE)
+                await self._finish_creation(workspace_id, started=started)
             elif state == self._DELETING:
-                await self.project_store.purge_workspace(workspace_id)
-                await self._delete_workspace(workspace_id, self._DELETING)
+                await self._finish_deletion(workspace_id)
 
         # Never silently mint a new Root Project for an already-visible orphan.
         # A pre-journal orphan is deterministically rolled back instead.
@@ -183,6 +218,68 @@ class SqliteWorkspaceStore:
                 await self._set_state(workspace_id, self._DELETING)
                 await self.project_store.purge_workspace(workspace_id)
                 await self._delete_workspace(workspace_id, self._DELETING)
+
+    async def _finish_creation(self, workspace_id: str, *, started: datetime) -> None:
+        """Give a ``creating`` row its Root and activate it, without racing its creator.
+
+        The activation is conditional on the row still being ``creating``. When
+        the creator's compensator removed the Workspace in between, the Root
+        made here is an orphan and is purged -- only when this call made it
+        (its `created_at` is after recovery started), never a legacy tree.
+        """
+        root = await self.project_store.create_root(workspace_id)
+        if await self._transition(workspace_id, self._CREATING, self._ACTIVE):
+            return
+        if await self._state(workspace_id) is None and root.created_at >= started:
+            await self.project_store.purge_workspace(workspace_id)
+
+    async def _finish_deletion(self, workspace_id: str) -> None:
+        """Purge a ``deleting`` row's Projects, or restore it when history forbids."""
+        try:
+            await self.project_store.purge_workspace(workspace_id)
+        except Exception as exc:
+            if _purge_refused(exc):
+                logger.warning(
+                    "Workspace %s retains canonical Run history and cannot be purged; "
+                    "restoring it to active",
+                    workspace_id,
+                )
+                await self._transition(workspace_id, self._DELETING, self._ACTIVE)
+                return
+            logger.warning(
+                "Workspace %s could not be purged during recovery; it stays deleting "
+                "until the next startup",
+                workspace_id,
+                exc_info=True,
+            )
+            return
+        await self._delete_workspace(workspace_id, self._DELETING)
+
+    async def _state(self, workspace_id: str) -> str | None:
+        async with self._conn.execute(
+            "SELECT state FROM canonical_workspace_lifecycle WHERE workspace_id = ?",
+            (workspace_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return str(row[0]) if row else None
+
+    async def _transition(self, workspace_id: str, from_state: str, to_state: str) -> bool:
+        """Compare-and-set one lifecycle state; False when the row is not in `from_state`."""
+        async with self._write_lock:
+            await self._begin_immediate()
+            try:
+                cursor = await self._conn.execute(
+                    """UPDATE canonical_workspace_lifecycle
+                          SET state = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE workspace_id = ? AND state = ?""",
+                    (to_state, workspace_id, from_state),
+                )
+                moved = cursor.rowcount == 1
+            except BaseException:
+                await self._conn.rollback()
+                raise
+            await self._conn.commit()
+        return moved
 
     async def _stage_workspace_create(
         self, workspace: Workspace, owner: WorkspaceMembership
@@ -294,9 +391,20 @@ class SqliteWorkspaceStore:
             return updated
 
     async def delete(self, workspace_id: str) -> None:
-        """Journal deletion before purging Projects, then remove both halves."""
+        """Journal deletion before purging Projects, then remove both halves.
+
+        A purge a foreign key refuses (the tree carries Run history) restores
+        the Workspace to ``active`` and raises `WorkspaceRetainsHistory`; any
+        other purge failure keeps the row ``deleting`` for `recover` to retry.
+        """
         await self._set_state_if_active(workspace_id, self._DELETING)
-        await self.project_store.purge_workspace(workspace_id)
+        try:
+            await self.project_store.purge_workspace(workspace_id)
+        except Exception as exc:
+            if _purge_refused(exc):
+                await self._transition(workspace_id, self._DELETING, self._ACTIVE)
+                raise WorkspaceRetainsHistory(workspace_id) from exc
+            raise
         await self._delete_workspace(workspace_id, self._DELETING)
 
     async def _set_state_if_active(self, workspace_id: str, state: str) -> None:

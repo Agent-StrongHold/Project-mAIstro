@@ -11,6 +11,7 @@ from maistro.workspaces.model import (
     WorkspaceMembership,
     WorkspaceNotFound,
     WorkspaceOwnershipError,
+    WorkspaceRetainsHistory,
     WorkspaceRole,
 )
 from maistro.workspaces.store import InMemoryWorkspaceStore, WorkspaceStore
@@ -41,6 +42,7 @@ __all__ = [
     "WorkspaceMembership",
     "WorkspaceNotFound",
     "WorkspaceOwnershipError",
+    "WorkspaceRetainsHistory",
     "WorkspaceRole",
     "WorkspaceStore",
     "resolve_workspace_id",

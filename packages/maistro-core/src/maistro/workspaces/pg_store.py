@@ -35,18 +35,34 @@ codec (`maistro.persistence._register_json_codecs`). That is why this reads
 
 from __future__ import annotations
 
+import contextlib
+import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final, NotRequired, TypedDict
 
-from maistro.projects.scope import ProjectNotFound
+from maistro.projects.scope import ProjectNotFound, ProjectScopeDenied
 from maistro.runs.evidence_json import json_of, model_of
 from maistro.workspaces.model import (
     Workspace,
     WorkspaceAccessDenied,
     WorkspaceMembership,
     WorkspaceNotFound,
+    WorkspaceRetainsHistory,
     WorkspaceRole,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _purge_refused(exc: BaseException) -> bool:
+    """Whether a purge failed because durable Run history references the tree.
+
+    asyncpg raises `ForeignKeyViolationError` when `canonical_runs.project_id`'s
+    `ON DELETE RESTRICT` refuses; matched by name so this module does not
+    import the driver at runtime.
+    """
+    return type(exc).__name__ == "ForeignKeyViolationError"
+
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import asyncpg
@@ -109,24 +125,67 @@ class PgWorkspaceStore:
             role=WorkspaceRole.OWNER,
             added_at=workspace.created_at,
         )
+        # A convergence import may name a Workspace whose legacy Project tree
+        # already exists; `create_root` then returns that Root rather than
+        # minting one, and a rollback must not purge what it did not create.
+        pre_existing_tree = await self._has_root(workspace.workspace_id)
         await self._stage_workspace_create(workspace, owner)
         try:
             await self.project_store.create_root(workspace.workspace_id)
-            await self._set_state(workspace.workspace_id, self._ACTIVE)
+            await self._activate(workspace.workspace_id)
         except BaseException:
             # A normal exception still gets the old all-or-neither behaviour.
             # A host crash skips this compensator; the durable `creating` row
             # is then completed by `recover` on the next startup.
-            try:
-                await self.project_store.purge_workspace(workspace.workspace_id)
-                await self._delete_workspace(workspace.workspace_id, self._CREATING)
-            except BaseException:
-                pass
+            with contextlib.suppress(BaseException):
+                await self._compensate_staged_create(
+                    workspace.workspace_id, purge_projects=not pre_existing_tree
+                )
             raise
         return workspace
 
+    async def _has_root(self, workspace_id: str) -> bool:
+        try:
+            await self.project_store.root_for_workspace(workspace_id)
+        except (ProjectNotFound, ProjectScopeDenied):
+            return False
+        return True
+
+    async def _activate(self, workspace_id: str) -> None:
+        """Move a staged row to ``active``; another replica finishing first is fine."""
+        if await self._transition(workspace_id, self._CREATING, self._ACTIVE):
+            return
+        if await self._state(workspace_id) != self._ACTIVE:
+            raise WorkspaceNotFound(workspace_id)
+
+    async def _compensate_staged_create(self, workspace_id: str, *, purge_projects: bool) -> None:
+        """Roll a staged create back, unless recovery already claimed the row.
+
+        The lifecycle row is held ``FOR UPDATE`` for the whole compensation, so
+        a concurrent `recover` on another replica cannot activate the row in
+        the middle of it: either recovery's conditional activation lands first
+        and this finds the row no longer ``creating`` and steps aside, or this
+        holds the row until the Workspace is gone and recovery's activation
+        finds nothing to update.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            state = await conn.fetchval(
+                """SELECT state FROM canonical_workspace_lifecycle
+                    WHERE workspace_id = $1 FOR UPDATE""",
+                workspace_id,
+            )
+            if state != self._CREATING:
+                return
+            if purge_projects:
+                await self.project_store.purge_workspace(workspace_id)
+            await conn.execute(
+                "DELETE FROM canonical_workspaces WHERE workspace_id = $1", workspace_id
+            )
+
     async def recover(self) -> None:
         """Complete or roll back lifecycle rows left by an interrupted process."""
+        started = datetime.now(UTC)
+        await self._backfill_journal()
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT workspace_id, state
@@ -146,11 +205,9 @@ class PgWorkspaceStore:
         for row in rows:
             workspace_id = row["workspace_id"]
             if row["state"] == self._CREATING:
-                await self.project_store.create_root(workspace_id)
-                await self._set_state(workspace_id, self._ACTIVE)
+                await self._finish_creation(workspace_id, started=started)
             elif row["state"] == self._DELETING:
-                await self.project_store.purge_workspace(workspace_id)
-                await self._delete_workspace(workspace_id, self._DELETING)
+                await self._finish_deletion(workspace_id)
 
         # Rows written before the journal migration are active by default. Do
         # not invent a replacement Root Project for one that is missing: roll
@@ -163,6 +220,85 @@ class PgWorkspaceStore:
                 await self._set_state(workspace_id, self._DELETING)
                 await self.project_store.purge_workspace(workspace_id)
                 await self._delete_workspace(workspace_id, self._DELETING)
+
+    async def _finish_creation(self, workspace_id: str, *, started: datetime) -> None:
+        """Give a ``creating`` row its Root and activate it, without racing its creator.
+
+        The snapshot `recover` read is unlocked, so the creator's compensator
+        may have removed the Workspace between the read and this call. The
+        activation is conditional on the row still being ``creating``; when it
+        is not, and the row is gone, the Root made here is an orphan and is
+        purged -- but only when this call made it (its `created_at` is after
+        recovery started), never a legacy tree an import left behind.
+        """
+        root = await self.project_store.create_root(workspace_id)
+        if await self._transition(workspace_id, self._CREATING, self._ACTIVE):
+            return
+        if await self._state(workspace_id) is None and root.created_at >= started:
+            await self.project_store.purge_workspace(workspace_id)
+
+    async def _finish_deletion(self, workspace_id: str) -> None:
+        """Purge a ``deleting`` row's Projects, or restore it when history forbids."""
+        try:
+            await self.project_store.purge_workspace(workspace_id)
+        except Exception as exc:
+            if _purge_refused(exc):
+                logger.warning(
+                    "Workspace %s retains canonical Run history and cannot be purged; "
+                    "restoring it to active",
+                    workspace_id,
+                )
+                await self._transition(workspace_id, self._DELETING, self._ACTIVE)
+                return
+            logger.warning(
+                "Workspace %s could not be purged during recovery; it stays deleting "
+                "until the next startup",
+                workspace_id,
+                exc_info=True,
+            )
+            return
+        await self._delete_workspace(workspace_id, self._DELETING)
+
+    async def _backfill_journal(self) -> None:
+        """Journal any Workspace row a pre-journal writer inserted as ``active``.
+
+        Migration 034 backfills once and installs a trigger for later inserts;
+        this covers a database whose trigger is absent (a rolling upgrade
+        against an older migration state) so an inner join on the journal can
+        never hide a complete Workspace forever.
+        """
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO canonical_workspace_lifecycle (workspace_id, state)
+                   SELECT w.workspace_id, $1
+                     FROM canonical_workspaces AS w
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM canonical_workspace_lifecycle AS l
+                         WHERE l.workspace_id = w.workspace_id)
+                   ON CONFLICT (workspace_id) DO NOTHING""",
+                self._ACTIVE,
+            )
+
+    async def _state(self, workspace_id: str) -> str | None:
+        async with self._pool.acquire() as conn:
+            state: str | None = await conn.fetchval(
+                "SELECT state FROM canonical_workspace_lifecycle WHERE workspace_id = $1",
+                workspace_id,
+            )
+        return state
+
+    async def _transition(self, workspace_id: str, from_state: str, to_state: str) -> bool:
+        """Compare-and-set one lifecycle state; False when the row is not in `from_state`."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            status = await conn.execute(
+                """UPDATE canonical_workspace_lifecycle
+                      SET state = $2, updated_at = CURRENT_TIMESTAMP
+                    WHERE workspace_id = $1 AND state = $3""",
+                workspace_id,
+                to_state,
+                from_state,
+            )
+        return not status.endswith(" 0")
 
     async def _stage_workspace_create(
         self, workspace: Workspace, owner: WorkspaceMembership
@@ -178,10 +314,15 @@ class PgWorkspaceStore:
                 workspace.updated_at,
                 json_of(workspace),
             )
+            # Migration 034's trigger journals every new Workspace row as
+            # `active` so pre-journal writers stay visible; the staged row
+            # overrides that default in the same transaction.
             await conn.execute(
                 """INSERT INTO canonical_workspace_lifecycle
                        (workspace_id, state)
-                   VALUES ($1, $2)""",
+                   VALUES ($1, $2)
+                   ON CONFLICT (workspace_id) DO UPDATE
+                       SET state = EXCLUDED.state, updated_at = CURRENT_TIMESTAMP""",
                 workspace.workspace_id,
                 self._CREATING,
             )
@@ -247,9 +388,23 @@ class PgWorkspaceStore:
         return updated
 
     async def delete(self, workspace_id: str) -> None:
-        """Journal deletion before purging Projects, then remove both halves."""
+        """Journal deletion before purging Projects, then remove both halves.
+
+        A purge the schema refuses -- the tree carries canonical Run history
+        under `ON DELETE RESTRICT` -- is an answer, not an interruption: the
+        Workspace goes back to ``active`` and the caller gets
+        `WorkspaceRetainsHistory`, rather than a hidden ``deleting`` row that
+        every later startup fails on again. Any other purge failure keeps the
+        row ``deleting`` for `recover` to retry.
+        """
         await self._set_state_if_active(workspace_id, self._DELETING)
-        await self.project_store.purge_workspace(workspace_id)
+        try:
+            await self.project_store.purge_workspace(workspace_id)
+        except Exception as exc:
+            if _purge_refused(exc):
+                await self._transition(workspace_id, self._DELETING, self._ACTIVE)
+                raise WorkspaceRetainsHistory(workspace_id) from exc
+            raise
         await self._delete_workspace(workspace_id, self._DELETING)
 
     async def _set_state_if_active(self, workspace_id: str, state: str) -> None:

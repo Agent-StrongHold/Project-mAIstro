@@ -92,6 +92,46 @@ class _SqliteBackend:
         await store.ensure_schema()
         return store
 
+    def purge_refusal(self) -> Exception:
+        """What the driver raises when a foreign key keeps the Project tree."""
+        import sqlite3
+
+        return sqlite3.IntegrityError("FOREIGN KEY constraint failed")
+
+    async def insert_pre_journal_workspace(self, workspace, owner) -> None:
+        """Write the rows an older release wrote: no lifecycle journal row."""
+        import aiosqlite
+
+        from maistro.workspaces.sqlite_store import _iso
+
+        conn = await aiosqlite.connect(self._path)
+        self._connections.append(conn)
+        await conn.execute(
+            """INSERT INTO canonical_workspaces
+                   (workspace_id, name, created_at, updated_at, payload)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                workspace.workspace_id,
+                workspace.name,
+                _iso(workspace.created_at),
+                _iso(workspace.updated_at),
+                workspace.model_dump_json(),
+            ),
+        )
+        await conn.execute(
+            """INSERT INTO canonical_workspace_memberships
+                   (workspace_id, user_id, role, added_at, payload)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                owner.workspace_id,
+                owner.user_id,
+                owner.role.value,
+                _iso(owner.added_at),
+                owner.model_dump_json(),
+            ),
+        )
+        await conn.commit()
+
     async def close(self) -> None:
         for conn in self._connections:
             await conn.close()
@@ -118,6 +158,40 @@ class _PostgresBackend:
         from maistro.projects.pg_scope_store import PgProjectScopeStore
 
         return PgProjectScopeStore(self._pool)
+
+    def purge_refusal(self) -> Exception:
+        """What asyncpg raises when `canonical_runs.project_id` RESTRICTs the purge."""
+        import asyncpg
+
+        return asyncpg.ForeignKeyViolationError(
+            'update or delete on table "canonical_projects" violates foreign key constraint'
+        )
+
+    async def insert_pre_journal_workspace(self, workspace, owner) -> None:
+        """Write the rows an older release wrote, bypassing the store's staging."""
+        from maistro.runs.evidence_json import json_of
+
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                """INSERT INTO canonical_workspaces
+                       (workspace_id, name, created_at, updated_at, payload)
+                   VALUES ($1, $2, $3, $4, $5::text::jsonb)""",
+                workspace.workspace_id,
+                workspace.name,
+                workspace.created_at,
+                workspace.updated_at,
+                json_of(workspace),
+            )
+            await conn.execute(
+                """INSERT INTO canonical_workspace_memberships
+                       (workspace_id, user_id, role, added_at, payload)
+                   VALUES ($1, $2, $3, $4, $5::text::jsonb)""",
+                owner.workspace_id,
+                owner.user_id,
+                owner.role.value,
+                owner.added_at,
+                json_of(owner),
+            )
 
     async def close(self) -> None:
         return None
@@ -522,6 +596,173 @@ class TestWorkspaceLifecycleRecovery:
         assert await recovered.get(workspace.workspace_id) is None
         with pytest.raises(ProjectNotFound):
             await recovered.project_store.root_for_workspace(workspace.workspace_id)
+
+
+class TestLifecycleUnderRefusalsAndRaces:
+    """The #1121 review cases: a refused purge, a rollback over an imported
+    tree, recovery racing the creator's compensator, and a pre-journal writer.
+    """
+
+    async def test_a_workspace_whose_history_cannot_be_purged_is_restored_not_stuck(
+        self, backend, monkeypatch
+    ) -> None:
+        """`ON DELETE RESTRICT` on Run history is an answer, not an interruption.
+
+        Left `deleting`, the Workspace would be hidden for good and every
+        startup would fail on the same purge. Both the request path and the
+        recovery path put it back to `active` instead.
+        """
+        if not backend.supports_lifecycle_recovery:
+            pytest.skip("the in-memory reference has no durable restart boundary")
+
+        from maistro.workspaces.model import WorkspaceRetainsHistory
+
+        store = await backend.store()
+        workspace = await store.create(creator_user_id=_user("creator-"), name="Has history")
+        root = await store.project_store.root_for_workspace(workspace.workspace_id)
+        refusal = backend.purge_refusal()
+
+        async def refuse(_self, workspace_id: str) -> None:
+            raise refusal
+
+        monkeypatch.setattr(type(store.project_store), "purge_workspace", refuse)
+
+        with pytest.raises(WorkspaceRetainsHistory, match="must be retained"):
+            await store.delete(workspace.workspace_id)
+        assert await store.get(workspace.workspace_id) is not None
+        assert (
+            await store.project_store.root_for_workspace(workspace.workspace_id)
+        ).project_id == root.project_id
+
+        # A crash after the journal write leaves `deleting`; recovery meets the
+        # same refusal and restores the Workspace rather than failing startup.
+        await store._set_state_if_active(workspace.workspace_id, store._DELETING)
+        assert await store.get(workspace.workspace_id) is None
+        recovered = await backend.store()
+        assert await recovered.get(workspace.workspace_id) is not None
+        assert (
+            await recovered.project_store.root_for_workspace(workspace.workspace_id)
+        ).project_id == root.project_id
+
+    async def test_create_rollback_keeps_a_pre_existing_project_tree(
+        self, backend, monkeypatch
+    ) -> None:
+        """A convergence import over a legacy tree fails without eating the tree."""
+        if not backend.supports_lifecycle_recovery:
+            pytest.skip("the in-memory reference has no durable restart boundary")
+
+        store = await backend.store()
+        workspace_id = f"legacy-{uuid4().hex}"
+        root = await store.project_store.create_root(workspace_id)
+        child = await store.project_store.create(
+            workspace_id=workspace_id, parent_project_id=root.project_id, name="Imported child"
+        )
+
+        async def refuse_activation(_workspace_id: str) -> None:
+            raise RuntimeError("journal write failed")
+
+        monkeypatch.setattr(store, "_activate", refuse_activation)
+        with pytest.raises(RuntimeError, match="journal write failed"):
+            await store.create(
+                creator_user_id=_user("importer-"), name="Imported", workspace_id=workspace_id
+            )
+
+        assert await store.get(workspace_id) is None
+        assert await store.project_store.get(root.project_id) is not None
+        assert await store.project_store.get(child.project_id) is not None
+        recovered = await backend.store()
+        assert await recovered.get(workspace_id) is None
+        assert await recovered.project_store.get(child.project_id) is not None
+
+    async def test_recovery_does_not_orphan_a_root_after_the_creator_compensated(
+        self, backend, monkeypatch
+    ) -> None:
+        """Recovery read `creating`; the creator rolled back before it acted.
+
+        Recovery's Root must not survive as an orphan, and its activation must
+        not resurrect a Workspace the creator removed.
+        """
+        if not backend.supports_lifecycle_recovery:
+            pytest.skip("the in-memory reference has no durable restart boundary")
+
+        from maistro.workspaces.model import Workspace, WorkspaceMembership
+
+        creator = await backend.store()
+        workspace = Workspace(name="Raced create")
+        owner = WorkspaceMembership(
+            workspace_id=workspace.workspace_id,
+            user_id=_user("creator-"),
+            role=WorkspaceRole.OWNER,
+            added_at=workspace.created_at,
+        )
+        await creator._stage_workspace_create(workspace, owner)
+        scope_cls = type(creator.project_store)
+        original_create_root = scope_cls.create_root
+
+        async def compensate_then_create(self_store, workspace_id: str):
+            if workspace_id == workspace.workspace_id:
+                # The creator's compensator wins after recovery took its snapshot.
+                await creator._compensate_staged_create(workspace_id, purge_projects=True)
+            return await original_create_root(self_store, workspace_id)
+
+        monkeypatch.setattr(scope_cls, "create_root", compensate_then_create)
+        recovered = await backend.store()
+
+        assert await recovered.get(workspace.workspace_id) is None
+        with pytest.raises(ProjectNotFound):
+            await recovered.project_store.root_for_workspace(workspace.workspace_id)
+
+    async def test_a_creator_steps_aside_when_recovery_activated_first(
+        self, backend, monkeypatch
+    ) -> None:
+        """The other order of the same race: the row is active, so the
+        compensator must not purge the Root recovery just gave it."""
+        if not backend.supports_lifecycle_recovery:
+            pytest.skip("the in-memory reference has no durable restart boundary")
+
+        store = await backend.store()
+        seen: list[str] = []
+        original_activate = store._activate
+
+        async def recovered_elsewhere_then_fail(workspace_id: str) -> None:
+            seen.append(workspace_id)
+            # Another replica's recovery completed the row before this write.
+            await original_activate(workspace_id)
+            raise RuntimeError("this replica lost its connection")
+
+        monkeypatch.setattr(store, "_activate", recovered_elsewhere_then_fail)
+        with pytest.raises(RuntimeError, match="lost its connection"):
+            await store.create(creator_user_id=_user("creator-"), name="Finished elsewhere")
+
+        (workspace_id,) = seen
+        assert await store.get(workspace_id) is not None
+        root = await store.project_store.root_for_workspace(workspace_id)
+        assert root.is_root
+
+    async def test_a_pre_journal_writer_s_workspace_becomes_visible(self, backend) -> None:
+        """A row an older release wrote without a journal entry is not lost."""
+        if not backend.supports_lifecycle_recovery:
+            pytest.skip("the in-memory reference has no durable restart boundary")
+
+        from maistro.workspaces.model import Workspace, WorkspaceMembership
+
+        store = await backend.store()
+        workspace = Workspace(name="Older writer")
+        owner = WorkspaceMembership(
+            workspace_id=workspace.workspace_id,
+            user_id=_user("creator-"),
+            role=WorkspaceRole.OWNER,
+            added_at=workspace.created_at,
+        )
+        await backend.insert_pre_journal_workspace(workspace, owner)
+        await store.project_store.create_root(workspace.workspace_id)
+
+        recovered = await backend.store()
+        assert await recovered.get(workspace.workspace_id) is not None
+        assert (
+            await recovered.get_membership(workspace.workspace_id, user_id=owner.user_id)
+            is not None
+        )
 
 
 class TestTheRosterOrderingsTheProtocolPromises:
