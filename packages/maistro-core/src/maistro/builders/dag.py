@@ -9,7 +9,7 @@ layers that already exist:
   execution; it *describes* a builders pipeline (stages, edges, gates,
   loop-back targets) and lowers that description onto the existing
   :class:`~maistro.builders.graph.PipelineGraph` +
-  :class:`~maistro.builders.graph_executor.GraphPipelineExecutor`.
+  :class:`~maistro.builders.graph_executor.CanonicalGraphPipelineExecutor`.
 - :mod:`maistro.graph` — the ADR-062 graph execution protocol.
   :func:`builders_dag_to_graph` converts a :class:`BuildersDAG` into the
   ADR-062 graph description (``GraphConfig``, exposed here under the SPEC's
@@ -45,12 +45,18 @@ from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 from maistro.builders.graph import PipelineGraph, PipelineNode, RunContext
-from maistro.builders.graph_executor import GraphPipelineExecutor, PipelineDispatcher
+from maistro.builders.graph_executor import (
+    CanonicalGraphPipelineExecutor,
+    PipelineDispatcher,
+)
 from maistro.graph.node import IterationBudget
 from maistro.graph.types import AgentRole, GraphConfig, GraphEdge, NodeConfig
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
+
+    from maistro.graph.durable_runs.protocol import DurableRunStore
+    from maistro.runs.store import RunStore
 
 # The ADR-062 graph description type. The SPEC calls this ``GraphSpec``;
 # maistro.graph's canonical name is ``GraphConfig`` — alias, don't fork.
@@ -274,8 +280,8 @@ def to_pipeline_graph(dag: BuildersDAG) -> PipelineGraph:
 
     Forward edges become ``depends_on``; gates become the graph's
     ``gate``/``revise_target``/``max_revisions``/``gate_exhausted`` fields,
-    so the existing :class:`GraphPipelineExecutor` provides the bounded
-    verify-and-revise loop unchanged.
+    so the canonical Builders adapter provides the bounded verify-and-revise
+    loop unchanged.
     """
     incoming: dict[str, list[str]] = {s.name: [] for s in dag.stages}
     for a, b in dag.edges:
@@ -452,9 +458,13 @@ def default_builders_dag(
 
 @dataclass
 class DagRun:
-    """Mutable run record driven by the pipeline executor."""
+    """Compatibility projection of one canonical Builders DAG Run."""
 
     id: str
+    issue_number: int = 0
+    title: str = ""
+    repo: str = ""
+    canonical_run_id: str | None = None
     status: str = "pending"
     context: RunContext = field(default_factory=dict)
     skipped_stages: list[str] = field(default_factory=list)
@@ -510,15 +520,26 @@ async def run_builders_dag(
     params: Mapping[str, Any] | None = None,
     run_id: str | None = None,
     budget: IterationBudget | None = None,
+    run_store: RunStore | None = None,
+    durable_store: DurableRunStore | None = None,
+    workspace_id: str | None = None,
+    project_id: str | None = None,
+    actor_principal_id: str | None = None,
 ) -> BuildersDagResult:
-    """Run a :class:`BuildersDAG` to completion via the existing pipeline
-    executor and return the terminal stage's output or a typed failure.
+    """Run a :class:`BuildersDAG` through canonical execution and return the
+    terminal stage's output or a typed failure.
 
     Never raises for run failures; total stage executions never exceed the
     iteration budget (default: ``(1 + sum of gate.max_iterations) * len(stages)``).
     """
-    run = DagRun(id=run_id or f"builders-dag-{uuid4().hex[:8]}")
-    run.context.update(dict(params or {}))
+    values = dict(params or {})
+    run = DagRun(
+        id=run_id or f"builders-dag-{uuid4().hex[:8]}",
+        issue_number=int(values.get("issue_number", 0)),
+        title=str(values.get("title", "")),
+        repo=str(values.get("repo", "")),
+    )
+    run.context.update(values)
 
     errors = dag.validate()
     if errors:
@@ -526,7 +547,15 @@ async def run_builders_dag(
         return BuildersDagResult(ok=False, run=run, failure=_classify_failure(run))
 
     graph = to_pipeline_graph(dag)
-    executor = GraphPipelineExecutor(dispatcher, budget=budget or _default_budget(dag))
+    executor = CanonicalGraphPipelineExecutor(
+        dispatcher,
+        run_store=run_store,
+        durable_store=durable_store,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        actor_principal_id=actor_principal_id,
+        budget=budget or _default_budget(dag),
+    )
     await executor.execute(graph, run)
 
     if run.status != "completed":
