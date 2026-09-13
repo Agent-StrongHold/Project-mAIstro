@@ -302,11 +302,14 @@ class InMemoryDurableRunStore:
         answer: dict[str, Any],
         *,
         at: datetime | None = None,
+        workspace_id: str | None = None,
     ) -> DurableRunRecord:
         async with self._lock:
             record = self._rows.get(run_id)
             if record is None:
                 raise KeyError(f"no such run: {run_id!r}")
+            if workspace_id is not None and record.run.workspace_id != workspace_id:
+                raise KeyError(f"run {run_id!r} is outside the requested Workspace")
             updated = answer_record(record, node_id, answer, at=at)
             self._rows[run_id] = updated
             return _clone(updated)
@@ -317,11 +320,14 @@ class InMemoryDurableRunStore:
         node_id: str,
         *,
         at: datetime | None = None,
+        workspace_id: str | None = None,
     ) -> DurableRunRecord:
         async with self._lock:
             record = self._rows.get(run_id)
             if record is None:
                 raise KeyError(f"no such run: {run_id!r}")
+            if workspace_id is not None and record.run.workspace_id != workspace_id:
+                raise KeyError(f"run {run_id!r} is outside the requested Workspace")
             updated = settle_hitl_record(record, node_id, "timed_out", at=at)
             self._rows[run_id] = updated
             return _clone(updated)
@@ -332,11 +338,14 @@ class InMemoryDurableRunStore:
         node_id: str,
         *,
         at: datetime | None = None,
+        workspace_id: str | None = None,
     ) -> DurableRunRecord:
         async with self._lock:
             record = self._rows.get(run_id)
             if record is None:
                 raise KeyError(f"no such run: {run_id!r}")
+            if workspace_id is not None and record.run.workspace_id != workspace_id:
+                raise KeyError(f"run {run_id!r} is outside the requested Workspace")
             updated = settle_hitl_record(record, node_id, "cancelled", at=at)
             self._rows[run_id] = updated
             return _clone(updated)
@@ -505,6 +514,7 @@ class SqliteDurableRunStore:
         answer: dict[str, Any],
         *,
         at: datetime | None = None,
+        workspace_id: str | None = None,
     ) -> DurableRunRecord:
         async with self._lock:
             return await asyncio.to_thread(
@@ -512,6 +522,7 @@ class SqliteDurableRunStore:
                 self,
                 run_id,
                 lambda current: answer_record(current, node_id, answer, at=at),
+                workspace_id,
             )
 
     async def timeout_hitl(
@@ -520,6 +531,7 @@ class SqliteDurableRunStore:
         node_id: str,
         *,
         at: datetime | None = None,
+        workspace_id: str | None = None,
     ) -> DurableRunRecord:
         async with self._lock:
             return await asyncio.to_thread(
@@ -527,6 +539,7 @@ class SqliteDurableRunStore:
                 self,
                 run_id,
                 lambda current: settle_hitl_record(current, node_id, "timed_out", at=at),
+                workspace_id,
             )
 
     async def cancel_hitl(
@@ -535,6 +548,7 @@ class SqliteDurableRunStore:
         node_id: str,
         *,
         at: datetime | None = None,
+        workspace_id: str | None = None,
     ) -> DurableRunRecord:
         async with self._lock:
             return await asyncio.to_thread(
@@ -542,6 +556,7 @@ class SqliteDurableRunStore:
                 self,
                 run_id,
                 lambda current: settle_hitl_record(current, node_id, "cancelled", at=at),
+                workspace_id,
             )
 
 
@@ -620,6 +635,7 @@ def _mutate_hitl_sync(
     store: SqliteDurableRunStore,
     run_id: str,
     mutate: Callable[[DurableRunRecord], DurableRunRecord],
+    workspace_id: str | None = None,
 ) -> DurableRunRecord:
     """Serialize one HITL decision and its optimistic write in one transaction."""
     with store._connect() as conn:
@@ -632,6 +648,8 @@ def _mutate_hitl_sync(
             raise KeyError(f"no such run: {run_id!r}")
 
         current = store._from_row(persisted)
+        if workspace_id is not None and current.run.workspace_id != workspace_id:
+            raise KeyError(f"run {run_id!r} is outside the requested Workspace")
         updated = mutate(current)
         row = {**store._to_row(updated), "expected_version": current.version}
         cursor = conn.execute(

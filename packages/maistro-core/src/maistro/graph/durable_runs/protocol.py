@@ -50,6 +50,7 @@ class DurableRunStore(Protocol):
         answer: dict[str, Any],
         *,
         at: datetime | None = None,
+        workspace_id: str | None = None,
     ) -> DurableRunRecord:
         """Attach an answer and queue the paused canonical Run for resume."""
         ...
@@ -60,6 +61,7 @@ class DurableRunStore(Protocol):
         node_id: str,
         *,
         at: datetime | None = None,
+        workspace_id: str | None = None,
     ) -> DurableRunRecord:
         """Terminalize a human pause whose persisted deadline elapsed."""
         ...
@@ -70,6 +72,7 @@ class DurableRunStore(Protocol):
         node_id: str,
         *,
         at: datetime | None = None,
+        workspace_id: str | None = None,
     ) -> DurableRunRecord:
         """Terminalize a human pause by explicit cancellation."""
         ...

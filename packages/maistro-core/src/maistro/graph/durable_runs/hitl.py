@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .protocol import DurableRunStore
@@ -21,6 +22,50 @@ class HitlDeadlineElapsed(HitlSettlementError):
 
 class HitlDeadlinePending(HitlSettlementError):
     """A timeout was requested before the pause's durable deadline."""
+
+
+@dataclass(frozen=True)
+class HitlAuthorization:
+    """Effective-principal evidence for a scoped HITL settlement tick.
+
+    The route/service authorization layer constructs this value after resolving
+    canonical Workspace membership. The durable layer consumes the resulting
+    scope but never treats a caller-supplied list of ids as authorization on
+    its own. Delegated callers retain the evidence that established the
+    effective principal in ``delegation_evidence``.
+    """
+
+    effective_principal: str
+    workspace_ids: frozenset[str]
+    delegation_evidence: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.effective_principal.strip():
+            raise ValueError("HITL authorization requires an effective principal")
+        if any(not workspace_id.strip() for workspace_id in self.workspace_ids):
+            raise ValueError("HITL authorization cannot contain a blank Workspace id")
+
+    @classmethod
+    def for_principal(
+        cls,
+        effective_principal: str,
+        workspace_ids: Collection[str],
+    ) -> HitlAuthorization:
+        """Bind canonical membership results to one effective principal."""
+        return cls(effective_principal, frozenset(workspace_ids))
+
+    @classmethod
+    def for_delegated_service(
+        cls,
+        effective_principal: str,
+        workspace_ids: Collection[str],
+        *,
+        delegation_evidence: str,
+    ) -> HitlAuthorization:
+        """Bind a service tick to explicit delegation evidence."""
+        if not delegation_evidence.strip():
+            raise ValueError("delegated HITL authorization requires evidence")
+        return cls(effective_principal, frozenset(workspace_ids), delegation_evidence)
 
 
 def hitl_pause(record: DurableRunRecord, node_id: str) -> dict[str, object]:
@@ -151,11 +196,11 @@ async def _due_candidates(
     *,
     moment: datetime,
     limit: int,
-    workspace_ids: Collection[str] | None,
+    authorization: HitlAuthorization | None,
 ) -> list[DurableRunRecord]:
-    """Page the due index until a scoped settlement page is complete."""
-    if workspace_ids is None:
-        return cast("list[DurableRunRecord]", await store.list_hitl_due(now=moment, limit=limit))
+    """Page the due index until an authorized settlement page is complete."""
+    if authorization is None:
+        return await store.list_hitl_due(now=moment, limit=limit)
 
     requested = limit
     candidates: list[DurableRunRecord] = []
@@ -166,7 +211,7 @@ async def _due_candidates(
             if record.run_id in seen:
                 continue
             seen.add(record.run_id)
-            if record.run.workspace_id in workspace_ids:
+            if record.run.workspace_id in authorization.workspace_ids:
                 candidates.append(record)
         if len(candidates) >= limit or len(page) < requested:
             return candidates[:limit]
@@ -178,19 +223,20 @@ async def expire_hitl_pauses(
     *,
     now: datetime | None = None,
     limit: int = 100,
-    workspace_ids: Collection[str] | None = None,
+    authorization: HitlAuthorization | None = None,
 ) -> list[DurableRunRecord]:
     """Settle at most ``limit`` paused Runs whose persisted deadline elapsed.
 
     This is an operator-scheduled tick, not a background task. It derives no
     deadline from process-local time or node configuration: only the absolute
-    timestamp already present in the durable pause is authoritative. When a
-    product supplies ``workspace_ids``, canonical Run scope is checked before
-    any timeout mutation is requested.
+    timestamp already present in the durable pause is authoritative. A
+    product-supplied authorization binds the effective principal (or explicit
+    delegation evidence) to canonical Workspace scope before any timeout
+    mutation is requested. ``None`` is reserved for an internal operator tick.
     """
     if limit <= 0:
         return []
-    if workspace_ids is not None and not workspace_ids:
+    if authorization is not None and not authorization.workspace_ids:
         return []
     moment = settlement_time(now)
     # ``list_hitl_due`` is a deadline-indexed candidate query. Its limit is
@@ -200,7 +246,7 @@ async def expire_hitl_pauses(
         store,
         moment=moment,
         limit=limit,
-        workspace_ids=workspace_ids,
+        authorization=authorization,
     )
     settled: list[DurableRunRecord] = []
     for record in candidates[:limit]:
@@ -217,7 +263,14 @@ async def expire_hitl_pauses(
         if expired_node_id is None:
             continue
         try:
-            settled.append(await store.timeout_hitl(record.run_id, expired_node_id, at=moment))
+            settled.append(
+                await store.timeout_hitl(
+                    record.run_id,
+                    expired_node_id,
+                    at=moment,
+                    workspace_id=record.run.workspace_id,
+                )
+            )
         except ValueError:
             # Another answer, cancellation, or expiry may have won after the
             # bounded scan. Its committed decision is the canonical outcome.
@@ -226,6 +279,7 @@ async def expire_hitl_pauses(
 
 
 __all__ = [
+    "HitlAuthorization",
     "HitlDeadlineElapsed",
     "HitlDeadlinePending",
     "HitlSettlementError",

@@ -231,6 +231,18 @@ async def test_expiry_endpoint_cannot_timeout_a_foreign_workspace(
         other_record = await store.get(other_id)
         assert mine_record is not None and mine_record.run.status is RunStatus.TIMED_OUT
         assert other_record is not None and other_record.run.status is RunStatus.PAUSED
+
+        # The same two-Workspace boundary applies after the local timeout has
+        # won a race: a late answer or cancel cannot settle the foreign pause.
+        assert (
+            workspace_writer_client.post(
+                f"/v1/hitl/{other_id}/ask/answer", json={"answer": "late"}
+            ).status_code
+            == 404
+        )
+        assert workspace_writer_client.post(f"/v1/hitl/{other_id}/ask/cancel").status_code == 404
+        other_record = await store.get(other_id)
+        assert other_record is not None and other_record.run.status is RunStatus.PAUSED
     finally:
         store._rows.pop(mine_id, None)
         store._rows.pop(other_id, None)

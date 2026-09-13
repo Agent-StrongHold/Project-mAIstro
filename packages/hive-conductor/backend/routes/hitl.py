@@ -31,7 +31,7 @@ from middleware.auth import resolve_principal
 from pydantic import BaseModel, ConfigDict, Field
 from services.workspace_authority import is_member, list_workspace_ids_for_user
 
-from maistro.graph.durable_runs import expire_hitl_pauses
+from maistro.graph.durable_runs import HitlAuthorization, expire_hitl_pauses
 from maistro.runs.model import RunStatus
 from routes.agents import ScanBudgetExceeded, scan_config
 from routes.audit import log_audit
@@ -211,11 +211,14 @@ async def expire_human_work(request: Request, limit: int = 100) -> dict[str, Any
     candidates before any settlement is requested.
     """
     user_id = _request_user_id(request)
-    workspace_ids = set(await list_workspace_ids_for_user(user_id))
+    authorization = HitlAuthorization.for_principal(
+        user_id,
+        await list_workspace_ids_for_user(user_id),
+    )
     expired = await expire_hitl_pauses(
         _store(),
         limit=max(1, min(limit, 200)),
-        workspace_ids=workspace_ids,
+        authorization=authorization,
     )
     run_ids = [record.run_id for record in expired]
     if run_ids:
@@ -227,9 +230,13 @@ async def expire_human_work(request: Request, limit: int = 100) -> dict[str, Any
 async def cancel_human_work(run_id: str, node_id: str, request: Request) -> dict[str, Any]:
     """Request canonical cancellation of one durable human pause."""
     store = _store()
-    await _authorized_record(request, run_id)
+    record = await _authorized_record(request, run_id)
     try:
-        updated = await store.cancel_hitl(run_id, node_id)
+        updated = await store.cancel_hitl(
+            run_id,
+            node_id,
+            workspace_id=record.run.workspace_id,
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="run not found") from exc
     except ValueError as exc:
@@ -298,7 +305,12 @@ async def answer_human_work(
         )
 
     try:
-        updated = await store.submit_hitl_answer(run_id, node_id, answer)
+        updated = await store.submit_hitl_answer(
+            run_id,
+            node_id,
+            answer,
+            workspace_id=record.run.workspace_id,
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="run not found") from exc
     except ValueError as exc:

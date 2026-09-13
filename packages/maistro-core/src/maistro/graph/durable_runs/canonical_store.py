@@ -435,6 +435,7 @@ class CanonicalDurableRunStore:
         answer: dict[str, Any],
         *,
         at: datetime | None = None,
+        workspace_id: str | None = None,
     ) -> DurableRunRecord:
         """Attach an answer and queue the paused canonical Run for resume.
 
@@ -446,6 +447,7 @@ class CanonicalDurableRunStore:
         return await self._mutate_hitl(
             run_id,
             lambda current: answer_record(current, node_id, answer, at=at),
+            workspace_id=workspace_id,
         )
 
     async def timeout_hitl(
@@ -454,11 +456,13 @@ class CanonicalDurableRunStore:
         node_id: str,
         *,
         at: datetime | None = None,
+        workspace_id: str | None = None,
     ) -> DurableRunRecord:
         """Persist an elapsed HITL deadline and mirror its terminal lifecycle."""
         return await self._mutate_hitl(
             run_id,
             lambda current: settle_hitl_record(current, node_id, "timed_out", at=at),
+            workspace_id=workspace_id,
         )
 
     async def cancel_hitl(
@@ -467,22 +471,27 @@ class CanonicalDurableRunStore:
         node_id: str,
         *,
         at: datetime | None = None,
+        workspace_id: str | None = None,
     ) -> DurableRunRecord:
         """Persist explicit HITL cancellation and mirror its terminal lifecycle."""
         return await self._mutate_hitl(
             run_id,
             lambda current: settle_hitl_record(current, node_id, "cancelled", at=at),
+            workspace_id=workspace_id,
         )
 
     async def _mutate_hitl(
         self,
         run_id: str,
         mutate: Callable[[DurableRunRecord], DurableRunRecord],
+        workspace_id: str | None = None,
     ) -> DurableRunRecord:
         async with self._lock:
             current = await self.get(run_id)
             if current is None:
                 raise KeyError(f"no such run: {run_id!r}")
+            if workspace_id is not None and current.run.workspace_id != workspace_id:
+                raise KeyError(f"run {run_id!r} is outside the requested Workspace")
             updated = mutate(current)
             await self._continuations.update(GraphContinuation.of(updated))
             await mirror_lifecycle(updated, run_store=self._run_store)

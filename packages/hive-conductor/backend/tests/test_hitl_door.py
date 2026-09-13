@@ -183,6 +183,30 @@ def scoped_client():
         stores.users.pop("scope-user", None)
 
 
+async def test_hitl_membership_predicate_guards_mutation(seeded, monkeypatch) -> None:
+    """Removing the canonical membership predicate must kill this test."""
+    client, store, seed = seeded
+    await seed("hitl-membership-predicate")
+
+    import routes.hitl as hitl_routes
+
+    calls: list[tuple[str, str]] = []
+
+    async def deny_membership(user_id: str, workspace_id: str) -> bool:
+        calls.append((user_id, workspace_id))
+        return False
+
+    monkeypatch.setattr(hitl_routes, "is_member", deny_membership)
+    response = client.post(
+        "/v1/hitl/hitl-membership-predicate/ask/cancel",
+    )
+
+    assert response.status_code == 404
+    assert len(calls) == 1 and calls[0][0] and calls[0][1]
+    record = await store.get("hitl-membership-predicate")
+    assert record is not None and record.run.status is RunStatus.PAUSED
+
+
 async def test_hitl_routes_are_scoped_to_the_callers_workspaces(scoped_client) -> None:
     """A scoped writer cannot list, answer, or cancel another workspace's pause."""
     from services.dag_agents import get_run_store

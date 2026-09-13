@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from maistro.graph import Graph, Node
 from maistro.graph.durable_runs import (
     CanonicalDurableRunStore,
+    HitlAuthorization,
     InMemoryGraphContinuationStore,
     resume_durable_graph,
     run_durable_graph,
@@ -22,6 +23,7 @@ from maistro.graph.durable_runs.hitl import (
     HitlDeadlineElapsed,
     HitlDeadlinePending,
     HitlSettlementError,
+    earliest_hitl_deadline,
     expire_hitl_pauses,
     hitl_deadline,
     settlement_time,
@@ -73,6 +75,7 @@ class _LosingTimeoutStore(InMemoryDurableRunStore):
         node_id: str,
         *,
         at: datetime | None = None,
+        workspace_id: str | None = None,
     ) -> DurableRunRecord:
         raise ValueError("another decision won")
 
@@ -100,7 +103,11 @@ def _yielded_attempt(node_run: NodeRun) -> Attempt:
     )
 
 
-def _paused_record(run_id: str) -> DurableRunRecord:
+def _paused_record(
+    run_id: str,
+    *,
+    workspace_id: str = "test-workspace",
+) -> DurableRunRecord:
     node_run = _paused_node_run(run_id)
     attempt = _yielded_attempt(node_run)
     record = durable_record(
@@ -112,6 +119,7 @@ def _paused_record(run_id: str) -> DurableRunRecord:
         run_id=run_id,
         status=RunStatus.PAUSED,
         active_node_id="ask",
+        workspace_id=workspace_id,
         node_runs=(node_run,),
         metadata={
             "initial_inputs": {},
@@ -371,6 +379,15 @@ def test_malformed_durable_deadlines_fail_closed(raw_deadline: object, message: 
 
     with pytest.raises(HitlSettlementError, match=message):
         hitl_deadline(record, "ask")
+
+
+async def test_deadline_projection_skips_malformed_active_pause() -> None:
+    record = _with_pause_entry(
+        _paused_record("malformed-projection"),
+        {"kind": "hitl", "metadata": {}, "resume_at": "2026-08-30T20:00:00"},
+    )
+
+    assert earliest_hitl_deadline(record) is None
 
 
 def test_missing_pause_is_only_compatible_with_the_legacy_answer_path() -> None:
@@ -812,6 +829,42 @@ async def test_expiry_tick_is_bounded_and_ignores_unelapsed_pauses() -> None:
     assert len(expired) == 1
     remaining = await store.list_by_status(RunStatus.PAUSED)
     assert len(remaining) == 1
+
+
+async def test_scoped_expiry_requires_effective_principal_and_keeps_foreign_run_paused() -> None:
+    store = InMemoryDurableRunStore()
+    await store.create(_paused_record("owned-expiry", workspace_id="owned-workspace"))
+    await store.create(_paused_record("foreign-expiry", workspace_id="foreign-workspace"))
+
+    with pytest.raises(KeyError, match="outside the requested Workspace"):
+        await store.cancel_hitl(
+            "owned-expiry",
+            "ask",
+            at=_BEFORE,
+            workspace_id="foreign-workspace",
+        )
+
+    authorization = HitlAuthorization.for_principal("member-user", ["owned-workspace"])
+    expired = await expire_hitl_pauses(store, now=_AFTER, authorization=authorization)
+
+    assert [record.run_id for record in expired] == ["owned-expiry"]
+    foreign = await store.get("foreign-expiry")
+    assert foreign is not None and foreign.status is RunStatus.PAUSED
+
+
+@pytest.mark.parametrize(
+    ("factory", "expected"),
+    [
+        (lambda: HitlAuthorization("", frozenset()), "effective principal"),
+        (
+            lambda: HitlAuthorization.for_delegated_service("service", [], delegation_evidence=""),
+            "delegated HITL authorization",
+        ),
+    ],
+)
+def test_scoped_hitl_expiry_rejects_missing_principal_or_delegation_evidence(factory, expected):
+    with pytest.raises(ValueError, match=expected):
+        factory()
 
 
 @pytest.mark.parametrize("backend", ["memory", "sqlite"])
