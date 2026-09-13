@@ -732,7 +732,7 @@ jobs:
         fi
   quality-hypothesis:
     name: Quality / Hypothesis property tests
-    uses: ./.github/workflows/reusable-quality-check.yml
+    uses: ./.github/workflows/reusable-quality-postgres-check.yml
     with:
       check_name: Quality / Hypothesis property tests
       command: |

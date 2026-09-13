@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +0
+  tests/: +3
 ---
 
 # CI granular-check restructuring
@@ -13,6 +13,9 @@ surface is workflow-contract validation rather than application tests:
 - `scripts/check-branch-protection.py` and generated protection tables;
 - `scripts/check-workflow-write-safety.py`;
 - `scripts/check-suite-inventory.py` (unchanged inventory).
+- `tests/test_check_required_checks.py::TestReusableWorkflowNames` verifies
+  caller/callee composed check names; its real-workflow checks pin PostgreSQL
+  routing for Hypothesis and topic-branch Vulture coverage.
 
 The quality and SAST commands retain their original arguments and baselines;
 service-coupled CI jobs remain grouped where their ordering is part of the
