@@ -65,9 +65,12 @@ happened and was answered, and that is the audit trail worth having.
 
 **Retention is bounded by the admitter, not by the store.** `ChatRunAdmitter`
 keeps a window of the last `MAX_RETAINED_CHAT_RUNS` (500) Runs it admitted, and
-deletes the oldest *terminal* ones as it overflows. This is enforced where the
-pressure is created, so the bound holds on any store rather than only on the one
-that happens to prune. A non-terminal Run in the window is skipped rather than
+deletes the oldest *terminal* ones as it overflows. Admission sweeps when a
+new Run arrives, and the canonical chat execution seam invokes the same sweep
+after terminalizing a turn; the latter closes the otherwise-unbounded final
+burst that has no subsequent admission. This is enforced where the pressure is
+created, so the bound holds on any store rather than only on the one that
+happens to prune. A non-terminal Run in the window is skipped rather than
 deleted: work in flight keeps its identity however old it is, and a window full
 of live Runs grows rather than eating them, which is the same failure the
 store's own bound already chooses and for the same reason.
