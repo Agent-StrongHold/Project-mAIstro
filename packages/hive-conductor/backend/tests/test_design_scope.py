@@ -181,10 +181,30 @@ class TestTheRoutesPassItDown:
 
                 return _Project()
 
+        class _Canonical:
+            @staticmethod
+            async def generate(*, operation: Any, **_: Any) -> Any:
+                return await operation()
+
         monkeypatch.setattr(design_routes, "get_design_engine", lambda: _Engine())
-        answer = await design_routes.create_design_project(_Request(org_id="org-7"), object())
+        monkeypatch.setattr(design_routes, "get_design_canonical_execution", lambda: _Canonical())
+        answer = await design_routes.create_design_project(
+            _Request(org_id="org-7", user={"id": "user-1"}), object()
+        )
         assert seen == {"org_id": "org-7", "team_id": None}
         assert answer["org_id"] == "org-7"
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-6")
+    async def test_creation_is_unavailable_without_canonical_execution(
+        self, ready: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(design_routes, "get_design_canonical_execution", lambda: None)
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.create_design_project(
+                _Request(org_id="org-7", user={"id": "user-1"}), object()
+            )
+        assert raised.value.status_code == 503
+        assert "canonical execution spine" in str(raised.value.detail)
 
     @pytest.mark.ac("SPEC-083026-6bc5/AC-2")
     async def test_creating_a_project_with_a_blank_request_scope_is_refused(

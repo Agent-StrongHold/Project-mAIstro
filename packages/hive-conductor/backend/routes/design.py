@@ -10,10 +10,11 @@ GET /design/systems — list registered design systems + catalog state
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Request
 from services.design_service import (
+    get_design_canonical_execution,
     get_design_engine,
     get_design_status,
     get_design_store,
@@ -73,6 +74,15 @@ CONDUCTOR_ORG_ID = "default-org"
 _ABSENT = object()
 
 
+def _request_principal_id(request: Request) -> str:
+    """Return the authenticated principal; never invent an actor identity."""
+    user = getattr(request.state, "user", None) or {}
+    principal = str(user.get("id") or user.get("username") or "")
+    if not principal:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return principal
+
+
 def _get_org_id(request: Request) -> str:
     """The scope this request's design projects belong to.
 
@@ -115,10 +125,25 @@ async def create_design_project(request: Request, discovery: DiscoveryResult) ->
     # "Generation failed: 403: No design scope resolved", which is a 500 for an
     # authorization decision.
     org_id = _get_org_id(request)
+    principal_id = _request_principal_id(request)
+    canonical = get_design_canonical_execution()
+    if canonical is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Design execution unavailable: canonical execution spine is not wired",
+        )
     try:
         engine = get_design_engine()
-        project = await engine.generate(discovery, org_id=org_id, team_id=None)
-        return project.to_dict()
+
+        async def _generate() -> Any:
+            return await engine.generate(discovery, org_id=org_id, team_id=None)
+
+        project = await canonical.generate(
+            discovery=discovery,
+            operation=_generate,
+            actor_principal_id=principal_id,
+        )
+        return cast(dict[str, Any], project.to_dict())
     except SkillNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from None
     except DesignSystemNotFoundError as e:

@@ -23,6 +23,7 @@ logger = logging.getLogger("hive.design_service")
 
 __all__ = [
     "DesignServiceStatus",
+    "get_design_canonical_execution",
     "get_design_engine",
     "get_design_status",
     "get_design_store",
@@ -59,6 +60,7 @@ class DesignServiceStatus:
     catalog_available: bool = False
     catalog_cause: str | None = None
     catalog_slugs: tuple[str, ...] = field(default=(), repr=False)
+    canonical_execution_available: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -70,6 +72,7 @@ class DesignServiceStatus:
                 "cause": self.catalog_cause,
                 "count": len(self.catalog_slugs),
             },
+            "canonical_execution_available": self.canonical_execution_available,
         }
 
 
@@ -133,6 +136,7 @@ def _get_async_session_factory() -> async_sessionmaker[Any] | None:
 _engine_singleton: Any = None
 _store_singleton: Any = None
 _renderer_registry_singleton: Any = None
+_canonical_execution_singleton: Any = None
 _status: DesignServiceStatus = DesignServiceStatus(cause="start_design_service() has not run")
 
 
@@ -160,6 +164,11 @@ def get_design_engine() -> Any:
     return _engine_singleton
 
 
+def get_design_canonical_execution() -> Any | None:
+    """Return the canonical Design execution adapter, if the spine is wired."""
+    return _canonical_execution_singleton
+
+
 def get_design_store() -> Any:
     """Get the PgDesignProjectStore singleton."""
     if _store_singleton is None:
@@ -174,7 +183,9 @@ async def start_design_service(settings: Settings) -> None:
 
     Called during FastAPI lifespan startup.
     """
-    global _engine_singleton, _store_singleton, _renderer_registry_singleton, _status
+    global _engine_singleton, _store_singleton, _renderer_registry_singleton
+    global _canonical_execution_singleton, _status
+    _canonical_execution_singleton = None
 
     try:
         from maistro_design.engine import DesignEngine
@@ -257,12 +268,34 @@ async def start_design_service(settings: Settings) -> None:
         _renderer_registry_singleton = registry
         logger.info("Renderer slots available: %s", sorted(s.value for s in filled))
 
+        # Design is a projection over the canonical spine. In degraded/demo
+        # mode there may be no in-process RunStore; leave the action unavailable
+        # rather than fabricating a successful local lifecycle.
+        try:
+            from maistro_design.canonical_execution import DesignCanonicalExecution
+            from services.engine import get_engine
+
+            core_engine = get_engine()
+            run_store = core_engine.run_store
+            scope_store = core_engine.project_scope_store
+            workspace_id = str(getattr(settings, "hive_default_workspace_id", "") or "")
+            if run_store is not None and scope_store is not None and workspace_id:
+                root = await scope_store.root_for_workspace(workspace_id)
+                _canonical_execution_singleton = DesignCanonicalExecution(
+                    run_store,
+                    workspace_id=workspace_id,
+                    project_id=root.project_id,
+                )
+        except Exception as exc:
+            logger.info("Design canonical execution unavailable: %s", exc)
+
         _status = DesignServiceStatus(
             ready=True,
             bundled_slugs=bundled,
             catalog_available=catalog_cause is None,
             catalog_cause=catalog_cause,
             catalog_slugs=catalog_slugs,
+            canonical_execution_available=_canonical_execution_singleton is not None,
         )
 
     # Both handlers still catch, because a Conductor install without
@@ -271,9 +304,11 @@ async def start_design_service(settings: Settings) -> None:
     # routes answer with, instead of a log line and a service that looks ready.
     except ImportError as exc:
         logger.warning("maistro-design not installed or unavailable: %s", exc)
+        _canonical_execution_singleton = None
         _status = DesignServiceStatus(cause=f"maistro-design is not installed: {exc}")
     except Exception as exc:
         logger.warning("DesignService initialization failed: %s", exc, exc_info=True)
+        _canonical_execution_singleton = None
         _status = DesignServiceStatus(cause=f"{type(exc).__name__}: {exc}")
 
 
@@ -360,11 +395,13 @@ def _probe_catalog() -> tuple[tuple[str, ...], str | None]:
 
 async def stop_design_service() -> None:
     """Cleanup the DesignService singletons."""
-    global _engine_singleton, _store_singleton, _renderer_registry_singleton, _status
+    global _engine_singleton, _store_singleton, _renderer_registry_singleton
+    global _canonical_execution_singleton, _status
     _status = DesignServiceStatus(cause="stop_design_service() has run")
     _engine_singleton = None
     _store_singleton = None
     _renderer_registry_singleton = None
+    _canonical_execution_singleton = None
     _get_async_engine.cache_clear()
     _get_async_session_factory.cache_clear()
     try:

@@ -12,6 +12,7 @@ try:
 except importlib.metadata.PackageNotFoundError:  # pragma: no cover - editable/unbuilt checkout
     __version__ = "0.9.0-dev"
 
+from maistro_design.canonical_execution import DesignCanonicalExecution
 from maistro_design.engine import DesignEngine
 from maistro_design.protocols import (
     DesignEngineProtocol,
@@ -81,6 +82,7 @@ __all__ = [
     "ArtifactKind",
     "ArtifactNode",
     "ColorToken",
+    "DesignCanonicalExecution",
     "DesignEngine",
     "DesignEngineProtocol",
     "DesignError",
