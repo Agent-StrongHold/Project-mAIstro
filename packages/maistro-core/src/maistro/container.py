@@ -1826,6 +1826,7 @@ _REQUIRED_PG_TABLES: Final = (
     "learnings",
     "outcomes",
     "quota_usage",
+    "quota_invocation_evidence",
     "sessions",
     # A turn's at-most-once marker, a row of its own since 023 (#327). Listed
     # for the same reason as `prompt_labels`: without it a database migrated

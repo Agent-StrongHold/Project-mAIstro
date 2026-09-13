@@ -223,8 +223,9 @@ InvocationCompletionHook = Callable[["Invocation"], Awaitable[None]]
 class InvocationExecutionService:
     """Resolve one Binding, persist one provider call, and guard effect retries.
 
-    Unreached in production: nothing constructs this outside tests, and the
-    effect-retry guard below therefore protects no live call yet (#55).
+    The composition root installs this service for governed model effects;
+    the effect-retry guard therefore protects live provider calls as well as
+    direct consumers constructed by tests.
     """
 
     def __init__(

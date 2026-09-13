@@ -85,6 +85,10 @@ class CanonicalInvocationUsageRecorder:
             await self._quota_tracker.record_usage(
                 provider, self._billing_cycle, input_tokens, output_tokens
             )
+        else:
+            record_unreported = getattr(self._quota_tracker, "record_unreported", None)
+            if callable(record_unreported):
+                await record_unreported(provider, self._billing_cycle)
 
 
 def record_llm_usage(

@@ -55,6 +55,7 @@ class InMemoryQuotaTracker:
         entry = self._usage[key]
         entry.setdefault("unreported_count", 0)
         entry["unreported_count"] += 1
+        entry["usage_complete"] = False
         entry.setdefault("input_tokens", 0)
         entry.setdefault("output_tokens", 0)
         entry.setdefault("total_tokens", 0)
