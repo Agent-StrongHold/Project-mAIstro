@@ -7,12 +7,6 @@ NULL would make those pauses permanently invisible to the bounded expiry scan.
 Revision ID: 034
 Revises: 033
 Create Date: 2026-09-07
-
-Renumbered from 033 after landing: #1221's
-`033_project_membership_unique_per_principal` had already taken that id on
-`down_revision = "032"`, so the two sat side by side as separate heads and
-every `alembic upgrade head` failed with "Multiple head revisions are
-present". Only the identifiers change; the schema this applies does not.
 """
 
 from __future__ import annotations
