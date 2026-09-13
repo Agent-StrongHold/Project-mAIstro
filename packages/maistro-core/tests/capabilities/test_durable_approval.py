@@ -15,7 +15,7 @@ from maistro.capabilities.approval_store import (
     approval_request_digest,
     redact_approval_value,
 )
-from maistro.capabilities.binding import Binding
+from maistro.capabilities.binding import Binding, ResolvedCapabilityProvider
 from maistro.capabilities.governed_invocation import (
     GovernedInvocationExecutionService,
     InvocationApprovalPending,
@@ -74,7 +74,7 @@ async def _allow_policy(
     return PolicyVerdict(Decision.ALLOW, reason="allowed", rule="allow")
 
 
-async def _must_not_execute(_provider: _Provider, _request: Any) -> None:
+async def _must_not_execute(_provider: ResolvedCapabilityProvider, _request: Any) -> None:
     raise AssertionError("approval-gated effect must not reach provider")
 
 
@@ -105,7 +105,7 @@ async def test_approved_effect_resumes_on_later_attempt_without_second_request()
     events = InMemoryEventStore()
     calls = 0
 
-    async def execute(_provider: _Provider, request: Any) -> dict[str, Any]:
+    async def execute(_provider: ResolvedCapabilityProvider, request: Any) -> dict[str, Any]:
         nonlocal calls
         calls += 1
         return {"committed": request}
@@ -200,7 +200,7 @@ async def test_approved_effect_is_committed_to_stateful_policy_before_execution(
 
     await approvals.resolve(pending.value.request_id, approved=True, actor="alice")
 
-    async def execute(_provider: _Provider, request: Any) -> dict[str, Any]:
+    async def execute(_provider: ResolvedCapabilityProvider, request: Any) -> dict[str, Any]:
         return {"committed": request}
 
     await service.invoke(
@@ -437,6 +437,111 @@ def test_redact_approval_value_preserves_path_but_redacts_pat() -> None:
     assert redact_approval_value({"path": "/tmp/result", "pat": "ghp_secret"}) == {
         "path": "/tmp/result",
         "pat": "[REDACTED]",
+    }
+
+
+def test_redact_approval_value_covers_key_synonyms() -> None:
+    """#1159 — private/ssh/signing key material and bare `key` cannot bypass
+    approval persistence merely because their argument key spells the family
+    differently. camelCase `apiKey` has no separator to split on and is
+    spelled out in the shared segment policy."""
+    redacted = redact_approval_value(
+        {
+            "private_key": "PK",
+            "ssh_key": "SK",
+            "signing_key": "GK",
+            "key": "K",
+            "apiKey": "AK",
+            "KEY2": "upper",
+        }
+    )
+
+    assert redacted == {
+        "private_key": "[REDACTED]",
+        "ssh_key": "[REDACTED]",
+        "signing_key": "[REDACTED]",
+        "key": "[REDACTED]",
+        "apiKey": "[REDACTED]",
+        # A trailing digit names the same family (`key2` -> `key`).
+        "KEY2": "[REDACTED]",
+    }
+
+
+def test_redact_approval_value_preserves_identifier_names() -> None:
+    """#1159 — an identifier is not a reusable credential: the segment policy
+    deliberately keeps `aws_access_key_id`, `key_arn`, and `token_id" readable
+    so approval evidence can still say WHAT was accessed."""
+    evidence = {
+        "aws_access_key_id": "AKIAIOSFODNN7EXAMPLE",
+        "key_arn": "arn:aws:kms:eu-west-1:111122223333:key/abcd-1234",
+        "token_id": "tok-123",
+        "region": "us-east-1",
+    }
+    assert redact_approval_value(evidence) == evidence
+
+
+def test_redact_approval_value_walks_nested_mappings_lists_and_tuples() -> None:
+    redacted = redact_approval_value(
+        {
+            "steps": [
+                {"signing_key": "GK", "keep": 1},
+                ("plain", {"ssh_key": "SK"}),
+                {"deeper": {"key": "K"}},
+            ],
+            "values": ["password", "not-a-field-name"],
+        }
+    )
+
+    assert redacted == {
+        "steps": [
+            {"signing_key": "[REDACTED]", "keep": 1},
+            # Tuples are walked but normalized to lists (pre-existing,
+            # JSON-oriented evidence shaping).
+            ["plain", {"ssh_key": "[REDACTED]"}],
+            {"deeper": {"key": "[REDACTED]"}},
+        ],
+        # List *values* are not field names; only mapping keys classify.
+        "values": ["password", "not-a-field-name"],
+    }
+
+
+def test_redact_approval_value_handles_attacker_controlled_names() -> None:
+    """Hostile key shapes must fail toward redaction, not around it."""
+    redacted = redact_approval_value(
+        {
+            "weird key !@#": "v",
+            "Authorization": "Bearer abc",
+            "x": {"secret\n": "s"},
+            "": "nameless survives: it names no family",
+        }
+    )
+
+    assert redacted["weird key !@#"] == "[REDACTED]"
+    assert redacted["Authorization"] == "[REDACTED]"
+    assert redacted["x"]["secret\n"] == "[REDACTED]"
+    assert redacted[""] == "nameless survives: it names no family"
+
+
+def test_redact_approval_value_covers_camelcase_synonyms() -> None:
+    """#1159 repair: the canonical classifier split camel case on the lowered
+    name, so these synonyms of covered families bypassed approval redaction."""
+    redacted = redact_approval_value(
+        {
+            "privateKey": "PRIV",
+            "SigningKey": "GK",
+            "clientToken": "TOK",
+            "userPassword": "PW",
+            # camelCase identifiers keep the identifier escape.
+            "awsAccessKeyId": "AKIAIOSFODNN7EXAMPLE",
+        }
+    )
+
+    assert redacted == {
+        "privateKey": "[REDACTED]",
+        "SigningKey": "[REDACTED]",
+        "clientToken": "[REDACTED]",
+        "userPassword": "[REDACTED]",
+        "awsAccessKeyId": "AKIAIOSFODNN7EXAMPLE",
     }
 
 
