@@ -58,6 +58,7 @@ MAX_RESULT_CHARS = 2000
 #: that run's events under their own cap.
 MAX_RESULT_CHARS_PER_RUN = 50 * MAX_RESULT_CHARS
 
+
 def _bounded(result: dict[str, Any] | None) -> dict[str, Any] | None:
     """A run result with its node responses truncated to `MAX_RESULT_CHARS`.
 

@@ -35,19 +35,56 @@ from services.workspace_authority import list_views_for_user
 
 def _canonical_run_store() -> Any | None:
     """Return the canonical RunStore, or None in standalone compatibility mode."""
+    # EngineService is the product composition seam. The dag-agent accessor is
+    # retained for standalone graph tests and older boot paths that do not bind
+    # an EngineService singleton.
+    try:
+        from services.engine import get_engine
+
+        store = get_engine().run_store
+        if store is not None:
+            return store
+    except Exception:  # pragma: no cover - boot-time compatibility path
+        pass
     try:
         from services.dag_agents import _container
 
         container = _container()
     except Exception:  # pragma: no cover - boot-time compatibility path
         return None
-    if container is None:
-        return None
-    return container.run_store
+    return getattr(container, "run_store", None) if container is not None else None
 
 
 def _timestamp(value: datetime | None) -> float | None:
     return value.timestamp() if value is not None else None
+
+
+async def _canonical_projection(record: dict[str, Any]) -> dict[str, Any]:
+    """Keep the pre-#1036 overlay helper for standalone callers.
+
+    The inspection API uses the richer snapshot adapter below. This narrow
+    compatibility function intentionally consults only EngineService, as its
+    historical contract did, and never invents canonical facts when the spine
+    is unavailable.
+    """
+    run_id = str(record.get("canonical_run_id") or record.get("id") or "")
+    if not run_id:
+        return record
+    try:
+        from services.engine import get_engine
+
+        store = get_engine().run_store
+        run = await store.get_run(run_id) if store is not None else None
+    except Exception:
+        return record
+    if run is None:
+        return record
+    return {
+        **record,
+        "status": run.status.value,
+        **({"result": run.result} if run.result is not None else {}),
+        **({"error": run.error} if run.error else {}),
+    }
 
 
 async def _canonical_snapshot(run_id: str) -> tuple[Any, list[Any], list[Any]] | None:
@@ -228,7 +265,14 @@ async def _visible_snapshot(
 
     run, node_runs, attempts = snapshot
     allowed = await authorized_workspace_ids(user_id)
-    if run.workspace_id not in allowed:
+    # The projection carries the scope captured when its canonical Run was
+    # admitted and is the route's authorization adapter. Lifecycle status and
+    # node/attempt facts still come exclusively from the canonical snapshot.
+    # Canonical-only producers use the Run scope directly.
+    if projection is not None:
+        if not _in_scope(projection, allowed):
+            return None
+    elif run.workspace_id not in allowed:
         return None
     return run, node_runs, attempts, projection or history.get_run(canonical_id)
 
