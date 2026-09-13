@@ -85,6 +85,15 @@ publisher contract rather than fabricated into the PR-job table below. See
 A check that cannot report on a branch must not be required there, or GitHub can
 wait forever for an `Expected` result.
 
+### Reusable workflow check names
+
+For a reusable-workflow caller, GitHub composes the check-run name as
+`<caller job name> / <called job name>`. The generated rows below intentionally
+use that composed name (for example, `Quality / ruff lint / Quality / ruff lint`),
+not the callee's bare `name:`. `scripts/check-required-checks.py` reads both
+workflow files and resolves `workflow_call` inputs so branch protection cannot
+wait on a check context that Actions never emits.
+
 ## The checks
 
 <!-- checks:table -->
@@ -115,41 +124,41 @@ wait forever for an `Expected` result.
 | Registry CI | `Validate ADR/spec front-matter` | every PR |
 | Vulture Ratchet | `exact-debt-ledger` | every PR |
 | quality | `Coverage gate (publish-set floor + diff coverage)` | every PR |
-| quality | `Quality / BFCL provenance` | every PR |
-| quality | `Quality / Hypothesis property tests` | every PR |
-| quality | `Quality / IFEval provenance` | every PR |
-| quality | `Quality / acceptance-state ratchet + mandate` | every PR |
-| quality | `Quality / agent store write path` | every PR |
-| quality | `Quality / architecture fitness functions` | every PR |
-| quality | `Quality / backlog consistency` | every PR |
-| quality | `Quality / contract marker ledger` | every PR |
-| quality | `Quality / convergence matrix` | every PR |
-| quality | `Quality / doc links` | every PR |
-| quality | `Quality / enumeration coverage` | every PR |
-| quality | `Quality / execution lifecycles` | every PR |
-| quality | `Quality / image inventory` | every PR |
-| quality | `Quality / interrogate` | every PR |
-| quality | `Quality / model egress` | every PR |
-| quality | `Quality / mypy strict` | every PR |
-| quality | `Quality / pyright ratchet` | every PR |
-| quality | `Quality / radon CC ratchet` | every PR |
-| quality | `Quality / radon CC report` | every PR |
-| quality | `Quality / reachability dispositions` | every PR |
-| quality | `Quality / reachability ratchet` | every PR |
-| quality | `Quality / release consistency` | every PR |
-| quality | `Quality / ruff format` | every PR |
-| quality | `Quality / ruff lint` | every PR |
-| quality | `Quality / security inventory` | every PR |
-| quality | `Quality / version consistency` | every PR |
-| quality | `Quality / wiring reads ratchet` | every PR |
-| quality | `Quality / xenon ratchet` | every PR |
+| quality | `Quality / BFCL provenance / Quality / BFCL provenance` | every PR |
+| quality | `Quality / Hypothesis property tests / Quality / Hypothesis property tests` | every PR |
+| quality | `Quality / IFEval provenance / Quality / IFEval provenance` | every PR |
+| quality | `Quality / acceptance-state ratchet + mandate / Quality / acceptance-state ratchet + mandate` | every PR |
+| quality | `Quality / agent store write path / Quality / agent store write path` | every PR |
+| quality | `Quality / architecture fitness functions / Quality / architecture fitness functions` | every PR |
+| quality | `Quality / backlog consistency / Quality / backlog consistency` | every PR |
+| quality | `Quality / contract marker ledger / Quality / contract marker ledger` | every PR |
+| quality | `Quality / convergence matrix / Quality / convergence matrix` | every PR |
+| quality | `Quality / doc links / Quality / doc links` | every PR |
+| quality | `Quality / enumeration coverage / Quality / enumeration coverage` | every PR |
+| quality | `Quality / execution lifecycles / Quality / execution lifecycles` | every PR |
+| quality | `Quality / image inventory / Quality / image inventory` | every PR |
+| quality | `Quality / interrogate / Quality / interrogate` | every PR |
+| quality | `Quality / model egress / Quality / model egress` | every PR |
+| quality | `Quality / mypy strict / Quality / mypy strict` | every PR |
+| quality | `Quality / pyright ratchet / Quality / pyright ratchet` | every PR |
+| quality | `Quality / radon CC ratchet / Quality / radon CC ratchet` | every PR |
+| quality | `Quality / radon CC report / Quality / radon CC report` | every PR |
+| quality | `Quality / reachability dispositions / Quality / reachability dispositions` | every PR |
+| quality | `Quality / reachability ratchet / Quality / reachability ratchet` | every PR |
+| quality | `Quality / release consistency / Quality / release consistency` | every PR |
+| quality | `Quality / ruff format / Quality / ruff format` | every PR |
+| quality | `Quality / ruff lint / Quality / ruff lint` | every PR |
+| quality | `Quality / security inventory / Quality / security inventory` | every PR |
+| quality | `Quality / version consistency / Quality / version consistency` | every PR |
+| quality | `Quality / wiring reads ratchet / Quality / wiring reads ratchet` | every PR |
+| quality | `Quality / xenon ratchet / Quality / xenon ratchet` | every PR |
 | quality | `coverage (MinIO)` | every PR |
 | quality | `coverage (PostgreSQL)` | every PR |
 | quality | `coverage (no services)` | every PR |
 | security | `Container scan + SBOM + cosign` | every PR, job `if:` on base_ref |
-| security | `SAST / bandit` | every PR |
-| security | `SAST / gitleaks` | every PR |
-| security | `SAST / semgrep` | every PR |
+| security | `SAST / bandit / SAST / bandit` | every PR |
+| security | `SAST / gitleaks / SAST / gitleaks` | every PR |
+| security | `SAST / semgrep / SAST / semgrep` | every PR |
 | security | `Supply chain (pip-audit)` | every PR |
 
 <!-- /checks:table -->

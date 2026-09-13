@@ -103,6 +103,41 @@ class TestRendering:
         assert "`job-id`" in gate.render(rows)
 
 
+class TestReusableWorkflowNames:
+    def test_composes_caller_and_callee_job_names(self, gate, tmp_path, monkeypatch) -> None:
+        workflows = tmp_path / ".github" / "workflows"
+        workflows.mkdir(parents=True)
+        (workflows / "reusable.yml").write_text(
+            yaml.safe_dump(
+                {
+                    "name": "Reusable",
+                    "on": {"workflow_call": {"inputs": {"check_name": {"type": "string"}}}},
+                    "jobs": {"check": {"name": "${{ inputs.check_name }}"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        caller = workflows / "caller.yml"
+        caller.write_text(
+            yaml.safe_dump(
+                {
+                    "name": "Caller",
+                    "on": {"pull_request": None},
+                    "jobs": {
+                        "quality": {
+                            "name": "Quality / lint",
+                            "uses": "./reusable.yml",
+                            "with": {"check_name": "Lint"},
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gate, "WORKFLOW_DIR", workflows)
+        assert gate.collect() == [("Caller", "Quality / lint / Lint", "every PR")]
+
+
 class TestMergeQueueRatchet:
     @staticmethod
     def _write_contracts(
@@ -310,6 +345,27 @@ class TestAgainstTheRealWorkflows:
         for branch in ("develop", "main"):
             contexts = protection["branches"][branch]["required_status_checks"]["contexts"]
             assert "DevSkim" not in contexts
+
+    def test_hypothesis_quality_caller_uses_the_postgres_reusable_workflow(self) -> None:
+        workflow = yaml.safe_load(
+            (ROOT / ".github" / "workflows" / "quality.yml").read_text(encoding="utf-8")
+        )
+        assert (
+            workflow["jobs"]["quality-hypothesis"]["uses"]
+            == "./.github/workflows/reusable-quality-postgres-check.yml"
+        )
+
+    def test_vulture_push_trigger_covers_every_topic_policy_prefix(self) -> None:
+        policy = json.loads(
+            (ROOT / ".github" / "branch-protection.json").read_text(encoding="utf-8")
+        )
+        workflow = yaml.safe_load(
+            (ROOT / ".github" / "workflows" / "vulture-ratchet.yml").read_text(encoding="utf-8")
+        )
+        push = workflow.get(True, workflow.get("on", {})).get("push", {})
+        assert set(push["branches"]) >= {
+            f"{prefix}/*" for prefix in policy["topic_branch_policy"]["prefixes"]
+        }
 
     def test_every_unfiltered_pr_workflow_cancels_superseded_runs(self, gate) -> None:
         offenders = []
