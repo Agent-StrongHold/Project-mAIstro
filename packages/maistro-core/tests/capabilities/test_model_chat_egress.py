@@ -602,7 +602,7 @@ async def test_an_alias_passes_through_when_no_model_metadata_is_registered(
         effects,
         registry=registry,
         router=CostAwareRouter(registry),
-        endpoint=GatewayEndpoint(base_url="http://gw", api_key="process-key"),
+        endpoint=GatewayEndpoint(base_url="https://gw", api_key="process-key"),
     )
 
     result = await egress.complete(
@@ -644,7 +644,7 @@ async def test_a_binding_that_declares_credential_refs_authenticates_with_them(
         effects,
         registry=registry,
         router=CostAwareRouter(registry),
-        endpoint=GatewayEndpoint(base_url="http://gw", api_key="process-key"),
+        endpoint=GatewayEndpoint(base_url="https://gw", api_key="process-key"),
     )
     binding = Binding(
         workspace_id="ws1",
@@ -683,7 +683,7 @@ async def test_a_binding_with_credential_refs_but_no_scoped_credential_fails_clo
         effects,
         registry=registry,
         router=CostAwareRouter(registry),
-        endpoint=GatewayEndpoint(base_url="http://gw", api_key="process-key"),
+        endpoint=GatewayEndpoint(base_url="https://gw", api_key="process-key"),
     )
     binding = Binding(
         workspace_id="ws1",

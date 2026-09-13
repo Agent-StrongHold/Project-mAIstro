@@ -283,24 +283,14 @@
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
-      "key": "packages/maistro-core/src/maistro/graph/nodes/llm_summarize.py::LlmSummarizeNode",
-      "path": "packages/maistro-core/src/maistro/graph/nodes/llm_summarize.py",
-      "line": 59,
-      "name": "LlmSummarizeNode",
-      "classname": null,
-      "rank": "C",
-      "complexity": 12,
-      "rationale": "Dropped 19 -> 12 by the #56 governed-egress migration: the node's HTTP/protocol branching moved into the approved llm_gateway Provider, leaving Binding resolution and request/result mapping. The remaining C is class-aggregate; further reduction tracked under SPEC-264."
-    },
-    {
       "key": "packages/maistro-core/src/maistro/graph/nodes/llm_summarize.py::LlmSummarizeNode._execute",
       "path": "packages/maistro-core/src/maistro/graph/nodes/llm_summarize.py",
-      "line": 73,
+      "line": 139,
       "name": "_execute",
       "classname": "LlmSummarizeNode",
       "rank": "C",
-      "complexity": 18,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+      "complexity": 11,
+      "rationale": "Dropped 18 -> 11 by the #56 governed-egress migration: the node's HTTP/protocol branching moved into the approved llm_gateway Provider, leaving Binding resolution and request/result mapping."
     },
     {
       "key": "packages/maistro-core/src/maistro/graph/nodes/transform_filter_by_type.py::TransformFilterByTypeNode",

@@ -543,7 +543,7 @@ async def test_sqlite_container_keeps_the_invocation_ledger_across_a_restart(
             container.capability_effects,
             registry=container.provider_registry,
             router=container.llm_router,
-            endpoint=GatewayEndpoint(base_url="http://gw"),
+            endpoint=GatewayEndpoint(base_url="https://gw"),
         )
         result = await egress.complete(
             binding=binding,

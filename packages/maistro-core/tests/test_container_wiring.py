@@ -65,6 +65,17 @@ async def test_sqlite_backend_wires_sqlite_durable_event_stores() -> None:
     assert (await container.durable_event_log.get(event.id)) is not None
 
 
+async def test_postgres_capability_ledger_wires_canonical_event_store() -> None:
+    """The PostgreSQL capability path is real wiring, not a dead import."""
+    from maistro.container import _wire_capability_ledger
+    from maistro.events.pg_envelope import PgEventStore
+
+    invocations, events = await _wire_capability_ledger(ledger_conn=None, pg_pool=object())
+
+    assert invocations is None
+    assert isinstance(events, PgEventStore)
+
+
 # --- Resilience (ADR-066) ----------------------------------------------------
 
 
