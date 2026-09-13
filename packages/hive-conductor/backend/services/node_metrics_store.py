@@ -1,10 +1,15 @@
-"""Per-node latency and token metrics, aggregated over a ring buffer.
+"""Per-node latency and token metrics over a bounded durable projection.
 
-The buffer is in-memory and bounded, and this module says so rather than
-calling itself durable: three docstrings here used to, while the destination
-was a `deque` (#698). Making the observations themselves durable needs the
-Conductor's UI run path to mint a canonical Run, which it does not — that is
-#53.
+The canonical Run/NodeRun/Attempt spine owns execution identity and lifecycle.
+This module owns only a bounded, query-friendly observation projection. When
+Conductor persistence is configured, observations are written to
+``stores.node_metrics`` and read through that shared state database, so a
+restart or another replica sees the same measurements. ``memory://`` remains
+an explicit ephemeral deployment choice.
+
+The UI run path must produce canonical identities before an observation can be
+written. Legacy observations without those identities remain supported for
+migration/tests, but are not allowed to masquerade as canonical execution.
 
 **An unmeasured field is absent, not zero.** `tokens_in`, `tokens_out`,
 `cost_usd` and `model_used` are optional, and the aggregate reports what it has
@@ -23,7 +28,7 @@ from __future__ import annotations
 import math
 from collections import deque
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -40,6 +45,11 @@ class NodeObservation:
     project_id: str
     dag_id: str
     phase: str
+    #: Canonical execution identities. Empty values are retained only for
+    #: pre-convergence records and test doubles; canonical writers fill them.
+    node_run_id: str = ""
+    attempt_id: str = ""
+    workspace_id: str = ""
     #: `None` where nothing measured it. Every one of these was a required
     #: field whose only non-durable writer supplied a zero or a guess.
     latency_ms: int | None = None
@@ -51,18 +61,94 @@ class NodeObservation:
 
 
 class NodeMetricsStore:
-    """In-memory ring buffer of node observations."""
+    """Bounded observations, optionally backed by a shared JsonStore.
 
-    def __init__(self, *, max_observations: int = DEFAULT_MAX_OBSERVATIONS) -> None:
+    ``records`` is deliberately a projection store, not a second Run store.
+    Canonical ids make writes idempotent when recovery or a retry replays the
+    completion callback. Reads refresh the JsonStore cache so an already
+    running replica does not serve an obsolete metrics window.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_observations: int = DEFAULT_MAX_OBSERVATIONS,
+        records: Any | None = None,
+    ) -> None:
+        if max_observations <= 0:
+            raise ValueError("max_observations must be positive")
         self._buf: deque[NodeObservation] = deque(maxlen=max_observations)
+        self._max_observations = max_observations
+        self._records = records
+        self._load_records()
+
+    @property
+    def is_durable(self) -> bool:
+        return self._records is not None
+
+    def _key(self, obs: NodeObservation) -> str:
+        identity = obs.attempt_id or obs.node_run_id
+        if identity:
+            return identity
+        # Legacy records have no canonical identity. Timestamp keeps separate
+        # test/compatibility observations distinct without inventing an id.
+        return f"legacy:{obs.run_id}:{obs.node_id}:{obs.recorded_at.isoformat()}"
+
+    @staticmethod
+    def _from_record(raw: dict[str, Any]) -> NodeObservation:
+        data = dict(raw)
+        timestamp = data.get("recorded_at")
+        if isinstance(timestamp, str):
+            data["recorded_at"] = datetime.fromisoformat(timestamp)
+        return NodeObservation(**data)
+
+    @staticmethod
+    def _to_record(obs: NodeObservation) -> dict[str, Any]:
+        raw = asdict(obs)
+        raw["recorded_at"] = obs.recorded_at.isoformat()
+        return raw
+
+    def _load_records(self) -> None:
+        if self._records is None:
+            return
+        values = getattr(self._records, "values", lambda: ())()
+        observations = [self._from_record(raw) for raw in values if isinstance(raw, dict)]
+        observations.sort(key=lambda item: item.recorded_at)
+        kept = observations[-self._max_observations :]
+        self._buf = deque(kept, maxlen=self._max_observations)
+        for old in observations[: -len(kept)] if kept else observations:
+            self._records.pop(self._key(old), None)
+
+    def _refresh(self) -> None:
+        if self._records is None:
+            return
+        initialize = getattr(self._records, "initialize", None)
+        if callable(initialize):
+            initialize()
+        self._load_records()
 
     def append(self, obs: NodeObservation) -> None:
-        self._buf.append(obs)
+        self._refresh()
+        key = self._key(obs)
+        # Canonical completion callbacks may be replayed. Replace that
+        # projection row rather than counting one Attempt twice.
+        existing = [item for item in self._buf if self._key(item) != key]
+        existing.append(obs)
+        existing.sort(key=lambda item: item.recorded_at)
+        evicted = existing[: -self._max_observations]
+        self._buf = deque(existing[-self._max_observations :], maxlen=self._max_observations)
+        if self._records is not None:
+            for old in evicted:
+                self._records.pop(self._key(old), None)
+            self._records[key] = self._to_record(obs)
 
     def __len__(self) -> int:
         return len(self._buf)
 
     def clear(self) -> None:
+        if self._records is not None:
+            for key in list(self._records.keys()):
+                self._records.pop(key, None)
         self._buf.clear()
 
     def _filter(
@@ -75,6 +161,7 @@ class NodeMetricsStore:
         window_seconds: int = 3600,
         now: datetime | None = None,
     ) -> list[NodeObservation]:
+        self._refresh()
         cutoff = (now or datetime.now(UTC)) - timedelta(seconds=window_seconds)
         out: list[NodeObservation] = []
         for obs in self._buf:
@@ -248,6 +335,9 @@ def _to_dict(obs: NodeObservation) -> dict[str, Any]:
         "tokens_out": obs.tokens_out,
         "cost_usd": obs.cost_usd,
         "model_used": obs.model_used,
+        "node_run_id": obs.node_run_id,
+        "attempt_id": obs.attempt_id,
+        "workspace_id": obs.workspace_id,
         "recorded_at": obs.recorded_at.isoformat(),
     }
 
@@ -260,9 +350,16 @@ def get_store() -> NodeMetricsStore:
 
 
 def set_store(store: NodeMetricsStore) -> None:
-    """Replace the process store. Tests use this; so does `reset_store`."""
+    """Replace the process projection. Tests and startup wiring use this seam."""
     global _store
     _store = store
+
+
+def configure_store(records: Any) -> NodeMetricsStore:
+    """Bind observations to the Conductor's shared durable JsonStore."""
+    store = NodeMetricsStore(records=records)
+    set_store(store)
+    return store
 
 
 def reset_store() -> NodeMetricsStore:
@@ -273,7 +370,8 @@ def reset_store() -> NodeMetricsStore:
     store carried across an engine restart would mix one run's observations
     into the next process's window (#698).
     """
-    set_store(NodeMetricsStore())
+    records = _store._records
+    set_store(NodeMetricsStore(records=records))
     return _store
 
 
@@ -313,9 +411,11 @@ def record_run_completion(run_record: Any) -> int:
     node_kinds = {node.node_id: node.node_type for node in getattr(graph, "nodes", ())}
 
     run_id = str(getattr(run, "run_id", "") or "")
+    workspace_id = str(getattr(run, "workspace_id", "") or "")
     project_id = str(getattr(run, "project_id", "") or "")
     dag_id = str(getattr(graph, "graph_id", "") or "")
     records = getattr(run_record, "node_runs", None) or ()
+    attempts = getattr(run_record, "attempts", None) or ()
 
     appended = 0
     for node_run in records:
@@ -328,6 +428,17 @@ def record_run_completion(run_record: Any) -> int:
         # this recording off the route and onto the canonical completion).
         result = getattr(node_run, "result", None)
         reported_model = str(result.get("model", "")) if isinstance(result, Mapping) else ""
+        node_run_id = str(getattr(node_run, "node_run_id", "") or "")
+        node_attempts = [
+            attempt
+            for attempt in attempts
+            if str(getattr(attempt, "node_run_id", "") or "") == node_run_id
+        ]
+        latest_attempt = max(
+            node_attempts,
+            key=lambda attempt: int(getattr(attempt, "ordinal", 0) or 0),
+            default=None,
+        )
         obs = NodeObservation(
             run_id=run_id,
             node_id=node_id,
@@ -335,6 +446,9 @@ def record_run_completion(run_record: Any) -> int:
             project_id=project_id,
             dag_id=dag_id,
             phase=phase,
+            node_run_id=node_run_id,
+            attempt_id=str(getattr(latest_attempt, "attempt_id", "") or ""),
+            workspace_id=workspace_id,
             latency_ms=_latency_ms(node_run),
             model_used=reported_model,
             # Absent, not zero. Attempt-level tokens and cost are not in the

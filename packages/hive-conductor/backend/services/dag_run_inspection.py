@@ -27,8 +27,15 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from services.dag_run_store import MAX_RUNS, get_dag_run_store
+from services.dag_run_store import MAX_RUNS, DagRunStore, get_dag_run_store
 from services.workspace_authority import list_views_for_user
+
+
+def _fresh_store() -> DagRunStore:
+    """Refresh the shared projection before every production inspection."""
+    store = get_dag_run_store()
+    store.reload()
+    return store
 
 
 async def _canonical_projection(record: dict[str, Any]) -> dict[str, Any]:
@@ -84,7 +91,7 @@ async def list_visible_runs(user_id: str, *, limit: int = 25) -> list[dict[str, 
     # canonical execution truth before the caller's limit is applied.
     visible = [
         await _canonical_projection(summary)
-        for summary in get_dag_run_store().list_runs(limit=MAX_RUNS)
+        for summary in _fresh_store().list_runs(limit=MAX_RUNS)
         if _in_scope(summary, allowed)
     ]
     return visible[:limit]
@@ -96,7 +103,7 @@ async def can_inspect_run(user_id: str, run_id: str) -> bool:
     Called before the SSE route opens anything: the stream, its replay, and
     every existence signal behind it stay closed until this says yes (#1174).
     """
-    record = get_dag_run_store().get_run(run_id)
+    record = _fresh_store().get_run(run_id)
     if record is None:
         return False
     allowed = await authorized_workspace_ids(user_id)
@@ -111,7 +118,7 @@ async def visible_run_detail(user_id: str, run_id: str) -> dict[str, Any] | None
     the same 404-shaped refusal a missing id gets and the response confirms
     nothing about runs the caller cannot see (#1174).
     """
-    record = get_dag_run_store().get_run(run_id)
+    record = _fresh_store().get_run(run_id)
     if record is None:
         return None
     allowed = await authorized_workspace_ids(user_id)
@@ -133,7 +140,7 @@ async def visible_run_ids(user_id: str, run_ids: Iterable[str]) -> set[str]:
     by-id readers.
     """
     allowed = await authorized_workspace_ids(user_id)
-    store = get_dag_run_store()
+    store = _fresh_store()
     visible: set[str] = set()
     for run_id in run_ids:
         record = store.get_run(str(run_id))

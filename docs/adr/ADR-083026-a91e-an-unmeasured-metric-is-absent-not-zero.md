@@ -22,6 +22,7 @@ contracts:
   - behavioral
 tests:
   - packages/hive-conductor/backend/tests/test_node_metrics_are_measured.py
+  - packages/hive-conductor/backend/tests/test_durable_node_metrics.py
 layer: Observability
 owners:
   - '@BlakeMatthews-dev'
@@ -79,9 +80,11 @@ blocks around metrics writes name the run and DAG whose observations were
 dropped. A metrics write must not fail a run that already produced a result;
 that is not a reason for the loss to be invisible.
 
-**The module's prose matches its storage.** It is a bounded in-memory buffer
-and says so. The three docstrings calling it durable were describing an
-intention.
+****The module's prose matches its storage.** The observation projection is
+bounded. With Conductor persistence configured it is backed by the shared
+`stores.node_metrics` JsonStore and refreshes before production reads; with
+`memory://` it remains explicitly ephemeral. It is not a second execution
+authority: Run/NodeRun/Attempt rows remain canonical.
 
 ## Related, once it lands
 
@@ -108,5 +111,10 @@ dangling link is worse than a sentence.
   so this is a reduction in claimed information, not in information.
 
 ### Neutral
-- Storage is unchanged: still a bounded buffer. Making observations durable
-  needs the UI path to mint a canonical Run, which is #53.
+- The metrics projection is retained only to make the canonical spine
+  queryable. It is bounded by `DEFAULT_MAX_OBSERVATIONS`; oldest rows are
+  deleted automatically when the bound is reached, and the metrics API exposes
+  that policy at `/v1/dag-metrics/retention`. Canonical Run retention remains
+  the deletion authority for execution rows.
+- Deployments without state persistence deliberately keep an ephemeral
+  projection and report `durable: false`; they do not imply restart durability.

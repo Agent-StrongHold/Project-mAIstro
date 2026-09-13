@@ -121,10 +121,13 @@ user_provider_config: JsonStore = JsonStore("user_provider_config")
 dashboard_layouts: JsonStore = JsonStore("dashboard_layouts")
 #: Stable OIDC identity links. Records contain no provider token or email.
 oauth_identity_links: JsonStore = JsonStore("oauth_identity_links")
-#: DAG run history — the records behind the "Live DAG Runs" page. In-memory
-#: until #697; the page presented a 100-entry deque as history, empty after
-#: every restart.
+#: DAG run history — the records behind the "Live DAG Runs" page. The
+#: projection is bounded and uses the same state database as the other Hive
+#: projections; canonical lifecycle truth remains in maistro-core's Run spine.
 dag_runs: JsonStore = JsonStore("dag_runs")
+#: Per-node metric observations. The observation index is a projection of
+#: canonical Run/NodeRun/Attempt rows; it is not an execution authority.
+node_metrics: JsonStore = JsonStore("node_metrics")
 #: Registration invitations (#313) — insert-only records under
 #: ``inv:<sha256(token)>`` plus the ``used:<sha256(token)>`` redemption marker
 #: whose conflict-safe insert decides single use. Name is shared with
@@ -160,6 +163,7 @@ _all_json_stores: list[JsonStore] = [
     dashboard_layouts,
     oauth_identity_links,
     dag_runs,
+    node_metrics,
     registration_invitations,
 ]
 

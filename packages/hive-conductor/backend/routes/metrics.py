@@ -25,6 +25,27 @@ from services.node_metrics_store import get_store
 router = APIRouter(tags=["dag-metrics"])
 
 
+@router.get("/retention")
+def retention() -> dict[str, Any]:
+    """State the observation bound and whether this deployment persists it.
+
+    Observations are a query projection, not an execution ledger. The oldest
+    rows are deleted automatically when the bound is reached; this API has no
+    ad-hoc deletion operation because canonical Run retention owns execution
+    deletion and replaying a completion can rebuild a projection row.
+    """
+    from services.node_metrics_store import DEFAULT_MAX_OBSERVATIONS, get_store
+
+    store = get_store()
+    return {
+        "durable": store.is_durable,
+        "max_observations": DEFAULT_MAX_OBSERVATIONS,
+        "window_seconds_default": 3600,
+        "max_window_seconds": 7 * 24 * 3600,
+        "deletion": "oldest observations are evicted at max_observations; no ad-hoc delete",
+    }
+
+
 @router.get("")
 def aggregate_metrics(
     node_kind: str = "",

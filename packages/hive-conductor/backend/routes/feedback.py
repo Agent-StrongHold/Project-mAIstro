@@ -73,6 +73,63 @@ def _resolve_project_id(request: Request, body: FeedbackBody) -> str:
     return str(getattr(request.state, "project_id", "") or "")
 
 
+async def _execution_identity(
+    request: Request,
+    *,
+    run_id: str,
+    node_id: str,
+) -> tuple[str, str, str]:
+    """Resolve feedback to the visible canonical Run/NodeRun/Attempt.
+
+    Projection-free legacy callers are retained for compatibility, but once a
+    history row exists the Workspace inspection door is mandatory. A node
+    thumb names the latest Attempt under that NodeRun; it never invents a
+    second execution identity.
+    """
+    from services.dag_run_inspection import visible_run_detail
+    from services.dag_run_store import get_dag_run_store
+
+    user = getattr(request.state, "user", None) or {}
+    user_id = str(user.get("id") or "")
+    detail = await visible_run_detail(user_id, run_id)
+    if detail is None:
+        # Existing deployments may still accept feedback for a projection
+        # written before history was enabled. Do not apply this compatibility
+        # path to a known row: a missing/foreign row must be indistinguishable.
+        if get_dag_run_store().get_run(run_id) is not None:
+            raise HTTPException(status_code=404, detail="run not found")
+        return run_id, "", ""
+
+    canonical_run_id = str(detail.get("canonical_run_id") or "")
+    if not canonical_run_id:
+        raise HTTPException(
+            status_code=409,
+            detail="feedback is unavailable for a run without canonical execution identity",
+        )
+    if not node_id:
+        return canonical_run_id, "", ""
+
+    try:
+        from services.engine import get_engine
+
+        run_store = get_engine().run_store
+        if run_store is None:
+            raise LookupError
+        node_runs = await run_store.list_node_runs(canonical_run_id)
+        node_run = next((item for item in node_runs if item.node_id == node_id), None)
+        if node_run is None:
+            raise HTTPException(status_code=404, detail="run node not found")
+        attempts = await run_store.list_attempts(node_run.node_run_id)
+        attempt_id = attempts[-1].attempt_id if attempts else ""
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503, detail="canonical execution spine unavailable"
+        ) from exc
+    return canonical_run_id, node_run.node_run_id, attempt_id
+
+
 async def _record_feedback(
     request: Request,
     *,
@@ -87,12 +144,20 @@ async def _record_feedback(
 
     user_id = _resolve_user_id(request)
     project_id = _resolve_project_id(request, body)
+    canonical_run_id, node_run_id, attempt_id = await _execution_identity(
+        request,
+        run_id=run_id,
+        node_id=node_id,
+    )
 
     try:
         result = await record_thumb(
             user_id=user_id,
             project_id=project_id,
             run_id=run_id,
+            canonical_run_id=canonical_run_id,
+            node_run_id=node_run_id,
+            attempt_id=attempt_id,
             thumb=body.thumb,
             comment=body.comment,
             node_id=node_id,

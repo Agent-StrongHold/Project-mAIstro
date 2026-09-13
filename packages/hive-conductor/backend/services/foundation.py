@@ -127,6 +127,13 @@ class Foundation:
 
             configure_dag_run_store(stores.dag_runs)
 
+            # Metrics are a query projection of the canonical Run spine. They
+            # share this state database for restart and replica reads; they do
+            # not become a second execution authority.
+            from services.node_metrics_store import configure_store as configure_metrics_store
+
+            configure_metrics_store(stores.node_metrics)
+
             from services.profile_store import PersistedProfileRecordStore
             from services.profile_store import configure as configure_profiles
 
