@@ -44,6 +44,7 @@ from maistro.router.selector import RouterEngine
 from maistro.runs.chat_admission import (
     ADMISSION_INCOMPLETE,
     ChatRunAdmitter,
+    chat_admission_receipt_is_live,
     chat_turn_outcome,
     failure_category,
 )
@@ -186,6 +187,11 @@ class Container:
     #: admitter because the two have different retention: a task's Run is kept
     #: as long as its receipt, a chat turn's is swept behind a small window.
     chat_admitter: ChatRunAdmitter = None  # type: ignore[assignment]
+    #: Durable admission receipts protect pre-dispatch chat Runs from a
+    #: recovery tick in another coroutine/process. These local sets close the
+    #: same-process race and remember a compensation that needs retrying.
+    _active_chat_admissions: set[str] = field(default_factory=set, init=False, repr=False)
+    _failed_chat_admissions: set[str] = field(default_factory=set, init=False, repr=False)
     #: Where a Graph definition comes from when a Run is not trivial work — a
     #: schedule firing, or anything else that instantiates a drawn topology
     #: rather than a one-node stand-in (#132). Optional in the same way the rest
@@ -557,6 +563,9 @@ class Container:
                 known_task_types=self.config.task_types,
                 actor_principal_id=getattr(auth, "user_id", None) or None,
             )
+            # The durable receipt covers the scheduling gap between create_run
+            # and this local marker being installed.
+            self._active_chat_admissions.add(run.run_id)
             # Two hops: a Run is born CREATED and the lifecycle has no edge
             # from there to RUNNING. Queued is momentarily true here — the turn
             # is admitted and about to be dispatched — rather than a fiction
@@ -564,6 +573,8 @@ class Container:
             await self.run_store.transition_run(run.run_id, RunStatus.QUEUED)
             return await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)
         except asyncio.CancelledError:
+            if run is not None:
+                self._failed_chat_admissions.add(run.run_id)
             # The client disconnected mid-admission. Without the shield the
             # compensating write would be aborted by the same cancellation it
             # exists to clean up after — the `_close_chat_run` shield's reason,
@@ -571,9 +582,14 @@ class Container:
             await asyncio.shield(self._cancel_incomplete_admission(run, admission_failed=True))
             raise
         except Exception:
+            if run is not None:
+                self._failed_chat_admissions.add(run.run_id)
             logger.warning("chat turn could not be admitted as a Run", exc_info=True)
             await self._cancel_incomplete_admission(run, admission_failed=True)
             return None
+        finally:
+            if run is not None:
+                self._active_chat_admissions.discard(run.run_id)
 
     async def _cancel_incomplete_admission(
         self, run: Run | None, *, admission_failed: bool = False
@@ -754,14 +770,13 @@ class Container:
         )
         from maistro.runs.reconciliation import AttemptLifecycleReconciler
 
-        # A chat Run with no Attempt has never been dispatched. It is not in
-        # the consumer allowlist, so a CREATED/QUEUED chat row left by a dead
-        # admission has no other owner. The same recovery tick that exposes
-        # non-terminal rows disposes of it; a live admission racing this write
-        # loses safely at its next lifecycle transition.
-        await self._recover_incomplete_chat_admissions(limit=limit)
+        moment = now if now is not None else datetime.now(UTC)
+        # A chat Run with no Attempt has never been dispatched. A live local or
+        # durable admission receipt is proof that its owner is still moving it
+        # through admission; an expired/missing receipt is recovery-owned.
+        await self._recover_incomplete_chat_admissions(limit=limit, now=moment)
 
-        reclaimed = await self.run_store.reclaim_expired_attempts(now=now, limit=limit)
+        reclaimed = await self.run_store.reclaim_expired_attempts(now=moment, limit=limit)
         if reclaimed:
             # The Container's bus, so the sweep's dispositions land on the
             # canonical Event stream rather than only in Run state (#462). A
@@ -788,24 +803,40 @@ class Container:
 
         open_runs, oldest_created_at = await self.run_store.non_terminal_run_stats()
         non_terminal_runs.set(open_runs)
-        moment = now if now is not None else datetime.now(UTC)
         age = (moment - oldest_created_at).total_seconds() if oldest_created_at else 0.0
         oldest_non_terminal_run_age_seconds.set(max(age, 0.0))
         return len(reclaimed)
 
-    async def _recover_incomplete_chat_admissions(self, *, limit: int) -> int:
-        """Cancel pre-dispatch chat Runs left by an interrupted admission.
+    async def _recover_incomplete_chat_admissions(self, *, limit: int, now: datetime) -> int:
+        """Cancel expired, never-dispatched chat Runs left by an interruption.
 
-        Chat Runs are executed inline, not by the admitted-Run consumer. A
-        CREATED or QUEUED chat Run therefore has no physical owner and is the
-        never-dispatched recovery row from ADR-082826-08f0. Re-reading the
-        status on each tick makes a failed compensation retryable and keeps
-        repeated ticks idempotent.
+        A local active admission or a durable receipt that has not expired is
+        live work and is left alone. Once the receipt expires, a pre-dispatch
+        Run is owned by this recovery tick. Runs with an Attempt are not
+        admission residue: the Attempt lease/retry recovery owns them instead.
         """
         recovered = 0
-        for status in (RunStatus.CREATED, RunStatus.QUEUED):
+        for status in (RunStatus.CREATED, RunStatus.QUEUED, RunStatus.RUNNING):
             for run in await self.run_store.list_by_status(status, limit=limit):
                 if run.provenance.get(ADMISSION_SOURCE) != CHAT_SOURCE:
+                    continue
+                if run.run_id in self._active_chat_admissions:
+                    continue
+                if (
+                    run.run_id not in self._failed_chat_admissions
+                    and chat_admission_receipt_is_live(run, now=now)
+                ):
+                    continue
+                # A physical Attempt means dispatch has begun. Its lease seam
+                # distinguishes live, expired and retryable work; this sweep
+                # must never cancel it as if admission had failed.
+                node_runs = await self.run_store.list_node_runs(run.run_id)
+                dispatched = False
+                for node_run in node_runs:
+                    if await self.run_store.list_attempts(node_run.node_run_id):
+                        dispatched = True
+                        break
+                if dispatched:
                     continue
                 try:
                     await self.run_store.transition_run(
@@ -820,6 +851,7 @@ class Container:
                         exc_info=True,
                     )
                     continue
+                self._failed_chat_admissions.discard(run.run_id)
                 recovered += 1
         return recovered
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -358,6 +359,58 @@ async def test_a_failure_persisting_queued_cancels_the_created_run() -> None:
     (run,) = _chat_runs(container)
     assert run.status is RunStatus.CANCELLED
     assert run.error == ADMISSION_INCOMPLETE
+
+
+@pytest.mark.ac("ADR-082826-08f0/AC-6")
+async def test_recovery_does_not_cancel_an_admission_still_in_flight() -> None:
+    """A recovery tick must not win the CREATED/QUEUED admission race."""
+    container = await _container()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class _SlowQueued:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        async def transition_run(self, run_id, target, **kwargs):
+            if target is RunStatus.QUEUED:
+                entered.set()
+                await release.wait()
+            return await self._inner.transition_run(run_id, target, **kwargs)
+
+    container.run_store = _SlowQueued(container.run_store)  # type: ignore[assignment]
+    container.conduit = _Conduit()
+    turn = asyncio.create_task(container.route_request([{"role": "user", "content": "hi"}]))
+    await entered.wait()
+
+    assert await container.recover_abandoned_attempts() == 0
+    (during,) = _chat_runs(container)
+    assert during.status is RunStatus.CREATED
+
+    release.set()
+    result = await turn
+    assert result["run_id"] == during.run_id
+    finished = await container.run_store.get_run(during.run_id)
+    assert finished is not None
+    assert finished.status is RunStatus.COMPLETED
+
+
+@pytest.mark.ac("ADR-082826-08f0/AC-6")
+async def test_expired_chat_admission_receipt_is_recovery_owned() -> None:
+    """A row left after its admitter died is cancelled after its receipt expires."""
+    container = await _container()
+    run = await container.chat_admitter.admit([{"role": "user", "content": "hi"}])
+    receipt = run.provenance["chat_admission_receipt"]
+    expiry = datetime.fromisoformat(receipt["expires_at"])
+
+    assert await container.recover_abandoned_attempts(now=expiry + timedelta(microseconds=1)) == 0
+    recovered = await container.run_store.get_run(run.run_id)
+    assert recovered is not None
+    assert recovered.status is RunStatus.CANCELLED
+    assert recovered.error == ADMISSION_INCOMPLETE
 
 
 @pytest.mark.parametrize("failed_target", [RunStatus.QUEUED, RunStatus.RUNNING])

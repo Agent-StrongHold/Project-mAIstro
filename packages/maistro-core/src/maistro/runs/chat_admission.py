@@ -34,8 +34,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from collections import OrderedDict
 from collections.abc import Container
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from maistro.runs.admission import admit_direct_work
@@ -93,6 +95,29 @@ TIMEOUT_FAILURE = "timeout"
 #: above, and for the same reason: the exception that interrupted admission is
 #: for the log, not for anyone holding the run_id.
 ADMISSION_INCOMPLETE = "admission_incomplete"
+
+#: The durable receipt carried by a pre-dispatch chat Run. Recovery may cancel
+#: the row after this lease expires, but must not race an admission that still
+#: has a live receipt.
+CHAT_ADMISSION_RECEIPT_KEY = "chat_admission_receipt"
+CHAT_ADMISSION_LEASE_TTL = timedelta(seconds=30)
+
+
+def chat_admission_receipt_is_live(run: Run, *, now: datetime) -> bool:
+    """Whether a pre-dispatch Run still has a valid admission receipt."""
+    receipt = run.provenance.get(CHAT_ADMISSION_RECEIPT_KEY)
+    if not isinstance(receipt, dict):
+        return False
+    expires_at = receipt.get("expires_at")
+    if not isinstance(expires_at, str):
+        return False
+    try:
+        expiry = datetime.fromisoformat(expires_at)
+    except ValueError:
+        return False
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=UTC)
+    return expiry > now
 
 
 def failure_category(exc: BaseException) -> str:
@@ -250,6 +275,10 @@ class ChatRunAdmitter:
             # Named, so a blank `to_agent` reads as "not chosen yet" rather
             # than as a resolution that happened to come out empty.
             provenance[AGENT_SELECTION_KEY] = DEFERRED_AGENT_SELECTION
+        provenance[CHAT_ADMISSION_RECEIPT_KEY] = {
+            "holder": uuid.uuid4().hex,
+            "expires_at": (datetime.now(UTC) + CHAT_ADMISSION_LEASE_TTL).isoformat(),
+        }
         if session_id:
             provenance[SESSION_ID_KEY] = session_id
         if request_id:
@@ -336,6 +365,8 @@ class ChatRunAdmitter:
 __all__ = [
     "ADMISSION_INCOMPLETE",
     "AGENT_SELECTION_KEY",
+    "CHAT_ADMISSION_LEASE_TTL",
+    "CHAT_ADMISSION_RECEIPT_KEY",
     "CHAT_SOURCE",
     "DEFAULT_TURN_NAME",
     "DEFERRED_AGENT_SELECTION",
@@ -344,6 +375,7 @@ __all__ = [
     "REQUEST_ID_KEY",
     "SESSION_ID_KEY",
     "ChatRunAdmitter",
+    "chat_admission_receipt_is_live",
     "chat_turn_outcome",
     "last_user_message",
 ]
