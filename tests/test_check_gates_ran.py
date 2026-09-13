@@ -42,7 +42,9 @@ def check() -> ModuleType:
     return module
 
 
-def _run(name: str, *, status: str = "completed", conclusion: str | None = "success") -> dict[str, Any]:
+def _run(
+    name: str, *, status: str = "completed", conclusion: str | None = "success"
+) -> dict[str, Any]:
     return {"name": name, "status": status, "conclusion": conclusion}
 
 
@@ -119,7 +121,9 @@ class TestTheThreeStates:
         runs = [_run("a", conclusion="action_required"), _run("a", conclusion="success")]
         assert check.evaluate(["a"], runs, require_complete=True).ok
 
-    def test_a_cancelled_duplicate_never_shadows_a_sibling_that_executed(self, check: ModuleType) -> None:
+    def test_a_cancelled_duplicate_never_shadows_a_sibling_that_executed(
+        self, check: ModuleType
+    ) -> None:
         """#1229: quality.yml/security.yml share one concurrency group across a
         `push` and a `pull_request` event for the same commit, so the loser of
         that race reports `cancelled` under the same check name a genuine
@@ -143,18 +147,24 @@ class TestItRefusesToGuess:
     """Reporting green because it could not tell is the one outcome that would
     make this gate actively harmful."""
 
-    def test_an_unparsable_payload_fails(self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_an_unparsable_payload_fails(
+        self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         bad = tmp_path / "check-runs.json"
         bad.write_text("{not json", encoding="utf-8")
         assert check.main(["--check-runs", str(bad)]) == 1
         assert "unmeasured" in capsys.readouterr().out
 
-    def test_a_missing_payload_fails(self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_a_missing_payload_fails(
+        self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         missing = tmp_path / "nope.json"
         assert check.main(["--check-runs", str(missing)]) == 1
         assert "unmeasured" in capsys.readouterr().out
 
-    def test_a_payload_without_the_array_fails(self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_a_payload_without_the_array_fails(
+        self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         bad = tmp_path / "check-runs.json"
         bad.write_text(json.dumps({"total_count": 0}), encoding="utf-8")
         assert check.main(["--check-runs", str(bad)]) == 1
@@ -165,7 +175,9 @@ class TestItRefusesToGuess:
         bad.write_text("not json", encoding="utf-8")
         assert check._pull_request_scope(bad) == (None, False)
 
-    def test_an_empty_check_list_is_pending_not_a_pass(self, check: ModuleType, tmp_path: Path) -> None:
+    def test_an_empty_check_list_is_pending_not_a_pass(
+        self, check: ModuleType, tmp_path: Path
+    ) -> None:
         """Zero checks is never green, but a live queue must wait for evidence."""
         assert check.main(["--check-runs", str(_payload(tmp_path, []))]) == check.PENDING_EXIT
 
@@ -194,14 +206,18 @@ class TestTheRequiredSet:
         assert not [n for n in names if n.startswith("Analyze (")]
         assert "Container scan + SBOM + cosign" not in names
 
-    def test_the_real_contract_passes_against_a_fully_green_head(self, check: ModuleType, tmp_path: Path) -> None:
+    def test_the_real_contract_passes_against_a_fully_green_head(
+        self, check: ModuleType, tmp_path: Path
+    ) -> None:
         """End to end on the actual required set, the way the workflow runs it."""
         runs = [_run(name) for name in check.required_check_names()]
         assert (
             check.main(["--check-runs", str(_payload(tmp_path, runs)), "--require-complete"]) == 0
         )
 
-    def test_one_missing_check_is_pending_for_the_real_contract(self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_one_missing_check_is_pending_for_the_real_contract(
+        self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         names = check.required_check_names()
         runs = [_run(name) for name in names[1:]]
         assert (
@@ -212,7 +228,9 @@ class TestTheRequiredSet:
         assert "not present yet" in out
         assert names[0] in out
 
-    def test_one_skipped_check_fails_the_real_contract(self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_one_skipped_check_fails_the_real_contract(
+        self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         """Presence of a skipped required check must never make the aggregate green."""
         names = check.required_check_names()
         runs = [_run(name) for name in names]
@@ -260,7 +278,9 @@ class TestTheWorkflowItself:
 
 class TestPathScopedRequiredChecks:
     @pytest.mark.ac("SPEC-091226-1341/AC-1")
-    def test_a_non_specialized_path_scoped_check_can_be_skipped(self, check: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_a_non_specialized_path_scoped_check_can_be_skipped(
+        self, check: ModuleType, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """The skip rule is generic: it is not a hard-coded specialized-job list."""
         monkeypatch.setitem(check.PATH_SCOPED_CHECKS, "coverage (path-gated)", "postgres")
         verdict = check.evaluate(
@@ -277,7 +297,9 @@ class TestPathScopedRequiredChecks:
         assert verdict.ok is False
 
     @pytest.mark.ac("SPEC-091226-1341/AC-2")
-    def test_an_out_of_scope_failure_is_still_a_finding(self, check: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_an_out_of_scope_failure_is_still_a_finding(
+        self, check: ModuleType, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setitem(check.PATH_SCOPED_CHECKS, "coverage (path-gated)", "postgres")
         verdict = check.evaluate(
             ["coverage (path-gated)"],
@@ -290,7 +312,9 @@ class TestPathScopedRequiredChecks:
         assert verdict.ran == ["coverage (path-gated)"]
 
     @pytest.mark.ac("SPEC-091226-1341/AC-3")
-    def test_unmeasured_scope_keeps_path_scoped_skip_pending(self, check: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_unmeasured_scope_keeps_path_scoped_skip_pending(
+        self, check: ModuleType, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setitem(check.PATH_SCOPED_CHECKS, "coverage (path-gated)", "postgres")
         verdict = check.evaluate(
             ["coverage (path-gated)"],
@@ -343,7 +367,9 @@ class TestTheCliScopeEnvelope:
         assert code == 0
         assert "ok: all" in capsys.readouterr().out
 
-    def test_an_in_scope_skip_still_fails_with_a_measured_envelope(self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_an_in_scope_skip_still_fails_with_a_measured_envelope(
+        self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         """The envelope excuses skips the scope proves unreachable, never ones it
         proves reachable: uv.lock is a global file, every leg runs on it, so a
         skipped leg there really did not execute."""
@@ -364,7 +390,9 @@ class TestTheCliScopeEnvelope:
         assert "FAIL: the gate set did not reach this commit" in out
         assert "did not execute to a verdict" in out
 
-    def test_a_pull_request_without_a_measured_envelope_is_pending(self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_a_pull_request_without_a_measured_envelope_is_pending(
+        self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         """pull_request with no --changed-files: the skip evidence cannot be
         judged, so the verdict must be pending rather than green or red."""
         every_leg = set(check.PATH_SCOPED_CHECKS.values())
@@ -381,7 +409,9 @@ class TestTheCliScopeEnvelope:
         assert code == check.PENDING_EXIT
         assert "changed files were not measured" in out
 
-    def test_an_envelope_that_was_never_measured_is_pending(self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_an_envelope_that_was_never_measured_is_pending(
+        self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         """`measured` must be literally true; anything else is the same
         ambiguity as no envelope at all."""
         every_leg = set(check.PATH_SCOPED_CHECKS.values())
@@ -400,7 +430,9 @@ class TestTheCliScopeEnvelope:
         assert code == check.PENDING_EXIT
         assert "changed-file payload is invalid" in out
 
-    def test_an_envelope_with_non_string_files_is_pending(self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_an_envelope_with_non_string_files_is_pending(
+        self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         """A files array holding a non-string is not an envelope this gate can
         interpret; guessing either way would be fabrication."""
         every_leg = set(check.PATH_SCOPED_CHECKS.values())
@@ -419,7 +451,9 @@ class TestTheCliScopeEnvelope:
         assert code == check.PENDING_EXIT
         assert "changed-file payload is invalid" in out
 
-    def test_an_unreadable_envelope_is_pending(self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_an_unreadable_envelope_is_pending(
+        self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         """A corrupt envelope file is unmeasured scope, not a pass."""
         bad = tmp_path / "changed-files.json"
         bad.write_text("{not json", encoding="utf-8")
@@ -440,7 +474,11 @@ class TestTheCliScopeEnvelope:
         assert "execution scope is ambiguous" in out
 
     def test_an_unloadable_scope_classifier_degrades_to_pending(
-        self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+        self,
+        check: ModuleType,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """If the classifier module cannot even be loaded, the envelope cannot be
         judged -- that packaging accident must surface as pending scope, never
@@ -487,7 +525,9 @@ class TestTheReport:
         assert names[0] in out
         assert "not present yet" not in out
 
-    def test_unfinished_checks_are_reported_as_pending(self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_unfinished_checks_are_reported_as_pending(
+        self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         names = check.required_check_names()
         runs = [_run(n) for n in names]
         runs[0] = _run(names[0], status="in_progress", conclusion=None)
@@ -497,7 +537,9 @@ class TestTheReport:
         assert "PENDING" in out
         assert "started but not finished" in out
 
-    def test_a_scalar_payload_is_refused(self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_a_scalar_payload_is_refused(
+        self, check: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         """Not an object and not an array. Refused rather than coerced, for the
         same reason as every other unreadable shape."""
         bad = tmp_path / "check-runs.json"
@@ -505,7 +547,13 @@ class TestTheReport:
         assert check.main(["--check-runs", str(bad)]) == 1
         assert "unmeasured" in capsys.readouterr().out
 
-    def test_an_empty_required_set_is_refused(self, check: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_an_empty_required_set_is_refused(
+        self,
+        check: ModuleType,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
         """If the contract ever came back empty this gate would pass everything
         while appearing to check. That is the failure it exists to prevent, one
         level up."""
@@ -513,7 +561,9 @@ class TestTheReport:
         assert check.main(["--check-runs", str(_payload(tmp_path, [_run("x")]))]) == 1
         assert "contract is empty" in capsys.readouterr().out
 
-    def test_the_script_entry_point_judges_a_green_head(self, check: ModuleType, tmp_path: Path) -> None:
+    def test_the_script_entry_point_judges_a_green_head(
+        self, check: ModuleType, tmp_path: Path
+    ) -> None:
         """The `python3 scripts/check-gates-ran.py` invocation the workflow
         actually runs -- argparse on real argv, exit code through the shell --
         rather than the imported main() every other test uses."""
