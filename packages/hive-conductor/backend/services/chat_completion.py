@@ -1540,7 +1540,7 @@ async def _tool_run_workflow(
         # The projection row opens before execution, so it must already carry
         # the scope the execution will resolve -- resolved here by the same
         # resolver `execute_dag` uses, never a second mapping (#1174).
-        workspace_id, project_id = await resolve_execution_scope(dag_data)
+        workspace_id, project_id = await resolve_execution_scope(dag_data, principal_id=user_id)
         store = get_dag_run_store()
         await store.start_run(
             run_id=exec_id,

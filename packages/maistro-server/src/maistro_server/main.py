@@ -305,6 +305,7 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Container selected, not lookalike stores reconstructed by the server.
     runs.configure_run_store(run_store)
     workspaces.configure_workspace_store(container.workspace_store)
+    workspaces.configure_workspace_project_service(container.workspace_project_service)
     # The OpenAI-compatible door now routes through the same Container (#142),
     # which owns the Gate scan, the Run admission and the terminalization that
     # #150 had to build here for want of one.

@@ -23,6 +23,10 @@ class _WorkspaceCreateKwargs(TypedDict):
 
 @runtime_checkable
 class WorkspaceStore(Protocol):
+    """Persistence only; product callers must use the authorized service."""
+
+    project_store: ProjectScopeStore
+
     async def create(
         self,
         *,

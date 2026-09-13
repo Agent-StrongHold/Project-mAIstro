@@ -298,6 +298,7 @@ async def resolve_execution_scope(
     *,
     workspace_id: str | None = None,
     project_id: str | None = None,
+    principal_id: str | None = None,
 ) -> tuple[str, str]:
     """Resolve the Workspace/Project a legacy-DAG execution will be admitted into.
 
@@ -312,6 +313,7 @@ async def resolve_execution_scope(
         dag_data,
         workspace_id=workspace_id,
         project_id=project_id,
+        principal_id=principal_id,
     )
     return resolved_workspace, resolved_project
 
@@ -321,6 +323,7 @@ async def _scope(
     *,
     workspace_id: str | None,
     project_id: str | None,
+    principal_id: str | None = None,
 ) -> tuple[str, str, Any]:
     container = _container()
     if container is None:
@@ -335,11 +338,27 @@ async def _scope(
         or str(dag_data.get("workspace_id") or "").strip()
         or str(container.config.workspace_id)
     )
+    service = getattr(container, "workspace_project_service", None)
+    actor_id = str(principal_id or dag_data.get("user_id") or "").strip()
     resolved_project = project_id or str(dag_data.get("project_id") or "").strip() or None
-    if resolved_project is None:
-        root = await container.project_scope_store.root_for_workspace(resolved_workspace)
-        resolved_project = root.project_id
-    return resolved_workspace, resolved_project, container.run_store
+    if service is None:
+        # Isolated legacy harnesses may not yet provide Container's composed
+        # service. Production Container wiring always takes the branch above.
+        if resolved_project is None:
+            project = await container.project_scope_store.root_for_workspace(resolved_workspace)
+            resolved_project = project.project_id
+        return resolved_workspace, resolved_project, container.run_store
+    else:
+        if not actor_id:
+            raise ValueError("canonical DAG scope resolution requires an acting principal")
+        from maistro.security.sentinel.authz_types import Principal
+
+        actor = Principal(id=actor_id, kind="human")
+        if resolved_project is None:
+            project = await service.get_root_project(actor, resolved_workspace)
+        else:
+            project = await service.get_project(actor, resolved_workspace, resolved_project)
+    return resolved_workspace, project.project_id, container.run_store
 
 
 def _node_env(
@@ -515,6 +534,7 @@ async def execute_dag(
         dag_data,
         workspace_id=workspace_id,
         project_id=project_id,
+        principal_id=user_id,
     )
     graph = graph_from_legacy_dag(
         dag_data,

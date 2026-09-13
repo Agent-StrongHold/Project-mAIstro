@@ -72,6 +72,7 @@ from maistro.sessions.store import InMemorySessionStore
 from maistro.tasks.admission import WorkspaceRoutingAdmitter
 from maistro.types.config import AgentConfig
 from maistro.types.errors import AgentError, ConfigError
+from maistro.workspaces.access import AuthorizedWorkspaceProjectService
 from maistro.workspaces.store import WorkspaceStore
 from maistro.workspaces.wiring import WORKSPACE_PG_TABLES, wire_workspace_store
 
@@ -176,6 +177,9 @@ class Container:
     #: backend since #132 while the thing its `workspace_id` names had none,
     #: so the only Workspaces that survived a restart were the Conductor's own.
     workspace_store: WorkspaceStore = None  # type: ignore[assignment]
+    # All product/background Workspace and Project consumers use this seam;
+    # low-level stores remain persistence dependencies of the Container only.
+    workspace_project_service: AuthorizedWorkspaceProjectService = None  # type: ignore[assignment]
     run_store: RunStore = None  # type: ignore[assignment]
     # Routing rather than bound: one Conductor process serves every Workspace
     # its users belong to, so the Workspace is chosen per submission (#158).
@@ -1360,6 +1364,9 @@ async def create_container(
         project_store=project_scope_store,
         pg_pool=pg_pool,
     )
+    workspace_project_service = AuthorizedWorkspaceProjectService(
+        workspace_store, project_scope_store
+    )
     node_template_store = await wire_node_template_store(db_pool, pg_pool=pg_pool)
     schedule_admitter = _wire_schedule_admission(run_store, graph_template_store, schedule_store)
     chat_admitter = wire_chat_admission(
@@ -1583,6 +1590,7 @@ async def create_container(
         project_store=project_store,
         project_scope_store=project_scope_store,
         workspace_store=workspace_store,
+        workspace_project_service=workspace_project_service,
         run_store=run_store,
         task_admitter=task_admitter,
         chat_admitter=chat_admitter,

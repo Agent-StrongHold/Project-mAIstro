@@ -234,17 +234,39 @@ class _ScheduleRunner:
         workspace_id = str(
             getattr(schedule, "workspace_id", "") or get_settings().hive_default_workspace_id
         )
+        service = getattr(container, "workspace_project_service", None)
+        actor_id = str(getattr(schedule, "user_id", "") or "").strip()
+        if not actor_id:
+            raise ValueError("scheduled scope resolution requires an acting principal")
+        if service is None:
+            # Compatibility for isolated scheduler harnesses that predate the
+            # Container seam. Production composition always supplies it.
+            from maistro.workspaces import AuthorizedWorkspaceProjectService
+            from maistro.workspaces.store import InMemoryWorkspaceStore
+
+            workspace_store = getattr(container, "workspace_store", None)
+            if workspace_store is None:
+                workspace_store = InMemoryWorkspaceStore(
+                    project_store=container.project_scope_store
+                )
+                if await workspace_store.get(workspace_id) is None:
+                    await workspace_store.create(
+                        creator_user_id=actor_id,
+                        name="scheduler compatibility workspace",
+                        workspace_id=workspace_id,
+                    )
+            service = AuthorizedWorkspaceProjectService(
+                workspace_store, container.project_scope_store
+            )
+        from maistro.security.sentinel.authz_types import Principal
+
+        actor = Principal(id=actor_id, kind="human")
         explicit_project = str(getattr(schedule, "project_id", "") or "")
         if explicit_project:
-            project = await container.project_scope_store.get(explicit_project)
-            if project is None:
-                raise ValueError(f"schedule names unknown Project {explicit_project!r}")
-            if project.workspace_id != workspace_id:
-                raise ValueError("schedule Project does not belong to its Workspace")
-            return workspace_id, explicit_project
-
-        root = await container.project_scope_store.root_for_workspace(workspace_id)
-        return workspace_id, root.project_id
+            project = await service.get_project(actor, workspace_id, explicit_project)
+        else:
+            project = await service.get_root_project(actor, workspace_id)
+        return workspace_id, project.project_id
 
     async def _prime_template(self, definition: Schedule, container: Any) -> None:
         """Persist the current Hive DAG descriptor as a canonical GraphTemplate.

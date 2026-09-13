@@ -1,11 +1,4 @@
-"""Canonical Project tree and scoped-authorization API (#38).
-
-The Project store owns structure and scope records. Workspace membership is the
-outer access boundary: a caller must first belong to the Workspace, and only a
-Workspace owner may mutate Project structure. Project-scoped delegation remains
-granular: a non-owner may add a grant only when the canonical authorization
-resolver says that exact action is delegable at the target Project.
-"""
+"""Canonical Project tree API over the shared authorization boundary (#1150)."""
 
 from __future__ import annotations
 
@@ -14,7 +7,6 @@ from typing import Annotated, Any, Self, cast
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from maistro.projects.authorization import require_delegable_grant
 from maistro.projects.scope import (
     Project,
     ProjectIntegrityError,
@@ -22,20 +14,19 @@ from maistro.projects.scope import (
     ProjectNotFound,
 )
 from maistro.projects.scope_store import ProjectScopeStore
-from maistro.workspaces import WorkspaceStore
+from maistro.workspaces import WorkspaceProjectAccessDenied, WorkspaceProjectService
 from maistro_server.api.auth import RequireAuth
 from maistro_server.api.workspace_access import (
-    get_workspace_store,
-    require_workspace_membership,
-    require_workspace_owner,
-    user_id,
+    access_http_error,
+    get_project_service,
+    principal,
 )
 
 router = APIRouter(prefix="/{workspace_id}/projects", tags=["projects"])
 
 
 def get_project_scope_store(request: Request) -> ProjectScopeStore:
-    """Return the exact Project store selected by the process Container."""
+    """Compatibility accessor; product routes use the authorized service."""
     container = getattr(request.app.state, "container", None)
     store = getattr(container, "project_scope_store", None)
     if store is None:
@@ -44,19 +35,6 @@ def get_project_scope_store(request: Request) -> ProjectScopeStore:
             detail="No Project scope store is configured",
         )
     return cast(ProjectScopeStore, store)
-
-
-async def _require_project(
-    store: ProjectScopeStore,
-    *,
-    workspace_id: str,
-    project_id: str,
-) -> Project:
-    project = await store.get(project_id)
-    if project is None or project.workspace_id != workspace_id:
-        # Do not disclose cross-Workspace Project identifiers.
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-    return project
 
 
 class CreateProjectBody(BaseModel):
@@ -107,12 +85,12 @@ class AddProjectMembershipBody(BaseModel):
 async def get_root_project(
     workspace_id: str,
     auth: RequireAuth,
-    workspace_store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
-    project_store: Annotated[ProjectScopeStore, Depends(get_project_scope_store)],
+    service: Annotated[WorkspaceProjectService, Depends(get_project_service)],
 ) -> Project:
-    await require_workspace_membership(workspace_store, workspace_id, user_id(auth))
     try:
-        return await project_store.root_for_workspace(workspace_id)
+        return await service.get_root_project(principal(auth), workspace_id)
+    except WorkspaceProjectAccessDenied as exc:
+        raise access_http_error(exc) from exc
     except ProjectNotFound as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
@@ -124,15 +102,12 @@ async def get_project(
     workspace_id: str,
     project_id: str,
     auth: RequireAuth,
-    workspace_store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
-    project_store: Annotated[ProjectScopeStore, Depends(get_project_scope_store)],
+    service: Annotated[WorkspaceProjectService, Depends(get_project_service)],
 ) -> Project:
-    await require_workspace_membership(workspace_store, workspace_id, user_id(auth))
-    return await _require_project(
-        project_store,
-        workspace_id=workspace_id,
-        project_id=project_id,
-    )
+    try:
+        return await service.get_project(principal(auth), workspace_id, project_id)
+    except WorkspaceProjectAccessDenied as exc:
+        raise access_http_error(exc) from exc
 
 
 @router.get("/{project_id}/children", response_model=list[Project])
@@ -140,12 +115,12 @@ async def list_project_children(
     workspace_id: str,
     project_id: str,
     auth: RequireAuth,
-    workspace_store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
-    project_store: Annotated[ProjectScopeStore, Depends(get_project_scope_store)],
+    service: Annotated[WorkspaceProjectService, Depends(get_project_service)],
 ) -> list[Project]:
-    await require_workspace_membership(workspace_store, workspace_id, user_id(auth))
-    await _require_project(project_store, workspace_id=workspace_id, project_id=project_id)
-    return await project_store.list_children(project_id)
+    try:
+        return await service.list_project_children(principal(auth), workspace_id, project_id)
+    except WorkspaceProjectAccessDenied as exc:
+        raise access_http_error(exc) from exc
 
 
 @router.post("", response_model=Project, status_code=status.HTTP_201_CREATED)
@@ -153,23 +128,19 @@ async def create_project(
     workspace_id: str,
     body: CreateProjectBody,
     auth: RequireAuth,
-    workspace_store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
-    project_store: Annotated[ProjectScopeStore, Depends(get_project_scope_store)],
+    service: Annotated[WorkspaceProjectService, Depends(get_project_service)],
 ) -> Project:
-    await require_workspace_owner(workspace_store, workspace_id, user_id(auth))
-    await _require_project(
-        project_store,
-        workspace_id=workspace_id,
-        project_id=body.parent_project_id,
-    )
     try:
-        return await project_store.create(
-            workspace_id=workspace_id,
+        return await service.create_project(
+            principal(auth),
+            workspace_id,
             parent_project_id=body.parent_project_id,
             name=body.name,
             defaults=body.defaults,
             metadata=body.metadata,
         )
+    except WorkspaceProjectAccessDenied as exc:
+        raise access_http_error(exc) from exc
     except ProjectIntegrityError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
@@ -180,21 +151,17 @@ async def move_project(
     project_id: str,
     body: MoveProjectBody,
     auth: RequireAuth,
-    workspace_store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
-    project_store: Annotated[ProjectScopeStore, Depends(get_project_scope_store)],
+    service: Annotated[WorkspaceProjectService, Depends(get_project_service)],
 ) -> Project:
-    await require_workspace_owner(workspace_store, workspace_id, user_id(auth))
-    await _require_project(project_store, workspace_id=workspace_id, project_id=project_id)
-    await _require_project(
-        project_store,
-        workspace_id=workspace_id,
-        project_id=body.parent_project_id,
-    )
     try:
-        return await project_store.move_project(
+        return await service.move_project(
+            principal(auth),
+            workspace_id,
             project_id,
             parent_project_id=body.parent_project_id,
         )
+    except WorkspaceProjectAccessDenied as exc:
+        raise access_http_error(exc) from exc
     except (ProjectIntegrityError, ProjectNotFound) as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
@@ -205,12 +172,14 @@ async def update_project_defaults(
     project_id: str,
     body: UpdateProjectDefaultsBody,
     auth: RequireAuth,
-    workspace_store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
-    project_store: Annotated[ProjectScopeStore, Depends(get_project_scope_store)],
+    service: Annotated[WorkspaceProjectService, Depends(get_project_service)],
 ) -> Project:
-    await require_workspace_owner(workspace_store, workspace_id, user_id(auth))
-    await _require_project(project_store, workspace_id=workspace_id, project_id=project_id)
-    return await project_store.update_defaults(project_id, defaults=body.defaults)
+    try:
+        return await service.update_project_defaults(
+            principal(auth), workspace_id, project_id, defaults=body.defaults
+        )
+    except WorkspaceProjectAccessDenied as exc:
+        raise access_http_error(exc) from exc
 
 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -218,13 +187,12 @@ async def delete_project(
     workspace_id: str,
     project_id: str,
     auth: RequireAuth,
-    workspace_store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
-    project_store: Annotated[ProjectScopeStore, Depends(get_project_scope_store)],
+    service: Annotated[WorkspaceProjectService, Depends(get_project_service)],
 ) -> None:
-    await require_workspace_owner(workspace_store, workspace_id, user_id(auth))
-    await _require_project(project_store, workspace_id=workspace_id, project_id=project_id)
     try:
-        await project_store.delete(project_id)
+        await service.delete_project(principal(auth), workspace_id, project_id)
+    except WorkspaceProjectAccessDenied as exc:
+        raise access_http_error(exc) from exc
     except (ProjectIntegrityError, ProjectNotFound) as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
@@ -234,12 +202,12 @@ async def list_project_memberships(
     workspace_id: str,
     project_id: str,
     auth: RequireAuth,
-    workspace_store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
-    project_store: Annotated[ProjectScopeStore, Depends(get_project_scope_store)],
+    service: Annotated[WorkspaceProjectService, Depends(get_project_service)],
 ) -> list[ProjectMembership]:
-    await require_workspace_owner(workspace_store, workspace_id, user_id(auth))
-    await _require_project(project_store, workspace_id=workspace_id, project_id=project_id)
-    return await project_store.memberships_for(project_id)
+    try:
+        return await service.list_project_memberships(principal(auth), workspace_id, project_id)
+    except WorkspaceProjectAccessDenied as exc:
+        raise access_http_error(exc) from exc
 
 
 @router.post(
@@ -252,54 +220,23 @@ async def add_project_membership(
     project_id: str,
     body: AddProjectMembershipBody,
     auth: RequireAuth,
-    workspace_store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
-    project_store: Annotated[ProjectScopeStore, Depends(get_project_scope_store)],
+    service: Annotated[WorkspaceProjectService, Depends(get_project_service)],
 ) -> ProjectMembership:
-    requester = user_id(auth)
-    requester_membership = await require_workspace_membership(
-        workspace_store,
-        workspace_id,
-        requester,
-    )
-    await _require_project(project_store, workspace_id=workspace_id, project_id=project_id)
-
-    denies = body.denies
-    if not requester_membership.can_administer:
-        if body.denies:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Workspace owner permission required to issue Project denies",
-            )
-        # Holding an action is not enough to grant it. Every action this record
-        # would confer must already be explicitly delegable at this scope.
-        for action in sorted(body.grants):
-            try:
-                await require_delegable_grant(
-                    project_store,
-                    project_id=project_id,
-                    principal_id=requester,
-                    action=action,
-                )
-            except PermissionError as exc:
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
-        # set_membership upserts the one canonical row per (project, principal)
-        # -- a non-owner's request must not be read as "clear whatever denies
-        # already exist" just because it says nothing about them, or a
-        # delegated re-grant would silently launder away an owner-issued deny.
-        existing = await project_store.memberships_for(project_id, principal_id=body.principal_id)
-        denies = existing[0].denies if existing else set()
-
     membership = ProjectMembership(
         workspace_id=workspace_id,
         project_id=project_id,
         principal_id=body.principal_id,
         role=body.role,
         grants=body.grants,
-        denies=denies,
+        denies=body.denies,
         delegable_grants=body.delegable_grants,
     )
     try:
-        return await project_store.set_membership(membership)
+        return await service.add_project_membership(
+            principal(auth), workspace_id, project_id, membership
+        )
+    except WorkspaceProjectAccessDenied as exc:
+        raise access_http_error(exc) from exc
     except ProjectIntegrityError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 

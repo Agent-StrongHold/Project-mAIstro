@@ -600,7 +600,19 @@ async def run_canonical_evolution_cycle(
         raise RuntimeError("Evolve canonical execution spine is unavailable (#51)")
 
     workspace_id = str(owner.config.workspace_id)
-    project = await owner.project_scope_store.root_for_workspace(workspace_id)
+    service = getattr(owner, "workspace_project_service", None)
+    if service is not None:
+        if not actor_principal_id:
+            raise ValueError("evolution scope resolution requires an acting principal")
+        from maistro.security.sentinel.authz_types import Principal
+
+        project = await service.get_root_project(
+            Principal(id=actor_principal_id, kind="human"), workspace_id
+        )
+    else:
+        # Isolated legacy harnesses may not yet provide Container's composed
+        # service. Production Container wiring always takes the authorized path.
+        project = await owner.project_scope_store.root_for_workspace(workspace_id)
     cycle = EvolutionCycle(harness=harness, tournament=tournament)
     if cycle.harness.fidelity != "real":
         logger.warning(
