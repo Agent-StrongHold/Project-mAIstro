@@ -170,6 +170,41 @@ async def test_disable_on_exhaustion_stops_the_schedule_being_due(
     assert await store.due(now=NOON + timedelta(days=1)) == []
 
 
+async def test_serialized_fire_count_disables_after_concurrent_admissions(
+    store: ScheduleStore,
+) -> None:
+    """Exhaustion must use the stored count, not either ticker's snapshot.
+
+    Two admitters can each claim a different occurrence from the same stale
+    schedule snapshot. Neither local ``disable`` decision reaches ``max_runs``
+    alone, but the serialized store writes do.
+    """
+    schedule = await store.put(_schedule(max_runs=2))
+
+    await store.record_fire(
+        schedule.schedule_id,
+        fired_at=NOON,
+        run_id="run-1",
+        next_due_at=NOON + timedelta(hours=1),
+        fires=1,
+        disable=False,
+    )
+    await store.record_fire(
+        schedule.schedule_id,
+        fired_at=NOON + timedelta(hours=1),
+        run_id="run-2",
+        next_due_at=NOON + timedelta(hours=2),
+        fires=1,
+        disable=False,
+    )
+
+    exhausted = await store.get(schedule.schedule_id)
+    assert exhausted is not None
+    assert exhausted.runs_so_far == 2
+    assert exhausted.enabled is False
+    assert exhausted.next_due_at is None
+
+
 async def test_record_fire_on_unknown_schedule_returns_none(store: ScheduleStore) -> None:
     assert (await store.record_fire("nope", fired_at=NOON, run_id=None, next_due_at=None)) is None
 
