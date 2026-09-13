@@ -133,6 +133,7 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
     from services.tool_executor import dispatch_tool
 
     from maistro.agents.factory import _load_preamble, create_agents
+    from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
     from maistro.config.database import resolve_database_url
     from maistro.container import create_container
     from maistro.types.config import AgentConfig, SecurityConfig
@@ -204,6 +205,13 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         session_store=container.session_store,
         quota_tracker=container.quota_tracker,
         tracer=None,
+        capability_effects=container.capability_effects,
+        provider_registry=container.provider_registry,
+        llm_router=container.llm_router,
+        model_endpoint=GatewayEndpoint(
+            base_url=llm_base or "http://localhost:4000/v1", api_key=llm_key
+        ),
+        workspace_id=config.workspace_id,
         # The tool seam, closed (#840 Slice 5): an explicit, REAL executor
         # instead of the implicit None the bridge used to pass. The factory
         # still wires it only into agents whose identity declares tools, so

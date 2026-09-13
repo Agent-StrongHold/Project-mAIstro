@@ -1,19 +1,11 @@
-"""Wires real per-call usage into the local quota cache (`InMemoryUsageLog`).
+"""Record provider evidence for canonical model Invocations.
 
-The one thing guaranteed present and correct in every LiteLLM (OpenAI-
-compatible) response is the standard `usage.prompt_tokens` /
-`usage.completion_tokens` pair — that's part of the compatibility contract
-itself, so it's populated the same way regardless of which upstream provider
-actually served the call. This is therefore the *primary* recording path.
-
-Provider-specific extras (raw rate-limit headers, Cohere's `meta.billed_units`)
-are not guaranteed to survive LiteLLM's response normalization the way the
-standard `usage` object is — a proxy whose whole job is presenting one common
-shape has no obligation to forward provider-native metadata untouched. Ambient
-header parsing (`ambient.py`) is wired in here too, but strictly as a
-best-effort bonus signal: if the expected headers didn't survive the proxy
-hop, the parser already returns an empty list and nothing happens — the
-primary `usage`-based recording is what a caller should actually rely on.
+The live path is :class:`CanonicalInvocationUsageRecorder`, installed once at
+Invocation terminalization by ``CapabilityEffectContext``. It records provider,
+cycle, usage evidence and Invocation identity exactly once, including an
+explicit unreported marker when a provider omits usage. The raw
+``on_response`` hook below remains a compatibility adapter for older callers
+and ambient header reconciliation; it is not the production authority.
 """
 
 from __future__ import annotations
@@ -24,6 +16,7 @@ from typing import Any
 
 import httpx
 
+from maistro.capabilities.invocation import Invocation
 from maistro.quota.ambient import AmbientSignalParser
 from maistro.quota.rate_profile import LimitUnit
 from maistro.quota.reconciliation import (
@@ -34,6 +27,64 @@ from maistro.quota.reconciliation import (
 )
 from maistro.quota.usage_log import InMemoryUsageLog
 from maistro.quota.usage_report import extract_usage
+
+
+class CanonicalInvocationUsageRecorder:
+    """Record completed model Invocations exactly once on the quota ledger.
+
+    Canonical model effects use this hook from Invocation terminalization, so
+    retries and deduplicated effects cannot charge twice. Missing usage is
+    recorded as unreported evidence, never as a measured zero.
+    """
+
+    def __init__(
+        self,
+        log: InMemoryUsageLog,
+        quota_tracker: Any | None = None,
+        *,
+        billing_cycle: str = "monthly",
+    ) -> None:
+        self._log = log
+        self._quota_tracker = quota_tracker
+        self._billing_cycle = billing_cycle
+        self._recorded: set[str] = set()
+
+    async def record(self, invocation: Invocation) -> None:
+        """Record one completed physical effect, keyed by Invocation identity."""
+        if invocation.invocation_id in self._recorded:
+            return
+        self._recorded.add(invocation.invocation_id)
+        provider = invocation.binding.provider_name
+        usage = invocation.usage
+        input_tokens = usage.input_units if usage is not None else 0
+        output_tokens = usage.output_units if usage is not None else 0
+        self._log.record(
+            provider,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_usd=((usage.cost_cents or 0.0) / 100.0) if usage is not None else 0.0,
+            invocation_id=invocation.invocation_id,
+            provider=provider,
+            billing_cycle=self._billing_cycle,
+            usage_reported=usage is not None,
+        )
+        if self._quota_tracker is None:
+            return
+        record_invocation = getattr(self._quota_tracker, "record_invocation", None)
+        if record_invocation is not None:
+            await record_invocation(
+                invocation.invocation_id,
+                provider,
+                self._billing_cycle,
+                input_tokens,
+                output_tokens,
+                usage is not None,
+            )
+        elif usage is not None:
+            # Compatibility for external trackers predating canonical evidence.
+            await self._quota_tracker.record_usage(
+                provider, self._billing_cycle, input_tokens, output_tokens
+            )
 
 
 def record_llm_usage(
@@ -95,9 +146,13 @@ def build_quota_recording_hook(
     ambient_parser: AmbientSignalParser | None = None,
     registry: ScopedReconciliationRegistry | None = None,
 ) -> Callable[[dict[str, Any], httpx.Response], None]:
-    """Build an `on_response` callback for `maistro_llm_call` (or any
-    `(response_json, response) -> None` callback site) that wires both
-    recording paths in one line:
+    """Build a compatibility `on_response` callback for legacy raw HTTP sites.
+
+    Canonical model calls do not supply this callback: their Invocation
+    terminalization invokes ``CanonicalInvocationUsageRecorder`` once.
+
+    For older `(response_json, response) -> None` callback sites this still
+    wires both recording paths in one line:
 
         hook = build_quota_recording_hook(log, "cerebras:qwen3-235b", ambient_parser=CerebrasHeaderParser())
         await maistro_llm_call(messages, model="cerebras-qwen-3-235b", on_response=hook)
