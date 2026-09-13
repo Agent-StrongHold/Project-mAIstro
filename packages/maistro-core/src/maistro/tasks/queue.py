@@ -109,7 +109,9 @@ def _task_from_record(record: TaskRecord) -> TaskResponse:
     """Rebuild a receipt without creating a new Run or delegation."""
     from maistro.tasks.lanes import Lane
 
-    actor_kind = record.actor_kind if record.actor_kind in {"user", "system", "service"} else "user"
+    actor_kind = record.actor_kind
+    if actor_kind not in {"user", "system", "service"}:
+        raise ValueError("invalid persisted task actor kind")
     lane = record.lane if record.lane in {item.value for item in Lane} else Lane.BACKGROUND.value
     priority_tier = (
         record.priority_tier
