@@ -18,6 +18,8 @@ from typing import Any, Protocol
 import httpx
 
 from maistro.http import shared_client
+from maistro.observability.correlation import current_execution_context
+from maistro.observability.middleware import REQUEST_ID_HEADER
 from maistro.tasks.http_contract import (
     WORKSPACE_ID_HEADER,
     WORKSPACE_SCOPE_SIGNATURE_HEADER,
@@ -223,6 +225,15 @@ class MaistroServerTaskBackend:
         headers = {"Content-Type": "application/json"}
         if self._key:
             headers["Authorization"] = f"Bearer {self._key}"
+        # Correlation metadata, not authorization (#1063): forwards the
+        # request id RequestIDMiddleware already validated/generated for
+        # this request, so maistro-server's own RequestIDMiddleware adopts
+        # the same id instead of allocating an unrelated one. Never signed,
+        # unlike the Workspace-scope headers above — this cannot assert
+        # scope, only let the two services' logs/Runs agree on one id.
+        request_id = current_execution_context().request_id
+        if request_id:
+            headers[REQUEST_ID_HEADER] = request_id
         return headers
 
     async def submit(

@@ -22,6 +22,9 @@ from maistro.observability.correlation import bind_execution_context
 
 logger = structlog.get_logger()
 
+REQUEST_ID_HEADER = "X-Request-ID"
+"""The one request-correlation header name, for this middleware and its callers."""
+
 REQUEST_ID_MAX_LENGTH = 128
 """Maximum accepted length of a client-supplied request ID."""
 
@@ -58,7 +61,7 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         # SECURITY-REVIEW: This client-controlled header must be validated before
         # it can reach request state, logs, spans, events, or the response.
-        request_id = _effective_request_id(request.headers.getlist("X-Request-ID"))
+        request_id = _effective_request_id(request.headers.getlist(REQUEST_ID_HEADER))
 
         # Store on request state for exception handlers
         request.state.request_id = request_id
@@ -77,5 +80,5 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         # an outer middleware had deliberately made.
         with bind_execution_context(request_id=request_id):
             response = await call_next(request)
-        response.headers["X-Request-ID"] = request_id
+        response.headers[REQUEST_ID_HEADER] = request_id
         return response
