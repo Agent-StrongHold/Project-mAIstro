@@ -234,6 +234,21 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#737",
       "reason": "settle_hitl_record is the single durable HITL settlement rule #737 serializes answer, timeout, and cancellation through: it validates the paused NodeRun, applies the settlement outcome (timed_out/cancelled) or attaches an answer, resolves resume_at vs the persisted deadline, and mirrors the terminal canonical lifecycle. The shared predicate for three settlement paths lands at cyclomatic complexity 16 (rank C); the per-path wrappers stay trivial. Tracked under ADR-083026-6c72."
+    },
+    "packages/maistro-core/src/maistro/graph/durable_runs/canonical_store.py::_terminal_hitl_evidence@13": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1296",
+      "reason": "_terminal_hitl_evidence extracts the single settlement matching a terminal HITL target (TIMED_OUT/CANCELLED) from a continuation's metadata and validates it end to end: exactly-one-match, node_run_id/decided_at type checks, a fromisoformat failure path, and a target-dependent reason string (an optional deadline detail on timeout vs. a plain cancellation message). Landed with #1296 (M1-B8 HITL timeout/cancel transitions) at cyclomatic complexity 13 (rank C); missed authorization at merge, caught here as a pre-existing gap unrelated to the PR that surfaced it."
+    },
+    "packages/maistro-core/src/maistro/graph/durable_runs/canonical_store.py::CanonicalDurableRunStore._reconcile_terminal_hitl@12": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1296",
+      "reason": "_reconcile_terminal_hitl repairs a HITL lifecycle mirror left behind by a crash between the continuation write and the canonical-spine write: it guards the target status, the canonical Run's current status, the extracted terminal evidence, record/NodeRun existence, and the two outcomes of a racing tick's InvalidLifecycleTransition (already repaired vs. a real conflict). Landed with #1296 at cyclomatic complexity 12 (rank C); same pre-existing, previously-unauthorized gap as _terminal_hitl_evidence above."
+    },
+    "packages/maistro-core/src/maistro/graph/durable_runs/canonical_store.py::CanonicalDurableRunStore.list_hitl_due@11": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1296",
+      "reason": "list_hitl_due pages the HITL due-deadline index, repairing in place any continuation parked PAUSED before its canonical Run was mirrored and widening the page past candidates that still do not qualify rather than re-reading one permanent prefix forever (see the method's own docstring). Landed with #1296 at cyclomatic complexity 11 (rank C); same pre-existing, previously-unauthorized gap as the other two HITL-reconciliation functions above."
     }
   },
   "contract-markers": {
