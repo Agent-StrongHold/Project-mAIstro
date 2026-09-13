@@ -7,6 +7,19 @@ from main import app
 client = TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def _canonical_chat_seam(monkeypatch: pytest.MonkeyPatch):
+    """Legacy HTTP parity tests use a configured canonical chat seam."""
+
+    class Runtime:
+        async def route_conversation_request(self, messages, dispatch, **_kwargs):
+            result = await dispatch()
+            result["run_id"] = "test-canonical-run"
+            return result
+
+    monkeypatch.setattr("services.chat_execution._canonical_container", lambda: Runtime())
+
+
 def _login(username: str = "testuser", password: str = "testpass") -> TestClient:
     c = TestClient(app)
     r = c.post("/v1/auth/login", json={"username": username, "password": password})

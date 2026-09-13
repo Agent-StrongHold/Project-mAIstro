@@ -20,13 +20,17 @@ from maistro.container import build_node_resolver
 from maistro.graph.dag_registry import DagRegistry
 from maistro.graph.definitions import Graph
 from maistro.graph.durable_runs import (
+    CanonicalDurableRunStore,
     DurableRunStore,
     InMemoryDurableRunStore,
+    InMemoryGraphContinuationStore,
     RunStatus,
     run_durable_graph,
 )
 from maistro.graph.seeds import daily_status_seed
 from maistro.graph.template_adapter import descriptor_to_template
+from maistro.projects.scope import Project
+from maistro.runs import InMemoryRunStore
 from services.node_metrics_store import record_run_completion
 
 logger = logging.getLogger(__name__)
@@ -109,12 +113,39 @@ def _resolve_nodes_with() -> Callable[[str, Any], Any]:
     )
 
 
-# The last-resort store, for a Conductor booted without a Container. It is
-# process-local and that is the defect, not the design: a restart empties the
-# HITL queue and two workers disagree about what is paused. It survives only
-# because a standalone Conductor has no canonical spine to project onto, and
-# it is reached only when `_container()` returns nothing.
+# The legacy fallback remains available to isolated compatibility consumers, but
+# registered DAG admission uses the canonical spine below even without a bridge.
 _fallback_run_store = InMemoryDurableRunStore()
+
+
+class _StandaloneProjectScope:
+    """Minimal canonical Project lookup for an unconfigured local process."""
+
+    def __init__(self) -> None:
+        self._projects: dict[str, Project] = {}
+
+    async def ensure(self, workspace_id: str, project_id: str) -> None:
+        self._projects.setdefault(
+            project_id,
+            Project(
+                project_id=project_id,
+                workspace_id=workspace_id,
+                name="Standalone compatibility project",
+                parent_project_id=None,
+                is_root=True,
+            ),
+        )
+
+    async def get(self, project_id: str) -> Project | None:
+        return self._projects.get(project_id)
+
+
+_fallback_project_scope = _StandaloneProjectScope()
+_fallback_canonical_run_store = InMemoryRunStore(project_store=_fallback_project_scope)
+_fallback_graph_store = CanonicalDurableRunStore(
+    _fallback_canonical_run_store,
+    InMemoryGraphContinuationStore(),
+)
 
 
 def get_run_store() -> DurableRunStore:
@@ -192,7 +223,18 @@ async def run_registered_dag(
     if configure is not None:
         configure(graph)
     container = _container()
-    run_store = container.run_store if container is not None else None
+    if container is not None:
+        run_store = container.run_store
+        graph_store = container.graph_run_store
+        if run_store is None or graph_store is None:
+            raise RuntimeError("canonical DAG execution spine is unavailable")
+    else:
+        # Standalone mode still uses the canonical Run -> NodeRun -> Attempt
+        # store. It is process-local because no durable backend was configured,
+        # but it is not the retired graph-only lifecycle.
+        await _fallback_project_scope.ensure(workspace_id, project_id)
+        run_store = _fallback_canonical_run_store
+        graph_store = _fallback_graph_store
     # Admission first, then execution. Traversal consumes an admitted Run
     # rather than creating one (#44): the create and the first traversal
     # checkpoint are writes to two stores, so a crash between them would leave
@@ -213,7 +255,7 @@ async def run_registered_dag(
         admitted_run_id = admitted.run_id
     record = await run_durable_graph(
         graph,
-        store=get_run_store(),
+        store=graph_store,
         node_resolver=node_resolver or _resolve_nodes_with(),
         actor_principal_id=user_id,
         run_id=admitted_run_id,

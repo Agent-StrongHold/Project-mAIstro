@@ -512,9 +512,11 @@ class Container:
         *,
         workspace_id: str | None = None,
         workspace_agent_id: str | None = None,
+        auth: Any = None,
         session_id: str | None = None,
         request_id: str | None = None,
         actor_principal_id: str | None = None,
+        runtime_agent_id: str | None = None,
     ) -> dict[str, Any]:
         """Execute a contained model turn on the canonical Run spine.
 
@@ -526,7 +528,7 @@ class Container:
         admission.
         """
         if self.run_store is None:
-            return await dispatch()
+            raise RuntimeError("canonical chat execution spine is unavailable")
         selected_workspace = (workspace_id or self.config.workspace_id).strip()
         if not selected_workspace:
             raise ValueError("conversation turns require a Workspace")
@@ -559,8 +561,26 @@ class Container:
         except Exception:
             await self._cancel_incomplete_admission(run)
             raise
+
+        async def _conduit_dispatch(_agent: Any, _agent_name: str) -> dict[str, Any]:
+            # Hive's public chat callback is intentionally tool-disabled. It is
+            # still invoked by Conduit after gate/classification, so this path
+            # cannot become a second request router while M2 hardening lands.
+            return await dispatch()
+
         try:
-            result = await self._execute_chat_turn(run, messages, dispatch)
+            result = await self._execute_chat_turn(
+                run,
+                messages,
+                lambda: self.conduit.route_request(
+                    messages,
+                    auth=auth,
+                    session_id=session_id,
+                    turn_id=run.run_id if run is not None else None,
+                    dispatch=_conduit_dispatch,
+                    agent_id=runtime_agent_id or workspace_agent_id,
+                ),
+            )
         except BaseException as exc:
             cancelled = isinstance(exc, asyncio.CancelledError)
             await self._close_chat_run(

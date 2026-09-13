@@ -24,7 +24,14 @@ from maistro.graph.durable_runs import (
 )
 from maistro.graph.types import DEFAULT_SYSTEM_PROMPTS, JSON_OUTPUT_SCHEMAS, AgentRole
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run
-from services.dag_agents import _container, get_run_store
+from services.dag_agents import (
+    _container,
+    _fallback_canonical_run_store,
+    _fallback_graph_store,
+    _fallback_project_scope,
+    _fallback_run_store,
+    get_run_store,
+)
 from services.legacy_dag_node import LegacyConductorNode, OnResponseHook
 from services.node_metrics_store import record_run_completion
 
@@ -521,6 +528,14 @@ async def execute_dag(
         workspace_id=resolved_workspace,
         project_id=resolved_project,
     )
+    graph_store = get_run_store()
+    if canonical_run_store is None and graph_store is _fallback_run_store:
+        # Standalone workflow callers still use an in-memory canonical spine;
+        # the old graph-only fallback is retained only for direct compatibility
+        # consumers that explicitly ask for it.
+        await _fallback_project_scope.ensure(resolved_workspace, resolved_project)
+        canonical_run_store = _fallback_canonical_run_store
+        graph_store = _fallback_graph_store
     execution_nodes, _, _ = _execution_shape(dag_data)
     raw_by_id = {str(raw["id"]): raw for raw in execution_nodes}
     task_desc = str(dag_data.get("description") or dag_data.get("name") or "")
@@ -543,7 +558,7 @@ async def execute_dag(
 
     record = await run_durable_graph(
         graph,
-        store=get_run_store(),
+        store=graph_store,
         node_resolver=_resolver(
             raw_by_id,
             task_desc=task_desc,

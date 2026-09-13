@@ -77,6 +77,23 @@ def _principal_id(request: Any) -> str | None:
     return str(value) if value else None
 
 
+def _auth_context(request: Any) -> Any:
+    """Carry the authenticated Hive principal into Conduit in the same kind."""
+    from maistro.security._types import AuthContext
+
+    user = getattr(request.state, "user", None) or {}
+    roles = user.get("roles", ())
+    if isinstance(roles, str):
+        roles = (roles,)
+    elif not isinstance(roles, (list, tuple, set, frozenset)):
+        roles = ()
+    return AuthContext(
+        user_id=str(user.get("id") or user.get("username") or ""),
+        username=str(user.get("username") or ""),
+        roles=frozenset(str(role) for role in roles),
+    )
+
+
 def _session_id(req: ChatCompletionRequest) -> str | None:
     value = getattr(req, "session_id", None)
     return value.strip() if isinstance(value, str) and value.strip() else None
@@ -84,6 +101,36 @@ def _session_id(req: ChatCompletionRequest) -> str | None:
 
 def _request_id(request: Any) -> str:
     return (request.headers.get("X-Request-ID") or str(uuid4())).strip()
+
+
+async def resolve_workspace_runtime_agent_id(
+    req: ChatCompletionRequest, workspace_id: str, container: Any
+) -> str | None:
+    """Resolve the persistent Workspace Agent to a real runtime identity.
+
+    ``stores.agents`` is the durable product projection while ``container.agents``
+    is the execution roster. Materialized Workspace definitions are promoted
+    through the one #840 factory seam when the bridge is present; no synthetic
+    per-turn runtime Agent is created when that seam is unavailable.
+    """
+    stable_id = resolve_workspace_agent_id(req, workspace_id)
+    runtime_agents = getattr(container, "agents", {}) or {}
+    if stable_id in runtime_agents:
+        return stable_id
+
+    for definition in workspace_agents(workspace_id):
+        if definition.id != stable_id:
+            continue
+        name = definition.name
+        if name in runtime_agents:
+            return name
+        from services.agent_materialization import materialize_runtime
+
+        stored = await materialize_runtime(definition)
+        if stored.config.get("dispatchable") and name in runtime_agents:
+            return name
+        return None
+    return None
 
 
 async def execute_conversation_turn(
@@ -96,17 +143,22 @@ async def execute_conversation_turn(
     container = _canonical_container()
     route = getattr(container, "route_conversation_request", None)
     if route is None:
-        # Stub/demo mode has no canonical runtime and retains the old product
-        # response rather than manufacturing a second local RunStore.
-        return await dispatch()
+        # A stub port is an unavailable runtime, not a second chat executor.
+        # Returning the callback result here produced a success-shaped answer
+        # with no canonical Run/NodeRun/Attempt evidence.
+        raise RuntimeError("canonical maistro-core chat runtime is unavailable")
     workspace_id = selected_workspace_id(req)
+    workspace_agent_id = resolve_workspace_agent_id(req, workspace_id)
+    runtime_agent_id = await resolve_workspace_runtime_agent_id(req, workspace_id, container)
     return cast(
         dict[str, Any],
         await route(
             messages,
             dispatch,
             workspace_id=workspace_id,
-            workspace_agent_id=resolve_workspace_agent_id(req, workspace_id),
+            workspace_agent_id=workspace_agent_id,
+            runtime_agent_id=runtime_agent_id,
+            auth=_auth_context(request),
             session_id=_session_id(req),
             request_id=_request_id(request),
             actor_principal_id=_principal_id(request),

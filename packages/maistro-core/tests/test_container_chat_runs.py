@@ -84,6 +84,38 @@ async def test_conversation_only_turns_share_workspace_agent_but_not_runs() -> N
     assert second_run is not None and second_run.provenance[REQUEST_ID_KEY] == "request-2"
 
 
+async def test_conversation_only_callback_enters_conduit_before_execution() -> None:
+    container = await _container()
+    await container.project_scope_store.create_root("workspace-conduit")
+    calls: list[dict[str, object]] = []
+    original = container.conduit.route_request
+
+    async def observed(messages, **kwargs):
+        calls.append(kwargs)
+        return await original(messages, **kwargs)
+
+    container.conduit.route_request = observed
+
+    async def dispatch() -> dict:
+        return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+
+    result = await container.route_conversation_request(
+        [{"role": "user", "content": "hello"}],
+        dispatch,
+        workspace_id="workspace-conduit",
+        workspace_agent_id="workspace-conduit.overseer",
+    )
+
+    assert result["run_id"]
+    assert len(calls) == 1
+    assert calls[0]["dispatch"] is not None
+    run = await container.run_store.get_run(result["run_id"])
+    assert run is not None and run.status is RunStatus.COMPLETED
+    node_runs = await container.run_store.list_node_runs(run.run_id)
+    attempts = await container.run_store.list_attempts(node_runs[0].node_run_id)
+    assert len(attempts) == 1
+
+
 async def test_conversation_only_model_failure_terminalizes_the_run() -> None:
     container = await _container()
     await container.project_scope_store.create_root("workspace-failure")

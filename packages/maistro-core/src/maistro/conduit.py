@@ -11,7 +11,7 @@ The Conduit never executes tasks directly — it decides and delegates.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from maistro.types.agent import AgentResponse
@@ -43,6 +43,11 @@ CONTENT_FILTER = "content_filter"
 #: only when one did: a refusal, an empty roster or a turn with no message
 #: never reached an agent, and a blank name would read as one that did.
 DISPATCHED_AGENT_KEY = "agent"
+
+#: Tool-disabled product surfaces still use Conduit for admission, gate,
+#: classification, and identity. Their callback is an egress boundary rather
+#: than a second router or executor.
+ConduitDispatch = Callable[[Any, str], Awaitable[Any]]
 
 
 def _stop_response(content: str, *, finish_reason: str = "stop") -> dict[str, Any]:
@@ -137,6 +142,8 @@ class Conduit:
         session_id: str | None = None,
         intent_hint: str = "",
         turn_id: str | None = None,
+        dispatch: ConduitDispatch | None = None,
+        agent_id: str | None = None,
     ) -> dict[str, Any]:
         last_user_msg = ""
         for msg in reversed(messages):
@@ -184,43 +191,52 @@ class Conduit:
             intent.tier,
         )
 
-        # 3. Resolve agent
-        agent_name = self.container.intent_registry.resolve(intent.task_type)
+        # 3. Resolve the stable runtime identity when the caller supplied one.
+        # A Workspace projection may use a scoped id while the runtime map keys
+        # the factory's declared identity, so accept the hint only when it
+        # names an actual runtime Agent.
+        agent_name = (agent_id or "").strip() or self.container.intent_registry.resolve(
+            intent.task_type
+        )
         agent = self.container.agents.get(agent_name)
 
         if agent is None:
             # The fallback rebinds the *name* as well as the agent. It used not
             # to, so `agent_name` went on naming the agent the registry asked
-            # for rather than the one that ran — which only ever reached a log
-            # line, and now reaches an Attempt's durable record (#223). A record
-            # naming an agent that did not run is worse than one naming none.
+            # for rather than the one that ran. A record naming an agent that
+            # did not run is worse than one naming none.
             agent_name, agent = next(iter(self.container.agents.items()), ("", None))
 
-        if agent is None:
-            return _stop_response("No agents available.")
-
-        # 4. Determine execution tier
+        # 4. Determine execution tier. Conversation-only product surfaces may
+        # provide a callback while a minimal container has no runtime Agent;
+        # Conduit still owns admission and classification in that case.
         intent = await determine_execution_tier(intent, agent)
 
-        # 5. Dispatch to agent
+        # 5. Dispatch through the supplied product boundary or the runtime
+        # Agent. The former keeps a tool-disabled callback out of the Agent
+        # tool loop without bypassing Conduit.
         try:
-            # `classified_task_type` is what reaches strategy construction, RCA
-            # tagging and learning scope. Passing only `intent=` left it at its
-            # "" default on every live request, so all three ran untyped and the
-            # classifier's work above was discarded at the last step.
-            result = await agent.handle(
-                messages=messages,
-                intent=intent,
-                auth=auth,
-                session_id=session_id,
-                classified_task_type=intent.task_type,
-                # Carried, not interpreted. The pipeline does not know what a
-                # turn identity means; the agent is where the session is
-                # written, so it is where the identity has to arrive (#327).
-                turn_id=turn_id,
-            )
+            if dispatch is not None:
+                result = await dispatch(agent, agent_name)
+            elif agent is None:
+                return _stop_response("No agents available.")
+            else:
+                # `classified_task_type` is what reaches strategy construction,
+                # RCA tagging and learning scope. Passing only `intent=` left it
+                # at the empty default on every live request.
+                result = await agent.handle(
+                    messages=messages,
+                    intent=intent,
+                    auth=auth,
+                    session_id=session_id,
+                    classified_task_type=intent.task_type,
+                    # Carried, not interpreted. The pipeline does not know what
+                    # a turn identity means; it is where the session is written.
+                    turn_id=turn_id,
+                )
         except Exception:
-            # Logged and re-raised, not turned into an answer.
+            # Logged and re-raised, not turned into an answer. A callback
+            # failure must still become a failed Attempt upstream.
             #
             # Two reasons. The message used to be `f"Agent error: {exc}"`, and
             # an exception's text is not sanitized — a provider error carries
