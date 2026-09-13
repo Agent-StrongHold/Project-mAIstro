@@ -87,7 +87,7 @@ class TestTheStoreStatesItsReachAndItsTable:
         doc = (invocation_store.__doc__ or "").lower()
         assert "rather than an alembic migration" in doc
 
-    def test_the_claim_about_the_migration_is_true(self) -> None
+    def test_the_claim_about_the_migration_is_true(self) -> None:
         creating = [
             path.name
             for path in sorted(_MIGRATIONS.glob("*.py"))
