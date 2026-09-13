@@ -58,7 +58,7 @@ from maistro.runs.model import (
     RunStatus,
 )
 from maistro.runs.sources import ADMISSION_SOURCE, CHAT_SOURCE
-from maistro.runs.store import RunIntegrityError, RunStore
+from maistro.runs.store import RunIntegrityError, RunStore, run_cursor_key
 from maistro.runs.wiring import (
     SPINE_PG_TABLES,
     wire_chat_admission,
@@ -849,6 +849,38 @@ class Container:
         oldest_non_terminal_run_age_seconds.set(max(age, 0.0))
         return len(reclaimed)
 
+    async def _recover_incomplete_chat_admission(self, run: Run, *, now: datetime) -> bool:
+        """Try to cancel one expired, never-dispatched chat Run."""
+        if run.provenance.get(ADMISSION_SOURCE) != CHAT_SOURCE:
+            return False
+        if run.run_id in self._active_chat_admissions:
+            return False
+        if run.run_id in self._failed_chat_admissions:
+            # This process already owns a failed compensation. Its receipt is
+            # intentionally ignored, but other containers remain lease-conditional.
+            await self._cancel_incomplete_admission(run, admission_failed=True)
+            self._failed_chat_admissions.discard(run.run_id)
+            return False
+        # The store rechecks the receipt and the physical Attempt while holding
+        # its write/row lock. A read here followed by a plain transition would
+        # let a concurrent renewal or dispatch win between the two operations.
+        try:
+            cancelled = await self.run_store.cancel_chat_admission_if_expired(
+                run.run_id,
+                now=now,
+                error=ADMISSION_INCOMPLETE,
+            )
+        except Exception:
+            logger.warning(
+                "incomplete chat Run %s could not be recovered",
+                run.run_id,
+                exc_info=True,
+            )
+            return False
+        if cancelled:
+            self._failed_chat_admissions.discard(run.run_id)
+        return cancelled
+
     async def _recover_incomplete_chat_admissions(self, *, limit: int, now: datetime) -> int:
         """Cancel expired, never-dispatched chat Runs left by an interruption.
 
@@ -859,38 +891,21 @@ class Container:
         """
         recovered = 0
         for status in (RunStatus.CREATED, RunStatus.QUEUED, RunStatus.RUNNING):
-            for run in await self.run_store.list_by_status(status, limit=limit):
-                if run.provenance.get(ADMISSION_SOURCE) != CHAT_SOURCE:
-                    continue
-                if run.run_id in self._active_chat_admissions:
-                    continue
-                if run.run_id in self._failed_chat_admissions:
-                    # This process already owns a failed compensation. Its
-                    # receipt is intentionally ignored, but the regular path
-                    # below must remain lease-conditional for other containers.
-                    await self._cancel_incomplete_admission(run, admission_failed=True)
-                    self._failed_chat_admissions.discard(run.run_id)
-                    continue
-                # The store rechecks the receipt and the physical Attempt while
-                # holding its write/row lock. A read here followed by a plain
-                # transition would let a concurrent renewal or dispatch win
-                # between the two operations.
-                try:
-                    cancelled = await self.run_store.cancel_chat_admission_if_expired(
-                        run.run_id,
-                        now=now,
-                        error=ADMISSION_INCOMPLETE,
-                    )
-                except Exception:
-                    logger.warning(
-                        "incomplete chat Run %s could not be recovered",
-                        run.run_id,
-                        exc_info=True,
-                    )
-                    continue
-                if cancelled:
-                    self._failed_chat_admissions.discard(run.run_id)
-                    recovered += 1
+            # `limit` is the page size, not the total scan budget. Filtering
+            # chat admissions happens after the status query, so a prefix of
+            # live non-chat or receipt-held rows must not hide an expired row
+            # forever. The stable cursor remains valid as rows are cancelled.
+            after = None
+            while True:
+                page = await self.run_store.list_by_status(status, limit=limit, after=after)
+                if not page:
+                    break
+                for run in page:
+                    after = run_cursor_key(run)
+                    if await self._recover_incomplete_chat_admission(run, now=now):
+                        recovered += 1
+                if len(page) < limit:
+                    break
         return recovered
 
     async def execute_admitted_runs(self, *, limit: int = 100) -> int:
@@ -916,7 +931,6 @@ class Container:
             executable_by_consumer,
             unresolvable_reason,
         )
-        from maistro.runs.store import run_cursor_key
 
         # `limit` bounds successful executions, not visibility into QUEUED.
         # Page by the stable oldest-first key so permanently ineligible rows

@@ -420,6 +420,39 @@ async def test_expired_chat_admission_receipt_is_recovery_owned() -> None:
 
 
 @pytest.mark.ac("ADR-082826-08f0/AC-6")
+async def test_recovery_paginates_past_live_chat_receipts() -> None:
+    """A live oldest prefix must not starve an expired admission behind it."""
+    container = await _container()
+    runs = [
+        await container.chat_admitter.admit([{"role": "user", "content": "hi"}]) for _ in range(101)
+    ]
+    for run in runs:
+        await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
+
+    expired_receipt = runs[-1].provenance[CHAT_ADMISSION_RECEIPT_KEY]
+    expiry = datetime.fromisoformat(expired_receipt["expires_at"])
+    for run in runs[:-1]:
+        receipt = run.provenance[CHAT_ADMISSION_RECEIPT_KEY]
+        live_expiry = datetime.fromisoformat(receipt["expires_at"])
+        assert await container.run_store.renew_chat_admission_receipt(
+            run.run_id,
+            holder=receipt["holder"],
+            ttl=CHAT_ADMISSION_LEASE_TTL,
+            at=live_expiry - timedelta(seconds=1),
+        )
+
+    await container.recover_abandoned_attempts(now=expiry + timedelta(microseconds=1), limit=100)
+
+    expired = await container.run_store.get_run(runs[-1].run_id)
+    assert expired is not None
+    assert expired.status is RunStatus.CANCELLED
+    assert expired.error == ADMISSION_INCOMPLETE
+    live = await container.run_store.get_run(runs[0].run_id)
+    assert live is not None
+    assert live.status is RunStatus.QUEUED
+
+
+@pytest.mark.ac("ADR-082826-08f0/AC-6")
 async def test_a_renewed_receipt_protects_an_admission_from_another_container() -> None:
     """Recovery trusts the durable lease, not the owner's process-local set."""
     owner = await _container()
