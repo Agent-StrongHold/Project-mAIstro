@@ -75,8 +75,13 @@ must be directly base-resolved, delegated to an executed trusted adapter, or
 recorded as a deliberate candidate-authored/derived exception with a reason.
 
 The required `Vulture Ratchet` workflow executes the full inventory and every
-live delegated adapter before its Vulture comparison. It checks out full history
-because trusted resolution uses `git merge-base`/`git show`. For a pull request
+live delegated adapter before its Vulture comparison. The inventory policy in
+`quality/ratchet-provenance.json` is itself resolved from the trusted base; the
+candidate copy is used only to detect stale mappings. This prevents a PR from
+adding a new consumer and its candidate-authored exception together. On the
+first migration that introduces the JSON policy, the prior literal maps in the
+trusted inventory script are used until the policy has landed. It checks out
+full history because trusted resolution uses `git merge-base`/`git show`. For a pull request
 it names the current target remote-tracking ref (`origin/<github.base_ref>`), not
 the PR event's historical `base.sha`. GitHub checks a PR as a synthetic
 target+candidate merge, so the shared resolver's merge-base is then the exact
