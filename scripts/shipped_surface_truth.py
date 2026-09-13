@@ -12,6 +12,12 @@ from pathlib import Path
 from typing import Any
 
 MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+#: GET is normally read-only, but these routes establish or consume
+#: authentication state and therefore belong in the execution/security matrix.
+_SECURITY_ROUTE_RE = re.compile(
+    r"(?:oauth|oidc|openid|authorize|authentication|identity|token|login|logout|permission|elevat)",
+    re.IGNORECASE,
+)
 #: Not an HTTP verb, so never a member of MUTATING_METHODS -- a WebSocket route
 #: is a distinct kind of shipped execution/control surface (#1122) and must be
 #: discovered on its own terms, not folded into the mutating-method vocabulary.
@@ -112,7 +118,12 @@ def _excluded(path: Path, root: Path) -> bool:
     )
 
 
-def _declared_methods(call: ast.Call, *, positional_index: int | None = None) -> list[str]:
+def _declared_methods(
+    call: ast.Call,
+    *,
+    positional_index: int | None = None,
+    include_security_get: bool = False,
+) -> list[str]:
     """The mutating methods a registration's ``methods`` argument names.
 
     A literal collection of string literals is read; the mutating subset is
@@ -122,7 +133,8 @@ def _declared_methods(call: ast.Call, *, positional_index: int | None = None) ->
     fail-closed inventory and the matrix must classify it. Starlette's
     ``add_route`` also accepts ``methods`` as a third positional argument;
     callers pass that index explicitly. No ``methods=`` at all is the
-    framework default GET, which is not a mutating surface.
+    framework default GET. It is normally omitted, but a security-marked
+    route opts into GET explicitly.
     """
     methods_expr: ast.expr | None = next(
         (keyword.value for keyword in call.keywords if keyword.arg == "methods"),
@@ -131,7 +143,7 @@ def _declared_methods(call: ast.Call, *, positional_index: int | None = None) ->
     if methods_expr is None and positional_index is not None and len(call.args) > positional_index:
         methods_expr = call.args[positional_index]
     if methods_expr is None:
-        return []
+        return ["GET"] if include_security_get else []
     if not isinstance(methods_expr, (ast.List, ast.Tuple, ast.Set)):
         return [DYNAMIC_METHODS]
     methods: list[str] = []
@@ -139,7 +151,15 @@ def _declared_methods(call: ast.Call, *, positional_index: int | None = None) ->
         if not (isinstance(item, ast.Constant) and isinstance(item.value, str)):
             return [DYNAMIC_METHODS]
         methods.append(item.value.upper())
-    return [method for method in methods if method in MUTATING_METHODS]
+    allowed = set(MUTATING_METHODS)
+    if include_security_get:
+        allowed.add("GET")
+    return [method for method in methods if method in allowed]
+
+
+def _security_surface(path: str, handler: str | None = None) -> bool:
+    """Whether a GET registration can make an authentication decision."""
+    return bool(_SECURITY_ROUTE_RE.search(path) or (handler and _SECURITY_ROUTE_RE.search(handler)))
 
 
 def _path_argument(call: ast.Call) -> ast.expr | None:
@@ -182,9 +202,12 @@ def _decorated_routes(node: ast.AsyncFunctionDef | ast.FunctionDef) -> list[tupl
             continue
         path = _route_path(path_expr, dynamic_at=decorator)
         name = decorator.func.attr.lower()
+        security_get = _security_surface(path, node.name)
         methods = [name.upper()] if name.upper() in MUTATING_METHODS else []
-        if name in {"api_route", "route"}:
-            methods = _declared_methods(decorator)
+        if name == "get" and security_get:
+            methods = ["GET"]
+        elif name in {"api_route", "route"}:
+            methods = _declared_methods(decorator, include_security_get=security_get)
         elif name == "websocket":
             # Every WebSocket route is a shipped execution/control surface
             # regardless of "mutating": it bypasses HTTP-method semantics
@@ -237,7 +260,7 @@ def _registered_route_calls(tree: ast.Module) -> list[tuple[str, str, str | None
         if not isinstance(node, ast.Call):
             continue
         registration = _call_attr_name(node)
-        if registration not in {"add_api_route", "add_route"}:
+        if registration not in {"add_api_route", "add_route", "add_websocket_route"}:
             continue
         path_expr = _path_argument(node)
         if path_expr is None:
@@ -248,9 +271,14 @@ def _registered_route_calls(tree: ast.Module) -> list[tuple[str, str, str | None
             if keyword.arg == "endpoint":
                 endpoint = keyword.value
         handler, resolvable = _handler_identity(endpoint) if endpoint is not None else (None, False)
-        methods = _declared_methods(
-            node, positional_index=2 if registration == "add_route" else None
-        )
+        if registration == "add_websocket_route":
+            methods = [WEBSOCKET_METHOD]
+        else:
+            methods = _declared_methods(
+                node,
+                positional_index=2 if registration == "add_route" else None,
+                include_security_get=_security_surface(path, handler),
+            )
         found.extend((method, path, handler, resolvable) for method in methods)
     return found
 
@@ -673,6 +701,27 @@ def _frontend_entry_errors(
     return errors
 
 
+def _product_status_errors(
+    repo_root: Path,
+    checks: list[dict[str, Any]],
+    backend_entries: dict[str, dict[str, Any]],
+) -> list[str]:
+    """Keep selected product-status prose tied to a reviewed matrix entry."""
+    errors: list[str] = []
+    for check in checks:
+        surface = str(check.get("surface", ""))
+        if surface not in backend_entries:
+            errors.append(f"product status check references unknown surface: {surface}")
+            continue
+        status_file = repo_root / str(check.get("file", ""))
+        marker = check.get("contains")
+        if not status_file.is_file():
+            errors.append(f"product status file does not exist: {status_file}")
+        elif not isinstance(marker, str) or marker not in status_file.read_text(encoding="utf-8"):
+            errors.append(f"product status claim missing from {status_file}: {marker!r}")
+    return errors
+
+
 def validate_matrix(repo_root: Path, matrix: dict[str, Any], *, strict: bool = False) -> list[str]:
     backend = discover_backend_surfaces(repo_root, list(matrix.get("backend_roots", [])))
     frontend = discover_frontend_surfaces(repo_root, list(matrix.get("frontend_roots", [])))
@@ -691,6 +740,13 @@ def validate_matrix(repo_root: Path, matrix: dict[str, Any], *, strict: bool = F
     }
 
     errors = [*duplicate_backend, *duplicate_frontend]
+    errors.extend(
+        _product_status_errors(
+            repo_root,
+            list(matrix.get("product_status_checks", [])),
+            backend_entries,
+        )
+    )
     errors.extend(
         _coverage_errors(
             set(discovered_backend),

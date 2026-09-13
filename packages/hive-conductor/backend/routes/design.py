@@ -302,16 +302,10 @@ async def get_skill_discovery_form(skill_slug: str) -> list[dict[str, Any]]:
 async def create_render_job(
     project_id: str, request: Request, format: str = "pdf"
 ) -> dict[str, Any]:
-    """Request server-side rendering of a project output.
+    """Reject rendering until its canonical worker and artifact path exist.
 
-    Validates code (for T3 artifacts), creates async render job.
-    Returns immediately with job_id for polling.
-
-    Query params:
-      format: output format (pdf, pptx, docx, png)
-
-    Returns:
-      501 until a canonical renderer, durable artifact store, and serving route exist.
+    The ownership lookup is intentionally retained below so this unavailable
+    capability cannot become a project-id probing endpoint.
     """
     _require_ready()
     org_id = _get_org_id(request)
@@ -347,29 +341,12 @@ async def create_render_job(
 
 @router.get("/projects/{project_id}/render/{job_id}")
 async def get_render_job_status(project_id: str, job_id: str) -> dict[str, Any]:
-    """Poll render job status and get download URL when ready.
-
-    Returns:
-      {job_id, status, url, error, created_at, updated_at}
-
-    Status: pending | rendering | completed | failed
-    """
-    try:
-        from services.design_preview import get_design_preview_service
-
-        preview_svc = get_design_preview_service()
-        job = preview_svc.get_render_job(job_id)
-
-        if not job:
-            raise HTTPException(status_code=404, detail=f"Render job {job_id} not found")
-
-        if job.project_id != project_id:
-            raise HTTPException(
-                status_code=403, detail="Render job does not belong to this project"
-            )
-
-        return job.to_dict()
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from None
+    """Report that render status is unavailable until a durable job exists."""
+    del project_id, job_id
+    raise HTTPException(
+        status_code=501,
+        detail=(
+            "Design rendering is unavailable: no canonical renderer, durable "
+            "job store, or output-serving route is configured"
+        ),
+    )

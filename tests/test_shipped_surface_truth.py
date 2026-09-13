@@ -36,6 +36,24 @@ def _matrix() -> dict:
     }
 
 
+def test_discovers_oauth_get_security_routes(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "backend/auth.py",
+        """
+from fastapi import APIRouter
+router = APIRouter()
+
+@router.get("/oauth/{provider}/callback")
+async def callback(request):
+    return authenticate(request)
+""",
+    )
+    surfaces = discover_backend_surfaces(tmp_path, ["backend"])
+    assert [(item.method, item.route, item.handler) for item in surfaces] == [
+        ("GET", "/oauth/{provider}/callback", "callback"),
+    ]
+
+
 def test_discovers_mutating_route_decorators_and_api_route_methods(tmp_path: Path) -> None:
     _write(
         tmp_path / "backend/routes.py",
@@ -75,6 +93,39 @@ def status(): return {}
     assert [(item.method, item.route) for item in surfaces] == [
         ("WEBSOCKET", "/tasks/{task_id}"),
     ]
+
+
+def test_discovers_starlette_add_websocket_route(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "backend/ws.py",
+        """
+from starlette.applications import Starlette
+app = Starlette()
+
+async def stream(websocket):
+    await websocket.accept()
+
+app.add_websocket_route(path="/runs", endpoint=stream)
+""",
+    )
+    surfaces = discover_backend_surfaces(tmp_path, ["backend"])
+    assert [(item.method, item.route, item.handler) for item in surfaces] == [
+        ("WEBSOCKET", "/runs", "stream"),
+    ]
+
+
+def test_missing_registered_websocket_route_disposition_fails_closed(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "backend/ws.py",
+        """
+from starlette.applications import Starlette
+app = Starlette()
+app.add_websocket_route("/runs", socket)
+""",
+    )
+    (tmp_path / "frontend").mkdir()
+    errors = validate_matrix(tmp_path, _matrix())
+    assert any("unclassified backend surface" in error and "WEBSOCKET" in error for error in errors)
 
 
 def test_missing_websocket_route_disposition_fails_closed(tmp_path: Path) -> None:
@@ -248,6 +299,37 @@ def test_disabled_surface_requires_owner_and_is_not_production_enabled(tmp_path:
     errors = validate_matrix(tmp_path, matrix)
     assert any("must name owner_issue" in error for error in errors)
     assert any("cannot be production_enabled" in error for error in errors)
+
+
+def test_product_status_claim_is_checked_against_matrix_surface(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "backend/routes.py",
+        'from fastapi import APIRouter\nrouter=APIRouter()\n@router.post("/render")\ndef render(): return unavailable()\n',
+    )
+    (tmp_path / "frontend").mkdir()
+    (tmp_path / "README.md").write_text("| render | **Partial** |", encoding="utf-8")
+    matrix = _matrix()
+    matrix["backend_surfaces"] = [
+        {
+            "source": "backend/routes.py",
+            "method": "POST",
+            "route": "/render",
+            "handler": "render",
+            "disposition": "disabled",
+            "production_enabled": False,
+            "owner_issue": 286,
+            "reason": "rendering is unavailable",
+        }
+    ]
+    matrix["product_status_checks"] = [
+        {
+            "surface": "backend/routes.py:POST:/render:render",
+            "file": "README.md",
+            "contains": "| render | **TODO** |",
+        }
+    ]
+    errors = validate_matrix(tmp_path, matrix)
+    assert any("product status claim missing" in error for error in errors)
 
 
 def test_fake_success_survives_logging_and_assignment_before_the_return(tmp_path: Path) -> None:

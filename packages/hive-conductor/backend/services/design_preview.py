@@ -1,29 +1,19 @@
-"""DesignPreviewService — server-side rendering and code validation for design outputs.
+"""DesignPreviewService — validation for design output code.
 
-Handles:
-1. AST validation for generated React/TSX code (imports whitelist, Tailwind classes)
-2. Security scanning for T3 artifacts (untrusted user input)
-3. Server-side rendering for PDF/PPTX/DOCX via async job queue
-4. Preview URLs for rendered outputs
-
-Follows async job queue pattern — render requests return immediately with job_id,
-client polls /v1/design/projects/{id}/render/{job_id} for status and download URL.
+The shipped renderer is deliberately unavailable until a canonical execution
+worker, durable artifact store, and serving route exist. Keeping an in-memory
+job lifecycle here would manufacture pending/completed states without owning
+rendered bytes, so this service only validates code and rejects rendering.
 """
 
 from __future__ import annotations
 
-import logging
 import re
-from datetime import UTC, datetime
 from typing import Any, ClassVar, NoReturn
-from uuid import uuid4
 
 from maistro_design.trust import TrustTier
-from maistro_design.types import OutputFormat
 
-logger = logging.getLogger("hive.design_preview")
-
-__all__ = ["CodeValidationError", "DesignPreviewService", "RenderJob"]
+__all__ = ["CodeValidationError", "DesignPreviewService"]
 
 
 class CodeValidationError(Exception):
@@ -32,42 +22,8 @@ class CodeValidationError(Exception):
     pass
 
 
-class RenderJob:
-    """Async render job tracking."""
-
-    def __init__(
-        self,
-        job_id: str,
-        project_id: str,
-        format: OutputFormat,
-        status: str = "pending",
-        url: str | None = None,
-        error: str | None = None,
-    ) -> None:
-        self.job_id = job_id
-        self.project_id = project_id
-        self.format = format
-        self.status = status
-        self.url = url
-        self.error = error
-        self.created_at = datetime.now(UTC)
-        self.updated_at = datetime.now(UTC)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "job_id": self.job_id,
-            "project_id": self.project_id,
-            "format": self.format,
-            "status": self.status,
-            "url": self.url,
-            "error": self.error,
-            "created_at": self.created_at.isoformat(),
-            "updated_at": self.updated_at.isoformat(),
-        }
-
-
 class DesignPreviewService:
-    """Server-side rendering and validation for design outputs."""
+    """Validate design output code; reject unavailable server-side rendering."""
 
     ALLOWED_IMPORTS: ClassVar[frozenset[str]] = frozenset(
         {
@@ -88,10 +44,6 @@ class DesignPreviewService:
         r"absolute|relative|fixed|block|inline|flex-col|flex-row|justify-|items-|"
         r"gap-|space-|opacity-|transition|duration-|ease-|hover|focus|active)"
     )
-
-    def __init__(self) -> None:
-        """Initialize the preview service."""
-        self._render_jobs: dict[str, RenderJob] = {}
 
     def _check_line_imports(self, line: str, result: dict[str, Any], trust_tier: TrustTier) -> int:
         """Check import line; return 1 if import, 0 otherwise."""
@@ -180,40 +132,6 @@ class DesignPreviewService:
             elif allowed in import_line_lower:
                 return True
         return False
-
-    def create_render_job(self, project_id: str, output_format: OutputFormat) -> RenderJob:
-        """Create a new async render job.
-
-        Returns immediately with job_id. Client polls for status/url.
-        """
-        job_id = str(uuid4())
-        job = RenderJob(job_id, project_id, output_format, status="pending")
-        self._render_jobs[job_id] = job
-        logger.info(
-            "Created render job %s for project %s (format: %s)", job_id, project_id, output_format
-        )
-        return job
-
-    def get_render_job(self, job_id: str) -> RenderJob | None:
-        """Retrieve a render job by ID."""
-        return self._render_jobs.get(job_id)
-
-    def update_render_job(
-        self,
-        job_id: str,
-        status: str,
-        url: str | None = None,
-        error: str | None = None,
-    ) -> RenderJob | None:
-        """Update a render job status."""
-        job = self._render_jobs.get(job_id)
-        if job:
-            job.status = status
-            job.url = url
-            job.error = error
-            job.updated_at = datetime.now(UTC)
-            logger.info("Updated render job %s: status=%s", job_id, status)
-        return job
 
     @staticmethod
     def _raise_rendering_unavailable(format_name: str) -> NoReturn:

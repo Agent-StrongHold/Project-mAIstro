@@ -1,6 +1,40 @@
 {
-  "_comment": "Truthful shipped-surface matrix (#465). Generated classification is reviewed content: every discovered mutating backend route and frontend execution signal must carry an exact disposition; scripts/check-shipped-surface-truth.py fails closed on drift. Facades stay visible as unresolved/disabled with owning issues rather than being hidden.",
+  "_comment": "Truthful shipped-surface matrix (#465). Generated classification is reviewed content: every discovered mutating/security backend route and frontend execution signal must carry an exact disposition; scripts/check-shipped-surface-truth.py fails closed on drift. Facades stay visible as unresolved/disabled with owning issues rather than being hidden.",
   "schema_version": 2,
+  "known_facade_issues": [
+    {
+      "issue": 286,
+      "disposition": "disabled",
+      "scope": "Design render and Canvas publish surfaces"
+    },
+    {
+      "issue": 292,
+      "disposition": "tracked",
+      "scope": "Conductor CLI page contract"
+    },
+    {
+      "issue": 294,
+      "disposition": "tracked",
+      "scope": "agent Forge artifacts"
+    },
+    {
+      "issue": 295,
+      "disposition": "removed/non-shipped",
+      "scope": "Tools Lab controls; no production route or UI action remains"
+    },
+    {
+      "issue": 382,
+      "disposition": "unresolved",
+      "scope": "container image build facade"
+    }
+  ],
+  "product_status_checks": [
+    {
+      "surface": "packages/hive-conductor/backend/routes/design.py:POST:/projects/{project_id}/render:create_render_job",
+      "file": "README.md",
+      "contains": "| `/v1/design/*` | **Partial** |"
+    }
+  ],
   "backend_roots": [
     "packages"
   ],
@@ -137,6 +171,26 @@
       "production_enabled": true,
       "reason": "authenticated start of an explicit provider-identity link flow; allocates PKCE state only, the callback binds the verified external subject (#491)",
       "effect_owner": "OAuth state store + durable identity-link store (link happens at callback)"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/auth.py",
+      "method": "GET",
+      "route": "/oauth/{provider}/callback",
+      "handler": "oauth_callback",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "verifies the provider callback and either binds an identity or issues a Hive session",
+      "effect_owner": "OAuth single-use state store + identity/session stores + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/auth.py",
+      "method": "GET",
+      "route": "/oauth/{provider}/start",
+      "handler": "oauth_start",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "starts the OAuth authorization-code flow and persists browser-bound PKCE state",
+      "effect_owner": "OAuth state store + HttpOnly state cookie"
     },
     {
       "source": "packages/hive-conductor/backend/routes/auth.py",

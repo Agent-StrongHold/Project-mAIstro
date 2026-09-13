@@ -159,6 +159,13 @@ class TestTheRoutesPassItDown:
         assert preview_calls == []
         assert store.calls == [{"project_id": "p-1", "org_id": "org-7"}]
 
+    @pytest.mark.ac("M1-465/AC-design-render-unavailable")
+    async def test_polling_render_status_reports_unavailable(self) -> None:
+        """Polling cannot expose a made-up pending state or output URL."""
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.get_render_job_status("p-1", "job-1")
+        assert raised.value.status_code == 501
+
     @pytest.mark.ac("SPEC-083026-6bc5/AC-2")
     async def test_listing_projects_uses_the_resolved_scope(
         self, ready: None, monkeypatch: pytest.MonkeyPatch
