@@ -103,6 +103,7 @@ wait forever for an `Expected` result.
 | CodeQL Advanced | `Analyze (actions)` | base `main` |
 | CodeQL Advanced | `Analyze (javascript-typescript)` | base `main` |
 | CodeQL Advanced | `Analyze (python)` | base `main` |
+| DevSkim | `DevSkim` | base `develop` |
 | Formal Conformance | `formal-conformance` | every PR |
 | Gate C | `Gate C — canonical clean install` | every PR |
 | Integration Scope | `integration-scope` | every PR |
@@ -124,6 +125,11 @@ wait forever for an `Expected` result.
 `Analyze (actions)`, `Analyze (javascript-typescript)`, `Analyze (python)`, and
 `Container scan + SBOM + cosign` are required on `main` only. They do not report
 as real executed checks on a `develop`-based PR or develop merge group.
+
+`DevSkim` is a documented advisory check for `develop`-based PRs. It is
+intentionally excluded from both protected required-check sets until the owner
+promotes it into the merge contract; its base-coupled workflow scope remains
+listed in the generated table above.
 
 ## Draft pull requests
 

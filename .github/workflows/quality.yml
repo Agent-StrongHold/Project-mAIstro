@@ -152,7 +152,7 @@ jobs:
           uv run coverage run --append --branch --source=packages/maistro-bootstrap/src/maistro_bootstrap \
             -m pytest packages/maistro-bootstrap/tests --timeout=30 -q
       - name: upload coverage data
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-unit
           # `.coverage` is a dotfile and upload-artifact@v4 skips hidden files
@@ -186,6 +186,11 @@ jobs:
   # of this job named `bitnami/minio:latest`, which does not resolve: Bitnami
   # retired their public tags, so every run died on `manifest unknown` before
   # reaching a single test. An image name is not verified by being plausible.
+  # The move to the upstream image was not the end of it either: `minio/minio`
+  # on Docker Hub stopped serving anonymous pulls (`pull access denied`), so
+  # the image below names quay.io — where MinIO publishes the same RELEASE tag
+  # ci.yml pins — rather than `:latest`, so this job and ci.yml's conformance
+  # job exercise the same server build.
   coverage-archive:
     name: coverage (MinIO)
     runs-on: ubuntu-latest
@@ -198,7 +203,7 @@ jobs:
           docker run -d --name minio -p 9000:9000 \
             -e MINIO_ROOT_USER=minioadmin \
             -e MINIO_ROOT_PASSWORD=minioadmin \
-            minio/minio:latest server /data
+            quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z server /data
           # Poll the health endpoint rather than sleeping a fixed amount: a
           # fixed sleep is either slower than it needs to be or racy, and the
           # race surfaces as a connection error that reads exactly like the
@@ -213,7 +218,7 @@ jobs:
           echo "::error::MinIO did not become ready within 60s"
           docker logs minio
           exit 1
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
@@ -239,7 +244,7 @@ jobs:
           uv run coverage run --branch --source=packages/maistro-core/src/maistro \
             -m pytest packages/maistro-core/tests/archive -v --tb=short
       - name: upload coverage data
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-archive
           include-hidden-files: true
@@ -302,7 +307,7 @@ jobs:
       MAISTRO_DRY_RUN: "1"
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
@@ -355,7 +360,7 @@ jobs:
             --source=packages/maistro-canvas/src/maistro_canvas \
             -m pytest packages/maistro-canvas/tests --timeout=30 -q
       - name: upload coverage data
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-postgres
           include-hidden-files: true
@@ -579,6 +584,23 @@ jobs:
     env:
       MAISTRO_TEST_PG_DSN: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
       DATABASE_URL: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
+      # AC-state must read the same candidate base for a topic push and its
+      # pull-request run. `before` is the previous topic tip and may already
+      # contain the candidate's own note, so it is not an independent base.
+      # Protected-branch pushes are different: their parent is the immutable
+      # revision the merge-time guard replaces.
+      RATCHET_BASE_REV: >-
+        ${{ github.event_name == 'pull_request'
+            && format('origin/{0}', github.base_ref)
+            || github.event_name == 'merge_group'
+            && github.event.merge_group.base_sha
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -765,22 +787,27 @@ jobs:
       # (#225) each survived audits and were found by grep. Scope is narrow on
       # purpose: the same check over every uncalled public export would seed at
       # 662 entries and teach banking (ADR-082526-1899).
-      # `RATCHET_BASE_REV` names the revision this event is a change *from*.
-      # Without it the checker fell back to `origin/develop`, and on a push to
-      # `develop` that ref IS the pushed HEAD -- so the ledger was read out of
-      # the commit under judgement, which is the self-approval this ratchet
-      # exists to prevent (Codex, #534). A PR based on anything other than
-      # `develop` was judged against the wrong branch for the same reason.
-      #
-      # On the push that creates a branch, `github.event.before` is git's null
-      # SHA. That names no revision, so the checker falls through to the trunk
-      # rather than failing every first push to a topic branch (#381).
+      # `RATCHET_BASE_REV` names the immutable revision this event is a change
+      # from. Topic-branch pushes use the same integration base as pull-request
+      # runs; using `github.event.before` here would include the branch's own
+      # AC-state note and let it manufacture a supersession. Protected-branch
+      # pushes use their actual parent because the merge-time guard replaces
+      # that exact revision. A first topic push has a null `before`, but the
+      # integration base remains available through the full checkout.
       - name: wiring reads ratchet (DI attributes nothing reads back)
         env:
           RATCHET_BASE_REV: >-
             ${{ github.event_name == 'pull_request'
-                && github.event.pull_request.base.sha
-                || github.event.before }}
+                && format('origin/{0}', github.base_ref)
+                || github.event_name == 'merge_group'
+                && github.event.merge_group.base_sha
+                || github.ref == 'refs/heads/develop'
+                && github.event.before
+                || github.ref == 'refs/heads/integration'
+                && github.event.before
+                || github.ref == 'refs/heads/main'
+                && github.event.before
+                || 'origin/develop' }}
         run: uv run python scripts/check-wiring-reads.py
 
       # #840: stores.agents is a durable product projection with exactly one

@@ -13,6 +13,13 @@ import math
 import re
 from collections import Counter
 
+from maistro.security.secret_policy import (
+    AWS_SECRET_ACCESS_KEY_PATTERN,
+    SLACK_TOKEN_PATTERN,
+    iter_secret_assignment_value_spans,
+    looks_like_aws_secret_access_key,
+)
+
 # ─── Patterns (order doesn't matter — we merge spans) ─────────────────────────
 
 _PATTERNS: list[tuple[re.Pattern[str], str]] = [
@@ -96,6 +103,11 @@ _PATTERNS: list[tuple[re.Pattern[str], str]] = [
         "[REDACTED_URL_CREDENTIALS]",
     ),
     # AWS access keys
+    #
+    # `AKIA...` values are access key IDs (identifiers), not secrets; they are
+    # redacted on this log path because an identifier keyed to a principal is
+    # still sensitive context. The paired *secret* is the 40-character key,
+    # detected below the patterns as a validated span (#1159).
     (
         re.compile(r"AKIA[A-Z0-9]{16}"),
         "[REDACTED_AWS_KEY]",
@@ -105,11 +117,24 @@ _PATTERNS: list[tuple[re.Pattern[str], str]] = [
         re.compile(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"),
         "[REDACTED_JWT]",
     ),
-    # Known API key prefixes
+    # Known API key prefixes.
+    #
+    # The Slack xox* family is NOT in this alternation: it is shared with the
+    # Sentinel PII filter through secret_policy.SLACK_TOKEN_PATTERN (#1159) and
+    # carries the same [REDACTED_API_KEY] label as a dedicated pattern below.
+    # Bare `key` is likewise in the JSON-name alternation below, not here:
+    # "tokenizer"/"monkey" must not redact, and only the JSON form can anchor
+    # the term to a whole _/-/.-separated segment of the field name.
     (
         re.compile(
-            r"(?:sk-ant-|sk_live_|sk_test_|sk-|ghp_|ghs_|github_pat_|AIza|xoxb-|xoxp-|pplx-|glpat-|ATATT)[A-Za-z0-9_-]{10,}"
+            r"(?:sk-ant-|sk_live_|sk_test_|sk-|ghp_|ghs_|github_pat_|AIza|pplx-|glpat-|ATATT)[A-Za-z0-9_-]{10,}"
         ),
+        "[REDACTED_API_KEY]",
+    ),
+    # Slack tokens (bot xoxb / user xoxp / app xoxa / refresh xoxr / session
+    # xoxs) — one canonical shape shared with the PII filter (#1159).
+    (
+        SLACK_TOKEN_PATTERN,
         "[REDACTED_API_KEY]",
     ),
     # Telegram bot tokens (ADR-064/AC-42): numeric bot id, colon, "AA" plus
@@ -130,14 +155,17 @@ _PATTERNS: list[tuple[re.Pattern[str], str]] = [
     # A sensitive term counts only as a whole `_`/`-`/`.`-separated segment of
     # the field name: "auth_token" and "user.password" match, "tokenizer" and
     # "secretary" do not — a substring hit would corrupt ordinary diagnostic
-    # JSON wholesale. Bare "key"/"auth" are NOT in the alternation ("monkey",
-    # "author"); the compound forms are spelled out instead. The value consumes
+    # JSON wholesale. Bare "key" IS in the alternation (#1159, shared with
+    # secret_policy's segment classifier: private_key/ssh_key/signing_key all
+    # reduce to the `key` segment); it is still segment-anchored here, because
+    # the term must sit at the start of the name or after a separator, so
+    # "monkey" cannot match. Bare "auth" is NOT ("author"). The value consumes
     # JSON escape sequences atomically so an escaped quote cannot end the match
     # early and leak the tail of the credential.
     (
         re.compile(
             r'"(?:[A-Za-z0-9._-]{0,64}[_.-])?(?:password|passwd|pwd|secret|token|credential'
-            r'|api[_-]?key|apikey|access[_-]?key|private[_-]?key)(?:[_.-][A-Za-z0-9._-]{0,64})?"'
+            r'|api[_-]?key|apikey|access[_-]?key|private[_-]?key|key)(?:[_.-][A-Za-z0-9._-]{0,64})?"'
             r'\s*:\s*"(?:[^"\\]|\\.){0,4096}"',
             re.IGNORECASE,
         ),
@@ -184,7 +212,83 @@ def _looks_like_secret(s: str) -> bool:
 # ─── Merge-spans redaction (fix #10: no order-dependent overlaps) ─────────────
 
 
-def redact(text: str) -> str:  # noqa: C901  pre-existing: sequence of independent pattern passes
+def _collect_pattern_spans(text: str) -> list[tuple[int, int, str]]:
+    """Collect spans from the fixed detector patterns."""
+    spans: list[tuple[int, int, str]] = []
+    for pattern, replacement in _PATTERNS:
+        spans.extend((m.start(), m.end(), replacement) for m in pattern.finditer(text))
+    return spans
+
+
+def _collect_special_spans(text: str) -> list[tuple[int, int, str]]:
+    """Collect validated AWS and high-entropy secret spans."""
+    spans: list[tuple[int, int, str]] = []
+    for m in AWS_SECRET_ACCESS_KEY_PATTERN.finditer(text):
+        if looks_like_aws_secret_access_key(m.group()):
+            spans.append((m.start(), m.end(), "[REDACTED_AWS_SECRET_KEY]"))
+    for m in _HIGH_ENTROPY_RE.finditer(text):
+        if _looks_like_secret(m.group()):
+            spans.append((m.start(), m.end(), "[REDACTED_HIGH_ENTROPY]"))
+    return spans
+
+
+def _collect_assignment_spans(
+    text: str,
+    claimed: list[tuple[int, int]],
+) -> list[tuple[int, int, str]]:
+    """Collect assignment values not already claimed by a specific detector."""
+    return [
+        (start, end, "[REDACTED_SECRET_ASSIGNMENT]")
+        for start, end in iter_secret_assignment_value_spans(text)
+        if not any(
+            start < claimed_end and claimed_start < end for claimed_start, claimed_end in claimed
+        )
+    ]
+
+
+def _collect_redaction_spans(text: str) -> list[tuple[int, int, str]]:
+    """Collect detector spans before applying any replacement."""
+    spans = _collect_pattern_spans(text)
+    spans.extend(_collect_special_spans(text))
+    claimed = [(start, end) for start, end, _ in spans]
+    spans.extend(_collect_assignment_spans(text, claimed))
+    return spans
+
+
+def _merge_redaction_spans(
+    spans: list[tuple[int, int, str]],
+) -> list[tuple[int, int, str]]:
+    """Sort spans and keep the longest detector match at each overlap."""
+    if not spans:
+        return []
+    spans.sort(key=lambda s: (s[0], -(s[1] - s[0])))
+    merged: list[tuple[int, int, str]] = []
+    for start, end, repl in spans:
+        if merged and start < merged[-1][1]:
+            prev_start, prev_end, prev_repl = merged[-1]
+            if end > prev_end:
+                merged[-1] = (prev_start, end, prev_repl)
+        else:
+            merged.append((start, end, repl))
+    return merged
+
+
+def _render_redaction(text: str, merged: list[tuple[int, int, str]]) -> str:
+    """Build the redacted text in one pass."""
+    if not merged:
+        return text
+    parts: list[str] = []
+    cursor = 0
+    for start, end, repl in merged:
+        if start > cursor:
+            parts.append(text[cursor:start])
+        parts.append(repl)
+        cursor = end
+    parts.append(text[cursor:])
+    return "".join(parts)
+
+
+def redact(text: str) -> str:
     """Redact all secrets from text using span-merging (no partial fragments)."""
     if not text:
         # `""`, not `text`. The falsy short-circuit used to pass its argument
@@ -195,45 +299,6 @@ def redact(text: str) -> str:  # noqa: C901  pre-existing: sequence of independe
         # rather than live behaviour, and a redactor should fail closed anyway.
         return ""
 
-    # Collect all (start, end, replacement) spans
-    spans: list[tuple[int, int, str]] = []
-
-    for pattern, replacement in _PATTERNS:
-        for m in pattern.finditer(text):
-            spans.append((m.start(), m.end(), replacement))
-
-    # Entropy heuristic: catch unknown key formats
-    for m in _HIGH_ENTROPY_RE.finditer(text):
-        candidate = m.group()
-        if _looks_like_secret(candidate):
-            spans.append((m.start(), m.end(), "[REDACTED_HIGH_ENTROPY]"))
-
-    if not spans:
-        return text
-
-    # Sort by start position, then by length descending (longer match wins)
-    spans.sort(key=lambda s: (s[0], -(s[1] - s[0])))
-
-    # Merge overlapping spans (longest match at each position wins)
-    merged: list[tuple[int, int, str]] = []
-    for start, end, repl in spans:
-        if merged and start < merged[-1][1]:
-            # Overlaps with previous — keep the one that covers more
-            prev_start, prev_end, prev_repl = merged[-1]
-            if end > prev_end:
-                merged[-1] = (prev_start, end, prev_repl)
-            # Otherwise skip (already covered by previous longer match)
-        else:
-            merged.append((start, end, repl))
-
-    # Build result in one pass (no sequential re.sub mutations)
-    parts: list[str] = []
-    cursor = 0
-    for start, end, repl in merged:
-        if start > cursor:
-            parts.append(text[cursor:start])
-        parts.append(repl)
-        cursor = end
-    parts.append(text[cursor:])
-
-    return "".join(parts)
+    spans = _collect_redaction_spans(text)
+    merged = _merge_redaction_spans(spans)
+    return _render_redaction(text, merged)

@@ -43,7 +43,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: PR base follows branch policy (ADR-095)
@@ -56,7 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
@@ -238,7 +238,7 @@ jobs:
       MAISTRO_DRY_RUN: "1"
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
@@ -293,7 +293,7 @@ jobs:
       MAISTRO_DRY_RUN: "1"
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
@@ -303,14 +303,17 @@ jobs:
       # which is why this used `bitnami/minio` — a repackaging that starts the
       # server by default. Bitnami withdrew that tag and the job began failing
       # on `manifest unknown`, so the dependency on someone else's repackaging
-      # is gone: the upstream image, pinned, started here.
+      # is gone: the upstream image, pinned, started here. That did not end the
+      # churn either — Docker Hub stopped serving `minio/minio` anonymously
+      # (`pull access denied` before a single test ran), so the pin now names
+      # quay.io, where MinIO publishes the identical RELEASE tag.
       - name: Start MinIO
         run: |
           docker run -d --name minio \
             -p 9000:9000 \
             -e MINIO_ROOT_USER=maistro \
             -e MINIO_ROOT_PASSWORD=maistro-secret \
-            minio/minio:RELEASE.2025-04-22T22-12-26Z server /data
+            quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z server /data
           for _ in $(seq 1 40); do
             if curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null; then
               echo "minio ready"
@@ -351,7 +354,7 @@ jobs:
           # unresolvable, which is a documented non-passing state for a
           # ratchet, not a pass.
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
@@ -497,7 +500,7 @@ jobs:
       MAISTRO_REQUIRE_PG_LEGS: "1"
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
@@ -556,7 +559,7 @@ jobs:
       MAISTRO_REQUIRE_PG_LEGS: "1"
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
@@ -672,7 +675,7 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
@@ -694,7 +697,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
@@ -735,7 +738,7 @@ jobs:
       # red, but the whole point of this job's caching quietly stops working
       # (Codex, #684). This is Docker's own documented fix for exactly this
       # gap: https://docs.docker.com/build/cache/backends/gha/#authentication
-      - uses: crazy-max/ghaction-github-runtime@v3
+      - uses: crazy-max/ghaction-github-runtime@v4
 
       # Fetch the base images first, retrying (#204). This job used to fail on a
       # registry reset before touching a line of repository content — a red
@@ -1059,7 +1062,7 @@ jobs:
       # one-line change once that warning is fixed.
       - name: shellcheck the standalone scripts under tools/
         run: /tmp/shellcheck-bin --severity=warning tools/*.sh
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Install PyYAML
