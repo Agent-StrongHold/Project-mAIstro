@@ -391,21 +391,51 @@ class SqliteOutcomeStore:
         from another tenant's project cannot reach this one's prompt — the
         defect this read existed with on this backend (#844).
         """
+        from maistro.memory.outcomes import _format_failure_lines, _format_thumb_lines
+
         cutoff = (datetime.now(UTC) - timedelta(days=7)).isoformat()
         params: list[Any] = [task_type, cutoff]
-        query = """SELECT error_type, model_used FROM outcomes
-               WHERE task_type = ? AND success = 0
-               AND created_at >= ?"""
+        query = """SELECT * FROM outcomes
+               WHERE task_type = ? AND created_at >= ?"""
         query += _scope_clause(params, org_id, project_id)
-        query += " ORDER BY created_at DESC LIMIT ?"
-        params.append(limit)
-        cursor = await self._conn.execute(query, params)
-        rows = await cursor.fetchall()
-        if not rows:
-            return ""
-        lines = ["Recent failures:"]
-        for r in rows:
-            lines.append(f"- {r[0]}: model={r[1]}")
+        if tool_name:
+            # SQLite stores tool calls as JSON text. Guard legacy Python-repr
+            # rows before handing the value to JSON1; those rows remain
+            # readable, but cannot satisfy a structured tool-name search.
+            query += """
+               AND EXISTS (
+                   SELECT 1
+                   FROM json_each(
+                       CASE WHEN json_valid(tool_calls) THEN tool_calls ELSE '[]' END
+                   )
+                   WHERE json_extract(json_each.value, '$.name') = ?
+               )"""
+            params.append(tool_name)
+
+        order = " ORDER BY created_at DESC, id DESC LIMIT ?"
+        failure_params = [*params, limit]
+        thumb_params = [*params, limit]
+        failure_cursor = await self._conn.execute(f"{query} AND success = 0{order}", failure_params)
+        failures = list(await failure_cursor.fetchall())
+        thumb_cursor = await self._conn.execute(
+            f"{query} AND success = 1 AND thumb = 'down'{order}", thumb_params
+        )
+        thumbs = list(await thumb_cursor.fetchall())
+
+        columns = [d[0] for d in failure_cursor.description]
+        failure_outcomes = [
+            _row_to_outcome(dict(zip(columns, row, strict=True))) for row in reversed(failures)
+        ]
+        columns = [d[0] for d in thumb_cursor.description]
+        thumb_outcomes = [
+            _row_to_outcome(dict(zip(columns, row, strict=True))) for row in reversed(thumbs)
+        ]
+        lines = _format_failure_lines(failure_outcomes)
+        thumb_lines = _format_thumb_lines(thumb_outcomes)
+        if thumb_lines:
+            if lines:
+                lines.append("")
+            lines.extend(thumb_lines)
         return "\n".join(lines)
 
     async def list_outcomes(

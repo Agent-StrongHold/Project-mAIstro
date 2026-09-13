@@ -174,6 +174,22 @@ class TestAScopedReadCannotCrossScope:
         assert comments == ["comment-org-b-p1", "comment-org-b-p2"]
         assert all("org-a" not in c for c in comments)
 
+    async def test_experience_search_scopes_tool_and_feedback_data(
+        self, outcome_store: Any
+    ) -> None:
+        narrative = await outcome_store.get_experience_context(
+            "code", tool_name="tool-org-a", org_id="org-a", project_id="p1"
+        )
+        wrong_tool = await outcome_store.get_experience_context(
+            "code", tool_name="tool-org-b", org_id="org-a", project_id="p1"
+        )
+
+        assert "fail-org-a-p1" in narrative
+        assert "comment-org-a-p1" in narrative
+        assert "fail-org-a-p2" not in narrative
+        assert "comment-org-b-p1" not in narrative
+        assert wrong_tool == ""
+
     async def test_cross_scope_tool_call_data_is_not_returned(self, outcome_store: Any) -> None:
         found = await outcome_store.list_outcomes(org_id="org-a")
 
