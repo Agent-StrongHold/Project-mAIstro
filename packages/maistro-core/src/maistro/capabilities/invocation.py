@@ -101,6 +101,9 @@ class Invocation(BaseModel):
     run_id: str
     node_run_id: str
     attempt_id: str
+    workspace_id: str = ""
+    project_id: str = ""
+    actor_id: str = ""
     binding: ResolvedBinding
     effect_key: str
     status: InvocationStatus = InvocationStatus.CREATED
@@ -119,6 +122,10 @@ class Invocation(BaseModel):
         _require(self.node_run_id, "node_run_id")
         _require(self.attempt_id, "attempt_id")
         _require(self.effect_key, "effect_key")
+        if not self.workspace_id:
+            self.workspace_id = self.binding.workspace_id
+        if not self.project_id:
+            self.project_id = self.binding.project_id
         terminal = self.status in TERMINAL_INVOCATION_STATUSES
         if terminal and self.finished_at is None:
             raise ValueError("terminal Invocation requires finished_at")
@@ -284,6 +291,7 @@ class InvocationExecutionService:
         attempt_id: str,
         effect_key: str,
         request: Any,
+        actor_id: str = "",
         resolver: ProviderResolver,
         executor: ProviderExecutor,
         usage_from: UsageExtractor | None = None,
@@ -341,6 +349,9 @@ class InvocationExecutionService:
                 run_id=run_id,
                 node_run_id=node_run_id,
                 attempt_id=attempt_id,
+                workspace_id=binding.workspace_id,
+                project_id=binding.project_id,
+                actor_id=actor_id,
                 binding=resolved,
                 effect_key=effect_key,
                 request=request,

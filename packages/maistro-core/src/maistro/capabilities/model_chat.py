@@ -152,6 +152,7 @@ class ModelChatEgress:
         attempt_id: str,
         effect_key: str,
         request: ModelChatRequest,
+        actor_id: str = "",
     ) -> ModelCallResult:
         resolver = resolve_model_chat_provider(self._registry, self._router, alias=request.model)
         selected: list[LlmGatewayProvider] = []
@@ -180,6 +181,7 @@ class ModelChatEgress:
             resolver=tracked_resolve,
             executor=execute,
             usage_from=usage_from,
+            actor_id=actor_id,
         )
         body = invocation.result if isinstance(invocation.result, dict) else {}
         return ModelCallResult(

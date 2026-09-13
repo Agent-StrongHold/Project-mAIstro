@@ -172,6 +172,7 @@ async def _fetch_subtask_statuses(
         effect_key=f"jira.wait_for_subtasks.status:{inputs.parent_key}:{poll_number}",
         request=JiraSubtasksRequest(parent_key=inputs.parent_key),
         timeout_s=inputs.timeout_s,
+        actor_id=str(ctx.user_id or ""),
     )
     data = invocation.result if isinstance(invocation.result, dict) else {}
     subtasks = (data.get("fields") or {}).get("subtasks") or []

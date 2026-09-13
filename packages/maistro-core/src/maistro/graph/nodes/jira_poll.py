@@ -91,6 +91,7 @@ class JiraPollNode(BaseNode[JiraPollIn, JiraPollOut]):
             effect_key=f"jira.poll.search:{inputs.jql}:{inputs.max_results}:{','.join(inputs.fields)}",
             request=request,
             timeout_s=inputs.timeout_s,
+            actor_id=str(ctx.user_id or ""),
         )
         data = invocation.result if isinstance(invocation.result, dict) else {}
         base = str(binding.config.get("base_url", "")).rstrip("/")

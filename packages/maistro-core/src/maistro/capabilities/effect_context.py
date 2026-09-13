@@ -47,6 +47,7 @@ class CapabilityEffectContext:
     invocation_store: InvocationStore
     event_store: EventStore
     approval_store: ApprovalStore | None = None
+    quota: InvocationQuota | None = None
     credentials: CredentialRouter = field(default_factory=CredentialRouter)
 
     def credential_routing(self) -> CredentialRouting:
@@ -77,6 +78,7 @@ def build_effect_context(
         invocation_store=invocation_store,
         event_store=event_store,
         approval_store=approval_store,
+        quota=quota,
         credentials=credentials or CredentialRouter(),
     )
 
@@ -114,6 +116,29 @@ def new_in_memory_effect_context(
 _process_effect_context: CapabilityEffectContext | None = None
 
 
+async def new_sqlite_effect_context(connection: Any) -> CapabilityEffectContext:
+    """Compose all durable effect authorities on one SQLite connection."""
+    from maistro.capabilities.approval_store import SqliteApprovalStore
+    from maistro.capabilities.binding_store import SqliteBindingStore
+    from maistro.capabilities.invocation_store import SqliteInvocationStore
+    from maistro.events.envelope import SqliteEventStore
+
+    bindings = SqliteBindingStore(connection)
+    invocations = SqliteInvocationStore(connection)
+    approvals = SqliteApprovalStore(connection)
+    events = SqliteEventStore(connection)
+    await bindings.ensure_schema()
+    await invocations.ensure_schema()
+    await approvals.ensure_schema()
+    await events.ensure_schema()
+    return build_effect_context(
+        bindings=bindings,
+        invocation_store=invocations,
+        approval_store=approvals,
+        event_store=events,
+    )
+
+
 def configure_default_effect_context(context: CapabilityEffectContext) -> None:
     """Publish the Container-owned context to registry-constructed nodes."""
     global _process_effect_context
@@ -132,10 +157,25 @@ def default_effect_context() -> CapabilityEffectContext:
     return _process_effect_context
 
 
+def _clear_default_effect_context() -> None:
+    global _process_effect_context
+    _process_effect_context = None
+
+
+# Kept as a small compatibility seam for test fixtures that need process
+# isolation; production uses configure_default_effect_context instead.
+def _default_cache_clear() -> None:
+    _clear_default_effect_context()
+
+
+default_effect_context.cache_clear = _default_cache_clear  # type: ignore[attr-defined]
+
+
 __all__ = [
     "CapabilityEffectContext",
     "build_effect_context",
     "configure_default_effect_context",
     "default_effect_context",
     "new_in_memory_effect_context",
+    "new_sqlite_effect_context",
 ]

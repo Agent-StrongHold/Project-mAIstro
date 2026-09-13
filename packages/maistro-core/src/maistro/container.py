@@ -1531,6 +1531,7 @@ async def create_container(
     capability_effects = await _wire_capability_effects(
         pg_pool=pg_pool,
         db_pool=db_pool,
+        database_url=config.database_url,
     )
     configure_default_effect_context(capability_effects)
 
@@ -2202,6 +2203,7 @@ async def _wire_capability_effects(
     *,
     pg_pool: Any,
     db_pool: Any,
+    database_url: str = "",
 ) -> CapabilityEffectContext:
     """Compose the sole governed effect context from the selected backend."""
     from maistro.capabilities.approval_store import (
@@ -2216,20 +2218,52 @@ async def _wire_capability_effects(
         PgBindingStore,
         SqliteBindingStore,
     )
-    from maistro.capabilities.invocation import InMemoryInvocationStore
+    from maistro.capabilities.invocation import (
+        InMemoryInvocationStore,
+        Invocation,
+        InvocationQuota,
+    )
     from maistro.capabilities.invocation_store import PgInvocationStore, SqliteInvocationStore
     from maistro.events.envelope import EventStore
     from maistro.events.wiring import wire_canonical_events
+    from maistro.quota.invocation_quota import QuotaEstimate
 
     # Event sequencing has one selector. The governed effect context consumes
     # its store directly rather than constructing a parallel event authority.
     canonical_events = await wire_canonical_events(pg_pool=pg_pool, db_pool=db_pool)
     events: EventStore = canonical_events.store
 
+    async def estimate(invocation: Invocation, _binding: Any) -> QuotaEstimate:
+        request = invocation.request
+        if isinstance(request, dict):
+            max_tokens = request.get("max_tokens")
+            messages = request.get("messages", "")
+        else:
+            max_tokens = getattr(request, "max_tokens", None)
+            messages = getattr(request, "messages", "")
+        if isinstance(max_tokens, int) and max_tokens > 0:
+            # Reserve both the caller's output ceiling and a conservative
+            # character-based bound for prompt tokens before dispatch.
+            tokens = max_tokens + max(1, len(str(messages)) // 4)
+        else:
+            tokens = None
+        return QuotaEstimate(
+            principal_id=invocation.actor_id or "system",
+            tokens=tokens,
+        )
+
+    bindings: BindingStore
+    invocations: Any
+    approvals: ApprovalStore
+    quota: InvocationQuota | None = None
     if pg_pool is not None:
-        bindings: BindingStore = PgBindingStore(pg_pool)
+        from maistro.quota.pg_invocation_quota import PgInvocationQuota
+
+        bindings = PgBindingStore(pg_pool)
         invocations = PgInvocationStore(pg_pool)
-        approvals: ApprovalStore = PgApprovalStore(pg_pool)
+        approvals = PgApprovalStore(pg_pool)
+        quota = PgInvocationQuota(pg_pool, estimate=estimate)
+        await quota.ensure_schema()
     elif db_pool is not None:
         bindings = SqliteBindingStore(db_pool)
         invocations = SqliteInvocationStore(db_pool)
@@ -2237,6 +2271,12 @@ async def _wire_capability_effects(
         await bindings.ensure_schema()
         await invocations.ensure_schema()
         await approvals.ensure_schema()
+        sqlite_path = database_url.removeprefix("sqlite:///").removeprefix("sqlite://")
+        if sqlite_path and sqlite_path != ":memory:":
+            from maistro.quota.sqlite_invocation_quota import SqliteInvocationQuota
+
+            quota = SqliteInvocationQuota(sqlite_path, estimate=estimate)
+            await quota.ensure_schema()
     else:
         bindings = InMemoryBindingStore()
         invocations = InMemoryInvocationStore()
@@ -2247,6 +2287,7 @@ async def _wire_capability_effects(
         invocation_store=invocations,
         approval_store=approvals,
         event_store=events,
+        quota=quota,
     )
 
 

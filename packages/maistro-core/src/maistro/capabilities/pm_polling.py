@@ -31,6 +31,7 @@ async def invoke_jira_poll(
     effect_key: str,
     request: JiraPollRequest | JiraSubtasksRequest,
     timeout_s: float,
+    actor_id: str = "",
 ) -> Invocation:
     """Route one Jira read through Binding, credential, policy and Invocation."""
 
@@ -51,6 +52,7 @@ async def invoke_jira_poll(
         request=request,
         resolver=resolver,
         executor=routing.executor(execute),
+        actor_id=actor_id,
     )
 
 
@@ -64,6 +66,7 @@ async def invoke_airtable_poll(
     effect_key: str,
     request: AirtablePollRequest,
     timeout_s: float,
+    actor_id: str = "",
 ) -> Invocation:
     """Route one Airtable read through Binding, credential, policy and Invocation."""
 
@@ -83,6 +86,7 @@ async def invoke_airtable_poll(
         request=request,
         resolver=routing.resolver(resolve_airtable_provider),
         executor=routing.executor(execute),
+        actor_id=actor_id,
     )
 
 

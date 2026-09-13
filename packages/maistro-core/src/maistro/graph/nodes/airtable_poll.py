@@ -93,6 +93,7 @@ class AirtablePollNode(BaseNode[AirtablePollIn, AirtablePollOut]):
                 page_size=inputs.page_size,
             ),
             timeout_s=inputs.timeout_s,
+            actor_id=str(ctx.user_id or ""),
         )
         data = invocation.result if isinstance(invocation.result, dict) else {}
         records = [

@@ -35,6 +35,10 @@ class BindingScopeDenied(BindingResolutionError):
     """A Binding exists but does not cover the requesting execution scope."""
 
 
+class BindingDisabled(BindingResolutionError):
+    """A Binding exists but has been disabled by its owner or policy."""
+
+
 @runtime_checkable
 class BindingStore(Protocol):
     """Canonical Binding definition and scope-resolution contract."""
@@ -123,6 +127,8 @@ class InMemoryBindingStore:
                 f"Binding {binding_id!r} authorizes Capability {binding.capability!r}, "
                 f"not {capability!r}"
             )
+        if not binding.enabled:
+            raise BindingDisabled(f"Binding {binding_id!r} is disabled")
         return binding
 
 
@@ -289,6 +295,8 @@ async def _resolve_binding(
         raise BindingScopeDenied(f"Binding {binding_id!r} is restricted to another Node")
     if binding.capability != capability:
         raise BindingScopeDenied(f"Binding {binding_id!r} authorizes another Capability")
+    if not binding.enabled:
+        raise BindingDisabled(f"Binding {binding_id!r} is disabled")
     return binding
 
 
@@ -299,6 +307,7 @@ def _binding_from_payload(payload: Any) -> Binding:
 
 
 __all__ = [
+    "BindingDisabled",
     "BindingNotFound",
     "BindingResolutionError",
     "BindingScopeDenied",

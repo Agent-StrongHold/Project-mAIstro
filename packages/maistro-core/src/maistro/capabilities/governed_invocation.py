@@ -43,6 +43,7 @@ class InvocationPolicyContext:
     node_run_id: str
     attempt_id: str
     effect_key: str
+    actor_id: str = ""
     approved: bool = False
 
 
@@ -117,6 +118,7 @@ class GovernedInvocationExecutionService:
         effect_key: str,
         request: Any,
         resolver: ProviderResolver,
+        actor_id: str = "",
         executor: ProviderExecutor,
         usage_from: UsageExtractor | None = None,
     ) -> Invocation:
@@ -125,6 +127,7 @@ class GovernedInvocationExecutionService:
             node_run_id=node_run_id,
             attempt_id=attempt_id,
             effect_key=effect_key,
+            actor_id=actor_id,
         )
         verdict = await self._policy(binding, request, context)
         policy_event = await self._append_policy_event(
@@ -166,6 +169,7 @@ class GovernedInvocationExecutionService:
                 resolver=resolver,
                 executor=executor,
                 usage_from=usage_from,
+                actor_id=actor_id,
             )
         except asyncio.CancelledError:
             await self._append_latest_terminal_event(
@@ -218,6 +222,7 @@ class GovernedInvocationExecutionService:
                 attempt_id=context.attempt_id,
                 correlation_id=context.run_id,
                 causation_id=causation_id,
+                actor_id=context.actor_id,
                 source="maistro.capabilities",
                 payload={
                     "binding_id": binding.binding_id,
@@ -364,6 +369,7 @@ class GovernedInvocationExecutionService:
             node_run_id=node_run_id,
             attempt_id=attempt_id,
             effect_key=effect_key,
+            actor_id=approval.actor,
             approved=True,
         )
         approved_verdict = await self._policy(binding, request, approved_context)
@@ -388,6 +394,7 @@ class GovernedInvocationExecutionService:
                 attempt_id=attempt_id,
                 correlation_id=run_id,
                 causation_id=approved_policy_event.event_id,
+                actor_id=approval.actor,
                 source="maistro.capabilities",
                 payload={
                     "request_id": approval.request.request_id,
@@ -480,6 +487,7 @@ class GovernedInvocationExecutionService:
                 invocation_id=invocation.invocation_id,
                 correlation_id=invocation.run_id,
                 causation_id=causation_id,
+                actor_id=invocation.actor_id,
                 source="maistro.capabilities",
                 payload={
                     "binding_id": invocation.binding.binding_id,

@@ -80,8 +80,8 @@ class ResolvedBinding(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     binding_id: str
-    workspace_id: str
-    project_id: str
+    workspace_id: str = ""
+    project_id: str = ""
     node_id: str = ""
     capability: str
     provider_name: str
@@ -95,8 +95,6 @@ class ResolvedBinding(BaseModel):
     @model_validator(mode="after")
     def _validate_resolved(self) -> ResolvedBinding:
         _require(self.binding_id, "binding_id")
-        _require(self.workspace_id, "workspace_id")
-        _require(self.project_id, "project_id")
         _require(self.capability, "capability")
         _require(self.provider_name, "provider_name")
         return self

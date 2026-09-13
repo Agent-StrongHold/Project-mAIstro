@@ -114,7 +114,9 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
             metadata=dict(resumed.get("metadata") or {}),
         )
 
-    async def _execute(self, inputs: SpawnHarnessIn, ctx: NodeContext) -> SpawnHarnessOut:
+    async def _execute(  # noqa: C901 - governed resume and dispatch paths are explicit
+        self, inputs: SpawnHarnessIn, ctx: NodeContext
+    ) -> SpawnHarnessOut:
         answers = (ctx.metadata or {}).get("hitl_answers") or {}
         resumed = answers.get(ctx.node_id)
         if resumed is not None:
@@ -143,24 +145,33 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
         async def resolve_provider(
             authorized: Binding,
         ) -> ResolvedCapabilityProvider | Unavailable:
-            adapter = self._adapters.get(inputs.harness_type)
+            # Provider authority comes from the Binding. A legacy request may
+            # describe the expected harness protocol, but it cannot choose an
+            # adapter when the Binding is unpinned.
+            provider_name = authorized.provider_name
+            if not provider_name:
+                return Unavailable(
+                    slot=self.capability,
+                    reason="harness Binding must pin one provider before dispatch",
+                )
+            if inputs.harness_type != provider_name:
+                return Unavailable(
+                    slot=self.capability,
+                    reason=(
+                        f"Binding provider {provider_name!r} does not match "
+                        f"requested harness protocol {inputs.harness_type!r}"
+                    ),
+                )
+            adapter = self._adapters.get(provider_name)
             if adapter is None:
                 return Unavailable(
                     slot=self.capability,
                     reason=(
-                        f"no harness provider registered for {inputs.harness_type!r}; "
+                        f"no harness provider registered for {provider_name!r}; "
                         f"available={sorted(self._adapters)}"
                     ),
                 )
-            if authorized.provider_name and authorized.provider_name != inputs.harness_type:
-                return Unavailable(
-                    slot=self.capability,
-                    reason=(
-                        f"Binding pins provider {authorized.provider_name!r}, not "
-                        f"requested harness provider {inputs.harness_type!r}"
-                    ),
-                )
-            return _HarnessDispatchProvider(name=inputs.harness_type, adapter=adapter)
+            return _HarnessDispatchProvider(name=provider_name, adapter=adapter)
 
         async def execute_provider(provider: ResolvedCapabilityProvider, request: Any) -> Any:
             if not isinstance(provider, _HarnessDispatchProvider):
@@ -193,6 +204,7 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
                 request=request_payload,
                 resolver=resolve_provider,
                 executor=execute_provider,
+                actor_id=str(ctx.user_id or ""),
             ),
             effect_key=effect_key,
         )
