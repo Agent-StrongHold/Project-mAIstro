@@ -75,7 +75,9 @@ from maistro.runs.store import (
     RunNotFound,
     StaleExecutionFence,
     admit_in_state,
+    chat_admission_receipt_is_live,
     outcome_embeds_attempt,
+    renew_chat_admission_receipt,
     repaired_accepted_outcome,
     require_repairable_attempt,
     validate_accepted_outcome_against_attempt,
@@ -463,6 +465,61 @@ class PgRunStore:
             "SELECT run_id, payload, archive_key FROM canonical_runs WHERE run_id = $1", run_id
         )
         return Run.model_validate(payload) if payload is not None else None
+
+    async def renew_chat_admission_receipt(
+        self,
+        run_id: str,
+        *,
+        holder: str,
+        ttl: timedelta,
+        at: datetime | None = None,
+    ) -> bool:
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT payload FROM canonical_runs WHERE run_id = $1 FOR UPDATE", run_id
+            )
+            if row is None or row["payload"] is None:
+                return False
+            run = model_of(Run, row["payload"])
+            renewed = renew_chat_admission_receipt(run, holder=holder, ttl=ttl, at=at)
+            if renewed is None:
+                return False
+            await self._write(conn, "canonical_runs", "run_id", run_id, renewed)
+            return True
+
+    async def cancel_chat_admission_if_expired(
+        self,
+        run_id: str,
+        *,
+        now: datetime,
+        error: str,
+    ) -> bool:
+        async with self._pool.acquire() as conn, conn.transaction():
+            run = Run.model_validate(await self._locked(conn, "canonical_runs", "run_id", run_id))
+            if run.status in TERMINAL_RUN_STATUSES or chat_admission_receipt_is_live(run, now=now):
+                return False
+            # Lock the NodeRuns in the same order as dispatch. This makes the
+            # no-Attempt check and cancellation one ownership decision.
+            open_node_runs = await self._locked_open_node_runs(conn, run_id)
+            attempt_exists = await conn.fetchval(
+                """SELECT 1 FROM canonical_attempts a
+                   JOIN canonical_node_runs n ON a.node_run_id = n.node_run_id
+                   WHERE n.run_id = $1 LIMIT 1""",
+                run_id,
+            )
+            if attempt_exists is not None:
+                return False
+            updated = transition_run(run, RunStatus.CANCELLED, at=now, error=error)
+            for node_run in open_node_runs:
+                await self._write(
+                    conn,
+                    "canonical_node_runs",
+                    "node_run_id",
+                    node_run.node_run_id,
+                    settle_open_node_run(node_run, RunStatus.CANCELLED, at=now),
+                )
+            await self._write(conn, "canonical_runs", "run_id", run_id, updated)
+            return True
 
     async def list_by_status(
         self,

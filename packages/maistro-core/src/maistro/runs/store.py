@@ -38,6 +38,7 @@ from maistro.runs.model import (
 )
 from maistro.runs.sources import (
     ADMISSION_SOURCE,
+    CHAT_ADMISSION_RECEIPT_KEY,
     EPHEMERAL_ADMISSION_SOURCES,
     occurrence_key,
 )
@@ -62,6 +63,64 @@ class AttemptNotFound(KeyError):
 
 class RunIntegrityError(ValueError):
     pass
+
+
+def chat_admission_receipt_is_live(run: Run, *, now: datetime) -> bool:
+    """Whether a pre-dispatch Run still has a valid admission receipt."""
+    receipt = run.provenance.get(CHAT_ADMISSION_RECEIPT_KEY)
+    if not isinstance(receipt, dict):
+        return False
+    expires_at = receipt.get("expires_at")
+    if not isinstance(expires_at, str):
+        return False
+    try:
+        expiry = datetime.fromisoformat(expires_at)
+    except ValueError:
+        return False
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=UTC)
+    return expiry > now
+
+
+def renew_chat_admission_receipt(
+    run: Run,
+    *,
+    holder: str,
+    ttl: timedelta,
+    at: datetime | None = None,
+) -> Run | None:
+    """Extend a live chat admission receipt, or refuse a stale holder.
+
+    The store calls this while holding its write lock/row lock. Checking the
+    holder and expiry together with the write prevents a second container from
+    renewing a receipt after recovery has claimed it.
+    """
+    if ttl <= timedelta(0):
+        raise ValueError("chat admission receipt TTL must be positive")
+    if run.status in TERMINAL_RUN_STATUSES:
+        return None
+    receipt = run.provenance.get(CHAT_ADMISSION_RECEIPT_KEY)
+    if not isinstance(receipt, dict) or receipt.get("holder") != holder:
+        return None
+    expires_at = receipt.get("expires_at")
+    if not isinstance(expires_at, str):
+        return None
+    try:
+        expiry = datetime.fromisoformat(expires_at)
+    except ValueError:
+        return None
+    moment = at if at is not None else datetime.now(UTC)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=UTC)
+    if expiry <= moment:
+        return None
+    updated_receipt = dict(receipt)
+    updated_receipt["expires_at"] = (moment + ttl).isoformat()
+    provenance = dict(run.provenance)
+    provenance[CHAT_ADMISSION_RECEIPT_KEY] = updated_receipt
+    return run.model_copy(update={"provenance": provenance, "updated_at": moment}, deep=True)
 
 
 class ArchivedPayloadUnavailable(RunIntegrityError):
@@ -340,6 +399,23 @@ class RunStore(Protocol):
     ) -> list[Run]: ...
 
     async def non_terminal_run_stats(self) -> tuple[int, datetime | None]: ...
+
+    async def renew_chat_admission_receipt(
+        self,
+        run_id: str,
+        *,
+        holder: str,
+        ttl: timedelta,
+        at: datetime | None = None,
+    ) -> bool: ...
+
+    async def cancel_chat_admission_if_expired(
+        self,
+        run_id: str,
+        *,
+        now: datetime,
+        error: str,
+    ) -> bool: ...
 
     async def get_run(self, run_id: str) -> Run | None: ...
 
@@ -785,6 +861,53 @@ class InMemoryRunStore:
     async def get_run(self, run_id: str) -> Run | None:
         run = self._runs.get(run_id)
         return run.model_copy(deep=True) if run is not None else None
+
+    async def renew_chat_admission_receipt(
+        self,
+        run_id: str,
+        *,
+        holder: str,
+        ttl: timedelta,
+        at: datetime | None = None,
+    ) -> bool:
+        run = self._runs.get(run_id)
+        if run is None:
+            return False
+        renewed = renew_chat_admission_receipt(run, holder=holder, ttl=ttl, at=at)
+        if renewed is None:
+            return False
+        self._runs[run_id] = renewed
+        return True
+
+    async def cancel_chat_admission_if_expired(
+        self,
+        run_id: str,
+        *,
+        now: datetime,
+        error: str,
+    ) -> bool:
+        run = self._runs.get(run_id)
+        if (
+            run is None
+            or run.status in TERMINAL_RUN_STATUSES
+            or chat_admission_receipt_is_live(run, now=now)
+        ):
+            return False
+        node_runs = self._node_runs_of(run_id)
+        if any(
+            attempt.node_run_id in {node.node_run_id for node in node_runs}
+            for attempt in self._attempts.values()
+        ):
+            return False
+        updated = transition_run(run, RunStatus.CANCELLED, error=error, at=now)
+        settled = [
+            settle_open_node_run(node_run, RunStatus.CANCELLED, at=now)
+            for node_run in self._open_node_runs(run_id)
+        ]
+        self._runs[run_id] = updated
+        for node_run in settled:
+            self._node_runs[node_run.node_run_id] = node_run
+        return True
 
     async def transition_run(
         self,

@@ -19,6 +19,9 @@ TASK_QUEUE_SOURCE = "task_queue"
 #: `admission_source` for work that entered as a chat turn.
 CHAT_SOURCE = "chat"
 
+#: Provenance key for the durable lease protecting chat admission.
+CHAT_ADMISSION_RECEIPT_KEY = "chat_admission_receipt"
+
 #: `admission_source` for work a Schedule fired (#145).
 SCHEDULE_SOURCE = "schedule"
 
@@ -88,6 +91,7 @@ def occurrence_key(provenance: dict[str, object] | None) -> tuple[str, str] | No
 
 __all__ = [
     "ADMISSION_SOURCE",
+    "CHAT_ADMISSION_RECEIPT_KEY",
     "CHAT_SOURCE",
     "EPHEMERAL_ADMISSION_SOURCES",
     "SCHEDULED_FOR_KEY",

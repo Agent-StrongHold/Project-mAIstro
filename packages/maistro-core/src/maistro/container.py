@@ -43,8 +43,9 @@ from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
 from maistro.runs.chat_admission import (
     ADMISSION_INCOMPLETE,
+    CHAT_ADMISSION_LEASE_TTL,
+    CHAT_ADMISSION_RECEIPT_KEY,
     ChatRunAdmitter,
-    chat_admission_receipt_is_live,
     chat_turn_outcome,
     failure_category,
 )
@@ -555,6 +556,8 @@ class Container:
         if self.chat_admitter is None:
             return None
         run: Run | None = None
+        renewal_stop: asyncio.Event | None = None
+        renewal_task: asyncio.Task[None] | None = None
         try:
             run = await self.chat_admitter.admit(
                 messages,
@@ -564,8 +567,15 @@ class Container:
                 actor_principal_id=getattr(auth, "user_id", None) or None,
             )
             # The durable receipt covers the scheduling gap between create_run
-            # and this local marker being installed.
+            # and this local marker being installed. Its lease is renewed while
+            # the admission writes are in flight, so another container cannot
+            # mistake a slow owner for a dead one.
             self._active_chat_admissions.add(run.run_id)
+            renewal_stop = asyncio.Event()
+            renewal_task = asyncio.create_task(
+                self._renew_chat_admission(run, renewal_stop),
+                name=f"chat-admission-renewal:{run.run_id}",
+            )
             # Two hops: a Run is born CREATED and the lifecycle has no edge
             # from there to RUNNING. Queued is momentarily true here — the turn
             # is admitted and about to be dispatched — rather than a fiction
@@ -588,8 +598,40 @@ class Container:
             await self._cancel_incomplete_admission(run, admission_failed=True)
             return None
         finally:
+            if renewal_stop is not None:
+                renewal_stop.set()
+            if renewal_task is not None:
+                renewal_task.cancel()
+                await asyncio.gather(renewal_task, return_exceptions=True)
             if run is not None:
                 self._active_chat_admissions.discard(run.run_id)
+
+    async def _renew_chat_admission(self, run: Run, stop: asyncio.Event) -> None:
+        """Keep the durable admission receipt live until dispatch is claimed."""
+        receipt = run.provenance.get(CHAT_ADMISSION_RECEIPT_KEY)
+        holder = receipt.get("holder") if isinstance(receipt, dict) else None
+        if not isinstance(holder, str) or not holder:
+            return
+        interval = max(CHAT_ADMISSION_LEASE_TTL.total_seconds() / 3, 0.01)
+        while True:
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=interval)
+                return
+            except TimeoutError:
+                pass
+            try:
+                renewed = await self.run_store.renew_chat_admission_receipt(
+                    run.run_id,
+                    holder=holder,
+                    ttl=CHAT_ADMISSION_LEASE_TTL,
+                )
+            except Exception:
+                # A transient store failure is not proof that the owner died;
+                # keep trying until the lease itself stops proving ownership.
+                logger.warning("chat admission receipt renewal failed", exc_info=True)
+                continue
+            if not renewed:
+                return
 
     async def _cancel_incomplete_admission(
         self, run: Run | None, *, admission_failed: bool = False
@@ -822,26 +864,21 @@ class Container:
                     continue
                 if run.run_id in self._active_chat_admissions:
                     continue
-                if (
-                    run.run_id not in self._failed_chat_admissions
-                    and chat_admission_receipt_is_live(run, now=now)
-                ):
+                if run.run_id in self._failed_chat_admissions:
+                    # This process already owns a failed compensation. Its
+                    # receipt is intentionally ignored, but the regular path
+                    # below must remain lease-conditional for other containers.
+                    await self._cancel_incomplete_admission(run, admission_failed=True)
+                    self._failed_chat_admissions.discard(run.run_id)
                     continue
-                # A physical Attempt means dispatch has begun. Its lease seam
-                # distinguishes live, expired and retryable work; this sweep
-                # must never cancel it as if admission had failed.
-                node_runs = await self.run_store.list_node_runs(run.run_id)
-                dispatched = False
-                for node_run in node_runs:
-                    if await self.run_store.list_attempts(node_run.node_run_id):
-                        dispatched = True
-                        break
-                if dispatched:
-                    continue
+                # The store rechecks the receipt and the physical Attempt while
+                # holding its write/row lock. A read here followed by a plain
+                # transition would let a concurrent renewal or dispatch win
+                # between the two operations.
                 try:
-                    await self.run_store.transition_run(
+                    cancelled = await self.run_store.cancel_chat_admission_if_expired(
                         run.run_id,
-                        RunStatus.CANCELLED,
+                        now=now,
                         error=ADMISSION_INCOMPLETE,
                     )
                 except Exception:
@@ -851,8 +888,9 @@ class Container:
                         exc_info=True,
                     )
                     continue
-                self._failed_chat_admissions.discard(run.run_id)
-                recovered += 1
+                if cancelled:
+                    self._failed_chat_admissions.discard(run.run_id)
+                    recovered += 1
         return recovered
 
     async def execute_admitted_runs(self, *, limit: int = 100) -> int:

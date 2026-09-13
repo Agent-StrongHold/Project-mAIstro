@@ -44,7 +44,8 @@ from maistro.runs.admission import admit_direct_work
 from maistro.runs.archival import ArchivePolicy, RunArchiveSweeper
 from maistro.runs.model import TERMINAL_RUN_STATUSES
 from maistro.runs.retention import RetentionPolicy, RunRetentionSweeper
-from maistro.runs.sources import CHAT_SOURCE
+from maistro.runs.sources import CHAT_ADMISSION_RECEIPT_KEY, CHAT_SOURCE
+from maistro.runs.store import chat_admission_receipt_is_live
 from maistro.runs.task_kinds import resolve_direct_work
 
 logger = logging.getLogger(__name__)
@@ -99,25 +100,7 @@ ADMISSION_INCOMPLETE = "admission_incomplete"
 #: The durable receipt carried by a pre-dispatch chat Run. Recovery may cancel
 #: the row after this lease expires, but must not race an admission that still
 #: has a live receipt.
-CHAT_ADMISSION_RECEIPT_KEY = "chat_admission_receipt"
 CHAT_ADMISSION_LEASE_TTL = timedelta(seconds=30)
-
-
-def chat_admission_receipt_is_live(run: Run, *, now: datetime) -> bool:
-    """Whether a pre-dispatch Run still has a valid admission receipt."""
-    receipt = run.provenance.get(CHAT_ADMISSION_RECEIPT_KEY)
-    if not isinstance(receipt, dict):
-        return False
-    expires_at = receipt.get("expires_at")
-    if not isinstance(expires_at, str):
-        return False
-    try:
-        expiry = datetime.fromisoformat(expires_at)
-    except ValueError:
-        return False
-    if expiry.tzinfo is None:
-        expiry = expiry.replace(tzinfo=UTC)
-    return expiry > now
 
 
 def failure_category(exc: BaseException) -> str:
