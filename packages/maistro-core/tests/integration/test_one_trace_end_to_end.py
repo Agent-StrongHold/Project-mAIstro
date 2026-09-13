@@ -205,3 +205,59 @@ class TestOneTraceFollowsTheWork:
             assert event.attempt_id == ambient.attempt_id
         finally:
             await conn.close()
+
+    async def test_a_task_admitted_through_the_http_boundary_carries_one_id_into_execution(
+        self,
+    ) -> None:
+        """#1063's remaining link: the id `RequestIDMiddleware` binds is not
+        only recorded on the Run's provenance by `TaskRunAdmitter` — it is the
+        same id the execution the Run causes sees in its own ambient context
+        and log lines. Two already-tested halves (admission's provenance
+        write in `tests/tasks/test_admission.py`, and direct-execution
+        propagation above) are exercised here as one chain: a task submitted
+        inside the exact binding `RequestIDMiddleware` establishes for an
+        HTTP-borne request, executed by the real spine."""
+        from maistro.projects.scope_store import InMemoryProjectScopeStore
+        from maistro.runs import InMemoryRunStore, RunExecutionService
+        from maistro.tasks.admission import REQUEST_ID_KEY, TaskRunAdmitter
+        from maistro.tasks.models import TaskCreate
+        from maistro.tasks.queue import TaskQueue
+
+        project_store = InMemoryProjectScopeStore()
+        root = await project_store.create_root("ws-1")
+        project = await project_store.create(
+            workspace_id="ws-1", parent_project_id=root.project_id, name="Admitted work"
+        )
+        run_store = InMemoryRunStore(project_store=project_store)
+        queue = TaskQueue(
+            admitter=TaskRunAdmitter(run_store, workspace_id="ws-1", project_id=project.project_id)
+        )
+        service = RunExecutionService(store=run_store, runtime=PythonExecutionRuntime())
+        seen = _Seen()
+        conn = await aiosqlite.connect(":memory:")
+        try:
+            events = SqliteEventStore(conn)
+            await events.ensure_schema()
+
+            with bind_execution_context(
+                request_id="req-http-boundary", workspace_id="ws-1", project_id=project.project_id
+            ):
+                task = await queue.submit(TaskCreate(description="admitted work"))
+                run = await run_store.get_run(task.run_id or "")
+                assert run is not None
+                node_id = run.graph.materialize().nodes[0].node_id
+                _node_run, attempt = await service.execute_node(
+                    run.run_id, node_id, "work", {}, executor=_executor(events, seen)
+                )
+
+            # The admission-time write and the execution-time context agree
+            # on the one id, without either reading it from the other.
+            assert run.provenance[REQUEST_ID_KEY] == "req-http-boundary"
+            [ambient] = seen.contexts
+            assert ambient.request_id == "req-http-boundary"
+            assert ambient.run_id == run.run_id
+            assert ambient.attempt_id == attempt.attempt_id
+            [log_fields] = seen.log_fields
+            assert log_fields["request_id"] == "req-http-boundary"
+        finally:
+            await conn.close()
