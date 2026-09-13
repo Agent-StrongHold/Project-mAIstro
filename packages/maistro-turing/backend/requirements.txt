@@ -1,5 +1,7 @@
-# Turing backend app deps. The backend imports the maistro_turing library and
-# maistro-core; install those editable from the workspace alongside these.
+# Install the runtime library and its maistro-core dependency with the app.
+# The backend is launched from this directory, so its explicit application
+# package is importable without a path-order workaround.
+-e ..
 fastapi>=0.115
 uvicorn[standard]>=0.32
 httpx>=0.28

@@ -35,7 +35,7 @@ rules:
       exclude:
         # containers.py is the HTTP client for the host Docker API (read-only container stats).
         # Does not pass untrusted input to the socket.
-        - packages/hive-conductor/backend/routes/containers.py
+        - packages/hive-conductor/backend/hive_conductor/routes/containers.py
         # patterns.py lists /var/run/docker.sock in BLOCKED_HOST_PATHS, a security boundary list
         # that *denies* sandbox access to the socket — the opposite of exposure.
         - packages/maistro-core/src/maistro/security/patterns.py

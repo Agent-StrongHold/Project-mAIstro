@@ -213,7 +213,9 @@ _APP_LITERAL_SITES = [
         "packages/hive-conductor/backend/hive_conductor/routes/health.py", _DICT_VERSION_RE
     ),
     _app_literal("packages/hive-conductor/backend/hive_conductor/main.py", _KWARG_VERSION_RE),
-    _app_literal("packages/maistro-turing/backend/main.py", _KWARG_VERSION_RE),
+    _app_literal(
+        "packages/maistro-turing/backend/maistro_turing_backend/main.py", _KWARG_VERSION_RE
+    ),
     _app_literal("packages/maistro-canvas/frontend/server/lulu/service.py", _KWARG_VERSION_RE),
 ]
 

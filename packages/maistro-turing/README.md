@@ -13,7 +13,7 @@ pip install maistro-turing            # pulls maistro-core
 pip install -e packages/maistro-turing[dev]
 ```
 
-Requires Python 3.11+.
+Requires Python 3.12+.
 
 ## Layout
 
@@ -35,8 +35,10 @@ distributed wheel (`[tool.hatch.build.targets.wheel]` ships `src/maistro_turing`
 HTTP app is canonically importable as `maistro_turing_backend.main` (with its routes and
 middleware below that namespace), so it can run beside Hive Conductor in one Python
 process without flat `main`, `routes`, or `state` module collisions. Start it from the
-repository with `uvicorn maistro_turing_backend.main:app --port 8120` after installing
-the backend requirements. The Astro `frontend/` was removed under the v1 cut list
+repository from the backend directory with `pip install -r requirements.txt` followed by
+`uvicorn maistro_turing_backend.main:app --port 8120`. The requirements install the
+runtime library as well as the backend dependencies, and the explicit application
+package is resolved from the current backend directory. The Astro `frontend/` was removed under the v1 cut list
 (D1/#289) — it had no tests and no CI job.
 
 ## Tests

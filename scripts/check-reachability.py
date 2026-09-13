@@ -136,15 +136,20 @@ _THIRD_PARTY_INSTALL_DIRS = frozenset({"node_modules"})
 
 @dataclass(frozen=True)
 class FlatApp:
-    """A standalone application whose modules resolve from a flat sys.path root."""
+    """A standalone application and the namespace used by its graph roots.
+
+    ``package`` identifies an application that has moved from a flat import
+    root into a package.  The graph keeps its historical scoped module keys so
+    the reachability ratchet does not treat a namespace rename as new debt;
+    import resolution still uses the real package name.
+    """
 
     name: str
     path: str
     roots: tuple[str, ...]
     dynamic_roots: tuple[str, ...] = ()
-    # Hive predates scoped flat-app identities in the baseline. Keep its report
-    # labels stable while using scoped keys internally; new apps get a prefix.
     report_prefix: str = ""
+    package: str | None = None
 
 
 # Standalone production processes outside packages/*/src. Keep their runtime
@@ -157,6 +162,7 @@ FLAT_APPS = (
         name="hive-conductor",
         path="packages/hive-conductor/backend",
         roots=("main",),
+        package="hive_conductor",
         dynamic_roots=(
             "routes.design",
             "routes.canvas",
@@ -176,6 +182,7 @@ FLAT_APPS = (
         path="packages/maistro-turing/backend",
         roots=("main",),
         report_prefix="maistro-turing-backend",
+        package="maistro_turing_backend",
     ),
     FlatApp(
         name="maistro-canvas-frontend-server",
@@ -492,7 +499,10 @@ def _collect_modules(
         _add_src_root(mods, src, root, add_tree)
 
     for app in flat_apps:
-        add_tree(root / app.path, "", app.name)
+        app_root = root / app.path
+        if app.package:
+            app_root /= app.package
+        add_tree(app_root, "", app.name)
 
     mods.update(_collect_tooling(root))
 
@@ -623,13 +633,23 @@ def _imports(path: Path, selfmod: str) -> set[str]:
     return out
 
 
-def _resolve(name: str, mods: dict[str, Path], app_name: str | None = None) -> str | None:
+def _resolve(
+    name: str,
+    mods: dict[str, Path],
+    app_name: str | None = None,
+    app_package: str | None = None,
+) -> str | None:
     parts = name.split(".")
     while parts:
         candidate = ".".join(parts)
-        # Flat imports resolve against that application's sys.path first. This
-        # lets Hive and Turing both have main, routes.*, config, state, etc.
-        if app_name and (flat := _flat_key(app_name, candidate)) in mods:
+        # A migrated app imports through its package, while the graph retains
+        # the old scoped key solely for reachability-baseline continuity.
+        local_candidate = candidate
+        if app_package and candidate == app_package:
+            local_candidate = ""
+        elif app_package and candidate.startswith(f"{app_package}."):
+            local_candidate = candidate[len(app_package) + 1 :]
+        if app_name and local_candidate and (flat := _flat_key(app_name, local_candidate)) in mods:
             return flat
         if candidate in mods:
             return candidate
@@ -668,6 +688,7 @@ def _reachability(
     dynamic_roots: tuple[str, ...] = DYNAMIC_ROOTS,
 ) -> tuple[dict[str, Path], set[str]]:
     mods = _collect_modules(root, flat_apps)
+    apps = {app.name: app for app in flat_apps}
     tooling = {key: path for key, path in mods.items() if key.startswith(_TOOL_PREFIX)}
     edges: dict[str, set[str]] = {}
     for key, path in mods.items():
@@ -681,7 +702,12 @@ def _reachability(
         edges[key] = {
             resolved
             for imported in _imports(path, import_name)
-            if (resolved := _resolve(imported, mods, app_name)) and resolved != key
+            if (
+                resolved := _resolve(
+                    imported, mods, app_name, apps[app_name].package if app_name else None
+                )
+            )
+            and resolved != key
         }
 
     stack = [root_name for root_name in (*static_roots, *dynamic_roots) if root_name in mods]
