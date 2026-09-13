@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -11,7 +12,7 @@ SCRIPT = ROOT / "scripts" / "check-gates-ran.py"
 
 
 @pytest.fixture(scope="module")
-def check():
+def check() -> ModuleType:
     spec = importlib.util.spec_from_file_location("check_gates_ran_scope", SCRIPT)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
@@ -20,18 +21,20 @@ def check():
     return module
 
 
-def test_pull_request_keeps_specialized_execution_evidence(check) -> None:
+def test_pull_request_keeps_specialized_execution_evidence(check: ModuleType) -> None:
     names = set(check.required_check_names(base_branch="develop", event_name="pull_request"))
     assert names >= check.MERGE_GROUP_SPECIALIZED_CHECKS
+    assert names >= check.MERGE_GROUP_PR_ONLY_CHECKS
     assert check.INTEGRATION_SCOPE_CHECK in names
 
 
-def test_merge_group_replaces_specialized_evidence_with_aggregate(check) -> None:
+def test_merge_group_replaces_specialized_evidence_with_aggregate(check: ModuleType) -> None:
     names = set(check.required_check_names(base_branch="develop", event_name="merge_group"))
     assert not names & check.MERGE_GROUP_SPECIALIZED_CHECKS
+    assert not names & check.MERGE_GROUP_PR_ONLY_CHECKS
     assert check.INTEGRATION_SCOPE_CHECK in names
 
 
-def test_merge_group_still_requires_unconditional_core_checks(check) -> None:
+def test_merge_group_still_requires_unconditional_core_checks(check: ModuleType) -> None:
     names = set(check.required_check_names(base_branch="develop", event_name="merge_group"))
     assert {"test", "lint-and-type-check", "workflow-lint"} <= names
