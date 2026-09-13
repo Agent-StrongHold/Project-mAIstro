@@ -24,7 +24,7 @@ Deliberately NOT covered here (out of E1 scope):
   (`uv.lock`'s `editable = "packages/..."` entries) and goes stale after a
   bump; re-run `uv lock` by hand (or via CI) after bumping.
 - Per-generated-skill/agent-spec version fields (e.g.
-  `packages/hive-conductor/backend/routes/skills.py`'s `forge_skill()`
+  `packages/hive-conductor/backend/hive_conductor/routes/skills.py`'s `forge_skill()`
   default, `packages/maistro-canvas/agents/davinci/agent.yaml`'s
   `spec_version`) — those are object/schema versions, not the package or
   app version.
@@ -209,8 +209,10 @@ _INTERPKG_SITES = [
 # than installing the wheel, so there is no dist-info for importlib.metadata to
 # read and the literal is the only value `/health` can return.
 _APP_LITERAL_SITES = [
-    _app_literal("packages/hive-conductor/backend/routes/health.py", _DICT_VERSION_RE),
-    _app_literal("packages/hive-conductor/backend/main.py", _KWARG_VERSION_RE),
+    _app_literal(
+        "packages/hive-conductor/backend/hive_conductor/routes/health.py", _DICT_VERSION_RE
+    ),
+    _app_literal("packages/hive-conductor/backend/hive_conductor/main.py", _KWARG_VERSION_RE),
     _app_literal("packages/maistro-turing/backend/main.py", _KWARG_VERSION_RE),
     _app_literal("packages/maistro-canvas/frontend/server/lulu/service.py", _KWARG_VERSION_RE),
 ]

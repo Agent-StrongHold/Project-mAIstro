@@ -2,15 +2,9 @@
 
 from __future__ import annotations
 
-import sys
 from collections.abc import Callable
-from pathlib import Path
 
-sys.path.insert(
-    0, str(Path(__file__).resolve().parents[2] / "packages" / "hive-conductor" / "backend")
-)
-
-from services.tool_primitives import ToolCallContext, ToolCredentialResolver
+from hive_conductor.services.tool_primitives import ToolCallContext, ToolCredentialResolver
 
 
 class _Store:
@@ -72,7 +66,7 @@ def test_resolver_uses_dev_fallback_when_requested() -> None:
 def test_ttl_cache_reuses_copy_until_expiry() -> None:
     import asyncio
 
-    from services.tool_primitives import ToolCallTTLCache
+    from hive_conductor.services.tool_primitives import ToolCallTTLCache
 
     now = 10.0
     loads = 0
@@ -109,7 +103,7 @@ def test_ttl_cache_reuses_copy_until_expiry() -> None:
 def test_ttl_cache_coalesces_concurrent_misses() -> None:
     import asyncio
 
-    from services.tool_primitives import ToolCallTTLCache
+    from hive_conductor.services.tool_primitives import ToolCallTTLCache
 
     loads = 0
     release = asyncio.Event()

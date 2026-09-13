@@ -28,7 +28,7 @@ contracts:
 tests:
   - packages/hive-conductor/backend/tests/test_dashboard_layout.py
 source:
-  - packages/hive-conductor/backend/services/dashboard_layouts.py
+  - packages/hive-conductor/backend/hive_conductor/services/dashboard_layouts.py
 ac-modules:
   AC-1: '@flat/hive-conductor/services.dashboard_layouts'
   AC-2: '@flat/hive-conductor/services.dashboard_layouts'

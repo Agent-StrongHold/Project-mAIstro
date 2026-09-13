@@ -32,7 +32,12 @@ Requires Python 3.11+.
 
 `backend/` holds the Turing app service that consumes this library; it is not part of the
 distributed wheel (`[tool.hatch.build.targets.wheel]` ships `src/maistro_turing` only). The
-Astro `frontend/` was removed under the v1 cut list (D1/#289) — it had no tests and no CI job.
+HTTP app is canonically importable as `maistro_turing_backend.main` (with its routes and
+middleware below that namespace), so it can run beside Hive Conductor in one Python
+process without flat `main`, `routes`, or `state` module collisions. Start it from the
+repository with `uvicorn maistro_turing_backend.main:app --port 8120` after installing
+the backend requirements. The Astro `frontend/` was removed under the v1 cut list
+(D1/#289) — it had no tests and no CI job.
 
 ## Tests
 

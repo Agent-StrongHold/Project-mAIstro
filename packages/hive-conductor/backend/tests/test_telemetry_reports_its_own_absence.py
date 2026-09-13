@@ -23,7 +23,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import adapters.telemetry_langfuse as telemetry
+import hive_conductor.adapters.telemetry_langfuse as telemetry
 import pytest
 
 

@@ -25,21 +25,18 @@ specific VALUE in the response, the recorded Outcome, or the audit log):
 from __future__ import annotations
 
 import pathlib
-import sys
 from typing import Any
 
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 
 @pytest.fixture()
 def fresh_outcome_store():
     """Bind a brand-new in-memory outcome store for each test so signals
     don't leak across tests."""
-    import services.feedback_service as svc
+    import hive_conductor.services.feedback_service as svc
 
     from maistro.memory.outcomes import InMemoryOutcomeStore
 
@@ -54,7 +51,7 @@ def fresh_outcome_store():
 
 
 async def test_record_thumb_up_persists_outcome(fresh_outcome_store: Any) -> None:
-    from services.feedback_service import record_thumb
+    from hive_conductor.services.feedback_service import record_thumb
 
     result = await record_thumb(
         user_id="u1",
@@ -82,7 +79,7 @@ async def test_record_thumb_up_persists_outcome(fresh_outcome_store: Any) -> Non
 async def test_record_thumb_down_with_node_id_sets_localization(
     fresh_outcome_store: Any,
 ) -> None:
-    from services.feedback_service import record_thumb
+    from hive_conductor.services.feedback_service import record_thumb
 
     await record_thumb(
         user_id="u2",
@@ -103,7 +100,7 @@ async def test_record_thumb_down_with_node_id_sets_localization(
 async def test_record_thumb_invalid_value_raises_value_error(
     fresh_outcome_store: Any,
 ) -> None:
-    from services.feedback_service import record_thumb
+    from hive_conductor.services.feedback_service import record_thumb
 
     with pytest.raises(ValueError, match="thumb must be one of"):
         await record_thumb(
@@ -117,7 +114,7 @@ async def test_record_thumb_invalid_value_raises_value_error(
 async def test_record_thumb_empty_user_raises_value_error(
     fresh_outcome_store: Any,
 ) -> None:
-    from services.feedback_service import record_thumb
+    from hive_conductor.services.feedback_service import record_thumb
 
     with pytest.raises(ValueError, match="user_id is required"):
         await record_thumb(
@@ -131,7 +128,7 @@ async def test_record_thumb_empty_user_raises_value_error(
 async def test_record_thumb_empty_run_id_raises_value_error(
     fresh_outcome_store: Any,
 ) -> None:
-    from services.feedback_service import record_thumb
+    from hive_conductor.services.feedback_service import record_thumb
 
     with pytest.raises(ValueError, match="run_id is required"):
         await record_thumb(
@@ -145,7 +142,7 @@ async def test_record_thumb_empty_run_id_raises_value_error(
 def test_set_outcome_store_swaps_the_module_singleton() -> None:
     """The bridge / tests can hot-swap the store via set_outcome_store
     so the optimizer reads from the same instance the route writes to."""
-    import services.feedback_service as svc
+    import hive_conductor.services.feedback_service as svc
 
     from maistro.memory.outcomes import InMemoryOutcomeStore
 
@@ -213,7 +210,7 @@ def test_feedback_route_invalid_thumb_returns_422(
 
 def test_feedback_route_unauthenticated_returns_401() -> None:
     from fastapi.testclient import TestClient
-    from main import app
+    from hive_conductor.main import app
 
     client = TestClient(app)  # not logged in
     r = client.post("/v1/dag-runs/run-Z/feedback", json={"thumb": "up"})
@@ -221,7 +218,7 @@ def test_feedback_route_unauthenticated_returns_401() -> None:
 
 
 def test_feedback_route_writes_audit_log(authed_client: Any, fresh_outcome_store: Any) -> None:
-    import stores
+    import hive_conductor.stores as stores
 
     audit_count_before = len(stores.audit_log)
     r = authed_client.post(
@@ -259,7 +256,7 @@ def test_feedback_route_comment_too_long_returns_422(
 async def test_thumbs_down_appears_in_same_project_experience_context(
     fresh_outcome_store: Any,
 ) -> None:
-    from services.feedback_service import record_thumb
+    from hive_conductor.services.feedback_service import record_thumb
 
     await record_thumb(
         user_id="u1",
@@ -288,7 +285,7 @@ def test_resolve_user_id_raises_401_when_user_missing() -> None:
     from types import SimpleNamespace
 
     from fastapi import HTTPException
-    from routes.feedback import _resolve_user_id
+    from hive_conductor.routes.feedback import _resolve_user_id
 
     request = SimpleNamespace(state=SimpleNamespace(user=None))
     with pytest.raises(HTTPException) as exc_info:
@@ -300,7 +297,7 @@ def test_resolve_user_id_raises_401_when_user_has_no_id() -> None:
     from types import SimpleNamespace
 
     from fastapi import HTTPException
-    from routes.feedback import _resolve_user_id
+    from hive_conductor.routes.feedback import _resolve_user_id
 
     request = SimpleNamespace(state=SimpleNamespace(user={"username": "x"}))
     with pytest.raises(HTTPException) as exc_info:
@@ -311,7 +308,7 @@ def test_resolve_user_id_raises_401_when_user_has_no_id() -> None:
 def test_resolve_project_id_falls_back_to_request_state_when_body_empty() -> None:
     from types import SimpleNamespace
 
-    from routes.feedback import FeedbackBody, _resolve_project_id
+    from hive_conductor.routes.feedback import FeedbackBody, _resolve_project_id
 
     request = SimpleNamespace(state=SimpleNamespace(project_id="state-proj"))
     body = FeedbackBody(thumb="up")  # project_id defaults to ""
@@ -321,7 +318,7 @@ def test_resolve_project_id_falls_back_to_request_state_when_body_empty() -> Non
 def test_resolve_project_id_body_wins_over_state() -> None:
     from types import SimpleNamespace
 
-    from routes.feedback import FeedbackBody, _resolve_project_id
+    from hive_conductor.routes.feedback import FeedbackBody, _resolve_project_id
 
     request = SimpleNamespace(state=SimpleNamespace(project_id="state-proj"))
     body = FeedbackBody(thumb="up", project_id="body-proj")
@@ -332,7 +329,7 @@ def test_resolve_project_id_missing_state_returns_empty_string() -> None:
     """No body project_id + no request.state.project_id → empty fallback."""
     from types import SimpleNamespace
 
-    from routes.feedback import FeedbackBody, _resolve_project_id
+    from hive_conductor.routes.feedback import FeedbackBody, _resolve_project_id
 
     request = SimpleNamespace(state=SimpleNamespace())  # no project_id attr
     body = FeedbackBody(thumb="up")
@@ -348,7 +345,7 @@ async def test_record_feedback_rejects_invalid_thumb_at_runtime(
     from types import SimpleNamespace
 
     from fastapi import HTTPException
-    from routes.feedback import FeedbackBody, _record_feedback
+    from hive_conductor.routes.feedback import FeedbackBody, _record_feedback
 
     # Bypass Pydantic by mutating the field after construction.
     body = FeedbackBody(thumb="up")
@@ -369,7 +366,7 @@ async def test_record_feedback_per_node_route_requires_non_empty_node_id(
     from types import SimpleNamespace
 
     from fastapi import HTTPException
-    from routes.feedback import FeedbackBody, submit_node_feedback
+    from hive_conductor.routes.feedback import FeedbackBody, submit_node_feedback
 
     request = SimpleNamespace(state=SimpleNamespace(user={"id": "u1"}))
     body = FeedbackBody(thumb="up")
@@ -391,14 +388,14 @@ async def test_record_feedback_translates_value_error_to_400(
 ) -> None:
     """If record_thumb raises ValueError (e.g. service-level invariant
     fails) the route maps it to 400 instead of 500."""
-    import services.feedback_service as svc
+    import hive_conductor.services.feedback_service as svc
 
     async def _raise(**kwargs: Any) -> Any:
         raise ValueError("invariant broken")
 
     monkeypatch.setattr(svc, "record_thumb", _raise)
     # Also patch the route module's reference (it imported by name)
-    import routes.feedback as fb
+    import hive_conductor.routes.feedback as fb
 
     monkeypatch.setattr(fb, "record_thumb", _raise)
 
@@ -410,7 +407,7 @@ async def test_record_feedback_translates_value_error_to_400(
 async def test_cross_project_thumb_does_not_leak(
     fresh_outcome_store: Any,
 ) -> None:
-    from services.feedback_service import record_thumb
+    from hive_conductor.services.feedback_service import record_thumb
 
     await record_thumb(
         user_id="u1",

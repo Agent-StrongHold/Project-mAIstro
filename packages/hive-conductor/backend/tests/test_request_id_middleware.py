@@ -19,7 +19,7 @@ test_security_headers.py).
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
-from main import app
+from hive_conductor.main import app
 
 
 def _client() -> TestClient:
@@ -82,7 +82,7 @@ class TestRequestIDPresence:
         middleware stack relative to other tests' requests, and this way
         removes that dependency entirely."""
         from fastapi import FastAPI
-        from main import unhandled_exception_handler
+        from hive_conductor.main import unhandled_exception_handler
 
         from maistro.observability.middleware import RequestIDMiddleware
 
@@ -104,7 +104,7 @@ class TestRequestIDPresence:
         -- the handler itself must not assume it's always present, since a
         future caller could register it without that middleware."""
         from fastapi import FastAPI
-        from main import unhandled_exception_handler
+        from hive_conductor.main import unhandled_exception_handler
 
         test_app = FastAPI()
         test_app.add_exception_handler(Exception, unhandled_exception_handler)

@@ -37,8 +37,8 @@ def test_service_key_authenticates(turing_service_client):
 
 def test_backend_startup_requires_service_key(monkeypatch):
     """An unset key must fail startup instead of enabling a public credential."""
-    from ..config import build_registry
-    from ..main import create_app
+    from maistro_turing_backend.config import build_registry
+    from maistro_turing_backend.main import create_app
 
     monkeypatch.delenv("TURING_SERVICE_KEY", raising=False)
     build_registry.cache_clear()

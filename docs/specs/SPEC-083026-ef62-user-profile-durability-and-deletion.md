@@ -27,9 +27,9 @@ contracts:
 tests:
   - packages/hive-conductor/backend/tests/test_profile_durability.py
 source:
-  - packages/hive-conductor/backend/services/profile_store.py
-  - packages/hive-conductor/backend/routes/profile.py
-  - packages/hive-conductor/backend/services/chat_completion.py
+  - packages/hive-conductor/backend/hive_conductor/services/profile_store.py
+  - packages/hive-conductor/backend/hive_conductor/routes/profile.py
+  - packages/hive-conductor/backend/hive_conductor/services/chat_completion.py
 ac-modules:
   AC-1: '@flat/hive-conductor/services.profile_store'
   AC-2: '@flat/hive-conductor/services.profile_store'

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
-from main import app
-from models.schemas import CapabilitySetting, SettingsModel
+from hive_conductor.main import app
+from hive_conductor.models.schemas import CapabilitySetting, SettingsModel
 
 
 def _config_writer(task_id: str) -> TestClient:
@@ -15,7 +15,7 @@ def _config_writer(task_id: str) -> TestClient:
     """
     from datetime import UTC, datetime
 
-    import stores
+    import hive_conductor.stores as stores
 
     from maistro.security.passwords import hash_password
 
@@ -70,7 +70,7 @@ def test_patch_settings_sets_capabilities() -> None:
     assert g.json()["capabilities"]["infra_action"]["active_provider"] == "host_health"
 
     # Stored as validated CapabilitySetting models, not raw dicts (bridge reads these).
-    from services import settings_store
+    from hive_conductor.services import settings_store
 
     assert isinstance(settings_store.current().capabilities["infra_action"], CapabilitySetting)
 

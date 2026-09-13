@@ -6,8 +6,8 @@ instead of always using the single global "default"/pm_fleet scope.
 
 from __future__ import annotations
 
+import hive_conductor.stores as stores
 import pytest
-import stores
 
 
 @pytest.fixture(autouse=True)

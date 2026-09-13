@@ -4,14 +4,14 @@ from collections.abc import Iterator
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+import hive_conductor.stores as stores
 import httpx
 import pytest
-import stores
-from config import OAuthProviderSettings, Settings
 from fastapi import HTTPException, Request
-from models.schemas import HiveUser
-from routes import auth
-from services.oauth_login import OAuthLoginDenied, OAuthLoginService
+from hive_conductor.config import OAuthProviderSettings, Settings
+from hive_conductor.models.schemas import HiveUser
+from hive_conductor.routes import auth
+from hive_conductor.services.oauth_login import OAuthLoginDenied, OAuthLoginService
 
 from maistro.auth.oauth import OAuthExchange, OAuthIdentity, OAuthToken
 

@@ -11,10 +11,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import hive_conductor.stores as stores
 import pytest
-import stores
-from models.schemas import Agent
-from services.agent_invocation import pulse_roster, resolve_agent, resolve_agent_task
+from hive_conductor.models.schemas import Agent
+from hive_conductor.services.agent_invocation import pulse_roster, resolve_agent, resolve_agent_task
 
 
 @pytest.fixture(autouse=True)
@@ -248,7 +248,7 @@ class TestDispatchWithManifestRowsPresent:
     ) -> None:
         from types import SimpleNamespace
 
-        from services.agent_materialization import materialize_manifest_roster
+        from hive_conductor.services.agent_materialization import materialize_manifest_roster
 
         materialize_manifest_roster(
             {
@@ -279,7 +279,7 @@ class TestDispatchWithManifestRowsPresent:
     def test_a_manifest_row_resolves_globally_by_its_name(self) -> None:
         from types import SimpleNamespace
 
-        from services.agent_materialization import materialize_manifest_roster
+        from hive_conductor.services.agent_materialization import materialize_manifest_roster
 
         materialize_manifest_roster(
             {
@@ -305,7 +305,7 @@ class TestDispatchWithManifestRowsPresent:
     def test_a_manifest_row_capability_the_agent_does_not_declare_is_refused(self) -> None:
         from types import SimpleNamespace
 
-        from services.agent_materialization import materialize_manifest_roster
+        from hive_conductor.services.agent_materialization import materialize_manifest_roster
 
         materialize_manifest_roster(
             {

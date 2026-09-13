@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from services.design_service import _open_design_config
+from hive_conductor.services.design_service import _open_design_config
 
 
 def test_open_design_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -75,7 +75,7 @@ async def test_render_to_png_raises_501_not_notimplementederror() -> None:
     untouched so the status survives to the client.
     """
     from fastapi import HTTPException
-    from services.design_render import DesignRenderService
+    from hive_conductor.services.design_render import DesignRenderService
 
     svc = DesignRenderService()
     with pytest.raises(HTTPException) as exc_info:

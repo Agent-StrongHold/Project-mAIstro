@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from services.hill_climber import HillClimber
+from hive_conductor.services.hill_climber import HillClimber
 
 
 def _hc() -> HillClimber:

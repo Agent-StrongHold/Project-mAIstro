@@ -18,14 +18,11 @@ from __future__ import annotations
 
 import ast
 import pathlib
-import sys
 from typing import Any
 
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 
 _PAYLOAD_MARKER = "PWNED_INJECTION_MARKER"
@@ -58,7 +55,7 @@ class _StubExecutor:
 
 @pytest.fixture()
 def stub_executor(monkeypatch: pytest.MonkeyPatch) -> _StubExecutor:
-    import services.hyperlight_executor as hx
+    import hive_conductor.services.hyperlight_executor as hx
 
     stub = _StubExecutor()
     monkeypatch.setattr(hx, "get_executor", lambda: stub)
@@ -68,7 +65,7 @@ def stub_executor(monkeypatch: pytest.MonkeyPatch) -> _StubExecutor:
 def test_node_script_is_static_with_no_untrusted_interpolation() -> None:
     """The subprocess script template is constant and valid Python — it does
     not contain any per-node prompt/task/context interpolation point."""
-    from services.graph_runner import _NODE_SCRIPT
+    from hive_conductor.services.graph_runner import _NODE_SCRIPT
 
     ast.parse(_NODE_SCRIPT)
     # Untrusted values are read from env at runtime, so the static template must
@@ -83,7 +80,7 @@ def test_malicious_prompt_not_templated_into_subprocess_source(
 ) -> None:
     """A node prompt with triple-quotes/backslashes/newlines must not appear in
     the generated subprocess source, and the script stays valid Python."""
-    from services.graph_runner import _run_node_subprocess
+    from hive_conductor.services.graph_runner import _run_node_subprocess
 
     node = {"id": "n1", "role": "worker", "prompt": _MALICIOUS_PROMPT}
     out = _run_node_subprocess(
@@ -109,7 +106,7 @@ def test_malicious_prompt_reaches_node_intact_as_data(
 ) -> None:
     """The prompt/task/context are passed as env data, preserved byte-for-byte
     so node behaviour is unchanged by the security fix."""
-    from services.graph_runner import _run_node_subprocess
+    from hive_conductor.services.graph_runner import _run_node_subprocess
 
     _run_node_subprocess(
         {"id": "n1", "role": "worker", "prompt": _MALICIOUS_PROMPT},
@@ -143,8 +140,8 @@ class _JsonEnvelopeExecutor:
 def test_run_node_subprocess_extracts_usage_from_json_envelope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.hyperlight_executor as hx
-    from services.graph_runner import _run_node_subprocess
+    import hive_conductor.services.hyperlight_executor as hx
+    from hive_conductor.services.graph_runner import _run_node_subprocess
 
     monkeypatch.setattr(
         hx,
@@ -166,7 +163,7 @@ def test_run_node_subprocess_falls_back_gracefully_on_malformed_envelope(
 ) -> None:
     """stub_executor returns a plain "ok" string, not JSON -- must degrade to
     treating it as the content with no usage, not crash."""
-    from services.graph_runner import _run_node_subprocess
+    from hive_conductor.services.graph_runner import _run_node_subprocess
 
     out = _run_node_subprocess(
         {"id": "n1", "role": "worker"}, task_desc="x", context="", base_env={}
@@ -178,7 +175,7 @@ def test_run_node_subprocess_falls_back_gracefully_on_malformed_envelope(
 
 
 def test_invoke_subprocess_usage_hooks_calls_on_response_with_usage() -> None:
-    from services.graph_runner import _invoke_subprocess_usage_hooks
+    from hive_conductor.services.graph_runner import _invoke_subprocess_usage_hooks
 
     captured: list[tuple[dict[str, Any], Any]] = []
 
@@ -198,14 +195,14 @@ def test_invoke_subprocess_usage_hooks_calls_on_response_with_usage() -> None:
 
 
 def test_invoke_subprocess_usage_hooks_no_op_without_on_response() -> None:
-    from services.graph_runner import _invoke_subprocess_usage_hooks
+    from hive_conductor.services.graph_runner import _invoke_subprocess_usage_hooks
 
     # Must not raise -- on_response=None is the default, common case.
     _invoke_subprocess_usage_hooks(["n1"], {"n1": {"usage": {"prompt_tokens": 1}}}, None)
 
 
 def test_invoke_subprocess_usage_hooks_swallows_a_failing_hook() -> None:
-    from services.graph_runner import _invoke_subprocess_usage_hooks
+    from hive_conductor.services.graph_runner import _invoke_subprocess_usage_hooks
 
     def broken_hook(data: dict[str, Any], response: Any) -> None:
         raise RuntimeError("recording hook blew up")
@@ -220,7 +217,7 @@ def test_hyperlight_wrapper_uses_base64_not_string_templating() -> None:
     into a triple-quoted literal (which broke on triple-quotes/backslashes)."""
     import asyncio
 
-    from services.hyperlight_executor import SandboxExecutor
+    from hive_conductor.services.hyperlight_executor import SandboxExecutor
 
     malicious_code = (
         "print('a')\n''' + __import__('os').system('echo " + _PAYLOAD_MARKER + "') + '''"

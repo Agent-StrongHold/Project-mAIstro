@@ -13,9 +13,9 @@ from contextlib import contextmanager
 from typing import Any
 
 import pytest
-from adapters.llm_http import _responses_event_to_chunk
-from models.schemas import ChatCompletionRequest
-from services.chat_completion import (
+from hive_conductor.adapters.llm_http import _responses_event_to_chunk
+from hive_conductor.models.schemas import ChatCompletionRequest
+from hive_conductor.services.chat_completion import (
     _complete_turn,
     _stream_turn,
     _ToolCallAccumulator,
@@ -138,9 +138,11 @@ async def _collect(agen) -> list[dict[str, Any]]:
 
 
 async def test_streaming_content_only_emits_deltas_then_done(monkeypatch) -> None:
-    monkeypatch.setattr("services.chat_completion._build_system_prompt", lambda uid: "SYS")
     monkeypatch.setattr(
-        "services.chat_completion.build_llm_port",
+        "hive_conductor.services.chat_completion._build_system_prompt", lambda uid: "SYS"
+    )
+    monkeypatch.setattr(
+        "hive_conductor.services.chat_completion.build_llm_port",
         lambda: _FakeLLM([[_content("Hel"), _content("lo"), _finish("stop")]]),
     )
 
@@ -155,14 +157,16 @@ async def test_streaming_content_only_emits_deltas_then_done(monkeypatch) -> Non
 
 
 async def test_streaming_tool_call_then_streamed_answer(monkeypatch) -> None:
-    monkeypatch.setattr("services.chat_completion._build_system_prompt", lambda uid: "SYS")
+    monkeypatch.setattr(
+        "hive_conductor.services.chat_completion._build_system_prompt", lambda uid: "SYS"
+    )
 
     async def fake_exec(tool_name: str, args: dict[str, Any], user_id: str) -> dict[str, Any]:
         assert tool_name == "check_blockers"
         assert args == {"sprint": 1}  # arguments correctly reassembled from fragments
         return {"ok": True}
 
-    monkeypatch.setattr("services.chat_completion._execute_tool", fake_exec)
+    monkeypatch.setattr("hive_conductor.services.chat_completion._execute_tool", fake_exec)
 
     turns = [
         # turn 1: the model assembles a tool call across fragments, then stops to call it
@@ -175,7 +179,9 @@ async def test_streaming_tool_call_then_streamed_answer(monkeypatch) -> None:
         # turn 2: with the tool result in context, it streams the final answer
         [_content("All "), _content("clear"), _finish("stop")],
     ]
-    monkeypatch.setattr("services.chat_completion.build_llm_port", lambda: _FakeLLM(turns))
+    monkeypatch.setattr(
+        "hive_conductor.services.chat_completion.build_llm_port", lambda: _FakeLLM(turns)
+    )
 
     req = ChatCompletionRequest(
         messages=[{"role": "user", "content": "blockers?"}], model="test-model"
@@ -225,14 +231,18 @@ async def test_streaming_telemetry_call_sites_are_content_free(monkeypatch) -> N
         traces.append((name, kwargs, context))
         yield context
 
-    monkeypatch.setattr("services.chat_completion.telemetry", _CaptureTelemetry(capture_trace))
-    monkeypatch.setattr("services.chat_completion._build_system_prompt", lambda uid: "SYS")
+    monkeypatch.setattr(
+        "hive_conductor.services.chat_completion.telemetry", _CaptureTelemetry(capture_trace)
+    )
+    monkeypatch.setattr(
+        "hive_conductor.services.chat_completion._build_system_prompt", lambda uid: "SYS"
+    )
 
     async def fake_exec(tool_name: str, args: dict[str, Any], user_id: str) -> dict[str, Any]:
         assert args == {"api_key": credential_probe}
         return {"credential_echo": credential_probe}
 
-    monkeypatch.setattr("services.chat_completion._execute_tool", fake_exec)
+    monkeypatch.setattr("hive_conductor.services.chat_completion._execute_tool", fake_exec)
     turns = [
         [
             _tool_frag(0, id="call_1", name="check_blockers"),
@@ -241,7 +251,9 @@ async def test_streaming_telemetry_call_sites_are_content_free(monkeypatch) -> N
         ],
         [_content(f"Answer without echoing {credential_probe}"), _finish("stop")],
     ]
-    monkeypatch.setattr("services.chat_completion.build_llm_port", lambda: _FakeLLM(turns))
+    monkeypatch.setattr(
+        "hive_conductor.services.chat_completion.build_llm_port", lambda: _FakeLLM(turns)
+    )
     req = ChatCompletionRequest(
         messages=[{"role": "user", "content": f"use {credential_probe}"}],
         model="test-model",
@@ -301,9 +313,13 @@ async def test_stream_span_measures_first_model_await_and_closes_before_yield(
             timeline.append("stream_resumed")
             yield _content("second")
 
-    monkeypatch.setattr("services.chat_completion.telemetry", _CaptureTelemetry(capture_trace))
-    monkeypatch.setattr("services.chat_completion._build_system_prompt", lambda uid: "SYS")
-    monkeypatch.setattr("services.chat_completion.build_llm_port", _MeasuredLLM)
+    monkeypatch.setattr(
+        "hive_conductor.services.chat_completion.telemetry", _CaptureTelemetry(capture_trace)
+    )
+    monkeypatch.setattr(
+        "hive_conductor.services.chat_completion._build_system_prompt", lambda uid: "SYS"
+    )
+    monkeypatch.setattr("hive_conductor.services.chat_completion.build_llm_port", _MeasuredLLM)
     req = ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}], model="model")
     stream = run_chat_completion_streaming(req)
 
@@ -325,7 +341,9 @@ async def test_stream_turn_exits_when_provider_stream_is_empty(monkeypatch) -> N
         traces.append((name, kwargs))
         yield {}
 
-    monkeypatch.setattr("services.chat_completion.telemetry", _CaptureTelemetry(capture_trace))
+    monkeypatch.setattr(
+        "hive_conductor.services.chat_completion.telemetry", _CaptureTelemetry(capture_trace)
+    )
     req = ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}], model="test-model")
     content_out: list[str] = []
     events = [
@@ -367,7 +385,9 @@ async def test_complete_turn_uses_non_streaming_telemetry_span(monkeypatch) -> N
         async def complete(self, req: ChatCompletionRequest) -> dict[str, Any]:
             return {"choices": [{"message": {"content": "done"}}]}
 
-    monkeypatch.setattr("services.chat_completion.telemetry", _CaptureTelemetry(capture_trace))
+    monkeypatch.setattr(
+        "hive_conductor.services.chat_completion.telemetry", _CaptureTelemetry(capture_trace)
+    )
     req = ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}], model="test-model")
     out = await _complete_turn(
         _CompleteLLM(),
@@ -391,7 +411,9 @@ async def test_complete_turn_uses_non_streaming_telemetry_span(monkeypatch) -> N
 
 
 async def test_streaming_falls_back_to_complete_on_stream_error(monkeypatch) -> None:
-    monkeypatch.setattr("services.chat_completion._build_system_prompt", lambda uid: "SYS")
+    monkeypatch.setattr(
+        "hive_conductor.services.chat_completion._build_system_prompt", lambda uid: "SYS"
+    )
 
     class _BrokenStream:
         def __aiter__(self) -> _BrokenStream:
@@ -407,7 +429,9 @@ async def test_streaming_falls_back_to_complete_on_stream_error(monkeypatch) -> 
         def stream(self, req: ChatCompletionRequest) -> _BrokenStream:
             return _BrokenStream()
 
-    monkeypatch.setattr("services.chat_completion.build_llm_port", lambda: _FailStreamLLM())
+    monkeypatch.setattr(
+        "hive_conductor.services.chat_completion.build_llm_port", lambda: _FailStreamLLM()
+    )
     req = ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}], model="test-model")
     events = await _collect(run_chat_completion_streaming(req))
 
@@ -418,14 +442,16 @@ async def test_streaming_falls_back_to_complete_on_stream_error(monkeypatch) -> 
 async def test_streaming_falls_back_to_complete_when_stream_yields_nothing(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr("services.chat_completion._build_system_prompt", lambda uid: "SYS")
+    monkeypatch.setattr(
+        "hive_conductor.services.chat_completion._build_system_prompt", lambda uid: "SYS"
+    )
 
     class _EmptyThenCompleteLLM(_FakeLLM):
         async def complete(self, req: ChatCompletionRequest) -> dict[str, Any]:
             return {"choices": [{"message": {"content": "from non-streaming"}}]}
 
     monkeypatch.setattr(
-        "services.chat_completion.build_llm_port",
+        "hive_conductor.services.chat_completion.build_llm_port",
         lambda: _EmptyThenCompleteLLM([[]]),
     )
     req = ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}], model="test-model")
@@ -439,7 +465,9 @@ async def test_streaming_retries_non_streaming_when_tool_leaked_as_text(
     monkeypatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    monkeypatch.setattr("services.chat_completion._build_system_prompt", lambda uid: "SYS")
+    monkeypatch.setattr(
+        "hive_conductor.services.chat_completion._build_system_prompt", lambda uid: "SYS"
+    )
 
     class _LeakyLLM:
         def __init__(self) -> None:
@@ -454,7 +482,7 @@ async def test_streaming_retries_non_streaming_when_tool_leaked_as_text(
             yield _finish("stop")
 
     llm = _LeakyLLM()
-    monkeypatch.setattr("services.chat_completion.build_llm_port", lambda: llm)
+    monkeypatch.setattr("hive_conductor.services.chat_completion.build_llm_port", lambda: llm)
     req = ChatCompletionRequest(
         messages=[{"role": "user", "content": "tasks?"}], model="test-model"
     )
@@ -476,13 +504,17 @@ async def test_streaming_final_synthesis_uses_non_streaming_span(monkeypatch) ->
         traces.append((name, kwargs))
         yield {}
 
-    monkeypatch.setattr("services.chat_completion.telemetry", _CaptureTelemetry(capture_trace))
-    monkeypatch.setattr("services.chat_completion._build_system_prompt", lambda uid: "SYS")
+    monkeypatch.setattr(
+        "hive_conductor.services.chat_completion.telemetry", _CaptureTelemetry(capture_trace)
+    )
+    monkeypatch.setattr(
+        "hive_conductor.services.chat_completion._build_system_prompt", lambda uid: "SYS"
+    )
 
     async def fake_exec(tool_name: str, args: dict[str, Any], user_id: str) -> dict[str, Any]:
         return {"ok": True}
 
-    monkeypatch.setattr("services.chat_completion._execute_tool", fake_exec)
+    monkeypatch.setattr("hive_conductor.services.chat_completion._execute_tool", fake_exec)
 
     tool_turn = [
         _tool_frag(0, id="call_1", name="poll_jira"),
@@ -498,7 +530,9 @@ async def test_streaming_final_synthesis_uses_non_streaming_span(monkeypatch) ->
             for chunk in tool_turn:
                 yield chunk
 
-    monkeypatch.setattr("services.chat_completion.build_llm_port", lambda: _FiveToolLoopLLM())
+    monkeypatch.setattr(
+        "hive_conductor.services.chat_completion.build_llm_port", lambda: _FiveToolLoopLLM()
+    )
     req = ChatCompletionRequest(messages=[{"role": "user", "content": "loop"}], model="test-model")
     events = await _collect(run_chat_completion_streaming(req))
 
@@ -536,9 +570,13 @@ async def test_stream_span_closes_when_first_model_await_is_cancelled(
             await asyncio.Event().wait()
             yield _content("unreachable")
 
-    monkeypatch.setattr("services.chat_completion.telemetry", _CaptureTelemetry(capture_trace))
-    monkeypatch.setattr("services.chat_completion._build_system_prompt", lambda uid: "SYS")
-    monkeypatch.setattr("services.chat_completion.build_llm_port", _BlockingLLM)
+    monkeypatch.setattr(
+        "hive_conductor.services.chat_completion.telemetry", _CaptureTelemetry(capture_trace)
+    )
+    monkeypatch.setattr(
+        "hive_conductor.services.chat_completion._build_system_prompt", lambda uid: "SYS"
+    )
+    monkeypatch.setattr("hive_conductor.services.chat_completion.build_llm_port", _BlockingLLM)
     req = ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}], model="model")
     stream = run_chat_completion_streaming(req)
 
@@ -559,9 +597,11 @@ async def test_stream_span_closes_when_first_model_await_is_cancelled(
 
 
 async def test_streaming_emits_thinking_from_reasoning_content(monkeypatch) -> None:
-    monkeypatch.setattr("services.chat_completion._build_system_prompt", lambda uid: "SYS")
     monkeypatch.setattr(
-        "services.chat_completion.build_llm_port",
+        "hive_conductor.services.chat_completion._build_system_prompt", lambda uid: "SYS"
+    )
+    monkeypatch.setattr(
+        "hive_conductor.services.chat_completion.build_llm_port",
         lambda: _FakeLLM([[_reasoning("Let me think"), _content("Answer"), _finish("stop")]]),
     )
 

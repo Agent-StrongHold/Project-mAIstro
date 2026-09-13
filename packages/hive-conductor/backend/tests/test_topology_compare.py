@@ -19,24 +19,21 @@ Tests cover:
 from __future__ import annotations
 
 import pathlib
-import sys
 from typing import Any
 
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 
 @pytest.fixture(autouse=True)
 def _isolated_metrics_and_outcomes():
-    from services.feedback_service import (
+    from hive_conductor.services.feedback_service import (
         InMemoryOutcomeStore,
         get_outcome_store,
         set_outcome_store,
     )
-    from services.node_metrics_store import (
+    from hive_conductor.services.node_metrics_store import (
         NodeMetricsStore,
         get_store,
         set_store,
@@ -54,7 +51,7 @@ def _isolated_metrics_and_outcomes():
 def _seed_obs(
     *, dag_id: str, node_id: str, model: str, kind: str, latency: int, phase: str = "COMPLETED"
 ) -> None:
-    from services.node_metrics_store import NodeObservation, get_store
+    from hive_conductor.services.node_metrics_store import NodeObservation, get_store
 
     get_store().append(
         NodeObservation(
@@ -77,8 +74,8 @@ def _seed_obs(
 
 
 def test_resolve_label_uses_attr_value() -> None:
-    from services.node_metrics_store import NodeObservation
-    from services.topology_compare import _resolve_label
+    from hive_conductor.services.node_metrics_store import NodeObservation
+    from hive_conductor.services.topology_compare import _resolve_label
 
     o = NodeObservation(
         run_id="r",
@@ -98,8 +95,8 @@ def test_resolve_label_uses_attr_value() -> None:
 
 
 def test_resolve_label_empty_string_falls_back_to_unset() -> None:
-    from services.node_metrics_store import NodeObservation
-    from services.topology_compare import _resolve_label
+    from hive_conductor.services.node_metrics_store import NodeObservation
+    from hive_conductor.services.topology_compare import _resolve_label
 
     o = NodeObservation(
         run_id="r",
@@ -119,20 +116,20 @@ def test_resolve_label_empty_string_falls_back_to_unset() -> None:
 
 def test_normalize_single_value_returns_half() -> None:
     """No variance → all 0.5; invert flag doesn't matter."""
-    from services.topology_compare import _normalize
+    from hive_conductor.services.topology_compare import _normalize
 
     assert _normalize([7.0]) == [0.5]
     assert _normalize([7.0], invert=False) == [0.5]
 
 
 def test_normalize_identical_values_returns_halves() -> None:
-    from services.topology_compare import _normalize
+    from hive_conductor.services.topology_compare import _normalize
 
     assert _normalize([3.0, 3.0, 3.0]) == [0.5, 0.5, 0.5]
 
 
 def test_normalize_invert_true_makes_smaller_better() -> None:
-    from services.topology_compare import _normalize
+    from hive_conductor.services.topology_compare import _normalize
 
     out = _normalize([10.0, 30.0, 50.0], invert=True)
     # 10 → 1.0 (best), 50 → 0.0 (worst)
@@ -141,7 +138,7 @@ def test_normalize_invert_true_makes_smaller_better() -> None:
 
 
 def test_normalize_invert_false_keeps_natural_order() -> None:
-    from services.topology_compare import _normalize
+    from hive_conductor.services.topology_compare import _normalize
 
     out = _normalize([10.0, 30.0, 50.0], invert=False)
     assert out[0] == 0.0
@@ -149,21 +146,21 @@ def test_normalize_invert_false_keeps_natural_order() -> None:
 
 
 def test_normalize_empty_list_returns_empty() -> None:
-    from services.topology_compare import _normalize
+    from hive_conductor.services.topology_compare import _normalize
 
     assert _normalize([]) == []
 
 
 def test_composite_uses_locked_weights() -> None:
-    from services.topology_compare import _composite
+    from hive_conductor.services.topology_compare import _composite
 
     out = _composite([1.0], [1.0], [1.0])
     assert out == [0.85]  # W_SUCCESS(0.4) + W_LATENCY(0.25) + W_THUMB(0.2) + W_COST(0.15*0) = 0.85
 
 
 def test_bucket_observations_groups_by_field() -> None:
-    from services.node_metrics_store import NodeObservation
-    from services.topology_compare import _bucket_observations
+    from hive_conductor.services.node_metrics_store import NodeObservation
+    from hive_conductor.services.topology_compare import _bucket_observations
 
     a = NodeObservation(
         run_id="r",
@@ -198,7 +195,7 @@ def test_bucket_observations_groups_by_field() -> None:
 
 
 def test_variant_bucket_success_rate_zero_when_empty() -> None:
-    from services.topology_compare import VariantBucket
+    from hive_conductor.services.topology_compare import VariantBucket
 
     b = VariantBucket(label="x")
     assert b.success_rate == 0.0
@@ -209,7 +206,7 @@ def test_variant_bucket_success_rate_zero_when_empty() -> None:
 
 
 def test_variant_bucket_thumb_down_rate_no_total_is_zero() -> None:
-    from services.topology_compare import VariantBucket
+    from hive_conductor.services.topology_compare import VariantBucket
 
     b = VariantBucket(label="x")  # no thumbs at all
     assert b.thumb_down_rate == 0.0
@@ -219,7 +216,7 @@ def test_variant_bucket_thumb_down_rate_no_total_is_zero() -> None:
 
 
 async def test_compare_variants_returns_ranked_variants() -> None:
-    from services.topology_compare import compare_variants
+    from hive_conductor.services.topology_compare import compare_variants
 
     # Two variants: gpt-4 succeeds, claude fails
     for _ in range(5):
@@ -244,7 +241,7 @@ async def test_compare_variants_returns_ranked_variants() -> None:
 
 
 async def test_compare_variants_empty_returns_no_winner() -> None:
-    from services.topology_compare import compare_variants
+    from hive_conductor.services.topology_compare import compare_variants
 
     out = await compare_variants("d-empty")
     assert out["winner"] == ""
@@ -252,7 +249,7 @@ async def test_compare_variants_empty_returns_no_winner() -> None:
 
 
 async def test_compare_variants_groups_by_node_kind() -> None:
-    from services.topology_compare import compare_variants
+    from hive_conductor.services.topology_compare import compare_variants
 
     _seed_obs(dag_id="d", node_id="n1", model="x", kind="jira.poll", latency=100)
     _seed_obs(dag_id="d", node_id="n2", model="x", kind="transform.alias", latency=10)
@@ -262,8 +259,8 @@ async def test_compare_variants_groups_by_node_kind() -> None:
 
 async def test_compare_variants_groups_by_node_id_includes_thumbs() -> None:
     """When group_by='node_id', thumbs attribute to the matching bucket."""
-    from services.feedback_service import record_thumb
-    from services.topology_compare import compare_variants
+    from hive_conductor.services.feedback_service import record_thumb
+    from hive_conductor.services.topology_compare import compare_variants
 
     _seed_obs(dag_id="d", node_id="n-good", model="x", kind="k", latency=100)
     _seed_obs(dag_id="d", node_id="n-bad", model="x", kind="k", latency=100)
@@ -285,8 +282,8 @@ async def test_compare_variants_groups_by_node_id_includes_thumbs() -> None:
 
 
 async def test_compare_variants_thumbs_not_folded_for_non_node_id_group() -> None:
-    from services.feedback_service import record_thumb
-    from services.topology_compare import compare_variants
+    from hive_conductor.services.feedback_service import record_thumb
+    from hive_conductor.services.topology_compare import compare_variants
 
     _seed_obs(dag_id="d", node_id="n1", model="gpt-4", kind="k", latency=100)
     await record_thumb(
@@ -303,14 +300,14 @@ async def test_compare_variants_thumbs_not_folded_for_non_node_id_group() -> Non
 
 
 async def test_compare_variants_empty_dag_id_raises() -> None:
-    from services.topology_compare import compare_variants
+    from hive_conductor.services.topology_compare import compare_variants
 
     with pytest.raises(ValueError, match="dag_id is required"):
         await compare_variants("")
 
 
 async def test_compare_variants_invalid_group_by_raises() -> None:
-    from services.topology_compare import compare_variants
+    from hive_conductor.services.topology_compare import compare_variants
 
     with pytest.raises(ValueError, match="group_by must be one of"):
         await compare_variants("d", group_by="something_weird")
@@ -319,8 +316,8 @@ async def test_compare_variants_invalid_group_by_raises() -> None:
 async def test_compare_variants_unknown_thumb_value_does_not_increment() -> None:
     """Direct outcome bypass: thumb='sideways' must not increment up or
     down. Hits the elif fall-through inside _fold_in_thumbs (line 116)."""
-    from services.feedback_service import get_outcome_store
-    from services.topology_compare import compare_variants
+    from hive_conductor.services.feedback_service import get_outcome_store
+    from hive_conductor.services.topology_compare import compare_variants
 
     from maistro.memory.types import Outcome
 
@@ -343,8 +340,8 @@ async def test_compare_variants_unknown_thumb_value_does_not_increment() -> None
 async def test_fold_in_thumbs_skips_other_dag_outcomes() -> None:
     """An Outcome tagged with a different dag_id must NOT contribute to
     this DAG's buckets (covers `continue` on line 110)."""
-    from services.feedback_service import record_thumb
-    from services.topology_compare import compare_variants
+    from hive_conductor.services.feedback_service import record_thumb
+    from hive_conductor.services.topology_compare import compare_variants
 
     _seed_obs(dag_id="d-target", node_id="n", model="x", kind="k", latency=10)
     await record_thumb(
@@ -363,8 +360,8 @@ async def test_fold_in_thumbs_skips_other_dag_outcomes() -> None:
 async def test_fold_in_thumbs_skips_outcomes_with_blank_thumb() -> None:
     """An Outcome with thumb='' (e.g. one recorded by a non-feedback
     flow) is skipped (covers `continue` on line 112)."""
-    from services.feedback_service import get_outcome_store
-    from services.topology_compare import compare_variants
+    from hive_conductor.services.feedback_service import get_outcome_store
+    from hive_conductor.services.topology_compare import compare_variants
 
     from maistro.memory.types import Outcome
 
@@ -387,8 +384,8 @@ async def test_fold_in_thumbs_skips_outcomes_with_blank_thumb() -> None:
 async def test_compare_variants_thumbs_for_unseeded_node_creates_bucket() -> None:
     """A thumb on a node that has NO observations still creates a
     bucket — the user told us something even if the metrics didn't."""
-    from services.feedback_service import record_thumb
-    from services.topology_compare import compare_variants
+    from hive_conductor.services.feedback_service import record_thumb
+    from hive_conductor.services.topology_compare import compare_variants
 
     # Seed a different node so the dag has observations at all
     _seed_obs(dag_id="d", node_id="n-seen", model="x", kind="k", latency=10)
@@ -433,7 +430,7 @@ def test_topology_group_fields_endpoint(authed_client: Any) -> None:
 
 def test_topology_compare_endpoint_unauthenticated() -> None:
     from fastapi.testclient import TestClient
-    from main import app
+    from hive_conductor.main import app
 
     client = TestClient(app)
     r = client.get("/v1/topology/d/compare")

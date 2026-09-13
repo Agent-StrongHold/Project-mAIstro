@@ -6,7 +6,7 @@ from contextlib import AbstractContextManager
 
 
 def test_adapter_package_exports_owned_public_ports() -> None:
-    import adapters
+    import hive_conductor.adapters as adapters
 
     assert adapters.__all__ == [
         "LocalTaskBackend",
@@ -18,7 +18,7 @@ def test_adapter_package_exports_owned_public_ports() -> None:
 
 
 def test_noop_telemetry_exposes_noop_context_managers() -> None:
-    from adapters.telemetry_noop import NoopTelemetry
+    from hive_conductor.adapters.telemetry_noop import NoopTelemetry
 
     telemetry = NoopTelemetry()
     trace_ctx = telemetry.trace(name="unit")
@@ -32,14 +32,14 @@ def test_noop_telemetry_exposes_noop_context_managers() -> None:
 
 
 def test_task_backend_protocol_defines_expected_boundary_methods() -> None:
-    from adapters.task_backend import TaskBackend
+    from hive_conductor.adapters.task_backend import TaskBackend
 
     expected = {"submit", "get", "list_tasks", "cancel", "iter_events", "stop"}
     assert expected.issubset(set(TaskBackend.__dict__))
 
 
 def test_privilege_middleware_currently_passes_through() -> None:
-    from middleware.privilege import PrivilegeMiddleware
+    from hive_conductor.middleware.privilege import PrivilegeMiddleware
 
     assert PrivilegeMiddleware.__doc__ is not None
     assert "privilege checks" in PrivilegeMiddleware.__doc__
@@ -52,9 +52,9 @@ def test_both_telemetry_backends_satisfy_the_port() -> None:
     runtime-checkable isinstance is the same fact restated for a reader of the
     wiring — an offline deployment and a traced one hold the same boundary.
     """
-    from adapters.telemetry_langfuse import LangfuseTelemetry
-    from adapters.telemetry_noop import NoopTelemetry
-    from protocols.telemetry import TelemetryPort
+    from hive_conductor.adapters.telemetry_langfuse import LangfuseTelemetry
+    from hive_conductor.adapters.telemetry_noop import NoopTelemetry
+    from hive_conductor.protocols.telemetry import TelemetryPort
 
     assert isinstance(NoopTelemetry(), TelemetryPort)
     assert isinstance(LangfuseTelemetry(), TelemetryPort)
@@ -63,8 +63,8 @@ def test_both_telemetry_backends_satisfy_the_port() -> None:
 def test_the_chat_path_holds_the_telemetry_port_not_the_backend() -> None:
     """`chat_completion` composes through the port singleton, so the backend
     is chosen in the adapter, not at every span call site."""
-    from adapters import telemetry_langfuse
-    from services import chat_completion
+    from hive_conductor.adapters import telemetry_langfuse
+    from hive_conductor.services import chat_completion
 
     assert chat_completion.telemetry is telemetry_langfuse.telemetry
     assert callable(chat_completion.telemetry.trace)
@@ -75,9 +75,9 @@ def test_the_engine_holds_the_agent_port_and_checks_it() -> None:
     """`_bind_agent_port` is the one assignment point and it verifies the
     port contract, so neither the bridge nor the stub can drift from it
     silently (#63)."""
-    from adapters.maistro_core import StubAgentPort
-    from protocols.agent import AgentPort
-    from services.engine import EngineService
+    from hive_conductor.adapters.maistro_core import StubAgentPort
+    from hive_conductor.protocols.agent import AgentPort
+    from hive_conductor.services.engine import EngineService
 
     engine = EngineService()
     engine._bind_agent_port(StubAgentPort())

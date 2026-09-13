@@ -49,7 +49,7 @@ _ACCEPTED = [
 @pytest.mark.parametrize("bad", _REJECTED)
 def test_validator_rejects_non_identifiers(bad: str) -> None:
     from fastapi import HTTPException
-    from routes.containers import _validate_container_id
+    from hive_conductor.routes.containers import _validate_container_id
 
     with pytest.raises(HTTPException) as exc:
         _validate_container_id(bad)
@@ -60,7 +60,7 @@ def test_validator_rejects_non_identifiers(bad: str) -> None:
 @pytest.mark.scope("unit")
 @pytest.mark.parametrize("good", _ACCEPTED)
 def test_validator_accepts_real_identifiers(good: str) -> None:
-    from routes.containers import _validate_container_id
+    from hive_conductor.routes.containers import _validate_container_id
 
     assert _validate_container_id(good) == good
 
@@ -108,7 +108,7 @@ class _RecordingClient:
 @pytest.mark.scope("integration")
 def test_logs_tail_is_clamped(admin_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """`tail` is interpolated too; an unbounded value is a memory amplifier."""
-    import routes.containers as containers
+    import hive_conductor.routes.containers as containers
 
     urls: list[str] = []
     monkeypatch.setattr(containers.os.path, "exists", lambda _p: True)

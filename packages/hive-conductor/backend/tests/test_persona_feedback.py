@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from models.persona_feedback import PersonaFeedback
-from services.persona_feedback import summarize
+from hive_conductor.models.persona_feedback import PersonaFeedback
+from hive_conductor.services.persona_feedback import summarize
 
 
 def _feedback(**overrides: object) -> PersonaFeedback:

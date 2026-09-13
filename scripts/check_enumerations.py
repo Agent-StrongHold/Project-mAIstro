@@ -195,14 +195,16 @@ def check_routes() -> tuple[list[Gap], str | None]:
 
     # The backend imports sibling workspace packages that are not pip-installed
     # (pytest supplies them via `src` roots in pyproject.toml), so mirror that
-    # here rather than requiring an editable install of all nine.
+    # here rather than requiring an editable install of all nine. Only the
+    # explicit application package root is added; no generic backend module is
+    # made authoritative by path order.
     for src_root in sorted((REPO / "packages").glob("*/src")):
         sys.path.insert(0, str(src_root))
     sys.path.insert(0, str(backend))
     os.environ.setdefault("CONDUCTOR_DATA_DIR", "/tmp/enum-check-data")
     try:
-        from main import app  # type: ignore[import-not-found]
-        from middleware.auth import (  # type: ignore[import-not-found]
+        from hive_conductor.main import app
+        from hive_conductor.middleware.auth import (
             _PROTECTED_OPS,
             _PUBLIC_EXACT,
             _PUBLIC_PREFIXES,

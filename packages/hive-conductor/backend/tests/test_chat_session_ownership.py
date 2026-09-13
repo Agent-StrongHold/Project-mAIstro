@@ -13,7 +13,6 @@ account is the admin, and the admin is refused the whole `/v1/chat/` surface.
 from __future__ import annotations
 
 import pathlib
-import sys
 from datetime import UTC, datetime
 from typing import Any
 
@@ -21,11 +20,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
-import stores  # noqa: E402
-from main import app  # noqa: E402
+import hive_conductor.stores as stores  # noqa: E402
+from hive_conductor.main import app  # noqa: E402
 
 BOB_ID = "user-bob-312"
 BOB_USERNAME = "bob-312"
@@ -192,7 +189,7 @@ class TestARowWithNoOwnerBelongsToNobody:
 
     @pytest.fixture
     def legacy(self) -> str:
-        from models.schemas import ChatSession
+        from hive_conductor.models.schemas import ChatSession
 
         now = datetime.now(UTC)
         stores.chat_sessions["legacy-unowned"] = ChatSession(
@@ -253,14 +250,14 @@ class TestTheAdminIsNotAnExceptionHere:
 
 class TestTheChecklistCountsChatsYouWrote:
     def test_a_seed_alone_does_not_complete_the_item(self, authed_client: Any) -> None:
-        from routes.setup_checklist import _has_chat_session
+        from hive_conductor.routes.setup_checklist import _has_chat_session
 
         authed_client.get("/v1/chat/sessions")  # seeds
 
         assert _has_chat_session("user") is False
 
     def test_a_session_you_created_does(self, authed_client: Any) -> None:
-        from routes.setup_checklist import _has_chat_session
+        from hive_conductor.routes.setup_checklist import _has_chat_session
 
         _create(authed_client)
 
@@ -269,7 +266,7 @@ class TestTheChecklistCountsChatsYouWrote:
     def test_someone_elses_session_does_not_complete_it_for_you(
         self, authed_client: Any, bob: Any
     ) -> None:
-        from routes.setup_checklist import _has_chat_session
+        from hive_conductor.routes.setup_checklist import _has_chat_session
 
         _create(bob)
 
@@ -300,7 +297,7 @@ class TestTheViewFailsClosedWithoutAPrincipal:
 
     def test_no_attached_user_is_a_401(self) -> None:
         from fastapi import HTTPException
-        from services.owned_records import owner_of
+        from hive_conductor.services.owned_records import owner_of
 
         with pytest.raises(HTTPException) as caught:
             owner_of(self._request(_MISSING))
@@ -311,7 +308,7 @@ class TestTheViewFailsClosedWithoutAPrincipal:
         """Anything that is not the middleware's dict — a model, a string, a
         `None` left by a half-written dependency — is not a principal."""
         from fastapi import HTTPException
-        from services.owned_records import owner_of
+        from hive_conductor.services.owned_records import owner_of
 
         with pytest.raises(HTTPException) as caught:
             owner_of(self._request("testuser"))
@@ -323,7 +320,7 @@ class TestTheViewFailsClosedWithoutAPrincipal:
         `user_id` every legacy row carries, so admitting it would hand the
         quarantined rows to whoever arrived without one."""
         from fastapi import HTTPException
-        from services.owned_records import owner_of
+        from hive_conductor.services.owned_records import owner_of
 
         with pytest.raises(HTTPException) as caught:
             owner_of(self._request({"id": "", "role": "user"}))

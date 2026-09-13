@@ -3,7 +3,7 @@
 
 What it catches
 ---------------
-`packages/hive-conductor/backend/services/design_service.py` imported
+`packages/hive-conductor/backend/hive_conductor/services/design_service.py` imported
 `maistro_design.systems.builtins` — a module that has never existed in any
 version of that package. Nothing noticed, because the import sat inside a bare
 `except Exception` that substituted a hand-built design system carrying the same
@@ -28,9 +28,9 @@ Static on purpose
 -----------------
 No importing, so a module with a side effect at import time cannot run here, and
 a package that is not installed in this environment is still checked. That last
-part matters: hive-conductor is a flat-layout app whose wheel is deliberately
-absent from `verify-wheel-imports.py`, so a runtime check would skip precisely
-the package this was written for.
+part matters: backend applications are checked against their source package
+namespaces as well as the published `src/` packages, so an uninstalled
+application dependency cannot hide a broken import.
 
 Two scopes, not one
 -------------------
@@ -86,9 +86,10 @@ _SKIP_PARTS = {".venv", "node_modules", "__pycache__", "build", "dist", ".git"}
 def source_roots() -> dict[str, Path]:
     """Top-level package name -> the directory its modules live under.
 
-    Both layouts this monorepo uses: `packages/<dist>/src/<pkg>/` for the
-    published libraries, and `packages/hive-conductor/backend/` for the flat app.
-    Only the former can be *imported* by name, so only the former is a target.
+    The published libraries use `packages/<dist>/src/<pkg>/`. Backend
+    application namespace shape is enforced separately by
+    `check-backend-package-namespaces.py`; this resolver targets the published
+    library roots only.
     """
     roots: dict[str, Path] = {}
     for src in sorted(PACKAGES.glob("*/src")):

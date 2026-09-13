@@ -126,7 +126,7 @@ class TestItStaysASurfaceAndNotAWildcard:
         "path",
         [
             "packages/maistro-core/src/maistro/memory/learnings/store.py",
-            "packages/hive-conductor/backend/routes/chat.py",
+            "packages/hive-conductor/backend/hive_conductor/routes/chat.py",
             "packages/maistro-canvas/src/maistro_canvas/types.py",
             "docs/adr/ADR-036-ontology.md",
             "README.md",

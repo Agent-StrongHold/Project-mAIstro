@@ -3,20 +3,17 @@
 from __future__ import annotations
 
 import pathlib
-import sys
 from pathlib import Path
 
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 
 @pytest.fixture(autouse=True)
 def _isolate_store():
     """Snapshot + restore the module-level _store reference."""
-    import services.user_credentials as cred_svc
+    import hive_conductor.services.user_credentials as cred_svc
 
     prev = cred_svc._store
     yield
@@ -24,7 +21,7 @@ def _isolate_store():
 
 
 def test_init_credential_store_success(tmp_path: Path) -> None:
-    import services.user_credentials as cred_svc
+    import hive_conductor.services.user_credentials as cred_svc
 
     cred_svc._store = None
     ok = cred_svc.init_credential_store(tmp_path)
@@ -36,7 +33,7 @@ def test_init_credential_store_failure_returns_false(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """If UserCredentialStore.open raises, init returns False + store stays None."""
-    import services.user_credentials as cred_svc
+    import hive_conductor.services.user_credentials as cred_svc
 
     from maistro.credentials.store import UserCredentialStore
 
@@ -51,7 +48,7 @@ def test_init_credential_store_failure_returns_false(
 
 
 def test_require_store_raises_when_uninitialized() -> None:
-    import services.user_credentials as cred_svc
+    import hive_conductor.services.user_credentials as cred_svc
 
     from maistro.credentials import CredentialStoreUnavailable
 
@@ -63,7 +60,7 @@ def test_require_store_raises_when_uninitialized() -> None:
 def test_require_store_returns_instance_when_initialized(
     tmp_path: Path,
 ) -> None:
-    import services.user_credentials as cred_svc
+    import hive_conductor.services.user_credentials as cred_svc
 
     cred_svc._store = None
     cred_svc.init_credential_store(tmp_path)
@@ -71,7 +68,7 @@ def test_require_store_returns_instance_when_initialized(
 
 
 def test_list_provider_catalog_returns_known_providers() -> None:
-    from services.user_credentials import list_provider_catalog
+    from hive_conductor.services.user_credentials import list_provider_catalog
 
     from maistro.credentials import PM_CREDENTIAL_PROVIDERS
 

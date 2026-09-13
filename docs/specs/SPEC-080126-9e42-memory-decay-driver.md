@@ -97,7 +97,7 @@ started from the app lifespan has exactly that lifetime: it restarts with the pr
 is all the durability a system cadence requires.
 
 So this is **not** built on `/v1/schedules` or `maistro/scheduling/store.py`. It follows the
-shape already established by `packages/hive-conductor/backend/services/scheduler.py` —
+shape already established by `packages/hive-conductor/backend/hive_conductor/services/scheduler.py` —
 a module-level singleton started from `main.py`'s lifespan and stopped on shutdown.
 SPEC-080126-3a7c remains worth doing for *user-created* schedules, where losing the record
 genuinely is data loss; it is simply not a prerequisite for this.

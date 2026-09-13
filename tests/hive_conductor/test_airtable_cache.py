@@ -3,15 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import sys
-from pathlib import Path
 from typing import Any
 
-sys.path.insert(
-    0, str(Path(__file__).resolve().parents[2] / "packages" / "hive-conductor" / "backend")
-)
-
-from services import airtable_cache
+from hive_conductor.services import airtable_cache
 
 
 class _Response:

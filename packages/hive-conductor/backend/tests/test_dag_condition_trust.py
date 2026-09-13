@@ -27,7 +27,7 @@ def _fake_llm_builder(_on_response: Any = None):
 
 
 def test_arbitrary_legacy_condition_remains_an_unconditional_dependency() -> None:
-    from services.canonical_dag_runner import graph_from_legacy_dag
+    from hive_conductor.services.canonical_dag_runner import graph_from_legacy_dag
 
     graph = graph_from_legacy_dag(
         {
@@ -51,7 +51,7 @@ def test_arbitrary_legacy_condition_remains_an_unconditional_dependency() -> Non
 
 
 def test_natural_language_with_an_operator_is_not_mistaken_for_a_predicate() -> None:
-    from services.canonical_dag_runner import graph_from_legacy_dag
+    from hive_conductor.services.canonical_dag_runner import graph_from_legacy_dag
 
     graph = graph_from_legacy_dag(
         {
@@ -78,7 +78,7 @@ def test_natural_language_with_an_operator_is_not_mistaken_for_a_predicate() -> 
 async def test_arbitrary_legacy_condition_cannot_silently_skip_successor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.canonical_dag_runner as runner
+    import hive_conductor.services.canonical_dag_runner as runner
 
     store = InMemoryDurableRunStore()
     monkeypatch.setattr(runner, "_container", lambda: None)

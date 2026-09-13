@@ -90,7 +90,7 @@ Generalize the existing `llm_http_variant` setting into a **per-model capability
 
 ## References
 
-- `packages/hive-conductor/backend/services/chat_completion.py` — `run_chat_completion_streaming`, `_ToolCallAccumulator`
-- `packages/hive-conductor/backend/adapters/llm_http.py` — `HttpOpenAIProtocolLLM.stream`, `_responses_event_to_chunk`
-- `packages/hive-conductor/backend/protocols/llm.py` — `LLMPort`
+- `packages/hive-conductor/backend/hive_conductor/services/chat_completion.py` — `run_chat_completion_streaming`, `_ToolCallAccumulator`
+- `packages/hive-conductor/backend/hive_conductor/adapters/llm_http.py` — `HttpOpenAIProtocolLLM.stream`, `_responses_event_to_chunk`
+- `packages/hive-conductor/backend/hive_conductor/protocols/llm.py` — `LLMPort`
 - maistro-engine#ADR-079 (model registry / routing), maistro-engine#ADR-038 (reliability / fallback), maistro-engine#SPEC-176 (Hive Conductor package)

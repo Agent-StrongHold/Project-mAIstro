@@ -27,7 +27,7 @@ _LEGACY_PASSWORD = "testpass"
 
 @pytest.fixture
 def client() -> TestClient:
-    from main import app
+    from hive_conductor.main import app
 
     return TestClient(app)
 
@@ -35,7 +35,7 @@ def client() -> TestClient:
 @pytest.fixture
 def seeded():
     """Seed users by id, and remove exactly what was seeded afterwards."""
-    import stores
+    import hive_conductor.stores as stores
 
     created: list[str] = []
 
@@ -58,7 +58,7 @@ def seeded():
 
 
 def _stored_hash(username: str) -> str:
-    import stores
+    import hive_conductor.stores as stores
 
     for user in stores.users.values():
         if user.username == username:
@@ -67,7 +67,7 @@ def _stored_hash(username: str) -> str:
 
 
 def test_registration_stores_argon2id_and_never_the_password(client) -> None:
-    import stores
+    import hive_conductor.stores as stores
 
     username = "argon2-registrant"
     response = client.post(

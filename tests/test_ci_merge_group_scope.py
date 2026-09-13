@@ -115,7 +115,7 @@ def test_migration_change_runs_postgres_and_docker() -> None:
 
 
 def test_hive_change_runs_hive_wheel_and_docker() -> None:
-    result = classify(["packages/hive-conductor/backend/routes/runs.py"])
+    result = classify(["packages/hive-conductor/backend/hive_conductor/routes/runs.py"])
     assert result["hive_e2e"] is True
     assert result["wheel_imports"] is True
     assert result["docker_build"] is True

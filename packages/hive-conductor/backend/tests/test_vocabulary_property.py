@@ -6,17 +6,10 @@ not just the examples in unit tests.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import pytest
+from eval.vocabulary import evaluate
 from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
-from eval.vocabulary import evaluate
 
 pytestmark = [pytest.mark.scope]
 

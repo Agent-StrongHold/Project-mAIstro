@@ -211,7 +211,7 @@ Phase 0/1 installment criteria — proven by the tests below and bound via
 ## Source references
 
 - `packages/maistro-core/src/maistro/capabilities/approval_store.py` — durable approval seam.
-- `packages/hive-conductor/backend/routes/hitl.py` — HITL door audit seam.
+- `packages/hive-conductor/backend/hive_conductor/routes/hitl.py` — HITL door audit seam.
 - `packages/maistro-core/src/maistro/graph/nodes/human_approve_draft.py` — verdict seam.
 - Biscuit authorization format — attenuation tokens, offline verification.
 

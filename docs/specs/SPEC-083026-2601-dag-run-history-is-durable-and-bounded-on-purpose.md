@@ -27,9 +27,9 @@ contracts:
 tests:
   - packages/hive-conductor/backend/tests/test_dag_run_history_durability.py
 source:
-  - packages/hive-conductor/backend/services/dag_run_store.py
-  - packages/hive-conductor/backend/routes/dag_runs.py
-  - packages/hive-conductor/backend/routes/dags.py
+  - packages/hive-conductor/backend/hive_conductor/services/dag_run_store.py
+  - packages/hive-conductor/backend/hive_conductor/routes/dag_runs.py
+  - packages/hive-conductor/backend/hive_conductor/routes/dags.py
 ac-modules:
   AC-1: '@flat/hive-conductor/services.dag_run_store'
   AC-2: '@flat/hive-conductor/services.dag_run_store'

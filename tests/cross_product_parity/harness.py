@@ -104,7 +104,7 @@ EVOLVE = Dependency(
     description="The shipped Evolve cycle returns and records its canonical Run identity.",
     probes=(
         SourceProbe(
-            "packages/hive-conductor/backend/services/evolution.py",
+            "packages/hive-conductor/backend/hive_conductor/services/evolution.py",
             required_tokens=("run_canonical_evolution_cycle", "last_run_id"),
         ),
     ),
@@ -117,7 +117,7 @@ SCHEDULER = Dependency(
     description="The live scheduler delegates occurrence admission to ScheduleRunAdmitter.",
     probes=(
         SourceProbe(
-            "packages/hive-conductor/backend/services/scheduler.py",
+            "packages/hive-conductor/backend/hive_conductor/services/scheduler.py",
             required_tokens=("ScheduleRunAdmitter", "_canonical_admitter"),
         ),
     ),
@@ -133,7 +133,7 @@ CONDUCTOR_INSPECTION = Dependency(
     ),
     probes=(
         SourceProbe(
-            "packages/hive-conductor/backend/routes/dag_runs.py",
+            "packages/hive-conductor/backend/hive_conductor/routes/dag_runs.py",
             required_tokens=("run_store",),
             forbidden_tokens=("from services.dag_run_store import get_dag_run_store",),
         ),

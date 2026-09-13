@@ -11,20 +11,17 @@ from __future__ import annotations
 
 import asyncio
 import pathlib
-import sys
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 
 @pytest.fixture(autouse=True)
 def _reset_singleton():
-    import services.scheduler as sched
+    import hive_conductor.services.scheduler as sched
 
     prev = sched._runner
     sched._runner = None
@@ -64,7 +61,7 @@ def _schedule_stub(
 
 
 def test_start_scheduler_creates_singleton_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    import services.scheduler as sched
+    import hive_conductor.services.scheduler as sched
 
     def _swallow(coro: Any) -> Any:
         coro.close()
@@ -81,7 +78,7 @@ def test_start_scheduler_creates_singleton_once(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_stop_scheduler_clears_singleton(monkeypatch: pytest.MonkeyPatch) -> None:
-    import services.scheduler as sched
+    import hive_conductor.services.scheduler as sched
 
     def _swallow(coro: Any) -> Any:
         coro.close()
@@ -95,7 +92,7 @@ def test_stop_scheduler_clears_singleton(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_stop_scheduler_when_not_running_is_noop() -> None:
-    import services.scheduler as sched
+    import hive_conductor.services.scheduler as sched
 
     assert sched._runner is None
     sched.stop_scheduler()
@@ -103,7 +100,7 @@ def test_stop_scheduler_when_not_running_is_noop() -> None:
 
 
 def test_runner_stop_flips_running() -> None:
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     runner = _ScheduleRunner()
     assert runner._running is True
@@ -115,7 +112,7 @@ def test_runner_stop_flips_running() -> None:
 
 
 def test_row_projects_onto_a_canonical_schedule_definition() -> None:
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     from maistro.scheduling import OverlapPolicy
 
@@ -137,7 +134,7 @@ def test_row_projects_onto_a_canonical_schedule_definition() -> None:
 def test_sunday_schedules_now_evaluate_on_sunday() -> None:
     """End-to-end guard on the bug the deleted matcher had: `0 9 * * 0` used to
     fire Monday because day-of-week was indexed by Python's Monday=0."""
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     definition = _ScheduleRunner()._as_definition(
         "s1", _schedule_stub("s1", "tpl", cron="0 9 * * 0")
@@ -150,7 +147,7 @@ def test_sunday_schedules_now_evaluate_on_sunday() -> None:
 def test_a_row_with_no_target_is_not_evaluated() -> None:
     """A schedule that names nothing to run cannot produce work; it is skipped
     rather than "fired" into nothing."""
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     assert _ScheduleRunner()._as_definition("s", _schedule_stub("s", None)) is None
 
@@ -158,7 +155,7 @@ def test_a_row_with_no_target_is_not_evaluated() -> None:
 def test_a_row_without_a_creation_time_still_fires() -> None:
     """A row predating the column must not be read as brand new — that would
     suppress every occurrence and silently retire the schedule."""
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     stub = _schedule_stub("s", "tpl", cron="0 * * * *")
     stub.created_at = None
@@ -171,8 +168,8 @@ def test_a_row_without_a_creation_time_still_fires() -> None:
 
 
 def test_tick_evaluates_enabled_schedules_only(monkeypatch: pytest.MonkeyPatch) -> None:
-    import services.scheduler as sched_mod
-    from services.scheduler import _ScheduleRunner
+    import hive_conductor.services.scheduler as sched_mod
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     evaluated: list[str] = []
 
@@ -182,7 +179,7 @@ def test_tick_evaluates_enabled_schedules_only(monkeypatch: pytest.MonkeyPatch) 
             "off": _schedule_stub("off", None, enabled=False),
         }
 
-    monkeypatch.setitem(sys.modules, "stores", _FakeStores)
+    monkeypatch.setattr("hive_conductor.stores.schedules", _FakeStores.schedules)
 
     async def _capture(self: Any, sid: str, schedule: Any, *, now: datetime) -> None:
         evaluated.append(sid)
@@ -195,12 +192,12 @@ def test_tick_evaluates_enabled_schedules_only(monkeypatch: pytest.MonkeyPatch) 
 
 def test_tick_swallows_evaluation_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     """One bad schedule must not stop the loop for every other schedule."""
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     class _FakeStores:
         schedules: ClassVar = {"s": _schedule_stub("s", None)}
 
-    monkeypatch.setitem(sys.modules, "stores", _FakeStores)
+    monkeypatch.setattr("hive_conductor.stores.schedules", _FakeStores.schedules)
 
     async def _boom(self: Any, sid: str, schedule: Any, *, now: datetime) -> None:
         raise RuntimeError("synthetic")
@@ -210,7 +207,7 @@ def test_tick_swallows_evaluation_errors(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_evaluate_fires_a_due_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     fired: list[tuple[datetime, bool]] = []
 
@@ -246,7 +243,7 @@ def test_an_on_time_fire_is_not_marked_as_a_catch_up(monkeypatch: pytest.MonkeyP
     Without this, threading `catchup` through would look correct while always
     passing `True` — a flag that is never `False` carries no information.
     """
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     fired: list[tuple[datetime, bool]] = []
 
@@ -275,7 +272,7 @@ def test_an_in_flight_schedule_does_not_stack_a_second_run(
 ) -> None:
     """Overlap SKIP: the default that keeps a twenty-minute agent Run off a
     fifteen-minute schedule's back."""
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     fired: list[str] = []
 
@@ -304,8 +301,8 @@ def test_an_in_flight_schedule_does_not_stack_a_second_run(
 def test_run_loop_logs_and_continues_on_tick_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.scheduler as sched_mod
-    from services.scheduler import _ScheduleRunner
+    import hive_conductor.services.scheduler as sched_mod
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     calls = [0]
 
@@ -331,9 +328,9 @@ def test_run_loop_logs_and_continues_on_tick_exception(
 def test_fire_schedule_with_registered_dag_produces_canonical_run() -> None:
     """A firing whose target is a registered DAG executes through the canonical
     durable path and audits the Run identity, not just that it fired."""
-    import stores
-    from services.dag_agents import get_registry
-    from services.scheduler import _ScheduleRunner
+    import hive_conductor.stores as stores
+    from hive_conductor.services.dag_agents import get_registry
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     registry = get_registry()
     registry.register(
@@ -380,9 +377,9 @@ def test_a_scheduled_run_records_its_schedule_on_the_run() -> None:
     (#41) and chat turns (#131) both carry theirs on the Run; scheduling was
     the outlier (#145).
     """
-    import stores
-    from services.dag_agents import get_registry
-    from services.scheduler import _ScheduleRunner
+    import hive_conductor.stores as stores
+    from hive_conductor.services.dag_agents import get_registry
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     registry = get_registry()
     registry.register(
@@ -406,7 +403,7 @@ def test_a_scheduled_run_records_its_schedule_on_the_run() -> None:
 
         # The fallback store, because this test boots no Container: with one,
         # the Run is a row on the canonical spine instead (#44).
-        from services.dag_agents import _fallback_run_store
+        from hive_conductor.services.dag_agents import _fallback_run_store
 
         runs = [r.run for r in _fallback_run_store._rows.values()]  # type: ignore[attr-defined]
         scheduled = [r for r in runs if r.provenance.get("schedule_id") == "s-prov"]
@@ -431,9 +428,9 @@ def test_a_schedule_firing_mints_its_own_request_id() -> None:
     ids happen to still be bound on this event loop tick -- it starts clean
     and mints its own root, the same hazard `detached_execution_context`
     documents for a transactional-outbox publisher."""
-    import stores
-    from services.dag_agents import get_registry
-    from services.scheduler import _ScheduleRunner
+    import hive_conductor.stores as stores
+    from hive_conductor.services.dag_agents import get_registry
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     from maistro.observability.correlation import bind_execution_context
 
@@ -459,7 +456,7 @@ def test_a_schedule_firing_mints_its_own_request_id() -> None:
                 _ScheduleRunner()._fire_schedule("s-reqid", stub, scheduled_for=scheduled_for)
             )
 
-        from services.dag_agents import _fallback_run_store
+        from hive_conductor.services.dag_agents import _fallback_run_store
 
         runs = [r.run for r in _fallback_run_store._rows.values()]  # type: ignore[attr-defined]
         scheduled = [r for r in runs if r.provenance.get("schedule_id") == "s-reqid"]
@@ -473,9 +470,9 @@ def test_a_schedule_firing_mints_its_own_request_id() -> None:
 
 
 def test_two_firings_of_the_same_schedule_get_different_request_ids() -> None:
-    import stores
-    from services.dag_agents import get_registry
-    from services.scheduler import _ScheduleRunner
+    import hive_conductor.stores as stores
+    from hive_conductor.services.dag_agents import get_registry
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     registry = get_registry()
     registry.register(
@@ -502,7 +499,7 @@ def test_two_firings_of_the_same_schedule_get_different_request_ids() -> None:
             )
         )
 
-        from services.dag_agents import _fallback_run_store
+        from hive_conductor.services.dag_agents import _fallback_run_store
 
         runs = [r.run for r in _fallback_run_store._rows.values()]  # type: ignore[attr-defined]
         scheduled = [r for r in runs if r.provenance.get("schedule_id") == "s-reqid-2"]
@@ -524,8 +521,8 @@ def test_fire_schedule_unresolved_template_says_so_instead_of_going_quiet() -> N
     normal state after a restart — exactly when an operator most needs to be
     told that a schedule is firing into nothing.
     """
-    import stores
-    from services.scheduler import _ScheduleRunner
+    import hive_conductor.stores as stores
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     stub = _schedule_stub("s-noop", "tpl-not-a-dag")
     stores.schedules._data["s-noop"] = stub  # type: ignore[attr-defined]
@@ -543,8 +540,8 @@ def test_fire_schedule_unresolved_template_says_so_instead_of_going_quiet() -> N
 
 
 def test_fire_schedule_no_template_id_skips_audit() -> None:
-    import stores
-    from services.scheduler import _ScheduleRunner
+    import hive_conductor.stores as stores
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     stub = _schedule_stub("s2", None)
     stores.schedules._data["s2"] = stub  # type: ignore[attr-defined]
@@ -562,9 +559,9 @@ def test_fire_schedule_no_template_id_skips_audit() -> None:
 def test_fire_schedule_run_failure_is_audited_not_raised(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import stores
-    from services.dag_agents import get_registry
-    from services.scheduler import _ScheduleRunner
+    import hive_conductor.stores as stores
+    from hive_conductor.services.dag_agents import get_registry
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     registry = get_registry()
     registry.register(
@@ -580,7 +577,7 @@ def test_fire_schedule_run_failure_is_audited_not_raised(
     async def _boom(*a: Any, **kw: Any) -> Any:
         raise RuntimeError("synthetic run failure")
 
-    import services.dag_agents as dag_agents_mod
+    import hive_conductor.services.dag_agents as dag_agents_mod
 
     monkeypatch.setattr(dag_agents_mod, "run_durable_graph", _boom)
 
@@ -605,7 +602,7 @@ def test_fire_schedule_run_failure_is_audited_not_raised(
 
 
 def _register(dag_id: str) -> None:
-    from services.dag_agents import get_registry
+    from hive_conductor.services.dag_agents import get_registry
 
     get_registry().register(
         {
@@ -651,7 +648,7 @@ class _RecordingStore:
 
 
 def _run_evaluate(sid: str, stub: Any, *, now: datetime, store: Any = None) -> None:
-    import services.scheduler as sched
+    import hive_conductor.services.scheduler as sched
 
     runner = sched._ScheduleRunner()
     runner._canonical_store = staticmethod(lambda: store)  # type: ignore[method-assign]
@@ -666,7 +663,7 @@ def test_an_unregistered_template_leaves_the_occurrence_owed() -> None:
     the template was unregistered afterwards, so the schedule asserted it had
     fired with no `run_id` anywhere — a receipt for work that never started.
     """
-    import stores
+    import hive_conductor.stores as stores
 
     now = datetime(2026, 8, 21, 12, 5, tzinfo=UTC)
     stub = _schedule_stub(
@@ -685,7 +682,7 @@ def test_an_unregistered_template_leaves_the_occurrence_owed() -> None:
 
 def test_the_owed_occurrence_fires_once_the_template_resolves() -> None:
     """The other half: leaving it owed is only right if it can still happen."""
-    import stores
+    import hive_conductor.stores as stores
 
     now = datetime(2026, 8, 21, 12, 5, tzinfo=UTC)
     stub = _schedule_stub(
@@ -714,7 +711,7 @@ def test_the_owed_occurrence_fires_once_the_template_resolves() -> None:
 
 def test_the_cursor_records_the_run_that_claimed_the_occurrence() -> None:
     """`last_run_id` must resolve to the canonical Run, not to nothing."""
-    import stores
+    import hive_conductor.stores as stores
 
     _register("sched-cursor")
     now = datetime(2026, 8, 21, 12, 5, tzinfo=UTC)
@@ -743,7 +740,7 @@ def test_the_durable_cursor_outranks_the_in_memory_row() -> None:
     Without this the schedule would re-fire every occurrence inside the
     catch-up window on the first tick after every restart.
     """
-    import stores
+    import hive_conductor.stores as stores
 
     from maistro.scheduling import Schedule
 
@@ -772,7 +769,7 @@ def test_the_durable_cursor_outranks_the_in_memory_row() -> None:
 
 def test_without_a_bridge_the_scheduler_still_fires() -> None:
     """No Container, no canonical store — the loop degrades, it does not stop."""
-    import stores
+    import hive_conductor.stores as stores
 
     _register("sched-no-bridge")
     now = datetime(2026, 8, 21, 12, 5, tzinfo=UTC)
@@ -810,7 +807,7 @@ def _bounded_stub(
 
 def _schedule_runs(sid: str, *, since: int) -> list[dict[str, Any]]:
     """The `schedule_run` audit entries for `sid` that carry a run_id."""
-    import stores
+    import hive_conductor.stores as stores
 
     return [
         e
@@ -822,7 +819,7 @@ def _schedule_runs(sid: str, *, since: int) -> list[dict[str, Any]]:
 def test_the_definition_takes_its_zone_and_bound_from_the_row() -> None:
     """Both used to be unreachable: the zone was hardcoded UTC and the bound
     was never set, so `max_runs` could not be applied by any caller."""
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     definition = _ScheduleRunner()._as_definition(
         "s1", _bounded_stub("s1", "tpl", timezone="America/Chicago", max_runs=4)
@@ -835,7 +832,7 @@ def test_the_definition_takes_its_zone_and_bound_from_the_row() -> None:
 def test_a_row_without_the_new_columns_still_projects() -> None:
     """The columns are additive: a row persisted before them keeps firing, in
     UTC and unbounded, which is exactly what it did."""
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     stub = _schedule_stub("legacy", "tpl")
     assert not hasattr(stub, "timezone")
@@ -850,7 +847,7 @@ def test_the_definition_carries_the_rows_disabled_flag() -> None:
     """`enabled` used to be hardcoded True. `_definition_for` ends in
     `store.put(...)`, so a hardcoded True there puts an `enabled: true`
     straight back over a disable `record_fire` had just written."""
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     stub = _schedule_stub("off", "tpl", enabled=False)
     definition = _ScheduleRunner()._as_definition("off", stub)
@@ -866,7 +863,7 @@ def test_a_non_utc_zone_is_evaluated_in_that_zone() -> None:
     its 09:00 is 14:00 UTC. Before the column existed every schedule was
     evaluated in UTC, so this one fired five hours early.
     """
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     runner = _ScheduleRunner()
     local = runner._as_definition(
@@ -888,7 +885,7 @@ def test_a_non_utc_zone_is_evaluated_in_that_zone() -> None:
 def test_a_bounded_schedule_fires_its_bound_and_then_disables() -> None:
     """AC: `max_runs: 3` fires exactly three times through the real runner,
     and the `/v1/schedules` row then reports `enabled: false`."""
-    import stores
+    import hive_conductor.stores as stores
 
     from maistro.scheduling import InMemoryScheduleStore
 
@@ -931,7 +928,7 @@ def test_the_disable_is_not_resurrected_by_the_next_tick() -> None:
     just written — leaving a spent schedule enabled, reported as due forever
     (`_is_due` reads a null `next_due_at` as due), and never firing.
     """
-    import stores
+    import hive_conductor.stores as stores
 
     from maistro.scheduling import InMemoryScheduleStore
 
@@ -967,7 +964,7 @@ def test_the_disable_is_not_resurrected_by_the_next_tick() -> None:
 def test_the_row_carries_the_run_that_claimed_the_occurrence() -> None:
     """AC: `last_run_id` on the row resolves to the canonical Run. `last_run`
     alone said only *that* something fired."""
-    import stores
+    import hive_conductor.stores as stores
 
     from maistro.scheduling import InMemoryScheduleStore
 
@@ -995,7 +992,7 @@ def test_the_row_carries_the_run_that_claimed_the_occurrence() -> None:
 
 
 def _with_store(monkeypatch: pytest.MonkeyPatch, store: Any) -> None:
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     monkeypatch.setattr(_ScheduleRunner, "_canonical_store", staticmethod(lambda: store))
 
@@ -1004,8 +1001,8 @@ def test_a_manual_run_creates_a_run_and_records_it(monkeypatch: pytest.MonkeyPat
     """The endpoint used to stamp `last_run` and stop: no Run, no cursor,
     nothing counted. That is the receipt-for-work-that-never-started defect
     #231 removed from the tick path, still live on the route."""
-    import stores
-    from services.scheduler import fire_now
+    import hive_conductor.stores as stores
+    from hive_conductor.services.scheduler import fire_now
 
     from maistro.scheduling import InMemoryScheduleStore
 
@@ -1040,8 +1037,8 @@ def test_a_manual_run_preserves_the_http_requests_id(monkeypatch: pytest.MonkeyP
     it rather than minting an unrelated one, or the request/response and the
     resulting Run's provenance would carry two different correlation ids for
     the same logical request."""
-    import stores
-    from services.scheduler import fire_now
+    import hive_conductor.stores as stores
+    from hive_conductor.services.scheduler import fire_now
 
     from maistro.observability.correlation import bind_execution_context
     from maistro.scheduling import InMemoryScheduleStore
@@ -1054,7 +1051,7 @@ def test_a_manual_run_preserves_the_http_requests_id(monkeypatch: pytest.MonkeyP
         with bind_execution_context(request_id="http-req-42"):
             run_id = asyncio.run(fire_now("s-man-reqid"))
 
-        from services.dag_agents import _fallback_run_store
+        from hive_conductor.services.dag_agents import _fallback_run_store
 
         run = _fallback_run_store._rows[run_id].run  # type: ignore[attr-defined]
         assert run.provenance["request_id"] == "http-req-42"
@@ -1068,8 +1065,8 @@ def test_a_manual_run_with_no_ambient_request_mints_its_own(
     """A manual fire triggered with no request id in scope (e.g. a script
     calling the service function directly) still gets a real one, not a
     blank provenance field."""
-    import stores
-    from services.scheduler import fire_now
+    import hive_conductor.stores as stores
+    from hive_conductor.services.scheduler import fire_now
 
     from maistro.scheduling import InMemoryScheduleStore
 
@@ -1080,7 +1077,7 @@ def test_a_manual_run_with_no_ambient_request_mints_its_own(
     try:
         run_id = asyncio.run(fire_now("s-man-noreqid"))
 
-        from services.dag_agents import _fallback_run_store
+        from hive_conductor.services.dag_agents import _fallback_run_store
 
         run = _fallback_run_store._rows[run_id].run  # type: ignore[attr-defined]
         assert run.provenance.get("request_id")
@@ -1093,8 +1090,8 @@ def test_a_manual_run_that_cannot_start_leaves_no_stamp(
 ) -> None:
     """Refusing is the whole point: the caller asked for work to start and it
     did not, so the schedule must not claim otherwise."""
-    import stores
-    from services.scheduler import ScheduleNotFireable, fire_now
+    import hive_conductor.stores as stores
+    from hive_conductor.services.scheduler import ScheduleNotFireable, fire_now
 
     from maistro.scheduling import InMemoryScheduleStore
 
@@ -1113,8 +1110,8 @@ def test_a_manual_run_that_cannot_start_leaves_no_stamp(
 
 def test_a_manual_run_respects_the_bound(monkeypatch: pytest.MonkeyPatch) -> None:
     """`max_runs` bounds every firing, not only the scheduled ones."""
-    import stores
-    from services.scheduler import ScheduleNotFireable, fire_now
+    import hive_conductor.stores as stores
+    from hive_conductor.services.scheduler import ScheduleNotFireable, fire_now
 
     from maistro.scheduling import InMemoryScheduleStore
 
@@ -1136,8 +1133,8 @@ def test_a_manual_run_respects_the_bound(monkeypatch: pytest.MonkeyPatch) -> Non
 def test_a_manual_run_of_a_targetless_schedule_is_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import stores
-    from services.scheduler import ScheduleNotFireable, fire_now
+    import hive_conductor.stores as stores
+    from hive_conductor.services.scheduler import ScheduleNotFireable, fire_now
 
     from maistro.scheduling import InMemoryScheduleStore
 
@@ -1151,7 +1148,7 @@ def test_a_manual_run_of_a_targetless_schedule_is_refused(
 
 
 def test_a_manual_run_of_an_unknown_schedule_is_refused() -> None:
-    from services.scheduler import ScheduleNotFireable, fire_now
+    from hive_conductor.services.scheduler import ScheduleNotFireable, fire_now
 
     with pytest.raises(ScheduleNotFireable, match="does not exist"):
         asyncio.run(fire_now("s-nope"))
@@ -1320,7 +1317,7 @@ def test_a_fire_recorded_after_the_row_was_read_survives_the_definition_refresh(
     every tick. The cursors it returns and leaves on disk are the store's,
     so a `record_fire` that landed since the row was read is not written
     back over by the stale copy (Codex, #1199)."""
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     from maistro.scheduling import InMemoryScheduleStore
 

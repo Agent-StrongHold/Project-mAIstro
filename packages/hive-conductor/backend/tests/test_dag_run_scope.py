@@ -33,7 +33,6 @@ infinite (keepalives), so the transport can never see it finish.
 from __future__ import annotations
 
 import asyncio
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -42,8 +41,6 @@ import pytest
 from fastapi import HTTPException
 
 _BACKEND = Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 pytestmark = [pytest.mark.contract("boundary")]
 
@@ -63,7 +60,7 @@ class _ScopedRequest:
 
 async def _seed_run_async(run_id: str, *, workspace_id: str = "", user_id: str = "") -> None:
     """Put one run row into the projection, carrying (or lacking) scope."""
-    from services.dag_run_store import get_dag_run_store
+    from hive_conductor.services.dag_run_store import get_dag_run_store
 
     store = get_dag_run_store()
     await store.start_run(run_id=run_id, user_id=user_id, workspace_id=workspace_id)
@@ -85,7 +82,7 @@ def _wipe_verdicts():
     """Verdicts outlive runs in the persistence half, and this suite records
     some (the eval-judge read-side tests): isolate them per test so a verdict
     recorded for one test's run id can never answer another test's."""
-    import stores
+    import hive_conductor.stores as stores
 
     for key in list(stores.eval_verdicts.keys()):
         stores.eval_verdicts.pop(key)
@@ -121,7 +118,7 @@ def test_list_hides_runs_outside_the_callers_workspace(
     mine = _workspace(authed_client, "Mine")
     _seed_run("r-mine", workspace_id=mine)
 
-    from services.workspace_authority import list_views_for_user
+    from hive_conductor.services.workspace_authority import list_views_for_user
 
     rows = authed_client.get("/v1/dag-runs").json()
     allowed = {view.id for view in asyncio.run(list_views_for_user(_AUTHED_USER_ID))}
@@ -205,7 +202,7 @@ async def test_sse_streams_and_replays_inside_the_callers_workspace(
     ws = _workspace(authed_client, "Mine")
     await _seed_run_async("r-mine", workspace_id=ws)
 
-    from routes.dag_runs import stream_run_events
+    from hive_conductor.routes.dag_runs import stream_run_events
 
     response = await stream_run_events("r-mine", _ScopedRequest(_AUTHED_USER_ID))
     assert response.media_type == "text/event-stream"
@@ -236,8 +233,8 @@ async def test_live_sse_stops_after_workspace_membership_is_revoked(
     assert added.status_code == 200, added.text
     await _seed_run_async("r-live-revoked", workspace_id=ws)
 
-    from routes.dag_runs import stream_run_events
-    from services.dag_run_store import get_dag_run_store
+    from hive_conductor.routes.dag_runs import stream_run_events
+    from hive_conductor.services.dag_run_store import get_dag_run_store
 
     response = await stream_run_events("r-live-revoked", _ScopedRequest(_AUTHED_USER_ID))
     iterator = response.body_iterator
@@ -271,8 +268,8 @@ async def test_sse_emits_keepalive_then_honors_disconnect(
     ws = _workspace(authed_client, "Keepalive")
     await _seed_run_async("r-keepalive", workspace_id=ws)
 
-    from routes import dag_runs
-    from routes.dag_runs import stream_run_events
+    from hive_conductor.routes import dag_runs
+    from hive_conductor.routes.dag_runs import stream_run_events
 
     class _DisconnectAfterKeepalive(_ScopedRequest):
         calls = 0
@@ -308,8 +305,8 @@ async def test_sse_stops_when_membership_is_revoked_during_idle_poll(
     assert added.status_code == 200, added.text
     await _seed_run_async("r-revoked-during-poll", workspace_id=ws)
 
-    from routes import dag_runs
-    from routes.dag_runs import stream_run_events
+    from hive_conductor.routes import dag_runs
+    from hive_conductor.routes.dag_runs import stream_run_events
 
     async def _timeout_after_revoke(awaitable: Any, **_kwargs: Any) -> None:
         awaitable.close()
@@ -336,7 +333,7 @@ async def test_sse_rechecks_scope_before_first_frame(authed_client: Any, admin_c
     assert added.status_code == 200, added.text
     await _seed_run_async("r-revoked-before-start", workspace_id=ws)
 
-    from routes.dag_runs import stream_run_events
+    from hive_conductor.routes.dag_runs import stream_run_events
 
     response = await stream_run_events("r-revoked-before-start", _ScopedRequest(_AUTHED_USER_ID))
     revoked = admin_client.delete(f"/v1/workspaces/{ws}/members/{_AUTHED_USER_ID}")
@@ -370,7 +367,7 @@ def test_unauthenticated_reads_are_refused_before_any_existence_signal(
     _seed_run("r-theirs", workspace_id=theirs)
 
     from fastapi.testclient import TestClient
-    from main import app
+    from hive_conductor.main import app
 
     anonymous = TestClient(app)
     r = anonymous.get(path)
@@ -389,7 +386,7 @@ def test_dag_run_handlers_fail_closed_without_a_principal() -> None:
     `getattr(...) or {}` into a scope resolution for the empty principal.
     The run below EXISTS, so the 401 also proves the refusal happens before
     any store read, not merely alongside one."""
-    from routes import dag_runs
+    from hive_conductor.routes import dag_runs
 
     _seed_run("r-anon", workspace_id="ws-exists")
 
@@ -405,7 +402,7 @@ def test_eval_judge_handlers_fail_closed_without_a_principal() -> None:
     names its principal before it authorizes the run, so a request without
     one is a 401 — never a verdict, and never a scoped existence answer
     computed for a principal nobody authenticated (#1174)."""
-    from routes import eval_judge as eval_judge_routes
+    from hive_conductor.routes import eval_judge as eval_judge_routes
 
     request = SimpleNamespace(state=SimpleNamespace())
     with pytest.raises(HTTPException) as excinfo:
@@ -440,7 +437,7 @@ def test_eval_judge_verdict_read_refuses_an_out_of_scope_run_like_a_missing_one(
     theirs = _workspace(admin_client, "Admin Verdicts")
     _seed_run("r-theirs", workspace_id=theirs)
 
-    from services.eval_judge import _persist
+    from hive_conductor.services.eval_judge import _persist
 
     _persist(
         SimpleNamespace(run_id="r-theirs"),
@@ -460,7 +457,7 @@ def test_eval_judge_serves_a_verdict_inside_the_callers_workspace(
     ws = _workspace(authed_client, "Mine")
     _seed_run("r-mine", workspace_id=ws)
 
-    from services.eval_judge import _persist
+    from hive_conductor.services.eval_judge import _persist
 
     _persist(
         SimpleNamespace(run_id="r-mine"),
@@ -490,7 +487,7 @@ def test_eval_judge_list_hides_out_of_scope_verdicts(authed_client: Any, admin_c
     _seed_run("r-theirs", workspace_id=ws)
     _seed_run("r-mine", workspace_id=mine)
 
-    from services.eval_judge import _persist
+    from hive_conductor.services.eval_judge import _persist
 
     _persist(SimpleNamespace(run_id="r-theirs"), {"score": 1, "status": "ok"})
     _persist(SimpleNamespace(run_id="r-mine"), {"score": 2, "status": "ok"})
@@ -507,7 +504,7 @@ def test_canonical_projection_mirrors_run_scope_verbatim() -> None:
     """`_project` copies the scope fields straight off the canonical Run
     record — run_id, workspace_id, project_id — so the projection writers
     never re-derive them (#1174)."""
-    from services.canonical_dag_runner import _project
+    from hive_conductor.services.canonical_dag_runner import _project
 
     from maistro.graph.durable_runs import RunStatus
 
@@ -539,8 +536,8 @@ def test_run_route_projection_is_born_with_canonical_scope_and_enforced(
     foreign principal gets the non-existence answer."""
     import asyncio
 
-    from routes.dags import _record_run_projection
-    from services.dag_run_store import get_dag_run_store
+    from hive_conductor.routes.dags import _record_run_projection
+    from hive_conductor.services.dag_run_store import get_dag_run_store
 
     ws = _workspace(authed_client, "Mine")
     asyncio.run(
@@ -580,11 +577,11 @@ def test_chat_workflow_tool_opens_the_projection_with_resolved_scope(
     mapping (#1174)."""
     import asyncio
 
-    import services.eval_judge as eval_judge_service
-    import services.graph_runner as graph_runner
-    import stores
-    from services.chat_completion import _tool_run_workflow
-    from services.dag_run_store import get_dag_run_store
+    import hive_conductor.services.eval_judge as eval_judge_service
+    import hive_conductor.services.graph_runner as graph_runner
+    import hive_conductor.stores as stores
+    from hive_conductor.services.chat_completion import _tool_run_workflow
+    from hive_conductor.services.dag_run_store import get_dag_run_store
 
     ws = _workspace(authed_client, "Chat Scope")
     dag_id = "dag-chat-scope"
@@ -654,7 +651,7 @@ def test_revoking_workspace_membership_revokes_run_visibility(
 
 async def test_a_record_without_any_run_identity_is_returned_verbatim() -> None:
     """A row with no canonical_run_id and no id has nothing to overlay."""
-    from services.dag_run_inspection import _canonical_projection
+    from hive_conductor.services.dag_run_inspection import _canonical_projection
 
     record = {"status": "running", "name": "Local only"}
     assert await _canonical_projection(dict(record)) == record
@@ -663,8 +660,8 @@ async def test_a_record_without_any_run_identity_is_returned_verbatim() -> None:
 async def test_projection_reads_stay_local_when_the_spine_has_no_store(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.engine as engine_mod
-    from services.dag_run_inspection import _canonical_projection
+    import hive_conductor.services.engine as engine_mod
+    from hive_conductor.services.dag_run_inspection import _canonical_projection
 
     monkeypatch.setattr(engine_mod, "_singleton", SimpleNamespace(run_store=None))
     record = {"id": "r-standalone", "status": "running"}
@@ -675,8 +672,8 @@ async def test_projection_reads_stay_local_when_the_spine_has_no_store(
 async def test_projection_never_invents_a_run_the_spine_never_saw(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.engine as engine_mod
-    from services.dag_run_inspection import _canonical_projection
+    import hive_conductor.services.engine as engine_mod
+    from hive_conductor.services.dag_run_inspection import _canonical_projection
 
     from maistro.projects.scope_store import InMemoryProjectScopeStore
     from maistro.runs import InMemoryRunStore
@@ -697,8 +694,8 @@ async def test_projection_reads_stay_local_when_the_spine_is_down(
     when the spine raises — reads stay available and canonical status is
     never invented.
     """
-    import services.engine as engine_mod
-    from services.dag_run_inspection import _canonical_projection
+    import hive_conductor.services.engine as engine_mod
+    from hive_conductor.services.dag_run_inspection import _canonical_projection
 
     def _engine_down() -> object:
         raise RuntimeError("spine unavailable")

@@ -1,7 +1,7 @@
 """`daily-status` — the PM Fleet's first user-modifiable default DAG.
 
 Replaces the hard-coded polling logic that lived in
-`hive-conductor/backend/routes/daily_report.py`. The same Jira + Airtable
+`hive-conductor/backend/hive_conductor/routes/daily_report.py`. The same Jira + Airtable
 + research + suggested-actions composition expressed as a DAG of registered
 nodes — so the user can edit it in DagBuilder, optimizer can mutate it
 under the 5-signal aggregator, and topology_compare can A/B it against

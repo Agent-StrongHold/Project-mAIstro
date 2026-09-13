@@ -16,16 +16,13 @@ from __future__ import annotations
 
 import ast
 import pathlib
-import sys
 from typing import Any, ClassVar
 
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
-from services.node_metrics_store import (  # noqa: E402
+from hive_conductor.services.node_metrics_store import (  # noqa: E402
     NodeMetricsStore,
     NodeObservation,
 )
@@ -125,7 +122,7 @@ class TestTheIngestHasAProductionCaller:
         this pins is that the finished record reaches the metrics ingest at
         all, which is what had no path into it.
         """
-        from services import dag_agents
+        from hive_conductor.services import dag_agents
 
         source = pathlib.Path(dag_agents.__file__).read_text(encoding="utf-8")
         calls = [
@@ -141,7 +138,7 @@ class TestTheIngestHasAProductionCaller:
     @pytest.mark.ac("SPEC-083026-2642/AC-3")
     def test_an_unmeasured_ingest_leaves_the_fields_absent(self) -> None:
         """The ingest itself: real latency, absent tokens and cost."""
-        from services.node_metrics_store import record_run_completion, set_store
+        from hive_conductor.services.node_metrics_store import record_run_completion, set_store
 
         store = NodeMetricsStore()
         previous = _current_store()
@@ -162,7 +159,7 @@ class TestTheIngestHasAProductionCaller:
         (the legacy adapter validates it onto every outcome), and the ingest
         copies it without re-resolving. A result with no model -- a tool node,
         a non-legacy node -- records the empty string, not a guess."""
-        from services.node_metrics_store import record_run_completion, set_store
+        from hive_conductor.services.node_metrics_store import record_run_completion, set_store
 
         class _NodeRunWithResult(_FakeNodeRun):
             result: ClassVar[dict[str, Any]] = {
@@ -190,7 +187,7 @@ class TestTheIngestHasAProductionCaller:
     @pytest.mark.ac("SPEC-083026-2642/AC-3")
     def test_a_node_run_with_no_timestamps_has_no_latency(self) -> None:
         """`None`, not `0`. Zero would be the fastest node in the window."""
-        from services.node_metrics_store import _latency_ms
+        from hive_conductor.services.node_metrics_store import _latency_ms
 
         assert _latency_ms(object()) is None
 
@@ -201,7 +198,9 @@ class TestTheReadersUseThePublicSurface:
     @pytest.mark.ac("SPEC-083026-2642/AC-4")
     @pytest.mark.parametrize("module", ["optimizer", "topology_compare"])
     def test_no_reader_touches_a_private_helper(self, module: str) -> None:
-        source = (_BACKEND / "services" / f"{module}.py").read_text(encoding="utf-8")
+        source = (_BACKEND / "hive_conductor" / "services" / f"{module}.py").read_text(
+            encoding="utf-8"
+        )
         tree = ast.parse(source)
 
         private = {
@@ -237,7 +236,7 @@ class TestTheProcessStoreIsInstalledPerStart:
     @pytest.mark.ac("SPEC-083026-2642/AC-5")
     def test_reset_store_installs_a_fresh_buffer(self) -> None:
         """`set_store` had no production caller; a carried buffer mixes windows."""
-        from services.node_metrics_store import get_store, reset_store, set_store
+        from hive_conductor.services.node_metrics_store import get_store, reset_store, set_store
 
         previous = get_store()
         stale = NodeMetricsStore()
@@ -253,7 +252,7 @@ class TestTheProcessStoreIsInstalledPerStart:
 
     @pytest.mark.ac("SPEC-083026-2642/AC-5")
     def test_the_engine_installs_one_at_start(self) -> None:
-        from services import engine as engine_module
+        from hive_conductor.services import engine as engine_module
 
         source = pathlib.Path(engine_module.__file__).read_text(encoding="utf-8")
 
@@ -261,7 +260,7 @@ class TestTheProcessStoreIsInstalledPerStart:
 
 
 def _current_store() -> NodeMetricsStore:
-    from services.node_metrics_store import get_store
+    from hive_conductor.services.node_metrics_store import get_store
 
     return get_store()
 
@@ -316,14 +315,14 @@ class TestAnUnmeasuredLatencyIsNotTheFastest:
 
     @pytest.mark.ac("SPEC-083026-2642/AC-2")
     def test_a_percentile_over_nothing_is_absent(self) -> None:
-        from services.node_metrics_store import _percentile
+        from hive_conductor.services.node_metrics_store import _percentile
 
         assert _percentile([], 50) is None
         assert _percentile([7], 95) == 7
 
     @pytest.mark.ac("SPEC-083026-2642/AC-2")
     def test_a_window_with_no_timed_node_reports_no_percentiles(self) -> None:
-        from services.node_metrics_store import NodeMetricsStore, NodeObservation
+        from hive_conductor.services.node_metrics_store import NodeMetricsStore, NodeObservation
 
         store = NodeMetricsStore()
         store.append(
@@ -345,8 +344,8 @@ class TestAnUnmeasuredLatencyIsNotTheFastest:
 
     @pytest.mark.ac("SPEC-083026-2642/AC-2")
     def test_an_untimed_bucket_has_no_p95(self) -> None:
-        from services.node_metrics_store import NodeObservation
-        from services.topology_compare import VariantBucket
+        from hive_conductor.services.node_metrics_store import NodeObservation
+        from hive_conductor.services.topology_compare import VariantBucket
 
         bucket = VariantBucket(label="x")
         bucket.observations.append(
@@ -366,7 +365,7 @@ class TestAnUnmeasuredLatencyIsNotTheFastest:
         """The midpoint, not the best score. An unmeasured bucket cannot be
         compared on speed; 1.0 says it was fastest and 0.0 says it was slowest,
         and both are claims the data does not support."""
-        from services.topology_compare import _normalize_measured
+        from hive_conductor.services.topology_compare import _normalize_measured
 
         scores = _normalize_measured([100.0, 900.0, None], invert=True)
         assert scores[0] == 1.0, "the fastest measured bucket still scores best"
@@ -375,7 +374,7 @@ class TestAnUnmeasuredLatencyIsNotTheFastest:
 
     @pytest.mark.ac("SPEC-083026-2642/AC-2")
     def test_when_nothing_is_measured_the_latency_term_stops_deciding(self) -> None:
-        from services.topology_compare import _normalize_measured
+        from hive_conductor.services.topology_compare import _normalize_measured
 
         assert _normalize_measured([None, None], invert=True) == [0.5, 0.5]
 
@@ -398,7 +397,7 @@ class TestTheModelANodeRanOnIsAMeasurement:
 
     @staticmethod
     def _runner_source() -> str:
-        return (_BACKEND / "services/legacy_dag_node.py").read_text()
+        return (_BACKEND / "hive_conductor/services/legacy_dag_node.py").read_text()
 
     @pytest.mark.ac("SPEC-083026-2642/AC-1")
     def test_every_llm_result_carries_the_model_it_called(self) -> None:
@@ -428,7 +427,7 @@ class TestTheModelANodeRanOnIsAMeasurement:
         onto `record_run_completion`, which reads the persisted NodeRun
         result -- the value the node itself reported.
         """
-        source = (_BACKEND / "services/node_metrics_store.py").read_text()
+        source = (_BACKEND / "hive_conductor/services/node_metrics_store.py").read_text()
         call = source[source.index("obs = NodeObservation(") : source.index("_store.append(obs)")]
         assert "model_used=reported_model" in call
         assert 'reported_model = str(result.get("model", ""))' in source
@@ -454,14 +453,14 @@ class TestOnlyATerminalRunIsIngested:
     @pytest.mark.ac("SPEC-083026-2642/AC-3")
     @pytest.mark.parametrize("status", ["completed", "failed", "cancelled", "timed_out"])
     def test_a_finished_run_is_ingested(self, status: str) -> None:
-        from services.dag_agents import _is_terminal
+        from hive_conductor.services.dag_agents import _is_terminal
 
         assert _is_terminal(_record_with_status(status)) is True
 
     @pytest.mark.ac("SPEC-083026-2642/AC-3")
     @pytest.mark.parametrize("status", ["created", "queued", "running", "waiting", "paused"])
     def test_a_run_still_going_is_not(self, status: str) -> None:
-        from services.dag_agents import _is_terminal
+        from hive_conductor.services.dag_agents import _is_terminal
 
         assert _is_terminal(_record_with_status(status)) is False
 
@@ -471,14 +470,14 @@ class TestOnlyATerminalRunIsIngested:
         status is likelier a new terminal state than a new suspended one, and
         reading it as suspended would silently stop recording — the shape of
         defect this whole change removes."""
-        from services.dag_agents import _is_terminal
+        from hive_conductor.services.dag_agents import _is_terminal
 
         assert _is_terminal(_record_with_status("superseded")) is True
         assert _is_terminal(_record_with_status("")) is True
 
     @pytest.mark.ac("SPEC-083026-2642/AC-3")
     def test_a_status_carried_as_an_enum_reads_the_same_as_a_string(self) -> None:
-        from services.dag_agents import _is_terminal
+        from hive_conductor.services.dag_agents import _is_terminal
 
         from maistro.runs.model import RunStatus
 
@@ -512,7 +511,7 @@ _SYNTH_DAG = {
 
 @pytest.fixture()
 def synth_dag_id():
-    from services.dag_agents import get_registry
+    from hive_conductor.services.dag_agents import get_registry
 
     registry = get_registry()
     registry.register(dict(_SYNTH_DAG))
@@ -530,14 +529,15 @@ class TestTheIngestDecisionDrivenThroughTheRealPath:
 
     @pytest.mark.ac("SPEC-083026-2642/AC-3")
     async def test_a_finished_run_reaches_the_ingest(self, synth_dag_id: str) -> None:
-        import services.node_metrics_store as metrics_module
-        from services.dag_agents import run_registered_dag
+        import hive_conductor.services.node_metrics_store as metrics_module
+        from hive_conductor.services.dag_agents import run_registered_dag
 
         seen: list[Any] = []
         with pytest.MonkeyPatch.context() as patch:
             patch.setattr(metrics_module, "record_run_completion", lambda r: seen.append(r) or 1)
             patch.setattr(
-                "services.dag_agents.record_run_completion", lambda r: seen.append(r) or 1
+                "hive_conductor.services.dag_agents.record_run_completion",
+                lambda r: seen.append(r) or 1,
             )
             await run_registered_dag(synth_dag_id, workspace_id="w1", project_id="p1")
         assert len(seen) == 1
@@ -551,13 +551,13 @@ class TestTheIngestDecisionDrivenThroughTheRealPath:
         that the observations were dropped."""
         import logging
 
-        from services.dag_agents import run_registered_dag
+        from hive_conductor.services.dag_agents import run_registered_dag
 
         def _boom(record: Any) -> int:
             raise RuntimeError("the metrics buffer is gone")
 
         with pytest.MonkeyPatch.context() as patch, caplog.at_level(logging.WARNING):
-            patch.setattr("services.dag_agents.record_run_completion", _boom)
+            patch.setattr("hive_conductor.services.dag_agents.record_run_completion", _boom)
             _graph, record = await run_registered_dag(
                 synth_dag_id, workspace_id="w1", project_id="p1"
             )
@@ -572,7 +572,7 @@ class TestTheIngestDecisionDrivenThroughTheRealPath:
         a wait or HITL node hands back a record that is not a finished run."""
         import logging
 
-        import services.dag_agents as dag_agents
+        import hive_conductor.services.dag_agents as dag_agents
 
         real = dag_agents.run_durable_graph
         seen: list[Any] = []
@@ -600,8 +600,8 @@ class TestTheSubprocessNodeReportsItsModelOnEveryOutcome:
 
     @pytest.mark.ac("SPEC-083026-2642/AC-1")
     def test_a_failed_subprocess_node_still_names_its_model(self) -> None:
-        import services.hyperlight_executor as executor_module
-        from services.graph_runner import _run_node_subprocess
+        import hive_conductor.services.hyperlight_executor as executor_module
+        from hive_conductor.services.graph_runner import _run_node_subprocess
 
         class _Executor:
             @staticmethod
@@ -617,8 +617,8 @@ class TestTheSubprocessNodeReportsItsModelOnEveryOutcome:
 
     @pytest.mark.ac("SPEC-083026-2642/AC-1")
     def test_a_subprocess_node_that_raised_still_names_its_model(self) -> None:
-        import services.hyperlight_executor as executor_module
-        from services.graph_runner import _run_node_subprocess
+        import hive_conductor.services.hyperlight_executor as executor_module
+        from hive_conductor.services.graph_runner import _run_node_subprocess
 
         def _boom() -> Any:
             raise RuntimeError("no executor here")

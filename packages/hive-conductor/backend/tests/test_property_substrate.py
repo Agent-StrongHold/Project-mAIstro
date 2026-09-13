@@ -23,7 +23,6 @@ Pins invariants that any future refactor MUST preserve:
 from __future__ import annotations
 
 import pathlib
-import sys
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -31,8 +30,6 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 
 # --- edit_lock invariants -----------------------------------------------
@@ -40,7 +37,7 @@ if str(_BACKEND) not in sys.path:
 
 @pytest.fixture(autouse=True)
 def _wipe_locks():
-    from services import edit_lock
+    from hive_conductor.services import edit_lock
 
     edit_lock.clear()
     yield
@@ -66,7 +63,7 @@ def test_property_marked_field_is_immediately_locked(
     dag_id: str,
     field_path: str,
 ) -> None:
-    from services import edit_lock
+    from hive_conductor.services import edit_lock
 
     edit_lock.clear()
     edit_lock.mark_edited(dag_id, [field_path])
@@ -81,7 +78,7 @@ def test_property_locking_parent_locks_every_descendant(
     child_suffix: str,
 ) -> None:
     """If parent path is locked, parent + '.' + anything is also locked."""
-    from services import edit_lock
+    from hive_conductor.services import edit_lock
 
     edit_lock.clear()
     edit_lock.mark_edited(dag_id, [parent])
@@ -100,7 +97,7 @@ def test_property_lock_holds_within_ttl(
     field_path: str,
     days_after: int,
 ) -> None:
-    from services import edit_lock
+    from hive_conductor.services import edit_lock
 
     edit_lock.clear()
     t0 = datetime(2026, 1, 1, tzinfo=UTC)
@@ -126,7 +123,7 @@ def test_property_lock_expires_after_ttl(
     field_path: str,
     days_after: int,
 ) -> None:
-    from services import edit_lock
+    from hive_conductor.services import edit_lock
 
     edit_lock.clear()
     t0 = datetime(2026, 1, 1, tzinfo=UTC)
@@ -147,7 +144,7 @@ def test_property_re_edit_refreshes_ttl(
     dag_id: str,
     field_path: str,
 ) -> None:
-    from services import edit_lock
+    from hive_conductor.services import edit_lock
 
     edit_lock.clear()
     t0 = datetime(2026, 1, 1, tzinfo=UTC)
@@ -181,7 +178,7 @@ def test_property_priority_score_equals_sum_of_components(
     thumb: float,
     latency: float,
 ) -> None:
-    from services.optimizer import SignalSnapshot
+    from hive_conductor.services.optimizer import SignalSnapshot
 
     s = SignalSnapshot(
         dag_id="d",
@@ -210,7 +207,7 @@ def test_property_priority_score_equals_sum_of_components(
 def test_property_normalize_invert_smaller_is_better(values: list[float]) -> None:
     """invert=True: the smallest input maps to 1.0 (best), largest to 0.0.
     All outputs in [0,1]."""
-    from services.topology_compare import _normalize
+    from hive_conductor.services.topology_compare import _normalize
 
     out = _normalize(values, invert=True)
     if not out:
@@ -234,7 +231,7 @@ def test_property_normalize_invert_smaller_is_better(values: list[float]) -> Non
 @settings(max_examples=50)
 def test_property_normalize_invert_false_natural_order(values: list[float]) -> None:
     """invert=False: largest input maps to 1.0 (best)."""
-    from services.topology_compare import _normalize
+    from hive_conductor.services.topology_compare import _normalize
 
     out = _normalize(values, invert=False)
     assert all(0.0 <= v <= 1.0 for v in out)
@@ -268,7 +265,7 @@ def test_property_composite_in_valid_range(
 ) -> None:
     """composite = 0.5·s + 0.3·l + 0.2·t with each input in [0,1] →
     composite is in [0,1] too."""
-    from services.topology_compare import _composite
+    from hive_conductor.services.topology_compare import _composite
 
     n = min(len(success), len(latency), len(thumb))
     out = _composite(success[:n], latency[:n], thumb[:n])
@@ -287,7 +284,7 @@ def test_property_aggregate_count_equals_input_size(
     phases: list[str],
     latencies: list[int],
 ) -> None:
-    from services.node_metrics_store import NodeMetricsStore, NodeObservation
+    from hive_conductor.services.node_metrics_store import NodeMetricsStore, NodeObservation
 
     store = NodeMetricsStore()
     for i, phase in enumerate(phases):
@@ -320,7 +317,7 @@ def test_property_aggregate_single_observation_percentile_is_value(
     latency: int,
 ) -> None:
     """A single observation: p50 == p95 == p99 == its latency."""
-    from services.node_metrics_store import NodeMetricsStore, NodeObservation
+    from hive_conductor.services.node_metrics_store import NodeMetricsStore, NodeObservation
 
     store = NodeMetricsStore()
     store.append(
@@ -350,7 +347,7 @@ def test_property_aggregate_single_observation_percentile_is_value(
 @given(st.integers(min_value=-10_000, max_value=10_000))
 @settings(max_examples=30)
 def test_property_validate_verdict_score_clamped_to_0_100(score: int) -> None:
-    from services.eval_judge import _validate_verdict
+    from hive_conductor.services.eval_judge import _validate_verdict
 
     out = _validate_verdict({"score": score, "rationale": "x"})
     assert 0 <= out["score"] <= 100
@@ -359,7 +356,7 @@ def test_property_validate_verdict_score_clamped_to_0_100(score: int) -> None:
 @given(st.text(min_size=0, max_size=200))
 @settings(max_examples=30)
 def test_property_validate_verdict_rationale_always_string(rat: str) -> None:
-    from services.eval_judge import _validate_verdict
+    from hive_conductor.services.eval_judge import _validate_verdict
 
     out = _validate_verdict({"score": 50, "rationale": rat})
     assert isinstance(out["rationale"], str)
@@ -382,7 +379,7 @@ async def test_property_record_thumb_persists_round_trip(
 ) -> None:
     """For any valid (thumb, comment, user_id): the recorded Outcome
     carries identical values + success=True + signal='user_thumb'."""
-    from services.feedback_service import (
+    from hive_conductor.services.feedback_service import (
         record_thumb,
         set_outcome_store,
     )
@@ -421,14 +418,14 @@ async def test_property_optimizer_zero_signal_produces_zero_proposals(
 ) -> None:
     """A DAG with no metrics, no thumbs, no verdicts, no edits → zero
     proposals (priority_score never exceeds 0)."""
-    import stores
-    from services import edit_lock
-    from services.feedback_service import (
+    import hive_conductor.stores as stores
+    from hive_conductor.services import edit_lock
+    from hive_conductor.services.feedback_service import (
         InMemoryOutcomeStore,
         set_outcome_store,
     )
-    from services.node_metrics_store import NodeMetricsStore, set_store
-    from services.optimizer import run_optimizer
+    from hive_conductor.services.node_metrics_store import NodeMetricsStore, set_store
+    from hive_conductor.services.optimizer import run_optimizer
 
     set_outcome_store(InMemoryOutcomeStore())
     set_store(NodeMetricsStore())

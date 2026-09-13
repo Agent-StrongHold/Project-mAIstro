@@ -30,7 +30,9 @@ def test_hive_requirements_change_is_yellow():
 
 def test_filename_auth_boundary_is_yellow():
     result = mod.assess(
-        [cf("packages/hive-conductor/backend/routes/auth.py")], "", head_ref="chatgpt/x"
+        [cf("packages/hive-conductor/backend/hive_conductor/routes/auth.py")],
+        "",
+        head_ref="chatgpt/x",
     )
     assert result.risk == "yellow" and not result.eligible
 

@@ -18,16 +18,14 @@ import sys
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 
 def test_second_complete_setup_is_rejected_and_creds_unchanged() -> None:
     """A second /v1/setup/complete on a provisioned instance is rejected and
     leaves the existing admin password hash untouched."""
-    import stores
+    import hive_conductor.stores as stores
     from fastapi import HTTPException
-    from routes.setup import _is_setup_complete, complete_setup
+    from hive_conductor.routes.setup import _is_setup_complete, complete_setup
 
     # conftest seeds an admin + user, so setup is already "complete".
     assert _is_setup_complete() is True
@@ -55,15 +53,15 @@ def test_public_setup_api_rejects_weak_admin_password_before_claim(
     monkeypatch: pytest.MonkeyPatch, password: str
 ) -> None:
     """The HTTP boundary must enforce the canonical policy, not just the UI."""
-    import stores
+    import hive_conductor.stores as stores
     from fastapi.testclient import TestClient
-    from main import app
-    from models.schemas import HiveUser
-    from services.model_store import ModelStore
+    from hive_conductor.main import app
+    from hive_conductor.models.schemas import HiveUser
+    from hive_conductor.services.model_store import ModelStore
 
     fresh_users = ModelStore("users", HiveUser)
     monkeypatch.setattr(stores, "users", fresh_users)
-    monkeypatch.setattr("routes.setup._get_kv", lambda: None)
+    monkeypatch.setattr("hive_conductor.routes.setup._get_kv", lambda: None)
 
     response = TestClient(app).post(
         "/v1/setup/complete",
@@ -84,7 +82,7 @@ def test_public_setup_api_rejects_weak_admin_password_before_claim(
 
 def test_setup_body_validates_boundary_and_unicode_passwords() -> None:
     """The shared length policy counts supplied Unicode characters as-is."""
-    from routes.setup import SetupCompleteBody
+    from hive_conductor.routes.setup import SetupCompleteBody
 
     for password in ("12345678", "密码密码密码密码", "éééé"):
         body = SetupCompleteBody.model_validate(
@@ -101,15 +99,15 @@ def test_public_setup_api_reports_typed_validation_errors_without_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Malformed requests fail Pydantic validation before provisioning starts."""
-    import stores
+    import hive_conductor.stores as stores
     from fastapi.testclient import TestClient
-    from main import app
-    from models.schemas import HiveUser
-    from services.model_store import ModelStore
+    from hive_conductor.main import app
+    from hive_conductor.models.schemas import HiveUser
+    from hive_conductor.services.model_store import ModelStore
 
     fresh_users = ModelStore("users", HiveUser)
     monkeypatch.setattr(stores, "users", fresh_users)
-    monkeypatch.setattr("routes.setup._get_kv", lambda: None)
+    monkeypatch.setattr("hive_conductor.routes.setup._get_kv", lambda: None)
 
     response = TestClient(app).post(
         "/v1/setup/complete",
@@ -127,16 +125,16 @@ def test_public_setup_api_reports_typed_validation_errors_without_state(
 
 def test_first_run_setup_still_works(monkeypatch: pytest.MonkeyPatch) -> None:
     """First-run setup (no users yet) must still succeed and create accounts."""
-    import stores
-    from models.schemas import HiveUser
-    from routes.setup import complete_setup
-    from services.model_store import ModelStore
+    import hive_conductor.stores as stores
+    from hive_conductor.models.schemas import HiveUser
+    from hive_conductor.routes.setup import complete_setup
+    from hive_conductor.services.model_store import ModelStore
 
     # Simulate a fresh, un-provisioned instance: empty users store, no kv.
     fresh_users = ModelStore("users", HiveUser)
     monkeypatch.setattr(stores, "users", fresh_users)
     # Ensure the kv-based check also reports "not complete".
-    monkeypatch.setattr("routes.setup._get_kv", lambda: None)
+    monkeypatch.setattr("hive_conductor.routes.setup._get_kv", lambda: None)
 
     out = complete_setup(
         {
@@ -160,17 +158,16 @@ def test_requested_identity_failure_aborts_before_creating_accounts(
     request BEFORE any account exists. Completing setup without the mnemonic
     would lock the one-shot endpoint behind its 409 guard with no later
     identity-provisioning step (SPEC-072726-3439 Phase 0)."""
-    import sys
 
-    import stores
+    import hive_conductor.stores as stores
     from fastapi import HTTPException
-    from models.schemas import HiveUser
-    from routes.setup import complete_setup
-    from services.model_store import ModelStore
+    from hive_conductor.models.schemas import HiveUser
+    from hive_conductor.routes.setup import complete_setup
+    from hive_conductor.services.model_store import ModelStore
 
     fresh_users = ModelStore("users", HiveUser)
     monkeypatch.setattr(stores, "users", fresh_users)
-    monkeypatch.setattr("routes.setup._get_kv", lambda: None)
+    monkeypatch.setattr("hive_conductor.routes.setup._get_kv", lambda: None)
     # A None entry in sys.modules makes `from maistro.identity import ...`
     # raise ImportError, simulating the missing [identity] extra.
     monkeypatch.setitem(sys.modules, "maistro.identity", None)
@@ -214,17 +211,19 @@ def test_first_run_provisions_vault_and_persists_seed(
     except ImportError:
         pytest.skip("identity extra (bip_utils/pynacl) not installed")
 
-    import stores
-    from models.schemas import HiveUser
-    from routes.setup import complete_setup
-    from services.model_store import ModelStore
+    import hive_conductor.stores as stores
+    from hive_conductor.models.schemas import HiveUser
+    from hive_conductor.routes.setup import complete_setup
+    from hive_conductor.services.model_store import ModelStore
 
     fresh_users = ModelStore("users", HiveUser)
     monkeypatch.setattr(stores, "users", fresh_users)
-    monkeypatch.setattr("routes.setup._get_kv", lambda: None)
+    monkeypatch.setattr("hive_conductor.routes.setup._get_kv", lambda: None)
     vault_file = tmp_path / "vault" / "secrets.age"
     key_file = tmp_path / "vault" / "admin.key"
-    monkeypatch.setattr("routes.setup._vault_paths", lambda: (str(vault_file), str(key_file)))
+    monkeypatch.setattr(
+        "hive_conductor.routes.setup._vault_paths", lambda: (str(vault_file), str(key_file))
+    )
 
     out = complete_setup(
         {
@@ -250,8 +249,8 @@ def test_first_run_provisions_vault_and_persists_seed(
 
 
 def test_empty_hardware_preset_is_rejected() -> None:
+    from hive_conductor.routes.setup import SetupCompleteBody
     from pydantic import ValidationError
-    from routes.setup import SetupCompleteBody
 
     with pytest.raises(ValidationError) as exc_info:
         SetupCompleteBody.model_validate(
@@ -271,7 +270,7 @@ def test_empty_hardware_preset_is_rejected() -> None:
 
 def test_direct_setup_validation_rejects_weak_password_with_422() -> None:
     from fastapi import HTTPException
-    from routes.setup import SetupCompleteBody, complete_setup
+    from hive_conductor.routes.setup import SetupCompleteBody, complete_setup
 
     with pytest.raises(HTTPException) as exc_info:
         complete_setup(
@@ -299,7 +298,7 @@ def test_direct_setup_validation_rejects_weak_password_with_422() -> None:
 
 
 def test_get_preset_returns_named_hardware_preset() -> None:
-    from routes.setup import get_preset
+    from hive_conductor.routes.setup import get_preset
 
     result = get_preset("laptop")
 
@@ -308,7 +307,7 @@ def test_get_preset_returns_named_hardware_preset() -> None:
 
 
 def test_resolve_preset_auto_returns_resolved_config() -> None:
-    from routes.setup import resolve_preset_auto
+    from hive_conductor.routes.setup import resolve_preset_auto
 
     result = resolve_preset_auto({"name": "auto", "total_memory_gb": 4})
 
@@ -320,10 +319,9 @@ def test_resolve_preset_auto_returns_resolved_config() -> None:
 def test_persist_identity_root_stores_seed_before_returning(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import sys
     import types
 
-    from routes import setup as setup_routes
+    from hive_conductor.routes import setup as setup_routes
 
     calls: dict[str, object] = {}
 

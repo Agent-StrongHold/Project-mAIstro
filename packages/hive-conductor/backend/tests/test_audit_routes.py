@@ -16,17 +16,14 @@ entry is a dict (`routes/audit.py::_field`), falling back to
 from __future__ import annotations
 
 import pathlib
-import sys
 from typing import Any
 
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
-import stores  # noqa: E402
-from routes.audit import log_audit  # noqa: E402
+import hive_conductor.stores as stores  # noqa: E402
+from hive_conductor.routes.audit import log_audit  # noqa: E402
 
 
 def _clear(store) -> None:
@@ -192,7 +189,7 @@ def test_create_entry_then_filterable_by_action(admin_client: Any) -> None:
 
 
 def test_list_entries_filter_tolerates_non_dict_entries(admin_client: Any) -> None:
-    from routes.audit import AuditEntry, _now
+    from hive_conductor.routes.audit import AuditEntry, _now
 
     eid = "model-instance-1"
     stores.audit_log[eid] = AuditEntry(

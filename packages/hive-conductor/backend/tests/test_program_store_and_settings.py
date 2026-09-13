@@ -5,13 +5,10 @@ settings_defaults.py (was 65%).
 from __future__ import annotations
 
 import pathlib
-import sys
 
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 
 # --- program_store ---------------------------------------------------
@@ -19,7 +16,7 @@ if str(_BACKEND) not in sys.path:
 
 @pytest.fixture(autouse=True)
 def _wipe_program_contexts():
-    import stores
+    import hive_conductor.stores as stores
 
     for k in list(stores.program_contexts.keys()):
         stores.program_contexts.pop(k)
@@ -29,7 +26,7 @@ def _wipe_program_contexts():
 
 
 def test_get_context_creates_empty_when_missing() -> None:
-    from services import program_store as prog
+    from hive_conductor.services import program_store as prog
 
     ctx = prog.get_context("brand-new-user")
     assert ctx.user_id == "brand-new-user"
@@ -39,7 +36,7 @@ def test_get_context_creates_empty_when_missing() -> None:
 
 
 def test_save_context_round_trips() -> None:
-    from services import program_store as prog
+    from hive_conductor.services import program_store as prog
 
     ctx = prog.get_context("u1")
     updated = ctx.model_copy(update={"interview_step": 3})
@@ -52,7 +49,7 @@ def test_save_context_round_trips() -> None:
 
 def test_two_workspaces_for_the_same_user_are_independent() -> None:
     """Persona/Workspace Phase B: keyed by (user_id, project_id), not bare user_id."""
-    from services import program_store as prog
+    from hive_conductor.services import program_store as prog
 
     pm_ctx = prog.get_context("u1", "ws-pm")
     canvas_ctx = prog.get_context("u1", "ws-canvas")
@@ -67,7 +64,7 @@ def test_two_workspaces_for_the_same_user_are_independent() -> None:
 
 
 def test_get_context_without_project_id_defaults_to_default_workspace() -> None:
-    from services import program_store as prog
+    from hive_conductor.services import program_store as prog
 
     ctx = prog.get_context("legacy-user")
     assert ctx.project_id == "default"
@@ -77,8 +74,8 @@ def test_pre_phase_b_legacy_bare_user_id_key_migrates_to_default_project() -> No
     """Installs from before Phase B persisted this keyed by bare user_id. The
     first read under the new (user_id, project_id) scheme must recover that
     state, not silently return a blank context and orphan the old record."""
-    import stores
-    from services import program_store as prog
+    import hive_conductor.stores as stores
+    from hive_conductor.services import program_store as prog
 
     legacy_ctx = prog.get_context("legacy-user", "default")
     legacy_ctx = legacy_ctx.model_copy(update={"interview_step": 3, "program_name": "Old Program"})
@@ -100,7 +97,7 @@ def test_pre_phase_b_legacy_bare_user_id_key_migrates_to_default_project() -> No
 
 
 def test_context_dict_returns_model_dump() -> None:
-    from services import program_store as prog
+    from hive_conductor.services import program_store as prog
 
     d = prog.context_dict("u2")
     assert isinstance(d, dict)
@@ -111,7 +108,7 @@ def test_context_dict_returns_model_dump() -> None:
 
 
 def test_default_settings_returns_settings_model_with_expected_fields() -> None:
-    from settings_defaults import default_settings
+    from hive_conductor.settings_defaults import default_settings
 
     s = default_settings()
     # Has expected fields

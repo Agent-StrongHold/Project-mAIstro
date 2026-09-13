@@ -11,7 +11,7 @@ no-op wearing a middleware's clothes.
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
-from main import app
+from hive_conductor.main import app
 
 
 def _middleware_index(cls: type) -> int:
@@ -26,7 +26,7 @@ def _middleware_index(cls: type) -> int:
 
 
 def test_privilege_middleware_is_installed_on_the_app() -> None:
-    from middleware.privilege import PrivilegeMiddleware
+    from hive_conductor.middleware.privilege import PrivilegeMiddleware
 
     assert "PrivilegeMiddleware" in [mw.cls.__name__ for mw in app.user_middleware]
     assert _middleware_index(PrivilegeMiddleware) >= 0
@@ -35,8 +35,8 @@ def test_privilege_middleware_is_installed_on_the_app() -> None:
 def test_privilege_runs_inside_the_authenticated_boundary() -> None:
     """Later in the outermost-first list, so `AuthMiddleware` wraps it: the
     principal is known by the time a privilege table entry could consult it."""
-    from middleware.auth import AuthMiddleware
-    from middleware.privilege import PrivilegeMiddleware
+    from hive_conductor.middleware.auth import AuthMiddleware
+    from hive_conductor.middleware.privilege import PrivilegeMiddleware
 
     assert _middleware_index(PrivilegeMiddleware) > _middleware_index(AuthMiddleware)
 

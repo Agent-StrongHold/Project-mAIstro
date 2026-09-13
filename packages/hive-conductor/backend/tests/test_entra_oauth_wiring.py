@@ -4,7 +4,10 @@ from typing import Any
 
 import httpx
 import pytest
-from services.entra_oauth import ProductIdTokenVerifier, entra_tenant_from_provider_config
+from hive_conductor.services.entra_oauth import (
+    ProductIdTokenVerifier,
+    entra_tenant_from_provider_config,
+)
 
 from maistro.auth.entra import build_entra_provider_config
 from maistro.auth.oauth import OAuthProviderConfig, OAuthTokenValidationError

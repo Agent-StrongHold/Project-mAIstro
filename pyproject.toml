@@ -256,6 +256,9 @@ pythonpath = [
     "packages/maistro-bootstrap/src",
     "packages/maistro-rsi/src",
     "packages/maistro-evolve/src",
+    "packages/hive-conductor",
+    "packages/hive-conductor/backend",
+    "packages/maistro-turing/backend",
     ".",
 ]
 

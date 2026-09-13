@@ -10,17 +10,14 @@ mode that arrives later, quietly, the first time someone adds a CDN.
 from __future__ import annotations
 
 import pathlib
-import sys
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
-from main import app  # noqa: E402
+from hive_conductor.main import app  # noqa: E402
 
 _FRONTEND = _BACKEND.parent / "frontend"
 
@@ -30,7 +27,7 @@ REPORT_ONLY = "content-security-policy-report-only"
 
 @pytest.fixture(autouse=True)
 def _clear_settings_cache():
-    from config import get_settings
+    from hive_conductor.config import get_settings
 
     get_settings.cache_clear()
     yield
@@ -68,7 +65,7 @@ class TestTheRolloutSwitch:
     def test_report_only_moves_the_policy_to_the_other_header(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from config import get_settings
+        from hive_conductor.config import get_settings
 
         enforced_value = _client().get("/health").headers[ENFORCED]
 
@@ -82,7 +79,7 @@ class TestTheRolloutSwitch:
     def test_enforcement_is_the_default(self) -> None:
         """A report-only policy nobody promotes protects nothing while looking
         like it does, so the shipped default has to be the enforcing one."""
-        from config import Settings
+        from hive_conductor.config import Settings
 
         assert Settings(_env_file=None).csp_report_only is False
 
@@ -94,8 +91,8 @@ class TestTheDevelopmentPolicyIsDistinct:
         sees the *development* header — which is why the production shape is
         asserted by forcing the flag off below rather than by trusting the
         ambient default."""
-        from config import get_settings
-        from services.csp_policy import VITE_DEV_ORIGINS
+        from hive_conductor.config import get_settings
+        from hive_conductor.services.csp_policy import VITE_DEV_ORIGINS
 
         assert get_settings().allow_insecure_transport is True
         assert any(
@@ -103,8 +100,8 @@ class TestTheDevelopmentPolicyIsDistinct:
         )
 
     def test_a_production_run_gets_no_dev_origins(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from config import get_settings
-        from services.csp_policy import VITE_DEV_ORIGINS
+        from hive_conductor.config import get_settings
+        from hive_conductor.services.csp_policy import VITE_DEV_ORIGINS
 
         monkeypatch.setenv("ALLOW_INSECURE_TRANSPORT", "false")
         get_settings.cache_clear()
@@ -120,8 +117,8 @@ class TestTheDevelopmentPolicyIsDistinct:
         local run, and start-up refuses to combine it with a production cookie
         posture (#369). A second switch would be a second way to ship the loose
         policy by accident, so the same flag has to move the policy both ways."""
-        from config import get_settings
-        from services.csp_policy import VITE_DEV_ORIGINS
+        from hive_conductor.config import get_settings
+        from hive_conductor.services.csp_policy import VITE_DEV_ORIGINS
 
         monkeypatch.setenv("ALLOW_INSECURE_TRANSPORT", "false")
         get_settings.cache_clear()
@@ -139,14 +136,14 @@ class TestTheDevelopmentPolicyIsDistinct:
         """The dev policy is looser in two named ways and no others. A dev
         policy that permitted inline script would let a violation reach
         production undetected, because nobody would ever see it locally."""
-        from services.csp_policy import conductor_policy
+        from hive_conductor.services.csp_policy import conductor_policy
 
         assert conductor_policy(development=True).sources_for("script-src") == ("'self'",)
 
     def test_upgrade_insecure_requests_is_production_only(self) -> None:
         """A local run is plain HTTP; the directive would upgrade every request
         to a port nothing is listening on."""
-        from services.csp_policy import conductor_policy
+        from hive_conductor.services.csp_policy import conductor_policy
 
         assert "upgrade-insecure-requests" in conductor_policy().header_value()
         assert "upgrade-insecure-requests" not in conductor_policy(development=True).header_value()
@@ -167,7 +164,7 @@ class TestThePolicyMatchesWhatTheFrontEndLoads:
         """
         import re
 
-        from services.csp_policy import conductor_policy
+        from hive_conductor.services.csp_policy import conductor_policy
 
         index_html = (_FRONTEND / "index.html").read_text(encoding="utf-8")
         wanted = {
@@ -257,6 +254,6 @@ class TestThePolicyMatchesWhatTheFrontEndLoads:
     def test_the_directives_that_should_admit_nothing_else(
         self, directive: str, expected: tuple[str, ...]
     ) -> None:
-        from services.csp_policy import conductor_policy
+        from hive_conductor.services.csp_policy import conductor_policy
 
         assert conductor_policy().sources_for(directive) == expected

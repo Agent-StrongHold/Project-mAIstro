@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import ast
 import pathlib
-import sys
 
 import pytest
 
@@ -55,8 +54,6 @@ def _reads_the_private_list(source: str) -> bool:
 
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 _REPO = _BACKEND.parents[2]
 #: The one module allowed to touch `_outcomes`: the store that defines it.
@@ -108,8 +105,10 @@ class TestThePrivateListIsNotReadOutsideItsOwner:
         """
         scanned = {str(p.relative_to(_REPO)) for p in _sources()}
 
-        assert "packages/hive-conductor/backend/services/optimizer.py" in scanned
-        assert "packages/hive-conductor/backend/services/topology_compare.py" in scanned
+        assert "packages/hive-conductor/backend/hive_conductor/services/optimizer.py" in scanned
+        assert (
+            "packages/hive-conductor/backend/hive_conductor/services/topology_compare.py" in scanned
+        )
 
     @pytest.mark.ac("SPEC-083026-58de/AC-4")
     def test_the_pattern_matches_the_attribute_and_not_its_lookalikes(self) -> None:
@@ -136,7 +135,7 @@ class TestTheSetterHasAProductionCaller:
 
     @pytest.mark.ac("SPEC-083026-58de/AC-6")
     def test_the_engine_binds_the_containers_store(self) -> None:
-        from services import engine as engine_module
+        from hive_conductor.services import engine as engine_module
 
         source = pathlib.Path(engine_module.__file__).read_text(encoding="utf-8")
 
@@ -150,8 +149,8 @@ class TestTheSetterHasAProductionCaller:
         The scan above proves the call is written; this proves it does what the
         name says when a container is present.
         """
-        from services import feedback_service
-        from services.engine import EngineService
+        from hive_conductor.services import feedback_service
+        from hive_conductor.services.engine import EngineService
 
         durable = object()
         service = EngineService()
@@ -173,8 +172,8 @@ class TestTheSetterHasAProductionCaller:
         AttributeError in exactly the dev and test modes the Hive-local default
         exists to serve.
         """
-        from services import feedback_service
-        from services.engine import EngineService
+        from hive_conductor.services import feedback_service
+        from hive_conductor.services.engine import EngineService
 
         from maistro.memory.outcomes import InMemoryOutcomeStore
 
@@ -195,8 +194,8 @@ class TestTheSetterHasAProductionCaller:
         container's store -- so feedback would keep being written to a database
         this engine no longer owns, or to a closed connection.
         """
-        from services import feedback_service
-        from services.engine import EngineService
+        from hive_conductor.services import feedback_service
+        from hive_conductor.services.engine import EngineService
 
         from maistro.memory.outcomes import InMemoryOutcomeStore
 
@@ -241,7 +240,7 @@ class TestTheBridgeTellsTheContainerWhichDatabase:
         """
         import ast
 
-        from adapters import maistro_core
+        from hive_conductor.adapters import maistro_core
 
         source = pathlib.Path(maistro_core.__file__).read_text(encoding="utf-8")
         calls = [

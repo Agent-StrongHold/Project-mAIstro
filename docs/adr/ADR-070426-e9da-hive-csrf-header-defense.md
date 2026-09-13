@@ -42,7 +42,7 @@ a cross-origin form POST can't attach an `Authorization` header or a cookie that
 different site.
 
 `hive-conductor`'s own `AuthMiddleware`
-(`packages/hive-conductor/backend/middleware/auth.py`) already has the shape this check would slot
+(`packages/hive-conductor/backend/hive_conductor/middleware/auth.py`) already has the shape this check would slot
 into. `dispatch()` (lines ~90-131) resolves the caller via `_get_user()` (lines ~133-146), which
 reads `request.cookies.get("hive_session")` first and falls back to a `Bearer ` `Authorization`
 header — i.e. it already knows, per request, which of the two auth modes was used. It does this
@@ -51,7 +51,7 @@ header — i.e. it already knows, per request, which of the two auth modes was u
 anywhere in this pipeline.
 
 The highest-value target for this gap is
-`packages/hive-conductor/backend/routes/auth.py`'s `POST /elevate` endpoint (lines ~266-300): it is
+`packages/hive-conductor/backend/hive_conductor/routes/auth.py`'s `POST /elevate` endpoint (lines ~266-300): it is
 authenticated (requires a valid `hive_session` cookie), cookie-bearing (the whole point of the
 session model), and permission-escalating (grants `elevated_permissions` for a `task_id`, logged at
 `severity="warning"`). A forged cross-site POST to `/v1/auth/elevate` from a page the victim has
@@ -67,7 +67,7 @@ touch it.
 ## Decision
 
 Add a header-based CSRF check directly inside `AuthMiddleware.dispatch()`
-(`packages/hive-conductor/backend/middleware/auth.py`), gated on the same three-way condition as
+(`packages/hive-conductor/backend/hive_conductor/middleware/auth.py`), gated on the same three-way condition as
 stronghold's `sessions.py` variant (not the blanket `auth.py` variant, which would needlessly break
 bearer-token API clients):
 
@@ -129,7 +129,7 @@ session). The `sessions.py` variant's extra cookie-present / no-bearer-header co
 the defense-in-depth refinement that makes this correct for an app that supports both auth modes.
 
 **Do nothing / status quo (SameSite=Lax cookie alone).** `_issue_session()`
-(`packages/hive-conductor/backend/routes/auth.py:158-164`) already sets `samesite="lax"` on the
+(`packages/hive-conductor/backend/hive_conductor/routes/auth.py:158-164`) already sets `samesite="lax"` on the
 session cookie, which blocks the cookie from riding along on cross-site POSTs from most modern
 browsers. Rejected as the sole defense: `SameSite=Lax` is a browser-enforced mitigation with known
 gaps (older browsers, some in-app browsers/webviews, and top-level GET-triggered navigations that
@@ -177,9 +177,9 @@ elevation-capable endpoint.
 
 - [ADR-058: A2A delegation protocol](ADR-058-a2a-delegation-protocol.md)
 - [ADR-068: Unified authorization and elevation](ADR-068-unified-authorization-and-elevation.md)
-- Seams: `packages/hive-conductor/backend/middleware/auth.py` (`AuthMiddleware.dispatch`,
+- Seams: `packages/hive-conductor/backend/hive_conductor/middleware/auth.py` (`AuthMiddleware.dispatch`,
   `_get_user`, `_PUBLIC_EXACT`/`_PUBLIC_PREFIXES`),
-  `packages/hive-conductor/backend/routes/auth.py` (`elevate`, `_issue_session`),
+  `packages/hive-conductor/backend/hive_conductor/routes/auth.py` (`elevate`, `_issue_session`),
   `packages/hive-conductor/backend/tests/conftest.py` (`authed_client`, `admin_client`)
 - Prior art: `stronghold/src/stronghold/api/routes/auth.py:43-53` (`_check_csrf`, blanket variant),
   `stronghold/src/stronghold/api/routes/sessions.py:19-36` (`_check_csrf`, defense-in-depth variant

@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Any
 
-import routes.harness as harness_mod
-from services.engine import get_engine
+import hive_conductor.routes.harness as harness_mod
+from hive_conductor.services.engine import get_engine
 
 from maistro.capabilities import HarnessSessionManager
 from maistro.capabilities.slots.harness_runner import SLOT_NAME
@@ -162,7 +162,7 @@ def test_harness_scope_is_not_satisfied_by_agents_write(authed_client):
     every operator who could edit a roster entry would silently also hold
     code execution.
     """
-    from middleware.auth import _PROTECTED_OPS
+    from hive_conductor.middleware.auth import _PROTECTED_OPS
 
     assert _PROTECTED_OPS["POST"]["/v1/harness"] == "harness.execute"
     assert _PROTECTED_OPS["POST"]["/v1/harness"] != _PROTECTED_OPS["POST"]["/v1/agents"]

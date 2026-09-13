@@ -181,7 +181,7 @@ closed below that.)
 ## Source references
 
 - `packages/maistro-core/src/maistro/tools/sandbox/docker.py` — current Docker sandbox.
-- `packages/hive-conductor/backend/services/hyperlight_executor.py` — fallback ladder + mode-floor
+- `packages/hive-conductor/backend/hive_conductor/services/hyperlight_executor.py` — fallback ladder + mode-floor
   enforcement (reference implementation of Decision items 5-6).
 - ADR-019 (canonical source split), ADR-038 (reliability taxonomy), ADR-072 (threat model).
 - SPEC-190 — pluggable sandbox substrate (the design implementing this decision).

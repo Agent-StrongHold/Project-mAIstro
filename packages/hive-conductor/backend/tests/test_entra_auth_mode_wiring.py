@@ -3,13 +3,13 @@ from __future__ import annotations
 from collections.abc import Iterator
 from types import SimpleNamespace
 
+import hive_conductor.stores as stores
 import pytest
-import stores
-from config import OAuthProviderSettings, Settings
 from fastapi import HTTPException, Request, Response
+from hive_conductor.config import OAuthProviderSettings, Settings
+from hive_conductor.routes import auth
+from hive_conductor.routes.auth import LoginBody
 from pydantic import ValidationError
-from routes import auth
-from routes.auth import LoginBody
 
 TENANT = "11111111-2222-3333-4444-555555555555"
 BASE = f"https://login.microsoftonline.com/{TENANT}"

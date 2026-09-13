@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from models.workspace import Workspace
-from services.themes import THEME_CATALOG, is_valid_theme_id, resolve_workspace_tone
+from hive_conductor.models.workspace import Workspace
+from hive_conductor.services.themes import THEME_CATALOG, is_valid_theme_id, resolve_workspace_tone
 
 
 def _workspace(**overrides: object) -> Workspace:

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from services.evolution_graph import _evaluate_one, run_canonical_evolution_cycle
+from hive_conductor.services.evolution_graph import _evaluate_one, run_canonical_evolution_cycle
 
 import maistro_evolve.cycle as cycle_module
 from maistro.graph.durable_runs import (

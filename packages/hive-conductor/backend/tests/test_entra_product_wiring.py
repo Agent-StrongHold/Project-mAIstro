@@ -19,21 +19,21 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from urllib.parse import parse_qs, urlparse
 
+import hive_conductor.routes.auth as auth_routes
+import hive_conductor.stores as stores
 import httpx
 import jwt as pyjwt
 import pytest
-import routes.auth as auth_routes
-import stores
-from config import OAuthProviderSettings, Settings, get_settings
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
-from main import app
-from pydantic import ValidationError
-from services.oauth_login import (
+from hive_conductor.config import OAuthProviderSettings, Settings, get_settings
+from hive_conductor.main import app
+from hive_conductor.services.oauth_login import (
     HiveIdentityLinkStore,
     OAuthLoginService,
     _identity_link_key,
 )
+from pydantic import ValidationError
 
 from maistro.security.auth_throttle import AuthThrottle
 

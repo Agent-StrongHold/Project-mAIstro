@@ -8,7 +8,6 @@ ModelStore, JSON round-trip for JsonStore.
 from __future__ import annotations
 
 import pathlib
-import sys
 import threading
 import time
 from typing import Any
@@ -17,8 +16,6 @@ import pytest
 from pydantic import BaseModel
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 
 class _Model(BaseModel):
@@ -56,7 +53,7 @@ class _FakePersisted:
 
 
 def test_model_store_set_and_get_no_persist() -> None:
-    from services.model_store import ModelStore
+    from hive_conductor.services.model_store import ModelStore
 
     s = ModelStore("ms", _Model)
     s["k"] = _Model(id="k", value=42)
@@ -71,7 +68,7 @@ def test_model_store_set_and_get_no_persist() -> None:
 
 
 def test_model_store_set_forwards_to_persisted() -> None:
-    from services.model_store import ModelStore
+    from hive_conductor.services.model_store import ModelStore
 
     p = _FakePersisted()
     s = ModelStore("ms", _Model, persisted=p)
@@ -81,7 +78,7 @@ def test_model_store_set_forwards_to_persisted() -> None:
 
 
 def test_model_store_pop_removes_and_forwards_delete() -> None:
-    from services.model_store import ModelStore
+    from hive_conductor.services.model_store import ModelStore
 
     p = _FakePersisted()
     s = ModelStore("ms", _Model, persisted=p)
@@ -93,14 +90,14 @@ def test_model_store_pop_removes_and_forwards_delete() -> None:
 
 
 def test_model_store_pop_returns_default_when_missing() -> None:
-    from services.model_store import ModelStore
+    from hive_conductor.services.model_store import ModelStore
 
     s = ModelStore("ms", _Model)
     assert s.pop("nope", "default-value") == "default-value"
 
 
 def test_model_store_pop_missing_no_default_raises_key_error() -> None:
-    from services.model_store import ModelStore
+    from hive_conductor.services.model_store import ModelStore
 
     s = ModelStore("ms", _Model)
     with pytest.raises(KeyError):
@@ -108,7 +105,7 @@ def test_model_store_pop_missing_no_default_raises_key_error() -> None:
 
 
 def test_model_store_initialize_loads_from_persisted() -> None:
-    from services.model_store import ModelStore
+    from hive_conductor.services.model_store import ModelStore
 
     p = _FakePersisted(models=[_Model(id="a", value=1), _Model(id="b", value=2)])
     s = ModelStore("ms", _Model, persisted=p)
@@ -120,7 +117,7 @@ def test_model_store_initialize_loads_from_persisted() -> None:
 
 def test_model_store_initialize_noop_without_persisted() -> None:
     """Initialize with no persisted store should be a no-op."""
-    from services.model_store import ModelStore
+    from hive_conductor.services.model_store import ModelStore
 
     s = ModelStore("ms", _Model)
     s["pre"] = _Model(id="pre", value=99)
@@ -129,7 +126,7 @@ def test_model_store_initialize_noop_without_persisted() -> None:
 
 
 def test_model_store_persist_method() -> None:
-    from services.model_store import ModelStore
+    from hive_conductor.services.model_store import ModelStore
 
     p = _FakePersisted()
     s = ModelStore("ms", _Model, persisted=p)
@@ -139,7 +136,7 @@ def test_model_store_persist_method() -> None:
 
 
 def test_model_store_persist_noop_when_key_missing() -> None:
-    from services.model_store import ModelStore
+    from hive_conductor.services.model_store import ModelStore
 
     p = _FakePersisted()
     s = ModelStore("ms", _Model, persisted=p)
@@ -148,7 +145,7 @@ def test_model_store_persist_noop_when_key_missing() -> None:
 
 
 def test_model_store_get_with_implicit_none_default() -> None:
-    from services.model_store import ModelStore
+    from hive_conductor.services.model_store import ModelStore
 
     s = ModelStore("ms", _Model)
     assert s.get("missing") is None
@@ -158,7 +155,7 @@ def test_model_store_get_with_implicit_none_default() -> None:
 
 
 def test_json_store_round_trip_in_memory() -> None:
-    from services.model_store import JsonStore
+    from hive_conductor.services.model_store import JsonStore
 
     s = JsonStore("js")
     s["k"] = {"v": 1}
@@ -168,7 +165,7 @@ def test_json_store_round_trip_in_memory() -> None:
 
 
 def test_json_store_set_serializes_to_persisted() -> None:
-    from services.model_store import JsonStore
+    from hive_conductor.services.model_store import JsonStore
 
     p = _FakePersisted()
     s = JsonStore("js", persisted=p)
@@ -179,7 +176,7 @@ def test_json_store_set_serializes_to_persisted() -> None:
 
 
 def test_json_store_pop_removes_and_forwards_delete() -> None:
-    from services.model_store import JsonStore
+    from hive_conductor.services.model_store import JsonStore
 
     p = _FakePersisted()
     s = JsonStore("js", persisted=p)
@@ -190,14 +187,14 @@ def test_json_store_pop_removes_and_forwards_delete() -> None:
 
 
 def test_json_store_pop_returns_default() -> None:
-    from services.model_store import JsonStore
+    from hive_conductor.services.model_store import JsonStore
 
     s = JsonStore("js")
     assert s.pop("nope", {"default": True}) == {"default": True}
 
 
 def test_json_store_pop_raises_key_error_without_default() -> None:
-    from services.model_store import JsonStore
+    from hive_conductor.services.model_store import JsonStore
 
     s = JsonStore("js")
     with pytest.raises(KeyError):
@@ -205,7 +202,7 @@ def test_json_store_pop_raises_key_error_without_default() -> None:
 
 
 def test_json_store_initialize_loads_and_parses_json() -> None:
-    from services.model_store import JsonStore
+    from hive_conductor.services.model_store import JsonStore
 
     p = _FakePersisted(raw=[("a", '{"a": 1}'), ("b", '{"b": 2}')])
     s = JsonStore("js", persisted=p)
@@ -215,7 +212,7 @@ def test_json_store_initialize_loads_and_parses_json() -> None:
 
 
 def test_json_store_initialize_noop_without_persisted() -> None:
-    from services.model_store import JsonStore
+    from hive_conductor.services.model_store import JsonStore
 
     s = JsonStore("js")
     s["pre"] = {"keep": True}
@@ -224,7 +221,7 @@ def test_json_store_initialize_noop_without_persisted() -> None:
 
 
 def test_json_store_get_with_default() -> None:
-    from services.model_store import JsonStore
+    from hive_conductor.services.model_store import JsonStore
 
     s = JsonStore("js")
     assert s.get("missing", "fallback") == "fallback"
@@ -245,7 +242,7 @@ class _ConflictPersisted(_FakePersisted):
 
 
 def test_json_store_put_if_absent_returns_false_when_key_present() -> None:
-    from services.model_store import JsonStore
+    from hive_conductor.services.model_store import JsonStore
 
     s = JsonStore("js")
     s["k"] = {"owner": "first"}
@@ -254,7 +251,7 @@ def test_json_store_put_if_absent_returns_false_when_key_present() -> None:
 
 
 def test_json_store_put_if_absent_requires_conflict_safe_backend() -> None:
-    from services.model_store import JsonStore
+    from hive_conductor.services.model_store import JsonStore
 
     s = JsonStore("js", persisted=_FakePersisted())
     with pytest.raises(RuntimeError, match="conflict-safe inserts"):
@@ -262,7 +259,7 @@ def test_json_store_put_if_absent_requires_conflict_safe_backend() -> None:
 
 
 def test_json_store_put_if_absent_loads_durable_winner_on_conflict() -> None:
-    from services.model_store import JsonStore
+    from hive_conductor.services.model_store import JsonStore
 
     p = _ConflictPersisted()
     s = JsonStore("js", persisted=p)
@@ -293,7 +290,7 @@ def test_json_store_put_if_absent_is_atomic_under_in_memory_contention() -> None
     insert has always provided, and what invitation redemption (#1126)
     depends on in the Foundation fallback where `persisted is None`.
     """
-    from services.model_store import JsonStore
+    from hive_conductor.services.model_store import JsonStore
 
     s = JsonStore("js")
     outcomes: list[tuple[int, bool]] = []

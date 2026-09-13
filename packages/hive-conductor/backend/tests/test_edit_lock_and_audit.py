@@ -16,22 +16,19 @@ Tests cover:
 from __future__ import annotations
 
 import pathlib
-import sys
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 
 @pytest.fixture(autouse=True)
 def _isolated_edit_lock_store():
     """Wipe the edit-lock module store before AND after each test so
     they don't poison each other."""
-    from services import edit_lock
+    from hive_conductor.services import edit_lock
 
     edit_lock.clear()
     yield
@@ -81,7 +78,7 @@ def _bare_snapshot(**overrides: Any) -> dict[str, Any]:
 
 
 def test_diff_top_level_name_change_only() -> None:
-    from services.edit_lock import diff_dag_snapshots
+    from hive_conductor.services.edit_lock import diff_dag_snapshots
 
     old = _bare_snapshot()
     new = _bare_snapshot(name="renamed")
@@ -89,7 +86,7 @@ def test_diff_top_level_name_change_only() -> None:
 
 
 def test_diff_top_level_multiple_fields() -> None:
-    from services.edit_lock import diff_dag_snapshots
+    from hive_conductor.services.edit_lock import diff_dag_snapshots
 
     old = _bare_snapshot()
     new = _bare_snapshot(name="x", status="active", max_cycles=20)
@@ -98,7 +95,7 @@ def test_diff_top_level_multiple_fields() -> None:
 
 
 def test_diff_node_config_change_uses_node_id_key() -> None:
-    from services.edit_lock import diff_dag_snapshots
+    from hive_conductor.services.edit_lock import diff_dag_snapshots
 
     old = _bare_snapshot()
     new = _bare_snapshot()
@@ -108,7 +105,7 @@ def test_diff_node_config_change_uses_node_id_key() -> None:
 
 
 def test_diff_added_and_removed_node() -> None:
-    from services.edit_lock import diff_dag_snapshots
+    from hive_conductor.services.edit_lock import diff_dag_snapshots
 
     old = _bare_snapshot()
     new = _bare_snapshot()
@@ -131,7 +128,7 @@ def test_diff_added_and_removed_node() -> None:
 
 
 def test_diff_edge_field_change() -> None:
-    from services.edit_lock import diff_dag_snapshots
+    from hive_conductor.services.edit_lock import diff_dag_snapshots
 
     old = _bare_snapshot()
     new = _bare_snapshot()
@@ -141,7 +138,7 @@ def test_diff_edge_field_change() -> None:
 
 
 def test_diff_added_and_removed_edge() -> None:
-    from services.edit_lock import diff_dag_snapshots
+    from hive_conductor.services.edit_lock import diff_dag_snapshots
 
     old = _bare_snapshot()
     new = _bare_snapshot()
@@ -153,7 +150,7 @@ def test_diff_added_and_removed_edge() -> None:
 
 
 def test_diff_no_change_returns_empty_list() -> None:
-    from services.edit_lock import diff_dag_snapshots
+    from hive_conductor.services.edit_lock import diff_dag_snapshots
 
     snap = _bare_snapshot()
     assert diff_dag_snapshots(snap, snap) == []
@@ -163,7 +160,7 @@ def test_diff_no_change_returns_empty_list() -> None:
 
 
 def test_mark_edited_locks_field_paths() -> None:
-    from services.edit_lock import is_locked, mark_edited
+    from hive_conductor.services.edit_lock import is_locked, mark_edited
 
     mark_edited("dag-A", ["name", "nodes[n-A].config"], user_id="u1")
     assert is_locked("dag-A", "name") is True
@@ -174,7 +171,7 @@ def test_mark_edited_locks_field_paths() -> None:
 def test_mark_edited_prefix_match_locks_nested_paths() -> None:
     """Editing nodes[n-A].config must also lock
     nodes[n-A].config.temperature so the optimizer can't sneak under."""
-    from services.edit_lock import is_locked, mark_edited
+    from hive_conductor.services.edit_lock import is_locked, mark_edited
 
     mark_edited("dag-B", ["nodes[n-A].config"])
     assert is_locked("dag-B", "nodes[n-A].config.temperature") is True
@@ -184,7 +181,7 @@ def test_mark_edited_prefix_match_locks_nested_paths() -> None:
 
 
 def test_lock_expires_after_edit_lock_days() -> None:
-    from services.edit_lock import EDIT_LOCK_DAYS, is_locked, mark_edited
+    from hive_conductor.services.edit_lock import EDIT_LOCK_DAYS, is_locked, mark_edited
 
     fixed_now = datetime(2026, 5, 22, tzinfo=UTC)
     mark_edited("dag-C", ["status"], now=fixed_now)
@@ -195,7 +192,7 @@ def test_lock_expires_after_edit_lock_days() -> None:
 
 
 def test_mark_edited_refreshes_ttl_on_repeat_edits() -> None:
-    from services.edit_lock import is_locked, mark_edited
+    from hive_conductor.services.edit_lock import is_locked, mark_edited
 
     t0 = datetime(2026, 1, 1, tzinfo=UTC)
     mark_edited("dag-D", ["name"], now=t0)
@@ -208,7 +205,7 @@ def test_mark_edited_refreshes_ttl_on_repeat_edits() -> None:
 
 
 def test_locked_fields_returns_active_only() -> None:
-    from services.edit_lock import locked_fields, mark_edited
+    from hive_conductor.services.edit_lock import locked_fields, mark_edited
 
     t0 = datetime(2026, 1, 1, tzinfo=UTC)
     mark_edited("dag-E", ["name"], now=t0)
@@ -220,7 +217,7 @@ def test_locked_fields_returns_active_only() -> None:
 
 
 def test_clear_all_wipes_state() -> None:
-    from services.edit_lock import clear, is_locked, mark_edited
+    from hive_conductor.services.edit_lock import clear, is_locked, mark_edited
 
     mark_edited("dag-F", ["x"])
     clear()
@@ -228,7 +225,7 @@ def test_clear_all_wipes_state() -> None:
 
 
 def test_clear_one_dag_only() -> None:
-    from services.edit_lock import clear, is_locked, mark_edited
+    from hive_conductor.services.edit_lock import clear, is_locked, mark_edited
 
     mark_edited("dag-G1", ["a"])
     mark_edited("dag-G2", ["b"])
@@ -238,21 +235,21 @@ def test_clear_one_dag_only() -> None:
 
 
 def test_mark_edited_empty_field_list_is_noop() -> None:
-    from services.edit_lock import locked_fields, mark_edited
+    from hive_conductor.services.edit_lock import locked_fields, mark_edited
 
     mark_edited("dag-H", [])
     assert locked_fields("dag-H") == []
 
 
 def test_mark_edited_empty_dag_id_raises_value_error() -> None:
-    from services.edit_lock import mark_edited
+    from hive_conductor.services.edit_lock import mark_edited
 
     with pytest.raises(ValueError, match="dag_id is required"):
         mark_edited("", ["field"])
 
 
 def test_is_locked_unknown_dag_returns_false() -> None:
-    from services.edit_lock import is_locked
+    from hive_conductor.services.edit_lock import is_locked
 
     assert is_locked("never-edited-dag", "any") is False
 
@@ -267,7 +264,7 @@ def _seed_dag(client: Any) -> str:
 
 
 def test_put_dag_writes_dag_edit_audit_entry(admin_client: Any) -> None:
-    import stores
+    import hive_conductor.stores as stores
 
     dag_id = _seed_dag(admin_client)
     before = len(stores.audit_log)
@@ -290,8 +287,8 @@ def test_put_dag_writes_dag_edit_audit_entry(admin_client: Any) -> None:
 def test_put_dag_no_changes_writes_no_audit(admin_client: Any) -> None:
     """Empty PUT body (or only no-op fields) MUST NOT write an audit entry
     or refresh the edit-lock. A no-op edit is not a 'manual override'."""
-    import stores
-    from services.edit_lock import locked_fields
+    import hive_conductor.stores as stores
+    from hive_conductor.services.edit_lock import locked_fields
 
     dag_id = _seed_dag(admin_client)
     before_audit = len(stores.audit_log)
@@ -302,7 +299,7 @@ def test_put_dag_no_changes_writes_no_audit(admin_client: Any) -> None:
 
 
 def test_put_dag_marks_edited_fields_as_locked(admin_client: Any) -> None:
-    from services.edit_lock import is_locked
+    from hive_conductor.services.edit_lock import is_locked
 
     dag_id = _seed_dag(admin_client)
     admin_client.put(f"/v1/dags/{dag_id}", json={"max_cycles": 99, "status": "active"})
@@ -314,7 +311,7 @@ def test_put_dag_marks_edited_fields_as_locked(admin_client: Any) -> None:
 def test_put_dag_unauthorized_returns_401() -> None:
     """The route is auth-gated by AuthMiddleware; no session → no actor."""
     from fastapi.testclient import TestClient
-    from main import app
+    from hive_conductor.main import app
 
     client = TestClient(app)
     r = client.put("/v1/dags/anything", json={"name": "x"})
@@ -322,7 +319,7 @@ def test_put_dag_unauthorized_returns_401() -> None:
 
 
 def test_put_dag_404_when_id_missing(admin_client: Any) -> None:
-    import stores
+    import hive_conductor.stores as stores
 
     before_audit = len(stores.audit_log)
     r = admin_client.put("/v1/dags/does-not-exist", json={"name": "x"})

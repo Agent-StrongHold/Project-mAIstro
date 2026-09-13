@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib
 import pathlib
-import sys
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -19,14 +18,12 @@ from maistro.tasks.http_contract import (
 from maistro.tasks.models import TaskCreate
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 SCOPE_KEY = "test-only-workspace-scope-key"
 
 
 def _backend_module() -> Any:
-    return importlib.import_module("adapters.task_backend")
+    return importlib.import_module("hive_conductor.adapters.task_backend")
 
 
 def _task_body() -> dict[str, Any]:

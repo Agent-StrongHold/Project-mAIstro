@@ -338,4 +338,4 @@ of all of them.
 - [SPEC-015: hyperagent graph runtime](SPEC-015-hyperagent-graph-runtime.md)
 - Seams: `protocols/tools.py:26-44`, `skills/registry.py:19-85`, `skills/loader.py:23-66`,
   `graph/nodes/__init__.py:127-155`, `hive-conductor/backend/stores.py:90,135-142`,
-  `hive-conductor/backend/routes/settings.py:48-53`, `router/` (filter/scorer/scarcity/speed).
+  `hive-conductor/backend/hive_conductor/routes/settings.py:48-53`, `router/` (filter/scorer/scarcity/speed).
