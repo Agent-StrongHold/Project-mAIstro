@@ -2,18 +2,26 @@
 
 from __future__ import annotations
 
+import hashlib
 import string
 import time
+from uuid import uuid4
 
 import pytest
 
 from maistro.security.redact import (
     _ENTROPY_BITS_PER_CHAR_THRESHOLD,
     _MIN_SECRET_LENGTH,
+    REDACTED_FIELD,
     _looks_like_secret,
     _shannon_entropy,
     redact,
+    redact_structure,
 )
+
+#: Assembled from segments for the same reason as `_jwt` below: a contiguous
+#: `xoxb-` literal trips secret scanners on every fresh clone.
+_SLACK_BOT_TOKEN = "-".join(["xoxb", "123456789012", "1234567890123", "abcdefghijklmnopqrstuvwx"])
 
 
 def _jwt(header: str, payload: str, signature: str) -> str:
@@ -940,3 +948,86 @@ class TestLooksLikeSecretLengthGuard:
     def test_length_alone_does_not_make_a_secret(self):
         """A long single-class run clears the guard and fails on entropy."""
         assert _looks_like_secret("a" * (_MIN_SECRET_LENGTH * 2)) is False
+
+
+class TestRedactStructure:
+    """`redact_structure` walks a nested structure applying both halves of the
+    canonical policy: name-based classification and value-shape scanning."""
+
+    def test_a_secret_named_field_loses_its_value(self):
+        assert redact_structure({"api_key": "live-value"}) == {"api_key": REDACTED_FIELD}
+
+    def test_nested_mappings_lists_and_tuples_are_walked(self):
+        scrubbed = redact_structure(
+            {"outer": {"ssh_key": "k"}, "items": [{"password": "p"}], "pair": ({"token": "t"},)}
+        )
+        assert scrubbed["outer"]["ssh_key"] == REDACTED_FIELD
+        assert scrubbed["items"][0]["password"] == REDACTED_FIELD
+        assert scrubbed["pair"][0]["token"] == REDACTED_FIELD
+
+    def test_a_secret_shaped_value_is_scrubbed_even_under_an_innocent_name(self):
+        """The name-based half alone would miss this: `message` is not a secret
+        name, but the Slack token inside its value still is."""
+        scrubbed = redact_structure({"message": f"deploying with {_SLACK_BOT_TOKEN}"})
+        assert _SLACK_BOT_TOKEN not in scrubbed["message"]
+        assert "deploying with" in scrubbed["message"]
+
+    def test_the_identifier_escape_survives_the_walk(self):
+        """An ARN or a `*_id` names an identifier, not a reusable credential —
+        the shared segment policy lets it through, and so must this walker."""
+        payload = {"key_arn": "arn:aws:kms:us-east-1:123456789012:key/1234abcd", "token_id": "t-42"}
+        assert redact_structure(payload) == payload
+
+    def test_the_value_scanner_is_a_second_gate_the_name_escape_cannot_open(self):
+        """`aws_access_key_id` clears the *name* half — it ends in an identifier
+        qualifier — and is still redacted, because the *value* half recognizes
+        the key-id shape on its own. The two halves are independent, so an
+        attacker cannot smuggle a credential through by choosing a benign name."""
+        scrubbed = redact_structure({"aws_access_key_id": "AKIAIOSFODNN7EXAMPLE"})
+        assert scrubbed["aws_access_key_id"] == redact("AKIAIOSFODNN7EXAMPLE")
+        assert "AKIAIOSFODNN7EXAMPLE" not in scrubbed["aws_access_key_id"]
+
+    def test_digests_ids_and_prose_are_not_destroyed(self):
+        """False-positive control. Lowercase-hex digests and uuid4 ids carry no
+        uppercase, so the high-entropy heuristic declines them; ordinary prose
+        is far below its length floor. Event payloads are full of all three."""
+        payload = {
+            "digest": hashlib.sha256(b"artifact").hexdigest(),
+            "event_id": uuid4().hex,
+            "note": "the build failed on step 3 with 2 lint errors",
+        }
+        assert redact_structure(payload) == payload
+
+    def test_it_is_idempotent(self):
+        """Re-scrubbing an already-scrubbed structure must not double-redact —
+        the canonical Event outbox re-validates envelopes exactly that way."""
+        once = redact_structure({"api_key": "v", "msg": f"tok {_SLACK_BOT_TOKEN}", "keep": "plain"})
+        assert redact_structure(once) == once
+
+    def test_non_string_keys_keep_their_type(self):
+        """`str(key)` is only how a name is classified; rewriting the key would
+        quietly change the structure a caller reads back."""
+        scrubbed = redact_structure({2: "int-key", "ok": 1})
+        assert 2 in scrubbed
+        assert scrubbed[2] == "int-key"
+
+    def test_a_tuple_stays_a_tuple(self):
+        assert isinstance(redact_structure({"t": (1, "a")})["t"], tuple)
+
+    def test_the_result_shares_no_container_with_its_input(self):
+        """It rebuilds every container it walks, so callers can rely on it as a
+        deep copy rather than paying for a second one."""
+        source = {"nested": {"n": 1}, "items": [{"n": 2}]}
+        scrubbed = redact_structure(source)
+        source["nested"]["n"] = 999
+        source["items"][0]["n"] = 999
+        assert scrubbed["nested"]["n"] == 1
+        assert scrubbed["items"][0]["n"] == 2
+
+    def test_scalars_pass_through_untouched(self):
+        assert redact_structure({"n": 5, "f": 1.5, "b": True, "none": None}) == {
+            "n": 5,
+            "f": 1.5,
+            "b": True,
+            "none": None,
+        }

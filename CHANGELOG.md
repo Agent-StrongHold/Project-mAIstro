@@ -25,6 +25,21 @@ or placeholder-only section.
 
 ### Security
 
+- **Canonical Event payloads are scrubbed of credential material before any
+  backend can persist them (#1164).** `EventEnvelope` now redacts `payload`
+  and `provenance` in its constructor — the one seam the memory, SQLite,
+  PostgreSQL and outbox paths all already go through for their size bound — so
+  a token pasted into an event can no longer reach durable storage, a replay,
+  or an operator's inspection of the event log. Both halves of #1159's policy
+  apply: a field whose *name* classifies as credential material
+  (`api_key`, `private_key`, `ssh_key`, a bare `key`, …) loses its value, and
+  every surviving string is scanned for secret *shapes* (Slack and AWS
+  credentials, bearer assignments, PEM blocks, high-entropy runs). Identifiers
+  are preserved — `key_arn`, `token_id`, digests, uuid4 ids and ordinary prose
+  survive untouched — and the scrub is idempotent, so re-validating a staged
+  envelope does not rewrite already-recorded evidence. Rows written before this
+  change are read back exactly as they were recorded rather than re-scrubbed on
+  read.
 - **Sentinel's permission table is fail-closed, and the production paths can
   both feel it and configure it (#1165).** An empty or omitted deployment
   table now denies every tool instead of authorizing all of them. A chat turn

@@ -12,10 +12,12 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
+from typing import Any
 
 from maistro.security.secret_policy import (
     AWS_SECRET_ACCESS_KEY_PATTERN,
     SLACK_TOKEN_PATTERN,
+    is_secret_key_name,
     iter_secret_assignment_value_spans,
     looks_like_aws_secret_access_key,
 )
@@ -302,3 +304,48 @@ def redact(text: str) -> str:
     spans = _collect_redaction_spans(text)
     merged = _merge_redaction_spans(spans)
     return _render_redaction(text, merged)
+
+
+#: Replacement for a value whose *field name* alone classified it as credential
+#: material. Deliberately the same token `redact_approval_value` writes, and
+#: deliberately distinct from the `[REDACTED_*]` span labels: those name the
+#: detector that matched inside a string, this one records that the name was
+#: enough and the value was never inspected.
+REDACTED_FIELD = "[REDACTED]"
+
+
+def redact_structure(value: Any) -> Any:
+    """Redact credential material from a nested JSON-shaped structure.
+
+    Applies both halves of the canonical policy: a field whose *name* classifies
+    as credential material (:func:`is_secret_key_name`) loses its value outright,
+    and every surviving string is scanned for secret *shapes* by :func:`redact`.
+    :func:`maistro.capabilities.approval_store.redact_approval_value` applies
+    only the first half, because approval evidence is read by the human deciding
+    on the action and scanning its free text would cost that readability. Both
+    classify names through :mod:`maistro.security.secret_policy`, so neither can
+    drift into its own key-name list (#1159).
+
+    Idempotent, so a caller that re-scrubs an already-scrubbed structure does not
+    double-redact -- the canonical Event outbox re-validates envelopes exactly
+    that way.
+
+    Recursion depth follows the input, so callers handling untrusted structures
+    must bound nesting first; the canonical Event envelope checks its depth
+    ceiling before scrubbing for this reason.
+    """
+    if isinstance(value, dict):
+        # The key object is preserved rather than coerced: `str(key)` is only
+        # how the name is *classified*, and rewriting a non-string key here
+        # would quietly change the payload a caller reads back.
+        return {
+            key: REDACTED_FIELD if is_secret_key_name(str(key)) else redact_structure(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_structure(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(redact_structure(item) for item in value)
+    if isinstance(value, str):
+        return redact(value)
+    return value

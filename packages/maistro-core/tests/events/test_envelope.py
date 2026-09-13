@@ -6,6 +6,7 @@ import asyncio
 import json
 import time
 from collections.abc import AsyncIterator
+from dataclasses import replace
 
 import aiosqlite
 import pytest
@@ -18,7 +19,13 @@ from maistro.events.envelope import (
     EventStore,
     InMemoryEventStore,
     SqliteEventStore,
+    reconstruct_persisted_event,
 )
+from maistro.security.redact import REDACTED_FIELD
+
+#: Assembled from segments so no source line carries a contiguous `xoxb-`
+#: literal for a secret scanner to flag on a fresh clone.
+_SLACK_BOT_TOKEN = "-".join(["xoxb", "123456789012", "1234567890123", "abcdefghijklmnopqrstuvwx"])
 
 
 def _encoded_size(value: object) -> int:
@@ -165,6 +172,113 @@ class TestPayloadStructuralBounds:
     def test_a_non_json_encodable_payload_is_rejected_before_any_backend_sees_it(self) -> None:
         with pytest.raises(EventPayloadTooLarge, match="not JSON-encodable"):
             EventEnvelope(type="x", workspace_id="w1", payload={"bad": object()})
+
+
+class TestPayloadSecretScrubbing:
+    """#1164's remaining scrub item: credential material is removed from
+    payload/provenance at construction, so no backend can persist it.
+
+    Scrubbing lives beside the bounds check in `__post_init__` for the same
+    reason the bound does -- it is the one place memory, SQLite, PostgreSQL and
+    the outbox all go through, so none of them needs (or can forget) its own
+    copy. The policy itself is #1159's, reached through
+    `maistro.security.redact.redact_structure`; these tests pin the *wiring*,
+    not the detector vocabulary, which `tests/security/test_redact.py` owns.
+    """
+
+    def test_a_secret_named_payload_field_is_scrubbed(self) -> None:
+        event = EventEnvelope(type="x", workspace_id="w1", payload={"api_key": "live-value"})
+        assert event.payload["api_key"] == REDACTED_FIELD
+
+    def test_provenance_is_scrubbed_the_same_way_as_payload(self) -> None:
+        event = EventEnvelope(type="x", workspace_id="w1", provenance={"password": "hunter2"})
+        assert event.provenance["password"] == REDACTED_FIELD
+
+    def test_a_secret_shaped_value_under_an_innocent_name_is_scrubbed(self) -> None:
+        """Name-based classification alone would persist this: `message` is not
+        a credential name, but the token pasted into its value is."""
+        event = EventEnvelope(
+            type="x", workspace_id="w1", payload={"message": f"deployed with {_SLACK_BOT_TOKEN}"}
+        )
+        assert _SLACK_BOT_TOKEN not in event.payload["message"]
+        assert "deployed with" in event.payload["message"]
+
+    def test_nested_credentials_are_scrubbed(self) -> None:
+        event = EventEnvelope(
+            type="x",
+            workspace_id="w1",
+            payload={"request": {"headers": {"authorization": "Bearer live"}}},
+        )
+        assert event.payload["request"]["headers"]["authorization"] == REDACTED_FIELD
+
+    def test_ordinary_payload_content_survives(self) -> None:
+        """False-positive control at the envelope seam: digests, ids and prose
+        are what real event payloads are mostly made of."""
+        payload = {"digest": "a" * 64, "attempt": 2, "note": "node finished in 41ms"}
+        event = EventEnvelope(type="x", workspace_id="w1", payload=payload)
+        assert event.payload == payload
+
+    async def test_no_backend_can_persist_a_credential(self, store: EventStore) -> None:
+        """The durable read-back is the real assertion: whatever the store wrote,
+        reading it out again must not yield the credential."""
+        stored = await store.append(
+            EventEnvelope(
+                type="x",
+                workspace_id="w1",
+                payload={"api_key": "live-value", "msg": f"tok {_SLACK_BOT_TOKEN}"},
+            )
+        )
+        read_back = await store.get(stored.event_id)
+        assert read_back is not None
+        assert read_back.payload["api_key"] == REDACTED_FIELD
+        assert _SLACK_BOT_TOKEN not in read_back.payload["msg"]
+
+    def test_the_byte_bound_is_enforced_before_the_scrub_runs(self) -> None:
+        """Order matters, and this payload proves it: scrubbing would collapse a
+        256 KiB value to `[REDACTED]` and let an oversize event through. Rejecting
+        resource abuse must not require first running the redactor over it."""
+        payload = {"api_key": "x" * (MAX_EVENT_FIELD_BYTES + 1)}
+        with pytest.raises(EventPayloadTooLarge):
+            EventEnvelope(type="x", workspace_id="w1", payload=payload)
+
+    def test_rescrubbing_an_envelope_does_not_double_redact(self) -> None:
+        """`replace()` re-runs `__post_init__` on an already-scrubbed payload --
+        the outbox stages events exactly that way -- so the scrub must be
+        idempotent or the stored evidence would drift on every revalidation."""
+        event = EventEnvelope(
+            type="x",
+            workspace_id="w1",
+            payload={"api_key": "v", "msg": f"tok {_SLACK_BOT_TOKEN}", "keep": "plain"},
+        )
+        assert replace(event).payload == event.payload
+
+    def test_reading_a_persisted_row_back_does_not_re_scrub_it(self) -> None:
+        """`reconstruct_persisted_event` deliberately skips the bound so a
+        historical row stays readable; it must skip the scrub for the same
+        reason. A row written before this change is evidence as it was recorded,
+        and re-running a detector over it on every read would be both wasted
+        work and a silent rewrite of durable history."""
+        historical = reconstruct_persisted_event(
+            type="x",
+            payload={"api_key": "written-before-the-scrub-existed"},
+            provenance={},
+            event_id="e1",
+            sequence=1,
+            timestamp=0.0,
+            workspace_id="w1",
+            stream_scope="",
+            project_id="",
+            run_id="",
+            node_run_id="",
+            attempt_id="",
+            invocation_id="",
+            session_id="",
+            correlation_id="",
+            causation_id="",
+            source="",
+            actor_id="",
+        )
+        assert historical.payload["api_key"] == "written-before-the-scrub-existed"
 
     def test_a_lone_surrogate_is_rejected_cleanly_rather_than_crashing_raw(self) -> None:
         """`json.dumps` can succeed on an unpaired surrogate; only the later
