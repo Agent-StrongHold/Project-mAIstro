@@ -116,8 +116,14 @@ def test_github_event_metadata_supplies_every_integration_base(
     monkeypatch.delenv("GITHUB_BASE_REF", raising=False)
     assert provenance._github_event_base() == "a" * 40
 
-    event.write_text(json.dumps({"before": "b" * 40}), encoding="utf-8")
+    event.write_text(
+        json.dumps({"before": "b" * 40, "ref": "refs/heads/fix/example"}),
+        encoding="utf-8",
+    )
     monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+    assert provenance._github_event_base() == "origin/develop"
+
+    monkeypatch.setenv("GITHUB_REF", "refs/heads/develop")
     assert provenance._github_event_base() == "b" * 40
 
 
