@@ -12,9 +12,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from maistro.observability.correlation import (
+    bind_execution_context,
+    current_execution_context,
+    detached_execution_context,
+)
 from maistro.runs.model import TERMINAL_RUN_STATUSES
 from maistro.scheduling import FireDecision, OverlapPolicy, Schedule, evaluate
 from maistro.scheduling.admission import ScheduleRunAdmitter
@@ -70,7 +76,17 @@ async def fire_now(sid: str) -> str:
         raise ScheduleNotFireable(f"schedule {sid} has used all {definition.max_runs} of its runs")
 
     now = datetime.now(UTC)
-    run_id = await runner._fire_schedule(sid, schedule, scheduled_for=now, catchup=False)
+    # Captured here, at the one call site with a trustworthy ambient context
+    # (#1063): this coroutine runs inside the HTTP request RequestIDMiddleware
+    # already bound an id for, so forwarding it explicitly is what keeps the
+    # request/response and the resulting Run in the same trace.
+    # `_fire_schedule` never reads ambient context itself -- it is also
+    # reachable from the tick loop, which shares an event loop with whatever
+    # else is running and cannot make the same claim.
+    request_id = current_execution_context().request_id or None
+    run_id = await runner._fire_schedule(
+        sid, schedule, scheduled_for=now, catchup=False, request_id=request_id
+    )
     if run_id is None:
         raise ScheduleNotFireable(
             f"schedule {sid} could not create a Run; its target may not be registered"
@@ -283,7 +299,15 @@ class _ScheduleRunner:
         store: Any,
         scope: tuple[str, str] | None = None,
     ) -> Schedule | None:
-        """Return the editable definition with the durable cursor overlaid."""
+        """Return the editable definition with the durable cursor overlaid.
+
+        The overlay is the store's: `ScheduleStore.put` keeps the cursors
+        `record_fire` recorded on an existing row and returns the row as
+        stored, so the copy this returns carries what is on disk *after* the
+        put, not what a read before it saw. A read-then-put here used to do
+        the overlay itself, and a fire that landed between the two halves
+        was written back over by the stale copy (Codex, #1199).
+        """
         definition = self._as_definition(sid, schedule)
         if definition is None:
             return None
@@ -293,19 +317,8 @@ class _ScheduleRunner:
             )
         if store is None:
             return definition
-        recorded = await store.get(sid)
-        if recorded is not None:
-            definition = definition.model_copy(
-                update={
-                    "last_fired_at": recorded.last_fired_at,
-                    "last_run_id": recorded.last_run_id,
-                    "runs_so_far": recorded.runs_so_far,
-                    "next_due_at": recorded.next_due_at,
-                    "created_at": recorded.created_at,
-                }
-            )
-        await store.put(definition)
-        return definition
+        stored: Schedule = await store.put(definition)
+        return stored
 
     async def _canonical_active_run(self, definition: Schedule, container: Any) -> bool:
         """Whether the schedule's latest Run is still non-terminal."""
@@ -532,6 +545,7 @@ class _ScheduleRunner:
         *,
         scheduled_for: datetime | None = None,
         catchup: bool = False,
+        request_id: str | None = None,
     ) -> str | None:
         """Compatibility immediate execution path used by manual fire/tests."""
         t = datetime.now(UTC)
@@ -572,19 +586,30 @@ class _ScheduleRunner:
         scope_id = f"hive:schedule:{sid}"
         user_id = str(getattr(schedule, "user_id", "") or "") or None
         try:
-            graph, record = await run_registered_dag(
-                str(template_id),
-                workspace_id=scope_id,
-                project_id=scope_id,
-                user_id=user_id,
-                provenance={
-                    "admission_source": "schedule",
-                    "schedule_id": sid,
-                    "schedule_name": schedule.name,
-                    "scheduled_for": (scheduled_for or t).isoformat(),
-                    "catchup": catchup,
-                },
-            )
+            # Always a clean slate (#1063): this path shares an event loop
+            # with whatever else is running (the tick loop) and cannot tell a
+            # trustworthy caller-supplied id from a stray one some unrelated
+            # Attempt left bound on the same tick just by looking at ambient
+            # context. `fire_now()` -- the one caller with a real HTTP
+            # request behind it -- passes its own id explicitly instead;
+            # a caller that passes none (the tick loop) gets a fresh root.
+            with detached_execution_context():
+                effective_request_id = request_id or uuid.uuid4().hex[:12]
+                with bind_execution_context(request_id=effective_request_id):
+                    graph, record = await run_registered_dag(
+                        str(template_id),
+                        workspace_id=scope_id,
+                        project_id=scope_id,
+                        user_id=user_id,
+                        provenance={
+                            "admission_source": "schedule",
+                            "schedule_id": sid,
+                            "schedule_name": schedule.name,
+                            "scheduled_for": (scheduled_for or t).isoformat(),
+                            "catchup": catchup,
+                            "request_id": effective_request_id,
+                        },
+                    )
         except Exception as exc:
             logger.warning("Schedule %s run failed: %s", sid, exc)
             log_audit(
