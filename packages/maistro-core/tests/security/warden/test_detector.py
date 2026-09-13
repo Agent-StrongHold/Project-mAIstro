@@ -70,6 +70,14 @@ async def test_scan_layer1_single_pattern_match_is_blocked() -> None:
         ('<svg><a href="javascript:alert(1)">x</a></svg>', "Active markup dangerous resource URL"),
         ('<img src="data:text/html,<script>alert(1)</script>">', "Active markup data URL"),
         (
+            '<link rel="stylesheet" href="https://evil.example/leak.css">',
+            "Active markup dangerous resource URL",
+        ),
+        (
+            '<video poster="https://evil.example/leak.png"></video>',
+            "Active markup dangerous resource URL",
+        ),
+        (
             "<style>.x { background: url(https://evil.example/leak) }</style>",
             "CSS network/code primitive",
         ),

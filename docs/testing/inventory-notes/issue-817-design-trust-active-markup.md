@@ -1,7 +1,7 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +6
-  packages/maistro-design/tests: +19
+  packages/maistro-core/tests: +8
+  packages/maistro-design/tests: +25
 ---
 # Issue 817: Design trust active-markup corpus
 
@@ -14,4 +14,6 @@ The render-output cases call `build_multimodal_output`, so they prove rejection
 at the returned-artifact boundary rather than only inspecting a helper result. The
 hostile corpus also covers a lookalike subdomain of an allowlisted font origin,
 which verifies that CSS network checks compare parsed URL authorities rather than
-string prefixes.
+string prefixes. The repair adds link stylesheet and video poster fetch surfaces to
+the shared Warden vocabulary and verifies both pre-scan recommendations and final
+render rejection for each.

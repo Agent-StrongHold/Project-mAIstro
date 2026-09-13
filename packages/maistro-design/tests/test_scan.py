@@ -51,6 +51,8 @@ class TestScanDesignOutput:
             ('<img src=x onerror="alert(1)">', "event-handler"),
             ('<svg><a href="javascript:alert(1)">x</a></svg>', "dangerous resource"),
             ('<img src="data:text/html,<script>alert(1)</script>">', "data URL"),
+            ('<link rel="stylesheet" href="https://evil.example/leak.css">', "dangerous resource"),
+            ('<video poster="https://evil.example/leak.png"></video>', "dangerous resource"),
             ("<style>.x { background: url(https://evil.example/leak) }</style>", "CSS"),
             (
                 "<style>.x { background: url(https://fonts.googleapis.com.evil/leak) }</style>",

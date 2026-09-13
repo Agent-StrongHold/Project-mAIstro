@@ -26,8 +26,9 @@ ACTIVE_MARKUP_PATTERNS: tuple[tuple[regex.Pattern[str], str], ...] = (
     ),
     (
         regex.compile(
-            r"<(?:img|image|svg|a|use|iframe|object|embed)\b[^>]*"
-            r"(?:src|href|xlink:href|data|action|formaction|poster)\s*=\s*"
+            r"<(?:img|image|svg|a|use|iframe|object|embed|link|video|audio|source|track|"
+            r"form|input|button)\b[^>]*"
+            r"(?:src|srcset|imagesrcset|href|xlink:href|data|action|formaction|poster)\s*=\s*"
             r"[\"']?\s*(?:java\s*script\s*:|vb\s*script\s*:|data\s*:|https?:|//)",
             regex.IGNORECASE,
         ),
