@@ -97,6 +97,7 @@ class ModelChatRequest(BaseModel):
     temperature: float = 0.7
     max_tokens: int | None = None
     tools: list[dict[str, object]] | None = None
+    response_format: dict[str, object] | None = None
 
 
 def _chat_payload(provider: LlmGatewayProvider, request: ModelChatRequest) -> dict[str, object]:
@@ -112,6 +113,8 @@ def _chat_payload(provider: LlmGatewayProvider, request: ModelChatRequest) -> di
         payload["max_tokens"] = request.max_tokens
     if request.tools:
         payload["tools"] = [dict(tool) for tool in request.tools]
+    if request.response_format:
+        payload["response_format"] = dict(request.response_format)
     return payload
 
 

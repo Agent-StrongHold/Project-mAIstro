@@ -225,13 +225,33 @@ async def _build_container(settings: Settings, pg_pool: Any) -> Any:
     want one starts from a Container that already has it.
     """
     container = await create_container(_agent_config(settings), pg_pool=pg_pool)
+    from maistro.capabilities.model_chat import ModelChatEgress
+    from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
+
+    governed_egress = ModelChatEgress(
+        container.capability_effects,
+        registry=container.provider_registry,
+        router=container.llm_router,
+        endpoint=GatewayEndpoint(
+            base_url=settings.litellm.base_url,
+            api_key=settings.litellm.master_key,
+        ),
+    )
     # `Container.agents` is typed `dict[str, Agent]`, and `Agent` is a concrete
     # base class rather than a protocol — but `Conduit` uses the map
     # structurally: `handle(...)`, and `priority_tier` only if present.
     # `ConductorAgent` provides exactly that and deliberately does not subclass
     # `BaseAgent`, which would bring a second strategy stack and a second
     # extraction pass over an answer `run_task` has already produced.
-    container.agents = cast("dict[str, Agent]", {CONDUCTOR_AGENT_NAME: ConductorAgent()})
+    container.agents = cast(
+        "dict[str, Agent]",
+        {
+            CONDUCTOR_AGENT_NAME: ConductorAgent(
+                governed_egress=governed_egress,
+                workspace_id=settings.workspace_id,
+            )
+        },
+    )
     await logger.ainfo("container_wired", agents=sorted(container.agents))
     return container
 

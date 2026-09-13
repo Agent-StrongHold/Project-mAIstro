@@ -29,6 +29,8 @@ from maistro.capabilities.invocation import (
 from maistro.credentials.router import CredentialRouter
 from maistro.events.envelope import EventStore, InMemoryEventStore
 from maistro.policy.types import Decision, PolicyVerdict
+from maistro.quota.recorder import CanonicalInvocationUsageRecorder
+from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 
 
 async def _m1_binding_authorized_policy(
@@ -60,6 +62,9 @@ class CapabilityEffectContext:
     invocations: GovernedInvocationExecutionService
     invocation_store: InvocationStore
     event_store: EventStore
+    # The same recorder is installed at Invocation terminalization for every
+    # effect consumer; callers do not thread independent response callbacks.
+    usage_log: InMemoryUsageLog = field(default_factory=get_default_usage_log)
     credentials: CredentialRouter = field(default_factory=CredentialRouter)
 
     def credential_routing(self) -> CredentialRouting:
@@ -79,6 +84,8 @@ def new_in_memory_effect_context(
     *,
     policy_evaluator: PolicyEvaluator | None = None,
     credentials: CredentialRouter | None = None,
+    usage_log: InMemoryUsageLog | None = None,
+    quota_tracker: Any | None = None,
 ) -> CapabilityEffectContext:
     """Build an isolated canonical effect context for local/runtime composition.
 
@@ -90,7 +97,12 @@ def new_in_memory_effect_context(
     binding_store = InMemoryBindingStore()
     invocation_store = InMemoryInvocationStore()
     event_store = InMemoryEventStore()
-    invocation_service = InvocationExecutionService(store=invocation_store)
+    usage_log = usage_log or get_default_usage_log()
+    usage_recorder = CanonicalInvocationUsageRecorder(usage_log, quota_tracker)
+    invocation_service = InvocationExecutionService(
+        store=invocation_store,
+        on_completed=usage_recorder.record,
+    )
     governed = GovernedInvocationExecutionService(
         invocation_service=invocation_service,
         event_store=event_store,
@@ -101,6 +113,7 @@ def new_in_memory_effect_context(
         invocations=governed,
         invocation_store=invocation_store,
         event_store=event_store,
+        usage_log=usage_log,
         credentials=credentials or CredentialRouter(),
     )
 

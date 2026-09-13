@@ -217,6 +217,7 @@ ProviderResolver = Callable[
 ]
 ProviderExecutor = Callable[[ResolvedCapabilityProvider, Any], Awaitable[Any]]
 UsageExtractor = Callable[[Any], "InvocationUsage | None"]
+InvocationCompletionHook = Callable[["Invocation"], Awaitable[None]]
 
 
 class InvocationExecutionService:
@@ -226,8 +227,14 @@ class InvocationExecutionService:
     effect-retry guard below therefore protects no live call yet (#55).
     """
 
-    def __init__(self, *, store: InvocationStore) -> None:
+    def __init__(
+        self,
+        *,
+        store: InvocationStore,
+        on_completed: InvocationCompletionHook | None = None,
+    ) -> None:
         self._store = store
+        self._on_completed = on_completed
         self._effect_lock = asyncio.Lock()
 
     async def latest_effect(
@@ -344,12 +351,15 @@ class InvocationExecutionService:
 
         usage = usage_from(result) if usage_from is not None else None
 
-        return await self._terminalize(
+        completed = await self._terminalize(
             invocation,
             InvocationStatus.COMPLETED,
             result=result,
             usage=usage,
         )
+        if self._on_completed is not None:
+            await self._on_completed(completed)
+        return completed
 
     async def _terminalize(
         self,
@@ -377,6 +387,7 @@ __all__ = [
     "EffectNotApplied",
     "InMemoryInvocationStore",
     "Invocation",
+    "InvocationCompletionHook",
     "InvocationExecutionService",
     "InvocationStatus",
     "InvocationStore",

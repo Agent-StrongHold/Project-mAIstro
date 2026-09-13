@@ -15,6 +15,11 @@ from maistro.quota.reconciliation import (
 from maistro.quota.usage_log import InMemoryUsageLog
 
 
+class _UnavailableVerifier:
+    async def verify(self, scope_key: str) -> ProviderQuotaSnapshot:
+        raise OSError(f"{scope_key} verifier is down")
+
+
 class _FakeVerifier:
     def __init__(self, remaining_sequence: list[float]) -> None:
         self._sequence = remaining_sequence
@@ -103,6 +108,21 @@ def test_due_respects_current_interval() -> None:
 
 
 # --- maybe_reconcile ---------------------------------------------------------
+
+
+async def test_verifier_outage_is_unavailable_evidence_not_an_exception() -> None:
+    state = ReconciliationState(policy=AdaptiveReconciliationPolicy(min_interval_s=1.0))
+
+    outcome = await maybe_reconcile(
+        state, "s-outage", InMemoryUsageLog(), _UnavailableVerifier(), now=10.0
+    )
+
+    assert outcome is not None
+    assert outcome.matched is None
+    assert outcome.available is False
+    assert outcome.snapshot is None
+    assert outcome.error is not None
+    assert state.last_explicit_check_at == 10.0
 
 
 async def test_not_due_yet_returns_none_without_calling_verifier() -> None:

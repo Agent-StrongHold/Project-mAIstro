@@ -41,6 +41,8 @@ from maistro.providers.types import (
     RouterBudget,
     RoutingTask,
 )
+from maistro.quota.tracker import InMemoryQuotaTracker
+from maistro.quota.usage_log import InMemoryUsageLog
 
 
 def _meta(
@@ -376,6 +378,81 @@ async def test_unreachable_gateway_records_failed_retryable_invocation(
         endpoint=GatewayEndpoint(base_url="http://gw"),
     ).complete(**kwargs)
     assert retried.model == "fast-model"
+
+
+async def test_canonical_invocation_completion_records_quota_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The live Invocation hook records provider usage and deduplicates effects."""
+    tracker = InMemoryQuotaTracker()
+    effects = new_in_memory_effect_context(usage_log=InMemoryUsageLog(), quota_tracker=tracker)
+    registry = _registry()
+    _patch_gateway(monkeypatch, _OK_BODY)
+    egress = ModelChatEgress(
+        effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+        endpoint=GatewayEndpoint(base_url="http://gw"),
+    )
+    kwargs: dict[str, Any] = {
+        "binding": _binding(),
+        "run_id": "r-quota",
+        "node_run_id": "nr-quota",
+        "attempt_id": "a-quota",
+        "effect_key": "quota:dedupe",
+        "request": ModelChatRequest(model="fast-model", messages=[]),
+    }
+
+    first = await egress.complete(**kwargs)
+    second = await egress.complete(**kwargs)
+
+    events = effects.usage_log.events_for("fast-model")
+    assert len(events) == 1
+    assert events[0].invocation_id == first.invocation_id
+    assert events[0].usage_reported is True
+    assert second.invocation_id == first.invocation_id
+    quota_rows = await tracker.get_all_usage()
+    assert quota_rows[0]["provider"] == "fast-model"
+    assert quota_rows[0]["total_tokens"] == 120
+    rows = await effects.invocation_store.list_effect(
+        run_id="r-quota",
+        node_run_id="nr-quota",
+        binding_id=kwargs["binding"].binding_id,
+        effect_key="quota:dedupe",
+    )
+    assert len(rows) == 1
+    assert rows[0].usage is not None
+
+
+async def test_canonical_invocation_missing_usage_is_explicitly_unreported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tracker = InMemoryQuotaTracker()
+    effects = new_in_memory_effect_context(usage_log=InMemoryUsageLog(), quota_tracker=tracker)
+    _patch_gateway(monkeypatch, {"choices": [{"message": {"content": "ok"}}]})
+    egress = ModelChatEgress(
+        effects,
+        registry=_registry(),
+        router=CostAwareRouter(_registry()),
+        endpoint=GatewayEndpoint(base_url="http://gw"),
+    )
+
+    result = await egress.complete(
+        binding=_binding(),
+        run_id="r-missing",
+        node_run_id="nr-missing",
+        attempt_id="a-missing",
+        effect_key="quota:missing",
+        request=ModelChatRequest(model="fast-model", messages=[]),
+    )
+
+    event = effects.usage_log.events_for("fast-model")[0]
+    assert result.usage is None
+    assert event.usage_reported is False
+    assert event.input_tokens == event.output_tokens == 0
+    row = (await tracker.get_all_usage())[0]
+    assert row["unreported_count"] == 1
+    assert row["total_tokens"] == 0
 
 
 async def test_unknown_outcome_blocks_repeat() -> None:

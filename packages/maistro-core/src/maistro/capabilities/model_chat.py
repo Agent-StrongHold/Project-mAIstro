@@ -19,7 +19,10 @@ registry metadata, then attached to the persisted canonical Invocation.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict
 
@@ -44,6 +47,7 @@ from maistro.providers.types import (
     RoutingTask,
     compute_cost_cents,
 )
+from maistro.quota.usage_report import reported_usage
 
 if TYPE_CHECKING:
     from maistro.capabilities.effect_context import CapabilityEffectContext
@@ -55,10 +59,10 @@ def _gateway_usage(provider: LlmGatewayProvider, body: Any) -> InvocationUsage |
 
     if not isinstance(body, dict):
         return None
-    usage = body.get("usage")
-    usage_map = usage if isinstance(usage, dict) else {}
-    input_units = int(usage_map.get("prompt_tokens") or 0)
-    output_units = int(usage_map.get("completion_tokens") or 0)
+    reported = reported_usage(body)
+    if reported is None:
+        return None
+    input_units, output_units = reported
     metadata = provider.metadata
     cost_cents = (
         compute_cost_cents(metadata, input_units, output_units) if metadata is not None else None
@@ -114,6 +118,99 @@ def resolve_model_chat_provider(
         return LlmGatewayProvider(selected, model=selected.name)
 
     return resolve
+
+
+class GovernedLLMClient:
+    """LLMClient adapter that sends every completion through ModelChatEgress.
+
+    Agent strategies keep their existing LLMClient shape, while the actual
+    provider call has one canonical Binding/Invocation authority. ``set_turn``
+    is a small runtime context seam used by Agent.handle; it does not dispatch
+    or own a second ledger.
+    """
+
+    def __init__(
+        self,
+        effects: CapabilityEffectContext,
+        *,
+        registry: LLMProviderRegistry,
+        router: LLMRouter,
+        endpoint: GatewayEndpoint,
+        workspace_id: str,
+        project_id: str = "agent-runtime",
+    ) -> None:
+        self._egress = ModelChatEgress(effects, registry=registry, router=router, endpoint=endpoint)
+        self._workspace_id = workspace_id
+        self._project_id = project_id
+        self._turn: ContextVar[tuple[str, str, str] | None] = ContextVar(
+            "governed_llm_turn", default=None
+        )
+        self._sequence: ContextVar[int] = ContextVar("governed_llm_sequence", default=0)
+
+    def set_turn(self, run_id: str | None = None, *, agent_name: str = "") -> None:
+        """Set correlation identity for the next Agent turn."""
+        self._turn.set(
+            (
+                run_id or f"agent-turn-{uuid4().hex}",
+                f"agent-node-{agent_name or 'model'}",
+                f"agent-attempt-{uuid4().hex}",
+            )
+        )
+        self._sequence.set(0)
+
+    def clear_turn(self) -> None:
+        self._turn.set(None)
+        self._sequence.set(0)
+
+    async def complete(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
+        stream: bool = False,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        del tool_choice, stream, metadata
+        if self._turn.get() is None:
+            self.set_turn()
+        self._sequence.set(self._sequence.get() + 1)
+        turn = self._turn.get()
+        assert turn is not None
+        run_id, node_run_id, attempt_id = turn
+        request = ModelChatRequest(
+            model=model,
+            messages=[dict(message) for message in messages],
+            temperature=0.7 if temperature is None else temperature,
+            max_tokens=max_tokens,
+            tools=[dict(tool) for tool in tools] if tools else None,
+        )
+        result = await self._egress.complete(
+            binding=Binding(
+                workspace_id=self._workspace_id,
+                project_id=self._project_id,
+                capability=MODEL_CHAT_CAPABILITY,
+            ),
+            run_id=run_id,
+            node_run_id=node_run_id,
+            attempt_id=attempt_id,
+            effect_key=f"agent-llm-{self._sequence.get()}",
+            request=request,
+        )
+        return result.body
+
+    async def stream(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        **kwargs: Any,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Compatibility stream; canonical egress remains one non-stream call."""
+        body = await self.complete(messages, model, **kwargs)
+        yield body
 
 
 class ModelCallResult(BaseModel):
@@ -192,7 +289,9 @@ class ModelChatEgress:
 
 __all__ = [
     "MODEL_CHAT_CAPABILITY",
+    "GovernedLLMClient",
     "ModelCallResult",
     "ModelChatEgress",
+    "ModelChatRequest",
     "resolve_model_chat_provider",
 ]

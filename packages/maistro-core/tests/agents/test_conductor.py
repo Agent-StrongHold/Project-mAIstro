@@ -117,6 +117,32 @@ class TestCallGateway:
             await _call_gateway(call, "hi", max_tokens=100, timeout=10)
 
     @pytest.mark.asyncio
+    async def test_governed_egress_returns_content_without_legacy_http(
+        self,
+    ) -> None:
+        captured: dict[str, Any] = {}
+
+        class _Egress:
+            async def complete(self, **kwargs: Any) -> Any:
+                captured.update(kwargs)
+                return type("Result", (), {"body": {"choices": [{"message": {"content": "{}"}}]}})()
+
+        call = ConductorCall(model="m", base_url=None, api_key="", system_prompt="sys")
+        result = await _call_gateway(
+            call,
+            "do thing",
+            max_tokens=512,
+            timeout=10,
+            governed_egress=_Egress(),  # type: ignore[arg-type]
+            invocation_identity=("run", "node", "attempt"),
+            invocation_number=2,
+        )
+
+        assert result == "{}"
+        assert captured["run_id"] == "run"
+        assert captured["effect_key"] == "conductor-llm-2"
+
+    @pytest.mark.asyncio
     async def test_posts_and_returns_content(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: dict[str, object] = {}
 

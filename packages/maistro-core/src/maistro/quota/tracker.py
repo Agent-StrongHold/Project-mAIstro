@@ -28,6 +28,18 @@ class InMemoryQuotaTracker:
         entry["request_count"] += 1
         return {"provider": provider, "cycle_key": key[1], **entry}
 
+    async def record_unreported(self, provider: str, billing_cycle: str) -> None:
+        """Keep missing provider usage visible without charging zero tokens."""
+        key = (provider, cycle_key(billing_cycle))
+        entry = self._usage[key]
+        entry.setdefault("unreported_count", 0)
+        entry["unreported_count"] += 1
+        entry.setdefault("input_tokens", 0)
+        entry.setdefault("output_tokens", 0)
+        entry.setdefault("total_tokens", 0)
+        entry.setdefault("request_count", 0)
+        entry["request_count"] += 1
+
     async def get_usage_pct(
         self,
         provider: str,

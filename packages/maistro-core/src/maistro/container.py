@@ -1539,7 +1539,10 @@ async def create_container(
 
     # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) -----------
     wired_harness_adapters = _wire_harness_adapters(harness_adapters)
-    capability_effects = new_in_memory_effect_context()
+    capability_effects = new_in_memory_effect_context(
+        usage_log=get_default_usage_log(),
+        quota_tracker=quota_tracker,
+    )
     spawn_harness_node = AgentSpawnHarnessNode(
         adapters=wired_harness_adapters, effect_context=capability_effects
     )
