@@ -318,10 +318,12 @@ PAUSE_REASON_WAKERS: dict[str, tuple[str, ...]] = {
     PAUSE_AWAITING_HUMAN_REVIEW: ("CanonicalDurableRunStore.submit_hitl_answer",),
     PAUSE_AWAITING_ROLE_DELEGATE: ("CanonicalDurableRunStore.submit_hitl_answer",),
     PAUSE_AWAITING_REMOTE_DELEGATION: (
+        "Container.wake_external_graph_result",
         "CanonicalDurableRunStore.submit_external_result",
         "resume_due_graph_runs",
     ),
     PAUSE_AWAITING_HARNESS: (
+        "Container.wake_external_graph_result",
         "CanonicalDurableRunStore.submit_external_result",
         "resume_due_graph_runs",
     ),
@@ -333,6 +335,14 @@ TIMER_RESUMABLE_PAUSE_REASONS = frozenset(
     reason
     for reason, condition in PAUSE_RESUME_CONDITIONS.items()
     if condition == RESUME_ON_ELAPSED
+)
+
+#: System-owned dispatches have a deadline waker too, but must not be
+#: redispatched on elapsed time: the waker first records a timeout result.
+DEADLINE_WOKEN_PAUSE_REASONS = frozenset(
+    reason
+    for reason, condition in PAUSE_RESUME_CONDITIONS.items()
+    if PAUSE_REASON_OWNERS.get(reason) == "system" and condition == RESUME_ON_ANSWER
 )
 
 #: Where a resumed execution finds what its own previous pause recorded.

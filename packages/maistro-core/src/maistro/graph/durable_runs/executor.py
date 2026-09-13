@@ -23,6 +23,7 @@ from maistro.graph.execution_state import (
     thaw_json_value,
 )
 from maistro.graph.nodes.base import (
+    DEADLINE_WOKEN_PAUSE_REASONS,
     HUMAN_PAUSE_REASONS,
     TIMER_RESUMABLE_PAUSE_REASONS,
     BaseNode,
@@ -470,9 +471,14 @@ def _with_deferred_fanins(
 
 
 def _timer_resume_at(result: NodeResult) -> datetime | None:
-    """Return a pause deadline only when elapsed time is allowed to re-enter it."""
+    """Return a persisted deadline for a reachable timer/deadline waker.
+
+    Polling pauses may be re-entered directly. A system-owned dispatch pause is
+    indexed as due as well, but its recovery waker records a timeout result
+    before the node is re-entered, so the dispatch is never repeated.
+    """
     reason = str((result.metadata or {}).get("paused_reason") or "")
-    if reason not in TIMER_RESUMABLE_PAUSE_REASONS:
+    if reason not in TIMER_RESUMABLE_PAUSE_REASONS | DEADLINE_WOKEN_PAUSE_REASONS:
         return None
     return result.resume_at
 

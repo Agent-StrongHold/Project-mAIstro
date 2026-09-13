@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +4
+  packages/maistro-core/tests: +8
 ---
 # M1-E2 recovery convergence
 

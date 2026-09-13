@@ -13,7 +13,11 @@ from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
 from maistro.graph.execution_state import GraphExecutionState
-from maistro.graph.nodes.base import PAUSE_RESUME_CONDITIONS, RESUME_ON_ELAPSED
+from maistro.graph.nodes.base import (
+    DEADLINE_WOKEN_PAUSE_REASONS,
+    PAUSE_RESUME_CONDITIONS,
+    RESUME_ON_ELAPSED,
+)
 from maistro.runs.model import Run, RunStatus
 from maistro.runs.recovery_events import RecoveryEventSink
 from maistro.runs.store import RunStore
@@ -71,7 +75,7 @@ def _answer_gated_pause(record: DurableRunRecord) -> tuple[str, str] | None:
             continue
         reason = str(metadata.get("paused_reason") or "")
         condition = PAUSE_RESUME_CONDITIONS.get(reason)
-        if condition is not None and condition != RESUME_ON_ELAPSED:
+        if reason in DEADLINE_WOKEN_PAUSE_REASONS and condition != RESUME_ON_ELAPSED:
             return str(node_id), reason
     return None
 

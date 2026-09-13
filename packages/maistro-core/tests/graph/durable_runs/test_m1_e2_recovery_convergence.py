@@ -6,6 +6,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from maistro.a2a.delegate import A2ATask, DelegationMode, TaskStatus
+from maistro.container import Container
 from maistro.graph import Graph, Node
 from maistro.graph.durable_runs.stores import InMemoryDurableRunStore, external_result_record
 from maistro.graph.durable_runs.types import DurableRunRecord
@@ -41,8 +43,7 @@ def test_every_registered_pause_reason_names_a_production_waker() -> None:
     assert set(PAUSE_REASON_WAKERS) == set(PAUSE_REASON_OWNERS)
     assert all(wakers for wakers in PAUSE_REASON_WAKERS.values())
     assert (
-        "CanonicalDurableRunStore.submit_external_result"
-        in PAUSE_REASON_WAKERS["awaiting_remote_delegation"]
+        "Container.wake_external_graph_result" in PAUSE_REASON_WAKERS["awaiting_remote_delegation"]
     )
     assert "resume_due_graph_runs" in PAUSE_REASON_WAKERS["awaiting_remote_delegation"]
 
@@ -137,6 +138,100 @@ async def test_recovery_rederives_parent_after_node_run_settlement_write() -> No
     assert await reconcile_stranded_runs(store) == 1
     repaired = await store.get_run(run.run_id)
     assert repaired is not None and repaired.status is RunStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+@pytest.mark.asyncio
+@pytest.mark.ac("M1-E2/#1192")
+async def test_terminal_a2a_receipt_reaches_the_canonical_external_waker() -> None:
+    calls: list[tuple[str, str, dict[str, object]]] = []
+
+    class _GraphStore:
+        async def submit_external_result(
+            self, run_id: str, node_id: str, result: dict[str, object]
+        ) -> None:
+            calls.append((run_id, node_id, result))
+
+    task = A2ATask(
+        id="a2a-task",
+        from_agent="planner",
+        to_agent="coder",
+        task="work",
+        status=TaskStatus.COMPLETED,
+        created_at=datetime.now(UTC),
+        assigned_at=None,
+        completed_at=datetime.now(UTC),
+        result="done",
+        error=None,
+        delegation_mode=DelegationMode.ALLOW_LIST,
+        metadata={"parent_run_id": "parent", "parent_node_id": "delegate"},
+    )
+    container = type("_Container", (), {"graph_run_store": _GraphStore()})()
+
+    await Container.wake_external_graph_result(container, task)  # type: ignore[arg-type]
+
+    assert calls == [
+        (
+            "parent",
+            "delegate",
+            {"status": "completed", "task_id": "a2a-task", "result": "done", "error": None},
+        )
+    ]
+
+
+def test_external_result_preserves_a_second_parked_frontier_deadline() -> None:
+    graph = Graph(
+        graph_id="m1-e2-frontier",
+        workspace_id="ws-m1-e2-frontier",
+        project_id="project-m1-e2-frontier",
+        name="M1-E2 frontier",
+        nodes=[
+            Node(node_id="first", node_type="test.m1_e2"),
+            Node(node_id="second", node_type="test.m1_e2"),
+        ],
+    )
+    run = Run(
+        run_id="frontier-parent",
+        workspace_id=graph.workspace_id,
+        project_id=graph.project_id,
+        graph=GraphSnapshot.from_graph(graph),
+        status=RunStatus.WAITING,
+    )
+    first_deadline = datetime.now(UTC) - timedelta(seconds=1)
+    second_deadline = datetime.now(UTC) + timedelta(minutes=1)
+    record = DurableRunRecord(
+        run=run,
+        graph_state=GraphExecutionState(
+            run_id=run.run_id,
+            active_node_ids=("first", "second"),
+            metadata={
+                "pauses": {
+                    node_id: {
+                        "kind": "wait",
+                        "metadata": {"paused_reason": "awaiting_remote_delegation"},
+                        "resume_at": deadline.isoformat(),
+                    }
+                    for node_id, deadline in (
+                        ("first", first_deadline),
+                        ("second", second_deadline),
+                    )
+                }
+            },
+        ),
+        node_runs=(
+            NodeRun(run_id=run.run_id, node_id="first", ordinal=1, status=RunStatus.WAITING),
+            NodeRun(run_id=run.run_id, node_id="second", ordinal=2, status=RunStatus.WAITING),
+        ),
+        resume_at=first_deadline,
+        version=1,
+    )
+
+    updated = external_result_record(record, "first", {"status": "completed"})
+
+    assert updated.run.status is RunStatus.WAITING
+    assert updated.resume_at == second_deadline
+    assert updated.node_runs[0].status is RunStatus.QUEUED
+    assert updated.node_runs[1].status is RunStatus.WAITING
 
 
 @pytest.mark.asyncio

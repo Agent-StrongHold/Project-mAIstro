@@ -10,7 +10,12 @@ from pathlib import Path
 from typing import Any, Literal
 
 from maistro.graph.execution_state import GraphExecutionState, thaw_json_value
-from maistro.graph.nodes.base import PAUSE_AWAITING_HARNESS, PAUSE_AWAITING_REMOTE_DELEGATION
+from maistro.graph.nodes.base import (
+    DEADLINE_WOKEN_PAUSE_REASONS,
+    PAUSE_AWAITING_HARNESS,
+    PAUSE_AWAITING_REMOTE_DELEGATION,
+    TIMER_RESUMABLE_PAUSE_REASONS,
+)
 from maistro.runs.lifecycle import settle_open_node_run, transition_node_run, transition_run
 from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
 
@@ -50,6 +55,36 @@ def _paused_node_run_index(record: DurableRunRecord, node_id: str) -> int:
         if node_run.node_id == node_id and node_run.status is RunStatus.PAUSED:
             return index
     raise ValueError(f"run {record.run_id!r} has no paused NodeRun for node {node_id!r}")
+
+
+def _earliest_wakeup(
+    metadata: Mapping[str, Any],
+    active_node_ids: tuple[str, ...],
+) -> datetime | None:
+    """Project the next timer/deadline waker after one pause is answered."""
+    pauses_raw = metadata.get("pauses", {})
+    pauses = pauses_raw if isinstance(pauses_raw, Mapping) else {}
+    deadlines: list[datetime] = []
+    for active_id in active_node_ids:
+        pause = pauses.get(active_id)
+        if not isinstance(pause, Mapping):
+            continue
+        pause_metadata = pause.get("metadata")
+        if not isinstance(pause_metadata, Mapping):
+            continue
+        reason = str(pause_metadata.get("paused_reason") or "")
+        if reason not in TIMER_RESUMABLE_PAUSE_REASONS | DEADLINE_WOKEN_PAUSE_REASONS:
+            continue
+        raw_deadline = pause.get("resume_at")
+        if not isinstance(raw_deadline, str):
+            continue
+        try:
+            deadline = datetime.fromisoformat(raw_deadline)
+        except ValueError:
+            continue
+        if deadline.tzinfo is not None:
+            deadlines.append(deadline)
+    return min(deadlines) if deadlines else None
 
 
 def _pause_metadata_after_answer(
@@ -204,12 +239,24 @@ def external_result_record(
     metadata = _pause_metadata_after_answer(record, metadata, node_id)
     node_runs = list(record.node_runs)
     node_runs[index] = transition_node_run(node_runs[index], RunStatus.QUEUED, at=moment)
+    remaining_node_ids = tuple(
+        active_id for active_id in record.graph_state.active_node_ids if active_id != node_id
+    )
+    remaining_parked = any(
+        node_run.node_id in remaining_node_ids
+        and node_run.status in {RunStatus.WAITING, RunStatus.PAUSED}
+        for node_run in node_runs
+    )
+    remaining_resume_at = _earliest_wakeup(metadata, remaining_node_ids)
+    run = (
+        record.run if remaining_parked else transition_run(record.run, RunStatus.QUEUED, at=moment)
+    )
     return _replace_record(
         record,
-        run=transition_run(record.run, RunStatus.QUEUED, at=moment),
+        run=run,
         graph_state=_replace_state(record.graph_state, metadata=metadata),
         node_runs=tuple(node_runs),
-        resume_at=None,
+        resume_at=remaining_resume_at if remaining_parked else None,
         version=record.version + 1,
     )
 

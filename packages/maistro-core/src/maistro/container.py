@@ -796,6 +796,59 @@ class Container:
         oldest_non_terminal_run_age_seconds.set(max(age, 0.0))
         return len(reclaimed)
 
+    async def wake_external_graph_result(self, task: Any) -> None:
+        """Write an A2A completion into its canonical parent Graph pause.
+
+        A2A task state is only a transport receipt. The metadata stamped at
+        dispatch identifies the canonical Run and NodeRun that own the pause;
+        this method is the reachable production waker for terminal receipts.
+        """
+        if self.graph_run_store is None:
+            return
+        metadata = getattr(task, "metadata", None)
+        if not isinstance(metadata, dict):
+            return
+        run_id = str(metadata.get("parent_run_id") or "")
+        node_id = str(metadata.get("parent_node_id") or "")
+        status = getattr(getattr(task, "status", None), "value", None)
+        if not run_id or not node_id or status not in {"completed", "failed", "cancelled"}:
+            return
+        try:
+            await self.graph_run_store.submit_external_result(
+                run_id,
+                node_id,
+                {
+                    "status": status,
+                    "task_id": str(getattr(task, "id", "")),
+                    "result": getattr(task, "result", None),
+                    "error": getattr(task, "error", None),
+                },
+            )
+        except (KeyError, ValueError):
+            # The parent may have timed out, been answered, or been purged
+            # before an at-least-once receipt arrived. Its canonical outcome
+            # remains authoritative and must not be rewritten here.
+            logger.info(
+                "A2A completion did not wake parent Run %s node %s",
+                run_id,
+                node_id,
+            )
+
+    def _schedule_external_graph_result(self, task: Any) -> None:
+        """Schedule the async canonical wake from A2A's synchronous receipt API."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.warning("cannot schedule A2A completion without a running event loop")
+            return
+        scheduled = loop.create_task(
+            self.wake_external_graph_result(task),
+            name=f"a2a-graph-wakeup-{getattr(task, 'id', 'unknown')}",
+        )
+        scheduled.add_done_callback(
+            lambda completed: None if completed.cancelled() else completed.exception()
+        )
+
     async def execute_admitted_runs(self, *, limit: int = 100) -> int:
         """Tick the canonical consumer for admitted Runs (#251). Returns how many ran.
 
@@ -1658,6 +1711,10 @@ async def create_container(
         a2a_delegator=a2a_delegator,
         guest_peers=guest_peers,
     )
+
+    # A2A remains a receipt store; terminal receipts wake the canonical parent
+    # through this container-owned bridge rather than a second lifecycle.
+    a2a_delegator.set_completion_handler(container._schedule_external_graph_result)
 
     # One word again, and only because this change is what makes it true.
     #
