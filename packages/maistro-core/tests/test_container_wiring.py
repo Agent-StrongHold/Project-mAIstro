@@ -9,6 +9,7 @@ connected, and reachable on the container.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -111,6 +112,94 @@ async def test_process_durable_events_delivers_to_matching_trigger() -> None:
     assert [t.trigger_id for t in triggers] == ["t1"]
     await container.set_durable_trigger_enabled("t1", False)
     assert not (await container.trigger_store.get("t1")).enabled  # type: ignore[union-attr]
+
+
+def _record_ids_caller(sink: list[int]):
+    async def _caller(trigger: object, event: Any) -> None:
+        sink.append(event.id)
+
+    return _caller
+
+
+async def test_durable_event_cursor_survives_a_restart(tmp_path: Path) -> None:
+    """#1163: a restart used to replay `durable_event_log` from zero every
+    time, because the cursor lived only as a plain `int` on the `Container`.
+    A fresh `Container` sharing the same durable SQLite database must instead
+    resume from the position the first container's tick durably committed.
+    """
+    from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
+    from maistro.events.trigger_store import TriggerDefinition
+
+    db_url = f"sqlite:///{tmp_path / 'events.db'}"
+    delivered_first: list[int] = []
+
+    container1 = await _container(database_url=db_url)
+    try:
+        container1.handler_caller = _record_ids_caller(delivered_first)  # type: ignore[assignment]
+        await container1.trigger_store.add(
+            TriggerDefinition(trigger_id="t1", event_pattern="agent.*")
+        )
+        await container1.durable_event_log.append("agent.created")
+        await container1.durable_event_log.append("agent.created")
+        cursor1 = await container1.process_durable_events()
+        assert cursor1 == 2
+        assert delivered_first == [1, 2]
+        # Simulate the old process being gone: its lease is renewed to an
+        # already-expired one rather than left at the normal 300s, standing
+        # in for however long a real restart takes to notice and wait out.
+        await container1.consumer_cursor_store.claim(
+            LEGACY_BRIDGE_CONSUMER_ID,
+            holder=container1._durable_events_holder,
+            lease_seconds=-1.0,
+        )
+    finally:
+        if container1.db_pool is not None:
+            await container1.db_pool.close()
+
+    delivered_second: list[int] = []
+    container2 = await _container(database_url=db_url)
+    try:
+        # "Restart": a fresh Container/process (a different holder id), same
+        # underlying database, no tick performed yet. The durable position
+        # must already read back as 2, not 0 -- proving it is the store, not
+        # an in-process default, that answers the claim.
+        lease = await container2.consumer_cursor_store.claim(
+            LEGACY_BRIDGE_CONSUMER_ID, holder=container2._durable_events_holder
+        )
+        assert lease is not None
+        assert lease.position == 2
+
+        container2.handler_caller = _record_ids_caller(delivered_second)  # type: ignore[assignment]
+        await container2.trigger_store.add(
+            TriggerDefinition(trigger_id="t1", event_pattern="agent.*")
+        )
+        await container2.durable_event_log.append("agent.created")  # id 3
+        cursor2 = await container2.process_durable_events()
+
+        # Only the new event is redelivered -- restart did not replay ids 1-2.
+        assert cursor2 == 3
+        assert delivered_second == [3]
+    finally:
+        if container2.db_pool is not None:
+            await container2.db_pool.close()
+
+
+async def test_a_held_tick_lease_stops_a_second_replica_from_reticking() -> None:
+    """#1163: of several replicas that might tick the bridge at once, only
+    the lease holder should re-scan/redispatch this round -- ticking under a
+    live lease held by someone else must not repeat that work."""
+    from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
+
+    container = await _container()
+
+    other_replica_lease = await container.consumer_cursor_store.claim(
+        LEGACY_BRIDGE_CONSUMER_ID, holder="other-replica"
+    )
+    assert other_replica_lease is not None
+
+    cursor = await container.process_durable_events()
+
+    assert cursor == container.durable_event_cursor == 0
 
 
 # --- LLM providers (SPEC-070226-cb8d) -----------------------------------------

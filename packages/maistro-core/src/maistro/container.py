@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -27,6 +28,7 @@ from maistro.capabilities.effect_context import (
     new_in_memory_effect_context,
 )
 from maistro.classifier.engine import ClassifierEngine
+from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
 from maistro.graph.durable_runs.canonical_store import CanonicalDurableRunStore
 from maistro.graph.durable_runs.protocol import DurableRunStore
 from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
@@ -88,6 +90,7 @@ if TYPE_CHECKING:
     )
     from maistro.capabilities.registry import CapabilityRegistry
     from maistro.events.bus import EventBus
+    from maistro.events.consumer_cursor import ConsumerCursorStore
     from maistro.events.durable_log import EventLogStore
     from maistro.events.invocations import InvocationStore
     from maistro.events.processing import HandlerCaller
@@ -294,6 +297,13 @@ class Container:
     trigger_store: TriggerStore = None  # type: ignore[assignment]
     invocation_store: InvocationStore = None  # type: ignore[assignment]
     handler_caller: HandlerCaller = None  # type: ignore[assignment]
+    # Durable replay cursor for the legacy-event bridge (#1163): a claim
+    # lease + fencing token so of several replicas that might tick
+    # `process_durable_events` at once, only the lease holder re-scans this
+    # round. `_durable_events_holder` identifies this Container instance as
+    # a lease holder across repeated ticks/renewals.
+    consumer_cursor_store: ConsumerCursorStore = None  # type: ignore[assignment]
+    _durable_events_holder: str = field(default_factory=lambda: uuid.uuid4().hex)
     # LLM provider registry + cost-aware router (SPEC-070226-cb8d).
     provider_registry: LLMProviderRegistry = None  # type: ignore[assignment]
     llm_router: LLMRouter = None  # type: ignore[assignment]
@@ -696,20 +706,48 @@ class Container:
     async def process_durable_events(self, *, limit: int = 100) -> int:
         """Tick the durable-event loop (ADR-086): log -> triggers -> handlers.
 
-        Advances and persists the container's replay cursor; safe to call
-        repeatedly (idempotent invocations dedupe redelivery).
+        Advances and persists the container's replay cursor (#1163); safe to
+        call repeatedly (idempotent invocations dedupe redelivery) and safe
+        to call from more than one replica at once.
+
+        The cursor is a resume optimisation, not the correctness backstop --
+        that is `InvocationStore.claim` (ADR-082426-82c7: "the occurrence is
+        the claim, not the cursor"). What `consumer_cursor_store.claim` adds
+        is: of several replicas that might tick this at once, only the lease
+        holder re-scans/redispatches this round, so the rest do not redo
+        (idempotent, but wasted) work. The durable position is written only
+        after `process_events` returns -- i.e. only once every event up to
+        it has a terminal invocation on every matching trigger -- so a crash
+        between "processed" and "cursor written" costs at most a replay of
+        already-settled, already-idempotent work; it never skips an event
+        still in flight.
         """
+        lease = await self.consumer_cursor_store.claim(
+            LEGACY_BRIDGE_CONSUMER_ID, holder=self._durable_events_holder
+        )
+        if lease is None:
+            # Another replica currently holds the tick lease; ticking anyway
+            # would only repeat work its lease already covers this round.
+            return self.durable_event_cursor
+
         from maistro.events.processing import process_events
 
-        self.durable_event_cursor = await process_events(
+        new_cursor = await process_events(
             self.durable_event_log,
             self.trigger_store,
             self.invocation_store,
             self.handler_caller,
-            after_id=self.durable_event_cursor,
+            after_id=lease.position,
             limit=limit,
         )
-        return self.durable_event_cursor
+        if new_cursor > lease.position:
+            await self.consumer_cursor_store.advance(
+                LEGACY_BRIDGE_CONSUMER_ID,
+                fencing_token=lease.fencing_token,
+                position=new_cursor,
+            )
+        self.durable_event_cursor = new_cursor
+        return new_cursor
 
     async def recover_abandoned_attempts(
         self, *, now: datetime | None = None, limit: int = 100
@@ -1443,6 +1481,7 @@ async def create_container(
 
     # --- Durable events (ADR-086) ----------------------------------------
     from maistro.events.bus import EventBus
+    from maistro.events.consumer_cursor import InMemoryConsumerCursorStore
     from maistro.events.durable_log import InMemoryEventLog, append_from_bus_event
     from maistro.events.invocations import InMemoryInvocationStore
     from maistro.events.processing import HTTPHandlerCaller
@@ -1451,6 +1490,7 @@ async def create_container(
     durable_event_log: EventLogStore
     trigger_store: TriggerStore
     invocation_store: InvocationStore
+    consumer_cursor_store: ConsumerCursorStore
     # PostgreSQL first: a caller who supplied a pool asked for the durable
     # backend, and `db_pool` (SQLite) may be set at the same time because the
     # two cover different stores. Silently preferring SQLite here would give
@@ -1461,17 +1501,20 @@ async def create_container(
             durable_event_log,
             trigger_store,
             invocation_store,
+            consumer_cursor_store,
         ) = await _wire_pg_durable_events(pg_pool)
     elif db_pool is not None:
         (
             durable_event_log,
             trigger_store,
             invocation_store,
+            consumer_cursor_store,
         ) = await _wire_sqlite_durable_events(db_pool)
     else:
         durable_event_log = InMemoryEventLog()
         trigger_store = InMemoryTriggerStore()
         invocation_store = InMemoryInvocationStore()
+        consumer_cursor_store = InMemoryConsumerCursorStore()
         if pg_pool is not None:
             # The durable-event stores (ADR-086) have a SQLite implementation
             # and no PostgreSQL one, so a PostgreSQL deployment gets in-memory
@@ -1606,6 +1649,7 @@ async def create_container(
         trigger_store=trigger_store,
         invocation_store=invocation_store,
         handler_caller=handler_caller,
+        consumer_cursor_store=consumer_cursor_store,
         provider_registry=provider_registry,
         llm_router=llm_router,
         record_store=record_store,
@@ -2182,8 +2226,9 @@ async def _wire_sqlite_backend(
 
 async def _wire_sqlite_durable_events(
     conn: Any,
-) -> tuple[EventLogStore, TriggerStore, InvocationStore]:
+) -> tuple[EventLogStore, TriggerStore, InvocationStore, ConsumerCursorStore]:
     """Wire the durable-event stores onto the already-open SQLite connection."""
+    from maistro.events.consumer_cursor import SqliteConsumerCursorStore
     from maistro.events.durable_log import SqliteEventLog
     from maistro.events.invocations import SqliteInvocationStore
     from maistro.events.trigger_store import SqliteTriggerStore
@@ -2191,24 +2236,32 @@ async def _wire_sqlite_durable_events(
     sqlite_event_log = SqliteEventLog(conn)
     sqlite_trigger_store = SqliteTriggerStore(conn)
     sqlite_invocation_store = SqliteInvocationStore(conn)
+    sqlite_consumer_cursor_store = SqliteConsumerCursorStore(conn)
     await sqlite_event_log.ensure_schema()
     await sqlite_trigger_store.ensure_schema()
     await sqlite_invocation_store.ensure_schema()
-    return sqlite_event_log, sqlite_trigger_store, sqlite_invocation_store
+    await sqlite_consumer_cursor_store.ensure_schema()
+    return (
+        sqlite_event_log,
+        sqlite_trigger_store,
+        sqlite_invocation_store,
+        sqlite_consumer_cursor_store,
+    )
 
 
 async def _wire_pg_durable_events(
     pool: Any,
-) -> tuple[EventLogStore, TriggerStore, InvocationStore]:
+) -> tuple[EventLogStore, TriggerStore, InvocationStore, ConsumerCursorStore]:
     """Wire the durable-event stores onto a caller-supplied `asyncpg.Pool` (#135).
 
-    All three share one pool rather than opening their own, matching
+    All four share one pool rather than opening their own, matching
     `persistence/pg_*` and leaving connection lifetime with the caller — which
-    also means a single `ensure_event_schema` covers all three tables, instead
-    of three `ensure_schema()` calls racing `CREATE TABLE IF NOT EXISTS` across
+    also means a single `ensure_event_schema` covers all four tables, instead
+    of four `ensure_schema()` calls racing `CREATE TABLE IF NOT EXISTS` across
     pool connections the way the SQLite twin's serial calls cannot.
     """
     from maistro.events.pg_stores import (
+        PgConsumerCursorStore,
         PgEventLog,
         PgInvocationStore,
         PgTriggerStore,
@@ -2216,7 +2269,12 @@ async def _wire_pg_durable_events(
     )
 
     await ensure_event_schema(pool)
-    return PgEventLog(pool), PgTriggerStore(pool), PgInvocationStore(pool)
+    return (
+        PgEventLog(pool),
+        PgTriggerStore(pool),
+        PgInvocationStore(pool),
+        PgConsumerCursorStore(pool),
+    )
 
 
 def _wire_hierarchy(
