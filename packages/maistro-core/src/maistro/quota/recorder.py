@@ -56,35 +56,34 @@ class CanonicalInvocationUsageRecorder:
         self._recorded.add(invocation.invocation_id)
         provider = invocation.binding.provider_name
         usage = invocation.usage
-        if usage is None:
-            self._log.record(
-                provider,
-                invocation_id=invocation.invocation_id,
-                provider=provider,
-                billing_cycle=self._billing_cycle,
-                usage_reported=False,
-            )
-            record_unreported = getattr(self._quota_tracker, "record_unreported", None)
-            if record_unreported is not None:
-                await record_unreported(provider, self._billing_cycle)
-            return
-
+        input_tokens = usage.input_units if usage is not None else 0
+        output_tokens = usage.output_units if usage is not None else 0
         self._log.record(
             provider,
-            input_tokens=usage.input_units,
-            output_tokens=usage.output_units,
-            cost_usd=(usage.cost_cents or 0.0) / 100.0,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_usd=((usage.cost_cents or 0.0) / 100.0) if usage is not None else 0.0,
             invocation_id=invocation.invocation_id,
             provider=provider,
             billing_cycle=self._billing_cycle,
-            usage_reported=True,
+            usage_reported=usage is not None,
         )
-        if self._quota_tracker is not None:
-            await self._quota_tracker.record_usage(
+        if self._quota_tracker is None:
+            return
+        record_invocation = getattr(self._quota_tracker, "record_invocation", None)
+        if record_invocation is not None:
+            await record_invocation(
+                invocation.invocation_id,
                 provider,
                 self._billing_cycle,
-                usage.input_units,
-                usage.output_units,
+                input_tokens,
+                output_tokens,
+                usage is not None,
+            )
+        elif usage is not None:
+            # Compatibility for external trackers predating canonical evidence.
+            await self._quota_tracker.record_usage(
+                provider, self._billing_cycle, input_tokens, output_tokens
             )
 
 
