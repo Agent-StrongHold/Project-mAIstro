@@ -567,29 +567,34 @@ class Container:
             # compensating write would be aborted by the same cancellation it
             # exists to clean up after — the `_close_chat_run` shield's reason,
             # one step earlier in the turn.
-            await asyncio.shield(self._cancel_incomplete_admission(run))
+            await asyncio.shield(self._cancel_incomplete_admission(run, admission_failed=True))
             raise
         except Exception:
             logger.warning("chat turn could not be admitted as a Run", exc_info=True)
-            await self._cancel_incomplete_admission(run)
+            await self._cancel_incomplete_admission(run, admission_failed=True)
             return None
 
-    async def _cancel_incomplete_admission(self, run: Run | None) -> None:
-        """Compensate a chat Run whose admission never reached RUNNING (#338).
+    async def _cancel_incomplete_admission(
+        self, run: Run | None, *, admission_failed: bool = False
+    ) -> None:
+        """Compensate a chat Run whose admission never reached dispatch (#338).
 
         Admission persists CREATED, then QUEUED, then RUNNING. An exception
         between any two of those writes used to strand the Run at the state it
         had reached: the caller got `None`, so `_close_chat_run` had nothing to
-        settle, and no sweeper owns a QUEUED chat Run — durable state claiming
-        work is waiting to run that nothing will ever run.
+        settle, and no sweeper owns a pre-dispatch chat Run — durable state
+        claiming work is waiting to run that nothing will ever run.
 
         CREATED and QUEUED both have a legal edge to CANCELLED, and CANCELLED
         is the honest word: the turn was never dispatched, so nothing failed
-        (ADR-082426-f170's distinction). A Run past QUEUED reached RUNNING and
-        returned from admission, making it `_close_chat_run`'s to settle — not
-        this method's. Idempotent by the terminal guard; a concurrent settle
-        loses the race harmlessly because the compensating write is logged,
-        never re-raised — compensation must not replace the turn's answer.
+        (ADR-082426-f170's distinction). The admission caller passes
+        ``admission_failed=True`` because a transition can persist RUNNING and
+        then raise (for example, after a connection drops its response); that
+        Run is still pre-dispatch and must be cancelled too. A direct call with
+        the default leaves an already-admitted RUNNING Run to `_close_chat_run`.
+        Idempotent by the terminal guard; a concurrent settle loses the race
+        harmlessly because compensation is logged, never re-raised — it must
+        not replace the turn's answer.
         """
         if run is None:
             return
@@ -597,7 +602,10 @@ class Container:
             current = await self.run_store.get_run(run.run_id)
             if current is None or current.status in TERMINAL_RUN_STATUSES:
                 return
-            if current.status not in (RunStatus.CREATED, RunStatus.QUEUED):
+            allowed_states: tuple[RunStatus, ...] = (RunStatus.CREATED, RunStatus.QUEUED)
+            if admission_failed:
+                allowed_states += (RunStatus.RUNNING,)
+            if current.status not in allowed_states:
                 return
             await self.run_store.transition_run(
                 run.run_id,

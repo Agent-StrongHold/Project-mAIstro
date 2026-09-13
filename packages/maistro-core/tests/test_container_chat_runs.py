@@ -299,6 +299,17 @@ class _VetoStore:
         return await self._inner.transition_run(run_id, target, **kwargs)
 
 
+class _PostWriteVetoStore(_VetoStore):
+    """Commits one transition, then loses its response to model an uncertain write."""
+
+    async def transition_run(self, run_id, target, **kwargs):
+        if target is self._veto:
+            self._veto = None
+            await self._inner.transition_run(run_id, target, **kwargs)
+            raise RuntimeError("connection dropped after commit")
+        return await self._inner.transition_run(run_id, target, **kwargs)
+
+
 @pytest.mark.ac("ADR-082826-08f0/AC-6")
 async def test_a_failure_persisting_running_cancels_the_queued_run() -> None:
     """#338's exact reproduction: QUEUED persists, RUNNING raises.
@@ -333,6 +344,34 @@ async def test_a_failure_persisting_queued_cancels_the_created_run() -> None:
     (run,) = _chat_runs(container)
     assert run.status is RunStatus.CANCELLED
     assert run.error == ADMISSION_INCOMPLETE
+
+
+@pytest.mark.parametrize("failed_target", [RunStatus.QUEUED, RunStatus.RUNNING])
+@pytest.mark.ac("ADR-082826-08f0/AC-6")
+async def test_a_transition_that_commits_before_raising_is_compensated(
+    failed_target: RunStatus,
+) -> None:
+    """An uncertain write must not leave a pre-dispatch Run unowned.
+
+    A database can commit a transition and lose the response. The admission
+    code therefore compensates from durable state, including RUNNING: no
+    Attempt exists yet, so this Run has not been dispatched.
+    """
+    container = await _container()
+    container.run_store = _PostWriteVetoStore(  # type: ignore[assignment]
+        container.run_store, failed_target
+    )
+    container.conduit = _Conduit()
+
+    result = await container.route_request([{"role": "user", "content": "hi"}])
+
+    assert result["choices"][0]["message"]["content"] == "hi"
+    assert "run_id" not in result
+    (run,) = _chat_runs(container)
+    assert run.status is RunStatus.CANCELLED
+    assert run.error == ADMISSION_INCOMPLETE
+    open_runs, _oldest = await container.run_store.non_terminal_run_stats()
+    assert open_runs == 0
 
 
 @pytest.mark.ac("ADR-082826-08f0/AC-6")
