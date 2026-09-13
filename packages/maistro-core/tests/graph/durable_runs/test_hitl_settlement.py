@@ -539,6 +539,41 @@ async def test_reconcile_repairs_crash_after_terminal_continuation_persistence(
     assert await reopened.reconcile_persistence() == 0
 
 
+@pytest.mark.ac("SPEC-083026-73c1/AC-1")
+async def test_reconcile_cancelled_evidence_without_pause_detail() -> None:
+    """A cancellation remains repairable when legacy evidence lacks pause detail."""
+    run_store, continuations, project_id = await _canonical_spine()
+    store = CanonicalDurableRunStore(run_store, continuations)
+    paused = await _canonical_pause(store, run_store, project_id)
+    continuation = await continuations.get(paused.run_id)
+    assert continuation is not None
+    [node_run] = paused.node_runs
+    metadata = {
+        **continuation.graph_state.metadata,
+        "hitl_settlements": {
+            "ask": {
+                "outcome": "cancelled",
+                "node_run_id": node_run.node_run_id,
+                "decided_at": _BEFORE.isoformat(),
+            }
+        },
+    }
+    interrupted = continuation.model_copy(
+        update={
+            "status": RunStatus.CANCELLED,
+            "graph_state": continuation.graph_state.model_copy(update={"metadata": metadata}),
+            "version": continuation.version + 1,
+        }
+    )
+    await continuations.update(interrupted)
+
+    assert await store.reconcile_persistence() == 1
+    repaired = await store.get(paused.run_id)
+    assert repaired is not None and repaired.status is RunStatus.CANCELLED
+    assert repaired.node_runs[0].status is RunStatus.CANCELLED
+    assert "was cancelled" in str(repaired.node_runs[0].error)
+
+
 async def _canonical_pause(
     store: CanonicalDurableRunStore, run_store: InMemoryRunStore, project_id: str
 ) -> DurableRunRecord:

@@ -651,33 +651,6 @@
       "rank": "C",
       "complexity": 11,
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/graph/durable_runs/canonical_store.py::_terminal_hitl_evidence",
-      "path": "packages/maistro-core/src/maistro/graph/durable_runs/canonical_store.py",
-      "line": 44,
-      "name": "_terminal_hitl_evidence",
-      "classname": "",
-      "rank": "C",
-      "complexity": 13
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/graph/durable_runs/canonical_store.py::CanonicalDurableRunStore._reconcile_terminal_hitl",
-      "path": "packages/maistro-core/src/maistro/graph/durable_runs/canonical_store.py",
-      "line": 248,
-      "name": "_reconcile_terminal_hitl",
-      "classname": "CanonicalDurableRunStore",
-      "rank": "C",
-      "complexity": 12
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/graph/durable_runs/canonical_store.py::CanonicalDurableRunStore.list_hitl_due",
-      "path": "packages/maistro-core/src/maistro/graph/durable_runs/canonical_store.py",
-      "line": 355,
-      "name": "list_hitl_due",
-      "classname": "CanonicalDurableRunStore",
-      "rank": "C",
-      "complexity": 11
     }
   ]
 }
