@@ -55,6 +55,7 @@ from maistro.runs.model import (
     Run,
     RunStatus,
 )
+from maistro.runs.reconciliation import reconcile_stranded_runs
 from maistro.runs.store import RunIntegrityError, RunStore
 from maistro.runs.wiring import (
     SPINE_PG_TABLES,
@@ -290,6 +291,9 @@ class Container:
     resilience_policies: ResiliencePolicyStore = None  # type: ignore[assignment]
     # Durable events (ADR-086): bus bridge + log/trigger/invocation stores.
     event_bus: EventBus = None  # type: ignore[assignment]
+    #: Canonical recovery facts are persisted through EventEnvelope; event_bus
+    #: remains only the compatibility projection used by older consumers.
+    recovery_event_sink: Any = None
     durable_event_log: EventLogStore = None  # type: ignore[assignment]
     trigger_store: TriggerStore = None  # type: ignore[assignment]
     invocation_store: InvocationStore = None  # type: ignore[assignment]
@@ -745,6 +749,12 @@ class Container:
         )
         from maistro.runs.reconciliation import AttemptLifecycleReconciler
 
+        recovery_events = self.recovery_event_sink or self.event_bus
+        # Tests and embedders may replace the store after composition. Do not
+        # ask a canonical sink bound to the old lookup to envelope new Runs.
+        if getattr(recovery_events, "_runs", self.run_store) is not self.run_store:
+            recovery_events = self.event_bus
+
         reclaimed = await self.run_store.reclaim_expired_attempts(now=now, limit=limit)
         if reclaimed:
             # The Container's bus, so the sweep's dispositions land on the
@@ -753,7 +763,7 @@ class Container:
             # decision becomes inspectable, not how it is made.
             reconciler = AttemptLifecycleReconciler(
                 self.run_store,
-                events=self.event_bus,
+                events=recovery_events,
                 source="maistro.container.recover_abandoned_attempts",
             )
             for attempt in reclaimed:
@@ -769,6 +779,15 @@ class Container:
                     )
             recovered_attempts_total.inc(len(reclaimed))
             logger.info("recovered %d abandoned Attempt(s)", len(reclaimed))
+
+        # Replay terminal physical/logical evidence even when no lease was left
+        # to reclaim. This closes the crash window after a NodeRun or graph
+        # continuation write and before the parent Run fold (#1151).
+        await reconcile_stranded_runs(
+            self.run_store,
+            limit=limit,
+            events=recovery_events,
+        )
 
         open_runs, oldest_created_at = await self.run_store.non_terminal_run_stats()
         non_terminal_runs.set(open_runs)
@@ -1447,6 +1466,8 @@ async def create_container(
     from maistro.events.invocations import InMemoryInvocationStore
     from maistro.events.processing import HTTPHandlerCaller
     from maistro.events.trigger_store import InMemoryTriggerStore
+    from maistro.events.wiring import wire_canonical_events
+    from maistro.runs.recovery_events import CanonicalRecoveryEventSink
 
     durable_event_log: EventLogStore
     trigger_store: TriggerStore
@@ -1492,6 +1513,12 @@ async def create_container(
         await durable_event_log.append(**append_from_bus_event(event))
 
     event_bus.subscribe(_persist_bus_event)
+    canonical_event_publisher = await wire_canonical_events(
+        pg_pool=pg_pool,
+        db_pool=db_pool,
+        legacy_bus=event_bus,
+    )
+    recovery_event_sink = CanonicalRecoveryEventSink(run_store, canonical_event_publisher)
 
     # --- LLM provider registry + cost-aware router (SPEC-070226-cb8d) ----
     from maistro.providers.config import load_provider_registry
@@ -1588,7 +1615,11 @@ async def create_container(
         chat_admitter=chat_admitter,
         template_store=graph_template_store,
         node_template_store=node_template_store,
-        graph_run_store=CanonicalDurableRunStore(run_store, graph_continuations),
+        graph_run_store=CanonicalDurableRunStore(
+            run_store,
+            graph_continuations,
+            events=recovery_event_sink,
+        ),
         schedule_store=schedule_store,
         schedule_admitter=schedule_admitter,
         context_assembly_policy=context_assembly_policy,
@@ -1602,6 +1633,7 @@ async def create_container(
         holds_db_pool=holds_db_pool,
         resilience_policies=resilience_policies,
         event_bus=event_bus,
+        recovery_event_sink=recovery_event_sink,
         durable_event_log=durable_event_log,
         trigger_store=trigger_store,
         invocation_store=invocation_store,

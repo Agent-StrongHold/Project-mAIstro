@@ -24,12 +24,14 @@ from maistro.runs.lifecycle import (
     transition_run,
 )
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Attempt, NodeRun, Run, RunStatus
+from maistro.runs.reconciliation import AttemptLifecycleReconciler
+from maistro.runs.recovery_events import RecoveryEventSink
 from maistro.runs.store import RunIntegrityError, RunStore
 
 from .continuation import GraphContinuation, GraphContinuationStore
 from .hitl import earliest_hitl_deadline, settlement_time
 from .spine import mirror_lifecycle
-from .stores import answer_record, settle_hitl_record
+from .stores import answer_record, external_result_record, settle_hitl_record
 from .types import DurableRunRecord
 
 _RECOVERY_VISIBLE_STATUSES = frozenset({RunStatus.WAITING, RunStatus.PAUSED, RunStatus.RUNNING})
@@ -39,6 +41,18 @@ _RECOVERY_VISIBLE_STATUSES = frozenset({RunStatus.WAITING, RunStatus.PAUSED, Run
 _CANDIDATE_PAGES = 6
 
 logger = logging.getLogger(__name__)
+
+
+def _continuation_has_work(continuation: GraphContinuation) -> bool:
+    """Whether persisted Graph frontier evidence still owes logical work."""
+    if continuation.graph_state.active_node_ids:
+        return True
+    metadata = continuation.graph_state.metadata
+    for key in ("deferred_frontier", "deferred_fanins"):
+        value = metadata.get(key)
+        if isinstance(value, (list, tuple)) and value:
+            return True
+    return False
 
 
 def _matching_hitl_settlement(
@@ -136,9 +150,12 @@ class CanonicalDurableRunStore:
         self,
         run_store: RunStore,
         continuations: GraphContinuationStore,
+        *,
+        events: RecoveryEventSink | None = None,
     ) -> None:
         self._run_store = run_store
         self._continuations = continuations
+        self._events = events
         self._lock = asyncio.Lock()
 
     async def create(self, record: DurableRunRecord) -> DurableRunRecord:
@@ -243,6 +260,28 @@ class CanonicalDurableRunStore:
         }:
             await self._run_store.transition_run(run_id, continuation.status)
             return True
+
+        # A graph can persist its empty frontier (or terminal continuation)
+        # immediately before the parent Run fold. Re-derive that fold from the
+        # canonical NodeRuns instead of waiting for a new Attempt that will
+        # never arrive (#1151).
+        if canonical.status is RunStatus.RUNNING and (
+            continuation.status in TERMINAL_RUN_STATUSES or not _continuation_has_work(continuation)
+        ):
+            before = canonical.status
+            record = await self.get(run_id)
+            if record is not None:
+                await AttemptLifecycleReconciler(
+                    self._run_store,
+                    events=self._events,
+                    source="maistro.graph.durable_runs.recovery",
+                ).reconcile_run(
+                    run_id,
+                    work_owed=_continuation_has_work(continuation),
+                    require_all_graph_nodes=False,
+                )
+            current = await self._run_store.get_run(run_id)
+            return current is not None and current.status is not before
         return False
 
     async def _reconcile_terminal_hitl(
@@ -448,6 +487,20 @@ class CanonicalDurableRunStore:
             lambda current: answer_record(current, node_id, answer, at=at),
         )
 
+    async def submit_external_result(
+        self,
+        run_id: str,
+        node_id: str,
+        result: dict[str, Any],
+        *,
+        at: datetime | None = None,
+    ) -> DurableRunRecord:
+        """Persist a remote/harness completion and queue the parent Graph."""
+        return await self._mutate_hitl(
+            run_id,
+            lambda current: external_result_record(current, node_id, result, at=at),
+        )
+
     async def timeout_hitl(
         self,
         run_id: str,
@@ -484,6 +537,8 @@ class CanonicalDurableRunStore:
             if current is None:
                 raise KeyError(f"no such run: {run_id!r}")
             updated = mutate(current)
+            if updated.version == current.version:
+                return current
             await self._continuations.update(GraphContinuation.of(updated))
             await mirror_lifecycle(updated, run_store=self._run_store)
             return await self._require(run_id)

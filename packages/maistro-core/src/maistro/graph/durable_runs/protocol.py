@@ -54,6 +54,17 @@ class DurableRunStore(Protocol):
         """Attach an answer and queue the paused canonical Run for resume."""
         ...
 
+    async def submit_external_result(
+        self,
+        run_id: str,
+        node_id: str,
+        result: dict[str, Any],
+        *,
+        at: datetime | None = None,
+    ) -> DurableRunRecord:
+        """Wake a system-owned remote or harness completion pause."""
+        ...
+
     async def timeout_hitl(
         self,
         run_id: str,

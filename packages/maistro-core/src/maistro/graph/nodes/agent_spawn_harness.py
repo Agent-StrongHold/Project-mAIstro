@@ -11,6 +11,7 @@ canonical Run until the harness result is supplied on resume.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field
@@ -26,6 +27,7 @@ from .base import (
     PAUSE_AWAITING_HARNESS,
     BaseNode,
     NodeContext,
+    now_utc,
     pause_until,
 )
 from .capability_effect import invoke_capability_effect
@@ -191,6 +193,7 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
 
         pause_until(
             PAUSE_AWAITING_HARNESS,
+            resume_at=now_utc() + timedelta(seconds=inputs.timeout_seconds),
             metadata={
                 "handle_id": str(result["handle_id"]),
                 "harness_type": str(result["harness_type"]),
