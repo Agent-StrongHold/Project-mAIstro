@@ -16,7 +16,7 @@ dependencies = [
     # the Pydantic-backed PipelineGenome arrives through maistro-evolve,
     # and pydantic is a hard dependency of maistro-core besides (#514).
     "httpx>=0.27,<1",
-    "structlog>=24.0,<26",
+    "structlog>=24.0,<27",
 ]
 
 [project.scripts]
