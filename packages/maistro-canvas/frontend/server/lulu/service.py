@@ -220,12 +220,25 @@ class CoverPreflightRequest(BaseModel):
 
 #: Where a caller may point preflight at. The export pipeline writes PDFs
 #: under the platform temp directory; anything outside it is not a print job.
-PREFLIGHT_ROOT = os.path.normpath(os.environ.get("LULU_PREFLIGHT_ROOT") or tempfile.gettempdir())
+#:
+#: ``realpath`` rather than ``normpath``: the default root is the platform temp
+#: directory, which is itself a symlink on some platforms (macOS ``/tmp`` ->
+#: ``/private/tmp``), and a root that is spelled differently from the paths
+#: underneath it refuses every legitimate request.
+PREFLIGHT_ROOT = os.path.realpath(os.environ.get("LULU_PREFLIGHT_ROOT") or tempfile.gettempdir())
 
 
 def _preflight_path(raw: str) -> str:
-    """Contain a caller-supplied PDF path to ``PREFLIGHT_ROOT`` or refuse."""
-    candidate = os.path.normpath(raw)
+    """Contain a caller-supplied PDF path to ``PREFLIGHT_ROOT`` or refuse.
+
+    Symlinks are followed *before* containment is decided. ``normpath`` alone
+    collapses ``..`` but knows nothing about links, and the default root is the
+    world-writable temp directory — so anyone on the host can plant a link
+    there whose every path component reads as legal and whose target is not.
+    The resolved path is what is returned, so the reader opens the file the
+    check actually approved rather than the spelling it was handed.
+    """
+    candidate = os.path.realpath(raw)
     if candidate != PREFLIGHT_ROOT and not candidate.startswith(PREFLIGHT_ROOT + os.sep):
         raise HTTPException(400, detail="pdf_path must be inside the preflight directory")
     return candidate

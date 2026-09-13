@@ -33,7 +33,7 @@ app.use(
   "/api",
   rateLimit({
     windowMs: 60_000,
-    limit: Number(process.env.API_RATE_LIMIT_PER_MINUTE || 600),
+    limit: security.apiRateLimitPerMinute,
     standardHeaders: "draft-8",
     legacyHeaders: false,
   }),
