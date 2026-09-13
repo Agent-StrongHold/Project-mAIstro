@@ -209,6 +209,53 @@ def test_scheduler_tick_executes_the_admitted_run_to_completion(
     asyncio.run(scenario())
 
 
+def test_scheduler_tick_logs_consumer_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A consumer failure is contained and reported by the scheduler tick."""
+    from services.scheduler import _ScheduleRunner
+
+    class _FailingContainer:
+        async def execute_admitted_runs(self) -> int:
+            raise RuntimeError("consumer unavailable")
+
+    async def scenario() -> None:
+        monkeypatch.setattr(
+            _ScheduleRunner,
+            "_canonical_container",
+            staticmethod(lambda: _FailingContainer()),
+        )
+        with caplog.at_level("WARNING", logger="services.scheduler"):
+            await _ScheduleRunner()._tick()
+
+    asyncio.run(scenario())
+    assert "Failed to consume admitted canonical Runs: consumer unavailable" in caplog.text
+
+
+def test_scheduler_tick_skips_missing_or_empty_consumer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Standalone ticks and empty consumer queues remain successful no-ops."""
+    from services.scheduler import _ScheduleRunner
+
+    class _EmptyContainer:
+        async def execute_admitted_runs(self) -> int:
+            return 0
+
+    async def scenario() -> None:
+        monkeypatch.setattr(_ScheduleRunner, "_canonical_container", staticmethod(lambda: None))
+        await _ScheduleRunner()._tick()
+        monkeypatch.setattr(
+            _ScheduleRunner,
+            "_canonical_container",
+            staticmethod(lambda: _EmptyContainer()),
+        )
+        await _ScheduleRunner()._tick()
+
+    asyncio.run(scenario())
+
+
 def test_persisted_template_survives_empty_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     from services.scheduler import _ScheduleRunner
 
