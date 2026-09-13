@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Collection, Mapping
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from .protocol import DurableRunStore
@@ -146,27 +146,64 @@ def earliest_hitl_deadline(record: DurableRunRecord) -> datetime | None:
     )
 
 
+async def _due_candidates(
+    store: DurableRunStore,
+    *,
+    moment: datetime,
+    limit: int,
+    workspace_ids: Collection[str] | None,
+) -> list[DurableRunRecord]:
+    """Page the due index until a scoped settlement page is complete."""
+    if workspace_ids is None:
+        return cast("list[DurableRunRecord]", await store.list_hitl_due(now=moment, limit=limit))
+
+    requested = limit
+    candidates: list[DurableRunRecord] = []
+    seen: set[str] = set()
+    while True:
+        page = await store.list_hitl_due(now=moment, limit=requested)
+        for record in page:
+            if record.run_id in seen:
+                continue
+            seen.add(record.run_id)
+            if record.run.workspace_id in workspace_ids:
+                candidates.append(record)
+        if len(candidates) >= limit or len(page) < requested:
+            return candidates[:limit]
+        requested *= 2
+
+
 async def expire_hitl_pauses(
     store: DurableRunStore,
     *,
     now: datetime | None = None,
     limit: int = 100,
+    workspace_ids: Collection[str] | None = None,
 ) -> list[DurableRunRecord]:
     """Settle at most ``limit`` paused Runs whose persisted deadline elapsed.
 
     This is an operator-scheduled tick, not a background task. It derives no
     deadline from process-local time or node configuration: only the absolute
-    timestamp already present in the durable pause is authoritative.
+    timestamp already present in the durable pause is authoritative. When a
+    product supplies ``workspace_ids``, canonical Run scope is checked before
+    any timeout mutation is requested.
     """
     if limit <= 0:
+        return []
+    if workspace_ids is not None and not workspace_ids:
         return []
     moment = settlement_time(now)
     # ``list_hitl_due`` is a deadline-indexed candidate query. Its limit is
     # settlement work, not a prefix of all PAUSED Runs, so old non-HITL and
     # future-deadline records cannot starve an elapsed human pause.
-    candidates = await store.list_hitl_due(now=moment, limit=limit)
+    candidates = await _due_candidates(
+        store,
+        moment=moment,
+        limit=limit,
+        workspace_ids=workspace_ids,
+    )
     settled: list[DurableRunRecord] = []
-    for record in candidates:
+    for record in candidates[:limit]:
         expired_node_id: str | None = None
         for node_id in record.graph_state.active_node_ids:
             try:

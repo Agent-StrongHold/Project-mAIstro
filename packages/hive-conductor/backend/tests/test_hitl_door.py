@@ -233,7 +233,8 @@ async def test_hitl_routes_are_scoped_to_the_callers_workspaces(scoped_client) -
         # unable to mutate it; otherwise this door leaks Run existence.
         assert (
             scoped_client.post(
-                f"/v1/hitl/{other_id}/ask/answer", json={"answer": "yes"}
+                f"/v1/hitl/{other_id}/ask/answer",
+                json={"answer": "yes", "_pause": {"forged": True}},
             ).status_code
             == 404
         )

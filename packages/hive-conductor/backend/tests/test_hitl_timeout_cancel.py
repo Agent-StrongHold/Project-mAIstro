@@ -159,6 +159,83 @@ async def test_expiry_endpoint_reports_an_empty_tick(seeded: _Seeded) -> None:
     assert response.json() == {"expired": 0, "run_ids": []}
 
 
+@pytest.fixture
+def workspace_writer_client() -> Iterator[Any]:
+    import stores
+    from fastapi.testclient import TestClient
+    from main import app
+
+    stores.users["scope-user"] = stores.users["user"].model_copy(
+        update={
+            "id": "scope-user",
+            "username": "scope-user",
+            "permissions": ["dags.write"],
+        }
+    )
+    client = TestClient(app)
+    try:
+        assert (
+            client.post(
+                "/v1/auth/login", json={"username": "scope-user", "password": "testpass"}
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/v1/auth/elevate",
+                json={
+                    "password": "testpass",
+                    "permissions": ["dags.write"],
+                    "task_id": "hitl-expiry-scope-test",
+                },
+            ).status_code
+            == 200
+        )
+        yield client
+    finally:
+        stores.users.pop("scope-user", None)
+
+
+async def test_expiry_endpoint_cannot_timeout_a_foreign_workspace(
+    seeded: _Seeded, workspace_writer_client: Any
+) -> None:
+    """A bounded timeout request applies only to canonical member Workspaces."""
+    _admin_client, store, _seed = seeded
+    mine = await create_workspace(
+        creator_user_id="scope-user",
+        name="HITL expiry mine",
+        persona_template_id="default",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
+    )
+    other = await create_workspace(
+        creator_user_id="other-tenant",
+        name="HITL expiry other",
+        persona_template_id="default",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
+    )
+    now = datetime.now(UTC) - timedelta(minutes=1)
+    mine_id = "hitl-expiry-scope-mine"
+    other_id = "hitl-expiry-scope-other"
+    await store.create(_paused_record(mine_id, deadline=now, workspace_id=mine.id))
+    await store.create(_paused_record(other_id, deadline=now, workspace_id=other.id))
+    try:
+        response = workspace_writer_client.post("/v1/hitl/expire?limit=10")
+
+        assert response.status_code == 200
+        assert response.json() == {"expired": 1, "run_ids": [mine_id]}
+        mine_record = await store.get(mine_id)
+        other_record = await store.get(other_id)
+        assert mine_record is not None and mine_record.run.status is RunStatus.TIMED_OUT
+        assert other_record is not None and other_record.run.status is RunStatus.PAUSED
+    finally:
+        store._rows.pop(mine_id, None)
+        store._rows.pop(other_id, None)
+
+
 def test_settlement_endpoints_keep_the_existing_dags_write_scope(authed_client: Any) -> None:
     assert authed_client.post("/v1/hitl/expire").status_code == 403
     assert authed_client.post("/v1/hitl/no-run/ask/cancel").status_code == 403

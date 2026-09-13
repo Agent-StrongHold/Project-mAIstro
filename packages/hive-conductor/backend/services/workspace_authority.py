@@ -380,6 +380,17 @@ async def list_views_for_user(user_id: str) -> list[Workspace]:
     return views
 
 
+async def list_workspace_ids_for_user(user_id: str) -> list[str]:
+    """Return canonical Workspace identities visible to a principal.
+
+    This deliberately does not require a Hive presentation record. Object
+    authorization follows canonical membership, while presentation state is
+    only a product view and may be absent during migration or recovery.
+    """
+    store = await _ensure_ready()
+    return [workspace.workspace_id for workspace in await store.list_for_user(user_id)]
+
+
 async def create_workspace(
     *,
     creator_user_id: str,
