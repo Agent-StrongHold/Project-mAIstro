@@ -63,6 +63,25 @@ async def test_scan_layer1_single_pattern_match_is_blocked() -> None:
     assert len(verdict.flags) >= 1
 
 
+@pytest.mark.parametrize(
+    ("payload", "flag"),
+    [
+        ('<img src=x onerror="alert(1)">', "Active markup event-handler attribute"),
+        ('<svg><a href="javascript:alert(1)">x</a></svg>', "Active markup dangerous resource URL"),
+        ('<img src="data:text/html,<script>alert(1)</script>">', "Active markup data URL"),
+        (
+            "<style>.x { background: url(https://evil.example/leak) }</style>",
+            "CSS network/code primitive",
+        ),
+    ],
+)
+async def test_scan_layer1_blocks_active_markup(payload: str, flag: str) -> None:
+    verdict = await Warden().scan(payload, "user_input")
+    assert verdict.clean is False
+    assert verdict.blocked is True
+    assert flag in verdict.flags
+
+
 async def test_scan_layer2_heuristic_density_flag_when_layer1_clean() -> None:
     warden = Warden()
     text = "instead actually really you must you should you are do not always never comply obey"

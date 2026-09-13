@@ -1,17 +1,21 @@
 """Shared content-scanning primitives for design-system imports and generated outputs.
 
-Detects script/eval injection, prompt-injection phrasing, base64 blobs, and Unicode
-steganography. `systems.importer` uses these for input-side (vendored design-system)
+Detects script/eval injection, prompt-injection phrasing, active markup/CSS network
+primitives, base64 blobs, and Unicode steganography. `systems.importer` uses these
+for input-side (vendored design-system)
 scanning; `scan_design_output` below applies the same primitives output-side, since
 generated HTML/SVG/JS/CSS carries the session's contaminated trust tier (ADR-062326-702b).
 """
 
 from __future__ import annotations
 
+import html
 import re
 import unicodedata
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
+
+from maistro.security.warden.patterns import ACTIVE_MARKUP_PATTERNS
 
 if TYPE_CHECKING:
     from maistro_design.trust import InMemoryTrustBanishList
@@ -42,6 +46,11 @@ _PROMPT_INJECTION_PATTERNS: tuple[re.Pattern[str], ...] = (
 
 _URL_RE = re.compile(r"https?://[^\s\"'<>)]+")
 _BASE64_RE = re.compile(r"[A-Za-z0-9+/]{200,}={0,2}")
+_CSS_URL_RE = re.compile(r"url\s*\(\s*(['\"]?)(.*?)\1\s*\)", re.IGNORECASE)
+_CSS_IMPORT_RE = re.compile(
+    r"@import\b\s*(?:url\s*\(\s*(['\"]?)(.*?)\1\s*\)|(['\"])(.*?)\3)",
+    re.IGNORECASE,
+)
 
 # Documentation/font-CDN links that are expected to appear in design-system prose.
 DEFAULT_URL_ALLOWLIST: tuple[str, ...] = (
@@ -57,8 +66,9 @@ DEFAULT_URL_ALLOWLIST: tuple[str, ...] = (
 class ScanReport:
     """Result of a content scan.
 
-    `blocking_flags` covers script/eval injection, prompt-injection phrasing,
-    base64 blobs, Unicode steganography, and banish-list hits — any of these
+    `blocking_flags` covers script/eval injection, prompt-injection phrasing, active
+    markup/CSS network primitives, base64 blobs, Unicode steganography, and banish-list
+    hits — any of these
     means `passed=False`. `external_urls` is informational only and never blocks.
     """
 
@@ -67,10 +77,58 @@ class ScanReport:
     external_urls: tuple[str, ...] = ()
 
 
+def _css_network_or_code_is_blocking(content: str, url_allowlist: tuple[str, ...]) -> bool:
+    """Allow only reviewed documentation/font URLs inside CSS primitives."""
+    normalized = html.unescape(content)
+    for match in _CSS_URL_RE.finditer(normalized):
+        target = re.sub(r"\s+", "", match.group(2)).strip()
+        if target.startswith("#"):
+            continue
+        if not any(target.startswith(prefix) for prefix in url_allowlist):
+            return True
+
+    for match in _CSS_IMPORT_RE.finditer(normalized):
+        target = match.group(2) or match.group(4) or ""
+        target = re.sub(r"\s+", "", target).strip()
+        if not any(target.startswith(prefix) for prefix in url_allowlist):
+            return True
+
+    # These primitives can execute code or trigger a request without a URL
+    # that the allowlist can meaningfully constrain.
+    return bool(
+        re.search(
+            r"(?:image-set\s*\(|cross-fade\s*\(|element\s*\(|"
+            r"paint\s*\(|expression\s*\(|(?:-moz-binding|behavior)\s*:|"
+            r"(?:javascript|vbscript)\s*:)",
+            normalized,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _scan_active_markup_patterns(content: str, url_allowlist: tuple[str, ...]) -> list[str]:
+    findings: list[str] = []
+    unescaped = html.unescape(content)
+    for pattern, description in ACTIVE_MARKUP_PATTERNS:
+        if description == "CSS network/code primitive":
+            matched = bool(pattern.search(content)) and _css_network_or_code_is_blocking(
+                content, url_allowlist
+            )
+        else:
+            matched = bool(pattern.search(unescaped))
+        if matched:
+            findings.append(description)
+    return findings
+
+
 def scan_blocking_patterns(
-    label: str, content: str, banish_list: InMemoryTrustBanishList | None
+    label: str,
+    content: str,
+    banish_list: InMemoryTrustBanishList | None,
+    *,
+    url_allowlist: tuple[str, ...] = DEFAULT_URL_ALLOWLIST,
 ) -> list[str]:
-    """Scan one named piece of text content for blocking patterns. `label` tags findings."""
+    """Scan one named piece of text content for the shared blocking vocabulary."""
     blocking: list[str] = []
     if banish_list is not None and banish_list.is_banned(content):
         blocking.append(f"{label}: matches banish-list pattern")
@@ -82,6 +140,11 @@ def scan_blocking_patterns(
     for pattern in _PROMPT_INJECTION_PATTERNS:
         if pattern.search(content):
             blocking.append(f"{label}: matched prompt-injection pattern {pattern.pattern!r}")
+
+    blocking.extend(
+        f"{label}: matched {description}"
+        for description in _scan_active_markup_patterns(content, url_allowlist)
+    )
 
     for match in _BASE64_RE.finditer(content):
         blocking.append(f"{label}: base64 blob ({len(match.group(0))} chars)")
@@ -122,7 +185,14 @@ def scan_design_output(
 
     for address, node in output.root.walk():
         if isinstance(node.value, str):
-            blocking.extend(scan_blocking_patterns(address, node.value, banish_list))
+            blocking.extend(
+                scan_blocking_patterns(
+                    address,
+                    node.value,
+                    banish_list,
+                    url_allowlist=url_allowlist,
+                )
+            )
             external_urls.update(find_external_urls(node.value, url_allowlist))
 
     return ScanReport(

@@ -43,6 +43,25 @@ class TestScanDesignOutput:
         assert not report.passed
         assert any("script pattern" in f for f in report.blocking_flags)
 
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    @pytest.mark.parametrize(
+        ("payload", "flag"),
+        [
+            ('<img src=x onerror="alert(1)">', "event-handler"),
+            ('<svg><a href="javascript:alert(1)">x</a></svg>', "dangerous resource"),
+            ('<img src="data:text/html,<script>alert(1)</script>">', "data URL"),
+            ("<style>.x { background: url(https://evil.example/leak) }</style>", "CSS"),
+            ("<svg><foreignObject><div>active</div></foreignObject></svg>", "SVG element"),
+        ],
+    )
+    def test_hostile_active_markup_corpus_is_blocking(self, payload: str, flag: str):
+        from maistro_design.scan import scan_design_output
+
+        report = scan_design_output(_file_output(payload))
+        assert not report.passed
+        assert any(flag in finding for finding in report.blocking_flags)
+
     @pytest.mark.contract("behavioral")
     @pytest.mark.scope("unit")
     @pytest.mark.ac("ADR-062326-702b/AC-4")

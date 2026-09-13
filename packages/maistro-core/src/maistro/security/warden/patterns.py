@@ -16,7 +16,51 @@ from __future__ import annotations
 
 import regex
 
+# These rules are also consumed by Design Studio's synchronous output scanner.
+# Keep the descriptions stable: they are the shared classification vocabulary
+# shown in trust review records and Sentinel/Warden verdicts.
+ACTIVE_MARKUP_PATTERNS: tuple[tuple[regex.Pattern[str], str], ...] = (
+    (
+        regex.compile(r"<[^>]*\bon[a-z][\w:-]*\s*=", regex.IGNORECASE),
+        "Active markup event-handler attribute",
+    ),
+    (
+        regex.compile(
+            r"<(?:img|image|svg|a|use|iframe|object|embed)\b[^>]*"
+            r"(?:src|href|xlink:href|data|action|formaction|poster)\s*=\s*"
+            r"[\"']?\s*(?:javascript\s*:|vbscript\s*:|data\s*:|https?:|//)",
+            regex.IGNORECASE,
+        ),
+        "Active markup dangerous resource URL",
+    ),
+    (
+        regex.compile(r"data\s*:\s*(?:text/html|image/svg\+xml)", regex.IGNORECASE),
+        "Active markup data URL",
+    ),
+    (
+        regex.compile(r"<(?:foreignobject|animate|animateTransform|set)\b", regex.IGNORECASE),
+        "Active SVG element",
+    ),
+    (
+        regex.compile(
+            r"<(?:meta\b[^>]*http-equiv\s*=\s*[\"']?\s*refresh|base\b[^>]*href\s*=)",
+            regex.IGNORECASE,
+        ),
+        "Active markup navigation primitive",
+    ),
+    (
+        regex.compile(
+            r"(?:url\s*\(|image-set\s*\(|cross-fade\s*\(|element\s*\(|"
+            r"paint\s*\(|expression\s*\(|@import\b|"
+            r"(?:-moz-binding|behavior)\s*:)",
+            regex.IGNORECASE,
+        ),
+        "CSS network/code primitive",
+    ),
+)
+
 REJECT_PATTERNS: list[tuple[regex.Pattern[str], str]] = [
+    *ACTIVE_MARKUP_PATTERNS,
     (
         regex.compile(
             r"ignore\s+(all\s+)?previous\s+(instructions|prompts|rules)",
