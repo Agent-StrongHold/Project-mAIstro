@@ -139,12 +139,13 @@ class TestAScopedReadCannotCrossScope:
     async def test_list_outcomes_returns_only_the_named_orgs_projects_rows(
         self, outcome_store: Any
     ) -> None:
-        found = await outcome_store.list_outcomes(org_id="org-a")
+        found = await outcome_store.list_outcomes(org_id="org-a", project_id="p1")
 
-        # Both projects of the named org are in scope; the marker check is the
-        # other direction — a project axis narrows further (below), it never
-        # admits another org.
-        assert {o.project_id for o in found} == {"p1", "p2"}
+        # A project axis narrows within the named org; it never admits another
+        # org's same-named project.
+        assert {o.project_id for o in found} == {"p1"}
+
+        assert all(o.org_id == "org-a" for o in found)
 
     async def test_the_experience_narrative_composes_org_and_project_with_and(
         self, outcome_store: Any
@@ -165,13 +166,13 @@ class TestAScopedReadCannotCrossScope:
         assert "fail-org-b-p2" not in narrative
 
     async def test_cross_scope_feedback_is_not_returned(self, outcome_store: Any) -> None:
-        found = await outcome_store.list_thumbs(org_id="org-b")
+        found = await outcome_store.list_thumbs(org_id="org-b", project_id="p2")
 
         # Sorted, not positional: both thumbs land in the same clock tick, so
         # their relative order under `created_at DESC` is an unspecified tie
         # and the claim under test is which scope's feedback came back.
         comments = sorted(o.thumb_comment for o in found)
-        assert comments == ["comment-org-b-p1", "comment-org-b-p2"]
+        assert comments == ["comment-org-b-p2"]
         assert all("org-a" not in c for c in comments)
 
     async def test_experience_search_scopes_tool_and_feedback_data(
@@ -213,17 +214,21 @@ class TestAScopedReadCannotCrossScope:
             assert outcome.session_id.startswith("sess-org-a")
 
     async def test_the_aggregates_cannot_cross_the_org_boundary(self, outcome_store: Any) -> None:
-        rate = await outcome_store.get_task_completion_rate(org_id="org-a")
-        usage = await outcome_store.get_usage_breakdown(group_by="user_id", org_id="org-a")
-        series = await outcome_store.get_daily_timeseries(group_by="user_id", org_id="org-a")
+        rate = await outcome_store.get_task_completion_rate(org_id="org-a", project_id="p1")
+        usage = await outcome_store.get_usage_breakdown(
+            group_by="user_id", org_id="org-a", project_id="p1"
+        )
+        series = await outcome_store.get_daily_timeseries(
+            group_by="user_id", org_id="org-a", project_id="p1"
+        )
 
-        assert rate["total"] == 4
-        assert rate["succeeded"] == 2
+        assert rate["total"] == 2
+        assert rate["succeeded"] == 1
         assert set(rate["by_model"]) == {"model-org-a"}
         assert [row["group"] for row in usage] == ["user-org-a"]
-        assert usage[0]["request_count"] == 4
+        assert usage[0]["request_count"] == 2
         assert [row["group"] for row in series] == ["user-org-a"]
-        assert series[0]["request_count"] == 4
+        assert series[0]["request_count"] == 2
 
     async def test_the_usage_breakdown_stays_scoped_without_a_time_window(
         self, outcome_store: Any
@@ -265,6 +270,7 @@ class TestTheCompositionRule:
             ("get_experience_context", {"project_id": None}),
             ("list_outcomes", {"org_id": None}),
             ("list_thumbs", {"org_id": None}),
+            ("list_thumbs", {"project_id": None}),
         ],
     )
     async def test_an_ambiguous_scope_fails_closed(

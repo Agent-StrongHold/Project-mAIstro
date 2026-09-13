@@ -92,7 +92,9 @@ class InMemoryOutcomeStore:
         task_type: str = "",
         days: int = 7,
         org_id: str = "",
+        project_id: str = "",
     ) -> dict[str, Any]:
+        self._validate_scope(org_id, project_id)
         cutoff = datetime.now(UTC) - timedelta(days=days)
         filtered = [
             o
@@ -100,6 +102,7 @@ class InMemoryOutcomeStore:
             if o.created_at >= cutoff
             and (not task_type or o.task_type == task_type)
             and self._org_matches(o.org_id, org_id)
+            and self._project_matches(o.project_id, project_id)
         ]
 
         total = len(filtered)
@@ -145,6 +148,7 @@ class InMemoryOutcomeStore:
         New in Phase 2: thumbs-down outcomes are surfaced alongside hard
         failures so user feedback flows into the next run's prompt.
         """
+        self._validate_scope(org_id, project_id)
         cutoff = datetime.now(UTC) - timedelta(days=7)
 
         def _matches(o: Outcome) -> bool:
@@ -156,7 +160,7 @@ class InMemoryOutcomeStore:
                 return False
             if not self._org_matches(o.org_id, org_id):
                 return False
-            return not (project_id and o.project_id != project_id)
+            return self._project_matches(o.project_id, project_id)
 
         # Two signal types: hard failures (success=False) and user thumbs-down.
         hard_failures = [o for o in self._outcomes if _matches(o) and not o.success]
@@ -181,13 +185,17 @@ class InMemoryOutcomeStore:
         group_by: str = "user_id",
         days: int = 7,
         org_id: str = "",
+        project_id: str = "",
     ) -> list[dict[str, Any]]:
         """Aggregate token usage grouped by a dimension."""
+        self._validate_scope(org_id, project_id)
         cutoff = datetime.now(UTC) - timedelta(days=days)
         filtered = [
             o
             for o in self._outcomes
-            if o.created_at >= cutoff and self._org_matches(o.org_id, org_id)
+            if o.created_at >= cutoff
+            and self._org_matches(o.org_id, org_id)
+            and self._project_matches(o.project_id, project_id)
         ]
 
         groups: dict[str, dict[str, Any]] = {}
@@ -230,13 +238,17 @@ class InMemoryOutcomeStore:
         group_by: str = "",
         days: int = 7,
         org_id: str = "",
+        project_id: str = "",
     ) -> list[dict[str, Any]]:
         """Daily token usage timeseries, optionally grouped."""
+        self._validate_scope(org_id, project_id)
         cutoff = datetime.now(UTC) - timedelta(days=days)
         filtered = [
             o
             for o in self._outcomes
-            if o.created_at >= cutoff and self._org_matches(o.org_id, org_id)
+            if o.created_at >= cutoff
+            and self._org_matches(o.org_id, org_id)
+            and self._project_matches(o.project_id, project_id)
         ]
 
         buckets: dict[str, dict[str, Any]] = {}
@@ -270,8 +282,10 @@ class InMemoryOutcomeStore:
         days: int = 7,
         limit: int = 50,
         org_id: str = "",
+        project_id: str = "",
     ) -> list[Outcome]:
         """List recent outcomes."""
+        self._validate_scope(org_id, project_id)
         cutoff = datetime.now(UTC) - timedelta(days=days)
         filtered = [
             o
@@ -279,6 +293,7 @@ class InMemoryOutcomeStore:
             if o.created_at >= cutoff
             and (not task_type or o.task_type == task_type)
             and self._org_matches(o.org_id, org_id)
+            and self._project_matches(o.project_id, project_id)
         ]
         return filtered[-limit:]
 
@@ -289,8 +304,10 @@ class InMemoryOutcomeStore:
         days: int = THUMB_WINDOW_DAYS,
         limit: int = THUMB_LIMIT,
         org_id: str = "",
+        project_id: str = "",
     ) -> list[Outcome]:
         """Outcomes carrying a thumb, most recent first."""
+        self._validate_scope(org_id, project_id)
         cutoff = datetime.now(UTC) - timedelta(days=days)
         matched = [
             o
@@ -299,6 +316,7 @@ class InMemoryOutcomeStore:
             and o.created_at >= cutoff
             and _dag_matches(o.dag_id, dag_id)
             and self._org_matches(o.org_id, org_id)
+            and self._project_matches(o.project_id, project_id)
         ]
         # Sorted, not reversed. Insertion order equals timestamp order only
         # while every write is "now"; a backfill, an import or a delayed event
@@ -310,7 +328,24 @@ class InMemoryOutcomeStore:
         return matched[:limit]
 
     @staticmethod
-    def _org_matches(record_org: str, caller_org: str) -> bool:
+    def _validate_scope(org_id: str | None, project_id: str | None) -> None:
+        if org_id is None:
+            raise ValueError("outcome read scope is ambiguous: org_id is None")
+        if project_id is None:
+            raise ValueError("outcome read scope is ambiguous: project_id is None")
+
+    @staticmethod
+    def _org_matches(record_org: str, caller_org: str | None) -> bool:
+        if caller_org is None:
+            raise ValueError("outcome read scope is ambiguous: org_id is None")
         if not caller_org:
             return True
         return record_org == caller_org
+
+    @staticmethod
+    def _project_matches(record_project: str, caller_project: str | None) -> bool:
+        if caller_project is None:
+            raise ValueError("outcome read scope is ambiguous: project_id is None")
+        if not caller_project:
+            return True
+        return record_project == caller_project

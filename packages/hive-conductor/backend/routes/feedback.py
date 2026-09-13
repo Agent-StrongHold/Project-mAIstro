@@ -33,6 +33,11 @@ from services.feedback_service import ALLOWED_THUMBS, record_thumb
 
 from routes.audit import log_audit
 
+# Agent Conductor is a single soft-org deployment unless middleware provides a
+# resolved org. This value narrows reads to one explicit org; it is not a
+# fallback to an unscoped Outcome query.
+CONDUCTOR_ORG_ID = "default-org"
+
 router = APIRouter(tags=["dag-feedback"])
 
 
@@ -70,7 +75,21 @@ def _resolve_project_id(request: Request, body: FeedbackBody) -> str:
     """
     if body.project_id:
         return body.project_id
-    return str(getattr(request.state, "project_id", "") or "")
+    project_id = str(getattr(request.state, "project_id", "") or "")
+    if not project_id:
+        raise HTTPException(status_code=403, detail="No project scope resolved for this request")
+    return project_id
+
+
+def _resolve_org_id(request: Request) -> str:
+    """Resolve the request org without converting an explicit blank to global."""
+    marker = object()
+    org_id = getattr(request.state, "org_id", marker)
+    if org_id is marker:
+        return CONDUCTOR_ORG_ID
+    if not org_id:
+        raise HTTPException(status_code=403, detail="No organization scope resolved")
+    return str(org_id)
 
 
 async def _record_feedback(
@@ -87,10 +106,12 @@ async def _record_feedback(
 
     user_id = _resolve_user_id(request)
     project_id = _resolve_project_id(request, body)
+    org_id = _resolve_org_id(request)
 
     try:
         result = await record_thumb(
             user_id=user_id,
+            org_id=org_id,
             project_id=project_id,
             run_id=run_id,
             thumb=body.thumb,

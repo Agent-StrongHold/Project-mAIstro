@@ -136,6 +136,10 @@ class SqliteOutcomeStore:
             "CREATE INDEX IF NOT EXISTS idx_outcomes_scope_task_time "
             "ON outcomes (org_id, project_id, task_type, created_at)"
         )
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_outcomes_scope_thumb_time "
+            "ON outcomes (org_id, project_id, thumb, created_at)"
+        )
         await self._conn.commit()
 
     async def record(self, outcome: Outcome) -> int:
@@ -213,6 +217,7 @@ class SqliteOutcomeStore:
         task_type: str = "",
         days: int = 7,
         org_id: str = "",
+        project_id: str = "",
     ) -> dict[str, Any]:
         """Get completion rate stats."""
         cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
@@ -221,7 +226,7 @@ class SqliteOutcomeStore:
         if task_type:
             query += " AND task_type = ?"
             params.append(task_type)
-        query += _scope_clause(params, org_id)
+        query += _scope_clause(params, org_id, project_id)
         cursor = await self._conn.execute(query, params)
         columns = [d[0] for d in cursor.description]
         raw_rows = await cursor.fetchall()
@@ -255,6 +260,7 @@ class SqliteOutcomeStore:
         group_by: str = "user_id",
         days: int = 7,
         org_id: str = "",
+        project_id: str = "",
     ) -> list[dict[str, Any]]:
         """Aggregate token usage grouped by a dimension."""
         if group_by not in _ALLOWED_GROUP_COLUMNS:
@@ -273,7 +279,7 @@ class SqliteOutcomeStore:
         if days > 0:
             cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
             params = [cutoff]
-            scope = _scope_clause(params, org_id)
+            scope = _scope_clause(params, org_id, project_id)
             cursor = await self._conn.execute(
                 f"""{select_cols}
                    WHERE created_at >= ?{scope}
@@ -286,7 +292,7 @@ class SqliteOutcomeStore:
             # than extend one. `days <= 0` means "all time", not "all orgs" —
             # the same rule the PostgreSQL twin states for its own branch.
             params = []
-            scope = _scope_clause(params, org_id).replace(" AND ", " WHERE ", 1)
+            scope = _scope_clause(params, org_id, project_id).replace(" AND ", " WHERE ", 1)
             cursor = await self._conn.execute(
                 f"""{select_cols}{scope}
                    GROUP BY {group_by}
@@ -314,12 +320,13 @@ class SqliteOutcomeStore:
         group_by: str = "",
         days: int = 7,
         org_id: str = "",
+        project_id: str = "",
     ) -> list[dict[str, Any]]:
         """Daily token usage timeseries."""
         has_group = group_by in _ALLOWED_GROUP_COLUMNS
         cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
         params: list[Any] = [cutoff]
-        scope = _scope_clause(params, org_id)
+        scope = _scope_clause(params, org_id, project_id)
 
         if has_group:
             query = f"""
@@ -444,6 +451,7 @@ class SqliteOutcomeStore:
         days: int = 7,
         limit: int = 50,
         org_id: str = "",
+        project_id: str = "",
     ) -> list[Outcome]:
         """List recent outcomes."""
         cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
@@ -452,7 +460,7 @@ class SqliteOutcomeStore:
         if task_type:
             query += " AND task_type = ?"
             params.append(task_type)
-        query += _scope_clause(params, org_id)
+        query += _scope_clause(params, org_id, project_id)
         query += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
         cursor = await self._conn.execute(query, params)
@@ -468,6 +476,7 @@ class SqliteOutcomeStore:
         days: int = THUMB_WINDOW_DAYS,
         limit: int = THUMB_LIMIT,
         org_id: str = "",
+        project_id: str = "",
     ) -> list[Outcome]:
         """Outcomes carrying a thumb, most recent first.
 
@@ -482,7 +491,7 @@ class SqliteOutcomeStore:
         if dag_id:
             query += " AND (dag_id = ? OR dag_id = '')"
             params.append(dag_id)
-        query += _scope_clause(params, org_id)
+        query += _scope_clause(params, org_id, project_id)
         query += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
         cursor = await self._conn.execute(query, params)

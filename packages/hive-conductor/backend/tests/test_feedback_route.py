@@ -328,15 +328,18 @@ def test_resolve_project_id_body_wins_over_state() -> None:
     assert _resolve_project_id(request, body) == "body-proj"  # type: ignore[arg-type]
 
 
-def test_resolve_project_id_missing_state_returns_empty_string() -> None:
-    """No body project_id + no request.state.project_id → empty fallback."""
+def test_resolve_project_id_missing_state_fails_closed() -> None:
+    """No body project_id + no request.state.project_id cannot write globally."""
     from types import SimpleNamespace
 
+    from fastapi import HTTPException
     from routes.feedback import FeedbackBody, _resolve_project_id
 
     request = SimpleNamespace(state=SimpleNamespace())  # no project_id attr
     body = FeedbackBody(thumb="up")
-    assert _resolve_project_id(request, body) == ""  # type: ignore[arg-type]
+    with pytest.raises(HTTPException) as exc_info:
+        _resolve_project_id(request, body)  # type: ignore[arg-type]
+    assert exc_info.value.status_code == 403
 
 
 async def test_record_feedback_rejects_invalid_thumb_at_runtime(
@@ -402,7 +405,9 @@ async def test_record_feedback_translates_value_error_to_400(
 
     monkeypatch.setattr(fb, "record_thumb", _raise)
 
-    r = authed_client.post("/v1/dag-runs/run-V/feedback", json={"thumb": "up"})
+    r = authed_client.post(
+        "/v1/dag-runs/run-V/feedback", json={"thumb": "up", "project_id": "project-1"}
+    )
     assert r.status_code == 400
     assert "invariant broken" in r.json()["detail"]
 

@@ -505,31 +505,29 @@ class Agent:
         trace: Any,
         session_id: str | None = None,
     ) -> tuple[list[dict[str, Any]], list[int]]:
-        """Build the agent's prompt context, recording a trace span when on."""
+        """Build prompt context with the canonical execution Project scope."""
+        from maistro.observability.correlation import current_execution_context
+
+        # Graph execution binds its Project on the canonical execution context.
+        # An absent Project deliberately produces no Outcome prompt block rather
+        # than widening the read to every project.
+        project_id = current_execution_context().project_id
+        build_kwargs = {
+            "prompt_manager": self._prompt_manager,
+            "learning_store": self._learning_store,
+            "context_assembly_policy": self._context_assembly_policy,
+            "agent_id": self.identity.name,
+            "org_id": org_id,
+            "team_id": team_id,
+            "project_id": project_id,
+            "session_id": session_id or "",
+        }
         if not trace:
-            return await self._context_builder.build(
-                messages,
-                self.identity,
-                prompt_manager=self._prompt_manager,
-                learning_store=self._learning_store,
-                context_assembly_policy=self._context_assembly_policy,
-                agent_id=self.identity.name,
-                org_id=org_id,
-                team_id=team_id,
-                session_id=session_id or "",
-            )
+            return await self._context_builder.build(messages, self.identity, **build_kwargs)
         with trace.span("prompt.build") as ps:
             ps.set_input({"message_count": len(messages)})
             context_messages, injected_learning_ids = await self._context_builder.build(
-                messages,
-                self.identity,
-                prompt_manager=self._prompt_manager,
-                learning_store=self._learning_store,
-                context_assembly_policy=self._context_assembly_policy,
-                agent_id=self.identity.name,
-                org_id=org_id,
-                team_id=team_id,
-                session_id=session_id or "",
+                messages, self.identity, **build_kwargs
             )
             ps.set_output(
                 {
