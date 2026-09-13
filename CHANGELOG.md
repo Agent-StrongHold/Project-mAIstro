@@ -25,6 +25,18 @@ or placeholder-only section.
 
 ### Security
 
+- **Sentinel's permission table is fail-closed, and the production paths can
+  both feel it and configure it (#1165).** An empty or omitted deployment
+  table now denies every tool instead of authorizing all of them. A chat turn
+  that carries no identity is evaluated as the role-less anonymous principal
+  rather than walking past the table (the strategies only consult Sentinel
+  when an identity is present), so an auth-less request can no longer execute
+  tools the table denies; a configured table or strike tracking still refuses
+  to run without a real identity. Operators state grants in `maistro.yaml`
+  (`security.permission_preset`, `security.permissions`, unknown presets
+  refused at load) and Hive reads `MAISTRO_PERMISSION_PRESET` /
+  `MAISTRO_PERMISSIONS`; both reach the config the Container is built from.
+  Hive's bridge and engine accept the caller's principal on `route`.
 - **Bootstrap credential staging is now private, atomic, and never follows a
   link (#809).** `write_bootstrap_credentials` writes secrets to a fresh 0600
   temp file in the same directory and promotes it with `os.replace`, so secret
@@ -64,6 +76,21 @@ or placeholder-only section.
   `BrowserNetEvent`. Operators can layer browser-specific origins via
   `BROWSER_USE_ALLOWED_ORIGINS`; a browser-use build that cannot be handed a
   guarded context is refused rather than run unguarded.
+
+- **Hive Conductor now propagates one request correlation identity into
+  maistro-server task admission (#1063).** Hive Conductor registers
+  maistro-core's `RequestIDMiddleware` in its own stack (reused, not
+  reimplemented), and `MaistroServerTaskBackend` forwards the bound id as an
+  outbound `X-Request-ID` header so maistro-server's own `RequestIDMiddleware`
+  adopts the same id instead of allocating an unrelated one for the
+  service-to-service hop. `TaskRunAdmitter.admit()` records that id on the
+  admitted Run's provenance alongside the existing `task_id`/`session_id`/
+  `user_id`. A schedule firing — which has no incoming HTTP request — mints
+  its own fresh correlation root inside a detached execution context rather
+  than admitting uncorrelated or risking a stray id from an unrelated
+  Attempt still bound on the same event loop tick. The id is correlation
+  metadata only; unlike the signed Workspace-scope headers, it can never
+  assert scope or authorization.
 
 ### Changed
 
@@ -136,6 +163,18 @@ or placeholder-only section.
   due-cursor-only write), so a bounded schedule cannot be spent by one. The
   live Hive tick still enumerates its own schedule rows; moving it onto
   `ScheduleStore.due()` is #1199's remaining scope.
+- **HITL settlement repair is fair, idempotent, and keeps the recorded time
+  (#737).** Startup reconciliation now finds crash residue (a canonical Run
+  still PAUSED under a CANCELLED/TIMED_OUT continuation) from the canonical
+  PAUSED side before the per-status scan, so an accumulating COMPLETED prefix
+  can no longer starve it; a second tick that loses the race to the same
+  repair stops instead of raising; the repaired Run and NodeRun are stamped
+  with the durable `decided_at`, not the reconciliation time. The expiry tick
+  repairs a continuation whose pause was never mirrored to its Run and widens
+  its candidate page past projections it cannot repair. Migration 033
+  validates each legacy `resume_at` (ISO-8601 with an explicit offset) before
+  casting, leaving malformed or timezone-less values unindexed rather than
+  aborting the upgrade or reading them in the session zone.
 - **Project membership is one canonical row per `(project, principal)`, and
   is now explicitly revocable (#1148).** `ProjectScopeStore.set_membership`
   used to mint a fresh `membership_id` on every call, so a re-grant, role

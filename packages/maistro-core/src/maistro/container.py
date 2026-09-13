@@ -64,6 +64,7 @@ from maistro.runs.wiring import (
 )
 from maistro.scheduling.admission import ScheduleRunAdmitter
 from maistro.scheduling.store import ScheduleStore
+from maistro.security._types import ANONYMOUS_AUTH
 from maistro.security.gate import Gate
 from maistro.security.outbound import configure_outbound_policy, configured_endpoints
 from maistro.security.warden.detector import Warden
@@ -409,6 +410,29 @@ class Container:
             self.schedule_conn = None
             self.holds_db_pool = False
 
+    def _resolve_chat_auth(self, auth: Any) -> Any:
+        """Require identity for armed controls and deny anonymous tool use."""
+        if auth is not None:
+            return auth
+        if self.sentinel._permission_table or self.strike_tracker:
+            armed = []
+            if self.sentinel._permission_table:
+                armed.append("sentinel permission table")
+            if self.strike_tracker:
+                armed.append("strike tracking")
+            msg = (
+                f"route_request() called without auth while {' and '.join(armed)} "
+                f"{'are' if len(armed) > 1 else 'is'} armed. These controls key on "
+                "the caller identity, so they would silently enforce nothing. "
+                "Pass an AuthContext, or disable them in config.security."
+            )
+            raise AgentError(msg)
+        # The fail-closed table (ADR-072726-0d6b, #1165) is armed even when it
+        # is empty -- it denies -- but strategies only consult Sentinel when
+        # auth is not None. Evaluate an identity-free request as the role-less
+        # anonymous principal so it cannot walk past the table.
+        return ANONYMOUS_AUTH
+
     async def route_request(
         self,
         messages: list[dict[str, Any]],
@@ -432,34 +456,7 @@ class Container:
         every turn to catch a mistake that is not reachable from within one
         process.
         """
-        # An armed security control that cannot run is worse than an unarmed
-        # one: the operator believes it is enforcing. Both controls this
-        # container can arm are keyed on the caller's identity --
-        # Gate.process_input derives user_id from auth and skips every strike
-        # path when it is empty (security/gate.py:62,64,102), and the ReAct and
-        # Artificer strategies guard Sentinel.pre_call with `auth is not None`
-        # (agents/strategies/react.py:252). So with auth=None an armed
-        # permission table authorizes everything and an armed strike tracker
-        # records nothing, silently.
-        #
-        # Refusing here costs nothing at the shipped defaults (empty table, no
-        # tracker -> this never fires) and converts a silent no-op into an
-        # unmissable error for anyone who opts in. That is the same defect
-        # class this container's permission table was fixed for; it should not
-        # reappear one level up.
-        if auth is None and (self.sentinel._permission_table or self.strike_tracker):
-            armed = []
-            if self.sentinel._permission_table:
-                armed.append("sentinel permission table")
-            if self.strike_tracker:
-                armed.append("strike tracking")
-            msg = (
-                f"route_request() called without auth while {' and '.join(armed)} "
-                f"{'are' if len(armed) > 1 else 'is'} armed. These controls key on "
-                "the caller identity, so they would silently enforce nothing. "
-                "Pass an AuthContext, or disable them in config.security."
-            )
-            raise AgentError(msg)
+        auth = self._resolve_chat_auth(auth)
 
         if run is None:
             run = await self._admit_chat_turn(
@@ -1402,8 +1399,9 @@ async def create_container(
         preset=config.security.permission_preset,
         permissions=config.security.permissions,
     )
-    # Recovery is an administrative capability, unlike ordinary tools whose
-    # absent permission-table entries intentionally remain open for compatibility.
+    # Recovery is an administrative capability; its capability check goes
+    # through the same fail-closed table below, so a deployment that arms
+    # nothing denies recovery actions too until it configures permissions.
     tier_policy = _configure_strike_recovery_policy()
     logger.info("Sentinel permission table: %s", describe_permission_table(permission_table))
     # SPEC-247 / ADR-068 §D. Without this, Sentinel._check_elevation_grant is a
@@ -1413,9 +1411,21 @@ async def create_container(
     # can therefore never flip authorized False -> True, only needs
     # "self_elevation"/"scoped_2fa" -> "none".
     elevation_store = InMemoryElevationStore()
+    # Canonical capability state is created BEFORE Sentinel so the permission
+    # source can hold the same registry the container exposes (#1165,
+    # ADR-072726-0d6b): a runtime capability disable (set_enabled) must reach
+    # Sentinel's next decision through this live source, without a restart.
+    from maistro.capabilities.bootstrap import default_capability_registry
+    from maistro.security.sentinel.permission_source import CapabilityPermissionSource
+
+    capabilities = default_capability_registry()
     sentinel = Sentinel(
         warden=warden,
         permission_table=permission_table,
+        permission_source=CapabilityPermissionSource(
+            base=permission_table,
+            capabilities=capabilities,
+        ),
         audit_log=audit_log,
         tier_policy=tier_policy,
         elevation_store=elevation_store,
@@ -1425,10 +1435,6 @@ async def create_container(
         sentinel=sentinel,
         audit_log=audit_log,
     )
-
-    from maistro.capabilities.bootstrap import default_capability_registry
-
-    capabilities = default_capability_registry()
 
     # --- P1 resilience policies (ADR-066) --------------------------------
     from maistro.resilience.p1 import InMemoryResiliencePolicyStore, default_policies

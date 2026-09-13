@@ -425,6 +425,96 @@ def test_a_scheduled_run_records_its_schedule_on_the_run() -> None:
         registry.deregister("sched-prov")
 
 
+def test_a_schedule_firing_mints_its_own_request_id() -> None:
+    """#1063: a timer tick has no incoming HTTP request, so it must not admit
+    silently uncorrelated, and must not inherit whatever unrelated Attempt's
+    ids happen to still be bound on this event loop tick -- it starts clean
+    and mints its own root, the same hazard `detached_execution_context`
+    documents for a transactional-outbox publisher."""
+    import stores
+    from services.dag_agents import get_registry
+    from services.scheduler import _ScheduleRunner
+
+    from maistro.observability.correlation import bind_execution_context
+
+    registry = get_registry()
+    registry.register(
+        {
+            "id": "sched-reqid",
+            "name": "Sched ReqId",
+            "entry_node": "only",
+            "nodes": [{"id": "only", "kind": "transform.alias_keys", "config": {"mapping": {}}}],
+            "edges": [],
+        }
+    )
+    stub = _schedule_stub("s-reqid", "sched-reqid")
+    stores.schedules._data["s-reqid"] = stub  # type: ignore[attr-defined]
+    try:
+        # A stray ambient context, as if this tick shared the event loop with
+        # some unrelated in-flight Attempt -- it must not leak into the Run
+        # this firing admits.
+        with bind_execution_context(run_id="stray-run", request_id="stray-request"):
+            scheduled_for = datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
+            asyncio.run(
+                _ScheduleRunner()._fire_schedule("s-reqid", stub, scheduled_for=scheduled_for)
+            )
+
+        from services.dag_agents import _fallback_run_store
+
+        runs = [r.run for r in _fallback_run_store._rows.values()]  # type: ignore[attr-defined]
+        scheduled = [r for r in runs if r.provenance.get("schedule_id") == "s-reqid"]
+        assert len(scheduled) == 1
+        request_id = scheduled[0].provenance.get("request_id")
+        assert request_id
+        assert request_id != "stray-request"
+    finally:
+        stores.schedules._data.pop("s-reqid", None)  # type: ignore[attr-defined]
+        registry.deregister("sched-reqid")
+
+
+def test_two_firings_of_the_same_schedule_get_different_request_ids() -> None:
+    import stores
+    from services.dag_agents import get_registry
+    from services.scheduler import _ScheduleRunner
+
+    registry = get_registry()
+    registry.register(
+        {
+            "id": "sched-reqid-2",
+            "name": "Sched ReqId 2",
+            "entry_node": "only",
+            "nodes": [{"id": "only", "kind": "transform.alias_keys", "config": {"mapping": {}}}],
+            "edges": [],
+        }
+    )
+    stub = _schedule_stub("s-reqid-2", "sched-reqid-2")
+    stores.schedules._data["s-reqid-2"] = stub  # type: ignore[attr-defined]
+    try:
+        runner = _ScheduleRunner()
+        asyncio.run(
+            runner._fire_schedule(
+                "s-reqid-2", stub, scheduled_for=datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
+            )
+        )
+        asyncio.run(
+            runner._fire_schedule(
+                "s-reqid-2", stub, scheduled_for=datetime(2026, 8, 21, 13, 0, tzinfo=UTC)
+            )
+        )
+
+        from services.dag_agents import _fallback_run_store
+
+        runs = [r.run for r in _fallback_run_store._rows.values()]  # type: ignore[attr-defined]
+        scheduled = [r for r in runs if r.provenance.get("schedule_id") == "s-reqid-2"]
+        assert len(scheduled) == 2
+        ids = {r.provenance.get("request_id") for r in scheduled}
+        assert len(ids) == 2
+        assert all(ids)
+    finally:
+        stores.schedules._data.pop("s-reqid-2", None)  # type: ignore[attr-defined]
+        registry.deregister("sched-reqid-2")
+
+
 def test_fire_schedule_unresolved_template_says_so_instead_of_going_quiet() -> None:
     """An unregistered target is reported, not silently skipped (#145).
 
@@ -942,6 +1032,60 @@ def test_a_manual_run_creates_a_run_and_records_it(monkeypatch: pytest.MonkeyPat
         assert recorded.last_run_id == run_id
     finally:
         stores.schedules._data.pop("s-man", None)  # type: ignore[attr-defined]
+
+
+def test_a_manual_run_preserves_the_http_requests_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#1063: `POST /v1/schedules/{id}/run` is a real HTTP request that
+    RequestIDMiddleware already bound an id for -- `fire_now` must forward
+    it rather than minting an unrelated one, or the request/response and the
+    resulting Run's provenance would carry two different correlation ids for
+    the same logical request."""
+    import stores
+    from services.scheduler import fire_now
+
+    from maistro.observability.correlation import bind_execution_context
+    from maistro.scheduling import InMemoryScheduleStore
+
+    _register("sched-manual-reqid")
+    stub = _bounded_stub("s-man-reqid", "sched-manual-reqid")
+    stores.schedules._data["s-man-reqid"] = stub  # type: ignore[attr-defined]
+    _with_store(monkeypatch, InMemoryScheduleStore())
+    try:
+        with bind_execution_context(request_id="http-req-42"):
+            run_id = asyncio.run(fire_now("s-man-reqid"))
+
+        from services.dag_agents import _fallback_run_store
+
+        run = _fallback_run_store._rows[run_id].run  # type: ignore[attr-defined]
+        assert run.provenance["request_id"] == "http-req-42"
+    finally:
+        stores.schedules._data.pop("s-man-reqid", None)  # type: ignore[attr-defined]
+
+
+def test_a_manual_run_with_no_ambient_request_mints_its_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A manual fire triggered with no request id in scope (e.g. a script
+    calling the service function directly) still gets a real one, not a
+    blank provenance field."""
+    import stores
+    from services.scheduler import fire_now
+
+    from maistro.scheduling import InMemoryScheduleStore
+
+    _register("sched-manual-noreqid")
+    stub = _bounded_stub("s-man-noreqid", "sched-manual-noreqid")
+    stores.schedules._data["s-man-noreqid"] = stub  # type: ignore[attr-defined]
+    _with_store(monkeypatch, InMemoryScheduleStore())
+    try:
+        run_id = asyncio.run(fire_now("s-man-noreqid"))
+
+        from services.dag_agents import _fallback_run_store
+
+        run = _fallback_run_store._rows[run_id].run  # type: ignore[attr-defined]
+        assert run.provenance.get("request_id")
+    finally:
+        stores.schedules._data.pop("s-man-noreqid", None)  # type: ignore[attr-defined]
 
 
 def test_a_manual_run_that_cannot_start_leaves_no_stamp(
