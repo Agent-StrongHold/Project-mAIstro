@@ -12,10 +12,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from datetime import UTC, datetime
 from typing import Any
 
 from maistro.graph.templates import GraphTemplateNotFound
+from maistro.observability.correlation import (
+    bind_execution_context,
+    current_execution_context,
+    detached_execution_context,
+)
 from maistro.runs.model import TERMINAL_RUN_STATUSES
 from maistro.scheduling import FireDecision, OverlapPolicy, Schedule, evaluate
 from maistro.scheduling.admission import ScheduleRunAdmitter
@@ -100,7 +106,17 @@ async def fire_now(sid: str) -> str:
         raise ScheduleNotFireable(f"schedule {sid} has used all {definition.max_runs} of its runs")
 
     now = datetime.now(UTC)
-    run_id = await runner._fire_schedule(sid, schedule, scheduled_for=now, catchup=False)
+    # Captured here, at the one call site with a trustworthy ambient context
+    # (#1063): this coroutine runs inside the HTTP request RequestIDMiddleware
+    # already bound an id for, so forwarding it explicitly is what keeps the
+    # request/response and the resulting Run in the same trace.
+    # `_fire_schedule` never reads ambient context itself -- it is also
+    # reachable from the tick loop, which shares an event loop with whatever
+    # else is running and cannot make the same claim.
+    request_id = current_execution_context().request_id or None
+    run_id = await runner._fire_schedule(
+        sid, schedule, scheduled_for=now, catchup=False, request_id=request_id
+    )
     if run_id is None:
         raise ScheduleNotFireable(
             f"schedule {sid} could not create a Run; its target may not be registered"
@@ -642,6 +658,7 @@ class _ScheduleRunner:
         *,
         scheduled_for: datetime | None = None,
         catchup: bool = False,
+        request_id: str | None = None,
     ) -> str | None:
         """Compatibility immediate execution path, standalone/demo contexts only.
 
@@ -688,19 +705,30 @@ class _ScheduleRunner:
         scope_id = f"hive:schedule:{sid}"
         user_id = str(getattr(schedule, "user_id", "") or "") or None
         try:
-            graph, record = await run_registered_dag(
-                str(template_id),
-                workspace_id=scope_id,
-                project_id=scope_id,
-                user_id=user_id,
-                provenance={
-                    "admission_source": "schedule",
-                    "schedule_id": sid,
-                    "schedule_name": schedule.name,
-                    "scheduled_for": (scheduled_for or t).isoformat(),
-                    "catchup": catchup,
-                },
-            )
+            # Always a clean slate (#1063): this path shares an event loop
+            # with whatever else is running (the tick loop) and cannot tell a
+            # trustworthy caller-supplied id from a stray one some unrelated
+            # Attempt left bound on the same tick just by looking at ambient
+            # context. `fire_now()` -- the one caller with a real HTTP
+            # request behind it -- passes its own id explicitly instead;
+            # a caller that passes none (the tick loop) gets a fresh root.
+            with detached_execution_context():
+                effective_request_id = request_id or uuid.uuid4().hex[:12]
+                with bind_execution_context(request_id=effective_request_id):
+                    graph, record = await run_registered_dag(
+                        str(template_id),
+                        workspace_id=scope_id,
+                        project_id=scope_id,
+                        user_id=user_id,
+                        provenance={
+                            "admission_source": "schedule",
+                            "schedule_id": sid,
+                            "schedule_name": schedule.name,
+                            "scheduled_for": (scheduled_for or t).isoformat(),
+                            "catchup": catchup,
+                            "request_id": effective_request_id,
+                        },
+                    )
         except Exception as exc:
             logger.warning("Schedule %s run failed: %s", sid, exc)
             log_audit(
