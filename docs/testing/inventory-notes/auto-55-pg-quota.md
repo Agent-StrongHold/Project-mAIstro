@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests/quota: +1
+  packages/maistro-core/tests: +1
 ---
 # auto-55-pg-quota
 
