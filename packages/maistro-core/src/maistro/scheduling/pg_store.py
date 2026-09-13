@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.runs.evidence_json import json_of, model_of
 from maistro.scheduling.model import Schedule
-from maistro.scheduling.store import _advance
+from maistro.scheduling.store import _advance, _merged
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import asyncpg
@@ -39,7 +39,18 @@ class PgScheduleStore:
         self._pool = pool
 
     async def put(self, schedule: Schedule) -> Schedule:
-        async with self._pool.acquire() as conn:
+        """Write the definition over the recorded cursors, under the row lock.
+
+        The same `FOR UPDATE` as `record_fire`, so the cursors this keeps are
+        the ones a concurrent `record_fire` has finished writing, never the
+        ones it is about to.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            payload = await conn.fetchval(
+                "SELECT payload FROM schedules WHERE schedule_id = $1 FOR UPDATE",
+                schedule.schedule_id,
+            )
+            stored = _merged(_schedule_of(payload) if payload is not None else None, schedule)
             await conn.execute(
                 """INSERT INTO schedules
                        (schedule_id, workspace_id, project_id, enabled, next_due_at, payload)
@@ -50,14 +61,14 @@ class PgScheduleStore:
                            enabled      = EXCLUDED.enabled,
                            next_due_at  = EXCLUDED.next_due_at,
                            payload      = EXCLUDED.payload""",
-                schedule.schedule_id,
-                schedule.workspace_id,
-                schedule.project_id,
-                schedule.enabled,
-                schedule.next_due_at,
-                json_of(schedule),
+                stored.schedule_id,
+                stored.workspace_id,
+                stored.project_id,
+                stored.enabled,
+                stored.next_due_at,
+                json_of(stored),
             )
-        return schedule
+        return stored
 
     async def get(self, schedule_id: str) -> Schedule | None:
         async with self._pool.acquire() as conn:
@@ -110,13 +121,13 @@ class PgScheduleStore:
         self,
         schedule_id: str,
         *,
-        fired_at: datetime,
+        fired_at: datetime | None,
         run_id: str | None,
         next_due_at: datetime | None,
-        fires: int = 1,
+        fires: int | None = None,
         disable: bool = False,
     ) -> Schedule | None:
-        """Advance the cursor under a row lock, so a concurrent tick cannot lose it."""
+        """Advance the cursors under a row lock, so a concurrent tick cannot lose them."""
         async with self._pool.acquire() as conn, conn.transaction():
             payload = await conn.fetchval(
                 "SELECT payload FROM schedules WHERE schedule_id = $1 FOR UPDATE",
