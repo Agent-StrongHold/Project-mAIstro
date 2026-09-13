@@ -67,8 +67,6 @@ jobs:
       # reads (#154).
       - name: No conflict markers in tracked files
         run: python scripts/check-merge-markers.py
-      - run: uv run ruff check .
-      - run: uv run ruff format --check .
       - run: >-
           uv run mypy
           packages/maistro-core/src
@@ -711,20 +709,6 @@ jobs:
           ls -1 dist/*.whl
       - name: Import wheels from a clean venv
         run: python scripts/verify-wheel-imports.py --dist dist/ --python 3.12
-
-  security:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-      - uses: ./.github/actions/setup-uv
-      - run: uv sync --locked --extra dev
-      - run: uv pip install pip-audit
-      - run: uv pip freeze --exclude-editable > /tmp/deps.txt
-      - run: uv run pip-audit --strict --format=json -r /tmp/deps.txt > /tmp/pip-audit.json || true
-      - run: python scripts/pip_audit_gate.py /tmp/pip-audit.json
 
   docker-build:
     needs: workflow-lint

@@ -1,0 +1,44 @@
+name: Reusable quality check
+
+on:
+  workflow_call:
+    inputs:
+      check_name:
+        description: Check label shown in the called job.
+        required: true
+        type: string
+      command:
+        description: Shell command that implements the check.
+        required: true
+        type: string
+      ratchet_base_rev:
+        description: Trusted base used by ratchet checks.
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: ${{ inputs.check_name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RATCHET_BASE_REV: ${{ inputs.ratchet_base_rev }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
+      - name: install quality tools
+        run: uv pip install radon xenon vulture pyright interrogate pytest-timeout
+      - name: Run quality check
+        run: ${{ inputs.command }}
