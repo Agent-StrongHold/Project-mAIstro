@@ -37,8 +37,9 @@ middleware below that namespace), so it can run beside Hive Conductor in one Pyt
 process without flat `main`, `routes`, or `state` module collisions. Start it from the
 repository from the backend directory with `pip install -r requirements.txt` followed by
 `uvicorn maistro_turing_backend.main:app --port 8120`. The requirements install the
-runtime library as well as the backend dependencies, and the explicit application
-package is resolved from the current backend directory. The Astro `frontend/` was removed under the v1 cut list
+runtime library, the explicit backend application package, and its dependencies, so
+startup does not depend on the current directory claiming generic module names. The
+Astro `frontend/` was removed under the v1 cut list
 (D1/#289) — it had no tests and no CI job.
 
 ## Tests

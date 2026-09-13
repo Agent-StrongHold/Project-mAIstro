@@ -30,8 +30,9 @@ frontend interpolates ids into paths, and the backend names them.
 
 Why an incomplete route table is refused
 ----------------------------------------
-Four routers are optional (`routes.design`, `routes.canvas`, `routes.evolution`,
-`routes.rsi`); each is mounted inside a `try`, so a missing dependency drops its
+Four Conductor routers are optional (`hive_conductor.routes.design`,
+`hive_conductor.routes.canvas`, `hive_conductor.routes.evolution`,
+`hive_conductor.routes.rsi`); each is mounted inside a `try`, so a missing dependency drops its
 routes silently. Checked against a table missing one, every call the Design page
 makes would be reported as an unregistered route -- the true cause being an
 import error one layer down. So this reads `app.state.optional_routers` and

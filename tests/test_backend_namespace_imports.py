@@ -42,3 +42,43 @@ def test_both_backend_asgi_namespaces_coexist() -> None:
         text=True,
     )
     assert probe.returncode == 0, probe.stderr
+
+
+def test_turing_documented_backend_command_starts_from_backend_directory() -> None:
+    """Exercise the shipped uvicorn command, not only importlib discovery."""
+    backend = ROOT / "packages" / "maistro-turing" / "backend"
+    env = os.environ | {
+        "TURING_SERVICE_KEY": "test-turing-service-key",
+        "TURING_ALLOW_INSECURE_TRANSPORT": "1",
+    }
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "maistro_turing_backend.main:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "0",
+            "--log-level",
+            "error",
+        ],
+        cwd=backend,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        try:
+            returncode = process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            returncode = None
+        if returncode is not None:
+            _stdout, stderr = process.communicate()
+            raise AssertionError(f"Turing backend exited during startup: {stderr}")
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=5)

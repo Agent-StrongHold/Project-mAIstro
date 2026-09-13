@@ -55,6 +55,9 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     # --- what the loop reaches into -----------------------------------------
     "maistro/security/",
     # --- the Conductor's own RSI execution surface --------------------------
+    # The application package initializer executes before every protected
+    # Conductor module, so keep the namespace entry point on the same surface.
+    "hive-conductor/backend/hive_conductor/__init__.py",
     # The product ships two production entry points for the capabilities this
     # list governs, and the `maistro_rsi/` and `maistro_evolve/` patterns above
     # never reached them because they live in the Conductor backend namespace:

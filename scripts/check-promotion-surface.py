@@ -100,8 +100,8 @@ PROMOTION_ROOTS: dict[str, str] = {
     # here was invisible (Codex, #513).
     "maistro_rsi.cli": "the installed command entry point",
     "maistro_rsi.__main__": "the `python -m maistro_rsi` entry point",
-    "services.rsi": "drives LocalRsiLoop from the Conductor",
-    "routes.rsi": "approves candidate patches and applies them with `git am`",
+    "hive_conductor.services.rsi": "drives LocalRsiLoop from the Conductor",
+    "hive_conductor.routes.rsi": "approves candidate patches and applies them with `git am`",
     "maistro_evolve.fitness": "holds the breeding and promotion thresholds",
     "maistro_evolve.scorecard": "renders the score a promotion decision reads",
 }

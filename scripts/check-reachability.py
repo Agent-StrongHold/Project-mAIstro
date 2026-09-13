@@ -161,26 +161,26 @@ FLAT_APPS = (
     FlatApp(
         name="hive-conductor",
         path="packages/hive-conductor/backend",
-        roots=("main",),
+        roots=("hive_conductor.main",),
         package="hive_conductor",
         dynamic_roots=(
-            "routes.design",
-            "routes.canvas",
-            "routes.evolution",
-            "routes.rsi",
-            "services.design_service",
-            "services.design_preview",
-            "services.design_render",
-            "services.evolution",
-            "services.scheduler",
-            "services.memory_decay",
-            "services.dag_run_store",
+            "hive_conductor.routes.design",
+            "hive_conductor.routes.canvas",
+            "hive_conductor.routes.evolution",
+            "hive_conductor.routes.rsi",
+            "hive_conductor.services.design_service",
+            "hive_conductor.services.design_preview",
+            "hive_conductor.services.design_render",
+            "hive_conductor.services.evolution",
+            "hive_conductor.services.scheduler",
+            "hive_conductor.services.memory_decay",
+            "hive_conductor.services.dag_run_store",
         ),
     ),
     FlatApp(
         name="maistro-turing-backend",
         path="packages/maistro-turing/backend",
-        roots=("main",),
+        roots=("maistro_turing_backend.main",),
         report_prefix="maistro-turing-backend",
         package="maistro_turing_backend",
     ),
@@ -388,6 +388,24 @@ def _validate_no_shadowed_modules(root: Path, flat_apps: tuple[FlatApp, ...] = F
 
 def _flat_key(app_name: str, module: str) -> str:
     return f"{_FLAT_PREFIX}{app_name}/{module}"
+
+
+def _app_root_key(app: FlatApp, root_name: str) -> str:
+    """Translate a canonical package root to the scanner's scoped identity.
+
+    The graph keeps scoped identities for baseline continuity, but application
+    configuration must name the real import path. Requiring the package prefix
+    here prevents a new flat ``main`` or ``routes`` root from creeping back in.
+    """
+    if app.package:
+        prefix = f"{app.package}."
+        if not root_name.startswith(prefix):
+            raise RuntimeError(
+                f"{app.name} reachability root {root_name!r} must use the "
+                f"canonical {app.package!r} package"
+            )
+        root_name = root_name[len(prefix) :]
+    return _flat_key(app.name, root_name)
 
 
 def _flat_identity(key: str) -> tuple[str, str] | None:
@@ -716,7 +734,7 @@ def _reachability(
         stack.extend(
             key
             for root_name in (*app.roots, *app.dynamic_roots)
-            if (key := _flat_key(app.name, root_name)) in mods
+            if (key := _app_root_key(app, root_name)) in mods
         )
 
     seen: set[str] = set()
