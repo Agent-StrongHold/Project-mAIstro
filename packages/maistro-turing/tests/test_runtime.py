@@ -234,12 +234,6 @@ class FailingMemoryBridge:
         raise RuntimeError("store failed")
 
 
-async def _fake_provider_call(
-    provider: FakeChatProvider, prompt: str, max_tokens: int | None
-) -> str:
-    return provider.complete(prompt, max_tokens=max_tokens)
-
-
 class TestTuringChatSession:
     async def test_handle_message_returns_reply_and_records_history(self) -> None:
         memory = FakeMemoryBridge()
@@ -253,22 +247,18 @@ class TestTuringChatSession:
             security=security,  # type: ignore[arg-type]
             self_id="self-1",
         )
-        reply = await session.handle_message(
-            "Hi",
-            provider_call=lambda prompt, max_tokens: _fake_provider_call(
-                provider, prompt, max_tokens
-            ),
-        )
-        assert reply == "Hello there!"
+        prompt = await session.prepare_message("Hi")
+        await session.record_response("Hi", "Hello there!")
+        assert prompt.startswith("User: Hi")
         assert session._history == [
             {"role": "user", "content": "Hi"},
             {"role": "assistant", "content": "Hello there!"},
         ]
         assert classifier.messages == ["Hi"]
-        assert "User: Hi" in provider.prompts[0]
+        assert "User: Hi" in prompt
         assert memory.calls[0]["tier"] == "observation"
 
-    async def test_handle_message_includes_previous_context_on_second_turn(self) -> None:
+    async def test_prepare_message_includes_previous_context_on_second_turn(self) -> None:
         provider = FakeChatProvider(reply="ok")
         session = TuringChatSession(
             memory=FakeMemoryBridge(),  # type: ignore[arg-type]
@@ -277,19 +267,10 @@ class TestTuringChatSession:
             security=FakeSecurityBridge(),  # type: ignore[arg-type]
             self_id="self-1",
         )
-        await session.handle_message(
-            "first message",
-            provider_call=lambda prompt, max_tokens: _fake_provider_call(
-                provider, prompt, max_tokens
-            ),
-        )
-        await session.handle_message(
-            "second message",
-            provider_call=lambda prompt, max_tokens: _fake_provider_call(
-                provider, prompt, max_tokens
-            ),
-        )
-        second_prompt = provider.prompts[1]
+        await session.prepare_message("first message")
+        await session.record_response("first message", "ok")
+        second_prompt = await session.prepare_message("second message")
+        await session.record_response("second message", "ok")
         assert "Previous context:" in second_prompt
         assert "user: first message" in second_prompt
         assert "User: second message" in second_prompt
@@ -303,11 +284,25 @@ class TestTuringChatSession:
             security=FakeSecurityBridge(),  # type: ignore[arg-type]
             self_id="self-1",
         )
+        prompt = await session.prepare_message("hi")
         # Must not raise even though the memory bridge always fails.
-        reply = await session.handle_message(
-            "hi",
-            provider_call=lambda prompt, max_tokens: _fake_provider_call(
-                provider, prompt, max_tokens
-            ),
+        await session.record_response("hi", "fine")
+        assert prompt == "User: hi\nRespond naturally as yourself."
+
+    async def test_handle_message_rejects_uncorrelated_provider_callback(self) -> None:
+        session = TuringChatSession(
+            memory=FakeMemoryBridge(),  # type: ignore[arg-type]
+            provider=FakeChatProvider(),  # type: ignore[arg-type]
+            classifier=FakeClassifierBridge(),  # type: ignore[arg-type]
+            security=FakeSecurityBridge(),  # type: ignore[arg-type]
+            self_id="self-1",
         )
-        assert reply == "fine"
+
+        async def ungoverned_call(_prompt: str, _max_tokens: int | None) -> str:
+            raise AssertionError("an ungoverned callback must never execute")
+
+        with pytest.raises(TypeError, match="provider_call"):
+            await session.handle_message(  # type: ignore[call-arg]
+                "must not execute directly",
+                provider_call=ungoverned_call,
+            )

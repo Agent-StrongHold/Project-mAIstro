@@ -47,11 +47,12 @@ Status: implementation in progress. CI type-checks this package's `src/` in
 ## Execution posture
 
 The Turing backend is a canonical Graph/Run/NodeRun/Attempt consumer. A chat
-session receives its provider callback from that execution boundary, and the
-model call crosses the Workspace-scoped Binding/Provider/Invocation seam. The
-self-model producers and cognitive reactor are library capabilities only; this
-package does not start autonomous cognition. Activation remains gated by the
-Proposed future cognitive-runtime ADR (`ADR-081426-fb9f`).
+session contributes prompt and conversation state to that execution boundary;
+the canonical chat Node performs the model call across the Workspace-scoped
+Binding/Provider/Invocation seam. The self-model producers and cognitive reactor
+are library capabilities only; this package does not start autonomous cognition.
+Activation remains gated by the Proposed future cognitive-runtime ADR
+(`ADR-081426-fb9f`).
 
 ## License
 

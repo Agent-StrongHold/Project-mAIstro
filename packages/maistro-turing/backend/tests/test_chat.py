@@ -135,11 +135,18 @@ def test_cancelled_chat_terminalizes_canonical_evidence():
     async def scenario() -> None:
         started = asyncio.Event()
 
+        from maistro_turing.bridge import TuringProviderBridge
+
         class BlockingSession:
-            async def handle_message(self, _message: str) -> str:
+            provider_bridge = TuringProviderBridge()
+
+            async def prepare_message(self, _message: str) -> str:
                 started.set()
                 await asyncio.Event().wait()
                 raise AssertionError("blocking chat should have been cancelled")
+
+            async def record_response(self, _message: str, _reply: str) -> None:
+                raise AssertionError("cancelled chat must not record a response")
 
         plane = TuringExecutionPlane()
         task = asyncio.create_task(
@@ -168,11 +175,22 @@ def test_cancelled_chat_terminalizes_canonical_evidence():
 
 
 def test_turing_chat_admission_uses_chat_retention_and_bounded_window():
+    from maistro_turing.bridge import TuringProviderBridge
+
     from ..execution import TuringExecutionPlane
 
+    class ReplyProvider(TuringProviderBridge):
+        def complete(self, prompt: str, *, max_tokens: int | None = None, pool: str = "") -> str:
+            return f"reply:{prompt}"
+
     class ReplySession:
-        async def handle_message(self, message: str) -> str:
-            return f"reply:{message}"
+        provider_bridge = ReplyProvider()
+
+        async def prepare_message(self, message: str) -> str:
+            return message
+
+        async def record_response(self, _message: str, _reply: str) -> None:
+            return None
 
     async def scenario() -> None:
         plane = TuringExecutionPlane(max_retained=1)

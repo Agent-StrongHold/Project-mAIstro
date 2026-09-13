@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -20,9 +20,6 @@ from maistro_turing.bridge import (
 )
 
 logger = logging.getLogger("maistro_turing.runtime")
-
-ChatProviderCall = Callable[[str, int | None], Awaitable[str]]
-
 
 # ---------------------------------------------------------------- config -----
 
@@ -155,21 +152,15 @@ class TuringChatSession:
         """Expose the configured Provider for the canonical backend adapter."""
         return self._provider
 
-    async def handle_message(
-        self,
-        message: str,
-        *,
-        provider_call: ChatProviderCall | None = None,
-    ) -> str:
-        """Process a user message and return a response.
+    async def prepare_message(self, message: str) -> str:
+        """Prepare a user turn for the canonical chat Node.
 
-        ``provider_call`` is supplied by a canonical Node when the session is
-        reachable through the backend. Direct provider calls are intentionally
-        rejected so this domain object cannot become an uncorrelated execution
-        path.
+        This method owns Turing conversation state and prompt construction, but
+        deliberately does not call a provider. The canonical Node must perform
+        the model call so the resulting Invocation is correlated to its
+        Run/NodeRun/Attempt.
         """
         self._history.append({"role": "user", "content": message})
-
         await self._classifier.classify_message(message)
 
         prompt_parts = [f"User: {message}"]
@@ -180,12 +171,10 @@ class TuringChatSession:
                     len(prompt_parts) - 1, f"  {turn['role']}: {turn['content'][:200]}"
                 )
         prompt_parts.append("Respond naturally as yourself.")
+        return "\n".join(prompt_parts)
 
-        prompt = "\n".join(prompt_parts)
-        if provider_call is None:
-            raise RuntimeError("Turing chat requires a canonical provider Invocation")
-        reply = await provider_call(prompt, 1000)
-
+    async def record_response(self, message: str, reply: str) -> None:
+        """Record a successful response after canonical provider execution."""
         self._history.append({"role": "assistant", "content": reply})
 
         try:
@@ -199,4 +188,12 @@ class TuringChatSession:
         except Exception:
             logger.debug("chat capture failed", exc_info=True)
 
-        return reply
+    async def handle_message(self, message: str) -> str:
+        """Reject direct chat execution outside the canonical execution plane.
+
+        Turing's domain session is intentionally not a provider executor. A
+        caller must use the backend's canonical Graph/Run path, which prepares
+        the prompt, records the Invocation, and then records the response.
+        """
+        del message
+        raise RuntimeError("Turing chat requires canonical Graph/Run/Invocation execution")

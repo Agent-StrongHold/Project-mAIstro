@@ -12,7 +12,7 @@ import asyncio
 import logging
 from collections import OrderedDict
 from collections.abc import Callable
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Protocol
 
 from pydantic import BaseModel
 
@@ -125,6 +125,14 @@ def _reply_from_invocation(invocation: Invocation) -> str:
     return str(message.get("content") or "")
 
 
+class _ChatSession(Protocol):
+    """Turing conversation state used by the canonical chat Node."""
+
+    async def prepare_message(self, message: str) -> str: ...
+
+    async def record_response(self, message: str, reply: str) -> None: ...
+
+
 class _ChatNode(BaseNode[_ChatInput, _ChatOutput]):
     """Execute one Turing domain chat turn under canonical Attempt evidence."""
 
@@ -139,7 +147,7 @@ class _ChatNode(BaseNode[_ChatInput, _ChatOutput]):
 
     def __init__(
         self,
-        session: TuringChatSession,
+        session: _ChatSession,
         provider: TuringProviderBridge,
         invoke_chat: Callable[..., Any],
     ) -> None:
@@ -148,25 +156,15 @@ class _ChatNode(BaseNode[_ChatInput, _ChatOutput]):
         self._invoke_chat = invoke_chat
 
     async def _execute(self, inputs: _ChatInput, ctx: NodeContext) -> _ChatOutput:
-        if not isinstance(self._session, TuringChatSession):
-            # Compatibility doubles in focused graph tests do not own Turing's
-            # provider bridge; real backend sessions always take the branch below.
-            return _ChatOutput(reply=await self._session.handle_message(inputs.message))
-
-        async def provider_call(prompt: str, max_tokens: int | None) -> str:
-            return await self._invoke_chat(
-                bridge=self._provider,
-                prompt=prompt,
-                max_tokens=max_tokens,
-                context=ctx,
-            )
-
-        return _ChatOutput(
-            reply=await self._session.handle_message(
-                inputs.message,
-                provider_call=provider_call,
-            )
+        prompt = await self._session.prepare_message(inputs.message)
+        reply = await self._invoke_chat(
+            bridge=self._provider,
+            prompt=prompt,
+            max_tokens=1000,
+            context=ctx,
         )
+        await self._session.record_response(inputs.message, reply)
+        return _ChatOutput(reply=reply)
 
 
 class TuringExecutionPlane:
@@ -450,11 +448,9 @@ class TuringExecutionPlane:
             await self._cancel_incomplete_admission(admitted_run_id)
             raise TuringAdmissionUnavailable("canonical Turing chat admission failed") from exc
 
-        provider = (
-            session.provider_bridge
-            if isinstance(session, TuringChatSession)
-            else TuringProviderBridge()
-        )
+        provider = getattr(session, "provider_bridge", TuringProviderBridge())
+        if not isinstance(provider, TuringProviderBridge):
+            raise TypeError("Turing chat session has no canonical provider bridge")
         node = _ChatNode(session, provider, self._invoke_chat)
         dispatch_prepared = False
 
