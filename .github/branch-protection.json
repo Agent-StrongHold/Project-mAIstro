@@ -169,7 +169,7 @@
       "Checks deliberately non-required must be named here with a reason."
     ],
     "pr-base": "PR-only branch-policy check (#383): reports on pull_request events only, so it cannot be a required check that the merge queue waits on (merge_group); the correction is to rebase onto develop.",
-    "DevSkim": "devskim.yml triggers on push/pull_request/schedule only, no merge_group -- same structural gap as pr-base. A merge-queue entry would wait forever for a status this check never reports there."
+    "DevSkim": "devskim.yml triggers on push/pull_request/schedule only, no merge_group -- same structural gap as pr-base. It runs on every develop PR but remains advisory until the owner explicitly adds it to the required merge contract; a merge-queue entry must not wait for a status this check never reports there."
   },
   "repository": {
     "allow_auto_merge": true,

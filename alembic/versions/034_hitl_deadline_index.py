@@ -4,8 +4,8 @@ The column is a lookup projection, so upgrading must populate it from the
 canonical pause entries already stored in each continuation. Leaving old rows
 NULL would make those pauses permanently invisible to the bounded expiry scan.
 
-Revision ID: 033
-Revises: 032
+Revision ID: 034
+Revises: 033
 Create Date: 2026-09-07
 """
 
@@ -14,8 +14,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "033"
-down_revision = "032"
+revision = "034"
+down_revision = "033"
 branch_labels = None
 depends_on = None
 

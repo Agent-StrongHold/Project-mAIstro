@@ -41,27 +41,28 @@ _CANDIDATE_PAGES = 6
 logger = logging.getLogger(__name__)
 
 
-def _terminal_hitl_evidence(
+def _matching_hitl_settlement(
     continuation: GraphContinuation,
     target: RunStatus,
-) -> tuple[str, str, datetime, str] | None:
-    metadata = continuation.graph_state.metadata
-    settlements_raw = metadata.get("hitl_settlements", {})
+) -> tuple[str, Mapping[str, Any]] | None:
+    settlements_raw = continuation.graph_state.metadata.get("hitl_settlements", {})
     settlements = settlements_raw if isinstance(settlements_raw, Mapping) else {}
     matching = [
         (str(node_id), settlement)
         for node_id, settlement in settlements.items()
         if isinstance(settlement, Mapping) and settlement.get("outcome") == target.value
     ]
-    if len(matching) != 1:
-        return None
-    node_id, settlement = matching[0]
-    node_run_id = settlement.get("node_run_id")
-    decided_at = settlement.get("decided_at")
-    if not isinstance(node_run_id, str) or not isinstance(decided_at, str):
+    return matching[0] if len(matching) == 1 else None
+
+
+def _settlement_moment(
+    continuation: GraphContinuation,
+    decided_at: object,
+) -> datetime | None:
+    if not isinstance(decided_at, str):
         return None
     try:
-        moment = settlement_time(datetime.fromisoformat(decided_at))
+        return settlement_time(datetime.fromisoformat(decided_at))
     except (TypeError, ValueError):
         logger.warning(
             "cannot reconcile terminal HITL continuation %s: invalid decided_at",
@@ -69,15 +70,36 @@ def _terminal_hitl_evidence(
         )
         return None
 
-    pause = settlement.get("pause")
-    if target is RunStatus.TIMED_OUT and isinstance(pause, Mapping):
-        deadline = pause.get("resume_at")
-        detail = f" at {deadline}" if isinstance(deadline, str) else ""
-        reason = f"human input for node {node_id!r} timed out{detail}"
-    elif target is RunStatus.TIMED_OUT:
-        reason = f"human input for node {node_id!r} timed out"
-    else:
-        reason = f"human input for node {node_id!r} was cancelled"
+
+def _settlement_reason(
+    node_id: str,
+    target: RunStatus,
+    pause: object,
+) -> str:
+    if target is not RunStatus.TIMED_OUT:
+        return f"human input for node {node_id!r} was cancelled"
+    if not isinstance(pause, Mapping):
+        return f"human input for node {node_id!r} timed out"
+    deadline = pause.get("resume_at")
+    detail = f" at {deadline}" if isinstance(deadline, str) else ""
+    return f"human input for node {node_id!r} timed out{detail}"
+
+
+def _terminal_hitl_evidence(
+    continuation: GraphContinuation,
+    target: RunStatus,
+) -> tuple[str, str, datetime, str] | None:
+    matching = _matching_hitl_settlement(continuation, target)
+    if matching is None:
+        return None
+    node_id, settlement = matching
+    node_run_id = settlement.get("node_run_id")
+    if not isinstance(node_run_id, str):
+        return None
+    moment = _settlement_moment(continuation, settlement.get("decided_at"))
+    if moment is None:
+        return None
+    reason = _settlement_reason(node_id, target, settlement.get("pause"))
     return node_id, node_run_id, moment, reason
 
 
@@ -248,9 +270,7 @@ class CanonicalDurableRunStore:
         record = await self.get(continuation.run_id)
         if record is None:
             return False
-        if not any(
-            node.node_run_id == node_run_id and node.node_id == node_id for node in record.node_runs
-        ):
+        if not self._has_terminal_hitl_node(record, node_id, node_run_id):
             logger.warning(
                 "cannot reconcile terminal HITL continuation %s: node run %s is missing",
                 continuation.run_id,
@@ -274,13 +294,31 @@ class CanonicalDurableRunStore:
 
         desired_run = transition_run(record.run, target, at=moment, error=reason)
         desired = record.model_copy(update={"run": desired_run, "node_runs": node_runs})
+        return await self._mirror_terminal_hitl(desired, continuation.run_id, target)
+
+    @staticmethod
+    def _has_terminal_hitl_node(
+        record: DurableRunRecord,
+        node_id: str,
+        node_run_id: str,
+    ) -> bool:
+        return any(
+            node.node_run_id == node_run_id and node.node_id == node_id for node in record.node_runs
+        )
+
+    async def _mirror_terminal_hitl(
+        self,
+        desired: DurableRunRecord,
+        run_id: str,
+        target: RunStatus,
+    ) -> bool:
         try:
             await mirror_lifecycle(desired, run_store=self._run_store)
         except InvalidLifecycleTransition:
             # Two ticks can both pass the non-terminal check above; the one
             # that mirrors second finds the Run already at `target` and its
             # terminal hop refused. That is the same repair, already done.
-            current = await self._run_store.get_run(continuation.run_id)
+            current = await self._run_store.get_run(run_id)
             if current is not None and current.status is target:
                 return False
             raise
@@ -352,22 +390,31 @@ class CanonicalDurableRunStore:
             run_ids = await self._continuations.list_hitl_due_run_ids(now=now, limit=requested)
             due = []
             for record in await self._assemble_all(run_ids):
-                if record.run.status is not RunStatus.PAUSED and await self._reconcile_run(
-                    record.run_id
-                ):
-                    refreshed = await self.get(record.run_id)
-                    if refreshed is not None:
-                        record = refreshed
-                if (
-                    record.run.status is RunStatus.PAUSED
-                    and (deadline := earliest_hitl_deadline(record)) is not None
-                    and deadline <= now
-                ):
-                    due.append(record)
+                candidate = await self._reconcile_hitl_due_candidate(record, now)
+                if candidate is not None:
+                    due.append(candidate)
             if len(due) >= limit or len(run_ids) < requested:
                 break
             requested *= 2
         return due[:limit]
+
+    async def _reconcile_hitl_due_candidate(
+        self,
+        record: DurableRunRecord,
+        now: datetime,
+    ) -> DurableRunRecord | None:
+        if record.run.status is not RunStatus.PAUSED:
+            repaired = await self._reconcile_run(record.run_id)
+            if repaired:
+                refreshed = await self.get(record.run_id)
+                if refreshed is not None:
+                    record = refreshed
+        if record.run.status is not RunStatus.PAUSED:
+            return None
+        deadline = earliest_hitl_deadline(record)
+        if deadline is None or deadline > now:
+            return None
+        return record
 
     async def list_for_project(
         self,
