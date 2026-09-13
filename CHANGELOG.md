@@ -25,6 +25,19 @@ or placeholder-only section.
 
 ### Security
 
+- **DevSkim scans the shipped surface instead of everything (no linked issue:
+  scanner configuration).** The action ran unconfigured, so the test and
+  vendored trees were scanned alongside the shipped ones and supplied 619 of
+  its 912 `http://`/`localhost` findings — fixtures that assert an insecure
+  URL is refused, loopback addresses in test servers, vendored benchmark
+  corpora. A scanner two-thirds noise is one nobody reads. `ignore-globs` now
+  names those trees, and only trees: every entry ends in a directory segment,
+  because a filename shape reaches across the repository and silently drops
+  shipped code (`**/test_*.py` did exactly that in the CodeQL config, where it
+  also matched `maistro_rsi/test_inventory.py`). `docs/**` is deliberately not
+  excluded, and no rule is suppressed repo-wide. What DevSkim reports about
+  shipped code is unchanged; only the noise around it is gone.
+
 - **Sentinel's permission table is fail-closed, and the production paths can
   both feel it and configure it (#1165).** An empty or omitted deployment
   table now denies every tool instead of authorizing all of them. A chat turn
