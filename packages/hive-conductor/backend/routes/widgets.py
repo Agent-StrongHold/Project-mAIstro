@@ -191,21 +191,13 @@ async def widget_airtable(  # noqa: C901  branchy per-display-mode rendering
         store = cred_svc.get_credential_store()
         if not store:
             return {"error": "Credential store not available.", "records": []}
-        # Find token — try user_id then fallback to "user"
         resolver = ToolCredentialResolver(store)
-        token = resolver.first_secret(
-            ToolCallContext(uid), AIRTABLE_PROVIDER_IDS, include_dev_fallback=True
-        )
+        token = resolver.first_secret(ToolCallContext(uid), AIRTABLE_PROVIDER_IDS)
         if not token:
             return {"error": "Airtable not configured.", "records": []}
-        # Find base_id from config store
-        base_id = ""
-        for key in stores.user_provider_config:
-            if key.endswith(":airtable"):
-                val = stores.user_provider_config.get(key)
-                if isinstance(val, dict) and val.get("base_id"):
-                    base_id = val["base_id"].split("/")[0]
-                    break
+        # Provider config is owned by the authenticated principal; never scan it.
+        config = stores.user_provider_config.get(f"{uid}:airtable")
+        base_id = config.get("base_id", "").split("/")[0] if isinstance(config, dict) else ""
     except Exception:
         return {"error": "Could not load Airtable credentials.", "records": []}
 
@@ -329,18 +321,11 @@ async def widget_airtable_fields(
         if not store:
             return {"fields": []}
         resolver = ToolCredentialResolver(store)
-        token = resolver.first_secret(
-            ToolCallContext(uid), AIRTABLE_PROVIDER_IDS, include_dev_fallback=True
-        )
+        token = resolver.first_secret(ToolCallContext(uid), AIRTABLE_PROVIDER_IDS)
         if not token:
             return {"fields": []}
-        base_id = ""
-        for key in stores.user_provider_config:
-            if key.endswith(":airtable"):
-                val = stores.user_provider_config.get(key)
-                if isinstance(val, dict) and val.get("base_id"):
-                    base_id = val["base_id"].split("/")[0]
-                    break
+        config = stores.user_provider_config.get(f"{uid}:airtable")
+        base_id = config.get("base_id", "").split("/")[0] if isinstance(config, dict) else ""
         if not base_id:
             return {"fields": []}
     except Exception:
@@ -364,7 +349,7 @@ async def widget_airtable_fields(
 
 
 @router.get("/airtable/bases")
-async def widget_airtable_bases(request: Request, refresh: bool = False) -> dict[str, Any]:  # noqa: C901  branchy per-display-mode rendering
+async def widget_airtable_bases(request: Request, refresh: bool = False) -> dict[str, Any]:
     """Return configured Airtable bases for the current user."""
     uid = _user_id(request)
     try:
@@ -374,19 +359,15 @@ async def widget_airtable_bases(request: Request, refresh: bool = False) -> dict
         store = cred_svc.get_credential_store()
         if not store:
             return {"bases": []}
-        # Find all airtable configs with base_ids
+        # A configured base is a selection made by this principal only.
         bases = []
-        for key in stores.user_provider_config:
-            if "airtable" in key:
-                val = stores.user_provider_config.get(key)
-                if isinstance(val, dict) and val.get("base_id"):
-                    bid = val["base_id"].split("/")[0]
-                    bases.append({"id": bid, "name": val.get("name", bid)})
-        # Also check token
+        config = stores.user_provider_config.get(f"{uid}:airtable")
+        if isinstance(config, dict) and config.get("base_id"):
+            bid = config["base_id"].split("/")[0]
+            bases.append({"id": bid, "name": config.get("name", bid)})
+        # With no selection, ask Airtable for bases authorized by this token.
         resolver = ToolCredentialResolver(store)
-        token = resolver.first_secret(
-            ToolCallContext(uid), AIRTABLE_PROVIDER_IDS, include_dev_fallback=True
-        )
+        token = resolver.first_secret(ToolCallContext(uid), AIRTABLE_PROVIDER_IDS)
         if not bases and token:
             # Try to get bases from metadata API
             try:
@@ -395,13 +376,6 @@ async def widget_airtable_bases(request: Request, refresh: bool = False) -> dict
                     bases.append({"id": b["id"], "name": b.get("name", b["id"])})
             except Exception:
                 pass
-        # Fallback: return the known base from config
-        if not bases:
-            for key in stores.user_provider_config:
-                if "airtable" in key:
-                    val = stores.user_provider_config.get(key)
-                    if isinstance(val, dict) and val.get("base_id"):
-                        bases.append({"id": val["base_id"].split("/")[0], "name": "Default Base"})
         return {"bases": bases}
     except Exception:
         return {"bases": []}
@@ -420,9 +394,7 @@ async def widget_airtable_tables(
         if not store:
             return {"tables": []}
         resolver = ToolCredentialResolver(store)
-        token = resolver.first_secret(
-            ToolCallContext(uid), AIRTABLE_PROVIDER_IDS, include_dev_fallback=True
-        )
+        token = resolver.first_secret(ToolCallContext(uid), AIRTABLE_PROVIDER_IDS)
         if not token:
             return {"tables": []}
 
