@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from fastapi import HTTPException
 from services.design_preview import DesignPreviewService
 
 from maistro_design.trust import TrustTier
@@ -183,22 +184,18 @@ class TestRenderStubs:
     """
 
     @pytest.mark.asyncio
-    async def test_render_to_pdf_stub(self, preview_service: DesignPreviewService) -> None:
-        """Test PDF render stub returns URL."""
-        pytest.importorskip("weasyprint")
-        url = await preview_service.render_to_pdf("<html>Test</html>", {})
-        assert url.endswith(".pdf")
-
-    @pytest.mark.asyncio
-    async def test_render_to_pptx_stub(self, preview_service: DesignPreviewService) -> None:
-        """Test PPTX render stub returns URL."""
-        pytest.importorskip("pptx")
-        url = await preview_service.render_to_pptx("<slides>Test</slides>", {})
-        assert url.endswith(".pptx")
-
-    @pytest.mark.asyncio
-    async def test_render_to_docx_stub(self, preview_service: DesignPreviewService) -> None:
-        """Test DOCX render stub returns URL."""
-        pytest.importorskip("docx")
-        url = await preview_service.render_to_docx("<doc>Test</doc>", {})
-        assert url.endswith(".docx")
+    @pytest.mark.parametrize(
+        ("method_name", "format_name"),
+        [("render_to_pdf", "PDF"), ("render_to_pptx", "PPTX"), ("render_to_docx", "DOCX")],
+    )
+    async def test_render_methods_report_unavailable_without_discarding_bytes(
+        self,
+        preview_service: DesignPreviewService,
+        method_name: str,
+        format_name: str,
+    ) -> None:
+        """Render helpers must not claim a URL without durable artifact storage."""
+        with pytest.raises(HTTPException) as raised:
+            await getattr(preview_service, method_name)("content", {})
+        assert raised.value.status_code == 501
+        assert format_name in str(raised.value.detail)

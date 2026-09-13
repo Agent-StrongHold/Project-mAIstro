@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import UTC, datetime
-from typing import Any, ClassVar
+from typing import Any, ClassVar, NoReturn
 from uuid import uuid4
 
 from maistro_design.trust import TrustTier
@@ -215,50 +215,30 @@ class DesignPreviewService:
             logger.info("Updated render job %s: status=%s", job_id, status)
         return job
 
-    async def render_to_pdf(self, content: str, metadata: dict[str, Any]) -> str:
-        """Render HTML/React to PDF via weasyprint (Phase 2B)."""
-        try:
-            from services.design_render import get_design_render_service
+    @staticmethod
+    def _raise_rendering_unavailable(format_name: str) -> NoReturn:
+        """Reject rendering until bytes can be durably served."""
+        from fastapi import HTTPException
 
-            render_svc = get_design_render_service()
-            pdf_bytes = await render_svc.render_to_pdf(content, metadata)
-            # Phase 2B.2: Store in S3, return signed URL
-            render_id = str(uuid4())
-            logger.info("PDF rendered successfully (%d bytes)", len(pdf_bytes))
-            return f"/v1/design/renders/{render_id}/output.pdf"
-        except Exception as exc:
-            logger.error("PDF render failed: %s", exc)
-            raise
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                f"{format_name.upper()} rendering is unavailable: artifact storage "
+                "and an output-serving route are not configured"
+            ),
+        )
+
+    async def render_to_pdf(self, content: str, metadata: dict[str, Any]) -> str:
+        """Reject PDF rendering until the produced bytes have a durable owner."""
+        self._raise_rendering_unavailable("pdf")
 
     async def render_to_pptx(self, content: str, metadata: dict[str, Any]) -> str:
-        """Render to PPTX via python-pptx (Phase 2B)."""
-        try:
-            from services.design_render import get_design_render_service
-
-            render_svc = get_design_render_service()
-            pptx_bytes = await render_svc.render_to_pptx(content, metadata)
-            # Phase 2B.2: Store in S3, return signed URL
-            render_id = str(uuid4())
-            logger.info("PPTX rendered successfully (%d bytes)", len(pptx_bytes))
-            return f"/v1/design/renders/{render_id}/output.pptx"
-        except Exception as exc:
-            logger.error("PPTX render failed: %s", exc)
-            raise
+        """Reject PPTX rendering until the produced bytes have a durable owner."""
+        self._raise_rendering_unavailable("pptx")
 
     async def render_to_docx(self, content: str, metadata: dict[str, Any]) -> str:
-        """Render to DOCX via python-docx (Phase 2B)."""
-        try:
-            from services.design_render import get_design_render_service
-
-            render_svc = get_design_render_service()
-            docx_bytes = await render_svc.render_to_docx(content, metadata)
-            # Phase 2B.2: Store in S3, return signed URL
-            render_id = str(uuid4())
-            logger.info("DOCX rendered successfully (%d bytes)", len(docx_bytes))
-            return f"/v1/design/renders/{render_id}/output.docx"
-        except Exception as exc:
-            logger.error("DOCX render failed: %s", exc)
-            raise
+        """Reject DOCX rendering until the produced bytes have a durable owner."""
+        self._raise_rendering_unavailable("docx")
 
 
 # Singleton instance

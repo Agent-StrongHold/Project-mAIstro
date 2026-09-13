@@ -311,42 +311,34 @@ async def create_render_job(
       format: output format (pdf, pptx, docx, png)
 
     Returns:
-      {job_id, status, created_at}
+      501 until a canonical renderer, durable artifact store, and serving route exist.
     """
     _require_ready()
     org_id = _get_org_id(request)
     try:
-        from services.design_preview import get_design_preview_service
-
-        from maistro_design.types import OutputFormat
-
         store = get_design_store()
-        preview_svc = get_design_preview_service()
+        if store is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Design persistence not configured (DATABASE_URL not set)",
+            )
 
-        # Fetch project, within the caller's scope: rendering another org's
-        # project would return its content through a route that never asked
-        # whose it was.
+        # Keep the ownership check even while rendering is unavailable. A
+        # disabled capability must not become a way to probe project ids.
         project = await store.get(project_id, org_id=org_id)
         if not project:
             raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
 
-        # Validate format
-        try:
-            output_format = OutputFormat(format)
-        except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unsupported format: {format}. Allowed: pdf, pptx, docx, png",
-            ) from None
-
-        # Create render job
-        job = preview_svc.create_render_job(project_id, output_format)
-        return {
-            "job_id": job.job_id,
-            "status": job.status,
-            "format": output_format,
-            "created_at": job.created_at.isoformat(),
-        }
+        # There is no worker or durable artifact-serving path yet. In
+        # particular, do not create an in-memory pending job that can never
+        # advance or claim a URL whose bytes were discarded.
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                "Design rendering is unavailable: no canonical renderer, durable "
+                "artifact store, or output-serving route is configured"
+            ),
+        )
     except HTTPException:
         raise
     except Exception as e:
