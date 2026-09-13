@@ -73,6 +73,7 @@ async def test_chat_and_widgets_bind_base_to_authenticated_principal(
         return {"tables": [{"id": "tbl-1", "name": kwargs["base_id"]}]}
 
     monkeypatch.setattr(widgets, "get_airtable_records_json", records)
+    monkeypatch.setattr(widgets, "get_airtable_base_tables_json", tables)
     monkeypatch.setattr(chat_completion, "get_airtable_records_json", records)
     monkeypatch.setattr(chat_completion, "get_airtable_base_tables_json", tables)
 
@@ -86,6 +87,20 @@ async def test_chat_and_widgets_bind_base_to_authenticated_principal(
 
         fields_result = await widgets.widget_airtable_fields(request, table="T")
         assert fields_result["fields"] == ["Owner"]
+
+        # A client-selected base cannot bypass the principal's configured base.
+        rejected_tables = await widgets.widget_airtable_tables(
+            request, base_id=f"app-{('bob' if user_id == 'alice' else 'alice').upper()}"
+        )
+        assert rejected_tables["tables"] == []
+        assert "not configured" in rejected_tables["error"]
+        tables_result = await widgets.widget_airtable_tables(
+            request, base_id=f"app-{user_id.upper()}"
+        )
+        assert tables_result == {
+            "tables": [{"id": "tbl-1", "name": f"app-{user_id.upper()}"}],
+            "base_id": f"app-{user_id.upper()}",
+        }
 
         bases_result = await widgets.widget_airtable_bases(request)
         assert bases_result["bases"] == [
@@ -107,6 +122,8 @@ async def test_chat_and_widgets_bind_base_to_authenticated_principal(
         ("alice-token", "app-ALICE"),
         ("alice-token", "app-ALICE"),
         ("alice-token", "app-ALICE"),
+        ("alice-token", "app-ALICE"),
+        ("bob-token", "app-BOB"),
         ("bob-token", "app-BOB"),
         ("bob-token", "app-BOB"),
         ("bob-token", "app-BOB"),
@@ -127,8 +144,11 @@ async def test_bases_without_selection_use_only_current_token_metadata(
 
     monkeypatch.setattr(widgets, "get_airtable_bases_json", metadata)
     result = await widgets.widget_airtable_bases(_request("bob"))
+    tables = await widgets.widget_airtable_tables(_request("bob"), base_id="app-BOB-METADATA")
 
     assert result == {"bases": [{"id": "app-BOB-METADATA", "name": "Bob Metadata"}]}
+    assert tables["tables"] == []
+    assert tables["error"] == "No base_id configured."
 
 
 @pytest.mark.parametrize("multi_user", [True, False])

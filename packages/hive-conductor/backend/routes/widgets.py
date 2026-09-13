@@ -385,24 +385,39 @@ async def widget_airtable_bases(request: Request, refresh: bool = False) -> dict
 async def widget_airtable_tables(
     request: Request, base_id: str = Query(...), refresh: bool = False
 ) -> dict[str, Any]:
-    """Return tables for a specific Airtable base."""
+    """Return tables for the authenticated principal's configured Airtable base."""
     uid = _user_id(request)
     try:
+        import stores
         from services import user_credentials as cred_svc
 
         store = cred_svc.get_credential_store()
         if not store:
             return {"tables": []}
+
+        config = stores.user_provider_config.get(f"{uid}:airtable")
+        configured_base_id = (
+            config.get("base_id", "").split("/")[0] if isinstance(config, dict) else ""
+        )
+        if not configured_base_id:
+            return {"tables": [], "error": "No base_id configured."}
+
+        # The query parameter is only a compatibility check. It cannot select a
+        # base outside the principal-owned provider configuration.
+        requested_base_id = base_id.split("/")[0]
+        if requested_base_id != configured_base_id:
+            return {"tables": [], "error": "Base is not configured for this principal."}
+
         resolver = ToolCredentialResolver(store)
         token = resolver.first_secret(ToolCallContext(uid), AIRTABLE_PROVIDER_IDS)
         if not token:
             return {"tables": []}
 
         data = await get_airtable_base_tables_json(
-            token=token, base_id=base_id, force_refresh=refresh
+            token=token, base_id=configured_base_id, force_refresh=refresh
         )
         tables = [{"id": t["id"], "name": t["name"]} for t in data.get("tables", [])]
-        return {"tables": tables, "base_id": base_id}
+        return {"tables": tables, "base_id": configured_base_id}
     except Exception as e:
         return {"tables": [], "error": str(e)[:100]}
 
