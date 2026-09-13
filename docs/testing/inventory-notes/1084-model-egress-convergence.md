@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/hive-conductor/backend/tests: +1
-  packages/maistro-core/tests/capabilities: +4
+  packages/maistro-core/tests: +4
 ---
 # 1084 model egress convergence
 

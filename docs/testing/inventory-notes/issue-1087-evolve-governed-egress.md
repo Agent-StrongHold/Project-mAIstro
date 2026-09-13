@@ -1,7 +1,6 @@
 ---
 inventory-delta:
   packages/hive-conductor/backend/tests: +1
-  packages/maistro-core/tests: +3
 ---
 # issue-1087-evolve-governed-egress
 
