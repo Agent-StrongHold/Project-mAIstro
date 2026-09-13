@@ -77,6 +77,21 @@ or placeholder-only section.
   `BROWSER_USE_ALLOWED_ORIGINS`; a browser-use build that cannot be handed a
   guarded context is refused rather than run unguarded.
 
+- **Hive Conductor now propagates one request correlation identity into
+  maistro-server task admission (#1063).** Hive Conductor registers
+  maistro-core's `RequestIDMiddleware` in its own stack (reused, not
+  reimplemented), and `MaistroServerTaskBackend` forwards the bound id as an
+  outbound `X-Request-ID` header so maistro-server's own `RequestIDMiddleware`
+  adopts the same id instead of allocating an unrelated one for the
+  service-to-service hop. `TaskRunAdmitter.admit()` records that id on the
+  admitted Run's provenance alongside the existing `task_id`/`session_id`/
+  `user_id`. A schedule firing — which has no incoming HTTP request — mints
+  its own fresh correlation root inside a detached execution context rather
+  than admitting uncorrelated or risking a stray id from an unrelated
+  Attempt still bound on the same event loop tick. The id is correlation
+  metadata only; unlike the signed Workspace-scope headers, it can never
+  assert scope or authorization.
+
 ### Changed
 
 - **HALF_OPEN circuit-breaker success is now caller-bound (#828).** `record_success()`
