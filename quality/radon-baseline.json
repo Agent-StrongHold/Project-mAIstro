@@ -203,36 +203,6 @@
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
-      "key": "packages/maistro-core/src/maistro/graph/durable_runs/canonical_store.py::_terminal_hitl_evidence",
-      "path": "packages/maistro-core/src/maistro/graph/durable_runs/canonical_store.py",
-      "line": 44,
-      "name": "_terminal_hitl_evidence",
-      "classname": null,
-      "rank": "C",
-      "complexity": 13,
-      "rationale": "Authorized raise per #1296: extracts and validates the single settlement matching a terminal HITL target (TIMED_OUT/CANCELLED) from continuation metadata, including a target-dependent reason string. Pre-existing gap caught while unrelated CI work exposed it."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/graph/durable_runs/canonical_store.py::CanonicalDurableRunStore._reconcile_terminal_hitl",
-      "path": "packages/maistro-core/src/maistro/graph/durable_runs/canonical_store.py",
-      "line": 226,
-      "name": "_reconcile_terminal_hitl",
-      "classname": "CanonicalDurableRunStore",
-      "rank": "C",
-      "complexity": 12,
-      "rationale": "Authorized raise per #1296: repairs a HITL lifecycle mirror left behind by a crash between the continuation write and the canonical-spine write. Pre-existing gap caught while unrelated CI work exposed it."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/graph/durable_runs/canonical_store.py::CanonicalDurableRunStore.list_hitl_due",
-      "path": "packages/maistro-core/src/maistro/graph/durable_runs/canonical_store.py",
-      "line": 333,
-      "name": "list_hitl_due",
-      "classname": "CanonicalDurableRunStore",
-      "rank": "C",
-      "complexity": 11,
-      "rationale": "Authorized raise per #1296: pages the HITL due-deadline index, repairing in place any continuation parked PAUSED before its Run was mirrored and widening the page past candidates that still do not qualify. Pre-existing gap caught while unrelated CI work exposed it."
-    },
-    {
       "key": "packages/maistro-core/src/maistro/graph/durable_runs/stores.py::settle_hitl_record",
       "path": "packages/maistro-core/src/maistro/graph/durable_runs/stores.py",
       "line": 139,
