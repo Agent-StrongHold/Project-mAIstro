@@ -131,6 +131,10 @@ async def test_delegated_users_keep_distinct_task_and_run_ownership(
     assert own_run.status_code == 200
     assert own_run.json()["provenance"]["service_principal_id"] == "conductor"
     assert cross_run.status_code == 404
+    cross_cancel = await client.delete(
+        f"/tasks/{alice_body['task_id']}", headers=_delegation_headers("bob")
+    )
+    assert cross_cancel.status_code == 404
 
 
 async def test_a_forged_originating_principal_is_rejected(
