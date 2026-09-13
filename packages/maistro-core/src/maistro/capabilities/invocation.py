@@ -9,18 +9,14 @@ than retryable failure: an exception can arrive after the remote system has
 already committed the side effect. A provider/adapter may raise
 :class:`EffectNotApplied` only when it can prove no external effect occurred.
 
-**Nothing in this repository constructs an Invocation outside tests.** Neither
-:class:`InvocationExecutionService` nor its governed wrapper is instantiated by
-the container, a route, or a node; the one caller of the seam,
-``HarnessSessionManager.send_invocation``, is itself unreached. This layer is the
-boundary #55 is going to route provider calls through, and it is written and
-tested ahead of that. Read it as a specification with a conformance suite, not
-as a description of what runs today: an id here does not appear in a log line,
-and no stored Invocation row exists in any deployment.
-
-Stating that is the point of the paragraph. A reader who finds a persisted
-effect-key ledger reasonably assumes retries are already deduplicated by it,
-and would then be wrong about how the running system recovers.
+Reachable consumers construct Invocations through this boundary. In
+particular, the standalone Turing chat backend composes the governed service and
+stores its canonical Invocation rows in a process-local
+:class:`InMemoryInvocationStore`; the core container can instead compose a
+durable store. This layer is therefore both a production execution boundary
+and a tested contract, although durability still depends on the composition
+root that selects the store. An Invocation id is correlated with the owning
+Run/NodeRun/Attempt on the Turing path, rather than being test-only evidence.
 """
 
 from __future__ import annotations
@@ -222,8 +218,8 @@ UsageExtractor = Callable[[Any], "InvocationUsage | None"]
 class InvocationExecutionService:
     """Resolve one Binding, persist one provider call, and guard effect retries.
 
-    Unreached in production: nothing constructs this outside tests, and the
-    effect-retry guard below therefore protects no live call yet (#55).
+    Reachable composition roots use this service for governed provider calls;
+    the effect-retry guard protects those calls when they share its store.
     """
 
     def __init__(self, *, store: InvocationStore) -> None:
