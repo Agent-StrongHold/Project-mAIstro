@@ -258,6 +258,31 @@ async def test_restore_requeues_same_delegated_receipt_without_new_identity(
             session_id="bob-session",
             created_at=created,
         ),
+        # This is the shape produced by a partially applied pre-1057
+        # migration. It must not be restored as runnable user work.
+        TaskRecord(
+            id="ownerless-task",
+            run_id="ownerless-run",
+            user_id="",
+            service_principal_id=None,
+            delegation_id=None,
+            actor_kind="user",
+            status="queued",
+            description="Unattributed legacy work",
+            workspace="/tmp/maistro-workspace",
+            tier=2,
+            phase="queued",
+            progress={"subtasks": 0, "completed": 0, "current": ""},
+            result=None,
+            task_type=None,
+            agent_id=None,
+            capability=None,
+            program_context=None,
+            lane="background",
+            priority_tier="P2",
+            session_id=None,
+            created_at=created,
+        ),
     ]
 
     class _Rows:
@@ -282,6 +307,7 @@ async def test_restore_requeues_same_delegated_receipt_without_new_identity(
     queue = TaskQueue()
 
     assert await queue.restore_persisted() == 2
+    assert queue.get("ownerless-task") is None
     alice = queue.get("alice-task", user_id="alice")
     assert alice is not None
     assert alice.user_id == "alice"

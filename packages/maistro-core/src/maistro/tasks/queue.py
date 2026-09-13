@@ -112,6 +112,12 @@ def _task_from_record(record: TaskRecord) -> TaskResponse:
     actor_kind = record.actor_kind
     if actor_kind not in {"user", "system", "service"}:
         raise ValueError("invalid persisted task actor kind")
+    if not isinstance(record.user_id, str) or not record.user_id.strip():
+        # A malformed/partially migrated receipt must never become runnable
+        # ownerless work. Migration 035 classifies pre-provenance rows as the
+        # explicit system actor; this guard protects a restart during or before
+        # that migration as well as hand-edited data.
+        raise ValueError("persisted task has no effective actor")
     lane = record.lane if record.lane in {item.value for item in Lane} else Lane.BACKGROUND.value
     priority_tier = (
         record.priority_tier
