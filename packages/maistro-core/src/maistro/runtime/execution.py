@@ -15,6 +15,7 @@ Governed by ADR-081426-1f7c / SPEC-081426-1f7c.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import sys
 import time
@@ -166,6 +167,7 @@ class PythonExecutionRuntime:
         self._event_sink = event_sink
         self._event_lock = asyncio.Lock()
         self._active: dict[str, asyncio.Task[Any]] = {}
+        self._work_tasks: dict[str, asyncio.Task[Any]] = {}
         self._slot_waiters: set[str] = set()
         self._slot_holders: set[str] = set()
 
@@ -218,13 +220,21 @@ class PythonExecutionRuntime:
             if timeout_s is None:
                 await self.acquire_slot(execution_id)
                 slot_acquired = True
-                result = await executor(work_item, execution_context)
+                result = await self._run_work(
+                    work_item, execution_context, execution_id=execution_id, executor=executor
+                )
             else:
                 timeout_context = asyncio.timeout(timeout_s)
                 async with timeout_context:
                     await self.acquire_slot(execution_id)
                     slot_acquired = True
-                    result = await executor(work_item, execution_context)
+                    result = await self._run_work(
+                        work_item, execution_context, execution_id=execution_id, executor=executor
+                    )
+                    # An executor is allowed to catch CancelledError. Do not
+                    # turn work that outlived the Runtime deadline into success.
+                    if timeout_context.expired():
+                        raise RuntimeDeadlineExceeded(execution_id)
 
             self._executions_completed += 1
             return result
@@ -254,11 +264,57 @@ class PythonExecutionRuntime:
             if slot_acquired:
                 self.release_slot(execution_id)
 
+    async def _run_work(
+        self,
+        work_item: Any,
+        execution_context: Any,
+        *,
+        execution_id: str,
+        executor: ExecutionCallable,
+    ) -> Any:
+        """Run provider/tool work as a child that cancellation can join.
+
+        Keeping a separate task makes the cancellation boundary explicit: a
+        cancelled Runtime request first cancels the child and waits for it to
+        finish, so an async provider cannot outlive the Attempt's terminal
+        evidence.
+        """
+
+        async def invoke() -> Any:
+            return await executor(work_item, execution_context)
+
+        work_task: asyncio.Task[Any] = asyncio.create_task(invoke())
+        self._work_tasks[execution_id] = work_task
+        try:
+            # Shielded, not awaited bare: CPython's Task.cancel() pre-cancels
+            # the future the victim is waiting on, so a bare await would
+            # propagate the outer cancellation INTO the child and settle it
+            # before this frame's handler runs -- leaving the explicit fence
+            # below unreachable, and losing an outer cancel entirely when the
+            # child swallows it and returns. The shield keeps the child
+            # mid-flight when the CancelledError lands here, so this frame
+            # owns the child's cancellation. External contract is unchanged:
+            # cancel the child, await its settlement, then re-raise.
+            return await asyncio.shield(work_task)
+        except asyncio.CancelledError:
+            if not work_task.done():
+                work_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await work_task
+            raise
+        finally:
+            self._work_tasks.pop(execution_id, None)
+
     async def cancel(self, execution_id: str) -> bool:
         task = self._active.get(execution_id)
         if task is None or task.done():
             return False
         task.cancel()
+        if task is not asyncio.current_task():
+            # Do not report cancellation before the Attempt's handler has had
+            # a chance to stop the child provider work and persist evidence.
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
         return True
 
     async def emit(self, event: Any) -> RuntimeEventEnvelope:

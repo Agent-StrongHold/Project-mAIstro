@@ -647,3 +647,63 @@ def test_revoking_workspace_membership_revokes_run_visibility(
     sse = authed_client.get("/v1/dag-runs/r-shared/events")
     assert sse.status_code == 404
     assert sse.json() == {"detail": "run not found"}
+
+
+# ── canonical lifecycle overlay (the read path) ────────────────────────
+
+
+async def test_a_record_without_any_run_identity_is_returned_verbatim() -> None:
+    """A row with no canonical_run_id and no id has nothing to overlay."""
+    from services.dag_run_inspection import _canonical_projection
+
+    record = {"status": "running", "name": "Local only"}
+    assert await _canonical_projection(dict(record)) == record
+
+
+async def test_projection_reads_stay_local_when_the_spine_has_no_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.engine as engine_mod
+    from services.dag_run_inspection import _canonical_projection
+
+    monkeypatch.setattr(engine_mod, "_singleton", SimpleNamespace(run_store=None))
+    record = {"id": "r-standalone", "status": "running"}
+
+    assert await _canonical_projection(dict(record)) == record
+
+
+async def test_projection_never_invents_a_run_the_spine_never_saw(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.engine as engine_mod
+    from services.dag_run_inspection import _canonical_projection
+
+    from maistro.projects.scope_store import InMemoryProjectScopeStore
+    from maistro.runs import InMemoryRunStore
+
+    empty = InMemoryRunStore(project_store=InMemoryProjectScopeStore())
+    monkeypatch.setattr(engine_mod, "_singleton", SimpleNamespace(run_store=empty))
+    record = {"id": "r-ghost", "canonical_run_id": "canonical-never-was", "status": "running"}
+
+    assert await _canonical_projection(dict(record)) == record
+
+
+async def test_projection_reads_stay_local_when_the_spine_is_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An engine that cannot even be consulted is standalone mode, not 500.
+
+    `_canonical_projection` must degrade to the projection row's own truth
+    when the spine raises — reads stay available and canonical status is
+    never invented.
+    """
+    import services.engine as engine_mod
+    from services.dag_run_inspection import _canonical_projection
+
+    def _engine_down() -> object:
+        raise RuntimeError("spine unavailable")
+
+    monkeypatch.setattr(engine_mod, "get_engine", _engine_down)
+    record = {"id": "r-spine-down", "status": "running"}
+
+    assert await _canonical_projection(dict(record)) == record

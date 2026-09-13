@@ -82,6 +82,36 @@ def retention() -> dict[str, Any]:
     }
 
 
+@router.post("/{run_id}/cancel")
+async def cancel_run(run_id: str, request: Request) -> dict[str, Any]:
+    """Cancel through the canonical Run/Attempt execution seam."""
+    uid = _user_id(request)
+    detail = await visible_run_detail(uid, run_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="run not found")
+
+    from services.engine import get_engine
+
+    from maistro.runs.service import RunExecutionService
+    from maistro.runtime import PythonExecutionRuntime
+
+    store = get_engine().run_store
+    if store is None:
+        raise HTTPException(status_code=503, detail="canonical execution spine unavailable")
+    try:
+        updated = await RunExecutionService(
+            store=store,
+            runtime=PythonExecutionRuntime(),
+        ).cancel_run(str(detail.get("canonical_run_id") or run_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="run not found") from exc
+    return {
+        "run_id": updated.run_id,
+        "status": updated.status.value,
+        "cancelled": updated.status.value == "cancelled",
+    }
+
+
 @router.get("/{run_id}")
 async def get_run(run_id: str, request: Request) -> dict[str, Any]:
     uid = _user_id(request)

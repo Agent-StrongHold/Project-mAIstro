@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 import os
@@ -336,10 +337,7 @@ with Sandbox(sc) as sb:
         }
         if env:
             run_env.update(env)
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
-            None, self._sync_run, [sys.executable, "-c", code], run_env, timeout_s
-        )
+        return await self._run_cancellable([sys.executable, "-c", code], run_env, timeout_s)
 
     async def _subprocess_via_cmd(
         self, cmd: list[str], env: dict | None, timeout_s: int
@@ -347,8 +345,46 @@ with Sandbox(sc) as sb:
         run_env = dict(os.environ)
         if env:
             run_env.update(env)
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._sync_run, cmd, run_env, timeout_s)
+        return await self._run_cancellable(cmd, run_env, timeout_s)
+
+    async def _run_cancellable(
+        self, cmd: list[str], env: dict[str, str], timeout_s: int
+    ) -> dict[str, Any]:
+        """Run an isolated child whose process is killed with its Attempt.
+
+        ``run_in_executor(subprocess.run)`` cannot observe cancellation: it
+        abandons a thread while the child keeps running. The canonical Runtime
+        can only be truthful when this adapter owns an async child process and
+        explicitly terminates it on cancellation or deadline.
+        """
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_s)
+        except asyncio.CancelledError:
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+            await process.wait()
+            raise
+        except TimeoutError:
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+            await process.wait()
+            return {"output": "", "error": "timeout", "success": False}
+        except Exception as exc:
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+            await process.wait()
+            return {"output": "", "error": str(exc)[:200], "success": False}
+        return {
+            "output": stdout.decode(errors="replace"),
+            "error": stderr.decode(errors="replace")[:500],
+            "success": process.returncode == 0,
+        }
 
     def _sync_run(self, cmd: list[str], env: dict, timeout_s: int) -> dict[str, Any]:
         try:
