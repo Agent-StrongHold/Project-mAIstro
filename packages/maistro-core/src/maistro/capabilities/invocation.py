@@ -12,11 +12,12 @@ already committed the side effect. A provider/adapter may raise
 Reachable consumers construct Invocations through this boundary. In
 particular, the standalone Turing chat backend composes the governed service and
 stores its canonical Invocation rows in a process-local
-:class:`InMemoryInvocationStore`; the core container can instead compose a
-durable store. This layer is therefore both a production execution boundary
-and a tested contract, although durability still depends on the composition
-root that selects the store. An Invocation id is correlated with the owning
-Run/NodeRun/Attempt on the Turing path, rather than being test-only evidence.
+:class:`InMemoryInvocationStore`; durable ``InvocationStore`` adapters exist
+for composition roots that select them. This layer is therefore both a
+production execution boundary and a tested contract, although durability still
+depends on the composition root that selects the store. An Invocation id is
+correlated with the owning Run/NodeRun/Attempt on the Turing path, rather than
+being test-only evidence.
 """
 
 from __future__ import annotations
