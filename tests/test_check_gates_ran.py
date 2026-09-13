@@ -14,6 +14,7 @@ converts "we do not know" into "we checked".
 
 from __future__ import annotations
 
+import importlib.machinery
 import importlib.util
 import json
 import subprocess
@@ -489,6 +490,38 @@ class TestTheCliScopeEnvelope:
             return None if "scope" in name else real_spec(name, *args, **kwargs)
 
         monkeypatch.setattr("importlib.util.spec_from_file_location", _broken_scope_loader)
+        every_leg = set(check.PATH_SCOPED_CHECKS.values())
+        code = check.main(
+            [
+                "--check-runs",
+                str(_payload(tmp_path, self._runs_for_scope(check, every_leg))),
+                "--require-complete",
+                "--event-name",
+                "pull_request",
+                "--changed-files",
+                str(_envelope(tmp_path, {"measured": True, "files": ["notes/todo.txt"]})),
+            ]
+        )
+        out = capsys.readouterr().out
+        assert code == check.PENDING_EXIT
+        assert "execution scope is ambiguous" in out
+
+    def test_a_scope_classifier_without_a_loader_degrades_to_pending(
+        self,
+        check: ModuleType,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A resolved spec without a loader cannot be imported as scope evidence."""
+        real_spec = importlib.util.spec_from_file_location
+
+        def _loaderless_scope_spec(name: str, *args: Any, **kwargs: Any) -> Any:
+            if "scope" in name:
+                return importlib.machinery.ModuleSpec(name, loader=None)
+            return real_spec(name, *args, **kwargs)
+
+        monkeypatch.setattr("importlib.util.spec_from_file_location", _loaderless_scope_spec)
         every_leg = set(check.PATH_SCOPED_CHECKS.values())
         code = check.main(
             [
