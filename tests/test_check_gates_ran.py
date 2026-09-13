@@ -141,7 +141,7 @@ class TestItRefusesToGuess:
     """Reporting green because it could not tell is the one outcome that would
     make this gate actively harmful."""
 
-    def test_an_unparseable_payload_fails(self, check, tmp_path, capsys):
+    def test_an_unparsable_payload_fails(self, check, tmp_path, capsys):
         bad = tmp_path / "check-runs.json"
         bad.write_text("{not json", encoding="utf-8")
         assert check.main(["--check-runs", str(bad)]) == 1
@@ -157,6 +157,11 @@ class TestItRefusesToGuess:
         bad.write_text(json.dumps({"total_count": 0}), encoding="utf-8")
         assert check.main(["--check-runs", str(bad)]) == 1
         assert "unmeasured" in capsys.readouterr().out
+
+    def test_invalid_changed_files_are_unmeasured(self, check, tmp_path):
+        bad = tmp_path / "changed-files.json"
+        bad.write_text("not json", encoding="utf-8")
+        assert check._pull_request_scope(bad) == (None, False)
 
     def test_an_empty_check_list_is_pending_not_a_pass(self, check, tmp_path):
         """Zero checks is never green, but a live queue must wait for evidence."""
@@ -242,6 +247,7 @@ class TestTheWorkflowItself:
         spec = importlib.util.spec_from_file_location(
             "crc", ROOT / "scripts" / "check-required-checks.py"
         )
+        assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
         sys.modules["crc"] = module
         spec.loader.exec_module(module)
