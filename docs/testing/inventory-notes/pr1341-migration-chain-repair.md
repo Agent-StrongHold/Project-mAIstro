@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/migrations: +2
+  tests/: +2
 ---
 # PR 1341 migration-chain repair
 
