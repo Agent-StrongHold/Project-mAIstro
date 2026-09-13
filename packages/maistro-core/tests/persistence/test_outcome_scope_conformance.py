@@ -300,14 +300,29 @@ class TestTheScopedPatternIsIndexBacked:
             plan = " ".join(str(row[3]) for row in await cursor.fetchall())
             assert "SCAN" not in plan
             assert "idx_outcomes_scope_task_time" in plan
+            cursor = await outcome_store._conn.execute(
+                "EXPLAIN QUERY PLAN SELECT * FROM outcomes "
+                "WHERE org_id = ? AND project_id = ? AND thumb = ? AND created_at >= ?",
+                ("org-a", "p1", "down", "2000-01-01"),
+            )
+            thumb_plan = " ".join(str(row[3]) for row in await cursor.fetchall())
+            assert "SCAN" not in thumb_plan
+            assert "idx_outcomes_scope_thumb_time" in thumb_plan
             return
 
         pool = outcome_store._pool
         async with pool.acquire() as conn:
-            row = await conn.fetchrow(
+            task_index = await conn.fetchrow(
                 "SELECT indexdef FROM pg_indexes WHERE tablename = 'outcomes' AND indexname = $1",
                 "ix_outcomes_scope_task_time",
             )
-        assert row is not None, "migration 010's scoped access composite is missing"
+            thumb_index = await conn.fetchrow(
+                "SELECT indexdef FROM pg_indexes WHERE tablename = 'outcomes' AND indexname = $1",
+                "ix_outcomes_scope_thumb_time",
+            )
+        assert task_index is not None, "migration 010's scoped access composite is missing"
+        assert thumb_index is not None, "migration 035's scoped feedback index is missing"
         for column in ("org_id", "project_id", "task_type", "created_at"):
-            assert column in row["indexdef"]
+            assert column in task_index["indexdef"]
+        for column in ("org_id", "project_id", "thumb", "created_at"):
+            assert column in thumb_index["indexdef"]

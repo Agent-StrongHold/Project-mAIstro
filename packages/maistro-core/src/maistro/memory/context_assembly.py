@@ -191,9 +191,10 @@ class DefaultContextAssemblyPolicy:
         layer2_text = await self.layer2(session_id, remaining)
         remaining = max(remaining - _estimate_tokens(layer2_text), 0)
 
-        layer3_text = ""
-        if org_id and project_id:
-            layer3_text = await self.layer3(project_id, budget_tokens=remaining, org_id=org_id)
+        # Layer 3 also carries project-scoped episodic wisdom. Keep that
+        # non-Outcome portion available without an org, while layer3 itself
+        # refuses the unscoped Outcome read.
+        layer3_text = await self.layer3(project_id, budget_tokens=remaining, org_id=org_id)
         remaining = max(remaining - _estimate_tokens(layer3_text), 0)
 
         layer4_text = await self.layer4(project_id)

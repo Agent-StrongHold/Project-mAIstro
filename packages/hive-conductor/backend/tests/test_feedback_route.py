@@ -256,6 +256,48 @@ def test_feedback_route_comment_too_long_returns_422(
 # --- outcome → next-run prompt invariant --------------------------------
 
 
+async def test_collect_thumbs_scopes_a_sqlite_store_by_org_and_project() -> None:
+    aiosqlite = pytest.importorskip("aiosqlite")
+    import services.feedback_service as svc
+    from services.feedback_service import collect_thumbs, record_thumb
+
+    from maistro.persistence.sqlite_outcomes import SqliteOutcomeStore
+
+    conn = await aiosqlite.connect(":memory:")
+    store = SqliteOutcomeStore(conn)
+    await store.ensure_schema()
+    previous = svc.get_outcome_store()
+    svc.set_outcome_store(store)
+    try:
+        await record_thumb(
+            user_id="u-a",
+            org_id="org-a",
+            project_id="project-a",
+            run_id="run-a",
+            thumb="down",
+            comment="secret-a",
+            node_id="node-a",
+            dag_id="dag-1",
+        )
+        await record_thumb(
+            user_id="u-b",
+            org_id="org-b",
+            project_id="project-b",
+            run_id="run-b",
+            thumb="down",
+            comment="secret-b",
+            node_id="node-b",
+            dag_id="dag-1",
+        )
+
+        scoped = await collect_thumbs("dag-1", org_id="org-a", project_id="project-a")
+
+        assert scoped == {"node-a": {"up": 0, "down": 1, "comments": ["secret-a"]}}
+    finally:
+        svc.set_outcome_store(previous)
+        await conn.close()
+
+
 async def test_thumbs_down_appears_in_same_project_experience_context(
     fresh_outcome_store: Any,
 ) -> None:
