@@ -310,6 +310,20 @@ class _PostWriteVetoStore(_VetoStore):
         return await self._inner.transition_run(run_id, target, **kwargs)
 
 
+class _MultiVetoStore(_VetoStore):
+    """Refuses a prescribed set of transitions once each."""
+
+    def __init__(self, inner, vetoes: tuple[RunStatus, ...]) -> None:
+        self._inner = inner
+        self._vetoes = set(vetoes)
+
+    async def transition_run(self, run_id, target, **kwargs):
+        if target in self._vetoes:
+            self._vetoes.remove(target)
+            raise RuntimeError("store hiccup")
+        return await self._inner.transition_run(run_id, target, **kwargs)
+
+
 @pytest.mark.ac("ADR-082826-08f0/AC-6")
 async def test_a_failure_persisting_running_cancels_the_queued_run() -> None:
     """#338's exact reproduction: QUEUED persists, RUNNING raises.
@@ -372,6 +386,29 @@ async def test_a_transition_that_commits_before_raising_is_compensated(
     assert run.error == ADMISSION_INCOMPLETE
     open_runs, _oldest = await container.run_store.non_terminal_run_stats()
     assert open_runs == 0
+
+
+@pytest.mark.ac("ADR-082826-08f0/AC-6")
+async def test_recovery_tick_retries_a_failed_compensation() -> None:
+    """A store outage during compensation leaves a row the recovery tick owns."""
+    container = await _container()
+    container.run_store = _MultiVetoStore(  # type: ignore[assignment]
+        container.run_store, (RunStatus.RUNNING, RunStatus.CANCELLED)
+    )
+    container.conduit = _Conduit()
+
+    result = await container.route_request([{"role": "user", "content": "hi"}])
+
+    assert result["choices"][0]["message"]["content"] == "hi"
+    (run,) = _chat_runs(container)
+    assert run.status is RunStatus.QUEUED
+
+    assert await container.recover_abandoned_attempts() == 0
+    recovered = await container.run_store.get_run(run.run_id)
+    assert recovered is not None
+    assert recovered.status is RunStatus.CANCELLED
+    assert recovered.error == ADMISSION_INCOMPLETE
+    assert await container.recover_abandoned_attempts() == 0
 
 
 @pytest.mark.ac("ADR-082826-08f0/AC-6")

@@ -55,6 +55,7 @@ from maistro.runs.model import (
     Run,
     RunStatus,
 )
+from maistro.runs.sources import ADMISSION_SOURCE, CHAT_SOURCE
 from maistro.runs.store import RunIntegrityError, RunStore
 from maistro.runs.wiring import (
     SPINE_PG_TABLES,
@@ -753,6 +754,13 @@ class Container:
         )
         from maistro.runs.reconciliation import AttemptLifecycleReconciler
 
+        # A chat Run with no Attempt has never been dispatched. It is not in
+        # the consumer allowlist, so a CREATED/QUEUED chat row left by a dead
+        # admission has no other owner. The same recovery tick that exposes
+        # non-terminal rows disposes of it; a live admission racing this write
+        # loses safely at its next lifecycle transition.
+        await self._recover_incomplete_chat_admissions(limit=limit)
+
         reclaimed = await self.run_store.reclaim_expired_attempts(now=now, limit=limit)
         if reclaimed:
             # The Container's bus, so the sweep's dispositions land on the
@@ -784,6 +792,36 @@ class Container:
         age = (moment - oldest_created_at).total_seconds() if oldest_created_at else 0.0
         oldest_non_terminal_run_age_seconds.set(max(age, 0.0))
         return len(reclaimed)
+
+    async def _recover_incomplete_chat_admissions(self, *, limit: int) -> int:
+        """Cancel pre-dispatch chat Runs left by an interrupted admission.
+
+        Chat Runs are executed inline, not by the admitted-Run consumer. A
+        CREATED or QUEUED chat Run therefore has no physical owner and is the
+        never-dispatched recovery row from ADR-082826-08f0. Re-reading the
+        status on each tick makes a failed compensation retryable and keeps
+        repeated ticks idempotent.
+        """
+        recovered = 0
+        for status in (RunStatus.CREATED, RunStatus.QUEUED):
+            for run in await self.run_store.list_by_status(status, limit=limit):
+                if run.provenance.get(ADMISSION_SOURCE) != CHAT_SOURCE:
+                    continue
+                try:
+                    await self.run_store.transition_run(
+                        run.run_id,
+                        RunStatus.CANCELLED,
+                        error=ADMISSION_INCOMPLETE,
+                    )
+                except Exception:
+                    logger.warning(
+                        "incomplete chat Run %s could not be recovered",
+                        run.run_id,
+                        exc_info=True,
+                    )
+                    continue
+                recovered += 1
+        return recovered
 
     async def execute_admitted_runs(self, *, limit: int = 100) -> int:
         """Tick the canonical consumer for admitted Runs (#251). Returns how many ran.
