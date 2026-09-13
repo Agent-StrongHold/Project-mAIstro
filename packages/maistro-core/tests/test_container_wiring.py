@@ -202,6 +202,27 @@ async def test_a_held_tick_lease_stops_a_second_replica_from_reticking() -> None
     assert cursor == container.durable_event_cursor == 0
 
 
+async def test_a_tick_with_nothing_new_does_not_advance_the_stored_cursor() -> None:
+    """#1163: `process_durable_events` must not write to the cursor store at
+    all when nothing new settled this round (`new_cursor == lease.position`)
+    -- only a real advance is worth a write."""
+    from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
+
+    container = await _container()
+
+    cursor = await container.process_durable_events()
+    assert cursor == container.durable_event_cursor == 0
+
+    # A second claim (a different holder, after this container's own lease
+    # would need to have been renewed/expired) proves the store's own
+    # position is still untouched, not just the in-process cache.
+    lease = await container.consumer_cursor_store.claim(
+        LEGACY_BRIDGE_CONSUMER_ID, holder=container._durable_events_holder
+    )
+    assert lease is not None
+    assert lease.position == 0
+
+
 # --- LLM providers (SPEC-070226-cb8d) -----------------------------------------
 
 
