@@ -221,6 +221,7 @@ class TestAgainstTheRealWorkflows:
             ("CodeQL Advanced", "Analyze (javascript-typescript)"),
             ("CodeQL Advanced", "Analyze (python)"),
             ("security", "Container scan + SBOM + cosign"),
+            ("DevSkim", "DevSkim"),
         }
 
     def test_every_unfiltered_pr_workflow_cancels_superseded_runs(self, gate) -> None:

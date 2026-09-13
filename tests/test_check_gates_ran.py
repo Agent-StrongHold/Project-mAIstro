@@ -107,6 +107,25 @@ class TestTheThreeStates:
         runs = [_run("a", conclusion="action_required"), _run("a", conclusion="success")]
         assert check.evaluate(["a"], runs, require_complete=True).ok
 
+    def test_a_cancelled_duplicate_never_shadows_a_sibling_that_executed(self, check):
+        """#1229: quality.yml/security.yml share one concurrency group across a
+        `push` and a `pull_request` event for the same commit, so the loser of
+        that race reports `cancelled` under the same check name a genuine
+        completed sibling run also used. Whichever the check-runs API happens
+        to return last must not decide the verdict -- the executed run always
+        wins over the cancelled one, in either order."""
+        executed_first = [_run("a", conclusion="success"), _run("a", conclusion="cancelled")]
+        cancelled_first = [_run("a", conclusion="cancelled"), _run("a", conclusion="success")]
+        assert check.evaluate(["a"], executed_first, require_complete=True).ok
+        assert check.evaluate(["a"], cancelled_first, require_complete=True).ok
+
+    def test_two_non_executed_attempts_still_report_the_later_one(self, check):
+        """When neither attempt executed, list order still decides which is
+        reported -- there is no executed sibling to prefer instead."""
+        runs = [_run("a", conclusion="cancelled"), _run("a", conclusion="skipped")]
+        verdict = check.evaluate(["a"], runs, require_complete=True)
+        assert verdict.not_executed == ["a"] and not verdict.ok
+
 
 class TestItRefusesToGuess:
     """Reporting green because it could not tell is the one outcome that would

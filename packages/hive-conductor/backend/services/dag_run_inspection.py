@@ -27,7 +27,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from services.dag_run_store import get_dag_run_store
+from services.dag_run_store import MAX_RUNS, get_dag_run_store
 from services.workspace_authority import list_views_for_user
 
 
@@ -52,11 +52,17 @@ def _in_scope(record: dict[str, Any], allowed: set[str]) -> bool:
 async def list_visible_runs(user_id: str, *, limit: int = 25) -> list[dict[str, Any]]:
     """Recent-run summaries, restricted to the caller's Workspace universe."""
     allowed = await authorized_workspace_ids(user_id)
-    return [
+    # Fetch the complete retained window before applying the caller's limit.
+    # Limiting the global projection first lets a burst of foreign runs hide a
+    # caller's own older run (or return an empty page), even though it is in
+    # scope. Filtering first preserves normal pagination semantics without
+    # exposing any additional rows.
+    visible = [
         summary
-        for summary in get_dag_run_store().list_runs(limit=limit)
+        for summary in get_dag_run_store().list_runs(limit=MAX_RUNS)
         if _in_scope(summary, allowed)
     ]
+    return visible[:limit]
 
 
 async def can_inspect_run(user_id: str, run_id: str) -> bool:
