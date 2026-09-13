@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from maistro.events.bus import EventBus, EventCategory, Trigger
 from maistro.events.envelope import EventEnvelope, InMemoryEventStore
 from maistro.events.publisher import (
@@ -93,6 +95,29 @@ def test_the_publisher_exposes_its_single_sequence_authority() -> None:
     store = InMemoryEventStore()
 
     assert CanonicalEventPublisher(store).store is store
+
+
+@pytest.mark.asyncio
+async def test_canonical_persistence_failure_is_not_reported_as_success() -> None:
+    class FailingStore(InMemoryEventStore):
+        async def append_with_disposition(self, event):
+            raise OSError("canonical store unavailable")
+
+    legacy_bus = EventBus()
+    publisher = CanonicalEventPublisher(FailingStore(), legacy_bus=legacy_bus)
+
+    with pytest.raises(OSError, match="canonical store unavailable"):
+        await publisher.emit(
+            EventEnvelope(
+                event_id="canonical-failure",
+                type="run.recovery_disposition",
+                workspace_id="workspace-a",
+            )
+        )
+
+    # The publisher fails before compatibility projection, so no consumer can
+    # mistake an unpersisted canonical fact for a delivered one.
+    assert legacy_bus.get_history() == []
 
 
 def test_legacy_projection_carries_a_declared_category() -> None:

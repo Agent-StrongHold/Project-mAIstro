@@ -138,6 +138,27 @@ Event stream after it is persisted (#462), which is the half of that issue's
 observability criterion the gauges do not answer — they count stranded work,
 they do not say what was decided about any of it.
 
+### Amendment, 2026-09-07 (#1062)
+
+Canonical lifecycle repair and event observation are separate phases. The
+recovery tick reconciles every Attempt returned by the lease reclaim write
+before announcing any event, and it announces each Attempt independently. A
+compatibility trigger handler still raises `TriggerActionFailure` after the
+EventBus finishes partial delivery; that failure is recorded per Attempt and
+cannot abort unrelated lifecycle repair. The canonical publisher persists the
+`EventEnvelope` before projecting to that bus, so canonical persistence errors
+are not swallowed: the tick raises an explicit `RecoveryEventDeliveryFailure`
+after the batch and the caller has a failure disposition to retry. This
+resolves the two #1001 review concerns: handler failure is isolated without
+manufacturing success evidence, while durable publication failure remains
+visible instead of being converted into a successful recovery tick.
+
+The public EventBus contract is therefore: history is recorded and all
+triggers/subscribers are attempted; successful trigger actions are reported,
+handler failures raise `TriggerActionFailure`, and subscriber failures raise
+`EventSubscriberFailure`. None of those notification failures rolls back the
+canonical lifecycle write.
+
 ## Consequences
 
 ### Positive
