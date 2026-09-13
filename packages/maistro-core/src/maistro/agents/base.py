@@ -734,6 +734,13 @@ class Agent:
             team_id=team_id,
             user_id=getattr(auth, "user_id", ""),
             agent_id=self.identity.name,
+            # Outcome prompt reads use the canonical execution Project. Keep
+            # the producer ids beside it so the stored evidence remains
+            # attributable to the same Run/NodeRun/Attempt (#844).
+            project_id=context.project_id,
+            run_id=context.run_id,
+            node_run_id=context.node_run_id,
+            attempt_id=context.attempt_id,
             input_tokens=result.input_tokens,
             output_tokens=result.output_tokens,
             # How many of this turn's provider calls reported usage. The token

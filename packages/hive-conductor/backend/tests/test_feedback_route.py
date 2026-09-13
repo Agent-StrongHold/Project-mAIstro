@@ -24,6 +24,7 @@ specific VALUE in the response, the recorded Outcome, or the audit log):
 
 from __future__ import annotations
 
+import asyncio
 import pathlib
 import sys
 from typing import Any
@@ -166,9 +167,38 @@ def _login_post(client: Any, run_id: str, body: dict[str, Any]) -> Any:
     return client.post(f"/v1/dag-runs/{run_id}/feedback", json=body)
 
 
+def _workspace_for_run(client: Any, run_id: str) -> str:
+    workspace = client.post(
+        "/v1/workspaces", json={"persona_template_id": "pm_fleet", "name": run_id}
+    )
+    assert workspace.status_code == 201, workspace.text
+    return workspace.json()["id"]
+
+
+async def _seed_run(workspace_id: str, run_id: str, project_id: str) -> None:
+    from services.dag_run_store import get_dag_run_store
+
+    await get_dag_run_store().start_run(
+        run_id=run_id,
+        workspace_id=workspace_id,
+        project_id=project_id,
+    )
+
+
+def _seed_authorized_run(client: Any, run_id: str, project_id: str) -> None:
+    """Feedback must target a run visible in the caller's Workspace."""
+    asyncio.run(_seed_run(_workspace_for_run(client, run_id), run_id, project_id))
+
+
+async def _seed_authorized_run_async(client: Any, run_id: str, project_id: str) -> None:
+    """Async-test counterpart that does not nest ``asyncio.run``."""
+    await _seed_run(_workspace_for_run(client, run_id), run_id, project_id)
+
+
 def test_feedback_route_records_run_level_thumb_down(
     authed_client: Any, fresh_outcome_store: Any
 ) -> None:
+    _seed_authorized_run(authed_client, "run-A", "proj-X")
     r = _login_post(
         authed_client,
         "run-A",
@@ -191,6 +221,7 @@ def test_feedback_route_records_run_level_thumb_down(
 def test_feedback_route_records_per_node_thumb_up(
     authed_client: Any, fresh_outcome_store: Any
 ) -> None:
+    _seed_authorized_run(authed_client, "run-B", "proj-Y")
     r = authed_client.post(
         "/v1/dag-runs/run-B/nodes/jira_poll/feedback",
         json={"thumb": "up", "project_id": "proj-Y"},
@@ -201,6 +232,32 @@ def test_feedback_route_records_per_node_thumb_up(
     assert o.node_id == "jira_poll"
     assert o.thumb == "up"
     assert o.project_id == "proj-Y"
+
+
+def test_feedback_route_refuses_a_missing_run_before_writing(
+    authed_client: Any, fresh_outcome_store: Any
+) -> None:
+    r = _login_post(authed_client, "run-does-not-exist", {"thumb": "down", "project_id": "p"})
+    assert r.status_code == 404
+    assert fresh_outcome_store._outcomes == []
+
+
+def test_feedback_route_refuses_a_caller_project_different_from_the_run(
+    authed_client: Any, fresh_outcome_store: Any
+) -> None:
+    _seed_authorized_run(authed_client, "run-scoped", "run-project")
+    r = _login_post(authed_client, "run-scoped", {"thumb": "down", "project_id": "other"})
+    assert r.status_code == 403
+    assert fresh_outcome_store._outcomes == []
+
+
+def test_feedback_route_refuses_a_run_outside_the_callers_workspace(
+    authed_client: Any, admin_client: Any, fresh_outcome_store: Any
+) -> None:
+    _seed_authorized_run(admin_client, "run-foreign", "foreign-project")
+    r = _login_post(authed_client, "run-foreign", {"thumb": "down"})
+    assert r.status_code == 404
+    assert fresh_outcome_store._outcomes == []
 
 
 def test_feedback_route_invalid_thumb_returns_422(
@@ -224,6 +281,7 @@ def test_feedback_route_writes_audit_log(authed_client: Any, fresh_outcome_store
     import stores
 
     audit_count_before = len(stores.audit_log)
+    _seed_authorized_run(authed_client, "run-Audit", "p")
     r = authed_client.post(
         "/v1/dag-runs/run-Audit/feedback",
         json={"thumb": "down", "comment": "x" * 50, "project_id": "p"},
@@ -350,37 +408,40 @@ def test_resolve_user_id_raises_401_when_user_has_no_id() -> None:
     assert exc_info.value.status_code == 401
 
 
-def test_resolve_project_id_falls_back_to_request_state_when_body_empty() -> None:
+def test_resolve_project_id_uses_the_authorized_run_when_body_empty() -> None:
     from types import SimpleNamespace
 
     from routes.feedback import FeedbackBody, _resolve_project_id
 
-    request = SimpleNamespace(state=SimpleNamespace(project_id="state-proj"))
+    request = SimpleNamespace(state=SimpleNamespace(project_id="caller-controlled"))
     body = FeedbackBody(thumb="up")  # project_id defaults to ""
-    assert _resolve_project_id(request, body) == "state-proj"  # type: ignore[arg-type]
+    assert _resolve_project_id(request, body, "run-project") == "run-project"  # type: ignore[arg-type]
 
 
-def test_resolve_project_id_body_wins_over_state() -> None:
-    from types import SimpleNamespace
-
-    from routes.feedback import FeedbackBody, _resolve_project_id
-
-    request = SimpleNamespace(state=SimpleNamespace(project_id="state-proj"))
-    body = FeedbackBody(thumb="up", project_id="body-proj")
-    assert _resolve_project_id(request, body) == "body-proj"  # type: ignore[arg-type]
-
-
-def test_resolve_project_id_missing_state_fails_closed() -> None:
-    """No body project_id + no request.state.project_id cannot write globally."""
+def test_resolve_project_id_rejects_a_body_scope_mismatch() -> None:
     from types import SimpleNamespace
 
     from fastapi import HTTPException
     from routes.feedback import FeedbackBody, _resolve_project_id
 
-    request = SimpleNamespace(state=SimpleNamespace())  # no project_id attr
+    request = SimpleNamespace(state=SimpleNamespace())
+    body = FeedbackBody(thumb="up", project_id="body-project")
+    with pytest.raises(HTTPException) as exc_info:
+        _resolve_project_id(request, body, "run-project")  # type: ignore[arg-type]
+    assert exc_info.value.status_code == 403
+
+
+def test_resolve_project_id_missing_run_scope_fails_closed() -> None:
+    """A projection without a Project cannot receive scoped feedback."""
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+    from routes.feedback import FeedbackBody, _resolve_project_id
+
+    request = SimpleNamespace(state=SimpleNamespace())
     body = FeedbackBody(thumb="up")
     with pytest.raises(HTTPException) as exc_info:
-        _resolve_project_id(request, body)  # type: ignore[arg-type]
+        _resolve_project_id(request, body, "")  # type: ignore[arg-type]
     assert exc_info.value.status_code == 403
 
 
@@ -447,6 +508,7 @@ async def test_record_feedback_translates_value_error_to_400(
 
     monkeypatch.setattr(fb, "record_thumb", _raise)
 
+    await _seed_authorized_run_async(authed_client, "run-V", "project-1")
     r = authed_client.post(
         "/v1/dag-runs/run-V/feedback", json={"thumb": "up", "project_id": "project-1"}
     )
