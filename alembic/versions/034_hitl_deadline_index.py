@@ -4,9 +4,15 @@ The column is a lookup projection, so upgrading must populate it from the
 canonical pause entries already stored in each continuation. Leaving old rows
 NULL would make those pauses permanently invisible to the bounded expiry scan.
 
-Revision ID: 033
-Revises: 032
+Revision ID: 034
+Revises: 033
 Create Date: 2026-09-07
+
+Renumbered from 033 after landing: #1221's
+`033_project_membership_unique_per_principal` had already taken that id on
+`down_revision = "032"`, so the two sat side by side as separate heads and
+every `alembic upgrade head` failed with "Multiple head revisions are
+present". Only the identifiers change; the schema this applies does not.
 """
 
 from __future__ import annotations
@@ -14,8 +20,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "033"
-down_revision = "032"
+revision = "034"
+down_revision = "033"
 branch_labels = None
 depends_on = None
 
