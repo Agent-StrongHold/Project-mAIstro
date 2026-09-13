@@ -112,29 +112,34 @@ def _excluded(path: Path, root: Path) -> bool:
     )
 
 
-def _declared_methods(call: ast.Call) -> list[str]:
-    """The mutating methods a `methods=` argument names, or `DYNAMIC_METHODS`.
+def _declared_methods(call: ast.Call, *, positional_index: int | None = None) -> list[str]:
+    """The mutating methods a registration's ``methods`` argument names.
 
     A literal collection of string literals is read; the mutating subset is
     returned. Anything else -- a name, a call, a collection holding a
-    non-literal element -- cannot be proven free of `POST`, so it yields the
+    non-literal element -- cannot be proven free of ``POST``, so it yields the
     one conservative stand-in rather than nothing: the route stays in the
-    fail-closed inventory and the matrix must classify it. No `methods=` at
-    all is FastAPI's default GET, which is not a mutating surface.
+    fail-closed inventory and the matrix must classify it. Starlette's
+    ``add_route`` also accepts ``methods`` as a third positional argument;
+    callers pass that index explicitly. No ``methods=`` at all is the
+    framework default GET, which is not a mutating surface.
     """
-    for keyword in call.keywords:
-        if keyword.arg != "methods":
-            continue
-        value = keyword.value
-        if not isinstance(value, (ast.List, ast.Tuple, ast.Set)):
+    methods_expr: ast.expr | None = next(
+        (keyword.value for keyword in call.keywords if keyword.arg == "methods"),
+        None,
+    )
+    if methods_expr is None and positional_index is not None and len(call.args) > positional_index:
+        methods_expr = call.args[positional_index]
+    if methods_expr is None:
+        return []
+    if not isinstance(methods_expr, (ast.List, ast.Tuple, ast.Set)):
+        return [DYNAMIC_METHODS]
+    methods: list[str] = []
+    for item in methods_expr.elts:
+        if not (isinstance(item, ast.Constant) and isinstance(item.value, str)):
             return [DYNAMIC_METHODS]
-        methods: list[str] = []
-        for item in value.elts:
-            if not (isinstance(item, ast.Constant) and isinstance(item.value, str)):
-                return [DYNAMIC_METHODS]
-            methods.append(item.value.upper())
-        return [method for method in methods if method in MUTATING_METHODS]
-    return []
+        methods.append(item.value.upper())
+    return [method for method in methods if method in MUTATING_METHODS]
 
 
 def _path_argument(call: ast.Call) -> ast.expr | None:
@@ -219,18 +224,20 @@ def _handler_identity(expr: ast.expr) -> tuple[str | None, bool]:
 _UNRESOLVED_ENDPOINT = "<unresolved endpoint>"
 
 
-def _add_api_route_calls(tree: ast.Module) -> list[tuple[str, str, str | None, bool]]:
-    """`(method, path, handler_identity, resolvable)` per `*.add_api_route(...)`.
+def _registered_route_calls(tree: ast.Module) -> list[tuple[str, str, str | None, bool]]:
+    """Discover call-registered FastAPI and Starlette routes.
 
-    The non-decorator registration form FastAPI supports alongside
-    `@router.post(...)`; a route registered this way carries no decorator for
-    `_decorated_routes` to see at all; this walks the whole module for the
-    call directly instead. The path may be positional or `path=`, the
-    endpoint positional or `endpoint=`.
+    ``add_api_route`` and ``add_route`` have no decorator for
+    ``_decorated_routes`` to see. Starlette's ``add_route`` accepts its
+    methods collection positionally (or by keyword), so that form must be
+    retained rather than silently treated as a default GET.
     """
     found: list[tuple[str, str, str | None, bool]] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or _call_attr_name(node) != "add_api_route":
+        if not isinstance(node, ast.Call):
+            continue
+        registration = _call_attr_name(node)
+        if registration not in {"add_api_route", "add_route"}:
             continue
         path_expr = _path_argument(node)
         if path_expr is None:
@@ -241,7 +248,9 @@ def _add_api_route_calls(tree: ast.Module) -> list[tuple[str, str, str | None, b
             if keyword.arg == "endpoint":
                 endpoint = keyword.value
         handler, resolvable = _handler_identity(endpoint) if endpoint is not None else (None, False)
-        methods = _declared_methods(node)
+        methods = _declared_methods(
+            node, positional_index=2 if registration == "add_route" else None
+        )
         found.extend((method, path, handler, resolvable) for method in methods)
     return found
 
@@ -289,6 +298,10 @@ def _literal_success_status(value: ast.expr | None) -> str | None:
 #: else -- a service call, a database write, a background-task scheduler --
 #: means the handler is not a no-op, however its final `return` reads.
 _LOG_LIKE_CALL_NAMES = {"log", "logger", "logging", "metrics", "print"}
+#: ``object()`` is a deliberately inert local placeholder, not an execution
+#: effect. Keep this exception narrow: arbitrary calls assigned to locals may
+#: perform the work that makes a status response truthful.
+_INERT_CALL_NAMES = {"object"}
 
 
 def _call_root_name(call: ast.Call) -> str | None:
@@ -330,7 +343,13 @@ class _RealWorkDetector(ast.NodeVisitor):
 
     def visit_Call(self, node: ast.Call) -> None:
         root = _call_root_name(node)
-        if root is None or root.lower() not in _LOG_LIKE_CALL_NAMES:
+        inert_builtin = (
+            isinstance(node.func, ast.Name)
+            and node.func.id in _INERT_CALL_NAMES
+            and not node.args
+            and not node.keywords
+        )
+        if not inert_builtin and (root is None or root.lower() not in _LOG_LIKE_CALL_NAMES):
             self.has_real_work = True
         self.generic_visit(node)
 
@@ -463,7 +482,7 @@ def _source_surfaces(path: Path, repo_root: Path) -> list[BackendSurface]:
                     obvious_fake_success=obvious_fake,
                 )
             )
-    for method, route, handler_name, resolvable in _add_api_route_calls(tree):
+    for method, route, handler_name, resolvable in _registered_route_calls(tree):
         handler_def = functions.get(handler_name) if handler_name and resolvable else None
         surfaces.append(
             BackendSurface(
