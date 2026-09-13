@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -204,6 +205,22 @@ def dependency_assessment(*dependencies: Dependency) -> DependencyAssessment:
     assessment = DependencyAssessment(ready=not blockers, blockers=tuple(blockers))
     assert assessment.ready is (not assessment.blockers)
     return assessment
+
+
+def enforce_strict_closeout(assessment: DependencyAssessment) -> None:
+    """Reject blocker-only parity passes when M1 closeout mode is enabled.
+
+    Normal development keeps named blockers visible while independent product
+    convergence lanes land. The closeout invocation sets this environment
+    variable so an unavailable producer/observer scenario is a failed proof,
+    never an accidental pass.
+    """
+    if assessment.ready or os.environ.get("M1_STRICT_CLOSEOUT") != "1":
+        return
+    blockers = " | ".join(assessment.blockers)
+    raise DependencyUnavailable(
+        "M1 strict closeout cannot abstain from a parity scenario: " + blockers
+    )
 
 
 def require_dependencies(*dependencies: Dependency) -> None:

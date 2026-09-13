@@ -4,6 +4,9 @@ The active product convergence PRs are dependencies, not implementation material
 for this branch. Each dependency-owned scenario asserts a concrete source-level
 blocker while unavailable; when those blockers disappear, the same test proceeds
 to its executable assertions. No missing product behavior is recreated here.
+
+Set `M1_STRICT_CLOSEOUT=1` for the closeout invocation; named blockers then
+fail instead of being treated as a passing abstention.
 """
 
 from __future__ import annotations
@@ -21,11 +24,14 @@ from tests.cross_product_parity.harness import (
     GOLDEN_BASELINES,
     ONTOLOGY,
     SCHEDULER,
+    DependencyAssessment,
+    DependencyUnavailable,
     ParityContractError,
     assert_identity_projection,
     assert_matches_golden,
     assert_ontology_identity_projection,
     dependency_assessment,
+    enforce_strict_closeout,
     open_durable_profile,
 )
 
@@ -111,6 +117,7 @@ def test_second_run_id_mapping_and_private_terminal_state_are_rejected() -> None
 def test_builders_created_work_has_public_conductor_inspection_seams() -> None:
     """Scenario 1 activation contract for Builders -> Conductor parity."""
     dependency = dependency_assessment(BUILDERS, CONDUCTOR_INSPECTION)
+    enforce_strict_closeout(dependency)
     if not dependency.ready:
         assert dependency.blockers
         return
@@ -133,6 +140,7 @@ def test_builders_created_work_has_public_conductor_inspection_seams() -> None:
 def test_schedule_fire_has_canonical_admission_and_shared_inspection_seams() -> None:
     """Scenario 2 activation contract for the live schedule fire path."""
     dependency = dependency_assessment(SCHEDULER, CONDUCTOR_INSPECTION)
+    enforce_strict_closeout(dependency)
     if not dependency.ready:
         assert dependency.blockers
         return
@@ -152,6 +160,7 @@ def test_schedule_fire_has_canonical_admission_and_shared_inspection_seams() -> 
 def test_evolve_has_canonical_run_identity_and_shared_inspection_seams() -> None:
     """Scenario 3 activation contract for the shipped Evolve cycle path."""
     dependency = dependency_assessment(EVOLVE, CONDUCTOR_INSPECTION)
+    enforce_strict_closeout(dependency)
     if not dependency.ready:
         assert dependency.blockers
         return
@@ -171,6 +180,7 @@ def test_evolve_has_canonical_run_identity_and_shared_inspection_seams() -> None
 def test_shared_identity_contract_consumes_executable_ontology() -> None:
     """Scenario 4 uses #458 as authority for shared identity field names."""
     dependency = dependency_assessment(ONTOLOGY)
+    enforce_strict_closeout(dependency)
     if not dependency.ready:
         assert dependency.blockers
         return
@@ -195,6 +205,7 @@ def test_shared_identity_contract_consumes_executable_ontology() -> None:
 def test_463_golden_fixtures_are_consumed_as_independent_oracle() -> None:
     """Scenario 6 consumes, rather than duplicates, the locked #463 matcher."""
     dependency = dependency_assessment(GOLDEN_BASELINES)
+    enforce_strict_closeout(dependency)
     if not dependency.ready:
         assert dependency.blockers
         return
@@ -206,6 +217,15 @@ def test_463_golden_fixtures_are_consumed_as_independent_oracle() -> None:
 
     scenario, _ = load_golden_scenario("builders", "retry_keeps_logical_run")
     assert_matches_golden("builders", "retry_keeps_logical_run", scenario["example_observation"])
+
+
+def test_strict_closeout_rejects_blocker_only_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Closeout mode turns a named dependency blocker into failed evidence."""
+    monkeypatch.setenv("M1_STRICT_CLOSEOUT", "1")
+    assessment = DependencyAssessment(ready=False, blockers=("waiting on issue #65",))
+
+    with pytest.raises(DependencyUnavailable, match="strict closeout cannot abstain"):
+        enforce_strict_closeout(assessment)
 
 
 def test_dependency_handling_contains_no_test_suppression_escape_hatch() -> None:
