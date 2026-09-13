@@ -28,7 +28,7 @@ ACTIVE_MARKUP_PATTERNS: tuple[tuple[regex.Pattern[str], str], ...] = (
         regex.compile(
             r"<(?:img|image|svg|a|use|iframe|object|embed)\b[^>]*"
             r"(?:src|href|xlink:href|data|action|formaction|poster)\s*=\s*"
-            r"[\"']?\s*(?:javascript\s*:|vbscript\s*:|data\s*:|https?:|//)",
+            r"[\"']?\s*(?:java\s*script\s*:|vb\s*script\s*:|data\s*:|https?:|//)",
             regex.IGNORECASE,
         ),
         "Active markup dangerous resource URL",
@@ -52,7 +52,8 @@ ACTIVE_MARKUP_PATTERNS: tuple[tuple[regex.Pattern[str], str], ...] = (
         regex.compile(
             r"(?:url\s*\(|image-set\s*\(|cross-fade\s*\(|element\s*\(|"
             r"paint\s*\(|expression\s*\(|@import\b|"
-            r"(?:-moz-binding|behavior)\s*:)",
+            r"(?:-moz-binding|behavior)\s*:|"
+            r"(?:java\s*script|vb\s*script)\s*:)",
             regex.IGNORECASE,
         ),
         "CSS network/code primitive",

@@ -9,7 +9,7 @@ inside "ignore" defeats a word-boundary regex while the model reads the word
 unimpeded. Every scanner therefore folds its input through this module first,
 so a bypass fixed for one boundary is fixed for all of them.
 
-Three folds, applied in order where applicable:
+The detection view applies entity/CSS escape decoding before these folds:
 
 1. NFKD — compatibility decomposition (fullwidth forms, ligatures, composed
    accents) so ``ｉｇｎｏｒｅ`` and ``ﬁ`` match their ASCII spellings.
@@ -27,7 +27,32 @@ Three folds, applied in order where applicable:
 
 from __future__ import annotations
 
+import html
+import re
 import unicodedata
+
+_CSS_ESCAPE_RE = re.compile(r"\\([0-9a-fA-F]{1,6})(?:[ \\t\\r\\n\\f]?|(?=$))|\\([^\\r\\n\\f])")
+
+
+def _decode_css_escapes(text: str) -> str:
+    """Decode CSS escapes in the detection view, including hex escapes.
+
+    CSS permits protocol and function names to be written as ``u\\72l`` or
+    ``j\\61vascript``. Decoding these only for matching leaves caller content
+    unchanged while making the scanner see the same tokens as a CSS parser.
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        hexadecimal, escaped = match.groups()
+        if escaped is not None:
+            return escaped
+        codepoint = int(hexadecimal, 16)
+        if codepoint == 0 or codepoint > 0x10FFFF or 0xD800 <= codepoint <= 0xDFFF:
+            return "\\ufffd"
+        return chr(codepoint)
+
+    return _CSS_ESCAPE_RE.sub(replace, text)
+
 
 # Invisible characters that are not category Cf but still interrupt a token
 # without rendering. U+034F exists specifically to break character sequences.
@@ -101,12 +126,14 @@ def fold_homoglyphs(text: str) -> str:
 
 
 def normalize_for_detection(text: str) -> str:
-    """The full Warden fold: NFKD, then invisibles out, then homoglyphs folded.
+    """Decode markup/CSS escapes, then apply the full Warden detection fold.
 
-    Order matters: NFKD first so compatibility forms decompose before the
-    other folds look at them.
+    Entity and CSS escape decoding happen first so protocol/function tokens are
+    compared as a browser/CSS parser would see them. NFKD then decomposes
+    compatibility forms before the other folds look at them.
     """
-    return fold_homoglyphs(strip_invisibles(unicodedata.normalize("NFKD", text)))
+    decoded = _decode_css_escapes(html.unescape(text))
+    return fold_homoglyphs(strip_invisibles(unicodedata.normalize("NFKD", decoded)))
 
 
 def normalize_for_redaction(text: str) -> str:

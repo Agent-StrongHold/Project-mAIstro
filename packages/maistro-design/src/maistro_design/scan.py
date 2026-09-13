@@ -9,12 +9,12 @@ generated HTML/SVG/JS/CSS carries the session's contaminated trust tier (ADR-062
 
 from __future__ import annotations
 
-import html
 import re
 import unicodedata
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from maistro.security.normalize import normalize_for_detection
 from maistro.security.warden.patterns import ACTIVE_MARKUP_PATTERNS
 
 if TYPE_CHECKING:
@@ -79,7 +79,7 @@ class ScanReport:
 
 def _css_network_or_code_is_blocking(content: str, url_allowlist: tuple[str, ...]) -> bool:
     """Allow only reviewed documentation/font URLs inside CSS primitives."""
-    normalized = html.unescape(content)
+    normalized = normalize_for_detection(content)
     for match in _CSS_URL_RE.finditer(normalized):
         target = re.sub(r"\s+", "", match.group(2)).strip()
         if target.startswith("#"):
@@ -108,14 +108,14 @@ def _css_network_or_code_is_blocking(content: str, url_allowlist: tuple[str, ...
 
 def _scan_active_markup_patterns(content: str, url_allowlist: tuple[str, ...]) -> list[str]:
     findings: list[str] = []
-    unescaped = html.unescape(content)
+    normalized = normalize_for_detection(content)
     for pattern, description in ACTIVE_MARKUP_PATTERNS:
         if description == "CSS network/code primitive":
-            matched = bool(pattern.search(content)) and _css_network_or_code_is_blocking(
-                content, url_allowlist
+            matched = bool(pattern.search(normalized)) and _css_network_or_code_is_blocking(
+                normalized, url_allowlist
             )
         else:
-            matched = bool(pattern.search(unescaped))
+            matched = bool(pattern.search(normalized))
         if matched:
             findings.append(description)
     return findings
@@ -133,12 +133,14 @@ def scan_blocking_patterns(
     if banish_list is not None and banish_list.is_banned(content):
         blocking.append(f"{label}: matches banish-list pattern")
 
+    normalized = normalize_for_detection(content)
+
     for pattern in _SCRIPT_PATTERNS:
-        if pattern.search(content):
+        if pattern.search(normalized):
             blocking.append(f"{label}: matched script pattern {pattern.pattern!r}")
 
     for pattern in _PROMPT_INJECTION_PATTERNS:
-        if pattern.search(content):
+        if pattern.search(normalized):
             blocking.append(f"{label}: matched prompt-injection pattern {pattern.pattern!r}")
 
     blocking.extend(
@@ -146,7 +148,7 @@ def scan_blocking_patterns(
         for description in _scan_active_markup_patterns(content, url_allowlist)
     )
 
-    for match in _BASE64_RE.finditer(content):
+    for match in _BASE64_RE.finditer(normalized):
         blocking.append(f"{label}: base64 blob ({len(match.group(0))} chars)")
 
     for offset, ch in enumerate(content):

