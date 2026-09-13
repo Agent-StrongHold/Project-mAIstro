@@ -52,11 +52,17 @@ reaching a limit it did not reach.
 from __future__ import annotations
 
 import logging
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Final
 
 from maistro.graph.templates import require_template
+from maistro.observability.correlation import (
+    bind_execution_context,
+    current_execution_context,
+    detached_execution_context,
+)
 from maistro.runs.model import RunStatus
 from maistro.runs.sources import (
     ADMISSION_SOURCE,
@@ -79,6 +85,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("maistro.scheduling.admission")
 
+#: Provenance key recording a scheduled Run's own correlation root (#1063).
+#: `admit_due` runs on the background tick loop, never inside an incoming
+#: request, so each admitted occurrence mints its own rather than leaving the
+#: Run uncorrelated or risking a stray id from an unrelated Attempt left
+#: bound on the same event loop tick.
+REQUEST_ID_KEY = "request_id"
+
 #: Skip reasons whose occurrence is still owed, so the cursor must not pass it.
 #:
 #: Read from `SkipReason`'s own documentation rather than restated: BUFFERED
@@ -87,6 +100,11 @@ logger = logging.getLogger("maistro.scheduling.admission")
 #: on it "would otherwise lose the occurrence with no record of it". Every other
 #: reason is a decision not to run that occurrence at all.
 _UNCONSUMED_SKIPS: Final = frozenset({SkipReason.BUFFERED, SkipReason.TRUNCATED})
+
+
+def _owes(decision: ScheduleEvaluation) -> bool:
+    """Whether the evaluation left an occurrence that still has to run."""
+    return any(skip.reason in _UNCONSUMED_SKIPS for skip in decision.skipped)
 
 
 @dataclass(frozen=True)
@@ -195,7 +213,15 @@ class ScheduleRunAdmitter:
         failures: list[Exception] = []
         for fire in decision.fires:
             try:
-                run_ids.append(await self._admit_one(schedule, template, fire))
+                # A clean slate, not just a fresh id: this loop runs on the
+                # background tick loop, sharing an event loop with whatever
+                # else happens to be running, so it must not risk inheriting
+                # a stray Attempt's ids still bound on this tick.
+                with (
+                    detached_execution_context(),
+                    bind_execution_context(request_id=uuid.uuid4().hex[:12]),
+                ):
+                    run_ids.append(await self._admit_one(schedule, template, fire))
                 admitted.append(fire)
                 consumed.append(fire)
             except DuplicateOccurrence:
@@ -240,10 +266,11 @@ class ScheduleRunAdmitter:
             )
 
         disable = self._exhausted_after(schedule, fires=len(admitted))
-        # `next_due_at` is recomputed only when the whole batch landed. A
-        # partial batch leaves occurrences owed, and `evaluate()`'s answer
-        # assumed all of them fired.
-        complete = len(consumed) == len(decision.fires)
+        # `next_due_at` is recomputed only when the whole batch landed and
+        # nothing was held back. A partial batch leaves occurrences owed, and
+        # `evaluate()`'s answer assumed all of them fired; a buffered
+        # occurrence is owed the same way (#1199).
+        complete = len(consumed) == len(decision.fires) and not _owes(decision)
         await self._schedules.record_fire(
             schedule.schedule_id,
             # The newest occurrence *admitted*, not `now`. This value becomes
@@ -294,6 +321,11 @@ class ScheduleRunAdmitter:
         decision not to run that occurrence at all.
         """
         consumable = [skip for skip in decision.skipped if skip.reason not in _UNCONSUMED_SKIPS]
+        # The due cursor moves only when nothing is owed (#1199). `due()`
+        # selects on `next_due_at`, so advancing it past a buffered occurrence
+        # would hide the schedule from the tick until the occurrence *after*
+        # the one it still has to run.
+        next_due_at = schedule.next_due_at if _owes(decision) else decision.next_due_at
         if consumable:
             newest = max(skip.scheduled_for for skip in consumable)
             await self._schedules.record_fire(
@@ -304,7 +336,22 @@ class ScheduleRunAdmitter:
                 # None, which is what makes "the last Run this schedule
                 # produced" survive an occurrence that produced none.
                 run_id=None,
-                next_due_at=decision.next_due_at,
+                next_due_at=next_due_at,
+                fires=0,
+            )
+        elif next_due_at is not None and next_due_at != schedule.next_due_at:
+            # Nothing fired and nothing was dropped, but the evaluation still
+            # learned when the next occurrence is — and a schedule that never
+            # records it stays selected by `due()` on every tick until its
+            # first occurrence, however far off that is (#1199). No occurrence
+            # was consumed, so `fired_at=None` leaves the enumeration cursor
+            # where it is; only the due cursor is written, and only when it
+            # changed, so an idle schedule costs no write per tick.
+            await self._schedules.record_fire(
+                schedule.schedule_id,
+                fired_at=None,
+                run_id=None,
+                next_due_at=next_due_at,
                 fires=0,
             )
         return ScheduleAdmission(
@@ -344,6 +391,9 @@ class ScheduleRunAdmitter:
             # runner, because a Run that cannot say what it was asked to do
             # cannot be audited or replayed.
             provenance[SCHEDULE_INPUTS_KEY] = schedule.inputs
+        request_id = current_execution_context().request_id
+        if request_id:
+            provenance[REQUEST_ID_KEY] = request_id
         run = await self._runs.create_run(
             graph,
             persona_id=schedule.persona_id,

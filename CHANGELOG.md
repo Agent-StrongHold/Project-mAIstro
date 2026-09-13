@@ -103,6 +103,21 @@ or placeholder-only section.
   `BROWSER_USE_ALLOWED_ORIGINS`; a browser-use build that cannot be handed a
   guarded context is refused rather than run unguarded.
 
+- **Hive Conductor now propagates one request correlation identity into
+  maistro-server task admission (#1063).** Hive Conductor registers
+  maistro-core's `RequestIDMiddleware` in its own stack (reused, not
+  reimplemented), and `MaistroServerTaskBackend` forwards the bound id as an
+  outbound `X-Request-ID` header so maistro-server's own `RequestIDMiddleware`
+  adopts the same id instead of allocating an unrelated one for the
+  service-to-service hop. `TaskRunAdmitter.admit()` records that id on the
+  admitted Run's provenance alongside the existing `task_id`/`session_id`/
+  `user_id`. A schedule firing — which has no incoming HTTP request — mints
+  its own fresh correlation root inside a detached execution context rather
+  than admitting uncorrelated or risking a stray id from an unrelated
+  Attempt still bound on the same event loop tick. The id is correlation
+  metadata only; unlike the signed Workspace-scope headers, it can never
+  assert scope or authorization.
+
 ### Changed
 
 - **HALF_OPEN circuit-breaker success is now caller-bound (#828).** `record_success()`
@@ -144,6 +159,48 @@ or placeholder-only section.
 
 ### Fixed
 
+- **A schedule's due cursor is recorded on every evaluation, and SQLite
+  `record_fire` is serialized (#1199).** `ScheduleRunAdmitter` computed
+  `next_due_at` on an evaluation that fired nothing but never persisted it, so
+  a schedule whose first occurrence was days away stayed `next_due_at=None`
+  and was selected by `ScheduleStore.due()` on every tick until then.
+  `record_fire` now takes `fired_at=None` to record the due cursor alone —
+  the enumeration cursor (`last_fired_at`), `last_run_id` and `runs_so_far`
+  are untouched — and the admitter writes it whenever it changes and nothing
+  is owed; a `BUFFER_ONE` occurrence held behind an active Run keeps the
+  schedule due rather than hiding it until the occurrence after it.
+  `SqliteScheduleStore.record_fire` was a get-then-put with nothing between
+  the read and the write, so a tick and a manual fire advancing one schedule
+  could both read `runs_so_far = n` and both write `n + 1`, losing each
+  other's `last_run_id` and `next_due_at` with it; every SQLite writer now
+  goes through one `BEGIN IMMEDIATE` critical section, matching the
+  PostgreSQL store's `FOR UPDATE`. That section is the connection's, so the
+  container now opens the schedule store its own SQLite connection
+  (`Container.schedule_conn`, on the session store's terms) rather than
+  sharing the spine's, where its BEGIN collided with a sibling store's open
+  transaction and its rollback discarded that sibling's work; a cancelled
+  writer waits the queued COMMIT out before deciding whether a rollback is
+  real. `ScheduleStore.put` keeps an existing row's recorded cursors
+  (`last_fired_at`, `last_run_id`, `runs_so_far`, `next_due_at`) instead of
+  writing back the copy the caller read, so the Hive tick's per-tick
+  definition refresh can no longer undo a fire that landed between its read
+  and its write; a changed recurrence clears `next_due_at` for re-evaluation.
+  `record_fire`'s `fires` now follows `fired_at` when omitted (none for a
+  due-cursor-only write), so a bounded schedule cannot be spent by one. The
+  live Hive tick still enumerates its own schedule rows; moving it onto
+  `ScheduleStore.due()` is #1199's remaining scope.
+- **HITL settlement repair is fair, idempotent, and keeps the recorded time
+  (#737).** Startup reconciliation now finds crash residue (a canonical Run
+  still PAUSED under a CANCELLED/TIMED_OUT continuation) from the canonical
+  PAUSED side before the per-status scan, so an accumulating COMPLETED prefix
+  can no longer starve it; a second tick that loses the race to the same
+  repair stops instead of raising; the repaired Run and NodeRun are stamped
+  with the durable `decided_at`, not the reconciliation time. The expiry tick
+  repairs a continuation whose pause was never mirrored to its Run and widens
+  its candidate page past projections it cannot repair. Migration 033
+  validates each legacy `resume_at` (ISO-8601 with an explicit offset) before
+  casting, leaving malformed or timezone-less values unindexed rather than
+  aborting the upgrade or reading them in the session zone.
 - **Project membership is one canonical row per `(project, principal)`, and
   is now explicitly revocable (#1148).** `ProjectScopeStore.set_membership`
   used to mint a fresh `membership_id` on every call, so a re-grant, role
