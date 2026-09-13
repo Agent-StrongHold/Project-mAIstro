@@ -73,7 +73,7 @@ class TestTheStoreStatesItsReachAndItsTable:
             for path in sorted(_MIGRATIONS.glob("*.py"))
             if "capability_invocations" in path.read_text()
         ]
-        assert creating == ["034_capability_invocations.py"]
+        assert creating == ["035_capability_invocations.py"]
 
     def test_the_migration_scan_has_a_corpus(self) -> None:
         assert len(list(_MIGRATIONS.glob("*.py"))) > 10

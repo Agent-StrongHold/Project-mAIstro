@@ -1,7 +1,12 @@
 """Canonical capability Invocation ledger.
 
-Revision ID: 034
-Revises: 033
+Revision ID: 035
+Revises: 034
+
+Renumbered from 034 after develop took that id: #1341 landed
+`034_hitl_deadline_index` while this branch was open, and both declared
+`down_revision = "033"`, so the chain had two heads. Only the identifiers
+change; the DDL this applies is untouched.
 """
 
 from __future__ import annotations
@@ -10,8 +15,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "034"
-down_revision = "033"
+revision = "035"
+down_revision = "034"
 branch_labels = None
 depends_on = None
 
