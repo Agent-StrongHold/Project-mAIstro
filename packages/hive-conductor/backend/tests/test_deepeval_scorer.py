@@ -13,10 +13,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
-
 # ---------------------------------------------------------------------------
 # Helpers — build a minimal deepeval stub so tests are self-contained
 # ---------------------------------------------------------------------------

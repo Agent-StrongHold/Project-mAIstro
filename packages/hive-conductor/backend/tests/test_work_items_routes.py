@@ -14,8 +14,8 @@ reason the flag had to go rather than be renamed.
 
 from __future__ import annotations
 
+import hive_conductor.stores as stores
 import pytest
-import stores
 
 
 @pytest.fixture(autouse=True)

@@ -1,10 +1,10 @@
 from datetime import UTC, datetime
 
+import hive_conductor.stores as stores
 import pytest
-import stores
 from fastapi.testclient import TestClient
-from models.workspace import Workspace, WorkspaceMember
-from services.dag_execution_scope import (
+from hive_conductor.models.workspace import Workspace, WorkspaceMember
+from hive_conductor.services.dag_execution_scope import (
     DagWorkspaceSelectionError,
     authorize_hive_dag_workspace,
 )

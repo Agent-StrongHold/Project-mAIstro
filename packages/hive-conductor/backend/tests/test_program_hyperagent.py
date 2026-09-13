@@ -18,7 +18,6 @@ Covers:
 from __future__ import annotations
 
 import pathlib
-import sys
 from types import SimpleNamespace
 from typing import Any, ClassVar
 
@@ -26,22 +25,20 @@ import pytest
 from fastapi import HTTPException
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 
 # --- user_id_from_request ------------------------------------------------
 
 
 def test_user_id_from_request_returns_id() -> None:
-    from services.program_hyperagent import user_id_from_request
+    from hive_conductor.services.program_hyperagent import user_id_from_request
 
     req = SimpleNamespace(state=SimpleNamespace(user={"id": "u1"}))
     assert user_id_from_request(req) == "u1"  # type: ignore[arg-type]
 
 
 def test_user_id_from_request_raises_401_when_no_user() -> None:
-    from services.program_hyperagent import user_id_from_request
+    from hive_conductor.services.program_hyperagent import user_id_from_request
 
     req = SimpleNamespace(state=SimpleNamespace(user=None))
     with pytest.raises(HTTPException) as ei:
@@ -50,7 +47,7 @@ def test_user_id_from_request_raises_401_when_no_user() -> None:
 
 
 def test_user_id_from_request_raises_401_when_no_id() -> None:
-    from services.program_hyperagent import user_id_from_request
+    from hive_conductor.services.program_hyperagent import user_id_from_request
 
     req = SimpleNamespace(state=SimpleNamespace(user={"username": "x"}))
     with pytest.raises(HTTPException) as ei:
@@ -65,7 +62,7 @@ async def test_require_program_access_404_without_a_member_workspace(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """And with the POC flag on, which used to be the whole gate (#129)."""
-    import services.program_hyperagent as ph
+    import hive_conductor.services.program_hyperagent as ph
 
     monkeypatch.setenv("HIVE_POC_MODE", "pm")
     monkeypatch.setenv("MAISTRO_POC_MODE", "pm")
@@ -77,12 +74,14 @@ async def test_require_program_access_404_without_a_member_workspace(
 async def test_require_program_access_passes_for_a_member(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.program_hyperagent as ph
+    import hive_conductor.services.program_hyperagent as ph
 
     async def _authorized(uid: str, workspace_id: str | None) -> bool:
         return True
 
-    monkeypatch.setattr("services.workspace_mode.is_workspace_request_authorized", _authorized)
+    monkeypatch.setattr(
+        "hive_conductor.services.workspace_mode.is_workspace_request_authorized", _authorized
+    )
     await ph.require_program_access("u1", "ws-1")
 
 
@@ -104,7 +103,7 @@ class _StubCtx:
 async def test_apply_guidance_interview_incomplete(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.program_hyperagent as ph
+    import hive_conductor.services.program_hyperagent as ph
 
     ctx = _StubCtx()
     ctx.interview_complete = False
@@ -122,7 +121,7 @@ async def test_apply_guidance_interview_incomplete(
 async def test_apply_guidance_pulse_succeeds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.program_hyperagent as ph
+    import hive_conductor.services.program_hyperagent as ph
 
     ctx = _StubCtx()
     ctx.interview_complete = True
@@ -146,7 +145,7 @@ async def test_apply_guidance_pulse_succeeds(
 async def test_apply_guidance_pulse_exception_swallowed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.program_hyperagent as ph
+    import hive_conductor.services.program_hyperagent as ph
 
     ctx = _StubCtx()
     ctx.interview_complete = True
@@ -167,7 +166,7 @@ async def test_apply_guidance_pulse_exception_swallowed(
 async def test_apply_guidance_max_pulse_actions_zero_skips_pulse(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.program_hyperagent as ph
+    import hive_conductor.services.program_hyperagent as ph
 
     ctx = _StubCtx()
     ctx.interview_complete = True  # would normally trigger pulse
@@ -196,7 +195,7 @@ async def test_apply_guidance_max_pulse_actions_zero_skips_pulse(
 async def test_run_program_pulse_interview_incomplete_returns_skipped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.program_hyperagent as ph
+    import hive_conductor.services.program_hyperagent as ph
 
     ctx = _StubCtx()
     ctx.interview_complete = False
@@ -211,7 +210,7 @@ async def test_run_program_pulse_interview_incomplete_returns_skipped(
 async def test_run_program_pulse_keeps_proposals_without_queueing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.program_hyperagent as ph
+    import hive_conductor.services.program_hyperagent as ph
 
     class _Action:
         agent_id = "program_manager"
@@ -241,7 +240,7 @@ async def test_run_program_pulse_keeps_proposals_without_queueing(
 async def test_run_program_pulse_no_actions_explains_no_queue(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.program_hyperagent as ph
+    import hive_conductor.services.program_hyperagent as ph
 
     ctx = _StubCtx()
     ctx.interview_complete = True
@@ -260,7 +259,7 @@ class TestTheWorkspaceReachesEverythingItShould:
     async def test_guidance_is_written_to_the_named_workspaces_context(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import services.program_hyperagent as ph
+        import hive_conductor.services.program_hyperagent as ph
 
         seen: list[str] = []
         ctx = _StubCtx()
@@ -282,7 +281,7 @@ class TestTheWorkspaceReachesEverythingItShould:
     async def test_the_pulse_reads_the_named_workspaces_context(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import services.program_hyperagent as ph
+        import hive_conductor.services.program_hyperagent as ph
 
         seen: list[str] = []
         ctx = _StubCtx()
@@ -301,7 +300,7 @@ class TestTheWorkspaceReachesEverythingItShould:
     async def test_the_pulse_reads_the_workspaces_own_roster(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import services.program_hyperagent as ph
+        import hive_conductor.services.program_hyperagent as ph
 
         seen: dict[str, Any] = {}
         ctx = _StubCtx()

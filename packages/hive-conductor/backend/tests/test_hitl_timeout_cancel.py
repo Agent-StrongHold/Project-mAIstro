@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 import pytest
-from services.workspace_authority import create_workspace
+from hive_conductor.services.workspace_authority import create_workspace
 
 from maistro.graph.definitions import Graph, Node
 from maistro.graph.durable_runs import InMemoryDurableRunStore
@@ -78,7 +78,7 @@ def _paused_record(
 
 @pytest.fixture
 def seeded(admin_client: Any) -> Iterator[_Seeded]:
-    from services.dag_agents import get_run_store
+    from hive_conductor.services.dag_agents import get_run_store
 
     store = get_run_store()
     assert isinstance(store, InMemoryDurableRunStore)

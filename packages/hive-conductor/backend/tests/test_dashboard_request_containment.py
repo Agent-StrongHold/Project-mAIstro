@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from services.dashboard_safety import (
+from hive_conductor.services.dashboard_safety import (
     sanitize_dashboard_layout,
     sanitize_widget_config,
     widget_config_violations,
@@ -190,7 +190,7 @@ def test_free_text_fields_allow_formula_characters_but_not_traversal() -> None:
 
 async def test_chat_widget_tool_rejects_non_declarative_config() -> None:
     """The model-facing tool reports violations instead of saving a shell (#314)."""
-    from services.chat_completion import _tool_create_dashboard_widget
+    from hive_conductor.services.chat_completion import _tool_create_dashboard_widget
 
     result = await _tool_create_dashboard_widget(
         {

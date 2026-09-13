@@ -7,21 +7,18 @@ is to revoke every session so each one stops resolving to a user.
 from __future__ import annotations
 
 import pathlib
-import sys
 from collections.abc import Iterator
 from typing import Any
 
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 
 @pytest.fixture()
 def preserved_sessions() -> Iterator[None]:
     """Purging is global; hand the session-scoped fixtures their logins back."""
-    import stores
+    import hive_conductor.stores as stores
 
     snapshot = dict(stores.sessions.items())
     try:
@@ -34,7 +31,7 @@ def preserved_sessions() -> Iterator[None]:
 
 def _login() -> tuple[Any, str]:
     from fastapi.testclient import TestClient
-    from main import app
+    from hive_conductor.main import app
 
     client = TestClient(app)
     resp = client.post("/v1/auth/login", json={"username": "testuser", "password": "testpass"})
@@ -45,7 +42,7 @@ def _login() -> tuple[Any, str]:
 
 
 def test_purge_revokes_a_live_session(preserved_sessions: None) -> None:
-    import stores
+    import hive_conductor.stores as stores
 
     client, session_id = _login()
     assert client.get("/v1/auth/whoami").json()["authenticated"] is True
@@ -61,7 +58,7 @@ def test_purge_revokes_a_live_session(preserved_sessions: None) -> None:
 
 
 def test_purge_empties_the_store(preserved_sessions: None) -> None:
-    import stores
+    import hive_conductor.stores as stores
 
     _login()
     _login()
@@ -74,14 +71,14 @@ def test_purge_empties_the_store(preserved_sessions: None) -> None:
 
 
 def test_purge_on_empty_store_is_a_noop(preserved_sessions: None) -> None:
-    import stores
+    import hive_conductor.stores as stores
 
     stores.purge_all_sessions()
     assert stores.purge_all_sessions() == 0
 
 
 def test_login_still_works_after_a_purge(preserved_sessions: None) -> None:
-    import stores
+    import hive_conductor.stores as stores
 
     _login()
     stores.purge_all_sessions()
@@ -93,7 +90,7 @@ def test_login_still_works_after_a_purge(preserved_sessions: None) -> None:
 
 def test_json_store_clear_deletes_from_persistence() -> None:
     """clear() must route through the same per-key delete as pop()."""
-    from services.model_store import JsonStore
+    from hive_conductor.services.model_store import JsonStore
 
     class _FakePersisted:
         def __init__(self) -> None:

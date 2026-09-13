@@ -29,34 +29,32 @@ import httpx
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 
 # --- _normalize_site -----------------------------------------------------
 
 
 def test_normalize_site_empty() -> None:
-    from services.mcp_client import _normalize_site
+    from hive_conductor.services.mcp_client import _normalize_site
 
     assert _normalize_site("") == ""
     assert _normalize_site("   ") == ""
 
 
 def test_normalize_site_adds_https_prefix() -> None:
-    from services.mcp_client import _normalize_site
+    from hive_conductor.services.mcp_client import _normalize_site
 
     assert _normalize_site("example.atlassian.net") == "https://example.atlassian.net"
 
 
 def test_normalize_site_strips_trailing_slash() -> None:
-    from services.mcp_client import _normalize_site
+    from hive_conductor.services.mcp_client import _normalize_site
 
     assert _normalize_site("https://x.atlassian.net/") == "https://x.atlassian.net"
 
 
 def test_normalize_site_preserves_existing_https() -> None:
-    from services.mcp_client import _normalize_site
+    from hive_conductor.services.mcp_client import _normalize_site
 
     assert _normalize_site("https://foo.atlassian.net") == "https://foo.atlassian.net"
 
@@ -67,7 +65,7 @@ def test_normalize_site_preserves_existing_https() -> None:
 def test_atlassian_site_url_reads_ATLASSIAN_SITE_URL_first(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from services.mcp_client import atlassian_site_url
+    from hive_conductor.services.mcp_client import atlassian_site_url
 
     monkeypatch.setenv("ATLASSIAN_SITE_URL", "https://primary.atlassian.net")
     monkeypatch.setenv("JIRA_SITE_URL", "https://fallback.atlassian.net")
@@ -77,7 +75,7 @@ def test_atlassian_site_url_reads_ATLASSIAN_SITE_URL_first(
 def test_atlassian_site_url_falls_back_to_JIRA_SITE_URL(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from services.mcp_client import atlassian_site_url
+    from hive_conductor.services.mcp_client import atlassian_site_url
 
     monkeypatch.delenv("ATLASSIAN_SITE_URL", raising=False)
     monkeypatch.setenv("JIRA_SITE_URL", "https://fallback.atlassian.net")
@@ -87,7 +85,7 @@ def test_atlassian_site_url_falls_back_to_JIRA_SITE_URL(
 def test_atlassian_site_url_empty_when_neither_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from services.mcp_client import atlassian_site_url
+    from hive_conductor.services.mcp_client import atlassian_site_url
 
     monkeypatch.delenv("ATLASSIAN_SITE_URL", raising=False)
     monkeypatch.delenv("JIRA_SITE_URL", raising=False)
@@ -98,7 +96,7 @@ def test_atlassian_site_url_empty_when_neither_set(
 
 
 def test_resolve_token_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    from services.mcp_client import resolve_atlassian_token
+    from hive_conductor.services.mcp_client import resolve_atlassian_token
 
     monkeypatch.setenv("ATLASSIAN_API_TOKEN", "env-token-1")
     monkeypatch.delenv("JIRA_API_TOKEN", raising=False)
@@ -108,7 +106,7 @@ def test_resolve_token_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_resolve_token_from_jira_api_token_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from services.mcp_client import resolve_atlassian_token
+    from hive_conductor.services.mcp_client import resolve_atlassian_token
 
     monkeypatch.delenv("ATLASSIAN_API_TOKEN", raising=False)
     monkeypatch.setenv("JIRA_API_TOKEN", "jira-fallback")
@@ -118,7 +116,7 @@ def test_resolve_token_from_jira_api_token_fallback(
 def test_resolve_token_no_user_returns_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from services.mcp_client import resolve_atlassian_token
+    from hive_conductor.services.mcp_client import resolve_atlassian_token
 
     monkeypatch.delenv("ATLASSIAN_API_TOKEN", raising=False)
     monkeypatch.delenv("JIRA_API_TOKEN", raising=False)
@@ -128,8 +126,8 @@ def test_resolve_token_no_user_returns_none(
 def test_resolve_token_from_store(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from services import mcp_client
-    from services import user_credentials as cred_svc
+    from hive_conductor.services import mcp_client
+    from hive_conductor.services import user_credentials as cred_svc
 
     monkeypatch.delenv("ATLASSIAN_API_TOKEN", raising=False)
     monkeypatch.delenv("JIRA_API_TOKEN", raising=False)
@@ -148,8 +146,8 @@ def test_resolve_token_from_store(
 def test_resolve_token_store_none_returns_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from services import mcp_client
-    from services import user_credentials as cred_svc
+    from hive_conductor.services import mcp_client
+    from hive_conductor.services import user_credentials as cred_svc
 
     monkeypatch.delenv("ATLASSIAN_API_TOKEN", raising=False)
     monkeypatch.delenv("JIRA_API_TOKEN", raising=False)
@@ -162,8 +160,8 @@ def test_resolve_token_inner_exception_swallowed_per_provider(
 ) -> None:
     """If has_secret/use_secret raises for one provider, the loop
     continues to the next."""
-    from services import mcp_client
-    from services import user_credentials as cred_svc
+    from hive_conductor.services import mcp_client
+    from hive_conductor.services import user_credentials as cred_svc
 
     monkeypatch.delenv("ATLASSIAN_API_TOKEN", raising=False)
     monkeypatch.delenv("JIRA_API_TOKEN", raising=False)
@@ -188,20 +186,20 @@ def test_resolve_token_outer_exception_returns_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """If the cred_svc import itself raises, returns None."""
-    from services import mcp_client
+    from hive_conductor.services import mcp_client
 
     monkeypatch.delenv("ATLASSIAN_API_TOKEN", raising=False)
     monkeypatch.delenv("JIRA_API_TOKEN", raising=False)
 
     import types
 
-    broken = types.ModuleType("services.user_credentials")
+    broken = types.ModuleType("hive_conductor.services.user_credentials")
 
     def _bad(name: str) -> Any:
         raise ImportError("synthetic")
 
     broken.__getattr__ = _bad  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "services.user_credentials", broken)
+    monkeypatch.setitem(sys.modules, "hive_conductor.services.user_credentials", broken)
     assert mcp_client.resolve_atlassian_token(user_id="u1") is None
 
 
@@ -209,7 +207,7 @@ def test_resolve_token_outer_exception_returns_none(
 
 
 async def test_jira_rest_no_token(monkeypatch: pytest.MonkeyPatch) -> None:
-    from services.mcp_client import test_jira_rest
+    from hive_conductor.services.mcp_client import test_jira_rest
 
     monkeypatch.delenv("ATLASSIAN_API_TOKEN", raising=False)
     monkeypatch.delenv("JIRA_API_TOKEN", raising=False)
@@ -219,7 +217,7 @@ async def test_jira_rest_no_token(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 async def test_jira_rest_no_site(monkeypatch: pytest.MonkeyPatch) -> None:
-    from services.mcp_client import test_jira_rest
+    from hive_conductor.services.mcp_client import test_jira_rest
 
     monkeypatch.setenv("ATLASSIAN_API_TOKEN", "tk")
     monkeypatch.delenv("ATLASSIAN_SITE_URL", raising=False)
@@ -230,7 +228,7 @@ async def test_jira_rest_no_site(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 async def test_jira_rest_invalid_site(monkeypatch: pytest.MonkeyPatch) -> None:
-    from services.mcp_client import test_jira_rest
+    from hive_conductor.services.mcp_client import test_jira_rest
 
     monkeypatch.setenv("ATLASSIAN_API_TOKEN", "tk")
     monkeypatch.setenv("ATLASSIAN_SITE_URL", "https://bogus.example.com")
@@ -240,7 +238,7 @@ async def test_jira_rest_invalid_site(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 async def test_jira_rest_200_success(monkeypatch: pytest.MonkeyPatch) -> None:
-    from services.mcp_client import test_jira_rest
+    from hive_conductor.services.mcp_client import test_jira_rest
 
     monkeypatch.setenv("ATLASSIAN_API_TOKEN", "tk")
     monkeypatch.setenv("ATLASSIAN_SITE_URL", "https://x.atlassian.net")
@@ -269,7 +267,7 @@ async def test_jira_rest_200_success(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 async def test_jira_rest_non_200_status(monkeypatch: pytest.MonkeyPatch) -> None:
-    from services.mcp_client import test_jira_rest
+    from hive_conductor.services.mcp_client import test_jira_rest
 
     monkeypatch.setenv("ATLASSIAN_API_TOKEN", "tk")
     monkeypatch.setenv("ATLASSIAN_SITE_URL", "https://x.atlassian.net")
@@ -298,7 +296,7 @@ async def test_jira_rest_non_200_status(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 async def test_jira_rest_httpx_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    from services.mcp_client import test_jira_rest
+    from hive_conductor.services.mcp_client import test_jira_rest
 
     monkeypatch.setenv("ATLASSIAN_API_TOKEN", "tk")
     monkeypatch.setenv("ATLASSIAN_SITE_URL", "https://x.atlassian.net")
@@ -321,7 +319,7 @@ async def test_jira_rest_httpx_error(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_jira_rest_uses_email_when_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from services.mcp_client import test_jira_rest
+    from hive_conductor.services.mcp_client import test_jira_rest
 
     monkeypatch.setenv("ATLASSIAN_API_TOKEN", "tk")
     monkeypatch.setenv("ATLASSIAN_SITE_URL", "https://x.atlassian.net")
@@ -356,7 +354,7 @@ async def test_jira_rest_uses_email_when_set(
 async def test_mcp_server_rovo_with_successful_jira(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from services import mcp_client
+    from hive_conductor.services import mcp_client
 
     async def _jira_ok(*, user_id: Any) -> dict[str, Any]:
         return {"ok": True, "mode": "jira_rest", "detail": "Connected as X"}
@@ -370,7 +368,7 @@ async def test_mcp_server_rovo_with_successful_jira(
 async def test_mcp_server_rovo_with_token_but_no_site(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from services import mcp_client
+    from hive_conductor.services import mcp_client
 
     async def _jira_no(*, user_id: Any) -> dict[str, Any]:
         return {"ok": False, "mode": "jira_rest", "detail": "ATLASSIAN_SITE_URL not set"}
@@ -385,7 +383,7 @@ async def test_mcp_server_rovo_with_token_but_no_site(
 async def test_mcp_server_rovo_no_token_no_jira(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from services import mcp_client
+    from hive_conductor.services import mcp_client
 
     async def _jira_no(*, user_id: Any) -> dict[str, Any]:
         return {"ok": False, "mode": "jira_rest", "detail": "No Jira token"}
@@ -400,7 +398,7 @@ async def test_mcp_server_rovo_no_token_no_jira(
 async def test_mcp_server_local_reachable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from services import mcp_client
+    from hive_conductor.services import mcp_client
 
     class _Resp:
         status_code = 200
@@ -426,7 +424,7 @@ async def test_mcp_server_local_reachable(
 async def test_mcp_server_local_http_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from services import mcp_client
+    from hive_conductor.services import mcp_client
 
     class _Client:
         def __init__(self, *a: Any, **kw: Any) -> None: ...
@@ -451,7 +449,7 @@ async def test_mcp_server_local_5xx_is_failure(
 ) -> None:
     """500+ responses are NOT considered reachable (the route considers
     them down)."""
-    from services import mcp_client
+    from hive_conductor.services import mcp_client
 
     class _Resp:
         status_code = 500
@@ -474,7 +472,7 @@ async def test_mcp_server_local_5xx_is_failure(
 
 
 async def test_mcp_server_unknown_server_type() -> None:
-    from services.mcp_client import test_mcp_server
+    from hive_conductor.services.mcp_client import test_mcp_server
 
     out = await test_mcp_server("mcp-mystery", url="https://elsewhere.com")
     assert out["ok"] is False

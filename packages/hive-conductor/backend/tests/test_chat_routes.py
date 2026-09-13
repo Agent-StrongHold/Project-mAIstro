@@ -10,16 +10,13 @@ endpoints through the M0 conversational-only route boundary.
 from __future__ import annotations
 
 import pathlib
-import sys
 from typing import Any
 
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
-import stores  # noqa: E402
+import hive_conductor.stores as stores  # noqa: E402
 
 
 def _clear(store) -> None:
@@ -162,7 +159,7 @@ def test_complete_calls_conversational_llm_without_tools(authed_client: Any, mon
             captured.append(req)
             return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
 
-    monkeypatch.setattr("routes.chat.build_llm_port", lambda: FakeLLM())
+    monkeypatch.setattr("hive_conductor.routes.chat.build_llm_port", lambda: FakeLLM())
 
     r = authed_client.post(
         "/v1/chat/complete",
@@ -208,7 +205,7 @@ def test_stream_emits_single_done_event_from_conversational_llm(
             assert req.tools is None
             return {"choices": [{"message": {"role": "assistant", "content": "Hello"}}]}
 
-    monkeypatch.setattr("routes.chat.build_llm_port", lambda: FakeLLM())
+    monkeypatch.setattr("hive_conductor.routes.chat.build_llm_port", lambda: FakeLLM())
 
     with authed_client.stream(
         "POST",
@@ -231,7 +228,7 @@ def test_stream_preserves_caller_provided_system_message(authed_client: Any, mon
             captured.append(req)
             return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
 
-    monkeypatch.setattr("routes.chat.build_llm_port", lambda: FakeLLM())
+    monkeypatch.setattr("hive_conductor.routes.chat.build_llm_port", lambda: FakeLLM())
 
     with authed_client.stream(
         "POST",
@@ -257,7 +254,7 @@ def test_stream_swallows_llm_exception_as_done_event(authed_client: Any, monkeyp
         async def complete(self, req):
             raise RuntimeError("boom")
 
-    monkeypatch.setattr("routes.chat.build_llm_port", lambda: FailingLLM())
+    monkeypatch.setattr("hive_conductor.routes.chat.build_llm_port", lambda: FailingLLM())
 
     with authed_client.stream(
         "POST",

@@ -8,8 +8,8 @@ class TestPermissionAssignment:
     """
 
     def test_admin_assigns_then_user_elevates_and_passes_the_scope_check(self, admin_client):
-        import stores
-        from middleware.auth import AuthMiddleware
+        import hive_conductor.stores as stores
+        from hive_conductor.middleware.auth import AuthMiddleware
 
         r = admin_client.patch(
             "/v1/auth/users/user/permissions",

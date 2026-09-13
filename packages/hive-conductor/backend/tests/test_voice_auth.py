@@ -8,7 +8,6 @@ nothing ever asked what an anonymous caller got.
 from __future__ import annotations
 
 import pathlib
-import sys
 from datetime import UTC, datetime
 from typing import Any
 
@@ -16,11 +15,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
-import stores  # noqa: E402
-from main import app  # noqa: E402
+import hive_conductor.stores as stores  # noqa: E402
+from hive_conductor.main import app  # noqa: E402
 
 # Assembled from pieces so no single line reads as `KEY = "<secret>"`.
 # `.gitleaks.toml` deliberately refuses allowlists for findings in code — the
@@ -40,7 +37,7 @@ UTTERANCE: dict[str, Any] = {"text": "turn the kitchen light on", "room": "kitch
 @pytest.fixture(autouse=True)
 def _clear_settings_cache():
     """The credential is read through `get_settings`, which is cached."""
-    from config import get_settings
+    from hive_conductor.config import get_settings
 
     get_settings.cache_clear()
     yield
@@ -66,7 +63,7 @@ def account() -> str:
 @pytest.fixture
 def configured(account: str, monkeypatch: pytest.MonkeyPatch) -> str:
     """A deployment with the voice credential set up."""
-    from config import get_settings
+    from hive_conductor.config import get_settings
 
     monkeypatch.setenv("VOICE_SERVICE_KEY", DEVICE_KEY)
     monkeypatch.setenv("VOICE_SERVICE_ACCOUNT", account)
@@ -93,7 +90,7 @@ def no_llm(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             captured["tools"] = req.tools
             return {"choices": [{"message": {"role": "assistant", "content": "on it"}}]}
 
-    monkeypatch.setattr("routes.voice.build_llm_port", lambda: FakeLLM())
+    monkeypatch.setattr("hive_conductor.routes.voice.build_llm_port", lambda: FakeLLM())
     return captured
 
 
@@ -122,7 +119,11 @@ class TestThePrefixIsNoLongerPublic:
     def test_the_prefix_is_absent_from_the_public_list(self) -> None:
         """Belt and braces on the declaration itself, because the route-level
         assertions above would also pass if voice simply stopped existing."""
-        from middleware.auth import _PUBLIC_EXACT, _PUBLIC_PREFIXES, _PUBLIC_PREFIXES_LOOSE
+        from hive_conductor.middleware.auth import (
+            _PUBLIC_EXACT,
+            _PUBLIC_PREFIXES,
+            _PUBLIC_PREFIXES_LOOSE,
+        )
 
         every = (*_PUBLIC_PREFIXES, *_PUBLIC_PREFIXES_LOOSE, *_PUBLIC_EXACT)
 
@@ -137,7 +138,7 @@ class TestAnUnsetKeyDoesNotMakeTheRouteOpen:
     def test_no_key_and_no_account_refuses_rather_than_admits(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from config import get_settings
+        from hive_conductor.config import get_settings
 
         monkeypatch.delenv("VOICE_SERVICE_KEY", raising=False)
         monkeypatch.delenv("VOICE_SERVICE_ACCOUNT", raising=False)
@@ -154,8 +155,8 @@ class TestAnUnsetKeyDoesNotMakeTheRouteOpen:
     ) -> None:
         """Half-configured is not configured. A key that names nobody cannot
         produce a principal, and a principal is what authorises the tool loop."""
-        from config import get_settings
-        from services.voice_identity import configured_credential
+        from hive_conductor.config import get_settings
+        from hive_conductor.services.voice_identity import configured_credential
 
         monkeypatch.setenv("VOICE_SERVICE_KEY", DEVICE_KEY)
         monkeypatch.delenv("VOICE_SERVICE_ACCOUNT", raising=False)
@@ -164,8 +165,8 @@ class TestAnUnsetKeyDoesNotMakeTheRouteOpen:
         assert configured_credential() is None
 
     def test_an_account_with_no_key_refuses(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from config import get_settings
-        from services.voice_identity import configured_credential
+        from hive_conductor.config import get_settings
+        from hive_conductor.services.voice_identity import configured_credential
 
         monkeypatch.delenv("VOICE_SERVICE_KEY", raising=False)
         monkeypatch.setenv("VOICE_SERVICE_ACCOUNT", SATELLITE_ACCOUNT)
@@ -196,8 +197,8 @@ class TestTheCredentialResolvesToARealAccount:
         assert "kitchen" in prompt
 
     def test_an_account_that_does_not_exist_refuses(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from config import get_settings
-        from services.voice_identity import principal_for
+        from hive_conductor.config import get_settings
+        from hive_conductor.services.voice_identity import principal_for
 
         monkeypatch.setenv("VOICE_SERVICE_KEY", DEVICE_KEY)
         monkeypatch.setenv("VOICE_SERVICE_ACCOUNT", "nobody-by-that-name")
@@ -208,7 +209,7 @@ class TestTheCredentialResolvesToARealAccount:
     def test_a_disabled_account_refuses(self, configured: str) -> None:
         """Disabling the account the satellite speaks as has to take the
         satellite offline too, or 'disabled' means less than it says."""
-        from services.voice_identity import principal_for
+        from hive_conductor.services.voice_identity import principal_for
 
         stored = stores.users[SATELLITE_ID]
         stores.users[SATELLITE_ID] = stored.model_copy(update={"is_active": False})
@@ -218,7 +219,7 @@ class TestTheCredentialResolvesToARealAccount:
     def test_the_device_carries_no_task_elevation(self, configured: str) -> None:
         """The key is an identity, not a permission: everything behind
         `_PROTECTED_OPS` stays refused for it."""
-        from services.voice_identity import principal_for
+        from hive_conductor.services.voice_identity import principal_for
 
         principal = principal_for(f"Bearer {configured}")
 
@@ -247,7 +248,7 @@ class TestTheComparisonAndTheReading:
         """Asserted by observing the call rather than by reading the source:
         #320 is open precisely because source-inspection tests do not survive a
         refactor that keeps the text and loses the property."""
-        import services.voice_identity as voice_identity
+        import hive_conductor.services.voice_identity as voice_identity
 
         seen: list[tuple[str, str]] = []
 
@@ -265,8 +266,8 @@ class TestTheComparisonAndTheReading:
     ) -> None:
         """The old check read the key into a module constant at import, so no
         reconfiguration could reach it while the process lived."""
-        from config import get_settings
-        from services.voice_identity import principal_for
+        from hive_conductor.config import get_settings
+        from hive_conductor.services.voice_identity import principal_for
 
         assert principal_for(f"Bearer {DEVICE_KEY}") is not None
 
@@ -286,6 +287,6 @@ class TestTheComparisonAndTheReading:
         """Including the lowercase `bearer`: accepting it would be harmless
         here, but the token is only ever produced by our own device config, so
         the narrow reading is the one that cannot surprise anyone."""
-        from services.voice_identity import principal_for
+        from hive_conductor.services.voice_identity import principal_for
 
         assert principal_for(header) is None

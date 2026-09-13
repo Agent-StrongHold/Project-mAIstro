@@ -17,17 +17,14 @@ from __future__ import annotations
 
 import json
 import pathlib
-import sys
 from typing import ClassVar
 
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
-from services import profile_store  # noqa: E402
-from services.profile_store import (  # noqa: E402
+from hive_conductor.services import profile_store  # noqa: E402
+from hive_conductor.services.profile_store import (  # noqa: E402
     STORE_NAME,
     EphemeralProfileRecordStore,
     PersistedProfileRecordStore,
@@ -248,7 +245,7 @@ class TestAWriteThatDidNotLandIsNotAcknowledged:
 
     @pytest.mark.ac("SPEC-083026-ef62/AC-2")
     async def test_the_chat_tool_reports_a_failed_write_rather_than_updated(self) -> None:
-        from services.chat_completion import _tool_profile_set
+        from hive_conductor.services.chat_completion import _tool_profile_set
 
         profile_store.configure(_persisted(ForgetfulRecords()))
         result = await _tool_profile_set({"field": "name", "value": "Blake"}, "u-1")
@@ -277,7 +274,9 @@ class TestNoProfilePathReachesTheAbsentPostgrestTable:
         }
 
     @pytest.mark.ac("SPEC-083026-ef62/AC-3")
-    @pytest.mark.parametrize("module", ["services/chat_completion.py", "routes/profile.py"])
+    @pytest.mark.parametrize(
+        "module", ["hive_conductor/services/chat_completion.py", "hive_conductor/routes/profile.py"]
+    )
     def test_no_code_names_the_user_profiles_table(self, module: str) -> None:
         assert "user_profiles" not in self._string_constants(_BACKEND / module)
 
@@ -286,7 +285,7 @@ class TestNoProfilePathReachesTheAbsentPostgrestTable:
         """Removed rather than wrapped, so a missed call site is an
         `AttributeError` at import and not a write that quietly does not
         land (ADR-082926-0b72)."""
-        import services.chat_completion as chat
+        import hive_conductor.services.chat_completion as chat
 
         assert not hasattr(chat, "_PROFILE_CACHE")
         assert not hasattr(chat, "hydrate_profile_cache")
@@ -298,7 +297,7 @@ class TestNoProfilePathReachesTheAbsentPostgrestTable:
         explanation."""
         import ast
 
-        tree = ast.parse((_BACKEND / "routes/profile.py").read_text())
+        tree = ast.parse((_BACKEND / "hive_conductor/routes/profile.py").read_text())
         called = {
             node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
             for node in ast.walk(tree)
@@ -317,7 +316,7 @@ class TestNoProfilePathReachesTheAbsentPostgrestTable:
 class TestTheRouteAndTheChatToolsReachTheSameOwner:
     @pytest.mark.ac("SPEC-083026-ef62/AC-4")
     async def test_a_tool_reads_what_the_store_holds(self) -> None:
-        from services.chat_completion import _tool_profile_get
+        from hive_conductor.services.chat_completion import _tool_profile_get
 
         profile_store.configure(_persisted(FakeRecords()))
         profile_store.save("u-1", {"name": "Blake"})
@@ -327,7 +326,7 @@ class TestTheRouteAndTheChatToolsReachTheSameOwner:
     async def test_a_tool_set_does_not_erase_what_was_already_there(self) -> None:
         """The defect itself. `profile_set` read the empty PostgREST table, so
         it wrote `{}` plus its one field over everything the panel had saved."""
-        from services.chat_completion import _tool_profile_set
+        from hive_conductor.services.chat_completion import _tool_profile_set
 
         profile_store.configure(_persisted(FakeRecords()))
         profile_store.save("u-1", {"name": "Blake", "role": "operator"})
@@ -340,7 +339,7 @@ class TestTheRouteAndTheChatToolsReachTheSameOwner:
 
     @pytest.mark.ac("SPEC-083026-ef62/AC-4")
     async def test_a_tool_delete_removes_the_field_from_the_shared_record(self) -> None:
-        from services.chat_completion import _tool_profile_delete
+        from hive_conductor.services.chat_completion import _tool_profile_delete
 
         profile_store.configure(_persisted(FakeRecords()))
         profile_store.save("u-1", {"name": "Blake", "role": "operator"})
@@ -349,7 +348,7 @@ class TestTheRouteAndTheChatToolsReachTheSameOwner:
 
     @pytest.mark.ac("SPEC-083026-ef62/AC-4")
     async def test_a_tool_delete_of_an_unset_field_says_so(self) -> None:
-        from services.chat_completion import _tool_profile_delete
+        from hive_conductor.services.chat_completion import _tool_profile_delete
 
         profile_store.configure(_persisted(FakeRecords()))
         profile_store.save("u-1", {"name": "Blake"})
@@ -357,7 +356,7 @@ class TestTheRouteAndTheChatToolsReachTheSameOwner:
 
     @pytest.mark.ac("SPEC-083026-ef62/AC-4")
     async def test_the_model_curation_tool_writes_where_the_route_reads(self) -> None:
-        from services.chat_completion import _tool_favorite_model
+        from hive_conductor.services.chat_completion import _tool_favorite_model
 
         profile_store.configure(_persisted(FakeRecords()))
         profile_store.save("u-1", {"name": "Blake"})
@@ -368,7 +367,7 @@ class TestTheRouteAndTheChatToolsReachTheSameOwner:
 
     @pytest.mark.ac("SPEC-083026-ef62/AC-4")
     async def test_the_route_sees_what_a_tool_set(self, authed_client) -> None:
-        from services.chat_completion import _tool_profile_set
+        from hive_conductor.services.chat_completion import _tool_profile_set
 
         profile_store.configure(_persisted(FakeRecords()))
         user_id = authed_client.get("/v1/auth/whoami").json()["user"]["id"]
@@ -377,7 +376,7 @@ class TestTheRouteAndTheChatToolsReachTheSameOwner:
 
     @pytest.mark.ac("SPEC-083026-ef62/AC-4")
     async def test_a_tool_sees_what_the_route_wrote(self, authed_client) -> None:
-        from services.chat_completion import _tool_profile_get
+        from hive_conductor.services.chat_completion import _tool_profile_get
 
         profile_store.configure(_persisted(FakeRecords()))
         user_id = authed_client.get("/v1/auth/whoami").json()["user"]["id"]
@@ -388,7 +387,7 @@ class TestTheRouteAndTheChatToolsReachTheSameOwner:
     def test_the_system_prompt_carries_the_stored_profile(self) -> None:
         """The reader that made the split-brain visible to the model: it read
         the cache the tools never wrote."""
-        from services.chat_completion import _build_system_prompt
+        from hive_conductor.services.chat_completion import _build_system_prompt
 
         profile_store.configure(_persisted(FakeRecords()))
         profile_store.save("u-1", {"name": "Blake"})
@@ -459,7 +458,7 @@ class TestAProfileIsDeletableAndBelongsToItsPrincipal:
         """`_user_id` used to return the literal `"dev"` here, pointing every
         such caller at one record."""
         from fastapi import HTTPException
-        from routes.profile import _user_id
+        from hive_conductor.routes.profile import _user_id
 
         class _State:
             #: A principal with a role and nothing to address a profile by.
@@ -489,7 +488,7 @@ class TestAProfileIsDeletableAndBelongsToItsPrincipal:
     @pytest.mark.ac("SPEC-083026-ef62/AC-5")
     def test_an_unauthenticated_request_is_refused(self) -> None:
         from fastapi.testclient import TestClient
-        from main import app
+        from hive_conductor.main import app
 
         assert TestClient(app).get("/v1/profile").status_code == 401
 
@@ -704,7 +703,7 @@ class TestTheHandlersDoNotBlockTheEventLoop:
     def test_every_profile_route_handler_is_synchronous(self) -> None:
         import ast
 
-        tree = ast.parse((_BACKEND / "routes/profile.py").read_text())
+        tree = ast.parse((_BACKEND / "hive_conductor/routes/profile.py").read_text())
         routed = [
             node
             for node in ast.walk(tree)
@@ -717,7 +716,7 @@ class TestTheHandlersDoNotBlockTheEventLoop:
     def test_every_chat_tool_write_goes_through_a_worker_thread(self) -> None:
         import ast
 
-        source = (_BACKEND / "services/chat_completion.py").read_text()
+        source = (_BACKEND / "hive_conductor/services/chat_completion.py").read_text()
         writes = {"set_field", "delete_field", "save"}
         offloaded = {
             node.args[0].attr
@@ -745,7 +744,9 @@ class TestTheCutoverFromPostgrestIsAnnounced:
     def test_a_configured_postgrest_is_warned_about(self, monkeypatch, caplog) -> None:
         import logging
 
-        from services.foundation import _warn_if_postgrest_profiles_are_being_left_behind
+        from hive_conductor.services.foundation import (
+            _warn_if_postgrest_profiles_are_being_left_behind,
+        )
 
         monkeypatch.setenv("POSTGREST_URL", "http://postgrest.invalid")
         with caplog.at_level(logging.WARNING):
@@ -756,7 +757,9 @@ class TestTheCutoverFromPostgrestIsAnnounced:
     def test_no_warning_when_postgrest_is_not_configured(self, monkeypatch, caplog) -> None:
         import logging
 
-        from services.foundation import _warn_if_postgrest_profiles_are_being_left_behind
+        from hive_conductor.services.foundation import (
+            _warn_if_postgrest_profiles_are_being_left_behind,
+        )
 
         monkeypatch.delenv("POSTGREST_URL", raising=False)
         monkeypatch.delenv("DEPLOY_TARGET_POSTGREST_URL", raising=False)
@@ -791,7 +794,7 @@ class TestATooldCallMissingItsArgumentsSaysSo:
         "args", [{}, {"field": "name"}, {"value": "Blake"}, {"field": "", "value": ""}]
     )
     async def test_profile_set_needs_a_field_and_a_value(self, args: dict) -> None:
-        from services.chat_completion import _tool_profile_set
+        from hive_conductor.services.chat_completion import _tool_profile_set
 
         records = FakeRecords()
         profile_store.configure(_persisted(records))
@@ -801,7 +804,7 @@ class TestATooldCallMissingItsArgumentsSaysSo:
     @pytest.mark.ac("SPEC-083026-ef62/AC-4")
     @pytest.mark.parametrize("args", [{}, {"field": ""}])
     async def test_profile_delete_needs_a_field(self, args: dict) -> None:
-        from services.chat_completion import _tool_profile_delete
+        from hive_conductor.services.chat_completion import _tool_profile_delete
 
         records = FakeRecords()
         profile_store.configure(_persisted(records))
@@ -813,7 +816,7 @@ class TestATooldCallMissingItsArgumentsSaysSo:
         """Deleting a field is a write, and it fails the same way setting one
         does. Answering `deleted: True` for a delete nothing kept is the same
         lie as `updated: True` for an unlanded set."""
-        from services.chat_completion import _tool_profile_delete
+        from hive_conductor.services.chat_completion import _tool_profile_delete
 
         records = ForgetfulRecords()
         records.documents[(STORE_NAME, "u-1")] = json.dumps(
@@ -826,7 +829,7 @@ class TestATooldCallMissingItsArgumentsSaysSo:
 
     @pytest.mark.ac("SPEC-083026-ef62/AC-2")
     async def test_the_model_curation_tool_reports_a_write_that_did_not_land(self) -> None:
-        from services.chat_completion import _tool_favorite_model
+        from hive_conductor.services.chat_completion import _tool_favorite_model
 
         profile_store.configure(_persisted(ForgetfulRecords()))
         result = await _tool_favorite_model({"model": "gemini-3-flash", "action": "add"}, "u-1")
@@ -835,7 +838,7 @@ class TestATooldCallMissingItsArgumentsSaysSo:
 
     @pytest.mark.ac("SPEC-083026-ef62/AC-4")
     async def test_the_model_curation_tool_needs_a_model(self) -> None:
-        from services.chat_completion import _tool_favorite_model
+        from hive_conductor.services.chat_completion import _tool_favorite_model
 
         records = FakeRecords()
         profile_store.configure(_persisted(records))

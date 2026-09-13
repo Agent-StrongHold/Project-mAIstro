@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
+import hive_conductor.stores as stores
 import pytest
-import stores
 
 
 @pytest.fixture
@@ -26,7 +26,7 @@ def clear_pm_state():
 
 
 async def test_direct_pm_capability_submission_is_refused_before_backend() -> None:
-    from services.engine import EngineService
+    from hive_conductor.services.engine import EngineService
 
     class _Backend:
         called = False
@@ -53,7 +53,7 @@ async def test_direct_pm_capability_submission_is_refused_before_backend() -> No
 async def test_program_pulse_keeps_proposals_but_never_queues_pm_capabilities(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.program_hyperagent as ph
+    import hive_conductor.services.program_hyperagent as ph
 
     class _Ctx:
         interview_complete = True

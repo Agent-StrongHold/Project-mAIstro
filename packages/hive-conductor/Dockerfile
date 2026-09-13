@@ -110,7 +110,7 @@ COPY --from=frontend /build/dist /app/frontend/dist
 # Persistent conductor state dir, pre-owned by the nonroot uid (see pybuild).
 COPY --from=pybuild --chown=65532:65532 /app/state_seed /data
 EXPOSE 8101
-WORKDIR /app/backend
+WORKDIR /app
 # Chainguard runs as nonroot (uid 65532) by default; make it explicit so the
 # image is unambiguously non-root.
 USER 65532
@@ -118,4 +118,4 @@ USER 65532
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD ["python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8101/health/ready', timeout=4).status==200 else 1)"]
 # Base image's ENTRYPOINT is `python`, so invoke uvicorn via `python -m`.
-ENTRYPOINT ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8101"]
+ENTRYPOINT ["python", "-m", "uvicorn", "hive_conductor.main:app", "--host", "0.0.0.0", "--port", "8101"]

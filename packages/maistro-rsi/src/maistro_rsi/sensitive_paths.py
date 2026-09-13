@@ -55,18 +55,22 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     # --- what the loop reaches into -----------------------------------------
     "maistro/security/",
     # --- the Conductor's own RSI execution surface --------------------------
+    # The application package initializer executes before every protected
+    # Conductor module, so keep the namespace entry point on the same surface.
+    "hive-conductor/backend/hive_conductor/__init__.py",
     # The product ships two production entry points for the capabilities this
     # list governs, and the `maistro_rsi/` and `maistro_evolve/` patterns above
-    # never reached them because they live in the Conductor's flat backend:
-    # `services/rsi.py` constructs and runs `LocalRsiLoop`, and `routes/rsi.py`
+    # never reached them because they live in the Conductor backend namespace:
+    # `hive_conductor/services/rsi.py` constructs and runs `LocalRsiLoop`, and
+    # `hive_conductor/routes/rsi.py`
     # approves a candidate patch and applies it with `git am`. Applying a
     # self-modification patch is a promotion, wherever the code that does it
     # happens to live (Codex, #513).
-    "hive-conductor/backend/services/rsi.py",
-    "hive-conductor/backend/routes/rsi.py",
+    "hive-conductor/backend/hive_conductor/services/rsi.py",
+    "hive-conductor/backend/hive_conductor/routes/rsi.py",
     # The services package initializer, on the same reasoning as the others
     # below: a docstring today, on the runtime import path regardless.
-    "hive-conductor/backend/services/__init__.py",
+    "hive-conductor/backend/hive_conductor/services/__init__.py",
     # Package initializers on the promotion path. Python executes these before
     # the module actually imported, so they are on the runtime import path even
     # when they only re-export. They are re-export shims *today*, and a
@@ -122,21 +126,22 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     # depth state, so `executor.py` alone left its siblings uncovered.
     "maistro/graph/durable_runs/",
     # --- the Conductor's RSI containment, now that the gate can see it ------
-    # `packages/*/src` never matched the Conductor's flat backend, so these were
+    # `packages/*/src` never matched the Conductor backend, so these were
     # invisible to the promotion-surface walk until #513 added that source root
-    # and rooted `services.rsi` / `routes.rsi`. They are not newly reachable;
+    # and rooted `hive_conductor.services.rsi` / `hive_conductor.routes.rsi`.
+    # They are not newly reachable;
     # they are newly *visible*, and both make containment decisions.
     #
     # `rsi_execution_policy` IS the containment: it resolves which repository an
     # HTTP-initiated run may touch, which argument vector it may execute, and
     # whether isolation is available at all. A candidate editing it authorizes
     # its own path and its own command.
-    "services/rsi_execution_policy.py",
+    "hive-conductor/backend/hive_conductor/services/rsi_execution_policy.py",
     # And the settings the policy reads — `rsi_repo_roots` above all. Protecting
     # the policy while leaving its inputs editable is the same mistake #513
     # found with `maistro/http.py`: the rule is written in one file and takes
     # effect from another.
-    "hive-conductor/backend/config.py",
+    "hive-conductor/backend/hive_conductor/config.py",
     # --- the gates, and the ratchet baselines they read ---------------------
     # Previously the only thing standing between the loop and its own CI config
     # was a sentence in a prompt telling the model not to touch it.

@@ -8,14 +8,11 @@ execution.
 from __future__ import annotations
 
 import pathlib
-import sys
 from typing import Any
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
-import services.tool_executor as tool_executor  # noqa: E402
+import hive_conductor.services.tool_executor as tool_executor  # noqa: E402
 
 
 async def test_an_unknown_tool_refuses_with_the_react_contract() -> None:

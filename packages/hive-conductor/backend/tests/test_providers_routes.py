@@ -8,14 +8,11 @@ from __future__ import annotations
 
 import pathlib
 import shutil
-import sys
 from typing import Any
 
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 
 def _needs_age() -> None:
@@ -36,7 +33,7 @@ class TestAuthz:
 
     def test_unauthenticated_is_401(self) -> None:
         from fastapi.testclient import TestClient
-        from main import app
+        from hive_conductor.main import app
 
         r = TestClient(app).get("/v1/providers")
         assert r.status_code == 401
@@ -109,7 +106,7 @@ class TestKeyAndActivate:
                 calls.append((url, json))
                 return _Resp()
 
-        import routes.providers as providers_mod
+        import hive_conductor.routes.providers as providers_mod
 
         monkeypatch.setattr(providers_mod.httpx, "Client", _Client)
 

@@ -9,7 +9,7 @@ and COMPLIANCE.md claimed otherwise. This module is that wiring.
 
 Two sinks exist in this repo and both are covered here:
 
-* **stdlib logging** — the Conductor (`hive-conductor/backend/logging_setup.py`).
+* **stdlib logging** — the Conductor (`hive-conductor/backend/hive_conductor/logging_setup.py`).
   Covered by wrapping each *handler's* formatter, not by a logger-level filter:
   a `Filter` attached to a `Logger` is only consulted for records logged through
   that logger, never for records propagating up from child loggers, so the root

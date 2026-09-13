@@ -10,17 +10,14 @@ from __future__ import annotations
 
 import logging
 import pathlib
-import sys
 from typing import Any
 
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
-import stores  # noqa: E402
-from models.schemas import MCPServer, MCPTool  # noqa: E402
+import hive_conductor.stores as stores  # noqa: E402
+from hive_conductor.models.schemas import MCPServer, MCPTool  # noqa: E402
 
 
 def _clear(store) -> None:
@@ -65,7 +62,7 @@ def test_list_servers_atlassian_rovo_url_uses_mcp_health_check(
     async def fake_test(server_id, *, user_id=None, url=""):
         return {"ok": True}
 
-    monkeypatch.setattr("services.mcp_client.test_mcp_server", fake_test)
+    monkeypatch.setattr("hive_conductor.services.mcp_client.test_mcp_server", fake_test)
 
     r = admin_client.get("/v1/mcp/servers")
     body = r.json()
@@ -80,7 +77,7 @@ def test_list_servers_atlassian_rovo_url_failed_check_is_connecting(
     async def fake_test(server_id, *, user_id=None, url=""):
         return {"ok": False}
 
-    monkeypatch.setattr("services.mcp_client.test_mcp_server", fake_test)
+    monkeypatch.setattr("hive_conductor.services.mcp_client.test_mcp_server", fake_test)
 
     r = admin_client.get("/v1/mcp/servers")
     body = r.json()
@@ -174,7 +171,7 @@ def test_test_connection_specific_server(admin_client: Any, monkeypatch) -> None
         captured["url"] = url
         return {"ok": True, "mode": "stub"}
 
-    monkeypatch.setattr("services.mcp_client.test_mcp_server", fake_test)
+    monkeypatch.setattr("hive_conductor.services.mcp_client.test_mcp_server", fake_test)
 
     r = admin_client.post("/v1/mcp/test", json={"server_id": "s1"})
     assert r.status_code == 200
@@ -194,7 +191,7 @@ def test_test_connection_no_server_id_tests_all(admin_client: Any, monkeypatch) 
     async def fake_test(server_id, *, user_id=None, url=""):
         return {"ok": True, "server_id": server_id}
 
-    monkeypatch.setattr("services.mcp_client.test_mcp_server", fake_test)
+    monkeypatch.setattr("hive_conductor.services.mcp_client.test_mcp_server", fake_test)
 
     r = admin_client.post("/v1/mcp/test", json={})
     assert r.status_code == 200
@@ -310,7 +307,7 @@ class TestTheFanOutIsBounded:
         """One GET used to `asyncio.gather` over the whole store, so a caller
         who can add servers could turn a single request into arbitrarily many
         concurrent outbound connections."""
-        import routes.mcp as mcp_routes
+        import hive_conductor.routes.mcp as mcp_routes
 
         for index in range(40):
             stores.mcp_servers[f"s{index}"] = _make_server(sid=f"s{index}")
@@ -398,7 +395,7 @@ class TestOneBadRecordCannotBreakTheListing:
         """The final fallback must not quietly recreate the defect #368
         removed. Something nobody anticipated is reported as `error` and logged
         at ERROR — never as `disconnected`, which reads as "start the server"."""
-        import routes.mcp as mcp_routes
+        import hive_conductor.routes.mcp as mcp_routes
 
         def explode(*_args, **_kwargs):
             # Raised where `shared_client(...)` is *called*, before the

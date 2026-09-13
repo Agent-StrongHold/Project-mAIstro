@@ -8,18 +8,9 @@ consume via store.subscribe(run_id).
 from __future__ import annotations
 
 import asyncio
-import sys
-from pathlib import Path
 
 import pytest
-
-# The hive-conductor backend isn't a proper package — main.py + routes/
-# + services/ live at the package root. Add the backend dir to sys.path.
-_BACKEND = Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
-
-from services.dag_run_store import DagRunStore, get_dag_run_store  # noqa: E402
+from hive_conductor.services.dag_run_store import DagRunStore, get_dag_run_store
 
 
 @pytest.mark.asyncio

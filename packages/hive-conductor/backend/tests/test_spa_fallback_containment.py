@@ -46,7 +46,7 @@ def static_app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     secret.parent.mkdir()
     secret.write_text("SUPER-SECRET-MASTER-KEY")
 
-    main = importlib.import_module("main")
+    main = importlib.import_module("hive_conductor.main")
     monkeypatch.setattr(main, "STATIC_DIR", static_root)
 
     return TestClient(main.create_app()), static_root, secret

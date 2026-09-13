@@ -10,8 +10,8 @@ from __future__ import annotations
 import io
 import logging
 
-import logging_setup
-from logging_setup import OAuthCallbackQueryFilter
+import hive_conductor.logging_setup as logging_setup
+from hive_conductor.logging_setup import OAuthCallbackQueryFilter
 
 SECRET = "sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
 _PROVIDER = "test"

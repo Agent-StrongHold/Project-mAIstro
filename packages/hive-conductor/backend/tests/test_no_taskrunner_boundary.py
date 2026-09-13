@@ -11,7 +11,7 @@ from __future__ import annotations
 import pathlib
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-_ALLOWED = _BACKEND / "adapters" / "task_backend.py"
+_ALLOWED = _BACKEND / "hive_conductor" / "adapters" / "task_backend.py"
 
 
 def _source_files() -> list[pathlib.Path]:

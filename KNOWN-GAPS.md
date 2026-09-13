@@ -116,7 +116,7 @@ default compose stack runs a Langfuse service, but no service in it exports
 traces there — the `LANGFUSE_*` variables configure the Langfuse service's
 own UI/API, not trace export. With no endpoint configured, spans are emitted
 to a no-op tracer at negligible cost and nothing leaves the process (#63's
-doc audit; see `packages/hive-conductor/backend/adapters/telemetry_langfuse.py`).
+doc audit; see `packages/hive-conductor/backend/hive_conductor/adapters/telemetry_langfuse.py`).
 
 Tracking: decide whether a compose profile should wire
 `OTEL_EXPORTER_OTLP_ENDPOINT` to the bundled Langfuse/Phoenix services when

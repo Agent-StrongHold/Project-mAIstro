@@ -21,7 +21,7 @@ from __future__ import annotations
 import re
 
 import pytest
-from services import design_service
+from hive_conductor.services import design_service
 
 from maistro_design.systems.importer import BUNDLED_SLUGS
 from maistro_design.types import DesignSystemNotFoundError, DiscoveryResult

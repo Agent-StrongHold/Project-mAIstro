@@ -11,17 +11,14 @@ slip past.
 from __future__ import annotations
 
 import pathlib
-import sys
 from typing import Any, ClassVar
 
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 from fastapi import HTTPException  # noqa: E402
-from routes import design as design_routes  # noqa: E402
+from hive_conductor.routes import design as design_routes  # noqa: E402
 
 pytestmark = [pytest.mark.contract("boundary")]
 
@@ -125,7 +122,7 @@ class TestTheRoutesPassItDown:
     ) -> None:
         """Rendering returns the project's content, so a render route that
         never asked whose it was is the same leak as the fetch route."""
-        import services.design_preview as preview_module
+        import hive_conductor.services.design_preview as preview_module
 
         store = _Store(project=None)
         monkeypatch.setattr(design_routes, "get_design_store", lambda: store)

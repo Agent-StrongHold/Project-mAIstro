@@ -239,7 +239,7 @@ External-library adoption per [`engine#ADR-039`](docs/adr/ADR-039-external-libra
 - Session log: `docs/exploratory-sessions/2026-06-28-service-key-registry-backfill.md`
 
 **[engine-111] `AuthMiddleware` sibling-prefix bypass + substring permission carve-out — Implemented**
-- Found while building the adversarial path-matching suite for `hive-conductor/backend/middleware/auth.py`
+- Found while building the adversarial path-matching suite for `hive-conductor/backend/hive_conductor/middleware/auth.py`
   (`engine#SPEC-062826-1924`): `_PUBLIC_PREFIXES`'s unguarded `startswith` let a sibling of
   `/v1/auth/login`/`/v1/auth/register` bypass auth entirely; `_required_permission`'s `"/invoke" in path`
   was a fail-open substring-anywhere check instead of a trailing-segment check

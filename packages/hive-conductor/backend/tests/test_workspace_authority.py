@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import hive_conductor.stores as stores
 import pytest
-import stores
-from models.schemas import Agent
-from models.workspace import Workspace, WorkspaceMember
-from services import workspace_authority
+from hive_conductor.models.schemas import Agent
+from hive_conductor.models.workspace import Workspace, WorkspaceMember
+from hive_conductor.services import workspace_authority
 
 from maistro.workspaces.model import WorkspaceMembership
 from maistro.workspaces.model import WorkspaceRole as CanonicalWorkspaceRole

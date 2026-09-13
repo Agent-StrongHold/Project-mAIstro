@@ -7,9 +7,9 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from routes.evolution import _actor_principal_id, trigger_cycle
-from services.evolution import _EvolutionService
-from services.evolution_graph import (
+from hive_conductor.routes.evolution import _actor_principal_id, trigger_cycle
+from hive_conductor.services.evolution import _EvolutionService
+from hive_conductor.services.evolution_graph import (
     _append_execution_ref,
     _BattleInput,
     _published_evaluation_ref,
@@ -42,7 +42,7 @@ def test_actor_provenance_and_cycle_run_id_projection(monkeypatch: pytest.Monkey
             captured["actor_principal_id"] = actor_principal_id
             return "canonical-run-7"
 
-    import services.evolution as evolution_service
+    import hive_conductor.services.evolution as evolution_service
 
     monkeypatch.setattr(evolution_service, "get_evolution_service", lambda: _Service())
     response = asyncio.run(trigger_cycle(requests[1][0]))

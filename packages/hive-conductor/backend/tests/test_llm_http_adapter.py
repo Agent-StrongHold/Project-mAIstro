@@ -21,8 +21,8 @@ from typing import Any
 
 import httpx
 import pytest
-from adapters.llm_http import HttpOpenAIProtocolLLM
-from models.schemas import ChatCompletionRequest
+from hive_conductor.adapters.llm_http import HttpOpenAIProtocolLLM
+from hive_conductor.models.schemas import ChatCompletionRequest
 
 from maistro.http import get_shared_client, override_transport
 

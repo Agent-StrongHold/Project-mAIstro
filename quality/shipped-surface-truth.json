@@ -9,7 +9,7 @@
   ],
   "backend_surfaces": [
     {
-      "source": "packages/hive-conductor/backend/main.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/main.py",
       "method": "POST",
       "route": "/{confirm_id}/respond",
       "handler": "respond_to_confirm",
@@ -19,7 +19,7 @@
       "effect_owner": "services.confirm_response.respond_confirm (Run continuation)"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/agents.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/agents.py",
       "method": "DELETE",
       "route": "/{agent_id}",
       "handler": "delete_agent",
@@ -29,7 +29,7 @@
       "effect_owner": "stores.agents + audit log"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/agents.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/agents.py",
       "method": "POST",
       "route": "",
       "handler": "create_agent",
@@ -39,7 +39,7 @@
       "effect_owner": "stores.agents + audit log"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/agents.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/agents.py",
       "method": "POST",
       "route": "/forge",
       "handler": "forge_agent",
@@ -49,7 +49,7 @@
       "effect_owner": "stores.agents"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/agents.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/agents.py",
       "method": "POST",
       "route": "/scan",
       "handler": "scan_proposed_config",
@@ -59,7 +59,7 @@
       "effect_owner": "maistro security scan_config walk"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/agents.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/agents.py",
       "method": "POST",
       "route": "/{agent_id}/scan",
       "handler": "scan_agent",
@@ -69,7 +69,7 @@
       "effect_owner": "maistro security scan_config walk"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/agents.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/agents.py",
       "method": "PUT",
       "route": "/{agent_id}",
       "handler": "update_agent",
@@ -79,7 +79,7 @@
       "effect_owner": "stores.agents + audit log"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/audit.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/audit.py",
       "method": "POST",
       "route": "",
       "handler": "create_entry",
@@ -89,7 +89,7 @@
       "effect_owner": "stores.audit_log"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/auth.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/auth.py",
       "method": "PATCH",
       "route": "/users/{user_id}/permissions",
       "handler": "set_user_permissions",
@@ -99,7 +99,7 @@
       "effect_owner": "hive session/user stores + audit log"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/auth.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/auth.py",
       "method": "POST",
       "route": "/elevate",
       "handler": "elevate",
@@ -109,7 +109,7 @@
       "effect_owner": "hive session/user stores + audit log"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/auth.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/auth.py",
       "method": "POST",
       "route": "/login",
       "handler": "login",
@@ -119,7 +119,7 @@
       "effect_owner": "hive session/user stores + audit log"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/auth.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/auth.py",
       "method": "POST",
       "route": "/logout",
       "handler": "logout",
@@ -129,7 +129,7 @@
       "effect_owner": "hive session/user stores + audit log"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/auth.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/auth.py",
       "method": "POST",
       "route": "/oauth/{provider}/link/start",
       "handler": "oauth_link_start",
@@ -139,7 +139,7 @@
       "effect_owner": "OAuth state store + durable identity-link store (link happens at callback)"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/auth.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/auth.py",
       "method": "POST",
       "route": "/register",
       "handler": "register",
@@ -149,7 +149,7 @@
       "effect_owner": "hive session/user stores + audit log"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/auth.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/auth.py",
       "method": "POST",
       "route": "/registration/invitations",
       "handler": "create_invitation",
@@ -159,7 +159,7 @@
       "effect_owner": "registration policy record store + audit log"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/auth.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/auth.py",
       "method": "PUT",
       "route": "/registration/policy",
       "handler": "put_registration_policy",
@@ -169,7 +169,7 @@
       "effect_owner": "registration policy record store + audit log"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/canvas.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/canvas.py",
       "method": "POST",
       "route": "/eval",
       "handler": "eval_visual",
@@ -179,7 +179,7 @@
       "effect_owner": "services visual_quality_eval"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/capabilities.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/capabilities.py",
       "method": "PATCH",
       "route": "/{slot}",
       "handler": "patch_capability",
@@ -189,7 +189,7 @@
       "effect_owner": "capabilities registry + persisted slot state"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/capabilities.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/capabilities.py",
       "method": "POST",
       "route": "/approvals/{request_id}",
       "handler": "resolve_approval",
@@ -199,7 +199,7 @@
       "effect_owner": "approval inbox store"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/capabilities.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/capabilities.py",
       "method": "POST",
       "route": "/discover",
       "handler": "discover_capabilities",
@@ -209,7 +209,7 @@
       "effect_owner": "maistro.capabilities.discovery.discover_into"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/capabilities.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/capabilities.py",
       "method": "POST",
       "route": "/self-repair/run",
       "handler": "self_repair_run",
@@ -219,7 +219,7 @@
       "effect_owner": "services.capabilities_wiring.run_self_repair_once"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/chat.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/chat.py",
       "method": "DELETE",
       "route": "/sessions/{session_id}",
       "handler": "delete_session",
@@ -229,7 +229,7 @@
       "effect_owner": "per-request chat session store"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/chat.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/chat.py",
       "method": "POST",
       "route": "/complete",
       "handler": "complete",
@@ -239,7 +239,7 @@
       "effect_owner": "build_llm_port LLM completion (conversation_only)"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/chat.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/chat.py",
       "method": "POST",
       "route": "/sessions",
       "handler": "create_session",
@@ -249,7 +249,7 @@
       "effect_owner": "per-request chat session store"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/chat.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/chat.py",
       "method": "POST",
       "route": "/sessions/{session_id}/messages",
       "handler": "append_message",
@@ -259,7 +259,7 @@
       "effect_owner": "per-request chat session store"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/chat.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/chat.py",
       "method": "POST",
       "route": "/stream",
       "handler": "stream_complete",
@@ -269,7 +269,7 @@
       "effect_owner": "build_llm_port LLM completion (SSE)"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/cli.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/cli.py",
       "method": "POST",
       "route": "/sessions",
       "handler": "create_cli_session",
@@ -279,7 +279,7 @@
       "effect_owner": "stores.cli_sessions"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/containers.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/containers.py",
       "method": "DELETE",
       "route": "/{container_id}",
       "handler": "delete_container",
@@ -289,7 +289,7 @@
       "effect_owner": "Docker Engine API over the mounted socket"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/containers.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/containers.py",
       "method": "POST",
       "route": "/build",
       "handler": "build_container",
@@ -299,7 +299,7 @@
       "owner_issue": 382
     },
     {
-      "source": "packages/hive-conductor/backend/routes/containers.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/containers.py",
       "method": "POST",
       "route": "/suggest",
       "handler": "suggest_dockerfile",
@@ -309,7 +309,7 @@
       "truth_contract": "returns one static starter Dockerfile template; no repository analysis or build happens"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/containers.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/containers.py",
       "method": "POST",
       "route": "/{container_id}/restart",
       "handler": "restart_container",
@@ -319,7 +319,7 @@
       "effect_owner": "Docker Engine API over the mounted socket"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/containers.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/containers.py",
       "method": "POST",
       "route": "/{container_id}/start",
       "handler": "start_container",
@@ -329,7 +329,7 @@
       "effect_owner": "Docker Engine API over the mounted socket"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/containers.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/containers.py",
       "method": "POST",
       "route": "/{container_id}/stop",
       "handler": "stop_container",
@@ -339,7 +339,7 @@
       "effect_owner": "Docker Engine API over the mounted socket"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/credentials.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/credentials.py",
       "method": "DELETE",
       "route": "/{provider_id}",
       "handler": "delete_credential",
@@ -349,7 +349,7 @@
       "effect_owner": "credential vault store + audit log"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/credentials.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/credentials.py",
       "method": "PUT",
       "route": "/{provider_id}",
       "handler": "save_credential",
@@ -359,7 +359,7 @@
       "effect_owner": "credential vault store + audit log"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/credentials.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/credentials.py",
       "method": "PUT",
       "route": "/{provider_id}/config",
       "handler": "save_credential_config",
@@ -369,7 +369,7 @@
       "effect_owner": "credential vault store + audit log"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/dag_runs.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/dag_runs.py",
       "method": "POST",
       "route": "/{run_id}/cancel",
       "handler": "cancel_run",
@@ -379,7 +379,7 @@
       "effect_owner": "maistro.runs.service.RunExecutionService.cancel_run (Run transition + physical Attempt cancellation)"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/dags.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/dags.py",
       "method": "DELETE",
       "route": "/{dag_id}",
       "handler": "delete_dag",
@@ -389,7 +389,7 @@
       "effect_owner": "stores.dags + audit log"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/dags.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/dags.py",
       "method": "DELETE",
       "route": "/{dag_id}/edges/{edge_id}",
       "handler": "remove_edge",
@@ -399,7 +399,7 @@
       "effect_owner": "stores.dags + audit log"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/dags.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/dags.py",
       "method": "DELETE",
       "route": "/{dag_id}/nodes/{node_id}",
       "handler": "remove_node",
@@ -409,7 +409,7 @@
       "effect_owner": "stores.dags + audit log"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/dags.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/dags.py",
       "method": "POST",
       "route": "",
       "handler": "create_dag",
@@ -419,7 +419,7 @@
       "effect_owner": "stores.dags + audit log"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/dags.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/dags.py",
       "method": "POST",
       "route": "/run-champion",
       "handler": "run_champion",
@@ -429,7 +429,7 @@
       "effect_owner": "services.graph_runner.execute_champion -> execute_dag"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/dags.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/dags.py",
       "method": "POST",
       "route": "/{dag_id}/activate",
       "handler": "activate_dag",
@@ -439,7 +439,7 @@
       "effect_owner": "stores.dags + audit log"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/dags.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/dags.py",
       "method": "POST",
       "route": "/{dag_id}/edges",
       "handler": "add_edge",
@@ -449,7 +449,7 @@
       "effect_owner": "stores.dags + audit log"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/dags.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/dags.py",
       "method": "POST",
       "route": "/{dag_id}/nodes",
       "handler": "add_node",
@@ -459,7 +459,7 @@
       "effect_owner": "stores.dags + audit log"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/dags.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/dags.py",
       "method": "POST",
       "route": "/{dag_id}/run",
       "handler": "run_dag",
@@ -469,7 +469,7 @@
       "effect_owner": "services.graph_runner.execute_dag + services.dag_run_store"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/dags.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/dags.py",
       "method": "PUT",
       "route": "/{dag_id}",
       "handler": "update_dag",
@@ -479,7 +479,7 @@
       "effect_owner": "stores.dags + audit log"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/dashboard_layout.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/dashboard_layout.py",
       "method": "PUT",
       "route": "/layout",
       "handler": "save_layout",
@@ -489,7 +489,7 @@
       "effect_owner": "services.dashboard_layouts store"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/design.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/design.py",
       "method": "POST",
       "route": "/projects",
       "handler": "create_design_project",
@@ -499,7 +499,7 @@
       "effect_owner": "design pipeline: Warden scan, prompt stack, DB persist"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/design.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/design.py",
       "method": "POST",
       "route": "/projects/{project_id}/render",
       "handler": "create_render_job",
@@ -509,7 +509,7 @@
       "owner_issue": 286
     },
     {
-      "source": "packages/hive-conductor/backend/routes/eval_judge.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/eval_judge.py",
       "method": "POST",
       "route": "/{run_id}",
       "handler": "trigger_score",
@@ -519,7 +519,7 @@
       "effect_owner": "eval judge over the dag_run_store run record"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/evolution.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/evolution.py",
       "method": "POST",
       "route": "/cycle",
       "handler": "trigger_cycle",
@@ -529,7 +529,7 @@
       "effect_owner": "services.evolution run cycle"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/evolution.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/evolution.py",
       "method": "POST",
       "route": "/seed",
       "handler": "seed_population",
@@ -539,7 +539,7 @@
       "effect_owner": "evolution population store"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/feedback.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/feedback.py",
       "method": "POST",
       "route": "/{run_id}/feedback",
       "handler": "submit_run_feedback",
@@ -549,7 +549,7 @@
       "effect_owner": "feedback Outcome store"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/feedback.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/feedback.py",
       "method": "POST",
       "route": "/{run_id}/nodes/{node_id}/feedback",
       "handler": "submit_node_feedback",
@@ -559,7 +559,7 @@
       "effect_owner": "feedback Outcome store"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/harness.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/harness.py",
       "method": "DELETE",
       "route": "/sessions/{session_id}",
       "handler": "stop_session",
@@ -569,7 +569,7 @@
       "effect_owner": "agent harness session manager"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/harness.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/harness.py",
       "method": "POST",
       "route": "/sessions",
       "handler": "start_session",
@@ -579,7 +579,7 @@
       "effect_owner": "agent harness session manager"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/harness.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/harness.py",
       "method": "POST",
       "route": "/sessions/{session_id}/send",
       "handler": "send_turn",
@@ -589,7 +589,7 @@
       "effect_owner": "agent harness session manager"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/hitl.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/hitl.py",
       "method": "POST",
       "route": "/{run_id}/{node_id}/answer",
       "handler": "answer_human_work",
@@ -599,7 +599,7 @@
       "effect_owner": "hitl store resumes the paused Run node"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/hitl.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/hitl.py",
       "method": "POST",
       "route": "/expire",
       "handler": "expire_human_work",
@@ -609,7 +609,7 @@
       "effect_owner": "hitl store settles elapsed deadlines"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/hitl.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/hitl.py",
       "method": "POST",
       "route": "/{run_id}/{node_id}/cancel",
       "handler": "cancel_human_work",
@@ -619,7 +619,7 @@
       "effect_owner": "hitl store settles the cancelled pause"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/install.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/install.py",
       "method": "POST",
       "route": "/session",
       "handler": "post_install_session",
@@ -629,7 +629,7 @@
       "effect_owner": "bootstrap installer state machine"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/mcp.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/mcp.py",
       "method": "DELETE",
       "route": "/servers/{server_id}",
       "handler": "delete_server",
@@ -639,7 +639,7 @@
       "effect_owner": "stores.mcp_servers"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/mcp.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/mcp.py",
       "method": "POST",
       "route": "/discover",
       "handler": "discover_tools",
@@ -649,7 +649,7 @@
       "owner_issue": 389
     },
     {
-      "source": "packages/hive-conductor/backend/routes/mcp.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/mcp.py",
       "method": "POST",
       "route": "/servers",
       "handler": "add_server",
@@ -659,7 +659,7 @@
       "effect_owner": "stores.mcp_servers"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/mcp.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/mcp.py",
       "method": "POST",
       "route": "/servers/{server_id}/scan",
       "handler": "scan_server",
@@ -669,7 +669,7 @@
       "owner_issue": 389
     },
     {
-      "source": "packages/hive-conductor/backend/routes/mcp.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/mcp.py",
       "method": "POST",
       "route": "/test",
       "handler": "test_mcp_connection",
@@ -679,7 +679,7 @@
       "effect_owner": "services.mcp_client.test_mcp_server"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/memory.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/memory.py",
       "method": "DELETE",
       "route": "/entries/{entry_id}",
       "handler": "delete_entry",
@@ -689,7 +689,7 @@
       "effect_owner": "stores.memory_entries"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/memory.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/memory.py",
       "method": "POST",
       "route": "/entries",
       "handler": "create_entry",
@@ -699,7 +699,7 @@
       "effect_owner": "stores.memory_entries"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/memory.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/memory.py",
       "method": "POST",
       "route": "/entries/{entry_id}/contradict",
       "handler": "contradict_entry",
@@ -709,7 +709,7 @@
       "owner_issue": 389
     },
     {
-      "source": "packages/hive-conductor/backend/routes/memory.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/memory.py",
       "method": "POST",
       "route": "/entries/{entry_id}/decay",
       "handler": "decay_entry",
@@ -719,7 +719,7 @@
       "effect_owner": "stores.memory_entries"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/memory.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/memory.py",
       "method": "POST",
       "route": "/entries/{entry_id}/reinforce",
       "handler": "reinforce_entry",
@@ -729,7 +729,7 @@
       "effect_owner": "stores.memory_entries"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/memory.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/memory.py",
       "method": "PUT",
       "route": "/entries/{entry_id}",
       "handler": "update_entry",
@@ -739,7 +739,7 @@
       "effect_owner": "stores.memory_entries"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/messages.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/messages.py",
       "method": "DELETE",
       "route": "/{msg_id}",
       "handler": "delete_message",
@@ -749,7 +749,7 @@
       "effect_owner": "stores.messages"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/messages.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/messages.py",
       "method": "PATCH",
       "route": "/{msg_id}/read",
       "handler": "mark_read",
@@ -759,7 +759,7 @@
       "effect_owner": "stores.messages"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/messages.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/messages.py",
       "method": "POST",
       "route": "",
       "handler": "create_message",
@@ -769,7 +769,7 @@
       "effect_owner": "stores.messages"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/messages.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/messages.py",
       "method": "POST",
       "route": "/mark-all-read",
       "handler": "mark_all_read",
@@ -779,7 +779,7 @@
       "effect_owner": "stores.messages"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/missions.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/missions.py",
       "method": "DELETE",
       "route": "/{mission_id}",
       "handler": "delete_mission",
@@ -789,7 +789,7 @@
       "effect_owner": "engine task store / stores.missions + audit"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/missions.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/missions.py",
       "method": "PATCH",
       "route": "/{mission_id}/status",
       "handler": "update_mission_status",
@@ -799,7 +799,7 @@
       "effect_owner": "stores.missions"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/missions.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/missions.py",
       "method": "POST",
       "route": "",
       "handler": "create_mission",
@@ -809,7 +809,7 @@
       "effect_owner": "engine.submit_task -> canonical Run in the Workspace Root Project"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/missions.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/missions.py",
       "method": "POST",
       "route": "/clear",
       "handler": "clear_missions",
@@ -819,7 +819,7 @@
       "effect_owner": "engine task store"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/missions.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/missions.py",
       "method": "POST",
       "route": "/{mission_id}/guidance",
       "handler": "post_mission_guidance",
@@ -829,7 +829,7 @@
       "effect_owner": "services.program_hyperagent.apply_guidance_and_pulse"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/optimizer.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/optimizer.py",
       "method": "POST",
       "route": "/proposals/{proposal_id}/accept",
       "handler": "accept_proposal",
@@ -839,7 +839,7 @@
       "effect_owner": "optimizer proposal decision store"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/optimizer.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/optimizer.py",
       "method": "POST",
       "route": "/proposals/{proposal_id}/reject",
       "handler": "reject_proposal",
@@ -849,7 +849,7 @@
       "effect_owner": "optimizer proposal decision store"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/optimizer.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/optimizer.py",
       "method": "POST",
       "route": "/{dag_id}/run",
       "handler": "trigger_optimizer",
@@ -859,7 +859,7 @@
       "effect_owner": "services optimizer run_optimizer with DAG validation"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/profile.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/profile.py",
       "method": "DELETE",
       "route": "",
       "handler": "delete_profile",
@@ -869,7 +869,7 @@
       "effect_owner": "services.profile_store"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/profile.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/profile.py",
       "method": "PATCH",
       "route": "",
       "handler": "patch_profile",
@@ -879,7 +879,7 @@
       "effect_owner": "services.profile_store"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/profile.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/profile.py",
       "method": "PUT",
       "route": "",
       "handler": "put_profile",
@@ -889,7 +889,7 @@
       "effect_owner": "services.profile_store"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/program.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/program.py",
       "method": "POST",
       "route": "/guidance",
       "handler": "post_guidance",
@@ -899,7 +899,7 @@
       "effect_owner": "services.program_hyperagent.apply_guidance_and_pulse"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/program.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/program.py",
       "method": "POST",
       "route": "/interview/answer",
       "handler": "post_interview_answer",
@@ -909,7 +909,7 @@
       "effect_owner": "program context store + run_program_pulse"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/program.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/program.py",
       "method": "POST",
       "route": "/pulse",
       "handler": "post_pulse",
@@ -919,7 +919,7 @@
       "effect_owner": "services program run_program_pulse"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/projects.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/projects.py",
       "method": "DELETE",
       "route": "/{project_id}",
       "handler": "delete_project",
@@ -929,7 +929,7 @@
       "effect_owner": "onboard_db"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/projects.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/projects.py",
       "method": "POST",
       "route": "",
       "handler": "create_project",
@@ -939,7 +939,7 @@
       "effect_owner": "onboard_db"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/projects.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/projects.py",
       "method": "POST",
       "route": "/webhooks/external-build",
       "handler": "external_build_webhook",
@@ -949,7 +949,7 @@
       "effect_owner": "onboard_db deployment records"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/projects.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/projects.py",
       "method": "POST",
       "route": "/{project_id}/deploy",
       "handler": "trigger_deploy",
@@ -959,7 +959,7 @@
       "effect_owner": "pipeline_orchestrator.trigger_deploy + deployment record"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/projects.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/projects.py",
       "method": "POST",
       "route": "/{project_id}/scan",
       "handler": "trigger_scan",
@@ -969,7 +969,7 @@
       "effect_owner": "background scan task + onboard_db + events"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/providers.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/providers.py",
       "method": "POST",
       "route": "/{name}/activate",
       "handler": "activate_provider",
@@ -979,7 +979,7 @@
       "effect_owner": "LiteLLM registration + one-token test completion"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/providers.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/providers.py",
       "method": "PUT",
       "route": "/{name}/key",
       "handler": "put_provider_key",
@@ -989,7 +989,7 @@
       "effect_owner": "vault store"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/rsi.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/rsi.py",
       "method": "POST",
       "route": "/runs",
       "handler": "start_run",
@@ -999,7 +999,7 @@
       "effect_owner": "maistro-rsi service"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/rsi.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/rsi.py",
       "method": "POST",
       "route": "/runs/{run_id}/reviews/{sha}",
       "handler": "decide_review",
@@ -1009,7 +1009,7 @@
       "effect_owner": "maistro-rsi service"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/rsi.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/rsi.py",
       "method": "POST",
       "route": "/runs/{run_id}/stop",
       "handler": "stop_run",
@@ -1019,7 +1019,7 @@
       "effect_owner": "maistro-rsi service"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/schedules.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/schedules.py",
       "method": "DELETE",
       "route": "/{schedule_id}",
       "handler": "delete_schedule",
@@ -1029,7 +1029,7 @@
       "effect_owner": "stores.schedules"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/schedules.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/schedules.py",
       "method": "POST",
       "route": "",
       "handler": "create_schedule",
@@ -1039,7 +1039,7 @@
       "effect_owner": "stores.schedules"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/schedules.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/schedules.py",
       "method": "POST",
       "route": "/{schedule_id}/run",
       "handler": "run_schedule",
@@ -1049,7 +1049,7 @@
       "effect_owner": "schedule fire creates a real Run"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/schedules.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/schedules.py",
       "method": "PUT",
       "route": "/{schedule_id}",
       "handler": "update_schedule",
@@ -1059,7 +1059,7 @@
       "effect_owner": "stores.schedules"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/settings.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/settings.py",
       "method": "DELETE",
       "route": "/volatile",
       "handler": "delete_volatile_settings",
@@ -1069,7 +1069,7 @@
       "effect_owner": "settings_store preview overlay"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/settings.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/settings.py",
       "method": "PATCH",
       "route": "",
       "handler": "patch_settings",
@@ -1079,7 +1079,7 @@
       "effect_owner": "settings_store"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/settings.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/settings.py",
       "method": "POST",
       "route": "/reload",
       "handler": "reload_settings",
@@ -1089,7 +1089,7 @@
       "owner_issue": 389
     },
     {
-      "source": "packages/hive-conductor/backend/routes/settings.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/settings.py",
       "method": "PUT",
       "route": "",
       "handler": "put_settings",
@@ -1099,7 +1099,7 @@
       "effect_owner": "settings_store"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/settings.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/settings.py",
       "method": "PUT",
       "route": "/volatile",
       "handler": "put_volatile_settings",
@@ -1109,7 +1109,7 @@
       "effect_owner": "settings_store preview overlay"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/setup.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/setup.py",
       "method": "POST",
       "route": "/complete",
       "handler": "complete_setup",
@@ -1119,7 +1119,7 @@
       "effect_owner": "users/config provisioning stores"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/setup.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/setup.py",
       "method": "POST",
       "route": "/presets/resolve",
       "handler": "resolve_preset_auto",
@@ -1129,7 +1129,7 @@
       "truth_contract": "stateless preset resolution: computes the config from name/memory, persists nothing"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/setup_checklist.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/setup_checklist.py",
       "method": "POST",
       "route": "/{item_id}/dismiss",
       "handler": "dismiss",
@@ -1139,7 +1139,7 @@
       "effect_owner": "checklist dismissal store"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/setup_checklist.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/setup_checklist.py",
       "method": "POST",
       "route": "/{item_id}/undismiss",
       "handler": "undismiss",
@@ -1149,7 +1149,7 @@
       "effect_owner": "checklist dismissal store"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/skills.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/skills.py",
       "method": "DELETE",
       "route": "/{skill_id}",
       "handler": "delete_skill",
@@ -1159,7 +1159,7 @@
       "effect_owner": "stores.skills"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/skills.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/skills.py",
       "method": "PATCH",
       "route": "/{skill_id}/toggle",
       "handler": "toggle_skill",
@@ -1169,7 +1169,7 @@
       "effect_owner": "stores.skills"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/skills.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/skills.py",
       "method": "POST",
       "route": "",
       "handler": "create_skill",
@@ -1179,7 +1179,7 @@
       "effect_owner": "stores.skills"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/skills.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/skills.py",
       "method": "POST",
       "route": "/forge",
       "handler": "forge_skill",
@@ -1189,7 +1189,7 @@
       "effect_owner": "stores.skills"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/skills.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/skills.py",
       "method": "POST",
       "route": "/scan",
       "handler": "scan_skills",
@@ -1199,7 +1199,7 @@
       "effect_owner": "maistro.skills.parser.security_scan"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/skills.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/skills.py",
       "method": "PUT",
       "route": "/{skill_id}",
       "handler": "update_skill",
@@ -1209,7 +1209,7 @@
       "effect_owner": "stores.skills"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/voice.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/voice.py",
       "method": "POST",
       "route": "/intent",
       "handler": "voice_intent",
@@ -1219,7 +1219,7 @@
       "effect_owner": "chat seam LLM port (conversation_only)"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/widgets.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/widgets.py",
       "method": "POST",
       "route": "/screenshot",
       "handler": "capture_screenshot",
@@ -1229,7 +1229,7 @@
       "effect_owner": "playwright chromium screenshot"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/work_items.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/work_items.py",
       "method": "DELETE",
       "route": "/{draft_id}",
       "handler": "cancel_work_item",
@@ -1239,7 +1239,7 @@
       "effect_owner": "work-item draft store"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/work_items.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/work_items.py",
       "method": "PATCH",
       "route": "/{draft_id}",
       "handler": "patch_work_item",
@@ -1249,7 +1249,7 @@
       "effect_owner": "work-item draft store"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/work_items.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/work_items.py",
       "method": "POST",
       "route": "/suggest",
       "handler": "suggest_work_item_route",
@@ -1259,7 +1259,7 @@
       "effect_owner": "services.work_item suggest_work_item + draft store"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/work_items.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/work_items.py",
       "method": "POST",
       "route": "/{draft_id}/clarify",
       "handler": "clarify_work_item",
@@ -1269,7 +1269,7 @@
       "effect_owner": "work-item draft store"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/work_items.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/work_items.py",
       "method": "POST",
       "route": "/{draft_id}/confirm",
       "handler": "confirm_work_item",
@@ -1279,7 +1279,7 @@
       "effect_owner": "engine.submit_task canonical Run + confirm_post_stub"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/workspaces.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/workspaces.py",
       "method": "DELETE",
       "route": "/{workspace_id}",
       "handler": "delete_workspace",
@@ -1289,7 +1289,7 @@
       "effect_owner": "stores.workspaces"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/workspaces.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/workspaces.py",
       "method": "DELETE",
       "route": "/{workspace_id}/members/{user_id}",
       "handler": "remove_workspace_member",
@@ -1299,7 +1299,7 @@
       "effect_owner": "stores.workspaces"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/workspaces.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/workspaces.py",
       "method": "PATCH",
       "route": "/{workspace_id}",
       "handler": "update_workspace",
@@ -1309,7 +1309,7 @@
       "effect_owner": "stores.workspaces"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/workspaces.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/workspaces.py",
       "method": "POST",
       "route": "",
       "handler": "create_workspace",
@@ -1319,7 +1319,7 @@
       "effect_owner": "stores.workspaces"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/workspaces.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/workspaces.py",
       "method": "POST",
       "route": "/persona-templates",
       "handler": "create_persona_template_route",
@@ -1329,7 +1329,7 @@
       "effect_owner": "stores.workspaces"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/workspaces.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/workspaces.py",
       "method": "POST",
       "route": "/{workspace_id}/feedback",
       "handler": "submit_workspace_feedback",
@@ -1339,7 +1339,7 @@
       "effect_owner": "stores.workspaces"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/workspaces.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/workspaces.py",
       "method": "POST",
       "route": "/{workspace_id}/members",
       "handler": "add_workspace_member",
@@ -1349,7 +1349,7 @@
       "effect_owner": "stores.workspaces"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/workspaces.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/workspaces.py",
       "method": "PUT",
       "route": "/{workspace_id}/tool-bindings",
       "handler": "update_tool_bindings",
@@ -1359,7 +1359,7 @@
       "effect_owner": "stores.workspaces"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/ws.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/ws.py",
       "method": "WEBSOCKET",
       "route": "/tasks/{task_id}",
       "handler": "stream_task",
@@ -1369,7 +1369,7 @@
       "effect_owner": "services.engine.EngineService.iter_task_events"
     },
     {
-      "source": "packages/hive-conductor/backend/routes/ws.py",
+      "source": "packages/hive-conductor/backend/hive_conductor/routes/ws.py",
       "method": "WEBSOCKET",
       "route": "/dags/{dag_id}/run",
       "handler": "stream_dag_run",
@@ -1859,7 +1859,7 @@
       "effect_owner": "maistro.tasks.queue.TaskQueue"
     },
     {
-      "source": "packages/maistro-turing/backend/routes/admin.py",
+      "source": "packages/maistro-turing/backend/maistro_turing_backend/routes/admin.py",
       "method": "PATCH",
       "route": "/facet",
       "handler": "patch_facet",
@@ -1869,7 +1869,7 @@
       "effect_owner": "turing state"
     },
     {
-      "source": "packages/maistro-turing/backend/routes/admin.py",
+      "source": "packages/maistro-turing/backend/maistro_turing_backend/routes/admin.py",
       "method": "PATCH",
       "route": "/mood",
       "handler": "patch_mood",
@@ -1879,7 +1879,7 @@
       "effect_owner": "turing state"
     },
     {
-      "source": "packages/maistro-turing/backend/routes/auth.py",
+      "source": "packages/maistro-turing/backend/maistro_turing_backend/routes/auth.py",
       "method": "POST",
       "route": "/login",
       "handler": "login",
@@ -1889,7 +1889,7 @@
       "effect_owner": "turing session store"
     },
     {
-      "source": "packages/maistro-turing/backend/routes/chat.py",
+      "source": "packages/maistro-turing/backend/maistro_turing_backend/routes/chat.py",
       "method": "POST",
       "route": "",
       "handler": "chat",
@@ -1899,7 +1899,7 @@
       "effect_owner": "turing chat session.handle_message"
     },
     {
-      "source": "packages/maistro-turing/backend/routes/feed.py",
+      "source": "packages/maistro-turing/backend/maistro_turing_backend/routes/feed.py",
       "method": "POST",
       "route": "",
       "handler": "publish_artifact",

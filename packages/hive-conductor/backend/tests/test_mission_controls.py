@@ -31,7 +31,7 @@ class _Rec:
 
 
 def test_an_engine_backed_mission_says_so() -> None:
-    from routes.missions import _task_to_mission
+    from hive_conductor.routes.missions import _task_to_mission
 
     mission = _task_to_mission(_Rec())
 
@@ -40,7 +40,7 @@ def test_an_engine_backed_mission_says_so() -> None:
 
 def test_an_engine_backed_missions_status_is_refused(admin_client, monkeypatch) -> None:
     """The metadata is not decoration: the route really does refuse."""
-    import routes.missions as missions_routes
+    import hive_conductor.routes.missions as missions_routes
 
     class _Engine:
         _backend = object()
@@ -57,7 +57,7 @@ def test_an_engine_backed_missions_status_is_refused(admin_client, monkeypatch) 
 
 @pytest.mark.parametrize("has_remove_where", [True, False])
 def test_clear_support_reflects_the_backend(has_remove_where: bool) -> None:
-    from services.engine import EngineService
+    from hive_conductor.services.engine import EngineService
 
     class _Backend:
         pass
@@ -73,7 +73,7 @@ def test_clear_support_reflects_the_backend(has_remove_where: bool) -> None:
 
 
 def test_clear_support_is_false_with_no_backend() -> None:
-    from services.engine import EngineService
+    from hive_conductor.services.engine import EngineService
 
     assert EngineService().supports_clear is False
 

@@ -7,8 +7,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from adapters.maistro_core import MaistroCoreBridge
-from config import Settings
+from hive_conductor.adapters.maistro_core import MaistroCoreBridge
+from hive_conductor.config import Settings
 
 
 def _fake_container() -> SimpleNamespace:
@@ -41,7 +41,7 @@ def _capture_runtime_seams(monkeypatch, container: SimpleNamespace) -> dict[str,
 
     monkeypatch.setattr("maistro.container.create_container", fake_create_container)
     monkeypatch.setattr("maistro.agents.factory.create_agents", fake_create_agents)
-    monkeypatch.setattr("services.secrets.maistro_llm_api_key", lambda _settings: "")
+    monkeypatch.setattr("hive_conductor.services.secrets.maistro_llm_api_key", lambda _settings: "")
     return captured
 
 
@@ -79,7 +79,7 @@ async def test_start_passes_container_prompt_manager_to_agent_factory(monkeypatc
 
     monkeypatch.setattr("maistro.container.create_container", fake_create_container)
     monkeypatch.setattr("maistro.agents.factory.create_agents", fake_create_agents)
-    monkeypatch.setattr("services.secrets.maistro_llm_api_key", lambda _settings: "")
+    monkeypatch.setattr("hive_conductor.services.secrets.maistro_llm_api_key", lambda _settings: "")
 
     bridge = MaistroCoreBridge()
     await bridge.start(
@@ -186,7 +186,7 @@ async def test_start_populates_the_dict_the_hierarchy_closed_over(monkeypatch):
 
     monkeypatch.setattr("maistro.container.create_container", fake_create_container)
     monkeypatch.setattr("maistro.agents.factory.create_agents", fake_create_agents)
-    monkeypatch.setattr("services.secrets.maistro_llm_api_key", lambda _settings: "")
+    monkeypatch.setattr("hive_conductor.services.secrets.maistro_llm_api_key", lambda _settings: "")
 
     bridge = MaistroCoreBridge()
     await bridge.start(Settings(maistro_agents_dir="agents"))
@@ -210,7 +210,7 @@ async def test_start_registers_the_runtime_materialization_source(monkeypatch):
     boot roster was seeded with."""
     from pathlib import Path
 
-    import services.agent_materialization as materialization
+    import hive_conductor.services.agent_materialization as materialization
 
     shipped_agents_dir = Path(__file__).resolve().parents[4] / "agents"
     container = _fake_container()
@@ -243,7 +243,7 @@ async def test_start_carries_the_permission_grants_onto_the_container_config(mon
 
     monkeypatch.setattr("maistro.container.create_container", fake_create_container)
     monkeypatch.setattr("maistro.agents.factory.create_agents", fake_create_agents)
-    monkeypatch.setattr("services.secrets.maistro_llm_api_key", lambda _settings: "")
+    monkeypatch.setattr("hive_conductor.services.secrets.maistro_llm_api_key", lambda _settings: "")
 
     await MaistroCoreBridge().start(
         Settings(

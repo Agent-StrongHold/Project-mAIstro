@@ -8,7 +8,7 @@ through the exact same all_persona_templates() every other reader uses.
 from __future__ import annotations
 
 import pytest
-from services.persona_authoring import (
+from hive_conductor.services.persona_authoring import (
     PersonaTemplateIdConflict,
     all_persona_templates,
     create_persona_template,
@@ -24,7 +24,7 @@ def _spawn() -> list[SpawnSpec]:
 
 
 def test_creates_a_yaml_file_resolvable_via_load_templates(tmp_path) -> None:
-    from services import persona_authoring
+    from hive_conductor.services import persona_authoring
 
     template = create_persona_template(
         id="dinner_party",
@@ -127,7 +127,7 @@ def test_interview_defaults_to_no_custom_script() -> None:
 
 
 def test_interview_script_is_persisted_and_resolvable() -> None:
-    from services import persona_authoring
+    from hive_conductor.services import persona_authoring
 
     template = create_persona_template(
         id="dinner_party_with_interview",
@@ -159,7 +159,7 @@ def test_user_templates_dir_is_under_conductor_data_dir(monkeypatch, tmp_path) -
     reference is unaffected by conftest's autouse patch on the source
     module's attribute (which only redirects lookups made from inside
     persona_authoring.py itself, e.g. create_persona_template's)."""
-    from config import get_settings
+    from hive_conductor.config import get_settings
 
     monkeypatch.setenv("CONDUCTOR_DATA_DIR", str(tmp_path))
     get_settings.cache_clear()

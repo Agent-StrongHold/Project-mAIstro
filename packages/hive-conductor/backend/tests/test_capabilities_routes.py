@@ -6,7 +6,7 @@ import asyncio
 
 import httpx
 from fastapi.testclient import TestClient
-from main import app
+from hive_conductor.main import app
 
 
 def _login(username: str = "testuser", password: str = "testpass") -> TestClient:
@@ -19,7 +19,7 @@ def _login(username: str = "testuser", password: str = "testpass") -> TestClient
 def _config_writer(task_id: str) -> TestClient:
     from datetime import UTC, datetime
 
-    import stores
+    import hive_conductor.stores as stores
 
     from maistro.security.passwords import hash_password
 
@@ -72,7 +72,7 @@ def test_patch_capability_activates_and_persists() -> None:
     assert r.json()["active_provider"] == "inbox"
 
     # Persisted into settings so it survives a restart.
-    from services import settings_store
+    from hive_conductor.services import settings_store
 
     assert settings_store.current().capabilities["approval"].active_provider == "inbox"
 
@@ -119,8 +119,8 @@ def test_resolve_unknown_approval_404() -> None:
 async def test_destructive_action_blocks_until_approved_then_completes() -> None:
     """A destructive infra_action is held pending approval, surfaces in the
     approvals inbox, and only completes once resolved through the API."""
-    from routes import capabilities as cap_routes
-    from services.engine import get_engine
+    from hive_conductor.routes import capabilities as cap_routes
+    from hive_conductor.services.engine import get_engine
 
     from maistro.capabilities.bootstrap import default_capability_registry
     from maistro.capabilities.http_client import HttpxAsyncHttp
@@ -168,8 +168,8 @@ async def test_destructive_action_blocks_until_approved_then_completes() -> None
 
 
 async def test_destructive_action_denied_does_not_execute() -> None:
-    from routes import capabilities as cap_routes
-    from services.engine import get_engine
+    from hive_conductor.routes import capabilities as cap_routes
+    from hive_conductor.services.engine import get_engine
 
     from maistro.capabilities.bootstrap import default_capability_registry
     from maistro.capabilities.http_client import HttpxAsyncHttp

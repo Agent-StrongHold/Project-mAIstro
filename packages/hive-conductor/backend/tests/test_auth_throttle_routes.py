@@ -13,7 +13,7 @@ from typing import ClassVar
 
 import pytest
 from fastapi.testclient import TestClient
-from main import app
+from hive_conductor.main import app
 
 
 @pytest.fixture(autouse=True)
@@ -24,7 +24,7 @@ def _fresh_throttles():
     server and wrong for a suite: one test spending a budget would refuse the
     next for reasons that have nothing to do with what it asserts.
     """
-    import routes.auth as auth
+    import hive_conductor.routes.auth as auth
 
     from maistro.security.auth_throttle import AuthThrottle, StricterLimits
 
@@ -70,7 +70,7 @@ class TestLoginDoesNotRevealWhichAccountsExist:
         measures the runner, not the code."""
         from unittest import mock
 
-        import routes.auth as auth
+        import hive_conductor.routes.auth as auth
 
         with mock.patch.object(
             auth, "_client_key", wraps=auth._client_key
@@ -91,9 +91,9 @@ class TestLoginDoesNotRevealWhichAccountsExist:
         fixes that."""
         from pathlib import Path
 
-        source = (Path(__file__).resolve().parents[1] / "routes" / "auth.py").read_text(
-            encoding="utf-8"
-        )
+        source = (
+            Path(__file__).resolve().parents[1] / "hive_conductor" / "routes" / "auth.py"
+        ).read_text(encoding="utf-8")
         login = source[source.index('@router.post("/login")') :]
         login = login[: login.index('@router.post("/logout")')]
         # Comments stripped first: this route's comment *quotes* the old
@@ -158,7 +158,7 @@ class TestRegistrationIsBoundedSeparately:
     def test_it_has_its_own_budget(self) -> None:
         """Registration hashes unconditionally and creates rows, so it is the
         same 64 MiB primitive plus a storage attack."""
-        import routes.auth as auth
+        import hive_conductor.routes.auth as auth
 
         assert auth._REGISTER_THROTTLE is not auth._LOGIN_THROTTLE
 
@@ -167,9 +167,9 @@ class TestRegistrationIsBoundedSeparately:
         cost, since a 409 is a definitive "this account exists"."""
         from pathlib import Path
 
-        source = (Path(__file__).resolve().parents[1] / "routes" / "auth.py").read_text(
-            encoding="utf-8"
-        )
+        source = (
+            Path(__file__).resolve().parents[1] / "hive_conductor" / "routes" / "auth.py"
+        ).read_text(encoding="utf-8")
         register = source[source.index('@router.post("/register")') :]
         register = register[: register.index('@router.post("/login")')]
 
@@ -178,7 +178,7 @@ class TestRegistrationIsBoundedSeparately:
 
 class TestElevationIsBoundedOnTheSession:
     def test_it_has_its_own_budget(self) -> None:
-        import routes.auth as auth
+        import hive_conductor.routes.auth as auth
 
         assert auth._ELEVATE_THROTTLE is not auth._LOGIN_THROTTLE
 
@@ -187,9 +187,9 @@ class TestElevationIsBoundedOnTheSession:
         would let one stolen session lock the real owner out of their others."""
         from pathlib import Path
 
-        source = (Path(__file__).resolve().parents[1] / "routes" / "auth.py").read_text(
-            encoding="utf-8"
-        )
+        source = (
+            Path(__file__).resolve().parents[1] / "hive_conductor" / "routes" / "auth.py"
+        ).read_text(encoding="utf-8")
         elevate = source[source.index('@router.post("/elevate")') :]
 
         assert "_enforce(_ELEVATE_THROTTLE, request, hive_session" in elevate
@@ -201,7 +201,7 @@ class TestTheClientKeyCannotBeSpoofed:
         varying the header, which is the same as having no per-client limit.
         #369 established the trusted-proxy check; this is the second thing that
         needed it."""
-        import routes.auth as auth
+        import hive_conductor.routes.auth as auth
 
         class _Req:
             client = type("C", (), {"host": "203.0.113.9"})()
@@ -212,8 +212,8 @@ class TestTheClientKeyCannotBeSpoofed:
     def test_a_forwarded_header_from_a_trusted_proxy_is_used(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import routes.auth as auth
-        from config import get_settings
+        import hive_conductor.routes.auth as auth
+        from hive_conductor.config import get_settings
 
         monkeypatch.setenv("TRUSTED_PROXY_IPS", "10.0.0.0/8")
         get_settings.cache_clear()
@@ -230,7 +230,7 @@ class TestTheClientKeyCannotBeSpoofed:
     def test_a_request_with_no_peer_shares_one_bounded_bucket(self) -> None:
         """A Unix socket has no peer address. An empty key per request would be
         an unbounded number of budgets; one shared bucket is bounded."""
-        import routes.auth as auth
+        import hive_conductor.routes.auth as auth
 
         class _Req:
             client = None
@@ -256,7 +256,7 @@ class TestADisabledAccountIsNotAnOracle:
     def disabled_account(self):
         from datetime import UTC, datetime
 
-        import stores
+        import hive_conductor.stores as stores
 
         from maistro.security.passwords import hash_password
 
@@ -297,7 +297,7 @@ class TestADisabledAccountIsNotAnOracle:
         """A 403 is not a credential failure, so it is not charged — the person
         holding the right password is not throttled out by their own account
         being disabled."""
-        import routes.auth as auth
+        import hive_conductor.routes.auth as auth
 
         client = _client()
         for _ in range(4):

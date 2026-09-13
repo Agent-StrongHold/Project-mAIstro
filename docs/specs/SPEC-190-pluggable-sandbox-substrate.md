@@ -113,7 +113,7 @@ Unknown or unspecified modes get the `autonomous` (stricter) floor. There is no 
 tier in any mode. `SandboxProtocol.spawn` callers pass the mode (or assert
 `capabilities().isolation >= floor`) so the policy is enforced in the substrate, not re-implemented
 per caller. Reference implementation:
-`packages/hive-conductor/backend/services/hyperlight_executor.py`.
+`packages/hive-conductor/backend/hive_conductor/services/hyperlight_executor.py`.
 
 ### Wiring
 

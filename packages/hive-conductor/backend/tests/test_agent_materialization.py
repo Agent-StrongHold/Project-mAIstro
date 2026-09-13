@@ -10,10 +10,10 @@ import re
 from types import SimpleNamespace
 from typing import Any
 
+import hive_conductor.stores as stores
 import pytest
-import stores
-from models.schemas import Agent
-from services.agent_materialization import (
+from hive_conductor.models.schemas import Agent
+from hive_conductor.services.agent_materialization import (
     MANIFEST_ROSTER_SOURCE,
     agent_id_for,
     materialize_boot_roster,
@@ -214,7 +214,9 @@ class TestBootRosterSeam:
         async def fake_build(settings):
             return {"delivery": _manifest_agent("delivery")}
 
-        monkeypatch.setattr("adapters.maistro_core.build_canonical_roster", fake_build)
+        monkeypatch.setattr(
+            "hive_conductor.adapters.maistro_core.build_canonical_roster", fake_build
+        )
 
         rows = await materialize_boot_roster(
             SimpleNamespace(hive_mode="production", maistro_agents_dir="agents"),
@@ -232,7 +234,7 @@ class TestBootRosterSeam:
         async def boom(settings):
             raise RuntimeError("required agents directory agents was not found")
 
-        monkeypatch.setattr("adapters.maistro_core.build_canonical_roster", boom)
+        monkeypatch.setattr("hive_conductor.adapters.maistro_core.build_canonical_roster", boom)
 
         rows = await materialize_boot_roster(
             SimpleNamespace(hive_mode="production", maistro_agents_dir="agents"),
@@ -246,8 +248,8 @@ class TestBootRosterSeam:
         """The fallback builds the roster the way the bridge does -- so it
         inherits the factory's and container's fail-closed contract rather
         than a softer one."""
-        from adapters.maistro_core import build_canonical_roster
-        from config import Settings
+        from hive_conductor.adapters.maistro_core import build_canonical_roster
+        from hive_conductor.config import Settings
 
         with pytest.raises(Exception, match="ROUTER_API_KEY"):
             await build_canonical_roster(Settings(maistro_agents_dir="agents"))
@@ -289,7 +291,9 @@ class TestDemoSeedGating:
     def test_demo_mode_still_seeds(self, monkeypatch) -> None:
         for key in list(stores.agents.keys()):
             stores.agents.pop(key, None)
-        monkeypatch.setattr("config.get_settings", lambda: SimpleNamespace(hive_mode="demo"))
+        monkeypatch.setattr(
+            "hive_conductor.config.get_settings", lambda: SimpleNamespace(hive_mode="demo")
+        )
 
         stores._seed_agents()
 

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from config import Settings
-from models.schemas import CapabilitySetting, SettingsModel
+from hive_conductor.config import Settings
+from hive_conductor.models.schemas import CapabilitySetting, SettingsModel
+from hive_conductor.services.capabilities_wiring import wire_capabilities
 from pydantic import SecretStr
-from services.capabilities_wiring import wire_capabilities
 
 from maistro.capabilities.bootstrap import default_capability_registry
 from maistro.capabilities.slots.infra import InfraAction
@@ -156,7 +156,7 @@ class _FakeSelfRepair:
 
 
 async def test_run_self_repair_once_runs_when_enabled() -> None:
-    from services.capabilities_wiring import run_self_repair_once
+    from hive_conductor.services.capabilities_wiring import run_self_repair_once
 
     reg = default_capability_registry()
     reg.register(_FakeSelfRepair())
@@ -165,7 +165,7 @@ async def test_run_self_repair_once_runs_when_enabled() -> None:
 
 
 async def test_run_self_repair_once_killswitch_when_slot_disabled() -> None:
-    from services.capabilities_wiring import run_self_repair_once
+    from hive_conductor.services.capabilities_wiring import run_self_repair_once
 
     reg = default_capability_registry()
     reg.register(_FakeSelfRepair())
@@ -176,7 +176,7 @@ async def test_run_self_repair_once_killswitch_when_slot_disabled() -> None:
 def test_engine_exposes_a_capability_registry_in_stub_mode() -> None:
     # The API reaches capabilities via the engine; it must exist even with no
     # real maistro-core container wired (stub/dev mode).
-    from services.engine import EngineService
+    from hive_conductor.services.engine import EngineService
 
     svc = EngineService()
     svc._agent_port = object()  # not a bridge → no .container

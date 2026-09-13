@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 from fastapi import HTTPException
-from services.workspace_authority import create_workspace
+from hive_conductor.services.workspace_authority import create_workspace
 
 from maistro.graph.definitions import Graph, Node
 from maistro.graph.execution_state import GraphExecutionState
@@ -74,7 +74,7 @@ def seeded(admin_client):
     `test_an_unscoped_principal_cannot_answer` -- and these use a principal
     that holds the scope.
     """
-    from services.dag_agents import get_run_store
+    from hive_conductor.services.dag_agents import get_run_store
 
     store = get_run_store()
     created: list[str] = []
@@ -138,7 +138,7 @@ async def test_answering_resumes_the_run_and_the_answer_is_readable(seeded) -> N
 
 
 def _audit_entries(action: str, target: str) -> list[dict[str, Any]]:
-    import stores
+    import hive_conductor.stores as stores
 
     return [
         entry
@@ -152,9 +152,9 @@ def _audit_entries(action: str, target: str) -> list[dict[str, Any]]:
 @pytest.fixture
 def scoped_client():
     """A non-admin principal with the route's coarse write permission."""
-    import stores
+    import hive_conductor.stores as stores
     from fastapi.testclient import TestClient
-    from main import app
+    from hive_conductor.main import app
 
     stores.users["scope-user"] = stores.users["user"].model_copy(
         update={
@@ -185,7 +185,7 @@ def scoped_client():
 
 async def test_hitl_routes_are_scoped_to_the_callers_workspaces(scoped_client) -> None:
     """A scoped writer cannot list, answer, or cancel another workspace's pause."""
-    from services.dag_agents import get_run_store
+    from hive_conductor.services.dag_agents import get_run_store
 
     store = get_run_store()
     assert scoped_client.get("/v1/hitl/pending").json() == []
@@ -299,7 +299,7 @@ def test_an_answer_with_no_verified_principal_is_never_recorded_as_system(
     """
     from types import SimpleNamespace
 
-    import routes.hitl as hitl_routes
+    import hive_conductor.routes.hitl as hitl_routes
 
     request = SimpleNamespace(
         state=SimpleNamespace(),

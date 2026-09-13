@@ -12,7 +12,7 @@ remains future work (see the eval-rigor discussion / a future SPEC).
 
 from __future__ import annotations
 
-from services.hill_climber import HillClimber
+from hive_conductor.services.hill_climber import HillClimber
 
 
 def test_loop_ratchets_on_real_gains_only() -> None:

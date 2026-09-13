@@ -1,6 +1,5 @@
 import asyncio
 import os
-import sys
 from pathlib import Path
 from typing import cast
 
@@ -14,32 +13,24 @@ import pytest
 os.environ.setdefault("SESSION_COOKIE_SECURE", "false")
 os.environ.setdefault("ALLOW_INSECURE_TRANSPORT", "true")
 
-# The backend dir must come FIRST: the monorepo root also has a `services/`
-# package (sandbox_broker) that shadows ours when the root pytest.ini's
-# `pythonpath = .` wins the sys.path race.
-_BACKEND = Path(__file__).resolve().parents[1]
-if str(_BACKEND) in sys.path:
-    sys.path.remove(str(_BACKEND))
-sys.path.insert(0, str(_BACKEND))
-
 
 @pytest.fixture(autouse=True, scope="session")
 def _init_engine() -> None:
-    import services.engine as engine_mod
-    from adapters.maistro_core import StubAgentPort
+    import hive_conductor.services.engine as engine_mod
+    from hive_conductor.adapters.maistro_core import StubAgentPort
 
     if engine_mod._singleton is None:
         svc = engine_mod.EngineService()
         svc._agent_port = StubAgentPort()
         engine_mod._singleton = svc
 
-    import services.foundation as foundation_mod
+    import hive_conductor.services.foundation as foundation_mod
 
     if foundation_mod._singleton is None:
         f = foundation_mod.Foundation()
         foundation_mod._singleton = f
 
-    import stores
+    import hive_conductor.stores as stores
 
     stores.initialize_stores()
 
@@ -47,12 +38,12 @@ def _init_engine() -> None:
 
     import tempfile
 
-    from services import user_credentials as cred_svc
+    from hive_conductor.services import user_credentials as cred_svc
 
     cred_svc.init_credential_store(tempfile.mkdtemp(prefix="hive-cred-test-"))
 
     try:
-        from services.design_render import init_design_render_service
+        from hive_conductor.services.design_render import init_design_render_service
 
         init_design_render_service()
     except Exception:
@@ -62,7 +53,7 @@ def _init_engine() -> None:
 @pytest.fixture(autouse=True)
 def _isolate_persona_authoring_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     """Redirect wizard-authored persona templates to tmp_path."""
-    import services.persona_authoring as persona_authoring
+    import hive_conductor.services.persona_authoring as persona_authoring
 
     monkeypatch.setattr(
         persona_authoring, "user_templates_dir", lambda: tmp_path / "persona_templates"
@@ -74,7 +65,7 @@ def _isolate_dashboard_layouts():
     """Give each test its own layout store."""
     import copy
 
-    import stores
+    import hive_conductor.stores as stores
 
     snapshot = copy.deepcopy(dict(stores.dashboard_layouts.items()))
     yield
@@ -87,7 +78,7 @@ def _isolate_dashboard_layouts():
 @pytest.fixture(autouse=True)
 def _isolate_workspace_authority():
     """Do not let the canonical fallback/presentation adapter leak across tests."""
-    from services.workspace_authority import reset_for_tests
+    from hive_conductor.services.workspace_authority import reset_for_tests
 
     reset_for_tests()
     yield
@@ -102,7 +93,7 @@ def _no_runtime_materialization_source():
     container-shaped fake explicitly. Resetting around every test keeps a
     bridge-booted (or test-registered) runtime from leaking into a test that
     expects the honest stub behavior -- stamped non-dispatchable, no Agent."""
-    import services.agent_materialization as materialization
+    import hive_conductor.services.agent_materialization as materialization
 
     materialization.reset_runtime_source()
     yield
@@ -111,8 +102,8 @@ def _no_runtime_materialization_source():
 
 def _set_canonical_workspace_members(workspace_id: str, roles: dict[str, str]) -> None:
     """Apply a legacy route-test member map through canonical Workspace authority."""
-    from models.workspace import WorkspaceRole
-    from services import workspace_authority
+    from hive_conductor.models.workspace import WorkspaceRole
+    from hive_conductor.services import workspace_authority
 
     target = dict(roles)
     if "owner" not in target.values():
@@ -189,7 +180,7 @@ def _legacy_registration_implementation_tests(request: pytest.FixtureRequest):
         yield
         return
 
-    from services import registration_policy
+    from hive_conductor.services import registration_policy
 
     registration_policy.set_mode("open", actor="test:legacy-registration")
     try:
@@ -201,14 +192,14 @@ def _legacy_registration_implementation_tests(request: pytest.FixtureRequest):
 @pytest.fixture(autouse=True)
 def _route_local_llm_alias_tracks_service_patch(monkeypatch: pytest.MonkeyPatch):
     """Keep older API tests' service-level LLM patches effective after #488."""
-    import routes.chat as chat_routes
-    import services.chat_completion as chat_service
+    import hive_conductor.routes.chat as chat_routes
+    import hive_conductor.services.chat_completion as chat_service
 
     monkeypatch.setattr(chat_routes, "build_llm_port", lambda: chat_service.build_llm_port())
 
 
 def _seed_test_user() -> None:
-    import stores
+    import hive_conductor.stores as stores
 
     if len(stores.users) > 0:
         return
@@ -239,7 +230,7 @@ def _seed_test_user() -> None:
 @pytest.fixture(scope="session")
 def authed_client():
     from fastapi.testclient import TestClient
-    from main import app
+    from hive_conductor.main import app
 
     client = TestClient(app)
     r = client.post("/v1/auth/login", json={"username": "testuser", "password": "testpass"})
@@ -250,7 +241,7 @@ def authed_client():
 @pytest.fixture(scope="session")
 def admin_client():
     from fastapi.testclient import TestClient
-    from main import app
+    from hive_conductor.main import app
 
     client = TestClient(app)
     r = client.post("/v1/auth/login", json={"username": "testadmin", "password": "adminpass"})
@@ -261,7 +252,7 @@ def admin_client():
 @pytest.fixture(autouse=True)
 def _isolate_vault_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     """Redirect first-run vault provisioning to tmp_path."""
-    import routes.setup as setup_routes
+    import hive_conductor.routes.setup as setup_routes
 
     monkeypatch.setattr(
         setup_routes,

@@ -26,13 +26,11 @@ from typing import Any
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 
 @pytest.fixture(autouse=True)
 def _reset_singleton():
-    import services.evolution as evo
+    import hive_conductor.services.evolution as evo
 
     prev = evo._service
     evo._service = None
@@ -44,7 +42,7 @@ def _reset_singleton():
 
 
 def test_get_evolution_service_raises_when_not_started() -> None:
-    from services.evolution import get_evolution_service
+    from hive_conductor.services.evolution import get_evolution_service
 
     with pytest.raises(RuntimeError, match="not started"):
         get_evolution_service()
@@ -52,7 +50,7 @@ def test_get_evolution_service_raises_when_not_started() -> None:
 
 def test_start_then_get_returns_instance(monkeypatch: pytest.MonkeyPatch) -> None:
     """start_evolution sets the singleton; get_evolution_service returns it."""
-    import services.evolution as evo
+    import hive_conductor.services.evolution as evo
 
     started: list[Any] = []
 
@@ -70,7 +68,7 @@ def test_start_then_get_returns_instance(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_stop_when_not_started_is_noop() -> None:
-    import services.evolution as evo
+    import hive_conductor.services.evolution as evo
 
     assert evo._service is None
     asyncio.run(evo.stop_evolution())
@@ -80,7 +78,7 @@ def test_stop_when_not_started_is_noop() -> None:
 def test_stop_flips_running_and_clears_singleton(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.evolution as evo
+    import hive_conductor.services.evolution as evo
 
     def _swallow(coro: Any) -> Any:
         coro.close()
@@ -99,7 +97,7 @@ def test_stop_flips_running_and_clears_singleton(
 
 
 def test_service_properties_initial_state() -> None:
-    from services.evolution import _EvolutionService
+    from hive_conductor.services.evolution import _EvolutionService
 
     s = _EvolutionService()
     assert s.cycle_count == 0
@@ -118,7 +116,7 @@ def test_run_loop_logs_and_returns_when_maistro_evolve_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When maistro_evolve.population is missing, run_loop returns instead of hanging."""
-    from services.evolution import _EvolutionService
+    from hive_conductor.services.evolution import _EvolutionService
 
     class _Broken:
         def __getattr__(self, name: str) -> Any:
@@ -140,8 +138,8 @@ def test_run_loop_initializes_and_stops_cleanly(
     """Initialize population + tournament, take one short sleep, stop."""
     import types
 
-    import services.evolution as evo
-    from services.evolution import _EvolutionService
+    import hive_conductor.services.evolution as evo
+    from hive_conductor.services.evolution import _EvolutionService
 
     class _StubPop:
         def __init__(self) -> None:
@@ -178,8 +176,8 @@ def test_run_loop_captures_cycle_exception(
     """If _run_one_cycle raises, run_loop stores the message and continues."""
     import types
 
-    import services.evolution as evo
-    from services.evolution import _EvolutionService
+    import hive_conductor.services.evolution as evo
+    from hive_conductor.services.evolution import _EvolutionService
 
     class _Pop:
         def list_all(self) -> list[Any]:
@@ -223,8 +221,8 @@ def test_run_loop_captures_cycle_exception(
 def test_run_one_cycle_dispatches_canonical_graph(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.evolution_graph as evolution_graph
-    from services.evolution import _EvolutionService
+    import hive_conductor.services.evolution_graph as evolution_graph
+    from hive_conductor.services.evolution import _EvolutionService
 
     from maistro.runs.model import RunStatus
 
@@ -263,8 +261,8 @@ def test_run_one_cycle_dispatches_canonical_graph(
 def test_run_one_cycle_does_not_count_failed_canonical_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.evolution_graph as evolution_graph
-    from services.evolution import _EvolutionService
+    import hive_conductor.services.evolution_graph as evolution_graph
+    from hive_conductor.services.evolution import _EvolutionService
 
     from maistro.runs.model import RunStatus
 
@@ -300,7 +298,7 @@ def test_run_one_cycle_does_not_count_failed_canonical_run(
 def test_build_llm_call_returns_none_without_base_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from services.evolution import _EvolutionService
+    from hive_conductor.services.evolution import _EvolutionService
 
     class _NoBase:
         maistro_llm_base_url = ""
@@ -309,7 +307,7 @@ def test_build_llm_call_returns_none_without_base_url(
         litellm_api_key = ""
         chat_default_model = "stub"
 
-    import config
+    import hive_conductor.config as config
 
     monkeypatch.setattr(config, "get_settings", lambda: _NoBase())
     s = _EvolutionService()
@@ -319,8 +317,8 @@ def test_build_llm_call_returns_none_without_base_url(
 def test_build_llm_call_swallows_exceptions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import config
-    from services.evolution import _EvolutionService
+    import hive_conductor.config as config
+    from hive_conductor.services.evolution import _EvolutionService
 
     def _boom() -> Any:
         raise RuntimeError("synthetic")
@@ -335,7 +333,7 @@ async def test_build_llm_call_real_call_posts_and_extracts_content(
 ) -> None:
     """When settings have a base URL, _build_llm_call posts and returns content."""
     import httpx
-    from services.evolution import _EvolutionService
+    from hive_conductor.services.evolution import _EvolutionService
 
     class _Settings:
         litellm_api_base = "http://test.example/api"
@@ -343,7 +341,7 @@ async def test_build_llm_call_real_call_posts_and_extracts_content(
         litellm_api_key = ""
         chat_default_model = "test-model"
 
-    import config
+    import hive_conductor.config as config
 
     monkeypatch.setattr(config, "get_settings", lambda: _Settings())
 
@@ -384,7 +382,7 @@ async def test_build_llm_call_real_call_posts_and_extracts_content(
 
 
 def test_status_reports_zero_state_when_nothing_running() -> None:
-    from services.evolution import _EvolutionService
+    from hive_conductor.services.evolution import _EvolutionService
 
     s = _EvolutionService()
     out = s.status()
@@ -397,7 +395,7 @@ def test_status_reports_zero_state_when_nothing_running() -> None:
 
 
 def test_status_reports_population_size_tournament_and_run() -> None:
-    from services.evolution import _EvolutionService
+    from hive_conductor.services.evolution import _EvolutionService
 
     class _Pop:
         def list_all(self) -> list[int]:

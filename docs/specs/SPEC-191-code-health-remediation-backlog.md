@@ -72,11 +72,11 @@ become a focused PR. Re-run `/code-health` after each tier to confirm the grade 
 ### P0 — Quick, safe wins (do first; low risk, high signal)
 
 - [ ] `maistro-evolve/.../diversity.py:38` — weak MD5 flagged by bandit (B324). Fix: `hashlib.md5(..., usedforsecurity=False)` (it is non-security hashing).
-- [ ] `hive-conductor/backend/routes/dags.py:292` — unreachable code after `return` (vulture 100%). Remove.
+- [ ] `hive-conductor/backend/hive_conductor/routes/dags.py:292` — unreachable code after `return` (vulture 100%). Remove.
 - [ ] `hive-conductor/run_hill_climb.py:89` — unreachable code after `return` (vulture 100%). Remove.
 - [ ] `maistro-core/.../security/oauth.py:68,90` — `redirect_uri` / `refresh_token` assigned but unused. **Likely a real correctness gap** (OAuth params silently dropped) — verify, then wire or remove.
-- [ ] `hive-conductor/backend/adapters/maistro_core.py:59 complete()` — `stream` and `metadata` params accepted but silently ignored (`payload` hardcodes `"stream": False`, never forwards `metadata`). Honor them or annotate intentional.
-- [ ] `hive-conductor/backend/main.py:28` — unused `daily_report` (v1) import; only `daily_report_v2` is registered. Remove (ruff F401 misses it inside the multi-line `from routes import (...)` tuple).
+- [ ] `hive-conductor/backend/hive_conductor/adapters/maistro_core.py:59 complete()` — `stream` and `metadata` params accepted but silently ignored (`payload` hardcodes `"stream": False`, never forwards `metadata`). Honor them or annotate intentional.
+- [ ] `hive-conductor/backend/hive_conductor/main.py:28` — unused `daily_report` (v1) import; only `daily_report_v2` is registered. Remove (ruff F401 misses it inside the multi-line `from routes import (...)` tuple).
 
 ### P1 — F/E-grade functions (CC > 30) — highest-risk refactors
 

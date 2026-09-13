@@ -25,7 +25,7 @@ owners:
 
 ## Finding addressed
 
-The third-pass vulture run mixed a true unreachable-code finding in `packages/hive-conductor/backend/routes/dags.py` with expected framework false positives from FastAPI route handlers, Pydantic fields, and dynamic integration surfaces. The unreachable-code finding has been removed, and the vulture baseline now classifies remaining findings by reviewed category while failing on new unreachable code or unclassified findings.
+The third-pass vulture run mixed a true unreachable-code finding in `packages/hive-conductor/backend/hive_conductor/routes/dags.py` with expected framework false positives from FastAPI route handlers, Pydantic fields, and dynamic integration surfaces. The unreachable-code finding has been removed, and the vulture baseline now classifies remaining findings by reviewed category while failing on new unreachable code or unclassified findings.
 
 ## Design
 

@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import pathlib
-import sys
 from typing import Any
 
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 
 def _seed(client: Any) -> str:
@@ -115,7 +112,7 @@ def test_delete_dag_missing_returns_404(admin_client: Any) -> None:
 
 
 def test_activate_dag(admin_client: Any) -> None:
-    import stores
+    import hive_conductor.stores as stores
 
     before_audit = len(stores.audit_log)
     dag_id = _seed(admin_client)
@@ -153,7 +150,7 @@ def _completed_result(run_id: str = "run-canonical-1") -> dict[str, Any]:
 def test_run_dag_success_uses_canonical_run_id(
     admin_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import services.graph_runner as graph_runner
+    import hive_conductor.services.graph_runner as graph_runner
 
     async def ok(_dag_data: Any, **_kwargs: Any) -> dict[str, Any]:
         return _completed_result()
@@ -168,7 +165,7 @@ def test_run_dag_success_uses_canonical_run_id(
     assert body["run_id"] == "run-canonical-1"
     assert body["result"]["run_id"] == "run-canonical-1"
 
-    from services.dag_run_store import get_dag_run_store
+    from hive_conductor.services.dag_run_store import get_dag_run_store
 
     projection = get_dag_run_store().get_run("run-canonical-1")
     assert projection is not None
@@ -180,7 +177,7 @@ def test_run_dag_success_uses_canonical_run_id(
 def test_run_dag_canonical_failure_stays_failed(
     admin_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import services.graph_runner as graph_runner
+    import hive_conductor.services.graph_runner as graph_runner
 
     failed = {
         "status": "failed",
@@ -203,7 +200,7 @@ def test_run_dag_canonical_failure_stays_failed(
     assert body["run_id"] == "run-failed-1"
     assert "node failed" in body["error"]
 
-    from services.dag_run_store import get_dag_run_store
+    from hive_conductor.services.dag_run_store import get_dag_run_store
 
     projection = get_dag_run_store().get_run("run-failed-1")
     assert projection is not None
@@ -215,7 +212,7 @@ def test_run_dag_canonical_failure_stays_failed(
 def test_run_dag_pre_admission_failure_has_no_fake_execution_id(
     admin_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import services.graph_runner as graph_runner
+    import hive_conductor.services.graph_runner as graph_runner
 
     async def boom(_dag_data: Any, **_kwargs: Any) -> dict[str, Any]:
         raise ValueError("cyclic DAG rejected before execution")
@@ -231,8 +228,8 @@ def test_run_dag_pre_admission_failure_has_no_fake_execution_id(
 def test_run_dag_projection_failure_does_not_rewrite_execution(
     admin_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import services.dag_run_store as history
-    import services.graph_runner as graph_runner
+    import hive_conductor.services.dag_run_store as history
+    import hive_conductor.services.graph_runner as graph_runner
 
     async def ok(_dag_data: Any, **_kwargs: Any) -> dict[str, Any]:
         return _completed_result("run-with-history-failure")
@@ -258,7 +255,7 @@ def test_run_dag_missing_dag_returns_404(admin_client: Any) -> None:
 def test_run_champion_success_uses_canonical_run_id(
     admin_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import services.graph_runner as graph_runner
+    import hive_conductor.services.graph_runner as graph_runner
 
     async def ok() -> dict[str, Any]:
         return {"status": "completed", "run_id": "champion-run", "champion": True}
@@ -273,7 +270,7 @@ def test_run_champion_success_uses_canonical_run_id(
 
 
 def test_run_champion_failure(admin_client: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    import services.graph_runner as graph_runner
+    import hive_conductor.services.graph_runner as graph_runner
 
     async def boom() -> dict[str, Any]:
         raise RuntimeError("champion crash")
@@ -293,8 +290,8 @@ async def test_a_result_without_a_run_id_projects_nothing(
     """The Recent Runs projection keys on the canonical Run id; a result that
     never got one (pre-admission failure shapes) must not mint a projection
     row under some synthesized key."""
-    import routes.dags as dags_routes
-    import services.dag_run_store as history
+    import hive_conductor.routes.dags as dags_routes
+    import hive_conductor.services.dag_run_store as history
 
     def _unexpected_store() -> Any:  # pragma: no cover
         raise AssertionError("no store may be consulted without a run id")

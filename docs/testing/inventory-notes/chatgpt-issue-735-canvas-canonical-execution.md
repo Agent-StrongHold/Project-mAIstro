@@ -76,6 +76,6 @@ Before claiming, the open PR set was checked for `canvas/executor.py`, `canvas/r
 
 ## Outer product boundary
 
-The Hive Conductor optional `routes.canvas` mounted in `packages/hive-conductor/backend/main.py` is the older `services.canvas_dag` surface, not `maistro_canvas.canvas.routes`. No repository production composition currently supplies `maistro_canvas.canvas.routes` with an authorized Workspace/Project-bound `CanvasCanonicalExecution`.
+The Hive Conductor optional `routes.canvas` mounted in `packages/hive-conductor/backend/hive_conductor/main.py` is the older `services.canvas_dag` surface, not `maistro_canvas.canvas.routes`. No repository production composition currently supplies `maistro_canvas.canvas.routes` with an authorized Workspace/Project-bound `CanvasCanonicalExecution`.
 
 This branch therefore does **not** claim that Hive's legacy Canvas entry point has been migrated. It supplies and proves the Canvas-package execution seam that an authorized outer composition can inject, while the cross-package product mounting/cleanup remains parent #52 work. No canonical scope is invented to erase that boundary.

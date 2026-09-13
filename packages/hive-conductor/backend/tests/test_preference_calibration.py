@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from services.preference_calibration import (
+from hive_conductor.services.preference_calibration import (
     MIN_COMPARISONS,
     PreferenceComparison,
     fit_preference_model,

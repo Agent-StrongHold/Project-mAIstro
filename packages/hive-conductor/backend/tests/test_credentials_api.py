@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
-from main import app
+from hive_conductor.main import app
 
 
 def _login(username: str = "testadmin", password: str = "adminpass") -> TestClient:

@@ -19,6 +19,14 @@ def _flat(app: str, module: str) -> str:
     return reachability._flat_key(app, module)
 
 
+def test_backend_roots_use_canonical_import_names() -> None:
+    packaged = [app for app in reachability.FLAT_APPS if app.package]
+
+    assert packaged
+    for app in packaged:
+        assert all(root.startswith(f"{app.package}.") for root in (*app.roots, *app.dynamic_roots))
+
+
 def test_turing_backend_modules_are_collected_and_reachable_from_real_entrypoint() -> None:
     mods, seen = reachability._reachability()
 

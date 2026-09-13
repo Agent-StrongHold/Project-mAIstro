@@ -13,8 +13,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import hive_conductor.stores as stores
 import pytest
-import stores
 
 
 @pytest.fixture(autouse=True)
@@ -72,7 +72,7 @@ def _create_workspace(client, persona_template_id: str = "pm_fleet") -> str:
 
 
 def test_a_members_submission_carries_its_workspace(admin_client, monkeypatch) -> None:
-    import routes.missions as missions_routes
+    import hive_conductor.routes.missions as missions_routes
 
     engine = _CapturingEngine()
     monkeypatch.setattr(missions_routes, "get_engine", lambda: engine)
@@ -103,7 +103,7 @@ def test_an_unknown_workspace_is_refused_rather_than_falling_back(admin_client) 
 
 
 def test_an_unscoped_submission_names_the_default_explicitly(admin_client, monkeypatch) -> None:
-    import routes.missions as missions_routes
+    import hive_conductor.routes.missions as missions_routes
 
     engine = _CapturingEngine()
     monkeypatch.setattr(missions_routes, "get_engine", lambda: engine)
@@ -165,7 +165,7 @@ async def test_the_http_backend_refuses_a_named_workspace() -> None:
     server's default Project while the caller was told it went to theirs,
     which is precisely the silent scope loss this issue removes.
     """
-    from adapters.task_backend import MaistroServerTaskBackend, WorkspaceNotRoutable
+    from hive_conductor.adapters.task_backend import MaistroServerTaskBackend, WorkspaceNotRoutable
 
     from maistro.tasks.models import TaskCreate
 
@@ -177,7 +177,7 @@ async def test_the_http_backend_refuses_a_named_workspace() -> None:
 
 async def test_the_http_backend_still_accepts_an_unscoped_submission(monkeypatch) -> None:
     """And the refusal must not have cost the default path anything."""
-    import adapters.task_backend as backend_mod
+    import hive_conductor.adapters.task_backend as backend_mod
 
     from maistro.tasks.models import TaskCreate
 
@@ -264,7 +264,7 @@ async def test_the_http_backend_forwards_the_bound_request_id(monkeypatch) -> No
     """Correlation metadata only, never authorization/scope (#1063): the id
     RequestIDMiddleware already bound reaches maistro-server's own
     RequestIDMiddleware unsigned, the same way it reaches this process's logs."""
-    import adapters.task_backend as backend_mod
+    import hive_conductor.adapters.task_backend as backend_mod
 
     from maistro.observability.correlation import bind_execution_context
     from maistro.tasks.models import TaskCreate
@@ -283,7 +283,7 @@ async def test_the_http_backend_omits_the_header_with_no_request_in_scope(monkey
     """No fabricated id: a caller outside any bound execution (a background
     job that has not minted its own correlation root) sends nothing rather
     than inventing a value maistro-server would treat as a real client id."""
-    import adapters.task_backend as backend_mod
+    import hive_conductor.adapters.task_backend as backend_mod
 
     from maistro.tasks.models import TaskCreate
 

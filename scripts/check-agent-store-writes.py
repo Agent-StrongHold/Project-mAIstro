@@ -44,7 +44,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 #: The one module permitted to mutate `stores.agents`.
-SERVICE = "packages/hive-conductor/backend/services/agent_materialization.py"
+SERVICE = "packages/hive-conductor/backend/hive_conductor/services/agent_materialization.py"
 
 #: Documented exceptions to the container-agents rebinding rule.
 CONTAINER_ASSIGN_EXCEPTIONS = frozenset(

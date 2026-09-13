@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import pathlib
-import sys
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
@@ -12,8 +11,6 @@ from typing import Any
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 
 class _Row:
@@ -104,19 +101,19 @@ async def _fixture(
 
 
 def _install_row(row: Any) -> None:
-    import stores
+    import hive_conductor.stores as stores
 
     stores.schedules._data[row.id] = row  # type: ignore[attr-defined]
 
 
 def _remove_row(row: Any) -> None:
-    import stores
+    import hive_conductor.stores as stores
 
     stores.schedules._data.pop(row.id, None)  # type: ignore[attr-defined]
 
 
 def test_two_live_runners_claim_one_occurrence(monkeypatch: pytest.MonkeyPatch) -> None:
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     async def scenario() -> None:
         container, row, root = await _fixture()
@@ -153,7 +150,7 @@ def test_two_live_runners_claim_one_occurrence(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_persisted_template_survives_empty_registry(monkeypatch: pytest.MonkeyPatch) -> None:
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     async def scenario() -> None:
         container, row, _root = await _fixture()
@@ -162,7 +159,7 @@ def test_persisted_template_survives_empty_registry(monkeypatch: pytest.MonkeyPa
             _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
         )
 
-        import services.dag_agents as dag_agents
+        import hive_conductor.services.dag_agents as dag_agents
 
         def _registry_must_not_be_read() -> None:
             raise AssertionError("registry must not be consulted")
@@ -181,7 +178,7 @@ def test_persisted_template_survives_empty_registry(monkeypatch: pytest.MonkeyPa
 
 
 def test_missing_template_keeps_occurrence_owed(monkeypatch: pytest.MonkeyPatch) -> None:
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     async def scenario() -> None:
         container, row, _root = await _fixture(template=False)
@@ -206,7 +203,7 @@ def test_missing_template_keeps_occurrence_owed(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_run_creation_failure_keeps_occurrence_owed(monkeypatch: pytest.MonkeyPatch) -> None:
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     async def scenario() -> None:
         container, row, _root = await _fixture()
@@ -238,10 +235,10 @@ def test_run_creation_failure_keeps_occurrence_owed(monkeypatch: pytest.MonkeyPa
 def test_max_runs_disables_canonical_and_product_projection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     async def scenario() -> None:
-        import stores
+        import hive_conductor.stores as stores
 
         container, row, _root = await _fixture(max_runs=1)
         _install_row(row)

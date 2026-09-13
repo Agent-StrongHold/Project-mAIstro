@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from models.workspace import AgentToolBinding, Workspace
-from services.tool_binding import resolve_agent_prompt_fragment, resolve_agent_tools
+from hive_conductor.models.workspace import AgentToolBinding, Workspace
+from hive_conductor.services.tool_binding import resolve_agent_prompt_fragment, resolve_agent_tools
 
 
 def _workspace(**overrides: object) -> Workspace:

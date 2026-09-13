@@ -10,19 +10,16 @@ from __future__ import annotations
 
 import asyncio
 import pathlib
-import sys
 from typing import Any
 
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 
 def _make_executor(monkeypatch: pytest.MonkeyPatch, available: set[str]):
     """Build a SandboxExecutor seeing exactly `available` backends on the host."""
-    import services.hyperlight_executor as hx
+    import hive_conductor.services.hyperlight_executor as hx
 
     monkeypatch.setattr(hx, "_has_hyperlight", lambda: "hyperlight" in available)
     monkeypatch.setattr(hx, "_has_firecracker", lambda: "firecracker" in available)

@@ -30,7 +30,7 @@ tests:
 source:
   - alembic/versions/024_design_project_scope.py
   - packages/maistro-design/src/maistro_design/stores.py
-  - packages/hive-conductor/backend/routes/design.py
+  - packages/hive-conductor/backend/hive_conductor/routes/design.py
 ac-modules:
   AC-2: 'maistro_design.stores'
   AC-3: 'maistro_design.stores'

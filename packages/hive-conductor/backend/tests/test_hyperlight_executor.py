@@ -4,7 +4,7 @@ import asyncio
 import sys
 
 import pytest
-from services.hyperlight_executor import SandboxExecutor
+from hive_conductor.services.hyperlight_executor import SandboxExecutor
 
 
 @pytest.mark.asyncio
@@ -79,7 +79,7 @@ async def test_a_command_that_outlives_its_deadline_is_a_timeout_not_a_hang() ->
 async def test_a_transport_failure_is_reported_not_raised(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.hyperlight_executor as hyperlight
+    import hive_conductor.services.hyperlight_executor as hyperlight
 
     async def _explode(coro: object, timeout: object) -> object:
         raise RuntimeError("transport exploded")

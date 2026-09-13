@@ -136,7 +136,7 @@ class IdentityLinkStore(Protocol):
 
 - `maistro-engine:packages/maistro-core/src/maistro/security/oauth.py` — the stub being replaced.
 - `maistro-engine:packages/maistro-core/src/maistro/auth/{registry,provider,_types,middleware}.py` — service-key authZ + `Scope` model (untouched).
-- `maistro-engine:packages/hive-conductor/backend/routes/auth.py`, `middleware/auth.py`, `models/schemas.py` — live user/session model OAuth must produce a session for.
+- `maistro-engine:packages/hive-conductor/backend/hive_conductor/routes/auth.py`, `middleware/auth.py`, `models/schemas.py` — live user/session model OAuth must produce a session for.
 - `maistro-engine:packages/maistro-core/src/maistro/security/passwords.py` — Argon2id (password path stays).
 - `maistro-engine:packages/maistro-core/src/maistro/vault.py` — age-encrypted token storage.
 - ADR-020 setup wizard ("OAuth-first where possible").

@@ -130,13 +130,13 @@ class TestFileClassification:
             [
                 "packages/maistro-core/src/maistro/router/scorer.py",
                 "packages/maistro-core/tests/router/test_scorer.py",
-                "packages/hive-conductor/backend/routes/chat.py",
+                "packages/hive-conductor/backend/hive_conductor/routes/chat.py",
                 "packages/maistro-evolve/tests/benchmarks/conftest.py",
                 "docs/specs/SPEC-281-harness-lift-measurement.md",
             ]
         )
         assert "packages/maistro-core/src/maistro/router/scorer.py" in src
-        assert "packages/hive-conductor/backend/routes/chat.py" in src
+        assert "packages/hive-conductor/backend/hive_conductor/routes/chat.py" in src
         assert "packages/maistro-core/tests/router/test_scorer.py" in tests
         assert "packages/maistro-evolve/tests/benchmarks/conftest.py" in tests
         # Docs are neither: they must not count as a source change on their own.
