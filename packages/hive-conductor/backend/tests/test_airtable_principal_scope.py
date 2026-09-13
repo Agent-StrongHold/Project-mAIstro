@@ -143,12 +143,23 @@ async def test_bases_without_selection_use_only_current_token_metadata(
         return {"bases": [{"id": "app-BOB-METADATA", "name": "Bob Metadata"}]}
 
     monkeypatch.setattr(widgets, "get_airtable_bases_json", metadata)
-    result = await widgets.widget_airtable_bases(_request("bob"))
-    tables = await widgets.widget_airtable_tables(_request("bob"), base_id="app-BOB-METADATA")
+    bob_request = _request("bob")
+    result = await widgets.widget_airtable_bases(bob_request)
+    tables = await widgets.widget_airtable_tables(bob_request, base_id="app-BOB-METADATA")
+    records = await widgets.widget_airtable(bob_request, table="T")
+    fields = await widgets.widget_airtable_fields(bob_request, table="T")
+    query = await chat_completion._tool_airtable_query(
+        {"table_name": "T"}, user_id="bob", jira_pat=None
+    )
+    describe = await chat_completion._tool_airtable_describe({}, user_id="bob", jira_pat=None)
 
     assert result == {"bases": [{"id": "app-BOB-METADATA", "name": "Bob Metadata"}]}
     assert tables["tables"] == []
     assert tables["error"] == "No base_id configured."
+    assert records == {"error": "No base_id configured.", "records": []}
+    assert fields == {"fields": []}
+    assert query == {"error": "Airtable base_id not configured. Set it in Credentials → Airtable."}
+    assert describe == {"error": "Airtable base_id not configured."}
 
 
 @pytest.mark.parametrize("multi_user", [True, False])
