@@ -467,6 +467,8 @@ async def test_postgres_reservation_and_settlement_return_none_for_missing_rows(
     assert await store.reserve_fire("missing") is None
     assert await store.settle_fire("missing", reservation, run_id=None) is None
     assert pool.connection.executed == []
+
+
 # --- the due cursor without a fire (#1199) ------------------------------------
 
 

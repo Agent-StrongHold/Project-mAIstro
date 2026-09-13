@@ -124,6 +124,8 @@ class ManualFireRefused(Exception):
     schedule's cursor, `runs_so_far`, and enabled flag are all exactly as they
     were.
     """
+
+
 def _owes(decision: ScheduleEvaluation) -> bool:
     """Whether the evaluation left an occurrence that still has to run."""
     return any(skip.reason in _UNCONSUMED_SKIPS for skip in decision.skipped)
