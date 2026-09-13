@@ -6,7 +6,8 @@ Live task state is held in memory. When a database is configured
 — upserts a ``TaskRecord`` row, fire-and-forget, so task execution never
 fails because the database is unavailable. Writes for one task are chained so
 they land in the order the state changed. With no database the queue behaves
-exactly as before and a restart loses all tasks.
+exactly as before. A configured database restores receipt rows on startup and
+re-enqueues only queued rows that already carry a canonical Run id.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import structlog
+from sqlalchemy import select
 
 from maistro.constants import DESCRIPTION_LOG_PREVIEW_LEN
 from maistro.memory.store import TaskRecord, get_async_session_factory
@@ -53,6 +55,13 @@ def _record_values(task: TaskResponse) -> dict[str, Any]:
         "phase": task.phase,
         "progress": task.progress.model_dump(mode="json") if task.progress else None,
         "result": task.result.model_dump(mode="json") if task.result else None,
+        "task_type": task.task_type,
+        "agent_id": task.agent_id,
+        "capability": task.capability,
+        "program_context": task.program_context,
+        "lane": task.lane.value,
+        "priority_tier": task.priority_tier,
+        "session_id": task.session_id,
         "started_at": task.started_at,
         "completed_at": task.completed_at,
     }
@@ -94,6 +103,44 @@ PRUNE_TARGET = 8_000
 
 # Terminal statuses that can be pruned
 _TERMINAL = frozenset({TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED})
+
+
+def _task_from_record(record: TaskRecord) -> TaskResponse:
+    """Rebuild a receipt without creating a new Run or delegation."""
+    from maistro.tasks.lanes import Lane
+
+    actor_kind = record.actor_kind if record.actor_kind in {"user", "system", "service"} else "user"
+    lane = record.lane if record.lane in {item.value for item in Lane} else Lane.BACKGROUND.value
+    priority_tier = (
+        record.priority_tier
+        if record.priority_tier in {"P0", "P1", "P2", "P3", "P4", "P5"}
+        else "P2"
+    )
+    return TaskResponse(
+        task_id=record.id,
+        status=TaskStatus(record.status),
+        description=record.description,
+        workspace=record.workspace,
+        user_id=record.user_id,
+        service_principal_id=record.service_principal_id,
+        delegation_id=record.delegation_id,
+        actor_kind=actor_kind,
+        task_type=record.task_type,
+        agent_id=record.agent_id,
+        capability=record.capability,
+        program_context=record.program_context,
+        tier=record.tier,
+        lane=lane,
+        priority_tier=priority_tier,
+        session_id=record.session_id,
+        run_id=record.run_id,
+        phase=record.phase,
+        progress=TaskProgress.model_validate(record.progress or {}),
+        result=TaskResult.model_validate(record.result) if record.result is not None else None,
+        created_at=record.created_at,
+        started_at=record.started_at,
+        completed_at=record.completed_at,
+    )
 
 
 class TaskQueue:
@@ -142,6 +189,52 @@ class TaskQueue:
                 self._last_write.pop(task.task_id, None)
 
         write.add_done_callback(_done)
+
+    async def restore_persisted(self) -> int:
+        """Restore task receipts and retry only durable queued work.
+
+        A queued row already has a canonical ``run_id``. Re-enqueuing that same
+        receipt lets the normal runner resume it without admitting a second Run
+        or minting a new delegation. Active rows stay projections: canonical
+        Run/Attempt recovery owns them, so this queue never becomes a second
+        recovery scheduler.
+        """
+        factory = get_async_session_factory()
+        if factory is None:
+            return 0
+        try:
+            async with factory() as session:
+                result = await session.execute(
+                    select(TaskRecord).order_by(TaskRecord.created_at, TaskRecord.id)
+                )
+                records = list(result.scalars().all())
+        except Exception as exc:
+            logger.warning("task_record_restore_failed", error=str(exc))
+            return 0
+
+        restored = 0
+        queued: list[str] = []
+        async with self._lock:
+            for record in records:
+                if record.id in self._tasks:
+                    continue
+                try:
+                    task = _task_from_record(record)
+                except (TypeError, ValueError) as exc:
+                    logger.warning("task_record_restore_skipped", task_id=record.id, error=str(exc))
+                    continue
+                self._tasks[task.task_id] = task
+                restored += 1
+                if task.status is TaskStatus.QUEUED and task.run_id:
+                    active_tasks.inc()
+                    queued.append(task.task_id)
+            self._maybe_prune()
+
+        for task_id in queued:
+            await self._pending.put(task_id)
+        if restored:
+            logger.info("task_records_restored", restored=restored, queued=len(queued))
+        return restored
 
     def _get_event(self, task_id: str) -> asyncio.Event:
         """Get or create an asyncio.Event for a task."""

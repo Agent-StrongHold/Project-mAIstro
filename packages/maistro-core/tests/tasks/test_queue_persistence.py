@@ -8,12 +8,13 @@ failing write is logged and swallowed, never surfaced to the caller.
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 
 import maistro.tasks.queue as queue_mod
+from maistro.memory.store import TaskRecord
 from maistro.tasks.models import TaskCreate, TaskProgress, TaskResult, TaskStatus
 from maistro.tasks.queue import TaskQueue
 
@@ -203,3 +204,93 @@ async def test_writes_for_one_task_commit_in_state_order(
     await _drain(queue)
 
     assert commits == ["queued", "planning", "coding"]
+
+
+async def test_restore_requeues_same_delegated_receipt_without_new_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A restart restores the receipt and retries only queued canonical work."""
+    created = datetime(2026, 9, 8, tzinfo=UTC)
+    records = [
+        TaskRecord(
+            id="alice-task",
+            run_id="alice-run",
+            user_id="alice",
+            service_principal_id="conductor",
+            delegation_id="alice-delegation",
+            actor_kind="user",
+            status="queued",
+            description="Alice's work",
+            workspace="/tmp/maistro-workspace",
+            tier=2,
+            phase="queued",
+            progress={"subtasks": 0, "completed": 0, "current": ""},
+            result=None,
+            task_type="engineering",
+            agent_id=None,
+            capability=None,
+            program_context=None,
+            lane="background",
+            priority_tier="P2",
+            session_id="alice-session",
+            created_at=created,
+        ),
+        TaskRecord(
+            id="bob-task",
+            run_id="bob-run",
+            user_id="bob",
+            service_principal_id="conductor",
+            delegation_id="bob-delegation",
+            actor_kind="user",
+            status="coding",
+            description="Bob's work",
+            workspace="/tmp/maistro-workspace",
+            tier=2,
+            phase="coding",
+            progress={"subtasks": 1, "completed": 0, "current": "coding"},
+            result=None,
+            task_type=None,
+            agent_id=None,
+            capability=None,
+            program_context=None,
+            lane="background",
+            priority_tier="P2",
+            session_id="bob-session",
+            created_at=created,
+        ),
+    ]
+
+    class _Rows:
+        def scalars(self) -> _Rows:
+            return self
+
+        def all(self) -> list[TaskRecord]:
+            return records
+
+    class _RestoreSession:
+        async def __aenter__(self) -> _RestoreSession:
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+        async def execute(self, statement: Any) -> _Rows:
+            del statement
+            return _Rows()
+
+    monkeypatch.setattr(queue_mod, "get_async_session_factory", lambda: lambda: _RestoreSession())
+    queue = TaskQueue()
+
+    assert await queue.restore_persisted() == 2
+    alice = queue.get("alice-task", user_id="alice")
+    assert alice is not None
+    assert alice.user_id == "alice"
+    assert alice.service_principal_id == "conductor"
+    assert alice.delegation_id == "alice-delegation"
+    assert alice.run_id == "alice-run"
+    assert queue.get("alice-task", user_id="bob") is None
+    assert queue.get("bob-task", user_id="alice") is None
+    assert await queue.next_task() == "alice-task"
+    # A task already in flight is restored for visibility, not dispatched by a
+    # second scheduler; canonical Run/Attempt recovery owns that work.
+    assert queue._pending.empty()

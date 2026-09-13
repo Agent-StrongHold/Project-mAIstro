@@ -1,7 +1,8 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +3
+  packages/maistro-core/tests: +4
   packages/maistro-server/tests: +3
+  packages/hive-conductor/backend/tests: +1
 ---
 
 # #1057 — task principal delegation

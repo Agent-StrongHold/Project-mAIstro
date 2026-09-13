@@ -110,6 +110,16 @@ class TaskRecord(Base):
     phase: Mapped[str | None] = mapped_column(String(20))
     progress: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     result: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    # Immutable task inputs needed to rebuild the receipt after a process
+    # restart. The Run remains the execution authority; these are its receipt's
+    # original dispatch inputs, not a second execution record.
+    task_type: Mapped[str | None] = mapped_column(String(200))
+    agent_id: Mapped[str | None] = mapped_column(String(200))
+    capability: Mapped[str | None] = mapped_column(String(200))
+    program_context: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    lane: Mapped[str] = mapped_column(String(20), nullable=False, default="background")
+    priority_tier: Mapped[str] = mapped_column(String(2), nullable=False, default="P2")
+    session_id: Mapped[str | None] = mapped_column(String(200))
     constraints: Mapped[list[Any] | None] = mapped_column(JSONB)
     branch: Mapped[str | None] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
