@@ -48,6 +48,9 @@ def test_turing_documented_backend_command_starts_from_backend_directory() -> No
     """Exercise the shipped uvicorn command, not only importlib discovery."""
     backend = ROOT / "packages" / "maistro-turing" / "backend"
     env = os.environ | {
+        "PYTHONPATH": os.pathsep.join(
+            (str(ROOT / "packages" / "maistro-turing" / "src"), os.environ.get("PYTHONPATH", ""))
+        ),
         "TURING_SERVICE_KEY": "test-turing-service-key",
         "TURING_ALLOW_INSECURE_TRANSPORT": "1",
     }
