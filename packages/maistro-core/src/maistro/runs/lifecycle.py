@@ -192,6 +192,16 @@ def transition_node_run(
     if migrated is not None:
         return migrated
 
+    # A newly successful logical node must name the physical completed Attempt
+    # whose evidence was accepted. `result=None` is a valid no-output success,
+    # but absence of AcceptedNodeOutcome is not evidence that such a success
+    # happened. Keep legacy hydration permissive above so old rows can still be
+    # read and repaired, while making every new success transition structural.
+    if target is RunStatus.COMPLETED and accepted_outcome is None:
+        raise InvalidLifecycleTransition(
+            "completed NodeRun requires an AcceptedNodeOutcome from a completed Attempt"
+        )
+
     values = _logical_values(node_run, target, at=at, result=result, error=error)
     if (
         node_run.accepted_outcome is not None

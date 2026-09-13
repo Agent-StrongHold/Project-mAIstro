@@ -28,10 +28,15 @@ class DurableRunStore(Protocol):
         *,
         limit: int = 100,
         project_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> list[DurableRunRecord]: ...
 
     async def list_due(self, *, now: datetime, limit: int = 100) -> list[DurableRunRecord]:
         """Return persisted graph continuations whose timed resume is due."""
+        ...
+
+    async def list_hitl_due(self, *, now: datetime, limit: int = 100) -> list[DurableRunRecord]:
+        """Return paused Runs whose indexed HITL deadline is due."""
         ...
 
     async def list_for_project(
