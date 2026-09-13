@@ -147,12 +147,12 @@ class TuringChatSession:
         self._self_id = self_id
         self._history: list[dict[str, str]] = []
 
-    @property
+    @property  # noqa: V106
     def provider_bridge(self) -> TuringProviderBridge:
         """Expose the configured Provider for the canonical backend adapter."""
         return self._provider
 
-    async def prepare_message(self, message: str) -> str:
+    async def prepare_message(self, message: str) -> str:  # noqa: V105
         """Prepare a user turn for the canonical chat Node.
 
         This method owns Turing conversation state and prompt construction, but
@@ -173,7 +173,7 @@ class TuringChatSession:
         prompt_parts.append("Respond naturally as yourself.")
         return "\n".join(prompt_parts)
 
-    async def record_response(self, message: str, reply: str) -> None:
+    async def record_response(self, message: str, reply: str) -> None:  # noqa: V105
         """Record a successful response after canonical provider execution."""
         self._history.append({"role": "assistant", "content": reply})
 

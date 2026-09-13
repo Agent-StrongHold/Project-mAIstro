@@ -191,6 +191,9 @@ src = [
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "C90", "C4"]
+# Vulture owns these external codes; keep its dynamic backend surface explicit
+# without making Ruff reject the cross-linter suppression annotations.
+external = ["V105", "V106"]
 # UP046/UP047 (PEP 695 type-parameter syntax) only fire once target-version
 # reaches py312 (C2/#287). The 9 existing TypeVar/Generic[T] sites they'd flag
 # (maistro.credentials.rotation, maistro.graph.executor/nodes.base,
