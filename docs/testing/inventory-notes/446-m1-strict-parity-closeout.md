@@ -1,5 +1,6 @@
 ---
 inventory-delta:
+  packages/hive-conductor/backend/tests: +1
   tests/: +1
 ---
 

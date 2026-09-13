@@ -10,9 +10,9 @@ Base recovered from zero diff and fast-forwarded to `develop@93401f3485ebb815ded
 
 ## Scope
 
-This branch owns the cross-product parity **test harness only**. It does not implement missing product convergence and does not close #459.
+This branch owns the cross-product parity **test harness and the #446 repair seams**. It does not close #459.
 
-The diff is limited to `tests/cross_product_parity/**` plus this #459-specific evidence note. No Builders, Evolve, scheduler, Canvas/Turing, Conductor product implementation, canonical Run/Graph store, migration, workflow, quality gate, or ontology implementation is changed.
+The repair is limited to canonical inspection authorization, the BuilderPipeline canonical composition, public scheduler/Evolve invocation entry points, and their parity evidence. It does not change the canonical Run/Graph store, migration, workflow, quality gate, or ontology.
 
 ## Ownership audit
 
@@ -52,17 +52,18 @@ No `skip`, `importorskip`, expected-failure marker, or other test suppression is
 
 ## Collected parity contracts
 
-The named suite currently contributes nine integration tests:
+The named suite currently contributes ten integration tests:
 
 1. The supported SQLite execution spine persists the identical canonical Run, Graph, Workspace, Project and admission provenance across connection close/reopen.
 2. An identical cross-product identity projection is accepted.
 3. A deliberately introduced second Run ID mapping and a product-private terminal state both fail the parity contract.
-4. Builders -> Conductor scenario 1 asserts its exact active dependencies; when both public seams are present, the same test activates rather than using a substitute runtime.
-5. Scheduler -> shared inspection scenario 2 follows the same dependency contract.
-6. Evolve -> shared inspection scenario 3 follows the same dependency contract.
+4. Builders -> Conductor scenario 1 runs the shipped BuilderPipeline canonical composition rather than constructing its executor directly.
+5. Scheduler -> shared inspection scenario 2 runs the live cadence entry point and observes through Conductor inspection.
+6. Evolve -> shared inspection scenario 3 runs the public EvolutionService cycle and observes through Conductor inspection.
 7. Scenario 4 consumes the #458 executable identity ontology once it lands.
 8. Scenario 6 consumes #463's independent golden fixture/matcher once it lands.
-9. A harness-integrity test rejects test-suppression escape hatches in this suite.
+9. Strict closeout rejects blocker-only producer passes.
+10. A harness-integrity test rejects test-suppression escape hatches in this suite.
 
 ## Acceptance status
 
@@ -79,7 +80,9 @@ Already proven independently by this branch:
 - unavailable product scenarios are explicitly tied to named source-level dependency evidence without skips/suppressions;
 - #458 and #463 are consumed as external authorities rather than recreated.
 
-The strict closeout suite now executes the first three producer scenarios against the
-canonical spine and fails closed in CI when any scenario cannot run. Broader identity
+The strict closeout suite now executes the three producer scenarios against the
+canonical spine and fails closed in CI when any scenario cannot run. Each producer
+uses a shipped composition entry point and the Conductor inspection seam where the
+product exposes one. Broader identity
 coverage and the remaining product-specific #459 acceptance work remain governed by
 #459 and its downstream dependencies.

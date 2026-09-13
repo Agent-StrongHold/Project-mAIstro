@@ -31,6 +31,7 @@ from typing import Any, ClassVar
 from maistro.builders.contracts import RunRequest, RunStatus, WorkerName
 from maistro.builders.graph import PipelineGraph, PipelineNode, RunContext
 from maistro.builders.graph_executor import (
+    CanonicalGraphPipelineExecutor,
     DispatchResult,
     GraphPipelineExecutor,
     PipelineDispatcher,
@@ -159,6 +160,7 @@ class PipelineRun:
     failed_stage_error: str = ""
     revisions: dict[str, int] = field(default_factory=dict)
     gate_exhausted: list[str] = field(default_factory=list)
+    canonical_run_id: str | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def to_dict(self) -> dict[str, object]:
@@ -172,6 +174,7 @@ class PipelineRun:
             "skipped_stages": list(self.skipped_stages),
             "revisions": dict(self.revisions),
             "gate_exhausted": list(self.gate_exhausted),
+            "canonical_run_id": self.canonical_run_id,
             "created_at": self.created_at.isoformat(),
         }
 
@@ -452,10 +455,22 @@ class RuntimeDispatcher:
 
 
 class BuilderPipeline:
-    """Executes the full issue-to-merge pipeline via GraphPipelineExecutor.
+    """Execute Builders, optionally admitted onto the canonical Run spine.
+
+    Supplying the canonical ``run_store``, ``durable_store``, Workspace and
+    Project makes this the production composition: the compatibility receipt
+    is projected from canonical Graph/Run/NodeRun/Attempt evidence. Omitting
+    those objects keeps the historical in-process adapter for callers that
+    have not wired a spine yet; it is not the configured product path.
 
     Usage:
-        pipeline = BuilderPipeline(dispatcher)
+        pipeline = BuilderPipeline(
+            dispatcher,
+            run_store=run_store,
+            durable_store=durable_store,
+            workspace_id="workspace-1",
+            project_id="project-root",
+        )
         run = await pipeline.execute(
             issue_number=42, title="Add caching", repo="acme/widget",
         )
@@ -472,8 +487,35 @@ class BuilderPipeline:
         spec_verifier: Any | None = None,
         code_index: Any | None = None,
         nodes: list[PipelineNode] | None = None,
+        run_store: Any | None = None,
+        durable_store: Any | None = None,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+        actor_principal_id: str | None = None,
     ) -> None:
+        spine_values = (run_store, durable_store, workspace_id, project_id)
+        if any(value is not None for value in spine_values) and not all(
+            value is not None for value in spine_values
+        ):
+            raise ValueError(
+                "canonical Builders execution requires run_store, durable_store, "
+                "workspace_id, and project_id"
+            )
         self._dispatcher = dispatcher
+        self._canonical_executor = None
+        if all(value is not None for value in spine_values):
+            assert run_store is not None
+            assert durable_store is not None
+            assert workspace_id is not None
+            assert project_id is not None
+            self._canonical_executor = CanonicalGraphPipelineExecutor(
+                dispatcher,
+                run_store=run_store,
+                durable_store=durable_store,
+                workspace_id=workspace_id,
+                project_id=project_id,
+                actor_principal_id=actor_principal_id,
+            )
         self._spec_store = spec_store
         self._spec_verifier = spec_verifier
         self._code_index = code_index
@@ -544,9 +586,12 @@ class BuilderPipeline:
         # Wrap each node's on_complete with spec verification if configured
         nodes = self._wrap_nodes_with_verification(self._nodes)
         graph = PipelineGraph(nodes)
-        executor = GraphPipelineExecutor(self._dispatcher)
-
-        await executor.execute(graph, run)
+        if self._canonical_executor is not None:
+            await self._canonical_executor.execute(graph, run)
+        else:
+            # Compatibility only: configured product composition uses the
+            # canonical executor above and never this in-process authority.
+            await GraphPipelineExecutor(self._dispatcher).execute(graph, run)
 
         self._reconcile_stages(run)
         return run

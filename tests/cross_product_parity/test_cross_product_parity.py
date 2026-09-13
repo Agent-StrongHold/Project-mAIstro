@@ -124,11 +124,8 @@ async def test_builders_created_work_is_observable_on_the_canonical_spine(
 ) -> None:
     """Scenario 1 executes Builders and reads the resulting canonical evidence."""
     from maistro.builders.graph import PipelineGraph, PipelineNode
-    from maistro.builders.graph_executor import (
-        CanonicalGraphPipelineExecutor,
-        DispatchResult,
-    )
-    from maistro.builders.pipeline import PipelineRun, PipelineStage
+    from maistro.builders.graph_executor import DispatchResult
+    from maistro.builders.pipeline import BuilderPipeline
     from maistro.graph.durable_runs import CanonicalDurableRunStore
 
     class Dispatcher:
@@ -149,33 +146,27 @@ async def test_builders_created_work_is_observable_on_the_canonical_spine(
             ),
         ]
     )
-    product_run = PipelineRun(
-        id="builders-parity-run",
-        issue_number=734,
-        title="Builders parity",
-        repo="Agent-StrongHold/Project-mAIstro",
-        stages=[
-            PipelineStage(
-                name=node.name, agent_name=node.agent_name, prompt_template=node.prompt_template
-            )
-            for node in graph
-        ],
-    )
     profile = await open_durable_profile(
         tmp_path / "builders.sqlite3", workspace_id="builders-parity"
     )
     try:
-        executor = CanonicalGraphPipelineExecutor(
+        pipeline = BuilderPipeline(
             Dispatcher(),
+            nodes=list(graph),
             run_store=profile.run_store,
             durable_store=CanonicalDurableRunStore(profile.run_store, profile.continuation_store),
             workspace_id=profile.workspace_id,
             project_id=profile.project_id,
         )
-        record = await executor.execute(graph, product_run)
-        observation = await canonical_observation(profile, record.run_id)
+        product_run = await pipeline.execute(
+            issue_number=734,
+            title="Builders parity",
+            repo="Agent-StrongHold/Project-mAIstro",
+        )
+        assert product_run.canonical_run_id
+        observation = await canonical_observation(profile, product_run.canonical_run_id)
         assert observation["status"] == "completed"
-        assert len(observation["node_run_ids"]) == len(observation["attempt_ids"]) == 2
+        assert len(observation["node_run_ids"]) == len(observation["attempt_ids"]) >= 2
 
         # Use the shipped Conductor inspection seam as the observer. The
         # canonical store remains the source of existence and lifecycle truth.
@@ -189,9 +180,11 @@ async def test_builders_created_work_is_observable_on_the_canonical_spine(
             engine_module, "_singleton", SimpleNamespace(run_store=profile.run_store)
         )
         monkeypatch.setattr(inspection, "list_views_for_user", _views_for_user)
-        inspected = await inspection.visible_run_detail("builders-observer", record.run_id)
+        inspected = await inspection.visible_run_detail(
+            "builders-observer", product_run.canonical_run_id
+        )
         assert inspected is not None
-        assert inspected["canonical_run_id"] == record.run_id
+        assert inspected["canonical_run_id"] == product_run.canonical_run_id
         assert inspected["status"] == "completed"
 
         assert_identity_projection(
@@ -210,7 +203,9 @@ async def test_schedule_fire_admits_a_canonical_run_from_the_live_runner(
     """Scenario 2 fires Hive's configured scheduler, not a source probe."""
     from datetime import UTC, datetime
 
-    from services.scheduler import _ScheduleRunner
+    import services.dag_run_inspection as inspection
+    import services.engine as engine_module
+    from services.scheduler import ScheduleRunner
 
     from maistro.graph.definitions import GraphTemplate, Node
 
@@ -260,18 +255,30 @@ async def test_schedule_fire_admits_a_canonical_run_from_the_live_runner(
     import stores
 
     stores.schedules[row.id] = row
-    monkeypatch.setattr(_ScheduleRunner, "_canonical_container", staticmethod(lambda: container))
+    monkeypatch.setattr(
+        engine_module,
+        "_singleton",
+        SimpleNamespace(
+            _agent_port=SimpleNamespace(container=container),
+            run_store=profile.run_store,
+        ),
+    )
+
+    async def _views_for_user(_user_id: str) -> list[SimpleNamespace]:
+        return [SimpleNamespace(id=profile.workspace_id)]
+
+    monkeypatch.setattr(inspection, "list_views_for_user", _views_for_user)
     try:
-        await _ScheduleRunner()._evaluate_schedule(
-            row.id,
-            row,
-            now=datetime(2026, 8, 21, 12, 5, tzinfo=UTC),
-        )
+        await ScheduleRunner().run_once(now=datetime(2026, 8, 21, 12, 5, tzinfo=UTC))
         recorded = await profile.schedule_store.get(row.id)
         assert recorded is not None and recorded.last_run_id
         observation = await canonical_observation(profile, recorded.last_run_id)
         assert observation["status"] == "queued"
         assert observation["workspace_id"] == profile.workspace_id
+        inspected = await inspection.visible_run_detail("scheduler-observer", recorded.last_run_id)
+        assert inspected is not None
+        assert inspected["canonical_run_id"] == recorded.last_run_id
+        assert inspected["workspace_id"] == profile.workspace_id
     finally:
         stores.schedules.pop(row.id, None)
         await profile.close()
@@ -279,8 +286,9 @@ async def test_schedule_fire_admits_a_canonical_run_from_the_live_runner(
 
 @pytest.mark.asyncio
 async def test_evolve_cycle_records_real_run_node_and_attempt_evidence() -> None:  # noqa: C901
-    """Scenario 3 runs the shipped Evolve graph adapter with deterministic domain input."""
-    from services.evolution_graph import run_canonical_evolution_cycle
+    """Scenario 3 runs Evolve's shipped service composition with deterministic input."""
+    import services.dag_run_inspection as inspection
+    import services.engine as engine_module
 
     import maistro_evolve.cycle as cycle_module
     from maistro.graph.durable_runs import CanonicalDurableRunStore, InMemoryGraphContinuationStore
@@ -391,21 +399,36 @@ async def test_evolve_cycle_records_real_run_node_and_attempt_evidence() -> None
             population_size=2,
             migration_interval=100,
         )
-        record = await run_canonical_evolution_cycle(
-            population=Population(),
-            tournament=Tournament(),
-            config=config,
-            harness=Harness(),
-            cycle_number=1,
-            container=owner,
+        from services.evolution import EvolutionService
+
+        service = EvolutionService()
+        service._population = Population()
+        service._tournament = Tournament()
+        monkeypatch.setattr(
+            engine_module,
+            "_singleton",
+            SimpleNamespace(
+                _agent_port=SimpleNamespace(container=owner),
+                run_store=run_store,
+            ),
         )
-        stored = await run_store.get_run(record.run_id)
+
+        async def _views_for_user(_user_id: str) -> list[SimpleNamespace]:
+            return [SimpleNamespace(id="evolve-parity")]
+
+        monkeypatch.setattr(inspection, "list_views_for_user", _views_for_user)
+        run_id = await service.run_cycle(config=config, harness=Harness(), llm_call=None)
+        stored = await run_store.get_run(run_id)
         assert stored is not None and stored.status.value == "completed"
-        nodes = await run_store.list_node_runs(record.run_id)
+        nodes = await run_store.list_node_runs(run_id)
         attempts = [
             attempt for node in nodes for attempt in await run_store.list_attempts(node.node_run_id)
         ]
         assert nodes and len(nodes) == len(attempts)
+        inspected = await inspection.visible_run_detail("evolve-observer", run_id)
+        assert inspected is not None
+        assert inspected["canonical_run_id"] == run_id
+        assert inspected["status"] == "completed"
         assert_identity_projection(
             {
                 "workspace_id": stored.workspace_id,
@@ -413,12 +436,7 @@ async def test_evolve_cycle_records_real_run_node_and_attempt_evidence() -> None
                 "run_id": stored.run_id,
                 "status": stored.status.value,
             },
-            {
-                "workspace_id": stored.workspace_id,
-                "project_id": stored.project_id,
-                "run_id": stored.run_id,
-                "status": stored.status.value,
-            },
+            inspected,
         )
     finally:
         monkeypatch.undo()

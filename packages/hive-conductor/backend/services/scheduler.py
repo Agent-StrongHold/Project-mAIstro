@@ -36,7 +36,7 @@ def start_scheduler() -> None:
     global _runner
     if _runner is not None:
         return
-    _runner = _ScheduleRunner()
+    _runner = ScheduleRunner()
     _runner.task = asyncio.ensure_future(_runner.run())
 
 
@@ -102,7 +102,7 @@ async def fire_now(sid: str) -> str:
     return run_id
 
 
-class _ScheduleRunner:
+class ScheduleRunner:
     def __init__(self) -> None:
         self._running = True
         self._last_check: datetime | None = None
@@ -146,19 +146,27 @@ class _ScheduleRunner:
         registry = get_engine().capabilities
         await run_self_repair_once(registry)
 
-    async def _tick(self) -> None:
+    async def run_once(self, *, now: datetime | None = None) -> None:
+        """Run one scheduler cadence through the configured production seam.
+
+        The background loop and deterministic operator/test invocations share
+        this entry point; neither needs to call the private per-row adapter.
+        """
         import stores
 
-        now = datetime.now(UTC)
+        effective_now = now or datetime.now(UTC)
         for sid, schedule in list(stores.schedules.items()):
             if not getattr(schedule, "enabled", False):
                 continue
             try:
-                await self._evaluate_schedule(sid, schedule, now=now)
+                await self._evaluate_schedule(sid, schedule, now=effective_now)
             except Exception as exc:
                 logger.warning("Failed to evaluate schedule %s: %s", sid, exc)
 
-        self._last_check = now
+        self._last_check = effective_now
+
+    async def _tick(self) -> None:
+        await self.run_once()
 
     def _as_definition(self, sid: str, schedule: Any) -> Schedule | None:
         """Project the live ``/v1/schedules`` row onto the canonical definition.
@@ -620,3 +628,10 @@ class _ScheduleRunner:
             },
         )
         return str(record.run.run_id)
+
+
+# Preserve the historical private import while exposing the shipped scheduler
+# composition for direct cadence invocations.
+_ScheduleRunner = ScheduleRunner
+
+__all__ = ["ScheduleNotFireable", "ScheduleRunner", "fire_now", "start_scheduler", "stop_scheduler"]

@@ -76,6 +76,7 @@ async def _canonical_projection(record: dict[str, Any]) -> dict[str, Any]:
         "status": run.status.value,
         "workspace_id": run.workspace_id,
         "project_id": run.project_id,
+        "run_id": run.run_id,
         "canonical_run_id": run.run_id,
         **({"result": run.result} if run.result is not None else {}),
         **({"error": run.error} if run.error else {}),
@@ -87,9 +88,12 @@ async def _canonical_record(run: Any) -> dict[str, Any]:
     projected = get_dag_run_store().get_run(run.run_id)
     if projected is not None:
         return await _canonical_projection(projected)
-    node_runs = await _canonical_store().list_node_runs(run.run_id)
+    canonical_store = _canonical_store()
+    assert canonical_store is not None
+    node_runs = await canonical_store.list_node_runs(run.run_id)
     return {
         "id": run.run_id,
+        "run_id": run.run_id,
         "canonical_run_id": run.run_id,
         "dag_id": run.graph.graph_id,
         "workspace_id": run.workspace_id,
@@ -177,12 +181,10 @@ async def can_inspect_run(user_id: str, run_id: str) -> bool:
         if run is None:
             return False
         allowed = await authorized_workspace_ids(user_id)
-        # Production writers copy canonical scope verbatim. Retain the
-        # projection scope only for pre-convergence rows whose canonical run
-        # predates scope threading; they remain lifecycle-read-only.
-        return run.workspace_id in allowed or (
-            projection is not None and _in_scope(projection, allowed)
-        )
+        # Canonical scope is the only authorization input once the spine is
+        # configured. A stale or malicious projection cannot widen it, even
+        # when its copied Workspace disagrees with the Run.
+        return run.workspace_id in allowed
 
     record = get_dag_run_store().get_run(run_id)
     if record is None:
@@ -207,9 +209,7 @@ async def visible_run_detail(user_id: str, run_id: str) -> dict[str, Any] | None
         if run is None:
             return None
         allowed = await authorized_workspace_ids(user_id)
-        if run.workspace_id not in allowed and not (
-            projection is not None and _in_scope(projection, allowed)
-        ):
+        if run.workspace_id not in allowed:
             return None
         return await _canonical_record(run)
 
