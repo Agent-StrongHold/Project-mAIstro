@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
     timestamp TEXT NOT NULL,
     boundary TEXT NOT NULL DEFAULT '',
     user_id TEXT NOT NULL DEFAULT '',
+    org_id TEXT NOT NULL DEFAULT '',
     team_id TEXT NOT NULL DEFAULT '',
     agent_id TEXT NOT NULL DEFAULT '',
     tool_name TEXT,
@@ -29,6 +30,7 @@ _ALLOWED_FILTER_COLUMNS: frozenset[str] = frozenset(
     {
         "user_id",
         "agent_id",
+        "org_id",
     }
 )
 
@@ -40,21 +42,36 @@ class SqliteAuditLog:
         self._conn = conn
 
     async def ensure_schema(self) -> None:
-        """Create the audit_log table if it doesn't exist."""
+        """Create or upgrade the audit_log table and its scope index.
+
+        SQLite has no ``ADD COLUMN IF NOT EXISTS``. Inspecting the table keeps
+        existing homelab databases readable while making the empty string an
+        explicit representation for legacy system/unscoped entries.
+        """
         await self._conn.execute(_SCHEMA)
+        cursor = await self._conn.execute("PRAGMA table_info(audit_log)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        if "org_id" not in columns:
+            await self._conn.execute(
+                "ALTER TABLE audit_log ADD COLUMN org_id TEXT NOT NULL DEFAULT ''"
+            )
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_audit_log_scope ON audit_log (org_id, timestamp)"
+        )
         await self._conn.commit()
 
     async def log(self, entry: AuditEntry) -> None:
         """Record an audit entry."""
         await self._conn.execute(
             """INSERT INTO audit_log
-               (timestamp, boundary, user_id, team_id, agent_id,
+               (timestamp, boundary, user_id, org_id, team_id, agent_id,
                 tool_name, verdict, detail, trace_id, request_id)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 entry.timestamp.isoformat(),
                 entry.boundary,
                 entry.user_id,
+                getattr(entry, "org_id", "") or "",
                 getattr(entry, "team_id", ""),
                 entry.agent_id,
                 getattr(entry, "tool_name", "") or "",
@@ -74,7 +91,17 @@ class SqliteAuditLog:
         org_id: str = "",
         limit: int = 100,
     ) -> list[AuditEntry]:
-        """Retrieve audit entries with optional filtering."""
+        """Retrieve audit entries with optional filtering.
+
+        ``org_id`` is an exact SQL predicate when non-empty. The empty string
+        is the explicit system/unscoped read value and intentionally preserves
+        the administrative all-scope read; authorization for that read belongs
+        to the caller, not this persistence adapter. Tenant callers must pass
+        a non-empty org id, which excludes system rows and every other tenant.
+        """
+        if org_id is None:
+            raise ValueError("org_id cannot be None; pass '' for an unscoped read")
+
         conditions: list[str] = []
         params: list[Any] = []
 
@@ -83,6 +110,8 @@ class SqliteAuditLog:
             filters.append(("user_id", user_id))
         if agent_id:
             filters.append(("agent_id", agent_id))
+        if org_id:
+            filters.append(("org_id", org_id))
 
         for col, value in filters:
             if col not in _ALLOWED_FILTER_COLUMNS:
@@ -93,7 +122,7 @@ class SqliteAuditLog:
         where = " AND ".join(conditions) if conditions else "1=1"
         params.append(limit)
         query = (
-            f"SELECT timestamp, boundary, user_id, team_id, agent_id, tool_name, "
+            f"SELECT timestamp, boundary, user_id, org_id, team_id, agent_id, tool_name, "
             f"verdict, detail, trace_id, request_id FROM audit_log "
             f"WHERE {where} ORDER BY timestamp DESC LIMIT ?"  # nosec B608
         )
@@ -108,13 +137,14 @@ class SqliteAuditLog:
                 timestamp=datetime.fromisoformat(r[0]),
                 boundary=r[1] or "",
                 user_id=r[2] or "",
-                team_id=r[3] or "",
-                agent_id=r[4] or "",
-                tool_name=r[5],
-                verdict=r[6] or "allowed",
-                detail=r[7] or "",
-                trace_id=r[8] or "",
-                request_id=r[9] or "",
+                org_id=r[3] or "",
+                team_id=r[4] or "",
+                agent_id=r[5] or "",
+                tool_name=r[6],
+                verdict=r[7] or "allowed",
+                detail=r[8] or "",
+                trace_id=r[9] or "",
+                request_id=r[10] or "",
             )
             for r in rows
         ]

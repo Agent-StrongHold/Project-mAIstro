@@ -30,4 +30,8 @@ class InMemoryAuditLog:
             result = [e for e in result if e.user_id == user_id]
         if agent_id:
             result = [e for e in result if e.agent_id == agent_id]
+        if org_id is None:
+            raise ValueError("org_id cannot be None; pass '' for an unscoped read")
+        if org_id:
+            result = [e for e in result if e.org_id == org_id]
         return list(reversed(result))[:limit]

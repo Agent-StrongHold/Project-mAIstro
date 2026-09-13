@@ -48,6 +48,16 @@ class TestInMemoryAuditLog:
         assert entries == [e1]
 
     @pytest.mark.asyncio
+    async def test_filters_by_org_id(self) -> None:
+        log = InMemoryAuditLog()
+        e1 = AuditEntry(boundary="b", user_id="u1", org_id="org-a")
+        e2 = AuditEntry(boundary="b", user_id="u1", org_id="org-b")
+        await log.log(e1)
+        await log.log(e2)
+        entries = await log.get_entries(org_id="org-a")
+        assert entries == [e1]
+
+    @pytest.mark.asyncio
     async def test_respects_limit(self) -> None:
         log = InMemoryAuditLog()
         for i in range(5):

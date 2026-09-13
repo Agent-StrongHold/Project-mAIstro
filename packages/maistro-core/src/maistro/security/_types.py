@@ -129,6 +129,8 @@ class AuditEntry:
     violations: tuple[Violation, ...] = ()
     detail: str = ""
     agent_id: str = ""
+    # Empty is the explicit system/unscoped representation.
+    org_id: str = ""
 
 
 @dataclass
