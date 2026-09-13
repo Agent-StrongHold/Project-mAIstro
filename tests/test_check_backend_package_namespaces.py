@@ -48,3 +48,14 @@ def test_python_outside_package_is_rejected(tmp_path: Path) -> None:
     errors = check.violations(tmp_path)
 
     assert any("routes contains Python outside" in error for error in errors)
+
+
+def test_unknown_backend_namespace_is_rejected(tmp_path: Path) -> None:
+    check = _load_check()
+    backend = tmp_path / "packages" / "new-backend" / "backend"
+    backend.mkdir(parents=True)
+    (backend / "main.py").write_text("app = object()\n", encoding="utf-8")
+
+    errors = check.violations(tmp_path)
+
+    assert any("has no approved application package" in error for error in errors)

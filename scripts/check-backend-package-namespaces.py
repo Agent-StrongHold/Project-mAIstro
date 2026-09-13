@@ -13,7 +13,6 @@ import argparse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-BACKENDS = ROOT / "packages"
 APP_PACKAGES = {
     "hive-conductor": "hive_conductor",
     "maistro-turing": "maistro_turing_backend",
@@ -21,41 +20,47 @@ APP_PACKAGES = {
 ALLOWED_TOP_LEVEL_DIRS = {"tests", "__pycache__"}
 
 
+def _package_violations(root: Path, backend: Path, package: str) -> list[str]:
+    """Check one approved backend without making path order authoritative."""
+    package_root = backend / package
+    if not (package_root / "__init__.py").is_file():
+        return [f"{package_root.relative_to(root)} must contain __init__.py"]
+
+    found: list[str] = []
+    for child in sorted(backend.iterdir()):
+        if (
+            child.name in ALLOWED_TOP_LEVEL_DIRS
+            or child.name == "__init__.py"
+            or child == package_root
+        ):
+            continue
+        if child.is_file() and child.suffix == ".py":
+            found.append(
+                f"{child.relative_to(root)} is a flat backend module; move it under {package}/"
+            )
+        elif child.is_dir() and any(child.rglob("*.py")):
+            found.append(
+                f"{child.relative_to(root)} contains Python outside the approved {package}/ package"
+            )
+
+    # A package can contain subpackages, but every Python-bearing directory must
+    # be importable as part of the approved namespace.
+    for path in sorted(package_root.rglob("*.py")):
+        if not (path.parent / "__init__.py").is_file():
+            found.append(f"{path.relative_to(root)} is not inside an __init__.py package")
+    return found
+
+
 def violations(root: Path = ROOT) -> list[str]:
     """Return stable, reviewable violations for every backend application."""
     found: list[str] = []
-    for distribution, package in sorted(APP_PACKAGES.items()):
-        backend = root / "packages" / distribution / "backend"
-        package_root = backend / package
-        if not (package_root / "__init__.py").is_file():
-            found.append(f"{package_root.relative_to(root)} must contain __init__.py")
-            continue
-        if not backend.is_dir():
-            found.append(f"{backend.relative_to(root)} is missing")
-            continue
-
-        for child in sorted(backend.iterdir()):
-            if (
-                child.name in ALLOWED_TOP_LEVEL_DIRS
-                or child.name == "__init__.py"
-                or child == package_root
-            ):
-                continue
-            if child.is_file() and child.suffix == ".py":
-                found.append(
-                    f"{child.relative_to(root)} is a flat backend module; move it under {package}/"
-                )
-                continue
-            if child.is_dir() and any(child.rglob("*.py")):
-                found.append(
-                    f"{child.relative_to(root)} contains Python outside the approved {package}/ package"
-                )
-
-        # A package can contain subpackages, but every Python-bearing directory
-        # must be importable as part of the approved namespace.
-        for path in sorted(package_root.rglob("*.py")):
-            if not (path.parent / "__init__.py").is_file():
-                found.append(f"{path.relative_to(root)} is not inside an __init__.py package")
+    for backend in sorted((root / "packages").glob("*/backend")):
+        package = APP_PACKAGES.get(backend.parent.name)
+        if package is None:
+            if any(backend.rglob("*.py")):
+                found.append(f"{backend.relative_to(root)} has no approved application package")
+        else:
+            found.extend(_package_violations(root, backend, package))
     return found
 
 

@@ -56,7 +56,7 @@ def _is_https(request: Request) -> bool:
     now read only from a peer named in ``TRUSTED_PROXY_IPS``; nothing named
     means nothing trusted.
 
-    Keeping local dev (``uvicorn main:app --reload``, plain HTTP) from getting
+    Keeping local dev (``uvicorn hive_conductor.main:app --reload``, plain HTTP) from getting
     an HSTS header that would force browsers to upgrade every future request is
     still what the gate is for.
     """
