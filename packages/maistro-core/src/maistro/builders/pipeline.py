@@ -3,8 +3,8 @@
 Faithful recreation of the Stronghold Epic-15 builder pipeline on maistro:
 stage ordering, skipping, and post-completion hooks are declared on
 :class:`~maistro.builders.graph.PipelineNode`;
-:class:`~maistro.builders.graph_executor.GraphPipelineExecutor` drives
-execution. New since Epic-15: the review stage is a verifiable gate that
+:class:`~maistro.builders.graph_executor.CanonicalGraphPipelineExecutor` drives
+production execution on the canonical spine. New since Epic-15: the review stage is a verifiable gate that
 routes back to implement (bounded verify-and-revise) instead of relying
 solely on a downstream cleanup stage.
 
@@ -27,13 +27,13 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import Enum
 from typing import Any, ClassVar
+from uuid import uuid4
 
 from maistro.builders.contracts import RunRequest, RunStatus, WorkerName
 from maistro.builders.graph import PipelineGraph, PipelineNode, RunContext
 from maistro.builders.graph_executor import (
     CanonicalGraphPipelineExecutor,
     DispatchResult,
-    GraphPipelineExecutor,
     PipelineDispatcher,
 )
 from maistro.builders.runtime import BuildersRuntime
@@ -455,13 +455,13 @@ class RuntimeDispatcher:
 
 
 class BuilderPipeline:
-    """Execute Builders, optionally admitted onto the canonical Run spine.
+    """Execute Builders on the canonical Run spine.
 
-    Supplying the canonical ``run_store``, ``durable_store``, Workspace and
-    Project makes this the production composition: the compatibility receipt
-    is projected from canonical Graph/Run/NodeRun/Attempt evidence. Omitting
-    those objects keeps the historical in-process adapter for callers that
-    have not wired a spine yet; it is not the configured product path.
+    A deployed caller should supply the shared canonical stores. For older
+    library callers that do not have a container, the pipeline lazily creates
+    an isolated in-memory canonical profile; it never falls back to the old
+    in-process graph executor. The compatibility receipt is always projected
+    from canonical Graph/Run/NodeRun/Attempt evidence.
 
     Usage:
         pipeline = BuilderPipeline(
@@ -502,7 +502,9 @@ class BuilderPipeline:
                 "workspace_id, and project_id"
             )
         self._dispatcher = dispatcher
-        self._canonical_executor = None
+        self._actor_principal_id = actor_principal_id
+        self._canonical_executor: CanonicalGraphPipelineExecutor | None = None
+        self._canonical_workspace_id = workspace_id or f"builders-{uuid4().hex}"
         if all(value is not None for value in spine_values):
             assert run_store is not None
             assert durable_store is not None
@@ -583,18 +585,45 @@ class BuilderPipeline:
 
         run.context["spec_summary"] = build_spec_summary(spec) if spec is not None else ""
 
-        # Wrap each node's on_complete with spec verification if configured
+        # Wrap each node's on_complete with spec verification if configured.
+        # Every composition, including the no-container compatibility profile,
+        # uses the canonical Graph -> Run -> NodeRun -> Attempt executor.
         nodes = self._wrap_nodes_with_verification(self._nodes)
         graph = PipelineGraph(nodes)
-        if self._canonical_executor is not None:
-            await self._canonical_executor.execute(graph, run)
-        else:
-            # Compatibility only: configured product composition uses the
-            # canonical executor above and never this in-process authority.
-            await GraphPipelineExecutor(self._dispatcher).execute(graph, run)
+        await self._ensure_canonical_executor()
+        assert self._canonical_executor is not None
+        await self._canonical_executor.execute(graph, run)
 
         self._reconcile_stages(run)
         return run
+
+    async def _ensure_canonical_executor(self) -> None:
+        """Create a local canonical profile for uncontainerized library use."""
+        if self._canonical_executor is not None:
+            return
+
+        from maistro.graph.durable_runs import (
+            CanonicalDurableRunStore,
+            InMemoryGraphContinuationStore,
+        )
+        from maistro.projects.scope_store import InMemoryProjectScopeStore
+        from maistro.runs.store import InMemoryRunStore
+
+        project_store = InMemoryProjectScopeStore()
+        project = await project_store.create_root(self._canonical_workspace_id)
+        run_store = InMemoryRunStore(project_store=project_store)
+        durable_store = CanonicalDurableRunStore(
+            run_store,
+            InMemoryGraphContinuationStore(),
+        )
+        self._canonical_executor = CanonicalGraphPipelineExecutor(
+            self._dispatcher,
+            run_store=run_store,
+            durable_store=durable_store,
+            workspace_id=self._canonical_workspace_id,
+            project_id=project.project_id,
+            actor_principal_id=self._actor_principal_id,
+        )
 
     def _wrap_nodes_with_verification(self, nodes: list[PipelineNode]) -> list[PipelineNode]:
         """Return nodes whose on_complete also runs spec verification."""

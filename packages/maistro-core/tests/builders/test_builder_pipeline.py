@@ -133,6 +133,7 @@ async def test_run_is_recorded_and_serializable() -> None:
     )
 
     assert pipeline.get_run(run.id) is run
+    assert run.canonical_run_id
     payload = pipeline.list_runs()
     assert payload[0]["id"] == "pipeline-9"
     assert payload[0]["status"] == "completed"
