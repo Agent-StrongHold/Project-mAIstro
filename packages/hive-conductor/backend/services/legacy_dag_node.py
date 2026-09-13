@@ -583,7 +583,7 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
                 attempt_id=ctx.attempt_id,
                 effect_key=effect_key,
                 request=request,
-                allow_unregistered_alias=True,
+                principal_id=str(ctx.user_id or "") or None,
             )
             if self._on_response is not None:
                 try:

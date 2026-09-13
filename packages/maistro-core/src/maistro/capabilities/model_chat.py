@@ -23,11 +23,11 @@ from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
-from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict
 
 from maistro.capabilities.binding import Binding, ResolvedCapabilityProvider
+from maistro.capabilities.binding_store import BindingNotFound, BindingScopeDenied
 from maistro.capabilities.invocation import (
     Invocation,
     InvocationUsage,
@@ -118,8 +118,9 @@ def resolve_model_chat_provider(
             try:
                 metadata: ModelMetadata = await registry.get_model(selection)
             except ModelNotFoundError:
-                if allow_unregistered_alias:
-                    return LlmGatewayProvider(None, model=selection)
+                # A model alias is a selection request, never authorization to
+                # create an ad-hoc Provider. The operator's registry is the
+                # single source of selectable models.
                 return Unavailable(
                     slot=MODEL_CHAT_CAPABILITY,
                     reason=f"selected model {selection!r} is not registered",
@@ -183,6 +184,7 @@ class ModelChatEgress:
         request: ModelChatRequest,
         setup: Callable[[], Awaitable[None]] | None = None,
         allow_unregistered_alias: bool = False,
+        principal_id: str | None = None,
     ) -> ModelCallResult:
         """Run one governed model call, optionally performing provider setup.
 
@@ -193,11 +195,22 @@ class ModelChatEgress:
         performed by the caller beforehand: a denied policy then causes zero
         HTTP, not a credential-bearing side request ahead of authorization.
         """
+        # Kept as a compatibility keyword for downstream adapters, but it can
+        # no longer widen the registered model set.
+        del allow_unregistered_alias
+        # Even direct egress consumers must present an id already loaded by
+        # the composition root; a caller-supplied Binding is not authority.
+        binding = await self._effects.bindings.resolve(
+            binding.binding_id,
+            workspace_id=binding.workspace_id,
+            project_id=binding.project_id,
+            node_id=binding.node_id,
+            capability=MODEL_CHAT_CAPABILITY,
+        )
         resolver = resolve_model_chat_provider(
             self._registry,
             self._router,
             alias=request.model,
-            allow_unregistered_alias=allow_unregistered_alias,
         )
         selected: list[LlmGatewayProvider] = []
 
@@ -217,17 +230,20 @@ class ModelChatEgress:
                 return None
             return _gateway_usage(selected[0], body)
 
-        invocation: Invocation = await self._effects.invocations.invoke(
-            binding=binding,
-            run_id=run_id,
-            node_run_id=node_run_id,
-            attempt_id=attempt_id,
-            effect_key=effect_key,
-            request=request,
-            resolver=tracked_resolve,
-            executor=execute,
-            usage_from=usage_from,
-        )
+        invocation_kwargs: dict[str, Any] = {
+            "binding": binding,
+            "run_id": run_id,
+            "node_run_id": node_run_id,
+            "attempt_id": attempt_id,
+            "effect_key": effect_key,
+            "request": request,
+            "resolver": tracked_resolve,
+            "executor": execute,
+            "usage_from": usage_from,
+        }
+        if principal_id is not None:
+            invocation_kwargs["principal_id"] = principal_id
+        invocation: Invocation = await self._effects.invocations.invoke(**invocation_kwargs)
         body = invocation.result if isinstance(invocation.result, dict) else {}
         return ModelCallResult(
             invocation_id=invocation.invocation_id,
@@ -249,7 +265,7 @@ class GovernedModelChatClient:
     def __init__(
         self,
         egress: ModelChatEgress,
-        binding: Binding,
+        binding: Binding | None,
         *,
         protocol: str = "chat_completions",
     ) -> None:
@@ -272,11 +288,16 @@ class GovernedModelChatClient:
     ) -> ModelCallResult:
         from maistro.observability.correlation import current_execution_context
 
+        execution = current_execution_context()
         metadata = {
-            **current_execution_context().as_log_fields(),
+            **execution.as_log_fields(),
             **(_MODEL_EXECUTION_CONTEXT.get() or {}),
             **(metadata or {}),
         }
+        if self._binding is None:
+            raise BindingNotFound(
+                "model.chat requires an operator-declared Binding; no Binding is configured"
+            )
         request = ModelChatRequest(
             model=model,
             messages=messages,
@@ -288,29 +309,51 @@ class GovernedModelChatClient:
             stream=stream,
             tool_choice=tool_choice,
         )
-        workspace_id = str(metadata.get("workspace_id") or self._binding.workspace_id)
-        project_id = str(metadata.get("project_id") or self._binding.project_id)
         binding = self._binding
+        workspace_id = str(metadata.get("workspace_id") or binding.workspace_id)
+        project_id = str(metadata.get("project_id") or binding.project_id)
         if workspace_id != binding.workspace_id or project_id != binding.project_id:
-            binding = binding.model_copy(
-                update={
-                    "binding_id": f"model-chat:{workspace_id}:{project_id}",
-                    "workspace_id": workspace_id,
-                    "project_id": project_id,
-                }
+            raise BindingScopeDenied(
+                f"model.chat Binding {binding.binding_id!r} does not cover "
+                f"Workspace/Project {workspace_id!r}/{project_id!r}"
             )
-        # Registration is idempotent and keeps compatibility callers on the
-        # same active Binding authority as graph/effect consumers.
-        await self._egress._effects.bindings.put(binding)
-        correlation = str(metadata.get("correlation_id") or uuid4().hex)
+        node_id = str(metadata.get("node_id") or binding.node_id)
+        run_id = str(metadata.get("run_id") or "")
+        node_run_id = str(metadata.get("node_run_id") or "")
+        attempt_id = str(metadata.get("attempt_id") or "")
+        effect_key = str(metadata.get("effect_key") or "")
+        missing = [
+            name
+            for name, value in (
+                ("run_id", run_id),
+                ("node_run_id", node_run_id),
+                ("attempt_id", attempt_id),
+                ("effect_key", effect_key),
+                ("node_id", node_id),
+            )
+            if not value.strip()
+        ]
+        if missing:
+            raise ValueError(
+                "model.chat requires canonical execution context: " + ", ".join(missing)
+            )
+        # Resolve the declaration from the Container-owned store. A caller may
+        # reference a Binding, but it cannot register or reshape authorization.
+        binding = await self._egress._effects.bindings.resolve(
+            binding.binding_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            node_id=node_id,
+            capability=MODEL_CHAT_CAPABILITY,
+        )
         return await self._egress.complete(
             binding=binding,
-            run_id=str(metadata.get("run_id") or correlation),
-            node_run_id=str(metadata.get("node_run_id") or f"llm:{correlation}"),
-            attempt_id=str(metadata.get("attempt_id") or f"attempt:{correlation}"),
-            effect_key=str(metadata.get("effect_key") or f"llm:{correlation}"),
+            run_id=run_id,
+            node_run_id=node_run_id,
+            attempt_id=attempt_id,
+            effect_key=effect_key,
             request=request,
-            allow_unregistered_alias=True,
+            principal_id=str(metadata.get("principal_id") or "") or None,
         )
 
     async def complete(
@@ -410,11 +453,10 @@ def build_model_chat_client(
         from maistro.providers.router import CostAwareRouter
 
         router = CostAwareRouter(registry)
-    active_binding = binding or Binding(
-        workspace_id=workspace_id,
-        project_id=project_id,
-        capability=MODEL_CHAT_CAPABILITY,
-    )
+    # No declaration means no authorization. Keep the compatibility client
+    # constructible for dependency-injection surfaces, but make its first call
+    # fail closed instead of minting a Binding here.
+    active_binding = binding
     egress = ModelChatEgress(effects, registry=registry, router=router, endpoint=endpoint)
     return GovernedModelChatClient(egress, active_binding, protocol=protocol)
 

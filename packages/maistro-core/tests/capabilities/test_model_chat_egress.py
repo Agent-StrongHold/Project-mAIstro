@@ -18,6 +18,7 @@ import httpx
 import pytest
 
 from maistro.capabilities.binding import Binding
+from maistro.capabilities.binding_store import BindingNotFound
 from maistro.capabilities.effect_context import new_in_memory_effect_context
 from maistro.capabilities.invocation import (
     CapabilityUnavailable,
@@ -77,6 +78,12 @@ def _binding(provider_name: str = "") -> Binding:
     )
 
 
+async def _registered_binding(effects: Any, provider_name: str = "") -> Binding:
+    binding = _binding(provider_name)
+    await effects.bindings.put(binding)
+    return binding
+
+
 _OK_BODY: dict[str, Any] = {
     "model": "fast-model-v3",
     "choices": [{"message": {"role": "assistant", "content": "hi"}}],
@@ -119,11 +126,12 @@ async def test_governed_call_creates_invocation_with_usage_metadata(
     )
 
     result = await egress.complete(
-        binding=_binding(),
+        binding=await _registered_binding(effects),
         run_id="r1",
         node_run_id="nr1",
         attempt_id="a1",
         effect_key="test:model",
+        principal_id="principal-1",
         request=ModelChatRequest(
             model="fast-model", messages=[{"role": "user", "content": "hello"}]
         ),
@@ -145,6 +153,33 @@ async def test_governed_call_creates_invocation_with_usage_metadata(
     assert stored.binding.capability == MODEL_CHAT_CAPABILITY
     assert stored.binding.provider_name == "fast-model"
     assert stored.usage == result.usage
+    assert stored.principal_id == "principal-1"
+
+
+async def test_compatibility_client_without_declared_binding_fails_closed() -> None:
+    effects = new_in_memory_effect_context()
+    registry = _registry()
+    client = build_model_chat_client(
+        endpoint=GatewayEndpoint(base_url="http://gw"),
+        workspace_id="ws-client",
+        project_id="project-client",
+        effects=effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+    )
+
+    with pytest.raises(BindingNotFound, match="operator-declared Binding"):
+        await client.complete(
+            [{"role": "user", "content": "hello"}],
+            "fast-model",
+            metadata={
+                "run_id": "run-client",
+                "node_run_id": "node-client",
+                "attempt_id": "attempt-client",
+                "node_id": "node-client",
+                "effect_key": "client:model",
+            },
+        )
 
 
 async def test_compatibility_client_records_the_call_on_the_canonical_ledger(
@@ -154,6 +189,8 @@ async def test_compatibility_client_records_the_call_on_the_canonical_ledger(
     effects = new_in_memory_effect_context()
     registry = _registry()
     _patch_gateway(monkeypatch, _OK_BODY)
+    binding = _binding()
+    await effects.bindings.put(binding)
     client = build_model_chat_client(
         endpoint=GatewayEndpoint(base_url="http://gw"),
         workspace_id="ws-client",
@@ -161,6 +198,7 @@ async def test_compatibility_client_records_the_call_on_the_canonical_ledger(
         effects=effects,
         registry=registry,
         router=CostAwareRouter(registry),
+        binding=binding,
     )
 
     assert isinstance(client, GovernedModelChatClient)
@@ -171,6 +209,7 @@ async def test_compatibility_client_records_the_call_on_the_canonical_ledger(
             "run_id": "run-client",
             "node_run_id": "node-client",
             "attempt_id": "attempt-client",
+            "node_id": "node-client",
             "effect_key": "client:model",
         },
     )
@@ -193,6 +232,12 @@ async def test_compatibility_client_inherits_canonical_execution_context(
     effects = new_in_memory_effect_context()
     registry = _registry()
     _patch_gateway(monkeypatch, _OK_BODY)
+    binding = Binding(
+        workspace_id="ws-client",
+        project_id="project-client",
+        capability=MODEL_CHAT_CAPABILITY,
+    )
+    await effects.bindings.put(binding)
     client = build_model_chat_client(
         endpoint=GatewayEndpoint(base_url="http://gw"),
         workspace_id="ws-client",
@@ -200,11 +245,12 @@ async def test_compatibility_client_inherits_canonical_execution_context(
         effects=effects,
         registry=registry,
         router=CostAwareRouter(registry),
+        binding=binding,
     )
 
     with bind_execution_context(
-        workspace_id="ws-run",
-        project_id="project-run",
+        workspace_id="ws-client",
+        project_id="project-client",
         run_id="run-context",
         node_run_id="node-context",
         attempt_id="attempt-context",
@@ -212,10 +258,10 @@ async def test_compatibility_client_inherits_canonical_execution_context(
         await client.complete(
             [{"role": "user", "content": "hello"}],
             "fast-model",
-            metadata={"effect_key": "context:model"},
+            metadata={"effect_key": "context:model", "node_id": "node-context"},
         )
 
-    binding_id = "model-chat:ws-run:project-run"
+    binding_id = binding.binding_id
     history = await effects.invocation_store.list_effect(
         run_id="run-context",
         node_run_id="node-context",
@@ -242,7 +288,7 @@ async def test_unpinned_unaliased_request_uses_router_selection(
     )
 
     result = await egress.complete(
-        binding=_binding(),
+        binding=await _registered_binding(effects),
         run_id="r1",
         node_run_id="nr1",
         attempt_id="a1",
@@ -294,7 +340,7 @@ async def test_binding_pin_outranks_router_preference(
     )
 
     result = await egress.complete(
-        binding=_binding(provider_name="slow-model"),
+        binding=await _registered_binding(effects, "slow-model"),
         run_id="r1",
         node_run_id="nr1",
         attempt_id="a1",
@@ -328,7 +374,7 @@ async def test_unregistered_alias_refuses_before_gateway_dispatch() -> None:
         endpoint=GatewayEndpoint(base_url="http://gw"),
     )
 
-    binding = _binding()
+    binding = await _registered_binding(effects)
     with pytest.raises(CapabilityUnavailable, match="not registered"):
         await egress.complete(
             binding=binding,
@@ -385,7 +431,7 @@ async def test_completed_effect_deduplicates_repeat_invocation(
         endpoint=GatewayEndpoint(base_url="http://gw"),
     )
     kwargs: dict[str, Any] = {
-        "binding": _binding(),
+        "binding": await _registered_binding(effects),
         "run_id": "r1",
         "node_run_id": "nr1",
         "attempt_id": "a1",
@@ -427,7 +473,7 @@ async def test_unreachable_gateway_records_failed_retryable_invocation(
         endpoint=GatewayEndpoint(base_url="http://gw"),
     )
     kwargs: dict[str, Any] = {
-        "binding": _binding(),
+        "binding": await _registered_binding(effects),
         "run_id": "r1",
         "node_run_id": "nr1",
         "attempt_id": "a1",
@@ -575,7 +621,7 @@ async def test_unavailable_selection_refuses_before_any_gateway_call(
 
     with pytest.raises(CapabilityUnavailable):
         await egress.complete(
-            binding=_binding(provider_name="fast-model"),
+            binding=await _registered_binding(effects, "fast-model"),
             run_id="r1",
             node_run_id="nr1",
             attempt_id="a1",
@@ -614,7 +660,12 @@ async def test_usage_from_without_tracked_provider_returns_none() -> None:
                 usage=None,
             )
 
+    class _StubBindings:
+        async def resolve(self, *_args: Any, **_kwargs: Any) -> Binding:
+            return _binding()
+
     class _StubEffects:
+        bindings = _StubBindings()
         invocations = _StubInvocations()
 
     registry = _registry()
@@ -690,7 +741,7 @@ async def test_setup_hook_runs_after_authorization_before_model_http(
         endpoint=GatewayEndpoint(base_url="http://gw:4000"),
     )
     result = await egress.complete(
-        binding=_binding(),
+        binding=await _registered_binding(effects),
         run_id="r1",
         node_run_id="nr1",
         attempt_id="a1",
@@ -735,7 +786,7 @@ async def test_denied_policy_refuses_before_setup_runs(
 
     with pytest.raises(InvocationDenied):
         await egress.complete(
-            binding=_binding(),
+            binding=await _registered_binding(effects),
             run_id="r1",
             node_run_id="nr1",
             attempt_id="a1",

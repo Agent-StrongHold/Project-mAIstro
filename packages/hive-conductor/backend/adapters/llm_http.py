@@ -129,7 +129,19 @@ class HttpOpenAIProtocolLLM:
                 max_tokens=req.max_tokens,
                 temperature=req.temperature,
                 response_format=getattr(req, "response_format", None),
-                metadata={"workspace_id": getattr(req, "workspace_id", "")},
+                metadata={
+                    name: getattr(req, name, "")
+                    for name in (
+                        "workspace_id",
+                        "project_id",
+                        "run_id",
+                        "node_run_id",
+                        "attempt_id",
+                        "node_id",
+                        "effect_key",
+                        "principal_id",
+                    )
+                },
             )
         except (EffectNotApplied, RuntimeError) as exc:
             raise self._compat_error(exc) from exc
@@ -145,7 +157,19 @@ class HttpOpenAIProtocolLLM:
                 max_tokens=req.max_tokens,
                 temperature=req.temperature,
                 response_format=getattr(req, "response_format", None),
-                metadata={"workspace_id": getattr(req, "workspace_id", "")},
+                metadata={
+                    name: getattr(req, name, "")
+                    for name in (
+                        "workspace_id",
+                        "project_id",
+                        "run_id",
+                        "node_run_id",
+                        "attempt_id",
+                        "node_id",
+                        "effect_key",
+                        "principal_id",
+                    )
+                },
             ):
                 yield chunk
         except (EffectNotApplied, RuntimeError) as exc:

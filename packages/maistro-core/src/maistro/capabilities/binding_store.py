@@ -74,7 +74,6 @@ def _resolve_binding(
         "binding_id": binding_id,
         "workspace_id": workspace_id,
         "project_id": project_id,
-        "node_id": node_id,
         "capability": capability,
     }
     for field, value in required.items():

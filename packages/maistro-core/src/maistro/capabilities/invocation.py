@@ -101,6 +101,7 @@ class Invocation(BaseModel):
     attempt_id: str
     binding: ResolvedBinding
     effect_key: str
+    principal_id: str | None = None
     status: InvocationStatus = InvocationStatus.CREATED
     request: Any | None = None
     result: Any | None = None
@@ -259,6 +260,7 @@ class InvocationExecutionService:
         attempt_id: str,
         effect_key: str,
         request: Any,
+        principal_id: str | None = None,
         resolver: ProviderResolver,
         executor: ProviderExecutor,
         usage_from: UsageExtractor | None = None,
@@ -304,6 +306,7 @@ class InvocationExecutionService:
                 Invocation(
                     workspace_id=binding.workspace_id,
                     project_id=binding.project_id,
+                    principal_id=principal_id,
                     run_id=run_id,
                     node_run_id=node_run_id,
                     attempt_id=attempt_id,

@@ -347,6 +347,7 @@ async def test_build_llm_call_uses_canonical_egress_and_correlates_invocation(
 
     from maistro.container import create_container
     from maistro.graph.nodes.base import NodeContext
+    from maistro.providers.types import ModelMetadata
     from maistro.types.config import AgentConfig
 
     config_model = AgentConfig(
@@ -361,6 +362,15 @@ async def test_build_llm_call_uses_canonical_egress_and_correlates_invocation(
         ],
     )
     owner = await create_container(config_model)
+    owner.provider_registry.register_model(
+        ModelMetadata(
+            name="model",
+            provider="test",
+            cost_per_1k_input=0.1,
+            cost_per_1k_output=0.1,
+            latency_p50_ms=100,
+        )
+    )
     effects = owner.capability_effects
     monkeypatch.setattr(evolution_graph, "_engine_container", lambda: owner)
     import services.secrets as secrets
@@ -462,6 +472,7 @@ async def test_run_one_cycle_shipped_path_records_governed_invocation(  # noqa: 
     import maistro_evolve.cycle as cycle_module
     import maistro_evolve.harness as harness_module
     from maistro.container import create_container
+    from maistro.providers.types import ModelMetadata
     from maistro.runs.model import RunStatus
     from maistro.types.config import AgentConfig
 
@@ -487,6 +498,17 @@ async def test_run_one_cycle_shipped_path_records_governed_invocation(  # noqa: 
     # generated canonical root Project can be named in the declaration.
     graph_owner.config = effects_owner.config
     graph_owner.capability_effects = effects_owner.capability_effects
+    graph_owner.provider_registry = effects_owner.provider_registry
+    graph_owner.llm_router = effects_owner.llm_router
+    graph_owner.provider_registry.register_model(
+        ModelMetadata(
+            name="model",
+            provider="test",
+            cost_per_1k_input=0.1,
+            cost_per_1k_output=0.1,
+            latency_p50_ms=100,
+        )
+    )
     effects = graph_owner.capability_effects
     monkeypatch.setattr(evolution_graph, "_engine_container", lambda: graph_owner)
 

@@ -8,9 +8,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
       "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
+      "rationale": "Reachability audit confirms this library/diagnostic module has no current process entry point or M1 product caller; retain as an explicit non-product disposition rather than wiring an unreachable effect."
     },
     "packages/hive-conductor/backend/services/canonical_corpus.py::CanonicalCorpus._score_against_new::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/canonical_corpus.py",
@@ -19,9 +19,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
       "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
+      "rationale": "Reachability audit confirms this library/diagnostic module has no current process entry point or M1 product caller; retain as an explicit non-product disposition rather than wiring an unreachable effect."
     },
     "packages/hive-conductor/backend/services/canonical_corpus.py::CanonicalCorpus.score::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/canonical_corpus.py",
@@ -30,9 +30,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
       "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
+      "rationale": "Reachability audit confirms this library/diagnostic module has no current process entry point or M1 product caller; retain as an explicit non-product disposition rather than wiring an unreachable effect."
     },
     "packages/hive-conductor/backend/services/chat_completion.py::_tool_browse_url::TOOL_EFFECT:hive.browse_url#1": {
       "path": "packages/hive-conductor/backend/services/chat_completion.py",
@@ -63,9 +63,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
       "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
+      "rationale": "Reachability audit confirms this library/diagnostic module has no current process entry point or M1 product caller; retain as an explicit non-product disposition rather than wiring an unreachable effect."
     },
     "packages/hive-conductor/backend/services/legacy_dag_node.py::_tool_browse_url::TOOL_EFFECT:hive.browse_url#1": {
       "path": "packages/hive-conductor/backend/services/legacy_dag_node.py",
@@ -129,9 +129,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
       "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
+      "rationale": "Reachability audit confirms this library/diagnostic module has no current process entry point or M1 product caller; retain as an explicit non-product disposition rather than wiring an unreachable effect."
     },
     "packages/hive-conductor/backend/services/skill_optimizer.py::optimize_tool::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/skill_optimizer.py",
@@ -140,9 +140,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
       "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
+      "rationale": "Reachability audit confirms this library/diagnostic module has no current process entry point or M1 product caller; retain as an explicit non-product disposition rather than wiring an unreachable effect."
     },
     "packages/hive-conductor/backend/services/tool_executor.py::browse_url::TOOL_EFFECT:browser.browse#1": {
       "path": "packages/hive-conductor/backend/services/tool_executor.py",
@@ -173,9 +173,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
       "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
+      "rationale": "Reachability audit confirms this library/diagnostic module has no current process entry point or M1 product caller; retain as an explicit non-product disposition rather than wiring an unreachable effect."
     },
     "packages/hive-conductor/backend/services/ui_auto_climb.py::score_visual::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/ui_auto_climb.py",
@@ -184,9 +184,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
       "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
+      "rationale": "Reachability audit confirms this library/diagnostic module has no current process entry point or M1 product caller; retain as an explicit non-product disposition rather than wiring an unreachable effect."
     },
     "packages/hive-conductor/backend/services/ui_hill_climber.py::generate_ui_mutation::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/ui_hill_climber.py",
@@ -195,9 +195,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
       "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
+      "rationale": "Reachability audit confirms this library/diagnostic module has no current process entry point or M1 product caller; retain as an explicit non-product disposition rather than wiring an unreachable effect."
     },
     "packages/hive-conductor/backend/services/ui_hill_climber.py::score_ui_code::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/ui_hill_climber.py",
@@ -206,9 +206,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
       "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
+      "rationale": "Reachability audit confirms this library/diagnostic module has no current process entry point or M1 product caller; retain as an explicit non-product disposition rather than wiring an unreachable effect."
     },
     "packages/hive-conductor/backend/services/ui_hill_climber.py::score_ui_visual::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/ui_hill_climber.py",
@@ -217,9 +217,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
       "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
+      "rationale": "Reachability audit confirms this library/diagnostic module has no current process entry point or M1 product caller; retain as an explicit non-product disposition rather than wiring an unreachable effect."
     },
     "packages/maistro-bootstrap/src/maistro_bootstrap/builders/model_selector.py::_probe_model::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-bootstrap/src/maistro_bootstrap/builders/model_selector.py",
@@ -251,8 +251,8 @@
       "entry_point": "openai-compatible-http",
       "callee": "httpx.post",
       "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
-      "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
+      "owner": "#1068/#49",
+      "rationale": "Builders-owned compatibility provider remains outside this M1 runtime entry-point set; #1068/#49 owns its cutover through the canonical model egress."
     },
     "packages/maistro-canvas/frontend/server/mcp/character.py::analyze_photo::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-canvas/frontend/server/mcp/character.py",
@@ -426,9 +426,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "svc.post",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
       "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
+      "rationale": "Reachability audit confirms this library/diagnostic module has no current process entry point or M1 product caller; retain as an explicit non-product disposition rather than wiring an unreachable effect."
     },
     "packages/maistro-core/src/maistro/events/handlers.py::conductor_chat_action::MODEL_EFFECT:openai-compatible-http#2": {
       "path": "packages/maistro-core/src/maistro/events/handlers.py",
@@ -437,9 +437,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
       "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
+      "rationale": "Reachability audit confirms this library/diagnostic module has no current process entry point or M1 product caller; retain as an explicit non-product disposition rather than wiring an unreachable effect."
     },
     "packages/maistro-evolve/src/maistro_evolve/providers/openai_compatible.py::OpenAICompatibleProvider.__call__::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-evolve/src/maistro_evolve/providers/openai_compatible.py",
@@ -450,7 +450,7 @@
       "callee": "client.post",
       "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
       "owner": "#56",
-      "rationale": "Terminal model-provider adapter egress; #56 owns ensuring callers reach it through governed Binding/Invocation."
+      "rationale": "Terminal Evolve provider adapter is unreachable from current M1 process entry points; downstream Evolve Run convergence must preserve this as the physical Provider implementation below canonical Invocation."
     },
     "packages/maistro-rsi/src/maistro_rsi/autorun.py::make_llm_proposer._propose::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-rsi/src/maistro_rsi/autorun.py",
@@ -460,8 +460,8 @@
       "entry_point": "openai-compatible-http",
       "callee": "httpx.post",
       "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
-      "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
+      "owner": "RSI downstream convergence",
+      "rationale": "RSI downstream product egress is not M1-shipped reachability in this repository; its downstream convergence milestone owns the governed cutover."
     },
     "packages/maistro-rsi/src/maistro_rsi/free_router.py::resolve_concrete_free_model::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-rsi/src/maistro_rsi/free_router.py",
@@ -471,8 +471,8 @@
       "entry_point": "openai-compatible-http",
       "callee": "httpx.post",
       "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
-      "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
+      "owner": "RSI downstream convergence",
+      "rationale": "RSI downstream product egress is not M1-shipped reachability in this repository; its downstream convergence milestone owns the governed cutover."
     },
     "packages/maistro-rsi/src/maistro_rsi/gateway.py::make_gateway_llm_call.llm_call::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-rsi/src/maistro_rsi/gateway.py",
@@ -482,8 +482,8 @@
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
       "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
-      "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
+      "owner": "RSI downstream convergence",
+      "rationale": "RSI downstream product egress is not M1-shipped reachability in this repository; its downstream convergence milestone owns the governed cutover."
     }
   }
 }

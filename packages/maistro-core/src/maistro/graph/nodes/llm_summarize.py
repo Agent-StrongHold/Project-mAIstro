@@ -172,6 +172,7 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
                 node_run_id=ctx.node_run_id,
                 attempt_id=ctx.attempt_id,
                 effect_key=f"llm.summarize.complete:{inputs.model}",
+                principal_id=ctx.user_id,
                 request=request,
             )
         except EffectNotApplied as exc:

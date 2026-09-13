@@ -1514,19 +1514,15 @@ async def create_container(
     )
     llm_router = CostAwareRouter(provider_registry)
 
-    # One active model Binding per container. Compatibility callers may derive
-    # a scoped copy, but they register it in this same BindingStore before the
-    # Invocation starts; no app-specific registry or effect authority exists.
-    from maistro.capabilities.binding import Binding
+    # Only operator-declared model Bindings authorize model.chat. Bootstrap
+    # them into this Container's live store before any compatibility client is
+    # exposed; an empty declaration set remains fail-closed.
+    from maistro.capabilities.model_binding_bootstrap import bootstrap_model_bindings
     from maistro.capabilities.model_chat import GovernedModelChatClient, ModelChatEgress
     from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
 
-    model_chat_binding = Binding(
-        workspace_id=config.workspace_id,
-        project_id="default",
-        capability="model.chat",
-    )
-    await capability_effects.bindings.put(model_chat_binding)
+    declared_model_bindings = await bootstrap_model_bindings(config, capability_effects)
+    model_chat_binding = declared_model_bindings[0] if len(declared_model_bindings) == 1 else None
     model_chat_egress = ModelChatEgress(
         capability_effects,
         registry=provider_registry,
@@ -1569,9 +1565,6 @@ async def create_container(
 
     # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) -----------
     wired_harness_adapters = _wire_harness_adapters(harness_adapters)
-    from maistro.capabilities.model_binding_bootstrap import bootstrap_model_bindings
-
-    await bootstrap_model_bindings(config, capability_effects)
     spawn_harness_node = AgentSpawnHarnessNode(
         adapters=wired_harness_adapters, effect_context=capability_effects
     )

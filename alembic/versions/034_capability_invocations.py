@@ -15,8 +15,10 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "034"
-down_revision = "033"
+# 034 is already used by the HITL deadline projection. Keep one linear
+# Alembic history so a fresh PostgreSQL deployment has a single head.
+revision = "035"
+down_revision = "034"
 branch_labels = None
 depends_on = None
 

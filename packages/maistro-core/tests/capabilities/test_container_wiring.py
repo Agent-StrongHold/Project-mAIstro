@@ -8,7 +8,8 @@ import httpx
 
 from maistro.capabilities.registry import CapabilityRegistry
 from maistro.container import create_container
-from maistro.types.config import AgentConfig
+from maistro.providers.types import ModelMetadata
+from maistro.types.config import AgentConfig, ModelBindingConfig
 
 
 async def test_container_wires_capability_registry() -> None:
@@ -20,7 +21,13 @@ async def test_container_wires_capability_registry() -> None:
 
 
 async def test_container_bootstraps_the_canonical_model_binding_and_client() -> None:
-    container = await create_container(AgentConfig(router_api_key="k", workspace_id="ws-model"))
+    container = await create_container(
+        AgentConfig(
+            router_api_key="k",
+            workspace_id="ws-model",
+            model_bindings=[ModelBindingConfig(binding_id="model-default", project_id="default")],
+        )
+    )
 
     assert container.model_chat_client is not None
     assert container.model_chat_egress is not None
@@ -58,7 +65,22 @@ async def test_container_model_client_records_invocation(
             return _Response()
 
     monkeypatch.setattr(httpx, "AsyncClient", _Client)
-    container = await create_container(AgentConfig(router_api_key="k", workspace_id="ws-live"))
+    container = await create_container(
+        AgentConfig(
+            router_api_key="k",
+            workspace_id="ws-live",
+            model_bindings=[ModelBindingConfig(binding_id="model-live", project_id="default")],
+        )
+    )
+    container.provider_registry.register_model(
+        ModelMetadata(
+            name="container-model",
+            provider="test",
+            cost_per_1k_input=0.1,
+            cost_per_1k_output=0.1,
+            latency_p50_ms=100,
+        )
+    )
 
     body = await container.model_chat_client.complete(
         [{"role": "user", "content": "hello"}],
@@ -67,6 +89,7 @@ async def test_container_model_client_records_invocation(
             "run_id": "run-live",
             "node_run_id": "node-live",
             "attempt_id": "attempt-live",
+            "node_id": "node-live",
             "effect_key": "container:model",
         },
     )

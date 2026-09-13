@@ -25,9 +25,17 @@ import pytest
 from adapters.llm_http import HttpOpenAIProtocolLLM
 from models.schemas import ChatCompletionRequest
 
+from maistro.capabilities.binding import Binding
+from maistro.capabilities.effect_context import new_in_memory_effect_context
+from maistro.capabilities.model_chat import build_model_chat_client, model_execution_context
+from maistro.capabilities.providers.llm_gateway import MODEL_CHAT_CAPABILITY, GatewayEndpoint
 from maistro.container import create_container
 from maistro.http import get_shared_client, override_transport
-from maistro.types.config import AgentConfig
+from maistro.observability.correlation import bind_execution_context
+from maistro.providers.registry import InMemoryProviderRegistry
+from maistro.providers.router import CostAwareRouter
+from maistro.providers.types import ModelMetadata
+from maistro.types.config import AgentConfig, ModelBindingConfig
 
 pytestmark = pytest.mark.asyncio
 
@@ -36,16 +44,55 @@ def _sse(*payloads: str) -> bytes:
     return ("".join(f"data: {p}\n\n" for p in payloads) + "data: [DONE]\n\n").encode()
 
 
-def _adapter(variant: str = "chat_completions") -> HttpOpenAIProtocolLLM:
+async def _adapter(variant: str = "chat_completions") -> HttpOpenAIProtocolLLM:
+    effects = new_in_memory_effect_context()
+    binding = Binding(
+        binding_id="adapter-model",
+        workspace_id="ws-adapter",
+        project_id="project-adapter",
+        capability=MODEL_CHAT_CAPABILITY,
+    )
+    await effects.bindings.put(binding)
+    registry = InMemoryProviderRegistry(
+        models=[
+            ModelMetadata(
+                name="m",
+                provider="test",
+                cost_per_1k_input=0.1,
+                cost_per_1k_output=0.1,
+                latency_p50_ms=100,
+            )
+        ]
+    )
     return HttpOpenAIProtocolLLM(
         base_url="https://gateway.invalid",
         api_key="k",
         variant=variant,  # type: ignore[arg-type]
+        client=build_model_chat_client(
+            endpoint=GatewayEndpoint(base_url="https://gateway.invalid", api_key="k"),
+            effects=effects,
+            registry=registry,
+            router=CostAwareRouter(registry),
+            binding=binding,
+            protocol=variant,
+        ),
     )
 
 
 def _req(**kw: Any) -> ChatCompletionRequest:
-    return ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}], model="m", **kw)
+    values: dict[str, Any] = {
+        "messages": [{"role": "user", "content": "hi"}],
+        "model": "m",
+        "workspace_id": "ws-adapter",
+        "project_id": "project-adapter",
+        "run_id": "run-adapter",
+        "node_run_id": "node-adapter",
+        "attempt_id": "attempt-adapter",
+        "node_id": "node-adapter",
+        "effect_key": "adapter:model",
+    }
+    values.update(kw)
+    return ChatCompletionRequest(**values)
 
 
 async def test_hive_builder_uses_container_governed_egress(
@@ -60,6 +107,16 @@ async def test_hive_builder_uses_container_governed_egress(
             workspace_id="ws-hive",
             litellm_url="https://gateway.invalid",
             litellm_key="container-key",
+            model_bindings=[ModelBindingConfig(binding_id="hive-model", project_id="default")],
+        )
+    )
+    container.provider_registry.register_model(
+        ModelMetadata(
+            name="m",
+            provider="test",
+            cost_per_1k_input=0.1,
+            cost_per_1k_output=0.1,
+            latency_p50_ms=100,
         )
     )
     monkeypatch.setattr(
@@ -89,9 +146,29 @@ async def test_hive_builder_uses_container_governed_egress(
             },
         )
 
-    with override_transport(httpx.MockTransport(handler)):
+    with (
+        override_transport(httpx.MockTransport(handler)),
+        bind_execution_context(
+            workspace_id="ws-hive",
+            project_id="default",
+            run_id="run-hive",
+            node_run_id="node-hive",
+            attempt_id="attempt-hive",
+        ),
+        model_execution_context(node_id="chat", effect_key="chat:model"),
+    ):
         port = chat_completion.build_llm_port()
-        result = await port.complete(_req())
+        result = await port.complete(
+            _req(
+                workspace_id="ws-hive",
+                project_id="default",
+                run_id="run-hive",
+                node_run_id="node-hive",
+                attempt_id="attempt-hive",
+                node_id="chat",
+                effect_key="chat:model",
+            )
+        )
 
     assert result["choices"][0]["message"]["content"] == "ok"
     assert port._client._egress is container.model_chat_egress  # type: ignore[attr-defined]
@@ -118,7 +195,7 @@ class TestStreaming:
             )
 
         with override_transport(httpx.MockTransport(handler)):
-            chunks = [c async for c in _adapter().stream(_req())]
+            chunks = [c async for c in (await _adapter()).stream(_req())]
 
         assert [c["choices"][0]["delta"]["content"] for c in chunks] == ["he", "llo"]
         assert str(seen[0].url) == "https://gateway.invalid/v1/chat/completions"
@@ -134,7 +211,7 @@ class TestStreaming:
             )
 
         with override_transport(httpx.MockTransport(handler)):
-            chunks = [c async for c in _adapter("responses").stream(_req())]
+            chunks = [c async for c in (await _adapter("responses")).stream(_req())]
 
         assert seen == ["https://gateway.invalid/v1/responses"]
         assert chunks, "the Responses branch yielded nothing"
@@ -151,7 +228,7 @@ class TestStreaming:
             return httpx.Response(200, content=_sse('{"choices":[{"delta":{"content":"x"}}]}'))
 
         with override_transport(httpx.MockTransport(handler)):
-            chunks = [c async for c in _adapter("auto").stream(_req())]
+            chunks = [c async for c in (await _adapter("auto")).stream(_req())]
 
         assert seen == ["/v1/responses", "/v1/chat/completions"]
         assert chunks[0]["choices"][0]["delta"]["content"] == "x"
@@ -161,7 +238,7 @@ class TestStreaming:
             override_transport(httpx.MockTransport(lambda r: httpx.Response(500))),
             pytest.raises(httpx.HTTPStatusError),
         ):
-            [c async for c in _adapter().stream(_req())]
+            [c async for c in (await _adapter()).stream(_req())]
 
 
 class TestComplete:
@@ -170,7 +247,7 @@ class TestComplete:
             return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
 
         with override_transport(httpx.MockTransport(handler)):
-            out = await _adapter().complete(_req())
+            out = await (await _adapter()).complete(_req())
 
         assert out["choices"][0]["message"]["content"] == "ok"
 
@@ -189,7 +266,7 @@ class TestPooling:
 
         with override_transport(httpx.MockTransport(handler)):
             before = get_shared_client(timeout=120.0)
-            [c async for c in _adapter().stream(_req())]
+            [c async for c in (await _adapter()).stream(_req())]
             after = get_shared_client(timeout=120.0)
 
             assert after is before, "the streaming path replaced the pooled client"
@@ -208,7 +285,7 @@ class TestPooling:
             return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
 
         with override_transport(httpx.MockTransport(handler)):
-            await _adapter().complete(_req())
+            await (await _adapter()).complete(_req())
             first = get_shared_client(timeout=120.0)
-            [c async for c in _adapter().stream(_req())]
+            [c async for c in (await _adapter()).stream(_req())]
             assert get_shared_client(timeout=120.0) is first

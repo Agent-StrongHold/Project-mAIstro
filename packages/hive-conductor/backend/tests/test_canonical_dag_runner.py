@@ -480,6 +480,7 @@ async def test_hive_facade_uses_governed_model_egress_on_canonical_run(
     from maistro.capabilities.binding import Binding
     from maistro.capabilities.providers.llm_gateway import MODEL_CHAT_CAPABILITY
     from maistro.container import create_container
+    from maistro.providers.types import ModelMetadata
     from maistro.types.config import AgentConfig
 
     class _Response:
@@ -516,6 +517,15 @@ async def test_hive_facade_uses_governed_model_egress_on_canonical_run(
         )
     )
     root = await container.project_scope_store.create_root("ws-1")
+    container.provider_registry.register_model(
+        ModelMetadata(
+            name="legacy-model",
+            provider="test",
+            cost_per_1k_input=0.1,
+            cost_per_1k_output=0.1,
+            latency_p50_ms=100,
+        )
+    )
     await container.capability_effects.bindings.put(
         Binding(
             binding_id="legacy-model-binding",
@@ -587,6 +597,7 @@ async def test_hive_gateway_failure_terminalizes_canonical_run_and_node(
     from maistro.capabilities.binding import Binding
     from maistro.capabilities.providers.llm_gateway import MODEL_CHAT_CAPABILITY
     from maistro.container import create_container
+    from maistro.providers.types import ModelMetadata
     from maistro.types.config import AgentConfig
 
     class _Response:
@@ -615,6 +626,15 @@ async def test_hive_gateway_failure_terminalizes_canonical_run_and_node(
         )
     )
     root = await container.project_scope_store.create_root("ws-1")
+    container.provider_registry.register_model(
+        ModelMetadata(
+            name="legacy-model",
+            provider="test",
+            cost_per_1k_input=0.1,
+            cost_per_1k_output=0.1,
+            latency_p50_ms=100,
+        )
+    )
     await container.capability_effects.bindings.put(
         Binding(
             binding_id="legacy-model-binding",
@@ -667,6 +687,7 @@ async def test_canonical_tool_model_fallbacks_share_attempt_correlated_egress(
     from maistro.capabilities.binding import Binding
     from maistro.capabilities.providers.llm_gateway import MODEL_CHAT_CAPABILITY
     from maistro.container import create_container
+    from maistro.providers.types import ModelMetadata
     from maistro.tools import browser
     from maistro.types.config import AgentConfig
 
@@ -721,6 +742,15 @@ async def test_canonical_tool_model_fallbacks_share_attempt_correlated_egress(
         )
     )
     root = await container.project_scope_store.create_root("ws-1")
+    container.provider_registry.register_model(
+        ModelMetadata(
+            name="chat",
+            provider="test",
+            cost_per_1k_input=0.1,
+            cost_per_1k_output=0.1,
+            latency_p50_ms=100,
+        )
+    )
     for node_id, binding_id in (("clarify", "clarify-binding"), ("grounded", "grounded-binding")):
         await container.capability_effects.bindings.put(
             Binding(

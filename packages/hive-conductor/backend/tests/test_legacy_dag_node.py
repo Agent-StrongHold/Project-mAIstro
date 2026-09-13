@@ -441,6 +441,7 @@ async def test_canonical_model_node_records_attempt_correlated_invocation(
     from maistro.capabilities.providers.llm_gateway import MODEL_CHAT_CAPABILITY
     from maistro.providers.registry import InMemoryProviderRegistry
     from maistro.providers.router import CostAwareRouter
+    from maistro.providers.types import ModelMetadata
 
     class _Response:
         status_code = 200
@@ -476,7 +477,17 @@ async def test_canonical_model_node_records_attempt_correlated_invocation(
             capability=MODEL_CHAT_CAPABILITY,
         )
     )
-    registry = InMemoryProviderRegistry()
+    registry = InMemoryProviderRegistry(
+        models=[
+            ModelMetadata(
+                name="legacy-model",
+                provider="test",
+                cost_per_1k_input=0.1,
+                cost_per_1k_output=0.1,
+                latency_p50_ms=100,
+            )
+        ]
+    )
     node = _adapter_node(
         {
             "id": "n1",
@@ -529,6 +540,7 @@ async def test_governed_model_failure_cannot_report_success(
     from maistro.capabilities.providers.llm_gateway import MODEL_CHAT_CAPABILITY
     from maistro.providers.registry import InMemoryProviderRegistry
     from maistro.providers.router import CostAwareRouter
+    from maistro.providers.types import ModelMetadata
 
     class _Response:
         status_code = 500
@@ -564,7 +576,17 @@ async def test_governed_model_failure_cannot_report_success(
             capability=MODEL_CHAT_CAPABILITY,
         )
     )
-    registry = InMemoryProviderRegistry()
+    registry = InMemoryProviderRegistry(
+        models=[
+            ModelMetadata(
+                name="gemini-3.5-flash",
+                provider="test",
+                cost_per_1k_input=0.1,
+                cost_per_1k_output=0.1,
+                latency_p50_ms=100,
+            )
+        ]
+    )
     node = _adapter_node(
         {"id": "n1", "binding_id": "legacy-failing-binding", "config": {"execution_tier": "safe"}},
         node_env={"LITELLM_API_BASE": "http://gateway.test"},

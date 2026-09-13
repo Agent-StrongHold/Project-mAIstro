@@ -130,6 +130,7 @@ class CanvasModelEgress:
                 node_run_id=node_run.node_run_id,
                 attempt_id=attempt.attempt_id,
                 effect_key="canvas.visual_quality.evaluate",
+                principal_id=str(getattr(run, "actor_principal_id", "") or "") or None,
                 request=request,
             )
             attempt_result = (
