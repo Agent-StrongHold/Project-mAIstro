@@ -6,8 +6,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "035"
-down_revision = "033"
+revision = "036"
+down_revision = "035"
 branch_labels = None
 depends_on = None
 
@@ -51,9 +51,24 @@ def upgrade() -> None:
         "invocation_quota_allocations",
         ["budget_id"],
     )
+    op.create_table(
+        "invocation_quota_evidence",
+        sa.Column(
+            "invocation_id",
+            sa.Text,
+            sa.ForeignKey("invocation_quota_reservations.invocation_id"),
+            nullable=False,
+        ),
+        sa.Column("revision", sa.Integer, nullable=False),
+        sa.Column("evidence_id", sa.Text, nullable=False),
+        sa.Column("payload", postgresql.JSONB, nullable=False),
+        sa.PrimaryKeyConstraint("invocation_id", "revision"),
+        sa.UniqueConstraint("invocation_id", "evidence_id"),
+    )
 
 
 def downgrade() -> None:
+    op.drop_table("invocation_quota_evidence")
     op.drop_index("idx_invocation_quota_alloc_budget", table_name="invocation_quota_allocations")
     op.drop_table("invocation_quota_allocations")
     op.drop_table("invocation_quota_reservations")

@@ -1,7 +1,7 @@
 """Persist canonical capability effect stores (#1133).
 
-Revision ID: 033
-Revises: 032
+Revision ID: 035
+Revises: 034
 """
 
 from __future__ import annotations
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "033"
-down_revision = "032"
+revision = "035"
+down_revision = "034"
 branch_labels = None
 depends_on = None
 
