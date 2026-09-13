@@ -215,7 +215,9 @@ async def test_the_http_backend_still_accepts_an_unscoped_submission(monkeypatch
             return _Response()
 
     monkeypatch.setattr(backend_mod, "shared_client", lambda **kw: _Client())
-    backend = backend_mod.MaistroServerTaskBackend(base_url="http://tasks.invalid", api_key=None)
+    backend = backend_mod.MaistroServerTaskBackend(
+        base_url="http://tasks.invalid", api_key=None, delegation_key="test-delegation"
+    )
 
     rec = await backend.submit(TaskCreate(description="d"), user_id="u")
 
@@ -271,7 +273,9 @@ async def test_the_http_backend_forwards_the_bound_request_id(monkeypatch) -> No
 
     sink: dict[str, Any] = {}
     monkeypatch.setattr(backend_mod, "shared_client", lambda **kw: _CapturingClient(sink))
-    backend = backend_mod.MaistroServerTaskBackend(base_url="http://tasks.invalid", api_key=None)
+    backend = backend_mod.MaistroServerTaskBackend(
+        base_url="http://tasks.invalid", api_key=None, delegation_key="test-delegation"
+    )
 
     with bind_execution_context(request_id="req-abc123"):
         await backend.submit(TaskCreate(description="d"), user_id="u")
@@ -289,7 +293,9 @@ async def test_the_http_backend_omits_the_header_with_no_request_in_scope(monkey
 
     sink: dict[str, Any] = {}
     monkeypatch.setattr(backend_mod, "shared_client", lambda **kw: _CapturingClient(sink))
-    backend = backend_mod.MaistroServerTaskBackend(base_url="http://tasks.invalid", api_key=None)
+    backend = backend_mod.MaistroServerTaskBackend(
+        base_url="http://tasks.invalid", api_key=None, delegation_key="test-delegation"
+    )
 
     await backend.submit(TaskCreate(description="d"), user_id="u")
 

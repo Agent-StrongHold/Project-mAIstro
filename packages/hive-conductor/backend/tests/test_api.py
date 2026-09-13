@@ -319,7 +319,7 @@ def test_mission_create_dispatches_task() -> None:
     # (#158) -- the route passes it rather than omitting it, so the default is
     # named at every submission instead of being inferred downstream.
     mock_engine.submit_task.assert_called_once_with(
-        "Write hello world", "Write hello world", workspace_id=None
+        "Write hello world", "Write hello world", user_id="user", workspace_id=None
     )
 
 

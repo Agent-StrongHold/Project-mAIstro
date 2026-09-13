@@ -12,9 +12,11 @@ import httpx
 import pytest
 
 from maistro.tasks.http_contract import (
+    DELEGATION_HEADER,
     WORKSPACE_ID_HEADER,
     WORKSPACE_SCOPE_SIGNATURE_HEADER,
     sign_workspace_scope,
+    verify_delegation_context,
 )
 from maistro.tasks.models import TaskCreate
 
@@ -23,6 +25,7 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 SCOPE_KEY = "test-only-workspace-scope-key"
+DELEGATION_KEY = "test-only-task-delegation-key"
 
 
 def _backend_module() -> Any:
@@ -78,6 +81,7 @@ async def test_named_workspace_crosses_the_production_http_boundary(
         base_url="http://maistro-server",
         api_key="secret",
         workspace_scope_key=SCOPE_KEY,
+        delegation_key=DELEGATION_KEY,
     )
 
     record = await backend.submit(
@@ -92,6 +96,10 @@ async def test_named_workspace_crosses_the_production_http_boundary(
         "workspace-a", SCOPE_KEY
     )
     assert seen_headers["Authorization"] == "Bearer secret"
+    assert DELEGATION_HEADER in seen_headers
+    context = verify_delegation_context(seen_headers[DELEGATION_HEADER], DELEGATION_KEY)
+    assert context.service_principal == "conductor"
+    assert context.originating_principal == "user-1"
 
 
 async def test_named_workspace_fails_closed_without_scope_proof_key() -> None:
@@ -146,7 +154,12 @@ async def test_unscoped_submission_does_not_fabricate_workspace_scope(
         yield _Client()
 
     monkeypatch.setattr(task_backend_module, "shared_client", _client)
-    backend = backend_type(base_url="http://maistro-server", api_key=None, workspace_scope_key="")
+    backend = backend_type(
+        base_url="http://maistro-server",
+        api_key=None,
+        workspace_scope_key="",
+        delegation_key=DELEGATION_KEY,
+    )
 
     await backend.submit(TaskCreate(description="ship it"), user_id="user-1")
 

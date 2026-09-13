@@ -174,6 +174,12 @@ class TaskRunAdmitter:
             provenance[SESSION_ID_KEY] = task.session_id
         if task.user_id:
             provenance["user_id"] = task.user_id
+        if task.service_principal_id:
+            provenance["service_principal_id"] = task.service_principal_id
+        if task.delegation_id:
+            provenance["delegation_id"] = task.delegation_id
+        if task.actor_kind:
+            provenance["actor_kind"] = task.actor_kind
         # The request that submitted this task, read off the ambient context
         # rather than a TaskCreate/TaskResponse field (#1063): admit() runs
         # inside the same coroutine chain RequestIDMiddleware bound it in

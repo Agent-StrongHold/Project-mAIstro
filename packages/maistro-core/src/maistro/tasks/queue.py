@@ -42,6 +42,10 @@ def _record_values(task: TaskResponse) -> dict[str, Any]:
     return {
         "id": task.task_id,
         "run_id": task.run_id,
+        "user_id": task.user_id,
+        "service_principal_id": task.service_principal_id,
+        "delegation_id": task.delegation_id,
+        "actor_kind": task.actor_kind,
         "status": task.status.value,
         "description": task.description,
         "workspace": task.workspace,
@@ -179,6 +183,9 @@ class TaskQueue:
         *,
         user_id: str = "",
         workspace_id: str | None = None,
+        service_principal_id: str | None = None,
+        delegation_id: str | None = None,
+        actor_kind: str = "user",
     ) -> TaskResponse:
         """Queue one task, admitting it as a Run when an admitter is wired.
 
@@ -197,6 +204,9 @@ class TaskQueue:
             description=request.description,
             workspace=request.workspace,
             user_id=owner,
+            service_principal_id=service_principal_id,
+            delegation_id=delegation_id,
+            actor_kind=actor_kind,
             task_type=request.task_type,
             agent_id=request.agent_id,
             capability=request.capability,

@@ -49,6 +49,15 @@ Hive keeps **HTTP routes** thin and pushes vendor specifics behind small **Proto
 - **LLM:** `LLM_HTTP_VARIANT` (`auto` | `responses` | `chat_completions`) controls whether we try the stateful **Responses** path first (`POST …/v1/responses`) and fall back to **chat.completions**, or pin one. See [`backend/.env.example`](backend/.env.example).
 - **Telemetry:** Langfuse is an **optional** `TelemetryPort` when `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and **`LANGFUSE_BASE_URL`** are set (SDK **≥ 3.9**; Langfuse **server ≥ 3.125** for full features). `LANGFUSE_HOST` aliases `LANGFUSE_BASE_URL` when unset. For a lightweight local alternative, run **`docker compose --profile observe up`** to start **Arize Phoenix** and point generic **OTEL** exporters at it (see [Phoenix documentation](https://docs.arize.com/phoenix)); wiring full auto-instrumentation is left as a learning exercise.
 
+## Production task identity
+
+When Hive calls maistro-server, `MAISTRO_ROUTER_API_KEY` authenticates the
+Conductor service and `MAISTRO_DELEGATION_KEY` signs the originating Hive user.
+Configure the same delegation key as `TASK_DELEGATION_KEY` on maistro-server.
+The server stores the user as the effective Run actor while retaining the
+service principal and delegation id in Run provenance; never use a caller-
+editable `user_id` as a substitute for this signed context.
+
 ## Boundaries
 
 Hive’s **`GET /v1/tasks`** returns **missions** (this package’s stub orchestration view). Maistro core’s **`/tasks`** is the engine task queue—same English word, different API and data model. When you wire the two together later, treat it as an explicit mapping layer, not a drop-in URL swap.

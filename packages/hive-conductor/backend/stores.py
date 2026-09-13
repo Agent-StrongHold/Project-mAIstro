@@ -57,6 +57,8 @@ def _mission(
     t = now()
     return Mission(
         id=id,
+        # Seeded demo work is an explicit system actor, not an ownerless task.
+        user_id="system",
         name=name,
         description=f"Stub mission: {name}",
         status=status,
