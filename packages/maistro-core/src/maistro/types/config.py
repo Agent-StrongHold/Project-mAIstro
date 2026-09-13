@@ -168,8 +168,8 @@ class ModelBindingConfig(BaseModel):
 if TYPE_CHECKING:
     # Pydantic discovers these validators through decorators; keep that
     # reflection-owned public surface visible to production-only Vulture scans.
-    _ = ModelBindingConfig._require_scope_identity
-    _ = ModelBindingConfig._reject_empty_refs
+    _scope_validator = ModelBindingConfig._require_scope_identity
+    _refs_validator = ModelBindingConfig._reject_empty_refs
 
 
 class AgentConfig(BaseModel):

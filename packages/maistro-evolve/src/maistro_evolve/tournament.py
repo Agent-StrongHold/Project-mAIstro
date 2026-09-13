@@ -70,6 +70,7 @@ class EloTournament:
             self._init_db()
 
     def _init_db(self) -> None:
+        assert self._db_path is not None
         conn = sqlite3.connect(self._db_path)
         conn.executescript(
             """
