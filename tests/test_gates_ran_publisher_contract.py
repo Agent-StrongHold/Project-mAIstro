@@ -38,7 +38,12 @@ def test_develop_excludes_main_only_release_checks():
 
 def test_publisher_has_only_the_write_permission_it_needs():
     doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    assert doc["permissions"] == {"checks": "read", "contents": "read", "statuses": "write"}
+    assert doc["permissions"] == {
+        "checks": "read",
+        "contents": "read",
+        "pull-requests": "read",
+        "statuses": "write",
+    }
     assert doc["jobs"]["publish-gates-ran"]["name"] == "gates-ran-publisher"
 
 
