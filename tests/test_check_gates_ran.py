@@ -176,6 +176,13 @@ class TestItRefusesToGuess:
         bad.write_text("not json", encoding="utf-8")
         assert check._pull_request_scope(bad) == (None, False)
 
+    def test_a_non_object_changed_files_payload_is_unmeasured(
+        self, check: ModuleType, tmp_path: Path
+    ) -> None:
+        bad = tmp_path / "changed-files.json"
+        bad.write_text(json.dumps(["notes/todo.txt"]), encoding="utf-8")
+        assert check._pull_request_scope(bad) == (None, False)
+
     def test_an_empty_check_list_is_pending_not_a_pass(
         self, check: ModuleType, tmp_path: Path
     ) -> None:
@@ -473,6 +480,10 @@ class TestTheCliScopeEnvelope:
         out = capsys.readouterr().out
         assert code == check.PENDING_EXIT
         assert "execution scope is ambiguous" in out
+
+    def test_a_loadable_scope_classifier_is_used(self, check: ModuleType) -> None:
+        classifier = check._load_scope_classifier()
+        assert classifier.classify(["notes/todo.txt"])
 
     def test_an_unloadable_scope_classifier_degrades_to_pending(
         self,
