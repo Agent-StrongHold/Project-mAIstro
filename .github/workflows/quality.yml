@@ -467,8 +467,7 @@ jobs:
           # 506 statements leave by deletion rather than by tests, and the
           # aggregate rises again when they do (see #171 for why writing tests
           # for them would be the wrong move).
-          uv run coverage report --fail-under=87 || \
-            (echo "::error::publish-set coverage below the 87% floor" && exit 1)
+          uv run python scripts/check-workflow-ratchets.py coverage
           # Now widen for the DIFF gate only. These four packages are outside
           # the publish set, so none of them is under the floor above, but "the
           # file you touched" is well defined even where "the package's
@@ -732,17 +731,7 @@ jobs:
       # is worked down, and drop the ratchet for a strict 0-baseline once
       # XENON_BASELINE reaches 0.
       - name: xenon (per-function ≤ B; per-module ≤ B; project avg ≤ A — ratchet)
-        env:
-          XENON_BASELINE: 77
-        run: |
-          uv run xenon --max-absolute B --max-modules B --max-average A packages/maistro-core/src > xenon.log 2>&1 || true
-          count=$(grep -c '^ERROR:xenon:block' xenon.log || true)
-          cat xenon.log
-          echo "xenon violation count: $count (baseline: $XENON_BASELINE)"
-          if [ "$count" -gt "$XENON_BASELINE" ]; then
-            echo "::error::xenon regression — $count violations exceeds baseline of $XENON_BASELINE; refactor the new complex blocks (Boy Scout Rule)"
-            exit 1
-          fi
+        run: uv run python scripts/check-workflow-ratchets.py xenon
 
       # Per-identity debt ledger, not a count: quality/vulture-baseline.json
       # records the exact reviewed finding identities per classification rule,
@@ -942,25 +931,7 @@ jobs:
       # unawaited coroutines in cli/_builders_tui.py, possibly-unbound tool_result
       # in artificer, a dead import in agents/factory.py.
       - name: pyright (type cross-check — ratchet)
-        env:
-          # 24 -> 21: `register_node` was typed
-          # `type[BaseNode[Any, Any]] -> type[BaseNode[Any, Any]]`, which erased
-          # every decorated subclass's own `__init__`, so each
-          # dependency-injected construction in `build_node_resolver` was
-          # reported as `No parameter named ...`. Making the decorator generic
-          # removed six findings (three that were in this baseline, three #147
-          # would have added). Ratcheted rather than left slack, per the note
-          # above -- 3 points of headroom is 3 regressions that land silently.
-          PYRIGHT_BASELINE: 21
-        run: |
-          uv run pyright --outputjson packages/maistro-core/src > pyright.json || true
-          count=$(uv run python -c "import json;print(json.load(open('pyright.json'))['summary']['errorCount'])")
-          uv run pyright packages/maistro-core/src || true
-          echo "pyright error count: $count (baseline: $PYRIGHT_BASELINE)"
-          if [ "$count" -gt "$PYRIGHT_BASELINE" ]; then
-            echo "::error::pyright regression — $count errors exceeds baseline of $PYRIGHT_BASELINE; fix the new findings (Boy Scout Rule)"
-            exit 1
-          fi
+        run: uv run python scripts/check-workflow-ratchets.py pyright
 
       # ----- Pillar 2: Hypothesis property tests -----
       # The property suite lives in formal/ (also run by formal-conformance.yml
@@ -1003,7 +974,7 @@ jobs:
       # 95% everywhere is the Phase 15 push.
       - name: interrogate (docstring coverage ratchet)
         run: |
-          uv run interrogate -f 38 packages/maistro-core/src/maistro/graph/nodes
-          uv run interrogate -f 45 packages/maistro-core/src/maistro/graph/durable_runs
-          uv run interrogate -f 63 packages/maistro-core/src/maistro/projects
-          uv run interrogate -f 46 packages/maistro-core/src/maistro
+          uv run python scripts/check-workflow-ratchets.py interrogate:graph/nodes
+          uv run python scripts/check-workflow-ratchets.py interrogate:graph/durable_runs
+          uv run python scripts/check-workflow-ratchets.py interrogate:projects
+          uv run python scripts/check-workflow-ratchets.py interrogate:all

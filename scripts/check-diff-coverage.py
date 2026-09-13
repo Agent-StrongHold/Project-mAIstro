@@ -61,13 +61,123 @@ Usage
 from __future__ import annotations
 
 import argparse
+import importlib.util
+import json
 import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from types import ModuleType
 
 ROOT = Path(__file__).resolve().parent.parent
+BASELINE = ROOT / "quality" / "workflow-ratchet-baseline.json"
+_PROVENANCE_SOURCE = Path(__file__).resolve().parent / "ratchet_provenance.py"
+RATCHET = "workflow-quality:diff-coverage"
+METRIC_DEFINITION_VERSION = "1"
+
+
+def _provenance() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("_diff_coverage_provenance", _PROVENANCE_SOURCE)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load {_PROVENANCE_SOURCE}")
+    cached = sys.modules.get(spec.name)
+    if cached is not None:
+        return cached
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules[spec.name]
+        raise
+    return module
+
+
+def _legacy_floors(prov: ModuleType) -> tuple[object, float, float]:
+    legacy = prov.resolve_baseline(ROOT / "scripts" / Path(__file__).name, root=ROOT)
+    if legacy.text is None:
+        raise RuntimeError(
+            "workflow quality baseline is absent at the trusted base and its legacy floor "
+            "is unavailable"
+        )
+    line_match = re.search(r'--fail-under", type=float, default=(\d+(?:\.\d+)?)', legacy.text)
+    branch_match = re.search(
+        r'--branch-fail-under", type=float, default=(\d+(?:\.\d+)?)', legacy.text
+    )
+    if line_match is None or branch_match is None:
+        raise RuntimeError("workflow quality baseline is absent and legacy diff floors are missing")
+    return legacy, float(line_match.group(1)), float(branch_match.group(1))
+
+
+def _recorded_floors(prov: ModuleType, reference: object) -> tuple[object, float, float]:
+    payload = reference.loads()
+    if not isinstance(payload, dict):
+        raise RuntimeError("workflow quality baseline must be a JSON object")
+    prov.require_metric_version(
+        METRIC_DEFINITION_VERSION,
+        recorded=str(payload.get("metric_definition_version"))
+        if payload.get("metric_definition_version") is not None
+        else None,
+        ratchet=RATCHET,
+        baseline=reference,
+    )
+    metrics = payload.get("metrics")
+    if not isinstance(metrics, dict):
+        raise RuntimeError("workflow quality baseline has no metrics object")
+    values: list[float] = []
+    for name in ("diff_coverage_lines", "diff_coverage_branches"):
+        record = metrics.get(name)
+        if not isinstance(record, dict):
+            raise RuntimeError(f"trusted workflow baseline is missing metric {name!r}")
+        if record.get("direction") != "minimum" or record.get("unit") != "percent":
+            raise RuntimeError(f"trusted workflow metric {name!r} has changed definition")
+        if record.get("tool") != "check-diff-coverage.py":
+            raise RuntimeError(f"trusted workflow metric {name!r} has changed tool")
+        value = record.get("value")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise RuntimeError(f"trusted workflow metric {name!r} has no numeric floor")
+        values.append(float(value))
+    return reference, values[0], values[1]
+
+
+def _validate_candidate(line_floor: float, branch_floor: float) -> None:
+    try:
+        payload = json.loads(BASELINE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"candidate workflow quality baseline is unreadable: {exc}") from exc
+    if (
+        not isinstance(payload, dict)
+        or payload.get("metric_definition_version") != METRIC_DEFINITION_VERSION
+    ):
+        raise RuntimeError("candidate workflow quality baseline has a changed definition")
+    metrics = payload.get("metrics")
+    if not isinstance(metrics, dict):
+        raise RuntimeError("candidate workflow quality baseline has no metrics object")
+    for name, trusted in (
+        ("diff_coverage_lines", line_floor),
+        ("diff_coverage_branches", branch_floor),
+    ):
+        record = metrics.get(name)
+        value = record.get("value") if isinstance(record, dict) else None
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise RuntimeError(f"candidate workflow metric {name!r} has no numeric floor")
+        if value < trusted:
+            raise RuntimeError(
+                f"candidate workflow metric {name!r} weakens the trusted floor; "
+                "floor reductions require a separate governance change"
+            )
+
+
+def _trusted_floors() -> tuple[object, float, float]:
+    prov = _provenance()
+    reference = prov.resolve_baseline(BASELINE, root=ROOT)
+    # Bootstrap the first migration from old script defaults at the trusted
+    # base. The candidate JSON is deliberately not consulted.
+    result = _legacy_floors(prov) if reference.absent_at_base else _recorded_floors(prov, reference)
+    _validate_candidate(result[1], result[2])
+    return result
+
 
 #: Every tree whose Python files this gate measures, as `--source` paths.
 #:
@@ -300,15 +410,12 @@ def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("report", type=Path, help="coverage.xml")
     ap.add_argument("--base", required=True, help="branch or rev the PR is based on")
-    # Two floors, because the two distributions are different. Measured over
-    # every PR merged into `develop` since 15abb9d, per file: worst line
-    # coverage 94.9%, worst branch coverage 85.7%. Each floor sits under its own
-    # measured worst with headroom — a floor pinned to its measurement fails the
-    # first PR with one awkward case, and a single shared floor would have to be
-    # the lower of the two, which would stop enforcing anything on lines.
-    ap.add_argument("--fail-under", type=float, default=90.0, help="per-file line floor")
+    # Two floors, because the two distributions are different. They are loaded
+    # from the trusted base below; CLI values are retained only as a checked,
+    # backwards-compatible spelling for local callers.
+    ap.add_argument("--fail-under", type=float, default=None, help="per-file line floor")
     ap.add_argument(
-        "--branch-fail-under", type=float, default=80.0, help="per-file branch-arc floor"
+        "--branch-fail-under", type=float, default=None, help="per-file branch-arc floor"
     )
     args = ap.parse_args(argv)
 
@@ -316,12 +423,36 @@ def main(argv: list[str]) -> int:
         print(f"FAIL: {args.report} does not exist; run `coverage xml` first")
         return 1
 
+    try:
+        reference, line_floor, branch_floor = _trusted_floors()
+    except (RuntimeError, OSError, json.JSONDecodeError) as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+    if args.fail_under is not None and args.fail_under != line_floor:
+        print("FAIL: --fail-under does not match the trusted base floor", file=sys.stderr)
+        return 1
+    if args.branch_fail_under is not None and args.branch_fail_under != branch_floor:
+        print("FAIL: --branch-fail-under does not match the trusted base floor", file=sys.stderr)
+        return 1
+
     _report_scope(args.base)
-    failures = audit(args.base, args.report, args.fail_under, args.branch_fail_under)
+    failures = audit(args.base, args.report, line_floor, branch_floor)
+    prov = _provenance()
+    print(
+        prov.Provenance(
+            ratchet=RATCHET,
+            baseline=reference,
+            tool="check-diff-coverage.py",
+            metric_definition_version=METRIC_DEFINITION_VERSION,
+            old_value=f"{line_floor:g}% lines / {branch_floor:g}% branches",
+            new_value="measured changed-file coverage",
+            candidate_sha=prov.head_sha(ROOT),
+        ).render()
+    )
     if not failures:
         print(
             f"ok: every measured file this change touches is at or above "
-            f"{args.fail_under:g}% lines / {args.branch_fail_under:g}% branch arcs"
+            f"{line_floor:g}% lines / {branch_floor:g}% branch arcs"
         )
         return 0
 

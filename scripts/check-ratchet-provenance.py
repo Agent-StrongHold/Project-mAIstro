@@ -17,6 +17,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -122,6 +123,23 @@ TRUSTED_ADAPTERS: dict[tuple[str, str], str] = {
 # resolver that base-resolves ratchet-authorizations.json, so requiring it to
 # import itself would be nonsense rather than stronger enforcement.
 SPECIAL_TRUSTED_CONSUMERS = {"ac_state_notes.py", "ratchet_provenance.py"}
+
+_WORKFLOW_REQUIRED = (
+    "uv run python scripts/check-workflow-ratchets.py coverage",
+    "uv run python scripts/check-workflow-ratchets.py xenon",
+    "uv run python scripts/check-workflow-ratchets.py pyright",
+    "uv run python scripts/check-workflow-ratchets.py interrogate:graph/nodes",
+    "uv run python scripts/check-workflow-ratchets.py interrogate:graph/durable_runs",
+    "uv run python scripts/check-workflow-ratchets.py interrogate:projects",
+    "uv run python scripts/check-workflow-ratchets.py interrogate:all",
+    "scripts/check-diff-coverage.py",
+)
+_WORKFLOW_INLINE_RATCHETS = (
+    re.compile(r"--fail-under\s*=?\s*\d"),
+    re.compile(r"\bXENON_BASELINE\s*:"),
+    re.compile(r"\bPYRIGHT_BASELINE\s*:"),
+    re.compile(r"^\s*(?:uv run\s+)?interrogate\s+-f\s+\d"),
+)
 
 
 @dataclass(frozen=True, order=True)
@@ -235,6 +253,31 @@ def _consumer_files(root: Path) -> list[Path]:
     return sorted(files)
 
 
+def workflow_violations(root: Path = ROOT) -> list[str]:
+    """Require workflow ratchets to use fixed trusted-base checkers."""
+    workflow = root / ".github" / "workflows" / "quality.yml"
+    if not workflow.is_file():
+        return ["quality workflow is missing; inline ratchets cannot be inventoried"]
+    source = workflow.read_text(encoding="utf-8")
+    errors = [
+        f"quality workflow is missing trusted ratchet invocation: {required}"
+        for required in _WORKFLOW_REQUIRED
+        if required not in source
+    ]
+    workflows = sorted((root / ".github" / "workflows").glob("*.yml"))
+    for candidate in workflows:
+        for line_number, line in enumerate(
+            candidate.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            code = line.split("#", 1)[0]
+            if any(pattern.search(code) for pattern in _WORKFLOW_INLINE_RATCHETS):
+                errors.append(
+                    f"{candidate.relative_to(root)} line {line_number} contains a "
+                    "candidate-controlled ratchet"
+                )
+    return errors
+
+
 def consumers(root: Path = ROOT) -> set[Consumer]:
     result: set[Consumer] = set()
     for path in _consumer_files(root):
@@ -340,6 +383,7 @@ def violations(
             stale_mapping_errors(live_keys, candidate_authored, label="provenance exception")
         )
         errors.extend(stale_mapping_errors(live_keys, candidate_adapters, label="trusted adapter"))
+        errors.extend(workflow_violations(root))
     return errors
 
 

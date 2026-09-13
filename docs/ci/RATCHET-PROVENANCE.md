@@ -32,6 +32,8 @@ candidate edit cannot authorize new debt or a newly allowed surface.
 | `check_mutation_baseline.py` | `mutation-baseline.json`, `mutation-history.json` | tolerance/history | direct; quality floor and runtime-history evidence both come from base; generated candidates start from that trusted baseline |
 | `check-model-egress.py` | `model-egress.json` | security allowlist | direct; a new direct caller requires prior authorization |
 | `check-public-routes.py` | `public-routes.json` | security allowlist | direct; a new unauthenticated path requires prior authorization |
+| `check-workflow-ratchets.py` | `workflow-ratchet-baseline.json` | quality floors | direct; aggregate coverage, Xenon, Pyright and Interrogate floors resolve from the trusted base |
+| `check-diff-coverage.py` | `workflow-ratchet-baseline.json` | quality floors | direct; changed-file line/branch floors resolve from the trusted base |
 
 `mutation-history.json` is trusted evidence, not an authorization channel. It
 changes runtime-regression/new-survivor reporting; it never grants permission to
@@ -108,7 +110,9 @@ inheriting candidate-controlled comparison by accident.
 A trusted-base ratchet must fail closed when the base revision or ledger cannot
 be read, identify the base and candidate revisions in its provenance record, and
 must not let its normal update/banking path authorize the increase it just
-measured. Authorization lives separately in
+measured. The first landing of a migrated workflow floor may read the old inline
+value from the trusted base workflow/script; after that bootstrap, the JSON
+ledger is required. Authorization lives separately in
 `quality/ratchet-authorizations.json`, which is itself read from the trusted
 base, so a new authorization takes effect only after it has already merged.
 

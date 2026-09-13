@@ -1,0 +1,59 @@
+{
+  "metric_definition_version": "1",
+  "metrics": {
+    "coverage": {
+      "value": 87,
+      "direction": "minimum",
+      "unit": "percent",
+      "tool": "coverage report --format=total"
+    },
+    "diff_coverage_lines": {
+      "value": 90,
+      "direction": "minimum",
+      "unit": "percent",
+      "tool": "check-diff-coverage.py"
+    },
+    "diff_coverage_branches": {
+      "value": 80,
+      "direction": "minimum",
+      "unit": "percent",
+      "tool": "check-diff-coverage.py"
+    },
+    "xenon": {
+      "value": 77,
+      "direction": "maximum",
+      "unit": "count",
+      "tool": "xenon --max-absolute B --max-modules B --max-average A"
+    },
+    "pyright": {
+      "value": 21,
+      "direction": "maximum",
+      "unit": "errors",
+      "tool": "pyright --outputjson packages/maistro-core/src"
+    },
+    "interrogate:graph/nodes": {
+      "value": 38,
+      "direction": "minimum",
+      "unit": "percent",
+      "tool": "interrogate -f 0 -v graph/nodes"
+    },
+    "interrogate:graph/durable_runs": {
+      "value": 45,
+      "direction": "minimum",
+      "unit": "percent",
+      "tool": "interrogate -f 0 -v graph/durable_runs"
+    },
+    "interrogate:projects": {
+      "value": 63,
+      "direction": "minimum",
+      "unit": "percent",
+      "tool": "interrogate -f 0 -v projects"
+    },
+    "interrogate:all": {
+      "value": 46,
+      "direction": "minimum",
+      "unit": "percent",
+      "tool": "interrogate -f 0 -v maistro"
+    }
+  }
+}
