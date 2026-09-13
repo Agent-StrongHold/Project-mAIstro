@@ -1,8 +1,8 @@
 ---
 inventory-delta:
-  packages/maistro-design/tests: +2
-  packages/hive-conductor/backend/tests: +1
+  packages/maistro-design/tests: +3
+  packages/hive-conductor/backend/tests: +2
 ---
 # Issue #52 Design canonical execution
 
-Adds two integration tests proving a Design Studio operation is admitted as a canonical Run over one NodeRun and Attempt, and that a provider failure remains a failed Attempt while the adapter terminalizes the logical NodeRun and Run truthfully.
+Adds canonical Design Studio execution coverage for Run/NodeRun/Attempt success and failure, bound Workspace/Project scope enforcement, and truthful refusal of the legacy local render-job lifecycle.

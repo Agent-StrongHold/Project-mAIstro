@@ -8,7 +8,7 @@ import pytest
 
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.model import AttemptStatus, RunStatus
-from maistro.runs.store import InMemoryRunStore
+from maistro.runs.store import InMemoryRunStore, RunIntegrityError
 from maistro_design.canonical_execution import DesignCanonicalExecution
 from maistro_design.types import DiscoveryResult
 
@@ -55,6 +55,39 @@ async def test_design_operation_persists_run_noderun_and_attempt() -> None:
     attempts = await runs.list_attempts(node_runs[0].node_run_id)
     assert [attempt.status for attempt in attempts] == [AttemptStatus.COMPLETED]
     assert attempts[0].result == {"project_id": "design-project-1"}
+
+
+async def test_adapter_rejects_a_run_outside_its_bound_scope() -> None:
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("workspace-design")
+    child = await projects.create(
+        workspace_id=root.workspace_id,
+        parent_project_id=root.project_id,
+        name="other-scope",
+    )
+    runs = InMemoryRunStore(project_store=projects)
+    bound = DesignCanonicalExecution(
+        runs,
+        workspace_id=root.workspace_id,
+        project_id=root.project_id,
+    )
+    other = DesignCanonicalExecution(
+        runs,
+        workspace_id=child.workspace_id,
+        project_id=child.project_id,
+    )
+    discovery = DiscoveryResult(
+        skill_slug="login-flow",
+        responses={"auth_methods": "email"},
+        design_system_slug="default",
+    )
+    run_id = await other.admit(discovery=discovery, actor_principal_id="principal-1")
+
+    async def _must_not_execute() -> Any:
+        raise AssertionError("an out-of-scope operation must not reach the provider")
+
+    with pytest.raises(RunIntegrityError, match="outside its bound"):
+        await bound.execute(run_id, _must_not_execute)
 
 
 async def test_design_failure_is_a_failed_attempt_and_failed_run() -> None:

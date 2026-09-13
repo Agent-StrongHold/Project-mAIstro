@@ -125,17 +125,29 @@ class TestTheRoutesPassItDown:
     ) -> None:
         """Rendering returns the project's content, so a render route that
         never asked whose it was is the same leak as the fetch route."""
-        import services.design_preview as preview_module
-
         store = _Store(project=None)
         monkeypatch.setattr(design_routes, "get_design_store", lambda: store)
-        # The route resolves the preview service before it reads the project,
-        # so it has to exist for the scope check to be reached at all.
-        monkeypatch.setattr(preview_module, "get_design_preview_service", lambda: object())
         with pytest.raises(HTTPException) as raised:
             await design_routes.create_render_job("p-1", _Request(org_id="org-7"))
         assert raised.value.status_code == 404
         assert store.calls == [{"project_id": "p-1", "org_id": "org-7"}]
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-2")
+    async def test_rendering_does_not_create_a_local_job_lifecycle(
+        self, ready: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class _Project:
+            outputs: ClassVar[list[Any]] = []
+
+        monkeypatch.setattr(design_routes, "get_design_store", lambda: _Store(project=_Project()))
+        monkeypatch.setattr(design_routes, "get_design_canonical_execution", lambda: object())
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.create_render_job("p-1", _Request(org_id="org-7"))
+        assert raised.value.status_code == 501
+        assert "canonical execution" in str(raised.value.detail)
+        with pytest.raises(HTTPException) as polled:
+            await design_routes.get_render_job_status("p-1", "job-1")
+        assert polled.value.status_code == 501
 
     @pytest.mark.ac("SPEC-083026-6bc5/AC-2")
     async def test_listing_projects_uses_the_resolved_scope(

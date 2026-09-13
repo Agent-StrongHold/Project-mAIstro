@@ -204,6 +204,10 @@ class DesignCanonicalExecution:
         run = await self._runs.get_run(run_id)
         if run is None:
             raise RunIntegrityError(f"Design canonical Run {run_id!r} does not exist")
+        if (run.workspace_id, run.project_id) != (self._workspace_id, self._project_id):
+            raise RunIntegrityError(
+                f"Design canonical Run {run_id!r} is outside its bound Workspace/Project scope"
+            )
         return run
 
 
