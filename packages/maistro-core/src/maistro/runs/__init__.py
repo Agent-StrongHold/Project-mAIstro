@@ -1,5 +1,12 @@
 """Canonical logical and physical execution lifecycle."""
 
+from maistro.runs.access import (
+    RUN_READ_ACTION,
+    AuthorizedRunStore,
+    RunAccessContext,
+    RunAuthorization,
+    RunReader,
+)
 from maistro.runs.execution import AttemptExecutionService, AttemptReconciler
 from maistro.runs.lifecycle import (
     ATTEMPT_TRANSITIONS,
@@ -39,6 +46,7 @@ from maistro.runs.store import (
 
 __all__ = [
     "ATTEMPT_TRANSITIONS",
+    "RUN_READ_ACTION",
     "RUN_TRANSITIONS",
     "TERMINAL_ATTEMPT_STATUSES",
     "TERMINAL_RUN_STATUSES",
@@ -51,6 +59,7 @@ __all__ = [
     "AttemptReconciler",
     "AttemptResult",
     "AttemptStatus",
+    "AuthorizedRunStore",
     "ExecutionLease",
     "GraphSnapshot",
     "InMemoryRunStore",
@@ -58,9 +67,12 @@ __all__ = [
     "NodeRun",
     "NodeRunNotFound",
     "Run",
+    "RunAccessContext",
+    "RunAuthorization",
     "RunExecutionService",
     "RunIntegrityError",
     "RunNotFound",
+    "RunReader",
     "RunStatus",
     "RunStore",
     "SqliteRunStore",

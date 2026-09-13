@@ -9,6 +9,12 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
+from maistro.runs.access import (
+    AuthorizedRunStore,
+    RunAccessContext,
+    RunAuthorization,
+    admission_identity_fields,
+)
 from maistro.runs.evidence_json import json_of, model_of_json
 from maistro.runs.lifecycle import (
     check_completion_is_earned,
@@ -234,10 +240,16 @@ class SqliteRunStore:
         allow_cross_project: bool = False,
         persona_id: str | None = None,
         actor_principal_id: str | None = None,
+        authorization: RunAuthorization | None = None,
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
     ) -> Run:
+        identities = admission_identity_fields(
+            graph,
+            authorization=authorization,
+            legacy_actor_principal_id=actor_principal_id,
+        )
         async with self._write_lock:
             await self._validate_graph_scope(graph)
             if parent_node_run_id is not None and parent_run_id is None:
@@ -263,7 +275,7 @@ class SqliteRunStore:
                 parent_run_id=parent_run_id,
                 parent_node_run_id=parent_node_run_id,
                 persona_id=persona_id,
-                actor_principal_id=actor_principal_id,
+                **identities,
                 provenance=dict(provenance or {}),
                 retention_expires_at=retention_expires_at,
             )
@@ -305,6 +317,9 @@ class SqliteRunStore:
             (run_id,),
         )
         return model_of_json(Run, row[0]) if row is not None else None
+
+    def scoped(self, context: RunAccessContext) -> AuthorizedRunStore:
+        return AuthorizedRunStore(self, context)
 
     async def list_by_status(
         self,

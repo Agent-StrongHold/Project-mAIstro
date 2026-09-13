@@ -38,6 +38,12 @@ from maistro.archive.protocols import ArchiveStore
 from maistro.archive.types import ArchiveKey
 from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
+from maistro.runs.access import (
+    AuthorizedRunStore,
+    RunAccessContext,
+    RunAuthorization,
+    admission_identity_fields,
+)
 from maistro.runs.evidence_json import decode_evidence, decode_payload, json_of, model_of
 from maistro.runs.lifecycle import (
     check_completion_is_earned,
@@ -144,10 +150,16 @@ class PgRunStore:
         allow_cross_project: bool = False,
         persona_id: str | None = None,
         actor_principal_id: str | None = None,
+        authorization: RunAuthorization | None = None,
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
     ) -> Run:
+        identities = admission_identity_fields(
+            graph,
+            authorization=authorization,
+            legacy_actor_principal_id=actor_principal_id,
+        )
         await self._validate_graph_scope(graph)
         if parent_node_run_id is not None and parent_run_id is None:
             raise RunIntegrityError("parent_node_run_id requires parent_run_id")
@@ -175,7 +187,7 @@ class PgRunStore:
             parent_run_id=parent_run_id,
             parent_node_run_id=parent_node_run_id,
             persona_id=persona_id,
-            actor_principal_id=actor_principal_id,
+            **identities,
             provenance=dict(provenance or {}),
             retention_expires_at=retention_expires_at,
         )
@@ -463,6 +475,9 @@ class PgRunStore:
             "SELECT run_id, payload, archive_key FROM canonical_runs WHERE run_id = $1", run_id
         )
         return Run.model_validate(payload) if payload is not None else None
+
+    def scoped(self, context: RunAccessContext) -> AuthorizedRunStore:
+        return AuthorizedRunStore(self, context)
 
     async def list_by_status(
         self,

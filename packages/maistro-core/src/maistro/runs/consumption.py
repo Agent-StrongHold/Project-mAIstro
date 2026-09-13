@@ -311,7 +311,9 @@ class ScheduleAttemptExecutor:
             run_id=run.run_id,
             dag_id=run.graph.graph_id,
             node_id=spec.node_id,
-            user_id=run.actor_principal_id,
+            # Accounting uses the immutable acting fact resolved at admission;
+            # it never trusts a metadata/provenance user id.
+            user_id=run.accounting_principal_id,
             workspace_id=run.workspace_id,
             project_id=run.project_id,
             metadata=metadata,

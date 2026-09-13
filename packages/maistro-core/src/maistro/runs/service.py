@@ -8,6 +8,7 @@ from typing import Any
 
 from maistro.graph.definitions import Graph
 from maistro.observability.correlation import bind_execution_context
+from maistro.runs.access import RunAuthorization
 from maistro.runs.execution import (
     AttemptContextFactory,
     AttemptExecutionService,
@@ -74,6 +75,7 @@ class RunExecutionService:
         allow_cross_project: bool = False,
         persona_id: str | None = None,
         actor_principal_id: str | None = None,
+        authorization: RunAuthorization | None = None,
         provenance: dict[str, Any] | None = None,
     ) -> Run:
         """Create one canonical logical Run from an immutable Graph snapshot."""
@@ -85,6 +87,7 @@ class RunExecutionService:
             allow_cross_project=allow_cross_project,
             persona_id=persona_id,
             actor_principal_id=actor_principal_id,
+            authorization=authorization,
             provenance=provenance,
         )
 

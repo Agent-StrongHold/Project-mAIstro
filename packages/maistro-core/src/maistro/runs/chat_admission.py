@@ -37,6 +37,7 @@ from collections import OrderedDict
 from collections.abc import Container
 from typing import TYPE_CHECKING, Any
 
+from maistro.runs.access import RunAuthorization
 from maistro.runs.admission import admit_direct_work
 from maistro.runs.archival import ArchivePolicy, RunArchiveSweeper
 from maistro.runs.model import TERMINAL_RUN_STATUSES
@@ -216,6 +217,7 @@ class ChatRunAdmitter:
         intent_hint: str = "",
         known_task_types: Container[str] | None = None,
         actor_principal_id: str | None = None,
+        authorization: RunAuthorization | None = None,
     ) -> Run:
         """Admit one chat turn as a Run over the trivial one-node Graph.
 
@@ -261,6 +263,7 @@ class ChatRunAdmitter:
             parameters=parameters,
             description=description,
             actor_principal_id=actor_principal_id,
+            authorization=authorization,
             provenance=provenance,
             retention_expires_at=self._retention.deadline(),
         )

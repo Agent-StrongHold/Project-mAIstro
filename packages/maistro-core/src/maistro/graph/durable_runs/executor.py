@@ -1078,7 +1078,7 @@ def _build_ctx(record: DurableRunRecord, node_id: str) -> NodeContext:
         run_id=record.run_id,
         dag_id=record.run.graph.graph_id,
         node_id=node_id,
-        user_id=record.run.actor_principal_id,
+        user_id=record.run.accounting_principal_id,
         workspace_id=record.run.workspace_id,
         project_id=record.run.project_id,
         blackboard=blackboard,

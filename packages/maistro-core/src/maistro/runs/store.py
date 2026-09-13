@@ -10,6 +10,12 @@ from maistro.archive.protocols import ArchiveStore
 from maistro.archive.types import ArchiveKey
 from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
+from maistro.runs.access import (
+    AuthorizedRunStore,
+    RunAccessContext,
+    RunAuthorization,
+    admission_identity_fields,
+)
 from maistro.runs.evidence_json import json_of
 from maistro.runs.lifecycle import (
     check_completion_is_earned,
@@ -314,6 +320,7 @@ class RunStore(Protocol):
         allow_cross_project: bool = False,
         persona_id: str | None = None,
         actor_principal_id: str | None = None,
+        authorization: RunAuthorization | None = None,
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
@@ -342,6 +349,8 @@ class RunStore(Protocol):
     async def non_terminal_run_stats(self) -> tuple[int, datetime | None]: ...
 
     async def get_run(self, run_id: str) -> Run | None: ...
+
+    def scoped(self, context: RunAccessContext) -> AuthorizedRunStore: ...
 
     async def transition_run(
         self,
@@ -552,10 +561,16 @@ class InMemoryRunStore:
         allow_cross_project: bool = False,
         persona_id: str | None = None,
         actor_principal_id: str | None = None,
+        authorization: RunAuthorization | None = None,
         provenance: dict[str, Any] | None = None,
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
     ) -> Run:
+        identities = admission_identity_fields(
+            graph,
+            authorization=authorization,
+            legacy_actor_principal_id=actor_principal_id,
+        )
         await self._validate_graph_scope(graph)
         if parent_node_run_id is not None and parent_run_id is None:
             raise RunIntegrityError("parent_node_run_id requires parent_run_id")
@@ -578,7 +593,7 @@ class InMemoryRunStore:
             parent_run_id=parent_run_id,
             parent_node_run_id=parent_node_run_id,
             persona_id=persona_id,
-            actor_principal_id=actor_principal_id,
+            **identities,
             provenance=dict(provenance or {}),
             retention_expires_at=retention_expires_at,
         )
@@ -785,6 +800,9 @@ class InMemoryRunStore:
     async def get_run(self, run_id: str) -> Run | None:
         run = self._runs.get(run_id)
         return run.model_copy(deep=True) if run is not None else None
+
+    def scoped(self, context: RunAccessContext) -> AuthorizedRunStore:
+        return AuthorizedRunStore(self, context)
 
     async def transition_run(
         self,

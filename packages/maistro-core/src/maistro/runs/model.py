@@ -269,7 +269,13 @@ class Run(BaseModel):
     parent_run_id: str | None = None
     parent_node_run_id: str | None = None
     persona_id: str | None = None
+    # ``actor_principal_id`` is retained as a read-compatible projection for
+    # older rows. New admissions populate the explicit initiating/acting facts
+    # from RunAuthorization rather than accepting caller text as accounting
+    # identity.
     actor_principal_id: str | None = None
+    initiating_principal_id: str | None = None
+    acting_principal_id: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     started_at: datetime | None = None
@@ -290,6 +296,26 @@ class Run(BaseModel):
         _require_non_empty(self.workspace_id, "workspace_id")
         _require_non_empty(self.project_id, "project_id")
         self._validate_scope_identity()
+        for field_name in (
+            "actor_principal_id",
+            "initiating_principal_id",
+            "acting_principal_id",
+        ):
+            value = getattr(self, field_name)
+            if value is not None:
+                _require_non_empty(value, field_name)
+        if (
+            self.actor_principal_id is not None
+            and self.acting_principal_id is not None
+            and self.actor_principal_id != self.acting_principal_id
+        ):
+            raise ValueError("actor_principal_id must project acting_principal_id")
+        if self.acting_principal_id is None and self.actor_principal_id is not None:
+            # Historical rows only carried actor_principal_id. They remain
+            # readable, while new delegated rows carry both explicit facts.
+            object.__setattr__(self, "acting_principal_id", self.actor_principal_id)
+        if self.initiating_principal_id is None and self.acting_principal_id is not None:
+            object.__setattr__(self, "initiating_principal_id", self.acting_principal_id)
         if self.parent_run_id == self.run_id:
             raise ValueError("Run cannot be its own parent")
         _validate_finished_at(
@@ -304,6 +330,11 @@ class Run(BaseModel):
             raise ValueError("Run and Graph snapshot must belong to the same Workspace")
         if self.graph.project_id != self.project_id:
             raise ValueError("Run and Graph snapshot must belong to the same Project")
+
+    @property
+    def accounting_principal_id(self) -> str | None:
+        """The acting identity, never a separately supplied accounting id."""
+        return self.acting_principal_id or self.actor_principal_id
 
 
 class ExecutionLease(BaseModel):
