@@ -207,6 +207,35 @@ async def test_hitl_membership_predicate_guards_mutation(seeded, monkeypatch) ->
     assert record is not None and record.run.status is RunStatus.PAUSED
 
 
+async def test_hitl_mutation_rechecks_membership_at_the_store_boundary(seeded, monkeypatch) -> None:
+    """A revocation between target lookup and settlement must win."""
+    client, store, seed = seeded
+    import routes.hitl as hitl_routes
+
+    for run_id, action in (("hitl-answer-revoked", "answer"), ("hitl-cancel-revoked", "cancel")):
+        await seed(run_id)
+        checks: list[bool] = []
+
+        def membership_revoked_factory(checks: list[bool]):
+            async def membership_revoked(_user_id: str, _workspace_id: str) -> bool:
+                checks.append(True)
+                return len(checks) == 1
+
+            return membership_revoked
+
+        monkeypatch.setattr(hitl_routes, "is_member", membership_revoked_factory(checks))
+        if action == "answer":
+            response = client.post(f"/v1/hitl/{run_id}/ask/answer", json={"answer": "yes"})
+        else:
+            response = client.post(f"/v1/hitl/{run_id}/ask/cancel")
+        assert response.status_code == 404
+        assert len(checks) == 2
+        record = await store.get(run_id)
+        assert record is not None and record.run.status is RunStatus.PAUSED
+
+        monkeypatch.undo()
+
+
 async def test_hitl_routes_are_scoped_to_the_callers_workspaces(scoped_client) -> None:
     """A scoped writer cannot list, answer, or cancel another workspace's pause."""
     from services.dag_agents import get_run_store

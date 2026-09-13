@@ -7,6 +7,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from maistro.runs.model import RunStatus
 
+from .hitl import HitlAuthorization
 from .types import DurableRunRecord
 
 
@@ -51,6 +52,7 @@ class DurableRunStore(Protocol):
         *,
         at: datetime | None = None,
         workspace_id: str | None = None,
+        authorization: HitlAuthorization | None = None,
     ) -> DurableRunRecord:
         """Attach an answer and queue the paused canonical Run for resume."""
         ...
@@ -62,6 +64,7 @@ class DurableRunStore(Protocol):
         *,
         at: datetime | None = None,
         workspace_id: str | None = None,
+        authorization: HitlAuthorization | None = None,
     ) -> DurableRunRecord:
         """Terminalize a human pause whose persisted deadline elapsed."""
         ...
@@ -73,6 +76,7 @@ class DurableRunStore(Protocol):
         *,
         at: datetime | None = None,
         workspace_id: str | None = None,
+        authorization: HitlAuthorization | None = None,
     ) -> DurableRunRecord:
         """Terminalize a human pause by explicit cancellation."""
         ...

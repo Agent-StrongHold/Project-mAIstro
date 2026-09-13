@@ -27,7 +27,7 @@ from maistro.runs.model import TERMINAL_RUN_STATUSES, Attempt, NodeRun, Run, Run
 from maistro.runs.store import RunIntegrityError, RunStore
 
 from .continuation import GraphContinuation, GraphContinuationStore
-from .hitl import earliest_hitl_deadline, settlement_time
+from .hitl import HitlAuthorization, earliest_hitl_deadline, settlement_time
 from .spine import mirror_lifecycle
 from .stores import answer_record, settle_hitl_record
 from .types import DurableRunRecord
@@ -436,6 +436,7 @@ class CanonicalDurableRunStore:
         *,
         at: datetime | None = None,
         workspace_id: str | None = None,
+        authorization: HitlAuthorization | None = None,
     ) -> DurableRunRecord:
         """Attach an answer and queue the paused canonical Run for resume.
 
@@ -448,6 +449,7 @@ class CanonicalDurableRunStore:
             run_id,
             lambda current: answer_record(current, node_id, answer, at=at),
             workspace_id=workspace_id,
+            authorization=authorization,
         )
 
     async def timeout_hitl(
@@ -457,12 +459,14 @@ class CanonicalDurableRunStore:
         *,
         at: datetime | None = None,
         workspace_id: str | None = None,
+        authorization: HitlAuthorization | None = None,
     ) -> DurableRunRecord:
         """Persist an elapsed HITL deadline and mirror its terminal lifecycle."""
         return await self._mutate_hitl(
             run_id,
             lambda current: settle_hitl_record(current, node_id, "timed_out", at=at),
             workspace_id=workspace_id,
+            authorization=authorization,
         )
 
     async def cancel_hitl(
@@ -472,12 +476,14 @@ class CanonicalDurableRunStore:
         *,
         at: datetime | None = None,
         workspace_id: str | None = None,
+        authorization: HitlAuthorization | None = None,
     ) -> DurableRunRecord:
         """Persist explicit HITL cancellation and mirror its terminal lifecycle."""
         return await self._mutate_hitl(
             run_id,
             lambda current: settle_hitl_record(current, node_id, "cancelled", at=at),
             workspace_id=workspace_id,
+            authorization=authorization,
         )
 
     async def _mutate_hitl(
@@ -485,6 +491,7 @@ class CanonicalDurableRunStore:
         run_id: str,
         mutate: Callable[[DurableRunRecord], DurableRunRecord],
         workspace_id: str | None = None,
+        authorization: HitlAuthorization | None = None,
     ) -> DurableRunRecord:
         async with self._lock:
             current = await self.get(run_id)
@@ -492,6 +499,10 @@ class CanonicalDurableRunStore:
                 raise KeyError(f"no such run: {run_id!r}")
             if workspace_id is not None and current.run.workspace_id != workspace_id:
                 raise KeyError(f"run {run_id!r} is outside the requested Workspace")
+            if authorization is not None and not await authorization.permits(
+                current.run.workspace_id
+            ):
+                raise KeyError(f"run {run_id!r} is outside the authorized Workspace")
             updated = mutate(current)
             await self._continuations.update(GraphContinuation.of(updated))
             await mirror_lifecycle(updated, run_store=self._run_store)

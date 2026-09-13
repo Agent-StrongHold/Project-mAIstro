@@ -197,7 +197,7 @@ def workspace_writer_client() -> Iterator[Any]:
 
 
 async def test_expiry_endpoint_cannot_timeout_a_foreign_workspace(
-    seeded: _Seeded, workspace_writer_client: Any
+    seeded: _Seeded, workspace_writer_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A bounded timeout request applies only to canonical member Workspaces."""
     _admin_client, store, _seed = seeded
@@ -220,6 +220,7 @@ async def test_expiry_endpoint_cannot_timeout_a_foreign_workspace(
     now = datetime.now(UTC) - timedelta(minutes=1)
     mine_id = "hitl-expiry-scope-mine"
     other_id = "hitl-expiry-scope-other"
+    race_id = "hitl-expiry-scope-revoked"
     await store.create(_paused_record(mine_id, deadline=now, workspace_id=mine.id))
     await store.create(_paused_record(other_id, deadline=now, workspace_id=other.id))
     try:
@@ -243,9 +244,23 @@ async def test_expiry_endpoint_cannot_timeout_a_foreign_workspace(
         assert workspace_writer_client.post(f"/v1/hitl/{other_id}/ask/cancel").status_code == 404
         other_record = await store.get(other_id)
         assert other_record is not None and other_record.run.status is RunStatus.PAUSED
+
+        import routes.hitl as hitl_routes
+
+        await store.create(_paused_record(race_id, deadline=now, workspace_id=mine.id))
+
+        async def revoked_membership(_user_id: str, _workspace_id: str) -> bool:
+            return False
+
+        monkeypatch.setattr(hitl_routes, "is_member", revoked_membership)
+        response = workspace_writer_client.post("/v1/hitl/expire?limit=10")
+        assert response.json() == {"expired": 0, "run_ids": []}
+        race_record = await store.get(race_id)
+        assert race_record is not None and race_record.run.status is RunStatus.PAUSED
     finally:
         store._rows.pop(mine_id, None)
         store._rows.pop(other_id, None)
+        store._rows.pop(race_id, None)
 
 
 def test_settlement_endpoints_keep_the_existing_dags_write_scope(authed_client: Any) -> None:

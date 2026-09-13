@@ -49,6 +49,25 @@ _BEFORE = _DEADLINE - timedelta(seconds=1)
 _AFTER = _DEADLINE + timedelta(seconds=1)
 
 
+async def _allow_test_membership(_principal: str, _workspace_id: str) -> bool:
+    return True
+
+
+def _test_authorization() -> HitlAuthorization:
+    return HitlAuthorization.for_principal(
+        "test-hitl-operator",
+        {
+            "test-workspace",
+            "ws-hitl-reconcile",
+            "ws-hitl-settlement",
+            "ws-1097",
+            "owned-workspace",
+            "foreign-workspace",
+        },
+        membership_check=_allow_test_membership,
+    )
+
+
 class _Empty(BaseModel):
     pass
 
@@ -76,6 +95,7 @@ class _LosingTimeoutStore(InMemoryDurableRunStore):
         *,
         at: datetime | None = None,
         workspace_id: str | None = None,
+        authorization: HitlAuthorization | None = None,
     ) -> DurableRunRecord:
         raise ValueError("another decision won")
 
@@ -233,7 +253,7 @@ async def test_deadline_survives_restart_and_timeout_preserves_attempt(tmp_path:
     del first_store
 
     reopened = SqliteDurableRunStore(db)
-    expired = await expire_hitl_pauses(reopened, now=_AFTER)
+    expired = await expire_hitl_pauses(reopened, now=_AFTER, authorization=_test_authorization())
 
     assert [record.run_id for record in expired] == ["restart-timeout"]
     settled = expired[0]
@@ -293,7 +313,9 @@ async def test_pre_index_sqlite_pause_is_backfilled_and_expires_after_restart(
         conn.commit()
 
     store = SqliteDurableRunStore(db)
-    expired = await expire_hitl_pauses(store, now=_AFTER, limit=1)
+    expired = await expire_hitl_pauses(
+        store, now=_AFTER, limit=1, authorization=_test_authorization()
+    )
 
     assert [record.run_id for record in expired] == ["pre-index-timeout"]
     assert expired[0].status is RunStatus.TIMED_OUT
@@ -416,7 +438,7 @@ async def test_late_answer_is_refused_before_the_sweep_observes_expiry() -> None
     assert still_paused.status is RunStatus.PAUSED
     assert still_paused.hitl_answers == {}
 
-    [timed_out] = await expire_hitl_pauses(store, now=_AFTER)
+    [timed_out] = await expire_hitl_pauses(store, now=_AFTER, authorization=_test_authorization())
     with pytest.raises(ValueError, match="not paused"):
         await store.submit_hitl_answer("late-answer", "ask", {"answer": "again"}, at=_AFTER)
     assert await store.get("late-answer") == timed_out
@@ -738,14 +760,21 @@ async def test_expiry_repairs_a_pause_whose_run_mirror_never_landed() -> None:
     stale_run = await run_store.get_run(stale_id)
     assert stale_run is not None and stale_run.status is RunStatus.RUNNING
 
-    first = await expire_hitl_pauses(store, now=_AFTER, limit=1)
-    second = await expire_hitl_pauses(store, now=_AFTER, limit=1)
+    first = await expire_hitl_pauses(
+        store, now=_AFTER, limit=1, authorization=_test_authorization()
+    )
+    second = await expire_hitl_pauses(
+        store, now=_AFTER, limit=1, authorization=_test_authorization()
+    )
 
     assert {record.run_id for record in first + second} == {stale_id, valid.run_id}
     for run_id in (stale_id, valid.run_id):
         settled = await run_store.get_run(run_id)
         assert settled is not None and settled.status is RunStatus.TIMED_OUT
-    assert await expire_hitl_pauses(store, now=_AFTER, limit=1) == []
+    assert (
+        await expire_hitl_pauses(store, now=_AFTER, limit=1, authorization=_test_authorization())
+        == []
+    )
 
 
 async def test_expiry_pages_past_a_projection_that_cannot_be_repaired() -> None:
@@ -757,7 +786,9 @@ async def test_expiry_pages_past_a_projection_that_cannot_be_repaired() -> None:
     # Cancelled on the canonical side while the continuation still says PAUSED.
     await run_store.transition_run(stale.run_id, RunStatus.CANCELLED)
 
-    settled = await expire_hitl_pauses(store, now=_AFTER, limit=1)
+    settled = await expire_hitl_pauses(
+        store, now=_AFTER, limit=1, authorization=_test_authorization()
+    )
 
     assert [record.run_id for record in settled] == [valid.run_id]
     cancelled = await run_store.get_run(stale.run_id)
@@ -823,8 +854,10 @@ async def test_expiry_tick_is_bounded_and_ignores_unelapsed_pauses() -> None:
     await store.create(_paused_record("first"))
     await store.create(_paused_record("second"))
 
-    assert await expire_hitl_pauses(store, now=_BEFORE) == []
-    expired = await expire_hitl_pauses(store, now=_AFTER, limit=1)
+    assert await expire_hitl_pauses(store, now=_BEFORE, authorization=_test_authorization()) == []
+    expired = await expire_hitl_pauses(
+        store, now=_AFTER, limit=1, authorization=_test_authorization()
+    )
 
     assert len(expired) == 1
     remaining = await store.list_by_status(RunStatus.PAUSED)
@@ -844,7 +877,11 @@ async def test_scoped_expiry_requires_effective_principal_and_keeps_foreign_run_
             workspace_id="foreign-workspace",
         )
 
-    authorization = HitlAuthorization.for_principal("member-user", ["owned-workspace"])
+    authorization = HitlAuthorization.for_principal(
+        "member-user",
+        ["owned-workspace"],
+        membership_check=_allow_test_membership,
+    )
     expired = await expire_hitl_pauses(store, now=_AFTER, authorization=authorization)
 
     assert [record.run_id for record in expired] == ["owned-expiry"]
@@ -855,9 +892,17 @@ async def test_scoped_expiry_requires_effective_principal_and_keeps_foreign_run_
 @pytest.mark.parametrize(
     ("factory", "expected"),
     [
-        (lambda: HitlAuthorization("", frozenset()), "effective principal"),
         (
-            lambda: HitlAuthorization.for_delegated_service("service", [], delegation_evidence=""),
+            lambda: HitlAuthorization("", frozenset(), _allow_test_membership),
+            "effective principal",
+        ),
+        (
+            lambda: HitlAuthorization.for_delegated_service(
+                "service",
+                [],
+                delegation_evidence="",
+                membership_check=_allow_test_membership,
+            ),
             "delegated HITL authorization",
         ),
     ],
@@ -894,7 +939,9 @@ async def test_expiry_deadline_query_skips_an_ineligible_paused_prefix(
     expired = _paused_record("expired-hitl").model_copy(update={"resume_at": None})
     await store.create(expired)
 
-    settled = await expire_hitl_pauses(store, now=_AFTER, limit=1)
+    settled = await expire_hitl_pauses(
+        store, now=_AFTER, limit=1, authorization=_test_authorization()
+    )
 
     assert [record.run_id for record in settled] == ["expired-hitl"]
     assert await store.get("expired-hitl") is not None
@@ -902,7 +949,12 @@ async def test_expiry_deadline_query_skips_an_ineligible_paused_prefix(
 
 
 async def test_expiry_tick_ignores_nonhuman_pauses_and_lost_races() -> None:
-    assert await expire_hitl_pauses(InMemoryDurableRunStore(), now=_AFTER, limit=0) == []
+    assert (
+        await expire_hitl_pauses(
+            InMemoryDurableRunStore(), now=_AFTER, limit=0, authorization=_test_authorization()
+        )
+        == []
+    )
 
     wait_store = InMemoryDurableRunStore()
     wait_record = _with_pause_entry(
@@ -910,11 +962,16 @@ async def test_expiry_tick_ignores_nonhuman_pauses_and_lost_races() -> None:
         {"kind": "wait", "metadata": {}, "resume_at": _DEADLINE.isoformat()},
     )
     await wait_store.create(wait_record)
-    assert await expire_hitl_pauses(wait_store, now=_AFTER) == []
+    assert (
+        await expire_hitl_pauses(wait_store, now=_AFTER, authorization=_test_authorization()) == []
+    )
 
     losing_store = _LosingTimeoutStore()
     await losing_store.create(_paused_record("lost-expiry-race"))
-    assert await expire_hitl_pauses(losing_store, now=_AFTER) == []
+    assert (
+        await expire_hitl_pauses(losing_store, now=_AFTER, authorization=_test_authorization())
+        == []
+    )
 
 
 # --- #1097: a malformed answer must not rewrite the durable deadline -------
@@ -1007,10 +1064,14 @@ async def test_repeated_malformed_answers_at_t_minus_1s_cannot_extend_the_deadli
         assert current.status is RunStatus.PAUSED
         assert hitl_deadline(current, "ask") == original_deadline
 
-    expired = await expire_hitl_pauses(store, now=original_deadline - timedelta(seconds=1))
+    expired = await expire_hitl_pauses(
+        store, now=original_deadline - timedelta(seconds=1), authorization=_test_authorization()
+    )
     assert expired == []
 
-    expired = await expire_hitl_pauses(store, now=original_deadline + timedelta(seconds=1))
+    expired = await expire_hitl_pauses(
+        store, now=original_deadline + timedelta(seconds=1), authorization=_test_authorization()
+    )
     assert [record.run_id for record in expired] == [paused.run_id]
     settled = await run_store.get_run(paused.run_id)
     assert settled is not None and settled.status is RunStatus.TIMED_OUT

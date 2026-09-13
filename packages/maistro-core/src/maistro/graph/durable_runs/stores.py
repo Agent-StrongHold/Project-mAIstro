@@ -14,6 +14,7 @@ from maistro.runs.lifecycle import settle_open_node_run, transition_node_run, tr
 from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
 
 from .hitl import (
+    HitlAuthorization,
     HitlDeadlineElapsed,
     HitlDeadlinePending,
     earliest_hitl_deadline,
@@ -303,6 +304,7 @@ class InMemoryDurableRunStore:
         *,
         at: datetime | None = None,
         workspace_id: str | None = None,
+        authorization: HitlAuthorization | None = None,
     ) -> DurableRunRecord:
         async with self._lock:
             record = self._rows.get(run_id)
@@ -310,6 +312,10 @@ class InMemoryDurableRunStore:
                 raise KeyError(f"no such run: {run_id!r}")
             if workspace_id is not None and record.run.workspace_id != workspace_id:
                 raise KeyError(f"run {run_id!r} is outside the requested Workspace")
+            if authorization is not None and not await authorization.permits(
+                record.run.workspace_id
+            ):
+                raise KeyError(f"run {run_id!r} is outside the authorized Workspace")
             updated = answer_record(record, node_id, answer, at=at)
             self._rows[run_id] = updated
             return _clone(updated)
@@ -321,6 +327,7 @@ class InMemoryDurableRunStore:
         *,
         at: datetime | None = None,
         workspace_id: str | None = None,
+        authorization: HitlAuthorization | None = None,
     ) -> DurableRunRecord:
         async with self._lock:
             record = self._rows.get(run_id)
@@ -328,6 +335,10 @@ class InMemoryDurableRunStore:
                 raise KeyError(f"no such run: {run_id!r}")
             if workspace_id is not None and record.run.workspace_id != workspace_id:
                 raise KeyError(f"run {run_id!r} is outside the requested Workspace")
+            if authorization is not None and not await authorization.permits(
+                record.run.workspace_id
+            ):
+                raise KeyError(f"run {run_id!r} is outside the authorized Workspace")
             updated = settle_hitl_record(record, node_id, "timed_out", at=at)
             self._rows[run_id] = updated
             return _clone(updated)
@@ -339,6 +350,7 @@ class InMemoryDurableRunStore:
         *,
         at: datetime | None = None,
         workspace_id: str | None = None,
+        authorization: HitlAuthorization | None = None,
     ) -> DurableRunRecord:
         async with self._lock:
             record = self._rows.get(run_id)
@@ -346,6 +358,10 @@ class InMemoryDurableRunStore:
                 raise KeyError(f"no such run: {run_id!r}")
             if workspace_id is not None and record.run.workspace_id != workspace_id:
                 raise KeyError(f"run {run_id!r} is outside the requested Workspace")
+            if authorization is not None and not await authorization.permits(
+                record.run.workspace_id
+            ):
+                raise KeyError(f"run {run_id!r} is outside the authorized Workspace")
             updated = settle_hitl_record(record, node_id, "cancelled", at=at)
             self._rows[run_id] = updated
             return _clone(updated)
@@ -515,8 +531,10 @@ class SqliteDurableRunStore:
         *,
         at: datetime | None = None,
         workspace_id: str | None = None,
+        authorization: HitlAuthorization | None = None,
     ) -> DurableRunRecord:
         async with self._lock:
+            await self._check_hitl_authorization(run_id, authorization)
             return await asyncio.to_thread(
                 _mutate_hitl_sync,
                 self,
@@ -532,8 +550,10 @@ class SqliteDurableRunStore:
         *,
         at: datetime | None = None,
         workspace_id: str | None = None,
+        authorization: HitlAuthorization | None = None,
     ) -> DurableRunRecord:
         async with self._lock:
+            await self._check_hitl_authorization(run_id, authorization)
             return await asyncio.to_thread(
                 _mutate_hitl_sync,
                 self,
@@ -549,8 +569,10 @@ class SqliteDurableRunStore:
         *,
         at: datetime | None = None,
         workspace_id: str | None = None,
+        authorization: HitlAuthorization | None = None,
     ) -> DurableRunRecord:
         async with self._lock:
+            await self._check_hitl_authorization(run_id, authorization)
             return await asyncio.to_thread(
                 _mutate_hitl_sync,
                 self,
@@ -558,6 +580,19 @@ class SqliteDurableRunStore:
                 lambda current: settle_hitl_record(current, node_id, "cancelled", at=at),
                 workspace_id,
             )
+
+    async def _check_hitl_authorization(
+        self,
+        run_id: str,
+        authorization: HitlAuthorization | None,
+    ) -> None:
+        if authorization is None:
+            return
+        record = await self.get(run_id)
+        if record is None:
+            raise KeyError(f"no such run: {run_id!r}")
+        if not await authorization.permits(record.run.workspace_id):
+            raise KeyError(f"run {run_id!r} is outside the authorized Workspace")
 
 
 def _create_sync(

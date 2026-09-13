@@ -102,6 +102,15 @@ async def _authorized_record(request: Request, run_id: str) -> Any:
     return record
 
 
+def _hitl_authorization(request: Request, workspace_ids: set[str]) -> HitlAuthorization:
+    """Carry live canonical membership into the durable mutation boundary."""
+    return HitlAuthorization.for_principal(
+        _request_user_id(request),
+        workspace_ids,
+        membership_check=is_member,
+    )
+
+
 def _session_principal(request: Request) -> str:
     """The verified session principal behind this request, never "system".
 
@@ -211,9 +220,9 @@ async def expire_human_work(request: Request, limit: int = 100) -> dict[str, Any
     candidates before any settlement is requested.
     """
     user_id = _request_user_id(request)
-    authorization = HitlAuthorization.for_principal(
-        user_id,
-        await list_workspace_ids_for_user(user_id),
+    authorization = _hitl_authorization(
+        request,
+        set(await list_workspace_ids_for_user(user_id)),
     )
     expired = await expire_hitl_pauses(
         _store(),
@@ -236,6 +245,7 @@ async def cancel_human_work(run_id: str, node_id: str, request: Request) -> dict
             run_id,
             node_id,
             workspace_id=record.run.workspace_id,
+            authorization=_hitl_authorization(request, {record.run.workspace_id}),
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="run not found") from exc
@@ -310,6 +320,7 @@ async def answer_human_work(
             node_id,
             answer,
             workspace_id=record.run.workspace_id,
+            authorization=_hitl_authorization(request, {record.run.workspace_id}),
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="run not found") from exc

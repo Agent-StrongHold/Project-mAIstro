@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +2
+  packages/hive-conductor/backend/tests: +3
   packages/maistro-core/tests: +2
 ---
 # Issue 1058 - HITL Workspace authorization
