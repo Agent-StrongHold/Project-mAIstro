@@ -258,9 +258,15 @@ def is_admissible(
 
 
 def merge_async_payload(candidate: Candidate) -> dict[str, str]:
+    """Queue enqueues take the PR head SHA and merge_action only.
+
+    ``merge_method`` is a property of the merge queue itself (pinned to
+    SQUASH in .github/merge-queue.json, audited by check-required-checks);
+    echoing it into the enqueue mutation is rejected with HTTP 422, which is
+    what burst-failed the 09-02 enqueues.
+    """
     return {
         "sha": candidate.head_sha,
-        "merge_method": "squash",
         "merge_action": "merge_queue",
     }
 
