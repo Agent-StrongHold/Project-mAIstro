@@ -176,3 +176,17 @@ def test_legacy_airtable_env_is_explicitly_single_user_only(
     assert chat_completion._get_airtable_creds("alice") == (
         (None, None) if multi_user else ("legacy-token", "app-LEGACY")
     )
+
+
+def test_legacy_airtable_env_fails_closed_if_principal_store_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AIRTABLE_SINGLE_USER_MODE", "true")
+
+    class BrokenUsers:
+        def keys(self) -> object:
+            raise RuntimeError("principal store unavailable")
+
+    monkeypatch.setattr(stores, "users", BrokenUsers())
+
+    assert chat_completion._single_user_airtable_env_enabled("alice") is False
