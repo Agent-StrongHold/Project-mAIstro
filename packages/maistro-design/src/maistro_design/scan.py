@@ -13,6 +13,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 from maistro.security.normalize import normalize_for_detection
 from maistro.security.warden.patterns import ACTIVE_MARKUP_PATTERNS
@@ -77,6 +78,44 @@ class ScanReport:
     external_urls: tuple[str, ...] = ()
 
 
+def _reviewed_url_parts(url: str) -> tuple[str, str, int, str] | None:
+    """Parse a URL into the authority fields used by the allowlist."""
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return None
+    if (
+        parts.scheme not in {"http", "https"}
+        or parts.username is not None
+        or parts.password is not None
+        or parts.hostname is None
+    ):
+        return None
+    effective_port = port or (443 if parts.scheme == "https" else 80)
+    return parts.scheme, parts.hostname, effective_port, parts.path
+
+
+def _is_allowlisted_url(target: str, url_allowlist: tuple[str, ...]) -> bool:
+    """Match reviewed URL authorities, not attacker-controlled string prefixes."""
+    target_parts = _reviewed_url_parts(target)
+    if target_parts is None:
+        return False
+
+    for allowed in url_allowlist:
+        allowed_parts = _reviewed_url_parts(allowed)
+        if allowed_parts is None or target_parts[:3] != allowed_parts[:3]:
+            continue
+        allowed_path = allowed_parts[3]
+        if allowed_path and not (
+            target_parts[3] == allowed_path
+            or target_parts[3].startswith(allowed_path.rstrip("/") + "/")
+        ):
+            continue
+        return True
+    return False
+
+
 def _css_network_or_code_is_blocking(content: str, url_allowlist: tuple[str, ...]) -> bool:
     """Allow only reviewed documentation/font URLs inside CSS primitives."""
     normalized = normalize_for_detection(content)
@@ -84,13 +123,13 @@ def _css_network_or_code_is_blocking(content: str, url_allowlist: tuple[str, ...
         target = re.sub(r"\s+", "", match.group(2)).strip()
         if target.startswith("#"):
             continue
-        if not any(target.startswith(prefix) for prefix in url_allowlist):
+        if not _is_allowlisted_url(target, url_allowlist):
             return True
 
     for match in _CSS_IMPORT_RE.finditer(normalized):
         target = match.group(2) or match.group(4) or ""
         target = re.sub(r"\s+", "", target).strip()
-        if not any(target.startswith(prefix) for prefix in url_allowlist):
+        if not _is_allowlisted_url(target, url_allowlist):
             return True
 
     # These primitives can execute code or trigger a request without a URL
@@ -166,7 +205,7 @@ def find_external_urls(content: str, url_allowlist: tuple[str, ...]) -> set[str]
     found: set[str] = set()
     for url in _URL_RE.findall(content):
         url = url.rstrip("`).,;\"'")
-        if not any(url.startswith(prefix) for prefix in url_allowlist):
+        if not _is_allowlisted_url(url, url_allowlist):
             found.add(url)
     return found
 

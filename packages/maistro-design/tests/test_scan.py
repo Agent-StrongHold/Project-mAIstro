@@ -52,6 +52,10 @@ class TestScanDesignOutput:
             ('<svg><a href="javascript:alert(1)">x</a></svg>', "dangerous resource"),
             ('<img src="data:text/html,<script>alert(1)</script>">', "data URL"),
             ("<style>.x { background: url(https://evil.example/leak) }</style>", "CSS"),
+            (
+                "<style>.x { background: url(https://fonts.googleapis.com.evil/leak) }</style>",
+                "CSS",
+            ),
             ('<a href="java&#x0A;script:alert(1)">x</a>', "dangerous resource"),
             (r"<style>.x { background: u\72l(https://evil.example/leak) }</style>", "CSS"),
             ("<svg><foreignObject><div>active</div></foreignObject></svg>", "SVG element"),
