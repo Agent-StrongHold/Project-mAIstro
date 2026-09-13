@@ -207,6 +207,8 @@ def test_prometheus_name_policy_rejects_invalid_and_reserved_names() -> None:
         reg.counter("__internal_total")
     with pytest.raises(ValueError, match="reserved for registry uptime"):
         reg.gauge("uptime_seconds")
+    with pytest.raises(ValueError, match="reserved for registry overflow accounting"):
+        reg.counter("metrics_series_overflow_total")
 
     counter = reg.counter("valid_total")
     with pytest.raises(ValueError, match="label name"):

@@ -102,6 +102,8 @@ def _validate_metric_name(name: str) -> None:
         raise ValueError(f"invalid Prometheus metric name {name!r}; the '__' prefix is reserved")
     if name == _UPTIME_METRIC_NAME:
         raise ValueError(f"{_UPTIME_METRIC_NAME!r} is reserved for registry uptime")
+    if name == _OVERFLOW_METRIC_NAME:
+        raise ValueError(f"{_OVERFLOW_METRIC_NAME!r} is reserved for registry overflow accounting")
 
 
 def _label_key(
