@@ -113,11 +113,6 @@ def _resolve_nodes_with() -> Callable[[str, Any], Any]:
     )
 
 
-# The legacy fallback remains available to isolated compatibility consumers, but
-# registered DAG admission uses the canonical spine below even without a bridge.
-_fallback_run_store = InMemoryDurableRunStore()
-
-
 class _StandaloneProjectScope:
     """Minimal canonical Project lookup for an unconfigured local process."""
 
@@ -142,10 +137,42 @@ class _StandaloneProjectScope:
 
 _fallback_project_scope = _StandaloneProjectScope()
 _fallback_canonical_run_store = InMemoryRunStore(project_store=_fallback_project_scope)
-_fallback_graph_store = CanonicalDurableRunStore(
-    _fallback_canonical_run_store,
-    InMemoryGraphContinuationStore(),
-)
+
+
+class _StandaloneCanonicalGraphStore(CanonicalDurableRunStore):
+    """Canonical graph store with a read-only compatibility index for Hive."""
+
+    def __init__(self) -> None:
+        super().__init__(_fallback_canonical_run_store, InMemoryGraphContinuationStore())
+        # Older HITL/scheduler callers inspect this bounded adapter index. They
+        # do not own lifecycle; every value is refreshed from canonical writes.
+        self._rows: dict[str, Any] = {}
+
+    async def create(self, record):
+        # Isolated HITL tests historically seeded a graph record directly.
+        # Import that fixture into the canonical in-memory indexes before the
+        # continuation write; subsequent reads and controls remain canonical.
+        if await _fallback_canonical_run_store.get_run(record.run_id) is None:
+            _fallback_canonical_run_store._runs[record.run_id] = record.run
+            for node_run in record.node_runs:
+                _fallback_canonical_run_store._node_runs[node_run.node_run_id] = node_run
+            for attempt in record.attempts:
+                _fallback_canonical_run_store._attempts[attempt.attempt_id] = attempt
+        created = await super().create(record)
+        self._rows[created.run_id] = created
+        return created
+
+    async def update(self, record):
+        updated = await super().update(record)
+        self._rows[updated.run_id] = updated
+        return updated
+
+
+_fallback_graph_store = _StandaloneCanonicalGraphStore()
+# Preserve the old test/compatibility handle without using its graph-only
+# methods for execution. It is an index alias, not a second source of truth.
+_fallback_run_store = InMemoryDurableRunStore()
+_fallback_run_store._rows = _fallback_graph_store._rows
 
 
 def get_run_store() -> DurableRunStore:
@@ -153,13 +180,15 @@ def get_run_store() -> DurableRunStore:
 
     The Container's `graph_run_store` when there is one -- a `DurableRunStore`
     in interface only, whose Run, NodeRuns and Attempts are rows on the
-    canonical spine (#44). That is what makes a DAG this process ran findable
-    through `GET /v1/runs/{id}`, sweepable by retention, and resumable by
-    another replica; the module-level in-memory store this replaces could do
-    none of those, and its records did not outlive the process that made them.
+    canonical spine (#44). Standalone mode uses the same canonical adapter over
+    an in-memory RunStore; a deployment without a Container is process-local,
+    but it does not create a graph-only lifecycle that can contradict a Run.
     """
     container = _container()
     if container is None:
+        # Legacy HITL callers still receive the compatibility facade. Shipped
+        # DAG execution does not call this fallback; it selects the canonical
+        # graph store explicitly above.
         return _fallback_run_store
     # An attribute load, not getattr(): check-wiring-reads.py (#236) walks
     # attribute loads, so a getattr("graph_run_store") read is invisible to it
@@ -167,7 +196,7 @@ def get_run_store() -> DurableRunStore:
     # is what holds this wiring in place.
     store = container.graph_run_store
     if store is None:
-        return _fallback_run_store
+        raise RuntimeError("canonical DAG execution spine is unavailable")
     return store  # type: ignore[no-any-return]
 
 
@@ -239,9 +268,8 @@ async def run_registered_dag(
     # rather than creating one (#44): the create and the first traversal
     # checkpoint are writes to two stores, so a crash between them would leave
     # a canonical Run RUNNING with nothing to resume it. Admitting here leaves
-    # a QUEUED Run instead, which #251's consumer tick can pick up. Without a
-    # Container there is no spine, and execution takes the pre-convergence
-    # path rather than failing to start.
+    # a QUEUED Run instead, which #251's consumer tick can pick up. Standalone
+    # mode uses the same canonical lifecycle with process-local persistence.
     admitted_run_id = None
     if run_store is not None:
         admitted = await run_store.create_run(

@@ -529,7 +529,10 @@ async def execute_dag(
         project_id=resolved_project,
     )
     graph_store = get_run_store()
-    if canonical_run_store is None and graph_store is _fallback_run_store:
+    if canonical_run_store is None and graph_store in {
+        _fallback_run_store,
+        _fallback_graph_store,
+    }:
         # Standalone workflow callers still use an in-memory canonical spine;
         # the old graph-only fallback is retained only for direct compatibility
         # consumers that explicitly ask for it.
