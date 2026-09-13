@@ -196,8 +196,12 @@ def _checked_body(response: Any) -> dict[str, object]:
         raise GatewayAuthError("llm_auth_failed status=401 (check gateway credentials)")
     if response.status_code == 429:
         raise EffectNotApplied("llm_rate_limited status=429")
-    if response.status_code >= 400:
+    if 400 <= response.status_code < 500:
         raise EffectNotApplied(f"llm_http_error status={response.status_code}")
+    if response.status_code >= 500:
+        # A server-side response may arrive after the gateway accepted work;
+        # keep it UNKNOWN so recovery cannot blindly redispatch it.
+        raise RuntimeError(f"llm_http_error status={response.status_code}")
     body = response.json()
     if not isinstance(body, dict):
         raise RuntimeError("model gateway returned a non-object response body")

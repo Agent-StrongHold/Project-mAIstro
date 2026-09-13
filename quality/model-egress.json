@@ -13,9 +13,7 @@
     "maistro_rsi.gateway",
     "maistro_server.api.chat_completions",
     "services.canonical_corpus",
-    "services.canvas_dag",
     "services.eval_bootstrap",
-    "services.evolution",
     "services.skill_optimizer",
     "services.ui_auto_climb",
     "services.ui_hill_climber"

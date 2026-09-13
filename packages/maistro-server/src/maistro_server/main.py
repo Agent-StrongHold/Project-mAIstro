@@ -163,7 +163,7 @@ def _model_bindings() -> list[dict[str, Any]]:
     closed at the Binding.
     """
     yaml_config = settings_module.get_yaml_config()
-    return list(yaml_config.model_bindings) if yaml_config is not None else []
+    return list(getattr(yaml_config, "model_bindings", [])) if yaml_config is not None else []
 
 
 def _agent_config(settings: Settings) -> AgentConfig:
@@ -210,11 +210,12 @@ def _security_config() -> SecurityConfig:
     fail-closed table (#1165).
     """
     yaml_config = settings_module.get_yaml_config()
-    if yaml_config is None:
+    security = getattr(yaml_config, "security", None) if yaml_config is not None else None
+    if security is None:
         return SecurityConfig()
     return SecurityConfig(
-        permission_preset=yaml_config.security.permission_preset,
-        permissions=yaml_config.security.permissions,
+        permission_preset=security.permission_preset,
+        permissions=security.permissions,
     )
 
 

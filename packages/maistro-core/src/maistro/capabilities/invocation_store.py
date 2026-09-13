@@ -1,11 +1,12 @@
 """Durable persistence adapters for canonical capability Invocations.
 
 The container selects this store alongside the canonical Binding store for
-SQLite and PostgreSQL. The payload keeps the complete resolved-provider and
-Workspace/Project correlation, while the indexed columns support effect-history
-lookups used by Invocation retry protection. The capability_invocations table
-is created by ensure_schema rather than an Alembic migration, matching the
-other runtime-owned capability stores.
+SQLite and PostgreSQL. It is distinct from the handler-delivery Invocation
+store. The payload keeps the complete resolved-provider and Workspace/Project
+correlation, while the indexed columns support effect-history lookups used by
+Invocation retry protection. The capability_invocations table is created by
+ensure_schema rather than an Alembic migration, matching the other runtime-owned
+capability stores.
 """
 
 from __future__ import annotations

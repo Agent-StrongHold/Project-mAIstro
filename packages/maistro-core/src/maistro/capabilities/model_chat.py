@@ -104,6 +104,7 @@ def resolve_model_chat_provider(
     alias: str = "",
     task: RoutingTask | None = None,
     budget: RouterBudget | None = None,
+    allow_unregistered_alias: bool = False,
 ) -> ProviderResolver:
     """Build the slot-specific resolver preserving ADR-079 selection policy.
 
@@ -115,12 +116,15 @@ def resolve_model_chat_provider(
         selection = binding.provider_name or alias
         if selection:
             try:
-                metadata: ModelMetadata | None = await registry.get_model(selection)
+                metadata: ModelMetadata = await registry.get_model(selection)
             except ModelNotFoundError:
-                # Gateway aliases need not be present in the local registry;
-                # preserve passthrough while leaving cost metadata absent.
-                metadata = None
-            if metadata is not None and not registry.is_available(metadata.name):
+                if allow_unregistered_alias:
+                    return LlmGatewayProvider(None, model=selection)
+                return Unavailable(
+                    slot=MODEL_CHAT_CAPABILITY,
+                    reason=f"selected model {selection!r} is not registered",
+                )
+            if not registry.is_available(metadata.name):
                 return Unavailable(
                     slot=MODEL_CHAT_CAPABILITY,
                     reason=(
@@ -178,6 +182,7 @@ class ModelChatEgress:
         effect_key: str,
         request: ModelChatRequest,
         setup: Callable[[], Awaitable[None]] | None = None,
+        allow_unregistered_alias: bool = False,
     ) -> ModelCallResult:
         """Run one governed model call, optionally performing provider setup.
 
@@ -188,7 +193,12 @@ class ModelChatEgress:
         performed by the caller beforehand: a denied policy then causes zero
         HTTP, not a credential-bearing side request ahead of authorization.
         """
-        resolver = resolve_model_chat_provider(self._registry, self._router, alias=request.model)
+        resolver = resolve_model_chat_provider(
+            self._registry,
+            self._router,
+            alias=request.model,
+            allow_unregistered_alias=allow_unregistered_alias,
+        )
         selected: list[LlmGatewayProvider] = []
 
         async def tracked_resolve(candidate: Binding) -> ResolvedCapabilityProvider | Unavailable:
@@ -300,6 +310,7 @@ class GovernedModelChatClient:
             attempt_id=str(metadata.get("attempt_id") or f"attempt:{correlation}"),
             effect_key=str(metadata.get("effect_key") or f"llm:{correlation}"),
             request=request,
+            allow_unregistered_alias=True,
         )
 
     async def complete(

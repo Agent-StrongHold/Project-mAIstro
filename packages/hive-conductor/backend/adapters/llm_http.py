@@ -109,7 +109,7 @@ class HttpOpenAIProtocolLLM:
         )
 
     @staticmethod
-    def _compat_error(exc: EffectNotApplied) -> httpx.HTTPStatusError:
+    def _compat_error(exc: Exception) -> httpx.HTTPStatusError:
         status = 500
         if "status=" in str(exc):
             with suppress(IndexError, ValueError):
@@ -131,7 +131,7 @@ class HttpOpenAIProtocolLLM:
                 response_format=getattr(req, "response_format", None),
                 metadata={"workspace_id": getattr(req, "workspace_id", "")},
             )
-        except EffectNotApplied as exc:
+        except (EffectNotApplied, RuntimeError) as exc:
             raise self._compat_error(exc) from exc
         return _normalize_to_chat_completions(body)
 
@@ -148,5 +148,5 @@ class HttpOpenAIProtocolLLM:
                 metadata={"workspace_id": getattr(req, "workspace_id", "")},
             ):
                 yield chunk
-        except EffectNotApplied as exc:
+        except (EffectNotApplied, RuntimeError) as exc:
             raise self._compat_error(exc) from exc

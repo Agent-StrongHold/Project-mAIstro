@@ -1,28 +1,6 @@
 {
   "_comment": "Actual AST call sites at curated direct-effect boundaries for #55. Imports/definitions are not usage. Update with scripts/check_direct_effects.py --update, then review every blank disposition/owner/rationale.",
   "sites": {
-    "packages/hive-conductor/backend/routes/providers.py::activate_provider._register_and_test::MODEL_EFFECT:openai-compatible-http#1": {
-      "path": "packages/hive-conductor/backend/routes/providers.py",
-      "qualname": "activate_provider._register_and_test",
-      "line": 232,
-      "category": "MODEL_EFFECT",
-      "entry_point": "openai-compatible-http",
-      "callee": "client.post",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
-      "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
-    },
-    "packages/hive-conductor/backend/services/benchmark_eval.py::evaluate_code_output::MODEL_EFFECT:openai-compatible-http#1": {
-      "path": "packages/hive-conductor/backend/services/benchmark_eval.py",
-      "qualname": "evaluate_code_output",
-      "line": 85,
-      "category": "MODEL_EFFECT",
-      "entry_point": "openai-compatible-http",
-      "callee": "client.post",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
-      "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
-    },
     "packages/hive-conductor/backend/services/canonical_corpus.py::CanonicalCorpus._extract_patterns::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/canonical_corpus.py",
       "qualname": "CanonicalCorpus._extract_patterns",
@@ -49,17 +27,6 @@
       "path": "packages/hive-conductor/backend/services/canonical_corpus.py",
       "qualname": "CanonicalCorpus.score",
       "line": 310,
-      "category": "MODEL_EFFECT",
-      "entry_point": "openai-compatible-http",
-      "callee": "client.post",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
-      "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
-    },
-    "packages/hive-conductor/backend/services/canvas_dag.py::visual_quality_eval::MODEL_EFFECT:openai-compatible-http#1": {
-      "path": "packages/hive-conductor/backend/services/canvas_dag.py",
-      "qualname": "visual_quality_eval",
-      "line": 105,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
@@ -100,21 +67,10 @@
       "owner": "#56",
       "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
-    "packages/hive-conductor/backend/services/evolution.py::_EvolutionService._build_llm_call._llm_call::MODEL_EFFECT:openai-compatible-http#1": {
-      "path": "packages/hive-conductor/backend/services/evolution.py",
-      "qualname": "_EvolutionService._build_llm_call._llm_call",
-      "line": 155,
-      "category": "MODEL_EFFECT",
-      "entry_point": "openai-compatible-http",
-      "callee": "client.post",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
-      "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
-    },
     "packages/hive-conductor/backend/services/legacy_dag_node.py::_tool_browse_url::TOOL_EFFECT:hive.browse_url#1": {
       "path": "packages/hive-conductor/backend/services/legacy_dag_node.py",
       "qualname": "_tool_browse_url",
-      "line": 196,
+      "line": 200,
       "category": "TOOL_EFFECT",
       "entry_point": "hive.browse_url",
       "callee": "browse_url",
@@ -147,7 +103,7 @@
     "packages/hive-conductor/backend/services/legacy_dag_node.py::_tool_web_search::TOOL_EFFECT:hive.web_search#1": {
       "path": "packages/hive-conductor/backend/services/legacy_dag_node.py",
       "qualname": "_tool_web_search",
-      "line": 178,
+      "line": 175,
       "category": "TOOL_EFFECT",
       "entry_point": "hive.web_search",
       "callee": "web_search",
@@ -191,7 +147,7 @@
     "packages/hive-conductor/backend/services/tool_executor.py::browse_url::TOOL_EFFECT:browser.browse#1": {
       "path": "packages/hive-conductor/backend/services/tool_executor.py",
       "qualname": "browse_url",
-      "line": 138,
+      "line": 143,
       "category": "TOOL_EFFECT",
       "entry_point": "browser.browse",
       "callee": "client.browse",
@@ -202,7 +158,7 @@
     "packages/hive-conductor/backend/services/tool_executor.py::web_search::TOOL_EFFECT:browser.search_web#1": {
       "path": "packages/hive-conductor/backend/services/tool_executor.py",
       "qualname": "web_search",
-      "line": 46,
+      "line": 51,
       "category": "TOOL_EFFECT",
       "entry_point": "browser.search_web",
       "callee": "client.search_web",
@@ -268,7 +224,7 @@
     "packages/maistro-bootstrap/src/maistro_bootstrap/builders/model_selector.py::_probe_model::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-bootstrap/src/maistro_bootstrap/builders/model_selector.py",
       "qualname": "_probe_model",
-      "line": 213,
+      "line": 225,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
@@ -279,7 +235,7 @@
     "packages/maistro-bootstrap/src/maistro_bootstrap/builders/model_selector.py::_run_code_probe::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-bootstrap/src/maistro_bootstrap/builders/model_selector.py",
       "qualname": "_run_code_probe",
-      "line": 168,
+      "line": 180,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
@@ -378,7 +334,7 @@
     "packages/maistro-core/src/maistro/capabilities/governed_invocation.py::GovernedInvocationExecutionService.invoke::CANONICAL_INVOCATION:InvocationExecutionService.invoke#1": {
       "path": "packages/maistro-core/src/maistro/capabilities/governed_invocation.py",
       "qualname": "GovernedInvocationExecutionService.invoke",
-      "line": 160,
+      "line": 161,
       "category": "CANONICAL_INVOCATION",
       "entry_point": "InvocationExecutionService.invoke",
       "callee": "self._invocations.invoke",
@@ -444,7 +400,7 @@
     "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py::execute_model_chat._post::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py",
       "qualname": "execute_model_chat._post",
-      "line": 231,
+      "line": 281,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.stream",
@@ -455,7 +411,7 @@
     "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py::execute_model_chat._post::MODEL_EFFECT:openai-compatible-http#2": {
       "path": "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py",
       "qualname": "execute_model_chat._post",
-      "line": 243,
+      "line": 293,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",

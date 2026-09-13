@@ -89,6 +89,7 @@ class _GovernedModelCall:
                     attempt_id=ctx.attempt_id,
                     effect_key=effect_key,
                     request=request,
+                    allow_unregistered_alias=True,
                 )
                 choices = result.body.get("choices")
                 if not isinstance(choices, list) or not choices:
