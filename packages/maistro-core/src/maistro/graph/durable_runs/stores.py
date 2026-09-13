@@ -15,6 +15,7 @@ from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
 
 from .hitl import (
     HitlAuthorization,
+    HitlAuthorizationRequired,
     HitlDeadlineElapsed,
     HitlDeadlinePending,
     earliest_hitl_deadline,
@@ -274,7 +275,17 @@ class InMemoryDurableRunStore:
                 break
         return out
 
-    async def list_hitl_due(self, *, now: datetime, limit: int = 100) -> list[DurableRunRecord]:
+    async def list_hitl_due(
+        self,
+        *,
+        authorization: HitlAuthorization,
+        now: datetime,
+        limit: int = 100,
+    ) -> list[DurableRunRecord]:
+        if authorization is None:
+            raise HitlAuthorizationRequired("HITL authorization is required")
+        if limit <= 0:
+            return []
         rows = [
             record
             for record in self._rows.values()
@@ -289,7 +300,16 @@ class InMemoryDurableRunStore:
                 record.run_id,
             )
         )
-        return [_clone(record) for record in rows[:limit]]
+        visible: list[DurableRunRecord] = []
+        for record in rows:
+            if (
+                record.run.workspace_id in authorization.workspace_ids
+                and await authorization.permits(record.run.workspace_id)
+            ):
+                visible.append(_clone(record))
+                if len(visible) >= limit:
+                    break
+        return visible
 
     async def list_for_project(self, project_id: str, *, limit: int = 25) -> list[DurableRunRecord]:
         runs = [record for record in self._rows.values() if record.run.project_id == project_id]
@@ -302,19 +322,19 @@ class InMemoryDurableRunStore:
         node_id: str,
         answer: dict[str, Any],
         *,
+        authorization: HitlAuthorization,
         at: datetime | None = None,
         workspace_id: str | None = None,
-        authorization: HitlAuthorization | None = None,
     ) -> DurableRunRecord:
+        if authorization is None:
+            raise HitlAuthorizationRequired("HITL authorization is required")
         async with self._lock:
             record = self._rows.get(run_id)
             if record is None:
                 raise KeyError(f"no such run: {run_id!r}")
             if workspace_id is not None and record.run.workspace_id != workspace_id:
                 raise KeyError(f"run {run_id!r} is outside the requested Workspace")
-            if authorization is not None and not await authorization.permits(
-                record.run.workspace_id
-            ):
+            if not await authorization.permits(record.run.workspace_id):
                 raise KeyError(f"run {run_id!r} is outside the authorized Workspace")
             updated = answer_record(record, node_id, answer, at=at)
             self._rows[run_id] = updated
@@ -325,19 +345,19 @@ class InMemoryDurableRunStore:
         run_id: str,
         node_id: str,
         *,
+        authorization: HitlAuthorization,
         at: datetime | None = None,
         workspace_id: str | None = None,
-        authorization: HitlAuthorization | None = None,
     ) -> DurableRunRecord:
+        if authorization is None:
+            raise HitlAuthorizationRequired("HITL authorization is required")
         async with self._lock:
             record = self._rows.get(run_id)
             if record is None:
                 raise KeyError(f"no such run: {run_id!r}")
             if workspace_id is not None and record.run.workspace_id != workspace_id:
                 raise KeyError(f"run {run_id!r} is outside the requested Workspace")
-            if authorization is not None and not await authorization.permits(
-                record.run.workspace_id
-            ):
+            if not await authorization.permits(record.run.workspace_id):
                 raise KeyError(f"run {run_id!r} is outside the authorized Workspace")
             updated = settle_hitl_record(record, node_id, "timed_out", at=at)
             self._rows[run_id] = updated
@@ -348,19 +368,19 @@ class InMemoryDurableRunStore:
         run_id: str,
         node_id: str,
         *,
+        authorization: HitlAuthorization,
         at: datetime | None = None,
         workspace_id: str | None = None,
-        authorization: HitlAuthorization | None = None,
     ) -> DurableRunRecord:
+        if authorization is None:
+            raise HitlAuthorizationRequired("HITL authorization is required")
         async with self._lock:
             record = self._rows.get(run_id)
             if record is None:
                 raise KeyError(f"no such run: {run_id!r}")
             if workspace_id is not None and record.run.workspace_id != workspace_id:
                 raise KeyError(f"run {run_id!r} is outside the requested Workspace")
-            if authorization is not None and not await authorization.permits(
-                record.run.workspace_id
-            ):
+            if not await authorization.permits(record.run.workspace_id):
                 raise KeyError(f"run {run_id!r} is outside the authorized Workspace")
             updated = settle_hitl_record(record, node_id, "cancelled", at=at)
             self._rows[run_id] = updated
@@ -512,8 +532,36 @@ class SqliteDurableRunStore:
             workspace_id,
         )
 
-    async def list_hitl_due(self, *, now: datetime, limit: int = 100) -> list[DurableRunRecord]:
-        return await asyncio.to_thread(_list_hitl_due_sync, self, now, limit)
+    async def list_hitl_due(
+        self,
+        *,
+        authorization: HitlAuthorization,
+        now: datetime,
+        limit: int = 100,
+    ) -> list[DurableRunRecord]:
+        if authorization is None:
+            raise HitlAuthorizationRequired("HITL authorization is required")
+        if limit <= 0:
+            return []
+        requested = limit
+        visible: list[DurableRunRecord] = []
+        seen: set[str] = set()
+        while True:
+            rows = await asyncio.to_thread(_list_hitl_due_sync, self, now, requested)
+            for record in rows:
+                if record.run_id in seen:
+                    continue
+                seen.add(record.run_id)
+                if (
+                    record.run.workspace_id in authorization.workspace_ids
+                    and await authorization.permits(record.run.workspace_id)
+                ):
+                    visible.append(record)
+                    if len(visible) >= limit:
+                        return visible[:limit]
+            if len(rows) < requested:
+                return visible
+            requested *= 2
 
     async def list_for_project(self, project_id: str, *, limit: int = 25) -> list[DurableRunRecord]:
         return await asyncio.to_thread(
@@ -529,9 +577,9 @@ class SqliteDurableRunStore:
         node_id: str,
         answer: dict[str, Any],
         *,
+        authorization: HitlAuthorization,
         at: datetime | None = None,
         workspace_id: str | None = None,
-        authorization: HitlAuthorization | None = None,
     ) -> DurableRunRecord:
         async with self._lock:
             await self._check_hitl_authorization(run_id, authorization)
@@ -548,9 +596,9 @@ class SqliteDurableRunStore:
         run_id: str,
         node_id: str,
         *,
+        authorization: HitlAuthorization,
         at: datetime | None = None,
         workspace_id: str | None = None,
-        authorization: HitlAuthorization | None = None,
     ) -> DurableRunRecord:
         async with self._lock:
             await self._check_hitl_authorization(run_id, authorization)
@@ -567,9 +615,9 @@ class SqliteDurableRunStore:
         run_id: str,
         node_id: str,
         *,
+        authorization: HitlAuthorization,
         at: datetime | None = None,
         workspace_id: str | None = None,
-        authorization: HitlAuthorization | None = None,
     ) -> DurableRunRecord:
         async with self._lock:
             await self._check_hitl_authorization(run_id, authorization)
@@ -584,10 +632,10 @@ class SqliteDurableRunStore:
     async def _check_hitl_authorization(
         self,
         run_id: str,
-        authorization: HitlAuthorization | None,
+        authorization: HitlAuthorization,
     ) -> None:
         if authorization is None:
-            return
+            raise HitlAuthorizationRequired("HITL authorization is required")
         record = await self.get(run_id)
         if record is None:
             raise KeyError(f"no such run: {run_id!r}")

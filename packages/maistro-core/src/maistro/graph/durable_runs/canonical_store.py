@@ -27,7 +27,12 @@ from maistro.runs.model import TERMINAL_RUN_STATUSES, Attempt, NodeRun, Run, Run
 from maistro.runs.store import RunIntegrityError, RunStore
 
 from .continuation import GraphContinuation, GraphContinuationStore
-from .hitl import HitlAuthorization, earliest_hitl_deadline, settlement_time
+from .hitl import (
+    HitlAuthorization,
+    earliest_hitl_deadline,
+    require_hitl_authorization,
+    settlement_time,
+)
 from .spine import mirror_lifecycle
 from .stores import answer_record, settle_hitl_record
 from .types import DurableRunRecord
@@ -371,6 +376,7 @@ class CanonicalDurableRunStore:
     async def list_hitl_due(
         self,
         *,
+        authorization: HitlAuthorization,
         now: datetime,
         limit: int = 100,
     ) -> list[DurableRunRecord]:
@@ -384,6 +390,9 @@ class CanonicalDurableRunStore:
         runs, and the page is widened past any candidate that still does not
         qualify, rather than re-reading one permanent prefix forever.
         """
+        require_hitl_authorization(authorization)
+        if limit <= 0:
+            return []
         requested = limit
         due: list[DurableRunRecord] = []
         for _ in range(_CANDIDATE_PAGES):
@@ -391,7 +400,11 @@ class CanonicalDurableRunStore:
             due = []
             for record in await self._assemble_all(run_ids):
                 candidate = await self._reconcile_hitl_due_candidate(record, now)
-                if candidate is not None:
+                if (
+                    candidate is not None
+                    and candidate.run.workspace_id in authorization.workspace_ids
+                    and await authorization.permits(candidate.run.workspace_id)
+                ):
                     due.append(candidate)
             if len(due) >= limit or len(run_ids) < requested:
                 break
@@ -434,9 +447,9 @@ class CanonicalDurableRunStore:
         node_id: str,
         answer: dict[str, Any],
         *,
+        authorization: HitlAuthorization,
         at: datetime | None = None,
         workspace_id: str | None = None,
-        authorization: HitlAuthorization | None = None,
     ) -> DurableRunRecord:
         """Attach an answer and queue the paused canonical Run for resume.
 
@@ -457,9 +470,9 @@ class CanonicalDurableRunStore:
         run_id: str,
         node_id: str,
         *,
+        authorization: HitlAuthorization,
         at: datetime | None = None,
         workspace_id: str | None = None,
-        authorization: HitlAuthorization | None = None,
     ) -> DurableRunRecord:
         """Persist an elapsed HITL deadline and mirror its terminal lifecycle."""
         return await self._mutate_hitl(
@@ -474,9 +487,9 @@ class CanonicalDurableRunStore:
         run_id: str,
         node_id: str,
         *,
+        authorization: HitlAuthorization,
         at: datetime | None = None,
         workspace_id: str | None = None,
-        authorization: HitlAuthorization | None = None,
     ) -> DurableRunRecord:
         """Persist explicit HITL cancellation and mirror its terminal lifecycle."""
         return await self._mutate_hitl(
@@ -490,18 +503,17 @@ class CanonicalDurableRunStore:
         self,
         run_id: str,
         mutate: Callable[[DurableRunRecord], DurableRunRecord],
+        authorization: HitlAuthorization,
         workspace_id: str | None = None,
-        authorization: HitlAuthorization | None = None,
     ) -> DurableRunRecord:
+        require_hitl_authorization(authorization)
         async with self._lock:
             current = await self.get(run_id)
             if current is None:
                 raise KeyError(f"no such run: {run_id!r}")
             if workspace_id is not None and current.run.workspace_id != workspace_id:
                 raise KeyError(f"run {run_id!r} is outside the requested Workspace")
-            if authorization is not None and not await authorization.permits(
-                current.run.workspace_id
-            ):
+            if not await authorization.permits(current.run.workspace_id):
                 raise KeyError(f"run {run_id!r} is outside the authorized Workspace")
             updated = mutate(current)
             await self._continuations.update(GraphContinuation.of(updated))

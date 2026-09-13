@@ -281,6 +281,10 @@ async def test_hitl_routes_are_scoped_to_the_callers_workspaces(scoped_client) -
     try:
         pending = scoped_client.get("/v1/hitl/pending").json()
         assert {item["run_id"] for item in pending} == {mine_id, mine_second_id}
+        inspected = scoped_client.get(f"/v1/hitl/{mine_id}/ask")
+        assert inspected.status_code == 200
+        assert inspected.json()["project_id"] == "project-hitl"
+        assert scoped_client.get(f"/v1/hitl/{other_id}/ask").status_code == 404
 
         # A foreign id is indistinguishable from a missing id as well as being
         # unable to mutate it; otherwise this door leaks Run existence.
@@ -374,9 +378,12 @@ async def test_an_unknown_run_is_404(seeded) -> None:
 async def test_a_run_that_is_not_paused_is_409(seeded) -> None:
     """Distinct from the unknown-run refusal, which is the point of mapping
     the store's three separately."""
-    client, store, seed = seeded
+    client, _store, seed = seeded
     await seed("hitl-not-paused")
-    await store.submit_hitl_answer("hitl-not-paused", "ask", {"answer": "first"})
+    assert (
+        client.post("/v1/hitl/hitl-not-paused/ask/answer", json={"answer": "first"}).status_code
+        == 200
+    )
 
     response = client.post("/v1/hitl/hitl-not-paused/ask/answer", json={"answer": "second"})
 

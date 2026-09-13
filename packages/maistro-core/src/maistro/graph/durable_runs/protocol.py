@@ -36,8 +36,14 @@ class DurableRunStore(Protocol):
         """Return persisted graph continuations whose timed resume is due."""
         ...
 
-    async def list_hitl_due(self, *, now: datetime, limit: int = 100) -> list[DurableRunRecord]:
-        """Return paused Runs whose indexed HITL deadline is due."""
+    async def list_hitl_due(
+        self,
+        *,
+        authorization: HitlAuthorization,
+        now: datetime,
+        limit: int = 100,
+    ) -> list[DurableRunRecord]:
+        """Return due paused Runs visible to the effective principal."""
         ...
 
     async def list_for_project(
@@ -50,9 +56,9 @@ class DurableRunStore(Protocol):
         node_id: str,
         answer: dict[str, Any],
         *,
+        authorization: HitlAuthorization,
         at: datetime | None = None,
         workspace_id: str | None = None,
-        authorization: HitlAuthorization | None = None,
     ) -> DurableRunRecord:
         """Attach an answer and queue the paused canonical Run for resume."""
         ...
@@ -62,9 +68,9 @@ class DurableRunStore(Protocol):
         run_id: str,
         node_id: str,
         *,
+        authorization: HitlAuthorization,
         at: datetime | None = None,
         workspace_id: str | None = None,
-        authorization: HitlAuthorization | None = None,
     ) -> DurableRunRecord:
         """Terminalize a human pause whose persisted deadline elapsed."""
         ...
@@ -74,9 +80,9 @@ class DurableRunStore(Protocol):
         run_id: str,
         node_id: str,
         *,
+        authorization: HitlAuthorization,
         at: datetime | None = None,
         workspace_id: str | None = None,
-        authorization: HitlAuthorization | None = None,
     ) -> DurableRunRecord:
         """Terminalize a human pause by explicit cancellation."""
         ...

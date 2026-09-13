@@ -16,6 +16,10 @@ class HitlSettlementError(ValueError):
     """A durable human pause cannot accept the requested settlement."""
 
 
+class HitlAuthorizationRequired(KeyError):
+    """A HITL read or mutation must carry effective-principal evidence."""
+
+
 class HitlDeadlineElapsed(HitlSettlementError):
     """An answer arrived at or after the pause's durable deadline."""
 
@@ -29,7 +33,7 @@ WorkspaceMembershipCheck = Callable[[str, str], Awaitable[bool]]
 
 @dataclass(frozen=True)
 class HitlAuthorization:
-    """Effective-principal evidence for a scoped HITL settlement tick.
+    """Effective-principal evidence for a scoped HITL operation.
 
     ``workspace_ids`` is a candidate page, not the authorization decision. The
     membership check is repeated by the canonical mutation immediately before
@@ -83,6 +87,20 @@ class HitlAuthorization:
         return workspace_id in self.workspace_ids and await self.membership_check(
             self.effective_principal, workspace_id
         )
+
+
+def require_hitl_authorization(
+    authorization: HitlAuthorization | None,
+) -> HitlAuthorization:
+    """Reject unscoped callers before resolving a target Run.
+
+    HITL settlement is an object-authorized operation, not a capability-only
+    service call. Keeping this check at the shared boundary prevents a new
+    durable backend from accidentally treating the argument as optional.
+    """
+    if authorization is None:
+        raise HitlAuthorizationRequired("HITL authorization is required")
+    return authorization
 
 
 def hitl_pause(record: DurableRunRecord, node_id: str) -> dict[str, object]:
@@ -220,7 +238,11 @@ async def _due_candidates(
     candidates: list[DurableRunRecord] = []
     seen: set[str] = set()
     while True:
-        page = await store.list_hitl_due(now=moment, limit=requested)
+        page = await store.list_hitl_due(
+            authorization=authorization,
+            now=moment,
+            limit=requested,
+        )
         for record in page:
             if record.run_id in seen:
                 continue
@@ -296,6 +318,7 @@ async def expire_hitl_pauses(
 
 __all__ = [
     "HitlAuthorization",
+    "HitlAuthorizationRequired",
     "HitlDeadlineElapsed",
     "HitlDeadlinePending",
     "HitlSettlementError",

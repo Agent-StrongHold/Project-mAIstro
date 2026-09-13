@@ -29,6 +29,7 @@ from .continuation import (
 from .execution_store import DurableRunExecutionStore
 from .hitl import (
     HitlAuthorization,
+    HitlAuthorizationRequired,
     HitlDeadlineElapsed,
     HitlDeadlinePending,
     HitlSettlementError,
@@ -54,6 +55,7 @@ __all__ = [
     "GraphContinuation",
     "GraphContinuationStore",
     "HitlAuthorization",
+    "HitlAuthorizationRequired",
     "HitlDeadlineElapsed",
     "HitlDeadlinePending",
     "HitlSettlementError",

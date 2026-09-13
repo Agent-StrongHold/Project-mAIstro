@@ -15,6 +15,7 @@ from maistro.graph import Graph, Node
 from maistro.graph.durable_runs import (
     CanonicalDurableRunStore,
     HitlAuthorization,
+    HitlAuthorizationRequired,
     InMemoryGraphContinuationStore,
     resume_durable_graph,
     run_durable_graph,
@@ -93,9 +94,9 @@ class _LosingTimeoutStore(InMemoryDurableRunStore):
         run_id: str,
         node_id: str,
         *,
+        authorization: HitlAuthorization,
         at: datetime | None = None,
         workspace_id: str | None = None,
-        authorization: HitlAuthorization | None = None,
     ) -> DurableRunRecord:
         raise ValueError("another decision won")
 
@@ -327,7 +328,9 @@ async def test_cancel_survives_restart_without_fabricating_an_answer(tmp_path: P
     original = _paused_record("restart-cancel")
     await store.create(original)
 
-    cancelled = await store.cancel_hitl("restart-cancel", "ask", at=_BEFORE)
+    cancelled = await store.cancel_hitl(
+        "restart-cancel", "ask", at=_BEFORE, authorization=_test_authorization()
+    )
 
     _assert_settlement(
         cancelled,
@@ -348,7 +351,9 @@ async def test_cancelling_one_human_frontier_member_cascades_open_siblings() -> 
     store = InMemoryDurableRunStore()
     await store.create(_paused_frontier_record("cancel-frontier"))
 
-    cancelled = await store.cancel_hitl("cancel-frontier", "ask", at=_BEFORE)
+    cancelled = await store.cancel_hitl(
+        "cancel-frontier", "ask", at=_BEFORE, authorization=_test_authorization()
+    )
 
     assert [node.status for node in cancelled.node_runs] == [
         RunStatus.CANCELLED,
@@ -368,21 +373,55 @@ async def test_timeout_is_refused_before_or_without_a_durable_deadline() -> None
     await store.create(without_deadline)
 
     with pytest.raises(HitlDeadlinePending, match="pending until"):
-        await store.timeout_hitl("deadline-pending", "ask", at=_BEFORE)
+        await store.timeout_hitl(
+            "deadline-pending", "ask", at=_BEFORE, authorization=_test_authorization()
+        )
     with pytest.raises(HitlDeadlinePending, match="has no deadline"):
-        await store.timeout_hitl("deadline-absent", "ask", at=_AFTER)
+        await store.timeout_hitl(
+            "deadline-absent", "ask", at=_AFTER, authorization=_test_authorization()
+        )
+
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+async def test_settlement_requires_object_authorization_before_target_lookup(
+    backend: str, tmp_path: Path
+) -> None:
+    store = (
+        InMemoryDurableRunStore()
+        if backend == "memory"
+        else SqliteDurableRunStore(tmp_path / "unscoped-hitl.db")
+    )
+    await store.create(_paused_record("unscoped-settlement"))
+
+    with pytest.raises(HitlAuthorizationRequired, match="authorization is required"):
+        await store.list_hitl_due(
+            now=_AFTER,
+            authorization=None,  # type: ignore[arg-type]
+        )
+    with pytest.raises(HitlAuthorizationRequired, match="authorization is required"):
+        await store.cancel_hitl(
+            "unscoped-settlement",
+            "ask",
+            at=_BEFORE,
+            authorization=None,  # type: ignore[arg-type]
+        )
+
+    unchanged = await store.get("unscoped-settlement")
+    assert unchanged is not None and unchanged.status is RunStatus.PAUSED
 
 
 async def test_settlement_refuses_missing_runs_and_nodes_outside_the_frontier() -> None:
     store = InMemoryDurableRunStore()
     with pytest.raises(KeyError, match="no such run"):
-        await store.timeout_hitl("missing", "ask", at=_AFTER)
+        await store.timeout_hitl("missing", "ask", at=_AFTER, authorization=_test_authorization())
     with pytest.raises(KeyError, match="no such run"):
-        await store.cancel_hitl("missing", "ask", at=_BEFORE)
+        await store.cancel_hitl("missing", "ask", at=_BEFORE, authorization=_test_authorization())
 
     await store.create(_paused_record("wrong-frontier-node"))
     with pytest.raises(ValueError, match="waiting on frontier"):
-        await store.cancel_hitl("wrong-frontier-node", "review", at=_BEFORE)
+        await store.cancel_hitl(
+            "wrong-frontier-node", "review", at=_BEFORE, authorization=_test_authorization()
+        )
 
 
 @pytest.mark.parametrize(
@@ -431,7 +470,9 @@ async def test_late_answer_is_refused_before_the_sweep_observes_expiry() -> None
     await store.create(_paused_record("late-answer"))
 
     with pytest.raises(HitlDeadlineElapsed, match="deadline elapsed"):
-        await store.submit_hitl_answer("late-answer", "ask", {"answer": "yes"}, at=_AFTER)
+        await store.submit_hitl_answer(
+            "late-answer", "ask", {"answer": "yes"}, at=_AFTER, authorization=_test_authorization()
+        )
 
     still_paused = await store.get("late-answer")
     assert still_paused is not None
@@ -440,7 +481,13 @@ async def test_late_answer_is_refused_before_the_sweep_observes_expiry() -> None
 
     [timed_out] = await expire_hitl_pauses(store, now=_AFTER, authorization=_test_authorization())
     with pytest.raises(ValueError, match="not paused"):
-        await store.submit_hitl_answer("late-answer", "ask", {"answer": "again"}, at=_AFTER)
+        await store.submit_hitl_answer(
+            "late-answer",
+            "ask",
+            {"answer": "again"},
+            at=_AFTER,
+            authorization=_test_authorization(),
+        )
     assert await store.get("late-answer") == timed_out
 
 
@@ -450,8 +497,10 @@ async def test_concurrent_answer_and_cancel_persist_exactly_one_winner() -> None
     await store.create(_paused_record("one-winner"))
 
     results = await asyncio.gather(
-        store.submit_hitl_answer("one-winner", "ask", {"answer": "yes"}, at=_BEFORE),
-        store.cancel_hitl("one-winner", "ask", at=_BEFORE),
+        store.submit_hitl_answer(
+            "one-winner", "ask", {"answer": "yes"}, at=_BEFORE, authorization=_test_authorization()
+        ),
+        store.cancel_hitl("one-winner", "ask", at=_BEFORE, authorization=_test_authorization()),
         return_exceptions=True,
     )
 
@@ -474,9 +523,17 @@ async def test_elapsed_deadline_wins_answer_timeout_cancel_race() -> None:
     await store.create(_paused_record("deadline-winner"))
 
     results = await asyncio.gather(
-        store.submit_hitl_answer("deadline-winner", "ask", {"answer": "yes"}, at=_AFTER),
-        store.cancel_hitl("deadline-winner", "ask", at=_AFTER),
-        store.timeout_hitl("deadline-winner", "ask", at=_AFTER),
+        store.submit_hitl_answer(
+            "deadline-winner",
+            "ask",
+            {"answer": "yes"},
+            at=_AFTER,
+            authorization=_test_authorization(),
+        ),
+        store.cancel_hitl("deadline-winner", "ask", at=_AFTER, authorization=_test_authorization()),
+        store.timeout_hitl(
+            "deadline-winner", "ask", at=_AFTER, authorization=_test_authorization()
+        ),
         return_exceptions=True,
     )
 
@@ -500,8 +557,16 @@ async def test_sqlite_instances_serialize_answer_cancel_race(tmp_path: Path) -> 
     await answer_store.create(_paused_record("sqlite-one-winner"))
 
     results = await asyncio.gather(
-        answer_store.submit_hitl_answer("sqlite-one-winner", "ask", {"answer": "yes"}, at=_BEFORE),
-        cancel_store.cancel_hitl("sqlite-one-winner", "ask", at=_BEFORE),
+        answer_store.submit_hitl_answer(
+            "sqlite-one-winner",
+            "ask",
+            {"answer": "yes"},
+            at=_BEFORE,
+            authorization=_test_authorization(),
+        ),
+        cancel_store.cancel_hitl(
+            "sqlite-one-winner", "ask", at=_BEFORE, authorization=_test_authorization()
+        ),
         return_exceptions=True,
     )
 
@@ -555,7 +620,9 @@ async def test_reconcile_repairs_crash_after_terminal_continuation_persistence(
 
     monkeypatch.setattr(run_store, "transition_run", crash_before_run_mirror)
     with pytest.raises(RuntimeError, match="injected crash"):
-        await store.timeout_hitl(paused.run_id, "ask", at=_AFTER)
+        await store.timeout_hitl(
+            paused.run_id, "ask", at=_AFTER, authorization=_test_authorization()
+        )
 
     interrupted = await run_store.get_run(paused.run_id)
     assert interrupted is not None and interrupted.status is RunStatus.PAUSED
@@ -664,7 +731,7 @@ async def _crash_after_continuation_timeout(
 
     monkeypatch.setattr(run_store, "transition_run", crash_before_run_mirror)
     with pytest.raises(RuntimeError, match="injected crash"):
-        await store.timeout_hitl(run_id, "ask", at=_AFTER)
+        await store.timeout_hitl(run_id, "ask", at=_AFTER, authorization=_test_authorization())
     monkeypatch.setattr(run_store, "transition_run", original_transition_run)
     interrupted = await run_store.get_run(run_id)
     assert interrupted is not None and interrupted.status is RunStatus.PAUSED
@@ -683,7 +750,7 @@ async def test_reconcile_reaches_settlement_residue_behind_a_full_terminal_prefi
     run_store, continuations, project_id = await _canonical_spine()
     store = CanonicalDurableRunStore(run_store, continuations)
     settled = await _canonical_pause(store, run_store, project_id)
-    await store.timeout_hitl(settled.run_id, "ask", at=_AFTER)
+    await store.timeout_hitl(settled.run_id, "ask", at=_AFTER, authorization=_test_authorization())
     residue = await _canonical_pause(store, run_store, project_id)
     await _crash_after_continuation_timeout(store, run_store, residue.run_id, monkeypatch)
 
@@ -822,7 +889,9 @@ async def test_canonical_projection_mirrors_timeout_without_rewriting_attempt() 
     )
     original_attempts = paused.attempts
 
-    settled = await store.timeout_hitl(paused.run_id, "ask", at=_AFTER)
+    settled = await store.timeout_hitl(
+        paused.run_id, "ask", at=_AFTER, authorization=_test_authorization()
+    )
 
     _assert_settlement(
         settled,
@@ -844,7 +913,9 @@ async def test_canonical_projection_mirrors_timeout_without_rewriting_attempt() 
         run_id=cancel_run.run_id,
         run_store=run_store,
     )
-    cancel_settled = await store.cancel_hitl(cancel_paused.run_id, "ask", at=_BEFORE)
+    cancel_settled = await store.cancel_hitl(
+        cancel_paused.run_id, "ask", at=_BEFORE, authorization=_test_authorization()
+    )
     assert cancel_settled.status is RunStatus.CANCELLED
 
 
@@ -875,6 +946,7 @@ async def test_scoped_expiry_requires_effective_principal_and_keeps_foreign_run_
             "ask",
             at=_BEFORE,
             workspace_id="foreign-workspace",
+            authorization=_test_authorization(),
         )
 
     authorization = HitlAuthorization.for_principal(
@@ -1027,7 +1099,11 @@ async def test_a_malformed_answer_re_pauses_without_moving_the_deadline() -> Non
 
     malformed_at = original_deadline - timedelta(seconds=50)
     await store.submit_hitl_answer(
-        paused.run_id, "ask", {"reviewer_note": "still deciding"}, at=malformed_at
+        paused.run_id,
+        "ask",
+        {"reviewer_note": "still deciding"},
+        at=malformed_at,
+        authorization=_test_authorization(),
     )
     resumed = await resume_durable_graph(
         paused.run_id, store=store, node_resolver=_resolver, run_store=run_store
@@ -1056,7 +1132,11 @@ async def test_repeated_malformed_answers_at_t_minus_1s_cannot_extend_the_deadli
     for offset in (timedelta(seconds=90), timedelta(seconds=30), timedelta(seconds=1)):
         malformed_at = original_deadline - offset
         await store.submit_hitl_answer(
-            current.run_id, "ask", {"reviewer_note": "not yet"}, at=malformed_at
+            current.run_id,
+            "ask",
+            {"reviewer_note": "not yet"},
+            at=malformed_at,
+            authorization=_test_authorization(),
         )
         current = await resume_durable_graph(
             current.run_id, store=store, node_resolver=_resolver, run_store=run_store
@@ -1093,6 +1173,7 @@ async def test_a_valid_answer_before_the_preserved_deadline_still_settles() -> N
         "ask",
         {"reviewer_note": "later"},
         at=original_deadline - timedelta(seconds=50),
+        authorization=_test_authorization(),
     )
     still_paused = await resume_durable_graph(
         paused.run_id, store=store, node_resolver=_resolver, run_store=run_store
@@ -1101,7 +1182,11 @@ async def test_a_valid_answer_before_the_preserved_deadline_still_settles() -> N
     assert hitl_deadline(still_paused, "ask") == original_deadline
 
     await store.submit_hitl_answer(
-        paused.run_id, "ask", {"verdict": "approved"}, at=original_deadline - timedelta(seconds=10)
+        paused.run_id,
+        "ask",
+        {"verdict": "approved"},
+        at=original_deadline - timedelta(seconds=10),
+        authorization=_test_authorization(),
     )
     settled = await resume_durable_graph(
         paused.run_id, store=store, node_resolver=_resolver, run_store=run_store

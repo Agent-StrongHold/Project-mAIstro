@@ -210,6 +210,18 @@ async def list_pending_human_work(
     return [item for record in records for item in _pending_items(record)]
 
 
+@router.get("/{run_id}/{node_id}")
+async def inspect_human_work(run_id: str, node_id: str, request: Request) -> PendingHumanWork:
+    """Inspect one pending node only after canonical Workspace authorization."""
+    record = await _authorized_record(request, run_id)
+    for item in _pending_items(record):
+        if item.node_id == node_id:
+            return item
+    # Missing, foreign, terminal, and non-HITL nodes share one refusal so this
+    # detail door cannot become an existence oracle.
+    raise HTTPException(status_code=404, detail="run not found")
+
+
 @router.post("/expire")
 async def expire_human_work(request: Request, limit: int = 100) -> dict[str, Any]:
     """Run one bounded expiry tick against the caller's canonical Workspaces.
