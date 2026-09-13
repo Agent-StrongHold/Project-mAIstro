@@ -46,12 +46,15 @@ async def test_record_returns_positive_id(store: SqliteOutcomeStore) -> None:
 
 @pytest.mark.asyncio
 async def test_record_and_list_outcomes_roundtrip(store: SqliteOutcomeStore) -> None:
-    await store.record(make_outcome(request_id="r1"))
+    await store.record(
+        make_outcome(request_id="r1", tool_calls=[{"name": "bash", "arguments": {"x": 1}}])
+    )
     outcomes = await store.list_outcomes()
     assert len(outcomes) == 1
     assert outcomes[0].request_id == "r1"
     assert outcomes[0].success is True
     assert outcomes[0].agent_id is None
+    assert outcomes[0].tool_calls == [{"name": "bash", "arguments": {"x": 1}}]
 
 
 @pytest.mark.asyncio

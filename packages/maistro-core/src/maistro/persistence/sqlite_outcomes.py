@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+import json
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -159,7 +161,11 @@ class SqliteOutcomeStore:
                 outcome.task_type,
                 outcome.model_used,
                 outcome.provider,
-                str(outcome.tool_calls),
+                # Keep the SQLite representation valid JSON so reads can
+                # return the same tool-call metadata as PostgreSQL. The
+                # literal-eval fallback in `_load_tool_calls` preserves rows
+                # written by older versions that used Python repr (#844).
+                json.dumps(outcome.tool_calls),
                 1 if outcome.success else 0,
                 outcome.error_type,
                 outcome.response_time_ms,
@@ -468,6 +474,27 @@ def _utc_text(moment: datetime) -> str:
     return moment.astimezone(UTC).isoformat()
 
 
+def _load_tool_calls(raw: object) -> list[dict[str, object]]:
+    """Decode current JSON and legacy Python-repr tool-call rows safely."""
+    if not raw:
+        return []
+    if isinstance(raw, list):
+        return [call for call in raw if isinstance(call, dict)]
+    if not isinstance(raw, str | bytes | bytearray):
+        return []
+    try:
+        decoded = json.loads(raw)
+    except (ValueError, TypeError):
+        try:
+            legacy_text = raw if isinstance(raw, str) else bytes(raw).decode()
+            decoded = ast.literal_eval(legacy_text)
+        except (UnicodeDecodeError, ValueError, SyntaxError):
+            return []
+    if not isinstance(decoded, list):
+        return []
+    return [call for call in decoded if isinstance(call, dict)]
+
+
 def _text(row: dict[str, Any], name: str) -> str:
     """A nullable text column as the empty string the dataclass field expects.
 
@@ -498,6 +525,7 @@ def _row_to_outcome(r: dict[str, Any]) -> Outcome:
         task_type=r.get("task_type", ""),
         model_used=r.get("model_used", ""),
         provider=r.get("provider", ""),
+        tool_calls=_load_tool_calls(r.get("tool_calls")),
         success=bool(r["success"]),
         error_type=r.get("error_type", ""),
         response_time_ms=r.get("response_time_ms", 0),

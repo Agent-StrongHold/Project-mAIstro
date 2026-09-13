@@ -177,6 +177,10 @@ class TestAScopedReadCannotCrossScope:
     async def test_cross_scope_tool_call_data_is_not_returned(self, outcome_store: Any) -> None:
         found = await outcome_store.list_outcomes(org_id="org-a")
 
+        assert found, "the assertion must exercise the returned tool-call metadata"
+        assert any(
+            call.get("name") == "tool-org-a" for outcome in found for call in outcome.tool_calls
+        )
         for outcome in found:
             assert all("org-b" not in str(call.get("name", "")) for call in outcome.tool_calls)
 
