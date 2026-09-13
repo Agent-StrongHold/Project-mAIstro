@@ -308,7 +308,11 @@ def test_mission_create_dispatches_task() -> None:
     with patch("services.engine._singleton", mock_engine):
         r = c.post(
             "/v1/tasks",
-            json={"name": "Write hello world", "description": "Write hello world"},
+            json={
+                "name": "Write hello world",
+                "description": "Write hello world",
+                "user_id": "bob",
+            },
         )
 
     assert r.status_code == 200

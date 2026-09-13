@@ -16,6 +16,7 @@ from maistro.tasks.http_contract import (
     sign_workspace_scope,
 )
 from maistro.tasks.queue import configure_task_queue
+from maistro_server.api.runs import configure_run_store
 from maistro_server.main import app
 
 TASK_WORKSPACE = "/tmp/maistro-workspace/test"  # nosec B108 -- API contract fixture
@@ -39,9 +40,11 @@ async def durable_spine(tmp_path, monkeypatch):
         _continuations,
     ) = await wire_execution_spine(conn, workspace_id="default")
     configure_task_queue(admitter=admitter)
+    configure_run_store(run_store)
     try:
         yield scope_store, run_store
     finally:
+        configure_run_store(None)
         queue_module._queue = previous
         await conn.close()
 
@@ -83,7 +86,11 @@ async def test_delegated_users_keep_distinct_task_and_run_ownership(
     alice = await client.post(
         "/tasks",
         headers=_delegation_headers("alice"),
-        json={"description": "Alice task", "workspace": TASK_WORKSPACE},
+        json={
+            "description": "Alice task",
+            "workspace": TASK_WORKSPACE,
+            "user_id": "mallory",
+        },
     )
     bob = await client.post(
         "/tasks",
@@ -107,11 +114,23 @@ async def test_delegated_users_keep_distinct_task_and_run_ownership(
     assert bob_run.actor_principal_id == "bob"
     assert alice_run.provenance["service_principal_id"] == "conductor"
     assert bob_run.provenance["service_principal_id"] == "conductor"
+    assert alice_run.provenance["delegation_id"] == alice_body["task"]["delegation_id"]
+    assert bob_run.provenance["delegation_id"] == bob_body["task"]["delegation_id"]
 
     own = await client.get(f"/tasks/{alice_body['task_id']}", headers=_delegation_headers("alice"))
     cross = await client.get(f"/tasks/{alice_body['task_id']}", headers=_delegation_headers("bob"))
     assert own.status_code == 200
     assert cross.status_code == 404
+
+    own_run = await client.get(
+        f"/runs/{alice_body['run_id']}", headers=_delegation_headers("alice")
+    )
+    cross_run = await client.get(
+        f"/runs/{alice_body['run_id']}", headers=_delegation_headers("bob")
+    )
+    assert own_run.status_code == 200
+    assert own_run.json()["provenance"]["service_principal_id"] == "conductor"
+    assert cross_run.status_code == 404
 
 
 async def test_a_forged_originating_principal_is_rejected(

@@ -68,7 +68,13 @@ async def test_submit_and_status_changes_upsert_records(
     sink = _install_factory(monkeypatch)
     queue = TaskQueue()
 
-    task = await queue.submit(TaskCreate(description="persist me", workspace="ws"))
+    task = await queue.submit(
+        TaskCreate(description="persist me", workspace="ws"),
+        user_id="alice",
+        service_principal_id="conductor",
+        delegation_id="delegation-1",
+        actor_kind="user",
+    )
     await queue.update_status(task.task_id, TaskStatus.PLANNING)
     await queue.update_status(task.task_id, TaskStatus.CODING)
     await queue.update_status(task.task_id, TaskStatus.COMPLETED)
@@ -84,6 +90,10 @@ async def test_submit_and_status_changes_upsert_records(
     assert final.id == task.task_id
     assert final.description == "persist me"
     assert final.workspace == "ws"
+    assert final.user_id == "alice"
+    assert final.service_principal_id == "conductor"
+    assert final.delegation_id == "delegation-1"
+    assert final.actor_kind == "user"
     # Aware UTC, not naive wall-clock. The `_naive()` helper that stripped
     # tzinfo went away with #122: the columns are TIMESTAMPTZ now, and a naive
     # value written into one is interpreted in whatever the server's TimeZone
