@@ -26,8 +26,13 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from services.dag_run_inspection import can_inspect_run, list_visible_runs, visible_run_detail
-from services.dag_run_store import get_dag_run_store
+from services.dag_run_inspection import (
+    can_inspect_run,
+    list_visible_runs,
+    projection_store,
+    retention_metadata,
+    visible_run_detail,
+)
 
 router = APIRouter(tags=["dag-runs"])
 
@@ -72,14 +77,7 @@ def retention() -> dict[str, Any]:
     per-run scoping applies, exactly as before (#1174 scoped the run-bearing
     routes, not this description of the store's bounds).
     """
-    from services.dag_run_store import MAX_EVENTS_PER_RUN, MAX_RUNS
-
-    store = get_dag_run_store()
-    return {
-        "durable": store.is_durable,
-        "max_runs": MAX_RUNS,
-        "max_events_per_run": MAX_EVENTS_PER_RUN,
-    }
+    return retention_metadata()
 
 
 @router.post("/{run_id}/cancel")
@@ -186,7 +184,7 @@ async def stream_run_events(run_id: str, request: Request) -> StreamingResponse:
     if not await can_inspect_run(uid, run_id):
         raise HTTPException(status_code=404, detail="run not found")
 
-    store = get_dag_run_store()
+    store = projection_store()
 
     return StreamingResponse(
         _event_generator(uid=uid, run_id=run_id, request=request, store=store),

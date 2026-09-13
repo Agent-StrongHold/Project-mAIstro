@@ -32,7 +32,11 @@ Relevant active dependencies observed during the audit:
 
 A branch discovered from CI, `chatgpt/issue-736-canonical-dag-run-route`, was also audited. Issue #736 and its closed draft PR #743 document the shipped DAG Run-button convergence attempt, but that lane stopped at the missing authorized Workspace/Project selection seam and carried no production route change. It is therefore a dependency-history signal, not a competing #459 implementation owner.
 
-The current `GET /v1/dag-runs/{run_id}` route still resolves `services.dag_run_store.get_dag_run_store`, so the shared Conductor inspection plane required for scenarios 1-3 is genuinely unavailable on this base. The harness records that as a source-level dependency on #65 rather than constructing a test-only substitute.
+The repair for #446 wires the DAG-run route through the inspection service rather than importing
+`services.dag_run_store` directly. When the Engine has a canonical Run store, inspection
+lists and resolves canonical Runs first; the projection remains an event/detail receipt and
+standalone compatibility path. Control continues to dispatch through the canonical Run
+service, so projection terminal state cannot replace canonical lifecycle truth.
 
 ## Harness architecture
 
@@ -62,7 +66,10 @@ The named suite currently contributes nine integration tests:
 
 ## Acceptance status
 
-This commit is scaffold/evidence, not completion evidence for #459.
+The original #459 commit was scaffold/evidence, not completion evidence. The #446 repair
+adds executable Builders, scheduler, and Evolve producer scenarios over durable canonical
+Run/NodeRun/Attempt state and registers a strict CI invocation. The remaining statements
+below describe the original scaffold's independent guarantees, not a current blocker.
 
 Already proven independently by this branch:
 
@@ -72,12 +79,7 @@ Already proven independently by this branch:
 - unavailable product scenarios are explicitly tied to named source-level dependency evidence without skips/suppressions;
 - #458 and #463 are consumed as external authorities rather than recreated.
 
-Still required before #459 can close:
-
-- execute actual Builders-created canonical work and observe the same canonical IDs through landed Conductor inspection;
-- fire an actual schedule and observe its canonical Run through that same inspection plane;
-- execute actual Evolve work and observe its canonical Run through that same inspection plane;
-- exercise all applicable Workspace/Project/Graph/Run/NodeRun/Attempt/Event/Invocation/artifact/provenance identities exposed by those real product flows;
-- feed real converged product observations, not only oracle-wiring examples, through the #463 matcher.
-
-Until those dependencies land and the product scenarios execute, #459 must remain open.
+The strict closeout suite now executes the first three producer scenarios against the
+canonical spine and fails closed in CI when any scenario cannot run. Broader identity
+coverage and the remaining product-specific #459 acceptance work remain governed by
+#459 and its downstream dependencies.
