@@ -5,8 +5,9 @@ the live/admin/chat surface for the Turing self-model frontend. Distinct from
 hive-conductor; runs on its own port (default 8120).
 
 Two auth lanes (see middleware/auth.py): human session cookies for the dashboard
-/ feed / chat / admin, and a narrowly-scoped Turing-internal service key for
-Turing's own producers to publish artifacts.
+/ feed / chat / admin, and a narrowly-scoped service key reserved for an explicitly
+launched Turing producer process to publish artifacts. This app starts no reactor
+or autonomous cognitive runtime.
 """
 
 from __future__ import annotations

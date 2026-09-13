@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -20,6 +20,8 @@ from maistro_turing.bridge import (
 )
 
 logger = logging.getLogger("maistro_turing.runtime")
+
+ChatProviderCall = Callable[[str, int | None], Awaitable[str]]
 
 
 # ---------------------------------------------------------------- config -----
@@ -148,8 +150,24 @@ class TuringChatSession:
         self._self_id = self_id
         self._history: list[dict[str, str]] = []
 
-    async def handle_message(self, message: str) -> str:
-        """Process a user message and return a response."""
+    @property
+    def provider_bridge(self) -> TuringProviderBridge:
+        """Expose the configured Provider for the canonical backend adapter."""
+        return self._provider
+
+    async def handle_message(
+        self,
+        message: str,
+        *,
+        provider_call: ChatProviderCall | None = None,
+    ) -> str:
+        """Process a user message and return a response.
+
+        ``provider_call`` is supplied by a canonical Node when the session is
+        reachable through the backend. Direct provider calls are intentionally
+        rejected so this domain object cannot become an uncorrelated execution
+        path.
+        """
         self._history.append({"role": "user", "content": message})
 
         await self._classifier.classify_message(message)
@@ -163,10 +181,10 @@ class TuringChatSession:
                 )
         prompt_parts.append("Respond naturally as yourself.")
 
-        reply = self._provider.complete(
-            "\n".join(prompt_parts),
-            max_tokens=1000,
-        )
+        prompt = "\n".join(prompt_parts)
+        if provider_call is None:
+            raise RuntimeError("Turing chat requires a canonical provider Invocation")
+        reply = await provider_call(prompt, 1000)
 
         self._history.append({"role": "assistant", "content": reply})
 

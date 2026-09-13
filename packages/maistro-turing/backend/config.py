@@ -1,8 +1,9 @@
 """Backend settings — CORS origins and the Turing-internal service key.
 
-The service key registry is seeded from TURING_SERVICE_KEY (env) so Turing's own
-reactor/producers can authenticate. The backend refuses to start unless the key
-is explicitly configured; it must never silently accept a shared public default.
+The service key registry is seeded from TURING_SERVICE_KEY (env) so an explicitly
+launched, future Turing producer process can authenticate. This backend does not
+start that process or a cognitive reactor. It refuses to start unless the key is
+explicitly configured; it must never silently accept a shared public default.
 """
 
 from __future__ import annotations
