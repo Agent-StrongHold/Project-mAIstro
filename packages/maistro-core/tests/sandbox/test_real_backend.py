@@ -330,6 +330,31 @@ async def test_a_real_sandbox_cannot_see_the_host_filesystem(tmp_path: Path) -> 
 
 
 @requires_bwrap
+async def test_a_real_sandbox_bounds_simultaneous_stdout_and_stderr(tmp_path: Path) -> None:
+    backend = BubblewrapSandboxBackend(root=tmp_path)
+    instance = await backend.spawn(
+        config=SandboxConfig(max_stdout_bytes=1024, max_stderr_bytes=1024)
+    )
+
+    result = await backend.exec(
+        instance,
+        [
+            "/bin/sh",
+            "-c",
+            "while :; do printf 'o%.0s' $(seq 1 4096); printf 'e%.0s' $(seq 1 4096) >&2; done",
+        ],
+        timeout_s=5,
+    )
+
+    assert result.exit_code == 125
+    assert result.output_limit_exceeded
+    assert result.stdout_truncated or result.stderr_truncated
+    assert result.stdout_bytes_retained <= 1024
+    assert result.stderr_bytes_retained <= 1024
+    await backend.destroy(instance)
+
+
+@requires_bwrap
 async def test_a_real_sandbox_times_out_rather_than_running_forever(tmp_path: Path) -> None:
     backend = BubblewrapSandboxBackend(root=tmp_path)
     instance = await backend.spawn(config=SandboxConfig())
