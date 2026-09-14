@@ -445,6 +445,20 @@ async def test_relevant_learnings_match_case_insensitively(learning_store: Any) 
     assert [item.learning for item in found] == ["target"]
 
 
+async def test_org_scope_is_exact_for_mutations(learning_store: Any) -> None:
+    """An empty org scope must not act as a wildcard in any backend."""
+    learning_id = await learning_store.store(
+        _learning(learning="org-a row", org_id="org-a", hit_count=1)
+    )
+
+    await learning_store.mark_outcome([learning_id], success=True, org_id="")
+    await learning_store.check_auto_promotions(threshold=1, org_id="")
+
+    [stored] = await learning_store.list_all(org_id="org-a")
+    assert stored.success_after_use == 0
+    assert stored.status == "active"
+
+
 async def test_relevant_learnings_apply_org_team_and_user_scope(learning_store: Any) -> None:
     """Every backend must apply the same three scope axes before ranking."""
     await learning_store.store(

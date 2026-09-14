@@ -498,10 +498,8 @@ def _row_to_learning(row: asyncpg.Record) -> Learning:
         trigger_keys=_load_keys(row.get("trigger_keys")),
         learning=row["learning"],
         tool_name=row.get("tool_name", ""),
-        # `source_query` and `team_id` are stored and were never read back, so
-        # every `Learning` this store returned carried the dataclass default
-        # rather than the row's value -- a round-trip that loses the team scope
-        # it filters on, and the query the learning was derived from.
+        # Preserve both the provenance query and team scope on reads; they are
+        # part of the Learning contract, not write-only SQL columns.
         source_query=row.get("source_query", ""),
         agent_id=row.get("agent_id") or None,
         user_id=row.get("user_id"),

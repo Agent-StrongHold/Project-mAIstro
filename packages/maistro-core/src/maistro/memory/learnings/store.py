@@ -152,7 +152,7 @@ class InMemoryLearningStore:
         for learning in self._learnings:
             if learning.id not in id_set:
                 continue
-            if org_id and learning.org_id != org_id:
+            if not matches_learning_scope(learning, org_id=org_id):
                 continue
             if success:
                 learning.success_after_use += 1
@@ -169,9 +169,7 @@ class InMemoryLearningStore:
         for learning in self._learnings:
             if learning.status != "active" or learning.hit_count < threshold:
                 continue
-            if org_id and learning.org_id != org_id:
-                continue
-            if not org_id and learning.org_id:
+            if not matches_learning_scope(learning, org_id=org_id):
                 continue
             learning.status = "promoted"
             promoted.append(learning)

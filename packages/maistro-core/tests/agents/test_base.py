@@ -97,6 +97,7 @@ class _FakeOutcomeStore:
 class _LearningRecord:
     learning: str = "x"
     agent_id: str = ""
+    user_id: str = ""
     org_id: str = ""
     team_id: str = ""
 
@@ -709,6 +710,7 @@ class TestHandleRcaAndLearningExtraction:
             "the unowned scope instead of this caller's"
         )
         assert learning_store.stored[0].team_id == "team-1"
+        assert learning_store.stored[0].user_id == "u1"
 
     async def test_rca_scope_does_not_depend_on_tracing(self) -> None:
         """The traced and untraced branches must persist identical scope.
@@ -733,7 +735,7 @@ class TestHandleRcaAndLearningExtraction:
             )
             await agent.handle(messages=[{"role": "user", "content": "x"}], auth=_Auth())
             rca = learning_store.stored[0]
-            stored.append((rca.agent_id, rca.org_id, rca.team_id))
+            stored.append((rca.agent_id, rca.user_id, rca.org_id, rca.team_id))
 
         assert stored[0] == stored[1], (
             f"tracing changed the persisted scope: traced={stored[0]} untraced={stored[1]}"
@@ -792,6 +794,7 @@ class TestHandleRcaAndLearningExtraction:
         learnings = [rec.learning for rec in learning_store.stored]
         assert "fix it" in learnings
         assert "good job" in learnings
+        assert all(rec.user_id == "u1" for rec in learning_store.stored)
         assert "learning.extraction" in tracer.traces[0].spans
 
     async def test_learning_extraction_without_trace_stores_only_corrections(self) -> None:
@@ -811,6 +814,7 @@ class TestHandleRcaAndLearningExtraction:
 
         learnings = [rec.learning for rec in learning_store.stored]
         assert learnings == ["fix it"]
+        assert learning_store.stored[0].user_id == "u1"
 
     async def test_no_tool_history_skips_learning_extraction(self) -> None:
         learning_store = _FakeLearningStore()
