@@ -241,33 +241,34 @@ async def _run_tool_node(
         results[nid] = {"role": role, "response": f"Tool error: {exc}", "success": False}
 
 
-def _classify_node_execution(node: dict[str, Any], nid: str) -> str:
-    """Preserve the existing per-node isolation classification during convergence.
+def _classify_node_execution(
+    node: dict[str, Any], nid: str, *, host_mode: str | None = None
+) -> str:
+    """Choose isolation without treating request/config tiers as authority.
 
-    M2 #845 owns replacing request/config-declared elevation with host-authorized
-    policy. #835 removes the second graph scheduler without weakening the
-    current per-node isolation floor underneath it.
+    ``host_mode`` is produced by Sentinel. Without it, compatibility callers
+    fail closed to sandbox (and untrusted nodes block); ``execution_tier`` and
+    ``tier_approved_by`` are metadata only.
     """
     config = node.get("config", {})
-    tier = config.get("execution_tier", "")
     capabilities = config.get("capabilities", [])
     dangerous = any(c in ("shell", "file_write", "code_exec", "browser") for c in capabilities)
     needs_secrets = any(c in ("jira_write", "deploy", "git_push") for c in capabilities)
     needs_filesystem = any(
         c in ("code_exec", "file_write", "repo_clone", "pytest") for c in capabilities
     )
-    if tier in ("light", "safe"):
-        return "async"
-    if config.get("untrusted", False):
-        if config.get("tier_approved_by") != "admin":
-            logger.warning("node_blocked node=%s reason=untrusted_no_approval", nid)
-            return "blocked"
+    if config.get("untrusted", False) and host_mode != "sandbox":
+        logger.warning("node_blocked node=%s reason=host_policy_required", nid)
+        return "blocked"
+    if host_mode == "blocked":
+        logger.warning("node_blocked node=%s reason=host_policy", nid)
+        return "blocked"
+    # A host can choose a stricter mode, but a request cannot lower this floor.
+    if dangerous or needs_secrets or needs_filesystem:
         return "sandbox"
-    if dangerous or needs_secrets or needs_filesystem or tier in ("container", "heavy"):
-        return "sandbox"
-    if not tier and not capabilities:
-        logger.info("node_default_sandbox node=%s reason=no_tier_no_capabilities", nid)
-        return "sandbox"
+    if host_mode in {"async", "sandbox"}:
+        return host_mode
+    logger.info("node_default_sandbox node=%s reason=host_policy_unavailable", nid)
     return "sandbox"
 
 
@@ -471,6 +472,8 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
         execution_mode: str,
         on_response: OnResponseHook | None,
         llm_builder: Callable[[OnResponseHook | None], Any] | None = None,
+        sentinel: Any = None,
+        host_mode: str | None = None,
     ) -> None:
         self._raw_node = dict(raw_node)
         self._task_desc = task_desc
@@ -478,13 +481,36 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
         self._execution_mode = execution_mode
         self._on_response = on_response
         self._llm_builder = llm_builder
+        self._sentinel = sentinel
+        self._host_mode = host_mode
 
     async def _execute(self, inputs: _LegacyInputs, ctx: NodeContext) -> _LegacyOutput:
         node_id = ctx.node_id
         parent_outputs = _context_from_inputs(inputs)
-        tier = _classify_node_execution(self._raw_node, node_id)
+        host_mode: str | None = self._host_mode
+        if self._sentinel is not None:
+            from maistro.security.sentinel.authz_types import Principal, Tier
+
+            config = self._raw_node.get("config", {})
+            untrusted = bool(config.get("untrusted", False))
+            principal = Principal(
+                id=ctx.user_id or "anonymous",
+                kind="human",
+                scopes=tuple(
+                    value for value in (ctx.workspace_id, ctx.project_id, ctx.user_id) if value
+                ),
+            )
+            host_mode = self._sentinel.resolve_execution_mode(
+                "graph.node.untrusted" if untrusted else "graph.node.execute",
+                principal,
+                reversibility="irreversible" if untrusted else "reversible",
+                # Graph effects default to the sandbox; only an explicit
+                # host policy entry can select the inline mode.
+                default=Tier.BLOCKED if untrusted else Tier.SELF_ELEVATION,
+            )
+        tier = _classify_node_execution(self._raw_node, node_id, host_mode=host_mode)
         if tier == "blocked":
-            raise PermissionError("Execution blocked: untrusted node requires admin approval")
+            raise PermissionError("Execution blocked: host policy did not authorize this node")
 
         if tier == "sandbox":
             context = "\n---\n".join(parent_outputs.values())

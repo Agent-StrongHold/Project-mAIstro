@@ -1389,6 +1389,7 @@ async def create_container(
         build_permission_table,
         describe_permission_table,
     )
+    from maistro.security.sentinel.delegation import InMemoryDelegationAuthority
     from maistro.security.sentinel.elevation import InMemoryElevationStore
     from maistro.security.sentinel.policy import Sentinel
 
@@ -1409,6 +1410,10 @@ async def create_container(
     # can therefore never flip authorized False -> True, only needs
     # "self_elevation"/"scoped_2fa" -> "none".
     elevation_store = InMemoryElevationStore()
+    # Delegated authority is host-owned state, separate from the manifest
+    # roster. A durable deployment can replace this implementation without
+    # changing the Agent or Graph execution paths.
+    delegation_authority = InMemoryDelegationAuthority()
     # Canonical capability state is created BEFORE Sentinel so the permission
     # source can hold the same registry the container exposes (#1165,
     # ADR-072726-0d6b): a runtime capability disable (set_enabled) must reach
@@ -1427,6 +1432,7 @@ async def create_container(
         audit_log=audit_log,
         tier_policy=tier_policy,
         elevation_store=elevation_store,
+        delegation_authority=delegation_authority,
     )
     strike_recovery = _wire_strike_recovery(
         tracker=strike_tracker,

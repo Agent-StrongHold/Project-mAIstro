@@ -263,14 +263,14 @@ def test_an_untrusted_node_without_admin_approval_is_blocked() -> None:
     assert adapter._classify_node_execution({"config": {"untrusted": True}}, "n1") == "blocked"
 
 
-def test_an_approved_untrusted_node_goes_to_the_sandbox() -> None:
+def test_request_metadata_cannot_approve_an_untrusted_node() -> None:
     import services.legacy_dag_node as adapter
 
     assert (
         adapter._classify_node_execution(
             {"config": {"untrusted": True, "tier_approved_by": "admin"}}, "n1"
         )
-        == "sandbox"
+        == "blocked"
     )
 
 
@@ -306,13 +306,30 @@ def test_a_declared_but_benign_shape_still_sandboxes() -> None:
     )
 
 
-def test_safe_and_light_tiers_run_inline() -> None:
+def test_request_tiers_do_not_select_inline_execution() -> None:
     import services.legacy_dag_node as adapter
 
-    assert adapter._classify_node_execution({"config": {"execution_tier": "safe"}}, "n1") == "async"
     assert (
-        adapter._classify_node_execution({"config": {"execution_tier": "light"}}, "n1") == "async"
+        adapter._classify_node_execution({"config": {"execution_tier": "safe"}}, "n1") == "sandbox"
     )
+    assert (
+        adapter._classify_node_execution({"config": {"execution_tier": "light"}}, "n1") == "sandbox"
+    )
+
+
+def test_host_mode_is_authoritative_over_request_tier() -> None:
+    import services.legacy_dag_node as adapter
+
+    node = {"config": {"execution_tier": "heavy"}}
+    assert adapter._classify_node_execution(node, "n1", host_mode="async") == "async"
+    assert adapter._classify_node_execution(node, "n1", host_mode="sandbox") == "sandbox"
+
+
+def test_request_approval_string_cannot_clear_host_block() -> None:
+    import services.legacy_dag_node as adapter
+
+    node = {"config": {"untrusted": True, "tier_approved_by": "admin"}}
+    assert adapter._classify_node_execution(node, "n1", host_mode="async") == "blocked"
 
 
 # --- compatibility helpers retained for tests ----------------------------------
@@ -394,7 +411,7 @@ def _adapter_node(raw_node: dict[str, Any], **kwargs: Any):
 async def test_an_unapproved_untrusted_adapter_node_refuses_to_execute() -> None:
     node = _adapter_node({"id": "n1", "config": {"untrusted": True}})
 
-    with pytest.raises(PermissionError, match="untrusted node requires admin approval"):
+    with pytest.raises(PermissionError, match="host policy did not authorize"):
         await node._execute(node.input_schema(), _ctx())
 
 

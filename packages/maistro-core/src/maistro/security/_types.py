@@ -33,6 +33,10 @@ class AuthContext:
     kind: IdentityKind = IdentityKind.USER
     auth_method: str = ""
     on_behalf_of: str = ""
+    # A delegated invocation carries the host-authorized subset separately
+    # from the owner's roles. ``None`` means this is not a delegated call.
+    delegated_actions: frozenset[str] | None = None
+    delegation_grant_id: str = ""
 
     def can_use_tool(self, tool_name: str, permission_table: PermissionTable) -> bool:
         """Fail-closed permission lookup (ADR-072726-0d6b, implemented for #1165).
@@ -44,6 +48,8 @@ class AuthContext:
         explicit ``Sentinel(allow_on_miss=True)`` construction, intended for
         non-production/test/demo wiring, and no configuration surface arms it.
         """
+        if self.delegated_actions is not None and tool_name not in self.delegated_actions:
+            return False
         allowed_roles = permission_table.get(tool_name)
         if allowed_roles is None:
             return False

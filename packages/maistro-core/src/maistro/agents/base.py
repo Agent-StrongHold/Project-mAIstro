@@ -227,6 +227,10 @@ class Agent:
         status_callback: Any = None,
         classified_task_type: str = "",
         turn_id: str | None = None,
+        goal_id: str | None = None,
+        run_id: str | None = None,
+        invocation_id: str | None = None,
+        delegation_scope: str | None = None,
         _delegation_depth: int = 0,
     ) -> AgentResponse:
         # `intent` was accepted and never read — line 219 was the only mention of
@@ -259,6 +263,10 @@ class Agent:
                 status_callback=status_callback,
                 classified_task_type=classified_task_type,
                 turn_id=turn_id,
+                goal_id=goal_id,
+                run_id=run_id,
+                invocation_id=invocation_id,
+                delegation_scope=delegation_scope,
                 _delegation_depth=_delegation_depth,
             )
         except Exception as exc:
@@ -304,6 +312,10 @@ class Agent:
         status_callback: Any,
         classified_task_type: str,
         turn_id: str | None,
+        goal_id: str | None,
+        run_id: str | None,
+        invocation_id: str | None,
+        delegation_scope: str | None,
         _delegation_depth: int,
     ) -> AgentResponse:
         """The body of `handle()`. Never ends `trace` — the caller owns that."""
@@ -366,6 +378,10 @@ class Agent:
                 depth=_delegation_depth,
                 trace=trace,
                 turn_id=turn_id,
+                goal_id=goal_id,
+                run_id=run_id,
+                invocation_id=invocation_id,
+                delegation_scope=delegation_scope,
             )
             if delegated is not None:
                 return delegated
@@ -803,6 +819,10 @@ class Agent:
         classified_task_type: str,
         depth: int,
         turn_id: str | None,
+        goal_id: str | None,
+        run_id: str | None,
+        invocation_id: str | None,
+        delegation_scope: str | None,
         trace: Any,
     ) -> AgentResponse | None:
         """Invoke the sub-agent chosen by the reasoning strategy.
@@ -842,6 +862,81 @@ class Agent:
             return None
 
         delegate_text = result.delegate_message or ""
+
+        # When Sentinel is wired (the production composition root), the
+        # manifest's roster is only a request. Host policy must issue the
+        # exact grant and the child receives only its effective action subset.
+        delegated_auth = auth
+        authorize_delegation = getattr(self._sentinel, "authorize_delegation", None)
+        if authorize_delegation is not None:
+            from dataclasses import replace as replace_dataclass
+
+            from maistro.security.sentinel.authz_types import Principal
+
+            owner_id = str(getattr(auth, "user_id", "") or "")
+            if not owner_id:
+                return AgentResponse(
+                    content="Delegation refused: no owning principal.",
+                    agent_name=self.identity.name,
+                )
+            principal = Principal(
+                id=self.identity.name,
+                kind="agent",
+                roles=tuple(getattr(auth, "roles", ()) or ()),
+                scopes=tuple(
+                    value
+                    for value in (
+                        getattr(auth, "org_id", ""),
+                        getattr(auth, "team_id", ""),
+                        getattr(auth, "project_id", ""),
+                        f"agent:{self.identity.name}",
+                    )
+                    if value
+                ),
+                owner=owner_id,
+            )
+            decision = await authorize_delegation(
+                principal=principal,
+                owner_id=owner_id,
+                delegating_agent_id=self.identity.name,
+                target_agent_id=target.identity.name,
+                goal_id=goal_id or str(getattr(auth, "goal_id", "") or session_id or ""),
+                run_id=run_id or str(getattr(auth, "run_id", "") or turn_id or ""),
+                invocation_id=invocation_id
+                or str(getattr(auth, "invocation_id", "") or turn_id or ""),
+                scope=delegation_scope
+                or str(
+                    getattr(auth, "project_id", "")
+                    or getattr(auth, "team_id", "")
+                    or getattr(auth, "org_id", "")
+                    or owner_id
+                ),
+                requested_actions=frozenset(self._delegated_target_actions(target)),
+                artifact=delegate_text,
+            )
+            if not decision.allowed:
+                log.warning(
+                    "Delegation refused by host policy: agent=%s target=%s reason=%s",
+                    self.identity.name,
+                    target.identity.name,
+                    decision.reason,
+                )
+                return AgentResponse(
+                    content=f"Delegation refused: {decision.reason}",
+                    agent_name=self.identity.name,
+                )
+            if not hasattr(auth, "delegated_actions"):
+                return AgentResponse(
+                    content="Delegation refused: authorization envelope cannot be carried.",
+                    agent_name=self.identity.name,
+                )
+            delegated_auth = replace_dataclass(
+                auth,
+                delegated_actions=decision.effective_actions,
+                delegation_grant_id=decision.grant_id,
+                on_behalf_of=self.identity.name,
+            )
+
         delegate_messages = [{"role": "user", "content": delegate_text}]
 
         if trace:
@@ -849,7 +944,7 @@ class Agent:
 
         delegated = await target.handle(
             messages=delegate_messages,
-            auth=auth,
+            auth=delegated_auth,
             session_id=session_id,
             model_override=model_override,
             status_callback=status_callback,
@@ -859,6 +954,10 @@ class Agent:
             # own -- so the identity has to reach it, or a retried delegated
             # turn is the one that duplicates (#327).
             turn_id=turn_id,
+            goal_id=goal_id,
+            run_id=run_id,
+            invocation_id=invocation_id,
+            delegation_scope=delegation_scope,
             _delegation_depth=depth + 1,
         )
         # Record who asked, on the way back out. The delegate's response is
@@ -870,6 +969,11 @@ class Agent:
             delegated,
             delegation_chain=(self.identity.name, *delegated.delegation_chain),
         )
+
+    @staticmethod
+    def _delegated_target_actions(target: Agent) -> tuple[str, ...]:
+        """Return advertised tools as requests, never as authority."""
+        return tuple(target.identity.tools)
 
     def _resolve_agent(self, name: str) -> Agent | None:
         """Look up a sub-agent by name via the configured resolver.

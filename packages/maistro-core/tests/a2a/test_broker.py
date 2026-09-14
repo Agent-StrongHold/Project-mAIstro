@@ -141,7 +141,8 @@ async def test_trust_tier_escalation_refused() -> None:
 
 
 @pytest.mark.asyncio
-async def test_explicit_allow_list_overrides_trust_tier() -> None:
+async def test_explicit_allow_list_cannot_override_trust_tier() -> None:
+    """A manifest request cannot grant a higher-privilege target."""
     catalog = _catalog()
     catalog.register(
         AgentCard(
@@ -153,8 +154,8 @@ async def test_explicit_allow_list_overrides_trust_tier() -> None:
         )
     )
     broker = A2ABroker(resolver=catalog, local=LocalTransport(_echo_invoker))
-    result = await broker.delegate(from_agent="ops", to="admin", task="x", budget=_budget())
-    assert result.status == "completed"
+    with pytest.raises(DelegationRefused, match="trust-tier escalation"):
+        await broker.delegate(from_agent="ops", to="admin", task="x", budget=_budget())
 
 
 @pytest.mark.asyncio

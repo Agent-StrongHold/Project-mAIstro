@@ -19,6 +19,12 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from maistro.a2a.delegate import A2ATask, DelegationMode, TaskStatus
 from maistro.a2a.guest_peers import DelegationResult
+from maistro.security.sentinel.authz_types import Principal
+from maistro.security.sentinel.delegation import (
+    DelegationAuthority,
+    DelegationRequest,
+    utc_now,
+)
 
 if TYPE_CHECKING:
     from maistro.agents.catalog import AgentCard
@@ -128,9 +134,16 @@ def _tier_rank(tier: str) -> int:
 class A2ABroker:
     """Facade for agent-to-agent delegation (ADR-058, local transport v0)."""
 
-    def __init__(self, *, resolver: CardResolver, local: Transport) -> None:
+    def __init__(
+        self,
+        *,
+        resolver: CardResolver,
+        local: Transport,
+        delegation_authority: DelegationAuthority | None = None,
+    ) -> None:
         self._resolver = resolver
         self._local = local
+        self._delegation_authority = delegation_authority
 
     async def delegate(
         self,
@@ -140,6 +153,13 @@ class A2ABroker:
         task: str,
         budget: DelegationBudget,
         user_id: str = "",
+        principal: Principal | None = None,
+        owner_id: str = "",
+        goal_id: str = "",
+        run_id: str = "",
+        invocation_id: str = "",
+        scope: str = "",
+        artifact: str = "",
     ) -> DelegationResult:
         """Delegate ``task`` from ``from_agent`` to local agent ``to``.
 
@@ -158,6 +178,36 @@ class A2ABroker:
 
         self._enforce_policy(caller, target)
 
+        metadata: dict[str, object] = {
+            "trace_id": budget.trace_id,
+            # The target's manifest is not an authority grant. This is only
+            # the subset the caller already advertises, for transports that
+            # can carry an action envelope.
+            "delegated_actions": sorted(set(caller.tools) & set(target.tools)),
+        }
+        if self._delegation_authority is not None:
+            if principal is None:
+                raise DelegationRefused("host delegation requires an authenticated agent principal")
+            request = DelegationRequest(
+                principal=principal,
+                owner_id=owner_id,
+                delegating_agent_id=from_agent,
+                target_agent_id=to,
+                goal_id=goal_id,
+                run_id=run_id,
+                invocation_id=invocation_id,
+                scope=scope,
+                action="agent.delegate",
+                requested_actions=frozenset(target.tools),
+                artifact=artifact or task,
+                requested_at=utc_now(),
+            )
+            decision = self._delegation_authority.authorize(request, now=request.requested_at)
+            if not decision.allowed:
+                raise DelegationRefused(f"host delegation refused: {decision.reason}")
+            metadata["delegated_actions"] = sorted(decision.effective_actions)
+            metadata["delegation_grant_id"] = decision.grant_id
+
         hop_budget = budget.spend(to)
         a2a_task = A2ATask(
             id=str(uuid.uuid4()),
@@ -171,6 +221,7 @@ class A2ABroker:
             result=None,
             error=None,
             delegation_mode=DelegationMode(caller.delegation_mode),
+            metadata=metadata,
         )
         logger.info(
             "Delegating task %s: %s -> %s (depth_left=%d, trace=%s)",
@@ -198,9 +249,10 @@ class A2ABroker:
         if mode not in (DelegationMode.ALLOW_ALL, DelegationMode.ALLOW_LIST):
             raise DelegationRefused(f"agent '{caller.id}' has unknown delegation_mode '{mode}'")
 
-        # ADR-058 resolved decision 3: target holds a subset of the caller's
-        # authority (t0 is most privileged) unless explicitly allow-listed.
-        if not explicitly_listed and _tier_rank(target.trust_tier) < _tier_rank(caller.trust_tier):
+        # A manifest allow-list selects a target; it cannot waive the
+        # privilege ceiling. Explicit host grants are checked separately by
+        # ``delegation_authority`` and carry the effective action subset.
+        if _tier_rank(target.trust_tier) < _tier_rank(caller.trust_tier):
             raise DelegationRefused(
                 f"trust-tier escalation: '{target.id}' ({target.trust_tier}) is more "
                 f"privileged than caller '{caller.id}' ({caller.trust_tier})"
