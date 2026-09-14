@@ -1,6 +1,7 @@
 ---
 inventory-delta:
-  tests: +11
+  packages/maistro-turing/backend/tests: +1
+  tests/: +10
 ---
 # Turing public-route gate inventory
 
