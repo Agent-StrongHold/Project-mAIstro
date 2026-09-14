@@ -117,6 +117,25 @@ class TestCompositeAuthProvider:
         assert later.calls == []
 
     @pytest.mark.asyncio
+    async def test_jwt_rejection_is_terminal_for_empty_bearer_shape(self) -> None:
+        from maistro.security.auth_jwt import JWTAuthProvider
+
+        later = _FakeProvider("success", result=SYSTEM_AUTH)
+        composite = CompositeAuthProvider(
+            [
+                JWTAuthProvider(
+                    jwks_url="",
+                    issuer="https://idp.example.com",
+                    audience="maistro",
+                ),
+                later,
+            ]
+        )
+        with pytest.raises(AuthError, match="Empty token"):
+            await composite.authenticate("Bearer    ")
+        assert later.calls == []
+
+    @pytest.mark.asyncio
     async def test_unknown_shape_reaches_a_later_provider(self) -> None:
         from maistro.security.auth_static import StaticKeyAuthProvider
 

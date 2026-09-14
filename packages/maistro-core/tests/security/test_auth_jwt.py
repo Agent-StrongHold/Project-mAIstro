@@ -56,9 +56,9 @@ class TestAuthenticate:
             await provider.authenticate("Basic abc123")
 
     @pytest.mark.asyncio
-    async def test_empty_token_raises_not_applicable(self) -> None:
+    async def test_empty_token_is_a_rejected_bearer_credential(self) -> None:
         provider = make_provider()
-        with pytest.raises(CredentialNotApplicable):
+        with pytest.raises(AuthError, match="Empty token"):
             await provider.authenticate("Bearer    ")
 
     @pytest.mark.asyncio

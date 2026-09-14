@@ -61,7 +61,8 @@ class JWTAuthProvider:
 
         token = authorization.removeprefix("Bearer ").strip()
         if not token:
-            raise CredentialNotApplicable("Empty token")
+            # The Bearer scheme is recognized even when its credential is empty.
+            raise AuthError("Empty token")
 
         claims = await self._decode_token(token)
 
