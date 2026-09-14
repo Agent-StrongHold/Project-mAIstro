@@ -22,24 +22,23 @@ from starlette.responses import JSONResponse, Response
 
 logger = logging.getLogger("hive.auth_middleware")
 
-_PUBLIC_PREFIXES = (
-    "/v1/setup/",
-    "/health",
-)
-
 #: Authenticated like everything else, but by a device credential rather than a
 #: session — see `services/voice_identity.py`. This is not an exemption: with
 #: no credential configured the prefix answers 401 like any other `/v1/` path.
 _VOICE_PREFIX = "/v1/voice/"
 
-# FastAPI's default docs/openapi paths don't end in "/" (the real route is
-# /openapi.json), so they can't use the boundary-safe prefix check below —
-# keep them on a plain startswith() match.
-_PUBLIC_PREFIXES_LOOSE = (
+# Documentation families are boundary-safe prefixes. The schema itself is
+# one exact route so a future sibling such as /openapi-anything is protected.
+_PUBLIC_PREFIXES = (
+    "/v1/setup/",
+    "/health",
     "/docs",
-    "/openapi",
     "/redoc",
 )
+
+# Kept as an empty compatibility surface for route-gate fixtures; no loose
+# public matching is permitted.
+_PUBLIC_PREFIXES_LOOSE: tuple[str, ...] = ()
 _OAUTH_PUBLIC_GET_RE = re.compile(r"^/v1/auth/oauth/(?P<provider>[^/]{1,128})/(?:start|callback)$")
 
 _PUBLIC_EXACT = frozenset(
@@ -50,6 +49,7 @@ _PUBLIC_EXACT = frozenset(
         "/v1/auth/login",
         "/v1/auth/register",
         "/v1/auth/whoami",
+        "/openapi.json",
         "/favicon.ico",
     }
 )
@@ -271,7 +271,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
             path in _PUBLIC_EXACT
             or _is_public_oauth_get(request.method, path)
             or any(_matches_public_prefix(path, p) for p in _PUBLIC_PREFIXES)
-            or any(path.startswith(p) for p in _PUBLIC_PREFIXES_LOOSE)
         ):
             return await call_next(request)
 

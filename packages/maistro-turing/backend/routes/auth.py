@@ -73,9 +73,9 @@ def get_current_user(session_id: str) -> dict | None:
         "id": user_id,
         "username": record["username"],
         "role": record["role"],
-        # Route authorization uses the repository-wide scope.verb vocabulary;
-        # role remains the product's existing admin/user policy.
-        "scopes": () if record["role"] == "admin" else ("turing.read", "turing.chat"),
+        # Principal.scopes is the repository-wide scope.verb contract; role
+        # remains the product's existing admin/user policy.
+        "scopes": () if record["role"] == "admin" else ("turing.vault_read", "turing.chat"),
     }
 
 
@@ -102,7 +102,7 @@ def login(body: LoginBody, response: Response) -> dict:
                 "id": user_id,
                 "username": record["username"],
                 "role": record["role"],
-                "scopes": () if record["role"] == "admin" else ("turing.read", "turing.chat"),
+                "scopes": () if record["role"] == "admin" else ("turing.vault_read", "turing.chat"),
             }
     raise HTTPException(status_code=401, detail="Invalid credentials")
 

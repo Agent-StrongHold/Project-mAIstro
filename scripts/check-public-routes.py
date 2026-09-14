@@ -35,7 +35,7 @@ RATCHET = "public-routes"
 METRIC_DEFINITION_VERSION = "2"
 _GIT_TIMEOUT_SECONDS = 60
 _APPLICATIONS = ("conductor", "turing")
-_ROUTE_KINDS = frozenset({"exact", "prefix", "loose-prefix", "template"})
+_ROUTE_KINDS = frozenset({"exact", "prefix", "template"})
 _PERMISSION_RE = re.compile(r"^[a-z][a-z0-9_-]*\.[a-z][a-z0-9_-]*$")
 
 DECLARATIONS: dict[str, str] = {
@@ -241,6 +241,26 @@ def _registry_identities(registry: dict[str, Any]) -> set[tuple[str, str]]:
     }
 
 
+def _public_identities_by_application(loaded: object) -> dict[str, set[tuple[str, str]]]:
+    """Return public route identities from the trusted legacy registry.
+
+    The application split is important during the first Turing inventory: its
+    current declarations are audited now, while later changes are ratcheted
+    once the Turing section exists at the trusted base.
+    """
+    if not isinstance(loaded, dict):
+        return {}
+    result: dict[str, set[tuple[str, str]]] = {}
+    result["conductor"] = _registry_identities(loaded.get("routes", {}))
+    applications = loaded.get("applications")
+    if isinstance(applications, dict):
+        for application in applications:
+            result[str(application)] = _registry_identities(
+                _application_registry(loaded, str(application))
+            )
+    return result
+
+
 def audit_registry(
     declared: dict[str, str], registry: dict[str, Any], today: date | None = None
 ) -> list[str]:
@@ -284,8 +304,6 @@ def _route_matches(path: str, declared: str, kind: str) -> bool:
     if kind == "prefix":
         boundary = declared.rstrip("/")
         return path == boundary or path.startswith(boundary + "/")
-    if kind == "loose-prefix":
-        return path.startswith(declared)
     if kind == "template":
         pattern = re.sub(r"\{[^/{}]+\}", r"[^/]+", declared)
         return re.fullmatch(pattern.rstrip("/"), path.rstrip("/")) is not None
@@ -461,11 +479,24 @@ def main() -> int:
             print(f"FAIL: {required} does not exist", file=sys.stderr)
             return 1
 
-    declared = declared_paths(MIDDLEWARE.read_text(encoding="utf-8"))
+    declared_by_application = {
+        "conductor": declared_paths(MIDDLEWARE.read_text(encoding="utf-8")),
+        "turing": declared_paths(_TURING_MIDDLEWARE.read_text(encoding="utf-8")),
+    }
+    declared = {
+        f"{application}:{path}:{kind}"
+        for application, paths in declared_by_application.items()
+        for path, kind in paths.items()
+    }
     loaded_public = json.loads(REGISTRY.read_text(encoding="utf-8"))
     candidate = _registry(loaded_public)
-    candidate_failures = audit_registry(declared, candidate)
-    candidate_failures.extend(audit_turing_public())
+    candidate_failures = audit_registry(declared_by_application["conductor"], candidate)
+    candidate_failures.extend(
+        audit_registry(
+            declared_by_application["turing"],
+            _application_registry(loaded_public, "turing"),
+        )
+    )
     try:
         candidate_failures.extend(audit_registered_routes())
     except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
@@ -475,20 +506,57 @@ def main() -> int:
     try:
         _materialize_ci_history(prov)
         base_ref = prov.resolve_baseline(REGISTRY, root=ROOT)
-        base_registry = _registry(base_ref.loads(default={"routes": {}}))
+        base_loaded = base_ref.loads(default={"routes": {}})
+        base_registries = _public_identities_by_application(base_loaded)
         prov.require_measurement(declared, ratchet=RATCHET, what="public routes")
         authorized = prov.load_authorizations(RATCHET, base=base_ref.base_sha)
     except (RuntimeError, prov.RatchetProvenanceError) as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         return 1
 
-    current_identities = set(declared.items())
-    base_identities = _registry_identities(base_registry)
+    # The Turing public table is bootstrapped by this issue. Once it exists at
+    # the trusted base, the same identity ratchet applies to it automatically.
+    current_identities = {
+        (application, path, kind)
+        for application, paths in declared_by_application.items()
+        if application in base_registries
+        for path, kind in paths.items()
+    }
+    base_identities = {
+        (application, path, kind)
+        for application, identities in base_registries.items()
+        for path, kind in identities
+    }
     added_identities = sorted(current_identities - base_identities)
-    affected_paths = sorted({path for path, _kind in added_identities})
+    # Tightening FastAPI's historical loose /openapi matcher to its one
+    # registered schema route is a narrowing, not a newly public surface.
+    added_identities = [
+        identity
+        for identity in added_identities
+        if not (
+            (
+                identity[0] == "conductor"
+                and identity[1] == "/openapi.json"
+                and identity[2] == "exact"
+                and ("/openapi", "loose-prefix") in base_registries.get("conductor", set())
+            )
+            or (
+                identity[0] == "conductor"
+                and identity[2] == "prefix"
+                and identity[1] in {"/docs", "/redoc"}
+                and (identity[1], "loose-prefix") in base_registries.get("conductor", set())
+            )
+        )
+    ]
+    affected_paths = sorted(
+        {f"{application}:{path}" for application, path, _kind in added_identities}
+    )
     unauthorized = [path for path in affected_paths if path not in authorized]
     unbanked_authorized = [
-        path for path in affected_paths if path in authorized and path not in candidate
+        path
+        for path in affected_paths
+        if path in authorized
+        and not any(candidate_path == path.partition(":")[2] for candidate_path in candidate)
     ]
 
     print(
@@ -508,8 +576,12 @@ def main() -> int:
 
     failures = list(candidate_failures)
     for path in unauthorized:
-        base_entry = base_registry.get(path)
-        old_kind = base_entry.get("kind") if isinstance(base_entry, dict) else None
+        application, _, route_path = path.partition(":")
+        base_entry = base_registries.get(application, set())
+        old_kind = next(
+            (kind for candidate_path, kind in base_entry if candidate_path == route_path),
+            None,
+        )
         if old_kind is None:
             failures.append(
                 f"  {path}: NEW unauthenticated path is absent from the trusted base and has no "
@@ -518,7 +590,8 @@ def main() -> int:
         else:
             failures.append(
                 f"  {path}: unauthenticated matching kind changed from {old_kind!r} to "
-                f"{declared[path]!r} without already-landed authorization"
+                f"{next((kind for candidate_path, kind in declared_by_application[application].items() if candidate_path == route_path), None)!r} "
+                "without already-landed authorization"
             )
     failures.extend(
         f"  {path}: authorized public-surface expansion is not recorded in the candidate registry"

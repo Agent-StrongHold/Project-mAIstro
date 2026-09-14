@@ -41,6 +41,10 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
         "this call site uses reachability only for census attribution; "
         "check-reachability.py owns the blocking debt ratchet"
     ),
+    ("check-public-routes.py", "quality/route-permissions.json"): (
+        "route-permissions.json is the reviewed current-tree declaration specification; "
+        "the public-routes ratchet separately protects unauthenticated surface expansion"
+    ),
     ("check_ac_state_impl.py", "quality/reachability-baseline.json"): (
         "criterion reachability is a measurement input; the blocking reachability ratchet "
         "separately prevents a candidate from deleting an actually-unreachable module to "

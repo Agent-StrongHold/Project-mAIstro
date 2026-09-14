@@ -8,7 +8,7 @@
   "routes": {
     "conductor": [
       {"methods": ["GET"], "path": "/docs", "kind": "prefix", "access": "public", "owner": "@BlakeMatthews-dev", "risk": "medium", "disposition": "permanent", "reason": "FastAPI documentation is a reviewed public disclosure."},
-      {"methods": ["GET"], "path": "/openapi", "kind": "loose-prefix", "access": "public", "owner": "@BlakeMatthews-dev", "risk": "medium", "disposition": "permanent", "reason": "The docs renderer loads the public schema path."},
+      {"methods": ["GET"], "path": "/openapi.json", "kind": "exact", "access": "public", "owner": "@BlakeMatthews-dev", "risk": "medium", "disposition": "permanent", "reason": "The docs renderer loads the public schema path."},
       {"methods": ["GET"], "path": "/redoc", "kind": "prefix", "access": "public", "owner": "@BlakeMatthews-dev", "risk": "medium", "disposition": "permanent", "reason": "The alternate docs renderer is a reviewed public disclosure."},
       {"methods": ["GET"], "path": "/health", "kind": "prefix", "access": "public", "owner": "@BlakeMatthews-dev", "risk": "low", "disposition": "permanent", "reason": "Health probes return liveness without a credential."},
       {"methods": ["POST"], "path": "/v1/auth/register", "kind": "exact", "access": "public", "owner": "@BlakeMatthews-dev", "risk": "high", "disposition": "temporary", "issue": 313, "expires": "2026-11-24", "reason": "First-run account creation remains a reviewed temporary exception."},
@@ -64,9 +64,9 @@
       {"methods": ["GET"], "path": "/health", "kind": "exact", "access": "public", "owner": "@BlakeMatthews-dev", "risk": "low", "disposition": "permanent", "reason": "The liveness probe returns only a fixed service status."},
       {"methods": ["POST"], "path": "/v1/auth/login", "kind": "exact", "access": "public", "owner": "@BlakeMatthews-dev", "risk": "low", "disposition": "permanent", "reason": "A caller must reach login before it can establish a session."},
       {"methods": ["GET"], "path": "/v1/auth/whoami", "kind": "exact", "access": "public", "owner": "@BlakeMatthews-dev", "risk": "low", "disposition": "permanent", "reason": "The frontend checks only its own session state."},
-      {"methods": ["GET"], "path": "/v1/state", "kind": "prefix", "access": "permission", "permission": "turing.read", "reason": "Self-model state is available only to an authenticated Turing caller."},
-      {"methods": ["GET"], "path": "/v1/feed", "kind": "prefix", "access": "permission", "permission": "turing.read", "reason": "Producer artifacts are authenticated Turing data."},
-      {"methods": ["POST"], "path": "/v1/feed", "kind": "prefix", "access": "permission", "permission": "turing.write", "reason": "Publishing an artifact is restricted to the internal write scope."},
+      {"methods": ["GET"], "path": "/v1/state", "kind": "prefix", "access": "permission", "permission": "turing.vault_read", "reason": "Self-model state is available only to an authenticated Turing caller."},
+      {"methods": ["GET"], "path": "/v1/feed", "kind": "prefix", "access": "permission", "permission": "turing.vault_read", "reason": "Producer artifacts are authenticated Turing data."},
+      {"methods": ["POST"], "path": "/v1/feed", "kind": "prefix", "access": "permission", "permission": "turing.vault_write", "reason": "Publishing an artifact is restricted to the internal write scope."},
       {"methods": ["POST"], "path": "/v1/chat", "kind": "prefix", "access": "permission", "permission": "turing.chat", "reason": "Chat invokes the canonical Turing execution path."},
       {"methods": ["*"], "path": "/v1/admin", "kind": "prefix", "access": "permission", "permission": "turing.admin", "reason": "Self-model mutation and administration require the human admin lane."}
     ]

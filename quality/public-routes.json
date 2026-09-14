@@ -35,21 +35,21 @@
       "reason": "Container and load-balancer liveness probes hold no credential and must not be given one. Returns liveness only, no deployment detail."
     },
     "/docs": {
-      "kind": "loose-prefix",
+      "kind": "prefix",
       "owner": "@BlakeMatthews-dev",
       "risk": "medium",
       "disposition": "permanent",
       "reason": "FastAPI's generated API documentation. Discloses the route surface and schemas, not data; it is the same information an authenticated caller reads from /openapi.json."
     },
-    "/openapi": {
-      "kind": "loose-prefix",
+    "/openapi.json": {
+      "kind": "exact",
       "owner": "@BlakeMatthews-dev",
       "risk": "medium",
       "disposition": "permanent",
       "reason": "The schema /docs renders. Public for the same reason and with the same exposure."
     },
     "/redoc": {
-      "kind": "loose-prefix",
+      "kind": "prefix",
       "owner": "@BlakeMatthews-dev",
       "risk": "medium",
       "disposition": "permanent",

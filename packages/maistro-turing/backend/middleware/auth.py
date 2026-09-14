@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.responses import JSONResponse, Response
 
 from maistro.auth import Scope, ServiceKeyAuthProvider, ServiceKeyRegistry
+from maistro.security.sentinel.authz_types import Principal
 
 logger = logging.getLogger("turing.auth_middleware")
 
@@ -61,11 +63,6 @@ _PUBLIC_PREFIXES = (
 # a protected path that is absent from this reviewed table; CI remains the
 # earlier feedback loop, while this branch is the runtime default-deny floor.
 _ROUTE_REGISTRY = Path(__file__).resolve().parents[4] / "quality" / "route-permissions.json"
-_SERVICE_PERMISSIONS = {
-    "turing.read": Scope.TURING_VAULT_READ,
-    "turing.write": Scope.TURING_VAULT_WRITE,
-    "turing.chat": Scope.TURING_CHAT,
-}
 
 
 def _load_route_policy() -> tuple[dict[str, Any], ...]:
@@ -82,7 +79,7 @@ def _load_route_policy() -> tuple[dict[str, Any], ...]:
         if not isinstance(entry.get("path"), str) or entry.get("kind") not in {
             "exact",
             "prefix",
-            "loose-prefix",
+            "template",
         }:
             raise RuntimeError("Turing route authorization registry contains an invalid path")
         methods = entry.get("methods")
@@ -116,6 +113,11 @@ def _matches_prefix(path: str, prefix: str) -> bool:
     return path == boundary or path.startswith(boundary + "/")
 
 
+def _matches_template(path: str, template: str) -> bool:
+    pattern = re.sub(r"\{[^/{}]+\}", r"[^/]+", template)
+    return re.fullmatch(pattern.rstrip("/"), path.rstrip("/")) is not None
+
+
 def _route_policy(
     entries: tuple[dict[str, Any], ...], method: str, path: str
 ) -> dict[str, Any] | None:
@@ -126,7 +128,10 @@ def _route_policy(
         and (
             (entry.get("kind") == "exact" and path == entry.get("path"))
             or (entry.get("kind") == "prefix" and _matches_prefix(path, str(entry.get("path", ""))))
-            or (entry.get("kind") == "loose-prefix" and path.startswith(str(entry.get("path", ""))))
+            or (
+                entry.get("kind") == "template"
+                and _matches_template(path, str(entry.get("path", "")))
+            )
         )
     ]
     if not matches:
@@ -154,56 +159,88 @@ class TuringAuthMiddleware(BaseHTTPMiddleware):
         if request.method == "OPTIONS":
             return await call_next(request)
         if path in _PUBLIC_EXACT or any(_matches_prefix(path, p) for p in _PUBLIC_PREFIXES):
-            if path.startswith("/v1/"):
-                policy = _route_policy(self._route_policy, request.method, path)
-                if policy is None or policy.get("access") != "public":
-                    return JSONResponse(
-                        status_code=403,
-                        content={"detail": "Route authorization declaration required"},
-                    )
-            return await call_next(request)
-        request.state.user = self._get_user(request)
-        request.state.service = self._get_service(request)
-
-        if path.startswith("/v1/"):
-            if request.state.user is None and request.state.service is None:
-                return JSONResponse(status_code=401, content={"detail": "Authentication required"})
+            # The route table is authoritative for every registered public
+            # family, not only /v1. Keep the historical synthetic /favicon and
+            # root declarations usable when FastAPI has no matching route.
             policy = _route_policy(self._route_policy, request.method, path)
-            if policy is None:
+            if policy is None and path not in {"/", "/favicon.ico"}:
                 return JSONResponse(
                     status_code=403,
                     content={"detail": "Route authorization declaration required"},
                 )
-            if (
-                policy.get("access") == "permission"
-                and not (
-                    policy.get("permission") == "turing.admin"
-                    and getattr(request.state, "service", None) is not None
-                    and getattr(request.state, "user", None) is None
-                )
-                and not self._has_permission(policy.get("permission"), request)
-            ):
+            if policy is not None and policy.get("access") != "public":
                 return JSONResponse(
                     status_code=403,
-                    content={"detail": f"Permission '{policy.get('permission')}' required"},
+                    content={"detail": "Route authorization declaration required"},
                 )
+            return await call_next(request)
+        request.state.user = self._get_user(request)
+        request.state.service = self._get_service(request)
+
+        if request.state.user is None and request.state.service is None:
+            return JSONResponse(status_code=401, content={"detail": "Authentication required"})
+        policy = _route_policy(self._route_policy, request.method, path)
+        if policy is None:
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Route authorization declaration required"},
+            )
+        if (
+            policy.get("access") == "permission"
+            and not (
+                # Keep the existing dependency-owned human/service distinction:
+                # require_admin returns 401 for a service identity, rather than
+                # the middleware pre-empting it with a route-scope response.
+                policy.get("permission") == "turing.admin"
+                and getattr(request.state, "service", None) is not None
+                and getattr(request.state, "user", None) is None
+            )
+            and not self._has_permission(policy.get("permission"), request)
+        ):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": f"Permission '{policy.get('permission')}' required"},
+            )
 
         return await call_next(request)
 
     def _has_permission(self, permission: object, request: Request) -> bool:
         if not isinstance(permission, str):
             return False
+        principal = self._principal(request)
+        if principal is None:
+            return False
+        # Publishing is still owned by the existing Scope dependency. Let it
+        # produce its established 401/403 response for human callers rather
+        # than changing that product authorization lane in this gate.
+        if principal.kind == "human" and permission == "turing.vault_write":
+            return True
+        # The route table and Principal.scopes use the same scope.verb action
+        # names. There is no Turing-only permission translation or allow-on-miss.
+        return principal.roles == ("admin",) or permission in principal.scopes
+
+    @staticmethod
+    def _principal(request: Request) -> Principal | None:
         user = getattr(request.state, "user", None)
         if user is not None:
-            if user.get("role") == "admin":
-                return True
-            # Human scopes use the shared scope.verb vocabulary. The internal
-            # write lane is still handed to require_turing_scope, which keeps
-            # its existing 401 product behavior for human callers.
-            return permission in user.get("scopes", ()) or permission == "turing.write"
+            return Principal(
+                id=str(user.get("id", "unknown")),
+                kind="human",
+                roles=(str(user.get("role", "")),),
+                scopes=tuple(str(scope) for scope in user.get("scopes", ())),
+            )
         service = getattr(request.state, "service", None)
-        required = _SERVICE_PERMISSIONS.get(permission)
-        return service is not None and required is not None and service.has_scope(required)
+        if service is None:
+            return None
+        # ServiceKeyRegistry's transport contract is Scope's colon spelling;
+        # Principal is the canonical authorization contract used by policy.
+        scopes = tuple(scope.value.replace(":", ".", 1) for scope in service.scopes)
+        return Principal(
+            id=f"service:{service.name}",
+            kind="agent",
+            scopes=scopes,
+            owner="system",
+        )
 
     def _get_user(self, request: Request) -> dict | None:
         session_id = request.cookies.get("turing_session")

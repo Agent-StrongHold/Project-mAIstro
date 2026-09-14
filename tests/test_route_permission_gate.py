@@ -101,6 +101,17 @@ def test_both_apps_reject_an_expired_exemption(gate, application: str) -> None:
     assert any("expired" in failure for failure in failures)
 
 
+def test_exact_public_route_does_not_match_a_lookalike(gate, application: str) -> None:
+    failures = gate._route_entry_failures(
+        application,
+        [("GET", "/openapi-anything")],
+        [_public("/openapi.json")],
+        gate.date(2026, 9, 8),
+    )
+
+    assert any("has no declaration" in failure for failure in failures)
+
+
 def test_suffix_lookalike_is_not_a_public_route(gate, application: str) -> None:
     # A declaration for /invoke cannot authorize the unrelated sibling
     # /invoke-history; this is the regression against suffix-based bypasses.
