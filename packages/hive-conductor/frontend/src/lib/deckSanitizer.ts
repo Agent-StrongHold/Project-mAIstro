@@ -3,11 +3,13 @@
 export {
   createSanitizedVisualArtifactFragment,
   SanitizedVisualArtifact,
+  recommendVisualArtifactTrust,
   sanitizeVisualArtifactMarkup,
   scanVisualArtifactMarkup,
   VISUAL_ARTIFACT_BLOCK_REASONS,
   type VisualArtifactBlockReason,
   type VisualArtifactScan,
+  type VisualArtifactTrustRecommendation,
 } from "./visualArtifactRenderer";
 
 import {
