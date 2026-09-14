@@ -227,7 +227,7 @@ class ReactStrategy:
         sentinel: Any,
         auth: Any,
         warden: Any,
-        context: list[WardenContext],
+        context: list[WardenContext] | None = None,
     ) -> str:
         """Apply the shared output gate with bounded prior tool context."""
         scan_kwargs = {"context": context} if context else {}
