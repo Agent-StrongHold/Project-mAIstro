@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from maistro.persistence.pg_learnings import PgLearningStore
+from maistro.persistence.pg_learnings import _PG_INSERT_FIELDS, PgLearningStore
 from maistro.types.memory import Learning, MemoryScope
 
 
@@ -137,6 +137,8 @@ async def test_store_inserts_new_learning_when_no_existing_match(
     assert insert_call.method == "fetchrow"
     assert "INSERT INTO learnings" in insert_call.query
     assert "RETURNING id" in insert_call.query
+    columns = insert_call.query.split("(", 1)[1].split(")", 1)[0]
+    assert tuple(c.strip() for c in columns.split(",")) == _PG_INSERT_FIELDS
     # `trigger_keys` goes out as JSON text, not as a list: the column is JSONB
     # and asyncpg's codec for it is text in both directions, so a list raised.
     # `source_query`, `team_id` and `hit_count` are written rather than omitted
