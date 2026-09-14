@@ -152,10 +152,17 @@ its floor, and it exists for development and deliberate unsafe deployments.
 not a flag another subsystem might set for unrelated reasons. Non-positive values
 are rejected in every mode, unsafe included.
 
-`GET /health/ready` reports the effective values under
-`effective_resource_policy`, including `unsafe_overrides_enabled`, so what a
-process is actually enforcing can be read rather than inferred from the
-environment it was supposed to have been given.
+The anonymous health endpoints intentionally return only liveness/readiness
+status. The secured metrics interface and deployment policy are documented in
+[`docs/security/metrics-endpoint.md`](docs/security/metrics-endpoint.md); do
+not add operational configuration or dependency details to public probes.
+
+### Metrics endpoint
+
+`GET /metrics` requires the canonical service-key registry and its dedicated
+`admin:metrics` scope. Scraper identity, TLS, trusted-proxy, network-policy,
+label, and cardinality-backstop requirements are documented in
+[`docs/security/metrics-endpoint.md`](docs/security/metrics-endpoint.md).
 
 ### Gaps against Stronghold's inventory
 
