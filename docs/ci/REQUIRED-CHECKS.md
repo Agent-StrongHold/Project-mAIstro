@@ -126,6 +126,11 @@ wait forever for an `Expected` result.
 `Container scan + SBOM + cosign` are required on `main` only. They do not report
 as real executed checks on a `develop`-based PR or develop merge group.
 
+`DevSkim` is a documented advisory check for `develop`-based PRs. It is
+intentionally excluded from both protected required-check sets until the owner
+promotes it into the merge contract; its base-coupled workflow scope remains
+listed in the generated table above.
+
 ## Draft pull requests
 
 Draft PRs run the required workflow set deliberately. Cost is controlled with

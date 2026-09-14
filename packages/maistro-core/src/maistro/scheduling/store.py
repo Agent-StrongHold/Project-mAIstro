@@ -227,13 +227,19 @@ def _advance(
     """The cursor advance, shared by every implementation so they cannot drift."""
     if fires is None:
         fires = 0 if fired_at is None else 1
+    runs_so_far = schedule.runs_so_far + fires
+    # `disable` is computed from an admitter's snapshot. A concurrent ticker
+    # may have admitted the remaining occurrences since that snapshot, so the
+    # store must enforce exhaustion from the serialized counter as well.
+    exhausted = schedule.max_runs is not None and runs_so_far >= schedule.max_runs
+    disabled = disable or exhausted
     return schedule.model_copy(
         update={
             "last_fired_at": fired_at if fired_at is not None else schedule.last_fired_at,
             "last_run_id": run_id if run_id is not None else schedule.last_run_id,
-            "runs_so_far": schedule.runs_so_far + fires,
-            "next_due_at": None if disable else next_due_at,
-            "enabled": False if disable else schedule.enabled,
+            "runs_so_far": runs_so_far,
+            "next_due_at": None if disabled else next_due_at,
+            "enabled": False if disabled else schedule.enabled,
             "updated_at": datetime.now(UTC),
         }
     )
