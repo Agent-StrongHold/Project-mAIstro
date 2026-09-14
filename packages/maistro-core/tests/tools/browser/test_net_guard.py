@@ -212,6 +212,14 @@ async def test_a_configured_origin_is_allowed_and_the_allowance_stays_scoped() -
 
 
 @pytest.mark.ac("SPEC-090326-b7e2/AC-6")
+async def test_a_non_http_allowance_cannot_bypass_the_scheme_policy() -> None:
+    _guard, context = await _guarded_context(extra_origins=["file:///etc/passwd"])
+
+    route = await context.navigate("file:///etc/passwd")
+
+    assert route.action == ("abort", ABORT_REASON)
+
+
 async def test_browser_specific_origins_layer_without_widening_the_shared_policy() -> None:
     """`BROWSER_USE_ALLOWED_ORIGINS` is a host-owned browser allowance.
 
