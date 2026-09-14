@@ -15,7 +15,6 @@ The in-flight guard keeps a pending resource from being re-dispatched next cycle
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
@@ -141,9 +140,15 @@ class RuleBasedRepair:
             return RepairResult(
                 proposal, RepairDecision.PROPOSE_ONLY, "escalated for human review"
             ), False
-        if self._autonomy == "detect_only" or self._action_resolver is None:
+        if (
+            self._autonomy == "detect_only"
+            or self._action_resolver is None
+            or self._effect_invoker is None
+        ):
             detail = (
-                "autonomy=detect_only" if self._autonomy == "detect_only" else "no infra_action"
+                "autonomy=detect_only"
+                if self._autonomy == "detect_only"
+                else "no governed infra_action"
             )
             return RepairResult(proposal, RepairDecision.SUPPRESSED, detail), False
         if dispatched >= self._max_actions:
@@ -202,26 +207,13 @@ class RuleBasedRepair:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
-    async def _resolve_action(self) -> InfraAction | None:
-        if self._action_resolver is None:
-            return None
-        resolved = self._action_resolver()
-        if inspect.isawaitable(resolved):
-            resolved = await resolved
-        return resolved
-
     async def _invoke_action(self, proposal: RepairProposal) -> ActionResult:
-        """Resolve and admit one action at the physical effect boundary."""
+        """Admit one action through the canonical effect boundary."""
+        if self._effect_invoker is None:
+            return ActionResult(ok=False, detail="no governed infra_action")
         action = proposal.action or ""
-        if self._effect_invoker is not None:
-            return await self._effect_invoker(
-                action,
-                proposal.params,
-                f"self_repair:{proposal.resource}:{action}:{id(proposal)}",
-            )
-        provider = await self._resolve_action()
-        if provider is None:
-            from maistro.capabilities.slots.infra import ActionResult
-
-            return ActionResult(ok=False, detail="infra_action unavailable")
-        return await provider.act(action, proposal.params)
+        return await self._effect_invoker(
+            action,
+            proposal.params,
+            f"self_repair:{proposal.resource}:{action}:{id(proposal)}",
+        )

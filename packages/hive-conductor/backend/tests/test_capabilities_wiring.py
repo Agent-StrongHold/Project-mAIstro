@@ -183,6 +183,33 @@ class _WiringAction:
         return ActionResult(ok=True, detail="done")
 
 
+async def test_self_repair_policy_failure_denies_without_provider_call() -> None:
+    reg = default_capability_registry(entry_points=[])
+    action = _WiringAction()
+    reg.register(_WiringMonitor())
+    reg.register(action)
+
+    async def broken_policy(*_args, **_kwargs):
+        raise RuntimeError("policy store unavailable")
+
+    effects = new_effect_context(policy_evaluator=broken_policy)
+    _register_self_repair(reg, _cfg(), effects)
+    repair = reg.provider("self_repair", "rule_based_repair")
+    assert repair is not None
+
+    cycle = await repair.run_once()
+
+    assert cycle.results[0].decision.value == "failed"
+    assert action.calls == []
+    assert "capability invocation policy unavailable" in cycle.results[0].detail
+    events = await effects.event_store.list_stream("workspace:default")
+    assert any(
+        event.type == "capability.invocation.policy_decision"
+        and event.payload["decision"] == "deny"
+        for event in events
+    )
+
+
 async def test_self_repair_wiring_uses_canonical_invocation() -> None:
     reg = default_capability_registry(entry_points=[])
     action = _WiringAction()

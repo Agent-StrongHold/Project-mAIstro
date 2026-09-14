@@ -9,7 +9,7 @@ a provider merely because one happens to be registered elsewhere.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from typing import Any
 
@@ -61,6 +61,13 @@ class CapabilityEffectContext:
     invocation_store: InvocationStore
     event_store: EventStore
     credentials: CredentialRouter = field(default_factory=CredentialRouter)
+
+    def with_policy_evaluator(self, policy_evaluator: PolicyEvaluator) -> CapabilityEffectContext:
+        """Narrow policy without creating competing Binding or Invocation stores."""
+        return replace(
+            self,
+            invocations=self.invocations.with_policy_evaluator(policy_evaluator),
+        )
 
     def credential_routing(self) -> CredentialRouting:
         """Credential routing for this context's Provider selection seam (#58).

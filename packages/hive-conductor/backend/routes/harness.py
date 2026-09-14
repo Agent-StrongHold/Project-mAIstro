@@ -10,6 +10,7 @@ returns 400 when Warden refuses an inbound payload.
 
 from __future__ import annotations
 
+import contextlib
 import json
 from typing import Any
 
@@ -21,9 +22,10 @@ from services.engine import get_engine
 from maistro.agents.spec.agent_spec import AgentRole, AgentSpec
 from maistro.capabilities import HarnessSessionManager, Unavailable
 from maistro.capabilities.binding import Binding
+from maistro.capabilities.binding_store import InMemoryBindingStore
 from maistro.capabilities.effect_context import new_effect_context
 from maistro.capabilities.slots.harness_runner import HarnessInputBlocked
-from maistro.policy import BudgetRule, SequencePolicyEngine
+from maistro.policy import Action, BudgetRule, Decision, PolicyVerdict, SequencePolicyEngine
 from maistro.security.warden.detector import Warden
 
 router = APIRouter(tags=["harness"])
@@ -41,22 +43,61 @@ def _configured_harness_policy() -> SequencePolicyEngine:
     return SequencePolicyEngine([BudgetRule(dimension="count", limit=0)])
 
 
-def _get_manager() -> HarnessSessionManager:
+def _configured_harness_invocation_policy() -> Any:
+    """Return the bounded policy used to admit route provider calls."""
+    policy = SequencePolicyEngine([BudgetRule(dimension="count", limit=1000)])
+
+    async def evaluate(binding: Binding, request: Any, context: Any) -> PolicyVerdict:
+        del request, context
+        try:
+            return policy.charge(
+                f"harness-route:{binding.binding_id}",
+                Action(kind="harness_invocation"),
+            )
+        except Exception:
+            # Policy dependencies are part of effect admission, never a reason
+            # to grant the route a provider call.
+            return PolicyVerdict(
+                Decision.DENY,
+                reason="harness invocation policy unavailable",
+                rule="harness.fail-closed",
+            )
+
+    return evaluate
+
+
+async def _get_manager() -> HarnessSessionManager:
     """Lazily build a process-wide manager over the engine registry + Warden."""
     global _manager
     if _manager is None:
-        effects = new_effect_context()
+        engine = get_engine()
+        container = getattr(engine.agent_port, "container", None)
+        effects = getattr(container, "capability_effects", None)
+        if effects is None:
+            effects = new_effect_context(policy_evaluator=_configured_harness_invocation_policy())
+        else:
+            effects = effects.with_policy_evaluator(_configured_harness_invocation_policy())
+        binding = Binding(
+            binding_id="builtin:harness-route",
+            workspace_id="default",
+            project_id="default",
+            capability="harness_runner",
+        )
+        # This is composition-time registration, not an effect-time grant. Once
+        # revoked, the manager only resolves the existing identity and never
+        # recreates it.
+        if isinstance(effects.bindings, InMemoryBindingStore):
+            with contextlib.suppress(Exception):
+                # A revoked route Binding stays revoked; the manager below
+                # exposes the route as unavailable rather than re-granting it.
+                effects.bindings.register(binding)
         _manager = HarnessSessionManager(
-            get_engine().capabilities,
+            engine.capabilities,
             warden=Warden(),
             policy=_configured_harness_policy(),
             invocation_service=effects.invocations,
-            invocation_binding=Binding(
-                binding_id="builtin:harness-route",
-                workspace_id="default",
-                project_id="default",
-                capability="harness_runner",
-            ),
+            invocation_binding=binding,
+            binding_store=effects.bindings,
         )
     return _manager
 
@@ -90,7 +131,8 @@ def _agent_spec(body: StartBody) -> AgentSpec:
 
 @router.post("/sessions")
 async def start_session(body: StartBody) -> dict[str, Any]:
-    result = await _get_manager().start(_agent_spec(body), workdir=body.workdir)
+    manager = await _get_manager()
+    result = await manager.start(_agent_spec(body), workdir=body.workdir)
     if isinstance(result, Unavailable):
         raise HTTPException(status_code=503, detail=result.reason)
     return {"session_id": result}
@@ -99,7 +141,8 @@ async def start_session(body: StartBody) -> dict[str, Any]:
 @router.post("/sessions/{session_id}/send")
 async def send_turn(session_id: str, body: SendBody) -> dict[str, Any]:
     try:
-        result = await _get_manager().send(session_id, body.messages)
+        manager = await _get_manager()
+        result = await manager.send(session_id, body.messages)
     except HarnessInputBlocked as exc:
         raise HTTPException(
             status_code=400, detail=f"blocked by warden: {', '.join(exc.flags)}"
@@ -112,7 +155,7 @@ async def send_turn(session_id: str, body: SendBody) -> dict[str, Any]:
 
 @router.get("/sessions/{session_id}/stream")
 async def stream_session(session_id: str, request: Request) -> StreamingResponse:
-    manager = _get_manager()
+    manager = await _get_manager()
 
     async def event_gen() -> Any:
         yield ": connected\n\n"
@@ -131,5 +174,9 @@ async def stream_session(session_id: str, request: Request) -> StreamingResponse
 
 @router.delete("/sessions/{session_id}")
 async def stop_session(session_id: str) -> dict[str, Any]:
-    await _get_manager().stop(session_id)
+    manager = await _get_manager()
+    result = await manager.stop(session_id)
+    if isinstance(result, Unavailable):
+        status = 404 if result.reason.startswith("unknown harness session") else 503
+        raise HTTPException(status_code=status, detail=result.reason)
     return {"stopped": True}

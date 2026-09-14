@@ -58,6 +58,13 @@ class _RaisingAction:
         raise RuntimeError("action exploded")
 
 
+def _raising_invoker(action: _RaisingAction):
+    async def invoke(action_name: str, params: dict, _effect_key: str) -> ActionResult:
+        return await action.act(action_name, params)
+
+    return invoke
+
+
 class TestProviderMetadata:
     def test_name_is_rule_based_repair(self) -> None:
         p = RuleBasedRepair(infra_monitor=None, infra_action_resolver=None)
@@ -101,9 +108,11 @@ class TestMonitorSnapshotFailure:
 
 class TestAutoRunFailure:
     async def test_action_exception_yields_failed_result(self) -> None:
+        action = _RaisingAction()
         p = RuleBasedRepair(
             infra_monitor=_FakeMonitor(),
-            infra_action_resolver=lambda: _RaisingAction(),
+            infra_action_resolver=lambda: action,
+            effect_invoker=_raising_invoker(action),
             autonomy="auto_safe",
         )
         result = await p.run_once()
@@ -113,9 +122,11 @@ class TestAutoRunFailure:
 
 class TestDispatchAsyncFailure:
     async def test_dispatch_async_exception_is_logged_and_swallowed(self) -> None:
+        action = _RaisingAction()
         p = RuleBasedRepair(
             infra_monitor=_FakeMonitor(),
-            infra_action_resolver=lambda: _RaisingAction(),
+            infra_action_resolver=lambda: action,
+            effect_invoker=_raising_invoker(action),
             autonomy="approve_all",
         )
         result = await p.run_once()

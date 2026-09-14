@@ -15,6 +15,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 from maistro.capabilities.binding import Binding
+from maistro.capabilities.binding_store import InMemoryBindingStore
 from maistro.capabilities.effect_context import CapabilityEffectContext, new_effect_context
 from maistro.capabilities.http_client import HttpxAsyncHttp
 from maistro.capabilities.providers.host_health import HostHealthAction, HostHealthMonitor
@@ -90,21 +91,8 @@ def _register_host_health(
     _register_self_repair(registry, config, effect_context)
 
 
-def _register_self_repair(
-    registry: CapabilityRegistry,
-    config: Settings,
-    effect_context: CapabilityEffectContext,
-) -> None:
-    """Register self_repair with decision-time infra_action admission (SPEC-188/#846)."""
-    monitor = registry.provider("infra_monitor", "host_health")
-    if monitor is None:
-        return
-
-    async def resolve_action() -> InfraAction | None:
-        provider = await registry.resolve("infra_action")
-        return provider if isinstance(provider, InfraAction) else None
-
-    binding = Binding(
+def _self_repair_binding() -> Binding:
+    return Binding(
         binding_id="builtin:self-repair:infra-action",
         workspace_id="default",
         project_id="default",
@@ -112,17 +100,25 @@ def _register_self_repair(
         capability="infra_action",
     )
 
-    async def invoke_action(action: str, params: dict[str, Any], effect_key: str) -> ActionResult:
-        await effect_context.bindings.put(binding)
 
+def _build_self_repair_effect_invoker(
+    registry: CapabilityRegistry,
+    effect_context: CapabilityEffectContext,
+    binding: Binding,
+) -> tuple[Callable[[], Any], Callable[[str, dict[str, Any], str], Any]]:
+    async def resolve_action() -> InfraAction | None:
+        provider = await registry.resolve("infra_action")
+        return provider if isinstance(provider, InfraAction) else None
+
+    async def invoke_action(action: str, params: dict[str, Any], effect_key: str) -> ActionResult:
         async def resolver(candidate: Binding) -> InfraAction | Unavailable:
             try:
                 authorized = await effect_context.bindings.resolve(
                     candidate.binding_id,
-                    workspace_id="default",
-                    project_id="default",
-                    node_id="self-repair",
-                    capability="infra_action",
+                    workspace_id=binding.workspace_id,
+                    project_id=binding.project_id,
+                    node_id=binding.node_id,
+                    capability=binding.capability,
                 )
             except Exception:
                 return Unavailable(slot="infra_action", reason="self_repair binding unavailable")
@@ -160,6 +156,30 @@ def _register_self_repair(
             blocked_pending_approval=bool(invocation.result.get("blocked_pending_approval")),
         )
 
+    return resolve_action, invoke_action
+
+
+def _register_self_repair(
+    registry: CapabilityRegistry,
+    config: Settings,
+    effect_context: CapabilityEffectContext,
+) -> None:
+    """Register self_repair with decision-time infra_action admission (SPEC-188/#846)."""
+    monitor = registry.provider("infra_monitor", "host_health")
+    if monitor is None:
+        return
+    binding = _self_repair_binding()
+    if not isinstance(effect_context.bindings, InMemoryBindingStore):
+        logger.warning("self_repair disabled: BindingStore has no boot registration seam")
+        return
+    try:
+        effect_context.bindings.register(binding)
+    except Exception:
+        logger.exception("self_repair disabled: failed to register its Binding")
+        return
+    resolve_action, invoke_action = _build_self_repair_effect_invoker(
+        registry, effect_context, binding
+    )
     registry.register(
         RuleBasedRepair(
             infra_monitor=monitor,

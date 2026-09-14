@@ -36,6 +36,10 @@ class BindingStore(Protocol):
 
     async def put(self, binding: Binding) -> Binding: ...
 
+    def register(self, binding: Binding) -> Binding: ...
+
+    async def revoke(self, binding_id: str) -> None: ...
+
     async def get(self, binding_id: str) -> Binding | None: ...
 
     async def resolve(
@@ -59,18 +63,39 @@ class InMemoryBindingStore:
 
     def __init__(self) -> None:
         self._items: dict[str, Binding] = {}
+        self._revoked: set[str] = set()
         self._lock = asyncio.Lock()
 
     async def put(self, binding: Binding) -> Binding:
         async with self._lock:
-            existing = self._items.get(binding.binding_id)
-            if existing is not None and existing != binding:
-                raise ValueError(
-                    f"Binding {binding.binding_id!r} is immutable and already registered"
-                )
-            persisted = binding.model_copy(deep=True)
-            self._items[binding.binding_id] = persisted
-            return persisted.model_copy(deep=True)
+            return self._put_locked(binding)
+
+    def register(self, binding: Binding) -> Binding:
+        """Register a boot-time Binding without creating a runtime grant.
+
+        Composition roots use this before serving requests. Runtime effect paths
+        must use ``resolve``; in particular, a revoked identity can never be
+        re-created by an actor that still remembers its id.
+        """
+        if binding.binding_id in self._revoked:
+            raise BindingNotFound(f"Binding {binding.binding_id!r} has been revoked")
+        return self._put_locked(binding)
+
+    def _put_locked(self, binding: Binding) -> Binding:
+        if binding.binding_id in self._revoked:
+            raise BindingNotFound(f"Binding {binding.binding_id!r} has been revoked")
+        existing = self._items.get(binding.binding_id)
+        if existing is not None and existing != binding:
+            raise ValueError(f"Binding {binding.binding_id!r} is immutable and already registered")
+        persisted = binding.model_copy(deep=True)
+        self._items[binding.binding_id] = persisted
+        return persisted.model_copy(deep=True)
+
+    async def revoke(self, binding_id: str) -> None:
+        """Withdraw a Binding permanently for this store's lifetime."""
+        async with self._lock:
+            self._items.pop(binding_id, None)
+            self._revoked.add(binding_id)
 
     async def get(self, binding_id: str) -> Binding | None:
         item = self._items.get(binding_id)
@@ -96,6 +121,8 @@ class InMemoryBindingStore:
             if not value.strip():
                 raise BindingScopeDenied(f"{field} is required to resolve a Binding")
 
+        if binding_id in self._revoked:
+            raise BindingNotFound(f"Binding {binding_id!r} has been revoked")
         binding = await self.get(binding_id)
         if binding is None:
             raise BindingNotFound(f"Binding {binding_id!r} is not registered")

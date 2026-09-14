@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 from fastapi.testclient import TestClient
 from main import app
@@ -44,12 +46,14 @@ def _config_writer(task_id: str) -> TestClient:
 def _wire_self_repair():
     """Swap the engine registry for one with a host_health-backed self_repair provider."""
     calls: list[str] = []
+    from config import Settings
+    from services.capabilities_wiring import _register_self_repair
     from services.engine import get_engine
 
     from maistro.capabilities.bootstrap import default_capability_registry
+    from maistro.capabilities.effect_context import new_effect_context
     from maistro.capabilities.http_client import HttpxAsyncHttp
     from maistro.capabilities.providers.host_health import HostHealthAction, HostHealthMonitor
-    from maistro.capabilities.providers.self_repair import RuleBasedRepair
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request.url.path)
@@ -76,21 +80,13 @@ def _wire_self_repair():
     reg.register(mon)
     reg.register(act)
 
-    async def resolve_action():
-        return await reg.resolve("infra_action")
-
-    reg.register(
-        RuleBasedRepair(
-            infra_monitor=mon,
-            infra_action_resolver=resolve_action,
-            autonomy="auto_safe",
-        )
-    )
+    effects = new_effect_context()
+    _register_self_repair(reg, Settings(infra_autonomy="auto_safe"), effects)
 
     engine = get_engine()
     saved = engine._capabilities
     engine._capabilities = reg
-    return engine, saved, calls
+    return engine, saved, calls, effects
 
 
 def test_proposals_empty_when_no_provider() -> None:
@@ -113,9 +109,10 @@ def test_run_503_when_no_provider() -> None:
 
 
 def test_disable_infra_action_after_repair_initialization_blocks_effect() -> None:
-    engine, saved, calls = _wire_self_repair()
+    engine, saved, calls, effects = _wire_self_repair()
     try:
         engine.capabilities.set_enabled("infra_action", False)
+        asyncio.run(effects.bindings.revoke("builtin:self-repair:infra-action"))
         c = _config_writer("sr-revoked")
 
         response = c.post("/v1/capabilities/self-repair/run")
@@ -131,7 +128,7 @@ def test_disable_infra_action_after_repair_initialization_blocks_effect() -> Non
 
 
 def test_run_executes_cycle_and_proposals_reflect_it() -> None:
-    engine, saved, _calls = _wire_self_repair()
+    engine, saved, _calls, _effects = _wire_self_repair()
     try:
         c = _config_writer("sr-run")
         r = c.post("/v1/capabilities/self-repair/run")

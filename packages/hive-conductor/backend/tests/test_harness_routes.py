@@ -125,6 +125,35 @@ def test_disable_after_route_session_start_makes_send_unavailable(admin_client):
     reg.set_enabled(SLOT_NAME, True)
 
 
+def test_shipped_route_factory_rechecks_revoked_binding(admin_client):
+    reg = get_engine().capabilities
+    harness = _FakeHarness()
+    reg.register(harness)
+    reg.activate(SLOT_NAME, "fake")
+    reg.set_enabled(SLOT_NAME, True)
+    harness_mod._manager = None
+    try:
+        r = admin_client.post("/v1/harness/sessions", json={"description": "x"})
+        assert r.status_code == 200, r.text
+        sid = r.json()["session_id"]
+        manager = harness_mod._manager
+        assert manager is not None
+        # Revoke the factory-registered Binding after the actor/session exists.
+        import asyncio
+
+        asyncio.run(manager._binding_store.revoke("builtin:harness-route"))
+
+        r = admin_client.post(f"/v1/harness/sessions/{sid}/send", json={"messages": []})
+
+        assert r.status_code == 503
+        assert harness.sent == []
+        r = admin_client.delete(f"/v1/harness/sessions/{sid}")
+        assert r.status_code == 503
+    finally:
+        harness_mod._manager = None
+        reg.set_enabled(SLOT_NAME, True)
+
+
 def test_send_unknown_session_returns_404(admin_client):
     _install_harness(warden=_StubWarden())
     r = admin_client.post("/v1/harness/sessions/ghost/send", json={"messages": []})

@@ -25,7 +25,11 @@ from uuid import uuid4
 
 from maistro.agents.spec.agent_spec import AgentSpec
 from maistro.capabilities.binding import Binding, ResolvedCapabilityProvider
-from maistro.capabilities.governed_invocation import GovernedInvocationExecutionService
+from maistro.capabilities.binding_store import BindingStore
+from maistro.capabilities.governed_invocation import (
+    GovernedInvocationExecutionService,
+    InvocationDenied,
+)
 from maistro.capabilities.invocation import CapabilityUnavailable, EffectNotApplied
 from maistro.capabilities.providers.harness_safety import (
     ActionGate,
@@ -56,6 +60,8 @@ class HarnessSessionManager:
         gate_factory: Callable[[str], ActionGate] | None = None,
         invocation_service: GovernedInvocationExecutionService | None = None,
         invocation_binding: Binding | None = None,
+        binding_store: BindingStore | None = None,
+        binding_node_id: str = "harness",
     ) -> None:
         self._registry = registry
         self._warden = warden
@@ -63,6 +69,8 @@ class HarnessSessionManager:
         self._gate_factory = gate_factory
         self._invocation_service = invocation_service
         self._invocation_binding = invocation_binding
+        self._binding_store = binding_store
+        self._binding_node_id = binding_node_id
         self._sessions: dict[str, _Session] = {}
 
     def _gate(self, session_id: str) -> ActionGate | None:
@@ -87,10 +95,31 @@ class HarnessSessionManager:
             )
         return SafeHarnessRunner(provider, warden=self._warden, gate=self._gate(session_id))
 
+    async def _resolve_binding(self, binding: Binding) -> Binding | Unavailable:
+        """Resolve the live Binding before policy/provider admission."""
+        if self._binding_store is None:
+            return binding
+        try:
+            return await self._binding_store.resolve(
+                binding.binding_id,
+                workspace_id=binding.workspace_id,
+                project_id=binding.project_id,
+                node_id=binding.node_id or self._binding_node_id,
+                capability=binding.capability,
+            )
+        except Exception:
+            return Unavailable(
+                slot=binding.capability,
+                reason="harness Binding is unavailable or revoked",
+            )
+
     async def start(self, agent_spec: AgentSpec, *, workdir: str) -> str | Unavailable:
         """Resolve + start a safety-wrapped harness session, or ``Unavailable``."""
         if self._invocation_service is not None and self._invocation_binding is not None:
-            return await self._start_invocation(agent_spec, workdir=workdir)
+            authorized = await self._resolve_binding(self._invocation_binding)
+            if isinstance(authorized, Unavailable):
+                return authorized
+            return await self._start_invocation(agent_spec, workdir=workdir, binding=authorized)
         provider = await self._registry.resolve(SLOT_NAME)
         if not isinstance(provider, HarnessRunner):
             return Unavailable(slot=SLOT_NAME, reason="no active harness_runner provider")
@@ -98,14 +127,18 @@ class HarnessSessionManager:
         self._sessions[session_id] = _Session(provider_name=provider.name)
         return session_id
 
-    async def _start_invocation(self, agent_spec: AgentSpec, *, workdir: str) -> str | Unavailable:
+    async def _start_invocation(
+        self, agent_spec: AgentSpec, *, workdir: str, binding: Binding
+    ) -> str | Unavailable:
         service = self._invocation_service
-        binding = self._invocation_binding
-        assert service is not None and binding is not None
+        assert service is not None
         selected_name = ""
 
         async def resolver(_binding: Binding) -> HarnessRunner | Unavailable:
             nonlocal selected_name
+            authorized = await self._resolve_binding(_binding)
+            if isinstance(authorized, Unavailable):
+                return authorized
             provider = await self._registry.resolve(SLOT_NAME)
             if not isinstance(provider, HarnessRunner):
                 return Unavailable(slot=SLOT_NAME, reason="no active harness_runner provider")
@@ -132,7 +165,7 @@ class HarnessSessionManager:
                 resolver=resolver,
                 executor=executor,
             )
-        except CapabilityUnavailable as exc:
+        except (CapabilityUnavailable, InvocationDenied) as exc:
             return Unavailable(slot=SLOT_NAME, reason=str(exc))
         if not isinstance(invocation.result, str) or not selected_name:
             return Unavailable(slot=SLOT_NAME, reason="harness Invocation returned no session")
@@ -143,10 +176,13 @@ class HarnessSessionManager:
         self, session_id: str, messages: list[dict[str, Any]]
     ) -> dict[str, Any] | Unavailable:
         if self._invocation_service is not None and self._invocation_binding is not None:
+            authorized = await self._resolve_binding(self._invocation_binding)
+            if isinstance(authorized, Unavailable):
+                return authorized
             return await self.send_invocation(
                 session_id,
                 messages,
-                binding=self._invocation_binding,
+                binding=authorized,
                 run_id=f"harness:{session_id}",
                 node_run_id=session_id,
                 attempt_id=uuid4().hex,
@@ -221,7 +257,7 @@ class HarnessSessionManager:
                 resolver=resolver,
                 executor=executor,
             )
-        except CapabilityUnavailable as exc:
+        except (CapabilityUnavailable, InvocationDenied) as exc:
             return Unavailable(slot=SLOT_NAME, reason=str(exc))
         executed = invocation.attempt_id == attempt_id
         result = invocation.result
@@ -238,6 +274,9 @@ class HarnessSessionManager:
     async def _resolve_invocation_provider(
         self, session_id: str, candidate: Binding
     ) -> SafeHarnessRunner | Unavailable:
+        authorized = await self._resolve_binding(candidate)
+        if isinstance(authorized, Unavailable):
+            return authorized
         safe = await self._safe_for_session(session_id)
         if isinstance(safe, Unavailable):
             return safe
@@ -276,11 +315,48 @@ class HarnessSessionManager:
         async for event in safe.stream(session_id):
             yield event
 
-    async def stop(self, session_id: str) -> None:
+    async def stop(self, session_id: str) -> Unavailable | None:
+        if self._invocation_service is not None and self._invocation_binding is not None:
+            return await self._stop_invocation(session_id)
         safe = await self._safe_for_session(session_id)
         self._sessions.pop(session_id, None)
         if not isinstance(safe, Unavailable):
             await safe.stop(session_id)
+        return None
+
+    async def _stop_invocation(self, session_id: str) -> Unavailable | None:
+        binding = self._invocation_binding
+        service = self._invocation_service
+        assert binding is not None and service is not None
+        authorized = await self._resolve_binding(binding)
+        if isinstance(authorized, Unavailable):
+            return authorized
+        if self._sessions.get(session_id) is None:
+            return Unavailable(slot=SLOT_NAME, reason=f"unknown harness session: {session_id}")
+
+        async def resolver(candidate: Binding) -> SafeHarnessRunner | Unavailable:
+            return await self._resolve_invocation_provider(session_id, candidate)
+
+        async def executor(provider: ResolvedCapabilityProvider, _request: Any) -> None:
+            if not isinstance(provider, SafeHarnessRunner):
+                raise TypeError("harness Invocation must execute through SafeHarnessRunner")
+            await provider.stop(session_id)
+
+        try:
+            await service.invoke(
+                binding=authorized,
+                run_id=f"harness:{session_id}",
+                node_run_id=session_id,
+                attempt_id=uuid4().hex,
+                effect_key=f"harness:stop:{session_id}:{uuid4().hex}",
+                request={"session_id": session_id},
+                resolver=resolver,
+                executor=executor,
+            )
+        except (CapabilityUnavailable, InvocationDenied) as exc:
+            return Unavailable(slot=SLOT_NAME, reason=str(exc))
+        self._sessions.pop(session_id, None)
+        return None
 
     def active_sessions(self) -> list[str]:
         return list(self._sessions)

@@ -230,6 +230,24 @@ async def test_resolve_requires_every_scope_field() -> None:
 
 
 @pytest.mark.asyncio
+async def test_revoked_binding_cannot_be_recreated_or_resolved() -> None:
+    store = InMemoryBindingStore()
+    binding = await store.put(_binding())
+    await store.revoke(binding.binding_id)
+
+    with pytest.raises(BindingNotFound, match="has been revoked"):
+        await store.resolve(
+            binding.binding_id,
+            workspace_id="ws-1",
+            project_id="project-1",
+            node_id="node-1",
+            capability="external_write",
+        )
+    with pytest.raises(BindingNotFound, match="has been revoked"):
+        await store.put(binding)
+
+
+@pytest.mark.asyncio
 async def test_resolve_of_an_unregistered_binding_is_not_found() -> None:
     store = InMemoryBindingStore()
 
