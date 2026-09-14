@@ -1,11 +1,4 @@
-"""Composition root for the canonical governed capability-effect boundary.
-
-This module owns no dispatch semantics. It composes the accepted Binding and
-Invocation authorities so production consumers can cross one governed seam
-instead of constructing private executors. The process default is intentionally
-empty of Bindings: an unconfigured consumer fails closed rather than obtaining
-a provider merely because one happens to be registered elsewhere.
-"""
+"""Composition root for the canonical governed capability-effect boundary."""
 
 from __future__ import annotations
 
@@ -24,6 +17,7 @@ from maistro.capabilities.governed_invocation import (
 from maistro.capabilities.invocation import (
     InMemoryInvocationStore,
     InvocationExecutionService,
+    InvocationQuota,
     InvocationStore,
 )
 from maistro.credentials.router import CredentialRouter
@@ -36,14 +30,6 @@ async def _m1_binding_authorized_policy(
     request: Any,
     context: InvocationPolicyContext,
 ) -> PolicyVerdict:
-    """M1 baseline after canonical Binding scope resolution has succeeded.
-
-    Binding authorization is evaluated by ``BindingStore.resolve`` before this
-    policy boundary. M2 may inject stronger policy semantics here; M1 does not
-    manufacture a second permission system just to make governed Invocation
-    reachable.
-    """
-
     del binding, request, context
     return PolicyVerdict(
         Decision.ALLOW,
@@ -54,7 +40,7 @@ async def _m1_binding_authorized_policy(
 
 @dataclass(frozen=True)
 class CapabilityEffectContext:
-    """Wired canonical Binding and Invocation authorities for effect consumers."""
+    """Wired canonical Binding, Invocation, and quota authorities."""
 
     bindings: BindingStore
     invocations: GovernedInvocationExecutionService
@@ -63,15 +49,6 @@ class CapabilityEffectContext:
     credentials: CredentialRouter = field(default_factory=CredentialRouter)
 
     def credential_routing(self) -> CredentialRouting:
-        """Credential routing for this context's Provider selection seam (#58).
-
-        Consumers wrap their slot-specific resolver/executor pair with this, so
-        credential selection is scoped by the resolved Binding and rotation
-        reacts to real Invocation outcomes. The default router starts empty —
-        absence of an authorized credential is a hard refusal, never a silent
-        fallback to some other scope's key.
-        """
-
         return CredentialRouting(self.credentials)
 
 
@@ -79,40 +56,39 @@ def new_in_memory_effect_context(
     *,
     policy_evaluator: PolicyEvaluator | None = None,
     credentials: CredentialRouter | None = None,
+    quota: InvocationQuota | None = None,
+    bindings: BindingStore | None = None,
+    invocation_store: InvocationStore | None = None,
+    event_store: EventStore | None = None,
 ) -> CapabilityEffectContext:
-    """Build an isolated canonical effect context for local/runtime composition.
+    """Compose the canonical effect seam from backend-selected authorities.
 
-    ``credentials`` supplies the scoped credential pool for Provider selection
-    (#58); omitted, the router exists but holds no credentials, so routed
-    acquisitions fail closed until one is registered in the requesting scope.
+    The historical name is retained for compatibility. Production may supply
+    durable stores and quota; omitted collaborators intentionally select the
+    isolated in-memory implementations used by tests and ephemeral deployments.
     """
 
-    binding_store = InMemoryBindingStore()
-    invocation_store = InMemoryInvocationStore()
-    event_store = InMemoryEventStore()
-    invocation_service = InvocationExecutionService(store=invocation_store)
+    binding_store = bindings or InMemoryBindingStore()
+    inv_store = invocation_store or InMemoryInvocationStore()
+    events = event_store or InMemoryEventStore()
+    invocation_service = InvocationExecutionService(store=inv_store, quota=quota)
     governed = GovernedInvocationExecutionService(
         invocation_service=invocation_service,
-        event_store=event_store,
+        event_store=events,
         policy_evaluator=policy_evaluator or _m1_binding_authorized_policy,
     )
     return CapabilityEffectContext(
         bindings=binding_store,
         invocations=governed,
-        invocation_store=invocation_store,
-        event_store=event_store,
+        invocation_store=inv_store,
+        event_store=events,
         credentials=credentials or CredentialRouter(),
     )
 
 
 @lru_cache(maxsize=1)
 def default_effect_context() -> CapabilityEffectContext:
-    """Process-wide canonical context used by registry-constructed effect nodes.
-
-    The shared instance matters: a Node must resolve the same Binding authority
-    an application populated, and retries must consult the same Invocation
-    ledger. No default Binding is created here; absence remains a hard refusal.
-    """
+    """Ephemeral default; production Container constructs its context explicitly."""
 
     return new_in_memory_effect_context()
 
