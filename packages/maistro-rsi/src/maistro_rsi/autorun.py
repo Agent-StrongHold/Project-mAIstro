@@ -36,7 +36,9 @@ import httpx
 import structlog
 
 from maistro.config.settings import get_settings
+from maistro.http import sync_client
 from maistro.quota.tracker import InMemoryQuotaTracker
+from maistro.security.outbound import configure_outbound_policy
 from maistro.security.warden.detector import Warden
 from maistro_evolve.tournament import EloTournament
 from maistro_evolve.types import DAGTopology, EvalWeights, NodeGenome, PipelineGenome
@@ -191,6 +193,19 @@ class ProposerCircuitOpen(RuntimeError):
 _MAX_CONSECUTIVE_FALLBACKS = 3
 
 
+def _post(
+    url: str,
+    *,
+    json: dict[str, object],
+    headers: dict[str, str],
+    timeout: float,
+) -> httpx.Response:
+    """Post through the central guarded sync transport."""
+    configure_outbound_policy(url)
+    with sync_client(timeout=timeout) as client:
+        return client.post(url, json=json, headers=headers)
+
+
 def make_llm_proposer(
     model: str | None = None, prior_learnings: Sequence[str] = ()
 ) -> HypothesisProposer:
@@ -220,7 +235,7 @@ def make_llm_proposer(
             "sentence, concrete and measurable. Reply with the hypothesis only."
         )
         try:
-            response = httpx.post(
+            response = _post(
                 settings.litellm.base_url.rstrip("/") + "/v1/chat/completions",
                 headers={"Authorization": f"Bearer {settings.litellm.master_key}"},
                 json={

@@ -219,7 +219,7 @@ class TestLlmProposerFallback:
         def boom(*args, **kwargs):
             raise ConnectionError("no gateway")
 
-        monkeypatch.setattr("maistro_rsi.autorun.httpx.post", boom)
+        monkeypatch.setattr("maistro_rsi.autorun._post", boom)
         proposer = make_llm_proposer()
         context = _context("root hyp")
 
@@ -237,7 +237,7 @@ class TestLlmProposerFallback:
             def json(self):
                 return {"choices": [{"message": {"content": "   "}}]}
 
-        monkeypatch.setattr("maistro_rsi.autorun.httpx.post", lambda *a, **k: _Resp())
+        monkeypatch.setattr("maistro_rsi.autorun._post", lambda *a, **k: _Resp())
         proposer = make_llm_proposer()
         context = _context("root hyp")
         assert proposer(context) == template_proposer(context)
@@ -687,7 +687,7 @@ class TestProposerCircuitBreaker:
         def _boom(*args, **kwargs):
             raise _httpx.ConnectError("gateway down")
 
-        monkeypatch.setattr(_httpx, "post", _boom)
+        monkeypatch.setattr("maistro_rsi.autorun._post", _boom)
         return make_llm_proposer("some-model")
 
     def _context(self):

@@ -31,6 +31,9 @@ from typing import Any
 
 import httpx
 
+from maistro.http import sync_client
+from maistro.security.outbound import configure_outbound_policy
+
 logger = logging.getLogger(__name__)
 
 CACHE_PATH = Path.home() / ".config" / "maistro" / "builders" / "model_cache.json"
@@ -277,7 +280,8 @@ def run_benchmark(
     verbose: bool = True,
 ) -> dict[str, Any]:
     """Probe models with tier-appropriate tests. Returns results dict."""
-    with httpx.Client(timeout=_CAPABLE_LATENCY_CAP_S + 5) as client:
+    configure_outbound_policy(_base_url())
+    with sync_client(timeout=_CAPABLE_LATENCY_CAP_S + 5) as client:
         if models is None:
             if verbose:
                 print("Discovering models…")

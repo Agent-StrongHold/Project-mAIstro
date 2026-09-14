@@ -9,6 +9,11 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from maistro.security.outbound import (
+    OutboundBlockedError,
+    current_outbound_policy,
+    reset_outbound_policy,
+)
 from maistro_rsi import free_router as fr
 from maistro_rsi.evolve_bridge import genome_to_competitor, seed_population
 
@@ -48,7 +53,7 @@ def test_resolve_reads_concrete_model(monkeypatch: pytest.MonkeyPatch) -> None:
         captured["model"] = json["model"]
         return _FakeResp(payload={"model": "cohere/north-mini-code:free", "provider": "Cohere"})
 
-    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr(fr, "_post", fake_post)
     got = fr.resolve_concrete_free_model()
     assert got == "cohere/north-mini-code:free"
     assert captured["url"] == fr._OPENROUTER_DIRECT
@@ -59,7 +64,7 @@ def test_resolve_ignores_echoed_preset(monkeypatch: pytest.MonkeyPatch) -> None:
     # The litellm gateway echoes the alias back — that is NOT a concrete pick.
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     monkeypatch.setattr(
-        httpx, "post", lambda *a, **k: _FakeResp(payload={"model": "openrouter/free"})
+        fr, "_post", lambda *a, **k: _FakeResp(payload={"model": "openrouter/free"})
     )
     assert fr.resolve_concrete_free_model() is None
 
@@ -77,7 +82,7 @@ def test_register_posts_credential_bound_alias(monkeypatch: pytest.MonkeyPatch) 
         captured["body"] = json
         return _FakeResp(status=200, payload={})
 
-    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr(fr, "_post", fake_post)
     alias = fr.register_gateway_alias("cohere/north:free", credential="openrouter/*-cred")
     assert alias == "openrouter/cohere/north:free"
     assert captured["url"] == "http://gw:4000/model/new"
@@ -94,7 +99,7 @@ def test_register_skips_when_already_known(monkeypatch: pytest.MonkeyPatch) -> N
     def boom(*a, **k):  # type: ignore[no-untyped-def]
         raise AssertionError("should not POST when alias already registered")
 
-    monkeypatch.setattr(httpx, "post", boom)
+    monkeypatch.setattr(fr, "_post", boom)
     known = {"openrouter/openai/gpt-oss-120b:free"}
     assert (
         fr.register_gateway_alias("openai/gpt-oss-120b:free", credential="c", known=known)
@@ -114,7 +119,7 @@ def test_register_double_prefixes_openrouter_owned_ids(monkeypatch: pytest.Monke
         captured["model_name"] = json["model_name"]
         return _FakeResp(status=200, payload={})
 
-    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr(fr, "_post", fake_post)
     alias = fr.register_gateway_alias("openrouter/sonoma-dusk-alpha:free", credential="c")
     assert alias == "openrouter/openrouter/sonoma-dusk-alpha:free"
     assert captured["model_name"] == "openrouter/openrouter/sonoma-dusk-alpha:free"
@@ -124,7 +129,7 @@ def test_register_treats_duplicate_as_success(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv("LITELLM_URL", "http://gw:4000")
     monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-master")
     monkeypatch.setattr(
-        httpx, "post", lambda *a, **k: _FakeResp(status=400, text="model already exists")
+        fr, "_post", lambda *a, **k: _FakeResp(status=400, text="model already exists")
     )
     assert fr.register_gateway_alias("x/y:free", credential="c") == "openrouter/x/y:free"
 
@@ -132,7 +137,7 @@ def test_register_treats_duplicate_as_success(monkeypatch: pytest.MonkeyPatch) -
 def test_register_returns_none_on_hard_error(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LITELLM_URL", "http://gw:4000")
     monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-master")
-    monkeypatch.setattr(httpx, "post", lambda *a, **k: _FakeResp(status=500, text="boom"))
+    monkeypatch.setattr(fr, "_post", lambda *a, **k: _FakeResp(status=500, text="boom"))
     assert fr.register_gateway_alias("x/y:free", credential="c") is None
 
 
@@ -143,6 +148,32 @@ def test_register_returns_none_without_gateway(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.delenv("LITELLM_MASTER_KEY", raising=False)
     monkeypatch.delenv("LITELLM_PROXY_KEY", raising=False)
     assert fr.register_gateway_alias("x/y:free", credential="c") is None
+
+
+def test_explicit_gateway_base_cannot_allowlist_a_private_target() -> None:
+    """Caller-provided bases must reach the transport validator, not the policy."""
+    reset_outbound_policy()
+    try:
+        with pytest.raises(OutboundBlockedError):
+            fr._post(
+                "http://127.0.0.1:8765/model/new",
+                json={},
+                headers={},
+                timeout=1.0,
+            )
+        assert not current_outbound_policy().allows("http://127.0.0.1:8765/model/new")
+        assert (
+            fr.register_gateway_alias(
+                "openai/gpt-oss:free",
+                base="http://127.0.0.1:8765",
+                key="k",
+                credential="c",
+            )
+            is None
+        )
+        assert not current_outbound_policy().allows("http://127.0.0.1:8765/model/new")
+    finally:
+        reset_outbound_policy()
 
 
 # --- expand_free_router ----------------------------------------------------------
@@ -159,7 +190,7 @@ def test_discover_credential_uses_override(monkeypatch: pytest.MonkeyPatch) -> N
     def boom(*a, **k):  # type: ignore[no-untyped-def]
         raise AssertionError("httpx.get should not be called when override env is set")
 
-    monkeypatch.setattr(httpx, "get", boom)
+    monkeypatch.setattr(fr, "_get", boom)
     cred = fr._discover_openrouter_credential(base="http://gw", key="k", timeout=1.0)
     assert cred == "my-override-cred"
 
@@ -191,7 +222,7 @@ def test_discover_credential_finds_first_openrouter(monkeypatch: pytest.MonkeyPa
             }
         )
 
-    monkeypatch.setattr(httpx, "get", fake_get)
+    monkeypatch.setattr(fr, "_get", fake_get)
     cred = fr._discover_openrouter_credential(base="http://gw", key="k", timeout=1.0)
     assert cred == "openrouter/cred-1"
 

@@ -338,6 +338,39 @@ class TestTheSeamCensus:
             gate._outbound_fetch_modules()
         )
 
+    def test_the_sibling_package_census_has_no_direct_httpx_network_calls(self, gate):
+        assert gate._sibling_unguarded_httpx_calls() == []
+
+    def test_the_sibling_census_follows_module_method_and_constructor_aliases(
+        self, gate, tmp_path, monkeypatch
+    ):
+        source = tmp_path / "alias_calls.py"
+        source.write_text(
+            """
+import httpx as wire
+from httpx import Client as SyncClient, head as fetch_head
+from httpx import options, stream
+
+wire.options('https://example.test')
+fetch_head('https://example.test')
+options('https://example.test')
+with stream('GET', 'https://example.test'):
+    pass
+SyncClient()
+"""
+        )
+        monkeypatch.setattr(gate, "_SIBLING_SRC_ROOTS", (tmp_path,))
+
+        findings = gate._sibling_unguarded_httpx_calls()
+
+        assert len(findings) == 5
+        assert any(": httpx.options" in finding for finding in findings)
+        assert any(": imported httpx.fetch_head" in finding for finding in findings)
+        assert any(": imported httpx.SyncClient" in finding for finding in findings)
+
+    def test_repo_constructor_census_has_no_unpooled_production_clients(self, gate):
+        assert gate._repo_unguarded_httpx_constructors() == []
+
     def test_the_pool_itself_is_not_counted_as_a_bypass(self, gate):
         """`http.py` constructs the clients everything else borrows — the ones
         the outbound policy wraps. Counting it would make the seam permanently
