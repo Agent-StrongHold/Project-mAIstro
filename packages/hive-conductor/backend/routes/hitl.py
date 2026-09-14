@@ -92,8 +92,38 @@ def _request_user_id(request: Request) -> str:
     return user_id
 
 
+def _intended_reviewer(record: Any, node_id: str) -> str | None:
+    """Read an optional reviewer binding from canonical pause metadata.
+
+    Existing human nodes intentionally allow any authorized reviewer. When a
+    graph records an exact reviewer/approver, mutation must be bound to that
+    principal rather than treating Project authority as a blanket approval.
+    """
+    pauses = record.graph_state.metadata.get("pauses")
+    pause = pauses.get(node_id) if isinstance(pauses, Mapping) else None
+    metadata = pause.get("metadata") if isinstance(pause, Mapping) else None
+    if not isinstance(metadata, Mapping):
+        return None
+    for key in (
+        "reviewer_id",
+        "reviewer_principal_id",
+        "approver_id",
+        "approver_principal_id",
+    ):
+        if key in metadata:
+            value = metadata[key]
+            return value.strip() if isinstance(value, str) and value.strip() else ""
+    return None
+
+
 async def _require_project_access(
-    request: Request, *, workspace_id: str, project_id: str, permission: str
+    request: Request,
+    *,
+    workspace_id: str,
+    project_id: str,
+    permission: str,
+    record: Any | None = None,
+    node_id: str | None = None,
 ) -> None:
     try:
         await authorize_project(
@@ -114,6 +144,18 @@ async def _require_project_access(
             severity="warning",
         )
         raise HTTPException(status_code=404, detail="run not found") from exc
+
+    if record is not None and node_id is not None:
+        intended = _intended_reviewer(record, node_id)
+        if intended is not None and intended != _request_user_id(request):
+            log_audit(
+                "hitl_authorization_denied",
+                _session_principal(request),
+                target=project_id,
+                detail={"target_class": "node_run", "permission": permission},
+                severity="warning",
+            )
+            raise HTTPException(status_code=404, detail="run not found")
 
 
 def _session_principal(request: Request) -> str:
@@ -249,6 +291,8 @@ async def cancel_human_work(run_id: str, node_id: str, request: Request) -> dict
         workspace_id=record.run.workspace_id,
         project_id=record.run.project_id,
         permission=HITL_CANCEL,
+        record=record,
+        node_id=node_id,
     )
     try:
         updated = await store.cancel_hitl(run_id, node_id)
@@ -297,6 +341,8 @@ async def answer_human_work(
         workspace_id=record.run.workspace_id,
         project_id=record.run.project_id,
         permission=HITL_ANSWER,
+        record=record,
+        node_id=node_id,
     )
     if record.run.status is not RunStatus.PAUSED:
         raise HTTPException(

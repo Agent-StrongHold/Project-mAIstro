@@ -32,6 +32,7 @@ def _paused_record(
     workspace_id: str = "ws-hitl",
     project_id: str = "project-hitl",
     kind: str = "hitl",
+    reviewer_id: str | None = None,
 ) -> Any:
     """A Run paused on one node, the way the durable executor leaves one."""
     from maistro.graph.durable_runs.types import DurableRunRecord
@@ -51,6 +52,9 @@ def _paused_record(
     run = transition_run(run, RunStatus.QUEUED)
     run = transition_run(run, RunStatus.RUNNING)
     run = transition_run(run, RunStatus.PAUSED)
+    pause_metadata: dict[str, Any] = {"question": "Ship it?"}
+    if reviewer_id is not None:
+        pause_metadata["reviewer_id"] = reviewer_id
     state = GraphExecutionState(
         run_id=run_id,
         active_node_ids=("ask",),
@@ -58,7 +62,7 @@ def _paused_record(
         metadata={
             "initial_inputs": {},
             "hitl_answers": {},
-            "pauses": {"ask": {"kind": kind, "metadata": {"question": "Ship it?"}}},
+            "pauses": {"ask": {"kind": kind, "metadata": pause_metadata}},
         },
     )
     return DurableRunRecord(
@@ -350,6 +354,7 @@ async def test_project_reviewer_isolated_from_sibling_hitl_work(reviewer_client)
     )
     approved_id = "hitl-reviewer-approved"
     approved_cancel_id = "hitl-reviewer-cancel"
+    bound_id = "hitl-reviewer-bound"
     denied_id = "hitl-reviewer-denied"
     await store.create(
         _paused_record(
@@ -364,6 +369,14 @@ async def test_project_reviewer_isolated_from_sibling_hitl_work(reviewer_client)
         )
     )
     await store.create(
+        _paused_record(
+            bound_id,
+            workspace_id=workspace.id,
+            project_id=approved_project.project_id,
+            reviewer_id="another-reviewer",
+        )
+    )
+    await store.create(
         _paused_record(denied_id, workspace_id=workspace.id, project_id=denied_project.project_id)
     )
     try:
@@ -371,6 +384,7 @@ async def test_project_reviewer_isolated_from_sibling_hitl_work(reviewer_client)
         assert {item["run_id"] for item in pending.json()} == {
             approved_id,
             approved_cancel_id,
+            bound_id,
         }
         assert (
             reviewer_client.get(f"/v1/hitl/pending?project_id={denied_project.project_id}").json()
@@ -389,15 +403,18 @@ async def test_project_reviewer_isolated_from_sibling_hitl_work(reviewer_client)
                 f"/v1/hitl/{denied_id}/ask/{operation}", json={"answer": "no"}
             )
             assert response.status_code == 404
-        denied_record = await store.get(denied_id)
-        assert denied_record is not None
-        assert denied_record.run.status is RunStatus.PAUSED
+        bound = reviewer_client.post(f"/v1/hitl/{bound_id}/ask/answer", json={"answer": "no"})
+        assert bound.status_code == 404
+        for run_id in (denied_id, bound_id):
+            refused_record = await store.get(run_id)
+            assert refused_record is not None
+            assert refused_record.run.status is RunStatus.PAUSED
         denials = _audit_entries("hitl_authorization_denied", denied_project.project_id)
         assert denials
         assert all(entry["actor"] == "hitl-reviewer" for entry in denials)
         assert all("question" not in str(entry["detail"]) for entry in denials)
     finally:
-        for run_id in (approved_id, approved_cancel_id, denied_id):
+        for run_id in (approved_id, approved_cancel_id, bound_id, denied_id):
             store._rows.pop(run_id, None)
 
 
