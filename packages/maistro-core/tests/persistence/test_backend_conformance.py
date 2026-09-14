@@ -351,6 +351,53 @@ async def test_a_stored_learning_comes_back(learning_store: Any) -> None:
     assert [item.learning for item in listed] == ["roll back before redeploying"]
 
 
+async def test_all_declared_learning_fields_survive_round_trip(learning_store: Any) -> None:
+    """A backend must not silently drop a declared Learning field (#1156)."""
+    expected = _learning(
+        source_query="how do I safely redeploy?",
+        org_id="org-round-trip",
+        team_id="team-round-trip",
+        agent_id="agent-round-trip",
+        user_id="user-round-trip",
+        scope="team",
+        hit_count=7,
+        status="active",
+        rca_category="safety",
+        rca_prevention="validate before deploy",
+        success_after_use=2,
+        failure_after_use=1,
+        run_id="run-round-trip",
+        node_run_id="node-round-trip",
+        attempt_id="attempt-round-trip",
+    )
+    await learning_store.store(expected)
+
+    [actual] = await learning_store.list_all(org_id="org-round-trip")
+
+    for field in (
+        "category",
+        "trigger_keys",
+        "learning",
+        "tool_name",
+        "source_query",
+        "org_id",
+        "team_id",
+        "agent_id",
+        "user_id",
+        "scope",
+        "hit_count",
+        "status",
+        "rca_category",
+        "rca_prevention",
+        "success_after_use",
+        "failure_after_use",
+        "run_id",
+        "node_run_id",
+        "attempt_id",
+    ):
+        assert getattr(actual, field) == getattr(expected, field), field
+
+
 async def test_store_returns_a_usable_id(learning_store: Any) -> None:
     """`mark_used` and `mark_outcome` take the ids `store` hands back, so an id
     that does not round-trip breaks reinforcement silently."""

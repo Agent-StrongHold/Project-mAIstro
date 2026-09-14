@@ -6,6 +6,10 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from maistro.observability.correlation import observed_provenance
+from maistro.persistence.learning_contract import (
+    LEARNING_GENERATED_FIELDS,
+    LEARNING_PERSISTED_FIELDS,
+)
 from maistro.types.memory import Learning, MemoryScope
 
 if TYPE_CHECKING:
@@ -18,9 +22,11 @@ CREATE TABLE IF NOT EXISTS learnings (
     trigger_keys TEXT NOT NULL DEFAULT '[]',
     learning TEXT NOT NULL DEFAULT '',
     tool_name TEXT NOT NULL DEFAULT '',
+    source_query TEXT NOT NULL DEFAULT '',
     agent_id TEXT NOT NULL DEFAULT '',
     user_id TEXT,
     org_id TEXT NOT NULL DEFAULT '',
+    team_id TEXT NOT NULL DEFAULT '',
     scope TEXT NOT NULL DEFAULT 'agent',
     hit_count INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'active',
@@ -34,10 +40,44 @@ CREATE TABLE IF NOT EXISTS learnings (
 )
 """
 
+#: Columns added to existing SQLite files without a default. NULL preserves the
+#: fact that an older row never recorded a scope/provenance value; the mapper
+#: exposes that absence as the dataclass's empty-string shape.
+_LEGACY_UPGRADE_COLUMNS = {
+    "source_query": "TEXT",
+    "team_id": "TEXT",
+}
+
 #: The producer columns, nullable for the same reason migration 026 makes them
 #: nullable in PostgreSQL: a row written with no execution in scope names none,
 #: and `''` would name a Run whose id is empty (#709).
 _PROVENANCE_COLUMNS = ("run_id", "node_run_id", "attempt_id")
+
+# Kept next to the SQL so the conformance test can detect a new Learning field
+# that is not represented by both persistence twins.
+_SQLITE_PERSISTED_FIELDS = LEARNING_PERSISTED_FIELDS
+_SQLITE_GENERATED_FIELDS = LEARNING_GENERATED_FIELDS
+_SQLITE_INSERT_FIELDS = (
+    "category",
+    "trigger_keys",
+    "learning",
+    "tool_name",
+    "source_query",
+    "agent_id",
+    "user_id",
+    "org_id",
+    "team_id",
+    "scope",
+    "hit_count",
+    "status",
+    "rca_category",
+    "rca_prevention",
+    "success_after_use",
+    "failure_after_use",
+    "run_id",
+    "node_run_id",
+    "attempt_id",
+)
 
 
 class SqliteLearningStore:
@@ -49,12 +89,13 @@ class SqliteLearningStore:
     async def ensure_schema(self) -> None:
         """Create the learnings table, and upgrade one created before its columns.
 
-        `org_id` was in the `Learning` dataclass and in every store method's
-        signature long before it was a column, so a database created by an
-        earlier version has rows the scope filter cannot see. SQLite has no
-        `ADD COLUMN IF NOT EXISTS`, so the column list is inspected first;
-        `ALTER TABLE ... ADD COLUMN` with a constant default is a metadata-only
-        operation, so this is cheap even on a large table.
+        `org_id`, `team_id` and `source_query` were in the `Learning` dataclass
+        long before the SQLite twin stored all of them, so a database created by
+        an earlier version needs an in-place upgrade. SQLite has no
+        `ADD COLUMN IF NOT EXISTS`, so the column list is inspected first.
+        The late fields are added without a default: existing rows have unknown
+        scope or
+        provenance and must not be silently fabricated.
         """
         await self._conn.execute(_SCHEMA)
         cursor = await self._conn.execute("PRAGMA table_info(learnings)")
@@ -63,6 +104,9 @@ class SqliteLearningStore:
             await self._conn.execute(
                 "ALTER TABLE learnings ADD COLUMN org_id TEXT NOT NULL DEFAULT ''"
             )
+        for column, column_type in _LEGACY_UPGRADE_COLUMNS.items():
+            if column not in columns:
+                await self._conn.execute(f"ALTER TABLE learnings ADD COLUMN {column} {column_type}")
         # The same in-place upgrade for the producer columns. A file created
         # before #709 holds real learnings; recreating the table would be the
         # only alternative, and it would lose them (#709).
@@ -113,21 +157,24 @@ class SqliteLearningStore:
 
         insert_cursor = await self._conn.execute(
             """INSERT INTO learnings
-               (category, trigger_keys, learning, tool_name,
-                agent_id, user_id, org_id, scope, status,
+               (category, trigger_keys, learning, tool_name, source_query,
+                agent_id, user_id, org_id, team_id, scope, hit_count, status,
                 rca_category, rca_prevention,
                 success_after_use, failure_after_use,
                 run_id, node_run_id, attempt_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 learning.category,
                 json.dumps(list(learning.trigger_keys)),
                 learning.learning,
                 learning.tool_name,
+                learning.source_query,
                 learning.agent_id or "",
                 learning.user_id,
                 learning.org_id or "",
+                learning.team_id or "",
                 learning.scope,
+                learning.hit_count,
                 learning.status,
                 learning.rca_category,
                 learning.rca_prevention,
@@ -313,9 +360,11 @@ def _row_to_learning(row: dict[str, Any]) -> Learning:
         trigger_keys=json.loads(row.get("trigger_keys") or "[]"),
         learning=row["learning"],
         tool_name=row.get("tool_name") or "",
+        source_query=_text(row, "source_query"),
         agent_id=row.get("agent_id") or None,
         user_id=row.get("user_id"),
         org_id=row.get("org_id") or "",
+        team_id=_text(row, "team_id"),
         scope=MemoryScope(row.get("scope") or "agent"),
         hit_count=row.get("hit_count", 0),
         status=row.get("status") or "active",

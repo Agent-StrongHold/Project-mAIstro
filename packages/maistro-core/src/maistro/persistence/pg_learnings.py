@@ -8,6 +8,10 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.memory.vectors import EMBEDDING_DIMENSIONS, to_pgvector_literal
 from maistro.observability.correlation import observed_provenance
+from maistro.persistence.learning_contract import (
+    LEARNING_GENERATED_FIELDS,
+    LEARNING_PERSISTED_FIELDS,
+)
 from maistro.types.memory import Learning
 
 if TYPE_CHECKING:
@@ -19,6 +23,32 @@ logger = logging.getLogger("maistro.persistence.learnings")
 #: `relaxed_order` over `strict_order` sits with the value rather than only
 #: in the query that uses it.
 _ITERATIVE_SCAN = "relaxed_order"
+
+# Kept next to the INSERT contract so the conformance test can detect a new
+# Learning field that is not represented by both persistence twins.
+_PG_PERSISTED_FIELDS = LEARNING_PERSISTED_FIELDS
+_PG_GENERATED_FIELDS = LEARNING_GENERATED_FIELDS
+_PG_INSERT_FIELDS = (
+    "category",
+    "trigger_keys",
+    "learning",
+    "tool_name",
+    "source_query",
+    "agent_id",
+    "user_id",
+    "org_id",
+    "team_id",
+    "scope",
+    "hit_count",
+    "status",
+    "rca_category",
+    "rca_prevention",
+    "success_after_use",
+    "failure_after_use",
+    "run_id",
+    "node_run_id",
+    "attempt_id",
+)
 
 
 def similarity_query(*, scoped_to_agent: bool) -> str:
