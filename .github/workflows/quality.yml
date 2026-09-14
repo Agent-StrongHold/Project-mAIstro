@@ -856,6 +856,11 @@ jobs:
       - name: security inventory (SECURITY.md's checkable claims match the code)
         run: uv run python scripts/check-security-inventory.py
 
+      # Every durable migration table must have an explicit retention, deletion,
+      # aggregation, or hold policy; runtime-only tables are recorded alongside it.
+      - name: durable-table retention inventory
+        run: uv run python scripts/check-retention-inventory.py
+
       # Trivy and Grype covered two images. The repository has nine
       # Dockerfiles, and the one whose own header calls the browser surface
       # "the single largest remaining CVE source" was not among the two —

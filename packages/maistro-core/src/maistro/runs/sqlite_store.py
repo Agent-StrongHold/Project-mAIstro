@@ -227,6 +227,7 @@ _RETAINED_REFERENCE_SQL = {
 _LIST_BY_STATUS_SQL = """SELECT payload FROM canonical_runs
     WHERE status = :status
       AND (:project IS NULL OR project_id = :project)
+      AND (:workspace IS NULL OR workspace_id = :workspace)
       AND (:after_created IS NULL
            OR (json_extract(payload, '$.created_at'), run_id) > (:after_created, :after_id))
     ORDER BY json_extract(payload, '$.created_at'), run_id
@@ -473,6 +474,7 @@ class SqliteRunStore:
             {
                 "status": status.value,
                 "project": project_id,
+                "workspace": workspace_id,
                 "after_created": after[0] if after is not None else None,
                 "after_id": after[1] if after is not None else None,
                 "limit": limit,

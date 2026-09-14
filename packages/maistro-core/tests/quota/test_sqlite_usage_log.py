@@ -149,6 +149,45 @@ async def test_empty_log_snapshot_is_a_no_op(persist: SqliteUsageLog) -> None:
 
 
 @pytest.mark.asyncio
+async def test_purge_aggregates_before_deleting_and_respects_boundary(
+    persist: SqliteUsageLog,
+) -> None:
+    log = InMemoryUsageLog()
+    log.record("provider:model", input_tokens=2, output_tokens=3, now=99.0)
+    log.record("provider:model", input_tokens=5, output_tokens=7, now=100.0)
+    await persist.snapshot(log)
+
+    assert await persist.purge_expired(before=100.0) == 1
+    cursor = await persist._conn.execute(
+        "SELECT input_tokens, output_tokens FROM usage_event_aggregates"
+    )
+    assert await cursor.fetchall() == [(2, 3)]
+    restored = await persist.restore()
+    assert restored.tokens_since("provider:model", 3600, LimitUnit.INPUT_TOKENS, now=100.0) == 5.0
+
+
+@pytest.mark.asyncio
+async def test_purge_is_bounded_and_legal_hold_is_scope_isolated(
+    persist: SqliteUsageLog,
+) -> None:
+    log = InMemoryUsageLog()
+    for timestamp in (1.0, 2.0, 3.0):
+        log.record("held", input_tokens=1, now=timestamp)
+        log.record("free", input_tokens=1, now=timestamp)
+    await persist.snapshot(log)
+
+    assert await persist.purge_expired(before=10.0, limit=1, legal_hold_scopes=("held",)) == 1
+    cursor = await persist._conn.execute(
+        "SELECT COUNT(*) FROM usage_events WHERE scope_key = 'held'"
+    )
+    assert (await cursor.fetchone())[0] == 3
+    cursor = await persist._conn.execute(
+        "SELECT COUNT(*) FROM usage_events WHERE scope_key = 'free'"
+    )
+    assert (await cursor.fetchone())[0] == 2
+
+
+@pytest.mark.asyncio
 async def test_restore_reproduces_max_retention_pruning(persist: SqliteUsageLog) -> None:
     log = InMemoryUsageLog()
     log.record("groq:kimi-k2", input_tokens=1, now=1000.0)

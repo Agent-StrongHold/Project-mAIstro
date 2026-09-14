@@ -64,6 +64,17 @@ class TestAppend:
         events = await log.query(limit=100)
         assert len(events) == 50
 
+    async def test_sqlite_purge_is_bounded_and_honors_legal_hold(self, log: EventLogStore) -> None:
+        if not isinstance(log, SqliteEventLog):
+            pytest.skip("purge is a durable-store operation")
+        await log.append("old.held", entity_id="held")
+        await log.append("old.free", entity_id="free")
+        removed = await log.purge_expired(
+            before=time.time() + 1, limit=1, legal_hold_entity_ids=("held",)
+        )
+        assert removed == 1
+        assert len(await log.query(limit=10)) == 1
+
 
 class TestQuery:
     async def test_filter_by_type(self, log: EventLogStore) -> None:

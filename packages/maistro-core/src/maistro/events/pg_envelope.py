@@ -75,6 +75,35 @@ class PgEventStore:
     async def ensure_schema(self) -> None:
         await ensure_canonical_event_schema(self._pool)
 
+    async def purge_expired(
+        self,
+        *,
+        before: float,
+        limit: int = 1_000,
+        legal_hold_workspace_ids: tuple[str, ...] = (),
+    ) -> int:
+        """Remove old canonical events in bounded, scope-aware batches."""
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        hold = "" if not legal_hold_workspace_ids else " AND workspace_id <> ALL($2::text[])"
+        if legal_hold_workspace_ids:
+            params: tuple[object, ...] = (before, list(legal_hold_workspace_ids), limit)
+            limit_mark = "$3"
+        else:
+            params = (before, limit)
+            limit_mark = "$2"
+        query = (
+            "DELETE FROM canonical_event_log WHERE event_id IN ("
+            "SELECT event_id FROM canonical_event_log WHERE timestamp < $1"
+            + hold
+            + " ORDER BY timestamp, event_id LIMIT "
+            + limit_mark
+            + ")"
+        )
+        async with self._pool.acquire() as conn, conn.transaction():
+            rows = await conn.fetch(query + " RETURNING event_id", *params)
+        return len(rows)
+
     async def append(self, event: EventEnvelope) -> EventEnvelope:
         return (await self.append_with_disposition(event)).event
 

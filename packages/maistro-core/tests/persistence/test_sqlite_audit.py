@@ -4,6 +4,7 @@ in-memory sqlite3 DB (via aiosqlite)."""
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
 
 import aiosqlite
 import pytest
@@ -45,6 +46,25 @@ async def test_log_and_get_entries_roundtrip(log: SqliteAuditLog) -> None:
     assert e.detail == "ok"
     assert e.trace_id == "t1"
     assert e.request_id == "r1"
+
+
+@pytest.mark.asyncio
+async def test_purge_expired_respects_boundary_and_legal_hold(log: SqliteAuditLog) -> None:
+    old = datetime.now(UTC) - timedelta(days=2)
+    await log._conn.executemany(
+        "INSERT INTO audit_log (timestamp, user_id, agent_id) VALUES (?, ?, ?)",
+        [(old.isoformat(), "held", "a"), (old.isoformat(), "free", "a")],
+    )
+    await log._conn.commit()
+
+    removed = await log.purge_expired(
+        before=datetime.now(UTC) - timedelta(days=1),
+        legal_hold_user_ids=("held",),
+    )
+
+    assert removed == 1
+    cursor = await log._conn.execute("SELECT user_id FROM audit_log")
+    assert [row[0] for row in await cursor.fetchall()] == ["held"]
 
 
 @pytest.mark.asyncio

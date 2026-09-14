@@ -126,6 +126,35 @@ class PgEventLog:
     async def ensure_schema(self) -> None:
         await ensure_event_schema(self._pool)
 
+    async def purge_expired(
+        self,
+        *,
+        before: float,
+        limit: int = 1_000,
+        legal_hold_entity_ids: tuple[str, ...] = (),
+    ) -> int:
+        """Delete a bounded delivery-history batch after terminal processing."""
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        hold = "" if not legal_hold_entity_ids else " AND entity_id <> ALL($2::text[])"
+        params: tuple[object, ...]
+        if legal_hold_entity_ids:
+            params = (before, list(legal_hold_entity_ids), limit)
+            limit_mark = "$3"
+        else:
+            params = (before, limit)
+            limit_mark = "$2"
+        query = (
+            "DELETE FROM event_log WHERE id IN (SELECT id FROM event_log "
+            "WHERE created_at < $1" + hold + " ORDER BY id LIMIT " + limit_mark + ")"
+        )
+        async with self._pool.acquire() as conn, conn.transaction():
+            result = await conn.execute(query, *params)
+        try:
+            return int(result.rsplit(" ", 1)[-1])
+        except (ValueError, IndexError):
+            return 0
+
     async def append(
         self,
         event_type: str,

@@ -37,6 +37,8 @@ from maistro.observability.metrics import (
     retention_dependent_evidence_retained,
     retention_dependents_purged_total,
     retention_purged_total,
+    retention_sweep_failures_total,
+    retention_sweep_last_success_timestamp,
 )
 from maistro.runs.retention_scope import GlobalRetentionScope, require_retention_scope
 from maistro.runs.store import DEFAULT_PURGE_BATCH, PurgeOutcome, RetentionScope
@@ -76,6 +78,13 @@ def _scope_key(scope: RetentionScope) -> tuple[str, str | None]:
     if isinstance(scope, GlobalRetentionScope):
         return _GLOBAL_SCOPE_KEY
     return ("workspace", scope.workspace_id)
+
+
+def _metric_mode(scope: RetentionScope | None) -> str:
+    """Keep retention health labels bounded even for an unscoped failure."""
+    if scope is None:
+        return "unscoped"
+    return "global" if isinstance(scope, GlobalRetentionScope) else "workspace"
 
 
 @dataclass(frozen=True)
@@ -225,6 +234,7 @@ class RunRetentionSweeper:
                     resolved, now=now, limit=self._policy.batch_limit
                 )
             except Exception as exc:
+                retention_sweep_failures_total.inc(mode=_metric_mode(resolved))
                 # A missing scope is a misconfiguration, and this is where it
                 # surfaces: recorded, visible, and deleting nothing — the one
                 # failure mode the pre-#1175 signature could not have.
@@ -261,6 +271,7 @@ class RunRetentionSweeper:
                     resolved, now=now, limit=self._policy.batch_limit
                 )
             except Exception as exc:
+                retention_sweep_failures_total.inc(mode=_metric_mode(resolved))
                 self.last_error = exc
                 self._last_outcome = None
                 if resolved is not None:
@@ -289,6 +300,7 @@ class RunRetentionSweeper:
         if outcome is None:
             return
         mode = outcome.mode
+        retention_sweep_last_success_timestamp.set(time.time(), mode=mode)
         # The backlog observation is recorded per scope and published as the
         # per-mode OR: another Workspace's clean batch must not clear this
         # scope's standing backlog, and vice versa (#1175).

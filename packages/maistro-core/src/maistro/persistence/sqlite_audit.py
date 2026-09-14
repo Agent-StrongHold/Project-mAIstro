@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from maistro.types.security import AuditEntry
@@ -42,6 +43,9 @@ class SqliteAuditLog:
     async def ensure_schema(self) -> None:
         """Create the audit_log table if it doesn't exist."""
         await self._conn.execute(_SCHEMA)
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log (timestamp, id)"
+        )
         await self._conn.commit()
 
     async def log(self, entry: AuditEntry) -> None:
@@ -65,6 +69,36 @@ class SqliteAuditLog:
             ),
         )
         await self._conn.commit()
+
+    async def purge_expired(
+        self,
+        *,
+        before: datetime,
+        limit: int = 1_000,
+        legal_hold_user_ids: tuple[str, ...] = (),
+    ) -> int:
+        """Delete an old bounded batch without crossing a legal hold."""
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        hold_sql = ""
+        params: list[Any] = [before.astimezone(UTC).isoformat()]
+        if legal_hold_user_ids:
+            marks = ",".join("?" for _ in legal_hold_user_ids)
+            hold_sql = f" AND user_id NOT IN ({marks})"  # values remain bound
+            params.extend(legal_hold_user_ids)
+        params.append(limit)
+        await self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = await self._conn.execute(
+                "DELETE FROM audit_log WHERE id IN (SELECT id FROM audit_log "
+                "WHERE timestamp < ?" + hold_sql + " ORDER BY timestamp, id LIMIT ?)",
+                params,
+            )
+            await self._conn.commit()
+            return max(cursor.rowcount, 0)
+        except BaseException:
+            await self._conn.rollback()
+            raise
 
     async def get_entries(
         self,

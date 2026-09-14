@@ -35,12 +35,19 @@ identical query results.
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 from maistro.quota.usage_log import InMemoryUsageLog
 
 if TYPE_CHECKING:
     import aiosqlite
+
+# Raw rows are retained long enough for provider reconciliation.  The
+# in-memory enforcement window is shorter, so purging rows older than this
+# boundary cannot change a current quota decision after restore.
+DEFAULT_RAW_RETENTION_SECONDS = 90 * 24 * 60 * 60
+DEFAULT_PURGE_BATCH = 1_000
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS usage_events (
@@ -50,6 +57,15 @@ CREATE TABLE IF NOT EXISTS usage_events (
     output_tokens INTEGER NOT NULL DEFAULT 0,
     images INTEGER NOT NULL DEFAULT 0,
     cost_usd REAL NOT NULL DEFAULT 0.0
+);
+CREATE TABLE IF NOT EXISTS usage_event_aggregates (
+    scope_key TEXT NOT NULL,
+    bucket_start REAL NOT NULL,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    images INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL NOT NULL DEFAULT 0.0,
+    PRIMARY KEY (scope_key, bucket_start)
 )
 """
 
@@ -68,6 +84,9 @@ class SqliteUsageLog:
 
     def __init__(self, conn: aiosqlite.Connection) -> None:
         self._conn = conn
+        # SQLite's file lock is the cross-replica authority; this lock also
+        # keeps one instance from interleaving snapshot and purge transactions.
+        self._write_lock = asyncio.Lock()
         # Per-scope high-water mark: the timestamp of the last event this
         # instance has already written. A VALUE watermark, not an index/count
         # one, because InMemoryUsageLog prunes its own deque over time --
@@ -77,10 +96,11 @@ class SqliteUsageLog:
         self._last_persisted_ts: dict[str, float] = {}
 
     async def ensure_schema(self) -> None:
-        """Create the usage_events table + its (scope_key, timestamp) index."""
-        await self._conn.execute(_SCHEMA)
-        await self._conn.execute(_INDEX)
-        await self._conn.commit()
+        """Create raw usage, aggregate, and lookup schemas."""
+        async with self._write_lock:
+            await self._conn.executescript(_SCHEMA)
+            await self._conn.execute(_INDEX)
+            await self._conn.commit()
 
     async def snapshot(self, log: InMemoryUsageLog) -> None:
         """Persist events recorded since the last `snapshot` call.
@@ -111,14 +131,75 @@ class SqliteUsageLog:
 
         if not rows:
             return
-        await self._conn.executemany(
-            "INSERT INTO usage_events "
-            "(scope_key, timestamp, input_tokens, output_tokens, images, cost_usd) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            rows,
-        )
-        await self._conn.commit()
-        self._last_persisted_ts.update(new_watermarks)
+        async with self._write_lock:
+            await self._conn.executemany(
+                "INSERT INTO usage_events "
+                "(scope_key, timestamp, input_tokens, output_tokens, images, cost_usd) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+            await self._conn.commit()
+            self._last_persisted_ts.update(new_watermarks)
+
+    async def purge_expired(
+        self,
+        *,
+        before: float,
+        limit: int = DEFAULT_PURGE_BATCH,
+        legal_hold_scopes: tuple[str, ...] = (),
+    ) -> int:
+        """Aggregate and delete an idempotent bounded batch of raw events.
+
+        Aggregates are upserted in the same transaction as deletion. A crash
+        before commit removes neither; a retry adds the same bucket exactly
+        once. ``legal_hold_scopes`` is deliberately an explicit input rather
+        than a hidden process-local flag, so every replica applies the same
+        hold decision.
+        """
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        if not legal_hold_scopes:
+            hold_sql = ""
+            hold_params: tuple[object, ...] = ()
+        else:
+            marks = ",".join("?" for _ in legal_hold_scopes)
+            hold_sql = f" AND scope_key NOT IN ({marks})"  # values remain bound
+            hold_params = tuple(legal_hold_scopes)
+        async with self._write_lock:
+            await self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                aggregate_sql = (
+                    """INSERT INTO usage_event_aggregates
+                       (scope_key, bucket_start, input_tokens, output_tokens, images, cost_usd)
+                       SELECT scope_key, CAST(timestamp / 86400 AS INTEGER) * 86400 AS bucket_start,
+                              SUM(input_tokens), SUM(output_tokens), SUM(images), SUM(cost_usd)
+                       FROM usage_events
+                       WHERE timestamp < """
+                    + "?"
+                    + hold_sql
+                    + """ GROUP BY scope_key, bucket_start
+                       ON CONFLICT(scope_key, bucket_start) DO UPDATE SET
+                         input_tokens = usage_event_aggregates.input_tokens + excluded.input_tokens,
+                         output_tokens = usage_event_aggregates.output_tokens + excluded.output_tokens,
+                         images = usage_event_aggregates.images + excluded.images,
+                         cost_usd = usage_event_aggregates.cost_usd + excluded.cost_usd"""
+                )
+                await self._conn.execute(aggregate_sql, (before, *hold_params))
+                delete_sql = (
+                    "DELETE FROM usage_events WHERE rowid IN ("
+                    "SELECT rowid FROM usage_events WHERE timestamp < ?"
+                    + hold_sql
+                    + " ORDER BY timestamp LIMIT ?)"
+                )
+                cursor = await self._conn.execute(
+                    delete_sql,
+                    (before, *hold_params, limit),
+                )
+                await self._conn.commit()
+                return max(cursor.rowcount, 0)
+            except BaseException:
+                await self._conn.rollback()
+                raise
 
     async def restore(self, *, max_retention_s: float = 86_400.0) -> InMemoryUsageLog:
         """Rehydrate a fresh `InMemoryUsageLog` from persisted events.

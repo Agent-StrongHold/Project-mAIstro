@@ -537,3 +537,11 @@ retention_dependent_evidence_retained = registry.gauge(
     "Dependent provenance references the last completed retention sweep kept by "
     "policy (canonical Event log), by authorization mode (#1175)",
 )
+retention_sweep_last_success_timestamp = registry.gauge(
+    "maistro_retention_sweep_last_success_timestamp",
+    "Unix timestamp of the last successful retention sweep, by authorization mode",
+)
+retention_sweep_failures_total = registry.counter(
+    "maistro_retention_sweep_failures_total",
+    "Retention sweeps that failed before committing, by authorization mode",
+)

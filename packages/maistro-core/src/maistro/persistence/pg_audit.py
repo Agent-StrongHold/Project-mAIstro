@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from maistro.types.security import AuditEntry
@@ -42,6 +43,35 @@ class PgAuditLog:
                 entry.trace_id,
                 entry.request_id,
             )
+
+    async def purge_expired(
+        self,
+        *,
+        before: datetime,
+        limit: int = 1_000,
+        legal_hold_user_ids: tuple[str, ...] = (),
+    ) -> int:
+        """Delete a bounded old batch while preserving held principals."""
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        hold = "" if not legal_hold_user_ids else " AND user_id <> ALL($2::text[])"
+        params: tuple[Any, ...]
+        if legal_hold_user_ids:
+            params = (before.astimezone(UTC), list(legal_hold_user_ids), limit)
+            limit_mark = "$3"
+        else:
+            params = (before.astimezone(UTC), limit)
+            limit_mark = "$2"
+        query = (
+            "DELETE FROM audit_log WHERE id IN (SELECT id FROM audit_log "
+            "WHERE timestamp < $1" + hold + " ORDER BY timestamp, id LIMIT " + limit_mark + ")"
+        )
+        async with self._pool.acquire() as conn, conn.transaction():
+            result = await conn.execute(query, *params)
+        try:
+            return int(result.rsplit(" ", 1)[-1])
+        except (ValueError, IndexError):
+            return 0
 
     async def get_entries(
         self,

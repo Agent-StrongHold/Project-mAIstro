@@ -389,6 +389,38 @@ class SqliteEventStore:
         await self._conn.executescript(_SCHEMA)
         await self._conn.commit()
 
+    async def purge_expired(
+        self,
+        *,
+        before: float,
+        limit: int = 1_000,
+        legal_hold_workspace_ids: tuple[str, ...] = (),
+    ) -> int:
+        """Remove old canonical events in bounded, scope-aware batches."""
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        hold_sql = ""
+        params: list[object] = [before]
+        if legal_hold_workspace_ids:
+            marks = ",".join("?" for _ in legal_hold_workspace_ids)
+            hold_sql = f" AND workspace_id NOT IN ({marks})"  # values remain bound
+            params.extend(legal_hold_workspace_ids)
+        params.append(limit)
+        await self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = await self._conn.execute(
+                "DELETE FROM canonical_event_log WHERE event_id IN ("
+                "SELECT event_id FROM canonical_event_log WHERE timestamp < ?"
+                + hold_sql
+                + " ORDER BY timestamp, event_id LIMIT ?)",
+                params,
+            )
+            await self._conn.commit()
+            return max(cursor.rowcount, 0)
+        except BaseException:
+            await self._conn.rollback()
+            raise
+
     async def append(self, event: EventEnvelope) -> EventEnvelope:
         return (await self.append_with_disposition(event)).event
 

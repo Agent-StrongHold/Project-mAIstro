@@ -57,6 +57,8 @@ CREATE TABLE IF NOT EXISTS security_rate_limits (
     PRIMARY KEY (key, window_start)
 );
 CREATE INDEX IF NOT EXISTS idx_rate_limits_expiry ON security_rate_limits(window_start);
+CREATE INDEX IF NOT EXISTS idx_security_violations_timestamp
+    ON security_violations(timestamp, id);
 """
 
 
@@ -211,6 +213,59 @@ class PgStrikeTracker:
             last_appeal=row["last_appeal"] or "",
             last_appeal_at=row["last_appeal_at"],
         )
+
+    async def purge_expired(
+        self,
+        *,
+        before: datetime,
+        limit: int = 1_000,
+        legal_hold_user_ids: tuple[str, ...] = (),
+    ) -> int:
+        """Purge old violation evidence, never current strike state.
+
+        The violation rows are immutable evidence and the strike summary is
+        live enforcement state. They therefore have separate lifetimes: this
+        operation only removes old evidence and leaves ``security_strikes``
+        untouched. A database transaction makes retries safe after a crash;
+        the limit makes each replica's lock hold bounded.
+        """
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        hold = "" if not legal_hold_user_ids else " AND user_id <> ALL($2::text[])"
+        params: tuple[Any, ...]
+        if legal_hold_user_ids:
+            params = (before.astimezone(UTC), list(legal_hold_user_ids), limit)
+            limit_mark = "$3"
+        else:
+            params = (before.astimezone(UTC), limit)
+            limit_mark = "$2"
+        query = (
+            "DELETE FROM security_violations WHERE id IN ("
+            "SELECT id FROM security_violations WHERE timestamp < $1"
+            + hold
+            + " ORDER BY timestamp, id LIMIT "
+            + limit_mark
+            + ") RETURNING id"
+        )
+        pool = await self._get_pool()
+        async with pool.acquire() as conn, conn.transaction():
+            rows = await conn.fetch(query, *params)
+        return len(rows)
+
+    async def purge_expired_rate_limits(self, *, before: datetime, limit: int = 1_000) -> int:
+        """Bound the short-lived throttle table independently of evidence."""
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        pool = await self._get_pool()
+        async with pool.acquire() as conn, conn.transaction():
+            rows = await conn.fetch(
+                "DELETE FROM security_rate_limits WHERE (key, window_start) IN ("
+                "SELECT key, window_start FROM security_rate_limits "
+                "WHERE window_start < $1 ORDER BY window_start LIMIT $2) RETURNING key",
+                before.astimezone(UTC),
+                limit,
+            )
+        return len(rows)
 
     async def get(self, user_id: str) -> StrikeRecord | None:
         pool = await self._get_pool()
