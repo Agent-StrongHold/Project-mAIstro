@@ -1,17 +1,11 @@
 """Durable persistence adapters for canonical capability Invocations.
 
-**Unreached, and durable only in the SQLite sense.** Nothing constructs
-:class:`SqliteInvocationStore` outside tests. The container does wire a class of
-the same name -- :class:`maistro.events.invocations.SqliteInvocationStore`, a
-different store over a different table -- and both are re-exported from
-:mod:`maistro.capabilities`, so the collision is easy to read the wrong way
-round. The wired one is the events store; this one is not wired.
-
-Its table has no migration. ``capability_invocations`` is created by
-``ensure_schema`` and appears in no revision under ``alembic/versions``, so it
-does not exist in any PostgreSQL deployment and there is no PostgreSQL twin of
-this store. That is a consequence of being unreached, not an omission to fix
-separately: the migration lands with the wiring, in #55.
+These stores persist the logical effect ledger used by
+:class:`InvocationExecutionService` to deduplicate completed effects and block
+unsafe replay of CREATED/RUNNING/UNKNOWN outcomes after process loss. SQLite is
+the single-instance durable backend; PostgreSQL is the shared replica-safe
+backend. The production Container selects one of them when its configured data
+backend is durable.
 """
 
 from __future__ import annotations
@@ -23,6 +17,7 @@ from maistro.capabilities.invocation import Invocation
 
 if TYPE_CHECKING:
     import aiosqlite
+    import asyncpg
 
 
 _SCHEMA = """
@@ -134,4 +129,80 @@ class SqliteInvocationStore:
         )
 
 
-__all__ = ["SqliteInvocationStore"]
+class PgInvocationStore:
+    """PostgreSQL InvocationStore shared by workers and process restarts."""
+
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self._pool = pool
+
+    async def create(self, invocation: Invocation) -> Invocation:
+        inserted = await self._pool.fetchval(
+            """INSERT INTO capability_invocations (
+                invocation_id, run_id, node_run_id, attempt_id, binding_id,
+                effect_key, status, created_at, payload_json
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+            ON CONFLICT (invocation_id) DO NOTHING
+            RETURNING invocation_id""",
+            invocation.invocation_id,
+            invocation.run_id,
+            invocation.node_run_id,
+            invocation.attempt_id,
+            invocation.binding.binding_id,
+            invocation.effect_key,
+            invocation.status.value,
+            invocation.created_at,
+            invocation.model_dump_json(),
+        )
+        if inserted is None:
+            raise ValueError(f"Invocation {invocation.invocation_id!r} already exists")
+        return invocation.model_copy(deep=True)
+
+    async def get(self, invocation_id: str) -> Invocation | None:
+        payload = await self._pool.fetchval(
+            "SELECT payload_json FROM capability_invocations WHERE invocation_id = $1",
+            invocation_id,
+        )
+        return Invocation.model_validate_json(str(payload)) if payload is not None else None
+
+    async def save(self, invocation: Invocation) -> Invocation:
+        updated = await self._pool.fetchval(
+            """UPDATE capability_invocations SET
+                run_id = $1, node_run_id = $2, attempt_id = $3, binding_id = $4,
+                effect_key = $5, status = $6, created_at = $7, payload_json = $8
+               WHERE invocation_id = $9
+               RETURNING invocation_id""",
+            invocation.run_id,
+            invocation.node_run_id,
+            invocation.attempt_id,
+            invocation.binding.binding_id,
+            invocation.effect_key,
+            invocation.status.value,
+            invocation.created_at,
+            invocation.model_dump_json(),
+            invocation.invocation_id,
+        )
+        if updated is None:
+            raise KeyError(f"Invocation {invocation.invocation_id!r} does not exist")
+        return invocation.model_copy(deep=True)
+
+    async def list_effect(
+        self,
+        *,
+        run_id: str,
+        node_run_id: str,
+        binding_id: str,
+        effect_key: str,
+    ) -> list[Invocation]:
+        rows = await self._pool.fetch(
+            """SELECT payload_json FROM capability_invocations
+               WHERE run_id = $1 AND node_run_id = $2 AND binding_id = $3 AND effect_key = $4
+               ORDER BY created_at ASC, invocation_id ASC""",
+            run_id,
+            node_run_id,
+            binding_id,
+            effect_key,
+        )
+        return [Invocation.model_validate_json(str(row["payload_json"])) for row in rows]
+
+
+__all__ = ["PgInvocationStore", "SqliteInvocationStore"]
