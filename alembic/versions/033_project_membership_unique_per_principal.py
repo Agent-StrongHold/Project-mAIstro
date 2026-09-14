@@ -23,8 +23,8 @@ De-duplicates first, keeping the most recently created row per
 deterministic choice -- so the new primary key can never fail to apply to
 whatever an environment already holds.
 
-Revision ID: 033
-Revises: 032
+Revision ID: 034
+Revises: 033
 Create Date: 2026-09-09
 """
 

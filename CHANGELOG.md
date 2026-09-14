@@ -172,6 +172,16 @@ or placeholder-only section.
 
 ### Fixed
 
+- **A manual schedule fire claims its run before creating it, and never moves
+  the recurrence cursor (#1119).** `ScheduleStore` gains `reserve_fire` /
+  `settle_fire`: the quota is counted (and the schedule disabled on
+  exhaustion) atomically under the store's lock *before* the Run exists, so
+  two "run now" requests racing on the last run yield one Run and one refusal
+  instead of `runs_so_far` overshooting `max_runs`, and a failure after the
+  Run exists leaves the slot counted rather than a Run the next request
+  duplicates. `last_fired_at` and `next_due_at` are no longer stamped with the
+  manual fire's instant, so an occurrence the cron already owed is still
+  admitted by the next tick; `last_run_id` still points at the manual Run.
 - **A schedule's due cursor is recorded on every evaluation, and SQLite
   `record_fire` is serialized (#1199).** `ScheduleRunAdmitter` computed
   `next_due_at` on an evaluation that fired nothing but never persisted it, so
@@ -214,6 +224,15 @@ or placeholder-only section.
   validates each legacy `resume_at` (ISO-8601 with an explicit offset) before
   casting, leaving malformed or timezone-less values unindexed rather than
   aborting the upgrade or reading them in the session zone.
+
+- **Ambiguous capability Invocations are recoverable, and the recovery is
+  safe to operate (#1118).** Reconciliation checks the caller's Workspace and
+  Project before returning a terminal Invocation, consults a provider adapter
+  outside the service-wide effect lock and refuses its evidence if the row
+  moved meanwhile, accepts and backfills scope on Invocations written before
+  scope was persisted, announces the reconciled terminal state on the event
+  stream, carries recovered usage into an APPLIED settlement, and reads naive
+  timestamps as UTC instead of raising during discovery.
 - **A scheduled Run whose resumed Attempt died is resumed again by the
   ordinary tick (#1112).** `recover_abandoned_attempts` reclaims a crashed
   resume's Attempt as CANCELLED and parks the Run WAITING, but
