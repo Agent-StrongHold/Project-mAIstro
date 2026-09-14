@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from models.schemas import HiveUser
@@ -99,6 +100,17 @@ def test_atomic_allocation_rolls_back_claim_when_user_insert_fails(tmp_path) -> 
         )
     assert persisted.get_raw("username_claims", "username:retry") is None
     state.close()
+
+
+def test_registration_route_uses_atomic_allocator_not_scan_then_write() -> None:
+    source = (Path(__file__).resolve().parents[1] / "routes" / "auth.py").read_text(
+        encoding="utf-8"
+    )
+    register = source[source.index('@router.post("/register")') :]
+    register = register[: register.index('@router.post("/login")')]
+
+    assert "username_registry.create_users([user])" in register
+    assert "stores.users[user_id] = user" not in register
 
 
 def test_historical_duplicate_is_quarantined_not_winner_selected() -> None:
