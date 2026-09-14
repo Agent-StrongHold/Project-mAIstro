@@ -26,6 +26,10 @@ SCRIPTS = ROOT / "scripts"
 _ROOT_NAMES = frozenset({"ROOT", "REPO", "REPO_ROOT"})
 
 CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
+    ("check-compliance.py", "quality/compliance-registry.json"): (
+        "the compliance registry is the reviewed status and evidence specification; changing a "
+        "claim or evidence record is the substantive compliance change"
+    ),
     ("check-retired-guidance.py", "quality/retired-guidance.json"): (
         "retirement guidance is the reviewed specification being changed"
     ),

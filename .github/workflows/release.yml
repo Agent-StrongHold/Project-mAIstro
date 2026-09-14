@@ -36,6 +36,7 @@ on:
 # Read-only by default; each job widens only what it needs.
 permissions:
   contents: read
+  actions: read
 
 env:
   REGISTRY: ghcr.io
@@ -74,6 +75,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install compliance checker dependencies
+        run: python -m pip install --disable-pip-version-check "PyYAML>=6.0,<7"
+
       # ADR §2: package versions never carry the rc suffix, so `vX.Y.Z` and
       # `vX.Y.Z-rcN` both have to equal VERSION once `-rcN` is stripped. The
       # script also runs scripts/bump_version.py --check (all 32 version sites)
@@ -94,6 +98,8 @@ jobs:
       # is not immutable release evidence; each release-required claim must be
       # bound to this exact tag commit by the registry before anything builds.
       - name: Compliance evidence must cover this release digest
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: >-
           python scripts/check-compliance.py
           --require-release-evidence

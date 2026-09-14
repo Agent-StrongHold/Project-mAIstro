@@ -41,6 +41,14 @@
       "reason": "This registry is the explicit policy that classifies collaboration-state representations."
     },
     {
+      "id": "compliance-registry",
+      "kind": "specification",
+      "paths": [
+        "quality/compliance-registry.json"
+      ],
+      "reason": "The compliance registry is the reviewed status and evidence specification; changing a claim or evidence record is the substantive compliance change."
+    },
+    {
       "id": "compatibility-contracts",
       "kind": "specification",
       "paths": [

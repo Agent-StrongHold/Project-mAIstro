@@ -12,9 +12,12 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import re
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -111,7 +114,7 @@ def _is_immutable_evidence_link(value: str) -> bool:
     if not isinstance(value, str):
         return False
     parsed = urlparse(value)
-    if parsed.scheme != "https" or parsed.netloc != "github.com" or parsed.query:
+    if parsed.scheme != "https" or parsed.netloc != "github.com" or parsed.query or parsed.fragment:
         return False
     expected_prefix = f"/{GITHUB_REPOSITORY}/actions/runs/"
     if not parsed.path.startswith(expected_prefix):
@@ -125,6 +128,83 @@ def _is_immutable_evidence_link(value: str) -> bool:
             or (len(suffix) == 3 and suffix[1] == "artifacts" and suffix[2].isdigit())
         )
     )
+
+
+def _evidence_artifact_ids(value: str) -> tuple[int, int] | None:
+    """Return the immutable Actions run and artifact IDs from an evidence URL."""
+    parsed = urlparse(value)
+    prefix = f"/{GITHUB_REPOSITORY}/actions/runs/"
+    if parsed.scheme != "https" or parsed.netloc != "github.com" or parsed.query:
+        return None
+    suffix = (
+        parsed.path[len(prefix) :].strip("/").split("/") if parsed.path.startswith(prefix) else []
+    )
+    if len(suffix) != 3 or suffix[1] != "artifacts":
+        return None
+    if not suffix[0].isdigit() or not suffix[2].isdigit():
+        return None
+    run_id, artifact_id = int(suffix[0]), int(suffix[2])
+    return (run_id, artifact_id) if run_id > 0 and artifact_id > 0 else None
+
+
+def _github_json(url: str) -> tuple[dict[str, Any] | None, str | None]:
+    """Fetch immutable Actions metadata; failures are evidence failures."""
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read())
+    except (OSError, urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as exc:
+        return None, str(exc)
+    if not isinstance(payload, dict):
+        return None, "GitHub returned a non-object response"
+    return payload, None
+
+
+def _verify_artifact_evidence(  # noqa: C901 - fail-closed provenance checks stay together
+    item: dict[str, Any], *, evidence_where: str, workflow_ref: str
+) -> list[str]:
+    """Prove that a green claim names a real, unexpired artifact from its release run."""
+    artifact_ids = _evidence_artifact_ids(item["url"])
+    if artifact_ids is None:
+        return [
+            f"{evidence_where}.url must identify an immutable GitHub Actions artifact for implemented status"
+        ]
+    run_id, artifact_id = artifact_ids
+    api_url = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/actions/artifacts/{artifact_id}"
+    artifact, failure = _github_json(api_url)
+    if artifact is None:
+        return [f"{evidence_where} could not verify GitHub artifact {artifact_id}: {failure}"]
+
+    errors: list[str] = []
+    workflow_run = artifact.get("workflow_run")
+    if not isinstance(workflow_run, dict) or workflow_run.get("id") != run_id:
+        errors.append(f"{evidence_where} artifact does not belong to the URL's workflow run")
+    run_url = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/actions/runs/{run_id}"
+    run, failure = _github_json(run_url)
+    if run is None:
+        errors.append(f"{evidence_where} could not verify workflow run {run_id}: {failure}")
+    else:
+        if run.get("head_sha") != item["release_digest"]:
+            errors.append(f"{evidence_where} workflow run is not for the evidence release digest")
+        if run.get("path") != workflow_ref:
+            errors.append(f"{evidence_where} workflow run does not match workflow_ref")
+        if run.get("status") != "completed" or run.get("conclusion") != "success":
+            errors.append(f"{evidence_where} workflow run did not complete successfully")
+    if artifact.get("expired") is not False:
+        errors.append(f"{evidence_where} artifact is expired or has no expiry state")
+    digest = artifact.get("digest")
+    if not isinstance(digest, str) or not digest.startswith("sha256:"):
+        errors.append(f"{evidence_where} artifact has no GitHub SHA-256 digest")
+    elif digest.removeprefix("sha256:").lower() != item["sha256"].lower():
+        errors.append(f"{evidence_where}.sha256 does not match the GitHub artifact digest")
+    return errors
 
 
 def _workflow_state(workflow_ref: str, root: Path) -> tuple[bool, bool] | None:
@@ -193,7 +273,7 @@ def validate_registry(  # noqa: C901 - this is the single fail-closed schema/evi
     release_digest: str | None = None,
     require_release_evidence: bool = False,
 ) -> list[str]:
-    """Return schema and evidence errors without making any network requests."""
+    """Return schema and evidence errors, verifying green artifacts with GitHub."""
     errors: list[str] = []
     today = today or dt.date.today()
     if not isinstance(registry, dict):
@@ -363,6 +443,21 @@ def validate_registry(  # noqa: C901 - this is the single fail-closed schema/evi
                         errors.append(
                             f"{ident} has never-run evidence supporting implemented status"
                         )
+                    if (
+                        isinstance(item.get("url"), str)
+                        and _is_immutable_evidence_link(item["url"])
+                        and isinstance(workflow_ref, str)
+                        and isinstance(item.get("release_digest"), str)
+                        and isinstance(item.get("sha256"), str)
+                        and SHA256_RE.fullmatch(item["sha256"])
+                    ):
+                        errors.extend(
+                            _verify_artifact_evidence(
+                                item,
+                                evidence_where=evidence_where,
+                                workflow_ref=workflow_ref,
+                            )
+                        )
                 if registry_digest and evidence_digest != registry_digest:
                     errors.append(f"{ident} evidence is not bound to registry.release_digest")
         if (
@@ -388,6 +483,8 @@ def validate_registry(  # noqa: C901 - this is the single fail-closed schema/evi
                 errors.append(f"{ident} is implemented but has no executable test reference")
             if not any(_is_executable_ref(ref) for ref in control["control_refs"]):
                 errors.append(f"{ident} is implemented but has no executable control reference")
+            if not any(_is_executable_ref(ref) for ref in control["test_refs"]):
+                errors.append(f"{ident} is implemented but has no executable test reference")
             if expires is not None and expires < today:
                 errors.append(f"{ident} is implemented but its evidence expiry has passed")
         if require_release_evidence and control["release_required"]:

@@ -209,6 +209,112 @@ def test_evidence_schema_requires_immutable_http_link(checker: ModuleType, regis
     )
 
 
+def test_green_artifact_must_match_github_provenance(
+    checker: ModuleType, registry: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    control = registry["controls"][0]
+    digest = "b" * 40
+    control["status"] = "implemented"
+    control["last_verified"] = "2026-08-25"
+    control["evidence"] = [
+        {
+            "url": "https://github.com/Agent-StrongHold/Project-mAIstro/actions/runs/123/artifacts/456",
+            "sha256": "a" * 64,
+            "release_digest": digest,
+            "observed_at": "2026-08-25",
+            "result": "passed",
+            "workflow_ref": ".github/workflows/ci.yml",
+            "workflow_enabled": True,
+            "manual_only": False,
+            "ran": True,
+        }
+    ]
+    registry["release_digest"] = digest
+    monkeypatch.setattr(checker, "_git_commit_exists", lambda _digest, _root: True)
+
+    def github_json(url: str) -> tuple[dict, None]:
+        if "/artifacts/" in url:
+            return {
+                "workflow_run": {"id": 123},
+                "expired": False,
+                "digest": "sha256:" + "a" * 64,
+            }, None
+        return {
+            "head_sha": digest,
+            "path": ".github/workflows/ci.yml",
+            "status": "completed",
+            "conclusion": "success",
+        }, None
+
+    monkeypatch.setattr(checker, "_github_json", github_json)
+    assert checker.validate_registry(registry, today=dt.date(2026, 8, 25)) == []
+
+
+def test_forged_artifact_digest_cannot_support_green(
+    checker: ModuleType, registry: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    control = registry["controls"][0]
+    digest = "b" * 40
+    control["status"] = "implemented"
+    control["last_verified"] = "2026-08-25"
+    control["evidence"] = [
+        {
+            "url": "https://github.com/Agent-StrongHold/Project-mAIstro/actions/runs/123/artifacts/456",
+            "sha256": "a" * 64,
+            "release_digest": digest,
+            "observed_at": "2026-08-25",
+            "result": "passed",
+            "workflow_ref": ".github/workflows/ci.yml",
+            "workflow_enabled": True,
+            "manual_only": False,
+            "ran": True,
+        }
+    ]
+    registry["release_digest"] = digest
+    monkeypatch.setattr(checker, "_git_commit_exists", lambda _digest, _root: True)
+
+    def github_json(url: str) -> tuple[dict, None]:
+        if "/artifacts/" in url:
+            return {
+                "workflow_run": {"id": 123},
+                "expired": False,
+                "digest": "sha256:" + "c" * 64,
+            }, None
+        return {
+            "head_sha": digest,
+            "path": ".github/workflows/ci.yml",
+            "status": "completed",
+            "conclusion": "success",
+        }, None
+
+    monkeypatch.setattr(checker, "_github_json", github_json)
+    errors = checker.validate_registry(registry, today=dt.date(2026, 8, 25))
+    assert any("does not match the GitHub artifact digest" in error for error in errors)
+
+
+def test_green_run_link_is_not_artifact_evidence(checker: ModuleType, registry: dict) -> None:
+    control = registry["controls"][0]
+    digest = "b" * 40
+    control["status"] = "implemented"
+    control["last_verified"] = "2026-08-25"
+    control["evidence"] = [
+        {
+            "url": "https://github.com/Agent-StrongHold/Project-mAIstro/actions/runs/123",
+            "sha256": "a" * 64,
+            "release_digest": digest,
+            "observed_at": "2026-08-25",
+            "result": "passed",
+            "workflow_ref": ".github/workflows/ci.yml",
+            "workflow_enabled": True,
+            "manual_only": False,
+            "ran": True,
+        }
+    ]
+    registry["release_digest"] = digest
+    errors = checker.validate_registry(registry, today=dt.date(2026, 8, 25))
+    assert any("must identify an immutable GitHub Actions artifact" in error for error in errors)
+
+
 def test_duplicate_control_ids_are_rejected(checker: ModuleType, registry: dict) -> None:
     registry["controls"].append(copy.deepcopy(registry["controls"][0]))
     errors = checker.validate_registry(registry, today=dt.date(2026, 8, 25))
