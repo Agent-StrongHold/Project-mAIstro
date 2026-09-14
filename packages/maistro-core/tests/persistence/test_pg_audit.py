@@ -286,7 +286,7 @@ async def test_real_postgres_two_org_scope_and_schema(
                WHERE tablename = 'audit_log' AND indexname = 'ix_audit_log_scope'"""
         )
     assert [row["column_name"] for row in columns] == ["org_id"]
-    assert "(org_id, \"timestamp\")" in indexes[0]["indexdef"]
+    assert '(org_id, "timestamp")' in indexes[0]["indexdef"]
 
     audit = PgAuditLog(pg_pool)
     await audit.log(AuditEntry(boundary="org-a", user_id="u", org_id="org-a"))
