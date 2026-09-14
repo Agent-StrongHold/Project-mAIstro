@@ -228,8 +228,7 @@ async def test_sandbox_glob_returns_files() -> None:
     assert result["files"] == ["/workspace/a.py", "/workspace/b.py"]
     assert result["file_count"] == 2
     command = fake.exec_calls[0][0]
-    assert "find /workspace -path" in command
-    assert "**/*.py" in command
+    assert command == ["find", "/workspace", "-path", "/workspace/**/*.py", "-type", "f"]
 
 
 async def test_sandbox_glob_no_files_found() -> None:
@@ -257,7 +256,7 @@ async def test_sandbox_grep_returns_matches() -> None:
     assert result["matches"] == [{"path": "src/a.py", "line": 10, "text": "def foo():"}]
     assert result["match_count"] == 1
     command = fake.exec_calls[0][0]
-    assert "grep -rn --" in command
+    assert command == ["grep", "-rn", "--", "def foo", "/workspace/."]
 
 
 async def test_sandbox_grep_no_matches_found() -> None:

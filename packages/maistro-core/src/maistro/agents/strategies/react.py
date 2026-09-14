@@ -9,6 +9,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
+from maistro.agents.tool_authority import ToolSchemaError
 from maistro.quota.usage_report import reported_usage
 from maistro.types.agent import ReasoningResult
 
@@ -23,14 +24,23 @@ def _find_tool_schema(
     tools: list[dict[str, Any]] | None,
     tool_name: str,
 ) -> dict[str, Any]:
+    """Return the declared schema, failing closed on a missing contract."""
     if not tools:
-        return {}
+        raise ToolSchemaError(f"no tool schema is configured for '{tool_name}'")
     for tool in tools:
         fn = tool.get("function", {})
-        if fn.get("name") == tool_name:
-            params: dict[str, Any] = fn.get("parameters", {})
-            return params
-    return {}
+        if fn.get("name") != tool_name:
+            continue
+        params = fn.get("parameters")
+        if not isinstance(params, dict):
+            raise ToolSchemaError(f"tool '{tool_name}' has no valid argument schema")
+        # _build_tool_schema's compatibility placeholder is deliberately not
+        # an execution contract. Empty schemas supplied by a real registry are
+        # valid; its reserved description distinguishes the placeholder.
+        if fn.get("description") == f"Unconfigured tool schema: {tool_name}":
+            raise ToolSchemaError(f"tool '{tool_name}' has no governed argument schema")
+        return params
+    raise ToolSchemaError(f"no tool schema is configured for '{tool_name}'")
 
 
 class ReactStrategy:
@@ -187,7 +197,7 @@ class ReactStrategy:
             return json.loads(raw_args), None
         except json.JSONDecodeError:
             logger.warning("Malformed tool arguments for %s: %s", tool_name, raw_args[:200])
-            return {}, None
+            return {}, f"Error: malformed arguments for tool '{tool_name}'"
 
     async def _run_tool(
         self,
@@ -256,13 +266,18 @@ class ReactStrategy:
         tool_args, error_result = self._parse_tool_args(tool_name, fn.get("arguments", "{}"))
 
         # NOTE: a parse error sets a placeholder result but does NOT block — the
-        # original behavior falls through to execution with the (possibly empty)
-        # parsed args. Only a sentinel denial blocks execution.
+        # Parsing and schema failures are denials; no executor call is allowed
+        # until the model arguments have a governed contract.
         tool_result: Any = error_result
-        tool_blocked = False
+        tool_blocked = error_result is not None
 
-        if sentinel is not None and auth is not None:
+        try:
             tool_schema = _find_tool_schema(tools, tool_name)
+        except ToolSchemaError as exc:
+            tool_result = f"Error: {exc}"
+            tool_blocked = True
+
+        if not tool_blocked and sentinel is not None and auth is not None:
             sentinel_verdict = await sentinel.pre_call(tool_name, tool_args, auth, tool_schema)
             if not sentinel_verdict.allowed:
                 tool_result = f"Error: Permission denied for tool '{tool_name}'"

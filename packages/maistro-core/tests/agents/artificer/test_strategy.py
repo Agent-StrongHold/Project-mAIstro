@@ -415,7 +415,7 @@ class TestHandleToolCall:
         assert any("Running write_file" in s for s in seen)
 
     @pytest.mark.asyncio
-    async def test_malformed_json_args_defaults_empty(self) -> None:
+    async def test_malformed_json_args_are_denied_before_execution(self) -> None:
         strategy = ArtificerStrategy()
         tc = {"id": "call_1", "function": {"name": "write_file", "arguments": "not-json"}}
 
@@ -430,7 +430,7 @@ class TestHandleToolCall:
         )
 
         assert tool_args == {}
-        assert "ran with" in result_str
+        assert result_str == "Error: malformed arguments for tool 'write_file'"
 
     @pytest.mark.asyncio
     async def test_oversized_args_returns_error(self) -> None:

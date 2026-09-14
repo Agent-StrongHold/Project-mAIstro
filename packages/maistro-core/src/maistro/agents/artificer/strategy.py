@@ -8,6 +8,8 @@ import logging
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
+from maistro.agents.strategies.react import _find_tool_schema
+from maistro.agents.tool_authority import ToolSchemaError
 from maistro.types.agent import ReasoningResult
 
 if TYPE_CHECKING:
@@ -117,6 +119,7 @@ class ArtificerStrategy:
             for tc in tool_calls:
                 tool_args, result_str = await self._handle_tool_call(
                     tc,
+                    tools=tools,
                     tool_executor=tool_executor,
                     trace=trace,
                     status=status,
@@ -235,6 +238,7 @@ class ArtificerStrategy:
         self,
         tc: dict[str, Any],
         *,
+        tools: list[dict[str, Any]] | None = None,
         tool_executor: Any,
         trace: Trace | None,
         status: Any,
@@ -250,7 +254,7 @@ class ArtificerStrategy:
             tool_args = json.loads(raw_args)
         except json.JSONDecodeError:
             logger.warning("Malformed tool arguments for %s: %s", tool_name, raw_args[:200])
-            tool_args = {}
+            return {}, f"Error: malformed arguments for tool '{tool_name}'"
 
         if len(raw_args.encode("utf-8")) > _MAX_ARG_BYTES:
             logger.warning(
@@ -262,8 +266,15 @@ class ArtificerStrategy:
             return tool_args, f"Error: tool arguments exceed {_MAX_ARG_BYTES} byte limit"
 
         tool_blocked = False
+        if tools is not None:
+            try:
+                schema = _find_tool_schema(tools, tool_name)
+            except ToolSchemaError as exc:
+                return tool_args, f"Error: {exc}"
+        else:
+            schema = {}
         if sentinel is not None and auth is not None:
-            sentinel_verdict = await sentinel.pre_call(tool_name, tool_args, auth, {})
+            sentinel_verdict = await sentinel.pre_call(tool_name, tool_args, auth, schema)
             if not sentinel_verdict.allowed:
                 tool_result: Any = f"Error: Permission denied for tool '{tool_name}'"
                 tool_blocked = True

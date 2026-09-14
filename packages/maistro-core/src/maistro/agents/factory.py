@@ -196,6 +196,9 @@ def _build_identity_from_manifest(manifest: dict[str, Any]) -> AgentIdentity:
         ),
         model_constraints=manifest.get("model_constraints", {}) or {},
         tools=_strict_str_tuple(manifest.get("tools"), field="tools", agent_name=name),
+        write_scopes=_strict_str_tuple(
+            manifest.get("write_scopes"), field="write_scopes", agent_name=name
+        ),
         skills=_strict_str_tuple(manifest.get("skills"), field="skills", agent_name=name),
         rules=_safe_tuple(manifest.get("rules")),
         sub_agents=_manifest_sub_agents(manifest, agent_name=name),
