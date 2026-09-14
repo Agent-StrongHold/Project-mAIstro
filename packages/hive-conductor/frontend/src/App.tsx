@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { ElevationProvider } from "./components/Elevation";
 import { ModeProvider } from "./components/ModeToggle";
 import { Onboarding } from "./components/Onboarding";
 import { ToastProvider } from "./components/shared";
@@ -179,9 +180,11 @@ export default function App() {
   return (
     <ErrorBoundary>
       <ToastProvider>
-        <ModeProvider>
-          <AppRoutes />
-        </ModeProvider>
+        <ElevationProvider>
+          <ModeProvider>
+            <AppRoutes />
+          </ModeProvider>
+        </ElevationProvider>
       </ToastProvider>
     </ErrorBoundary>
   );

@@ -3,6 +3,18 @@ import { debugApi } from "./debug";
 
 export const API_BASE = "";
 
+export class ApiError extends Error {
+  readonly status: number;
+  readonly detail: string;
+
+  constructor(path: string, status: number, detail: string) {
+    super(`${path}: ${detail}`);
+    this.name = "ApiError";
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
 async function request<T>(
   path: string,
   init: RequestInit,
@@ -29,7 +41,7 @@ async function request<T>(
       parsed && typeof parsed === "object" && "detail" in parsed
         ? String((parsed as { detail: unknown }).detail)
         : `${r.status}`;
-    throw new Error(`${path}: ${detail}`);
+    throw new ApiError(path, r.status, detail);
   }
   return { data: parsed as T, status: r.status };
 }

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiGet, apiPost, apiDelete } from "../lib/api";
+import { useUser } from "../App";
 import { Hex, PageHeader, StatCard } from "../components/shared";
 
 type Container = {
@@ -14,6 +15,8 @@ type Container = {
 type LogData = { id: string; logs: string };
 
 export default function Containers() {
+  const user = useUser();
+  const canControl = user?.role === "admin";
   const [containers, setContainers] = useState<Container[]>([]);
   const [loading, setLoading] = useState(true);
   const [logsFor, setLogsFor] = useState<{ id: string; name: string } | null>(null);
@@ -75,7 +78,7 @@ export default function Containers() {
       <div>
         <PageHeader
           title="Containers"
-          subtitle={`${running} running · ${containers.length} total — Docker services powering your system`}
+          subtitle={`${running} running · ${containers.length} total — Docker services powering your system${canControl ? "" : " · admin role required for controls"}`}
           helpHref="/docs#containers"
           actions={<button className="btn" style={{ fontSize: 9, padding: "2px 8px" }} onClick={() => void load()}>refresh</button>}
         />
@@ -109,14 +112,14 @@ export default function Containers() {
                     <div style={{ display: "flex", gap: 3 }}>
                       {isRunning ? (
                         <>
-                          <button className="btn" style={{ fontSize: 8, padding: "1px 6px" }} onClick={() => void containerAction(c.id, "restart")} disabled={isActing}>restart</button>
-                          <button className="btn" style={{ fontSize: 8, padding: "1px 6px", borderColor: "var(--warn)", color: "var(--warn)" }} onClick={() => void containerAction(c.id, "stop")} disabled={isActing}>stop</button>
+                          <button className="btn" style={{ fontSize: 8, padding: "1px 6px" }} onClick={() => void containerAction(c.id, "restart")} disabled={isActing || !canControl} title={canControl ? "Restart container" : "Admin role required for container controls"}>restart</button>
+                          <button className="btn" style={{ fontSize: 8, padding: "1px 6px", borderColor: "var(--warn)", color: "var(--warn)" }} onClick={() => void containerAction(c.id, "stop")} disabled={isActing || !canControl} title={canControl ? "Stop container" : "Admin role required for container controls"}>stop</button>
                           <button className="btn" style={{ fontSize: 8, padding: "1px 6px" }} onClick={() => void fetchLogs(c.id, c.name)}>logs</button>
                         </>
                       ) : (
                         <>
-                          <button className="btn" style={{ fontSize: 8, padding: "1px 6px", borderColor: "var(--ok)", color: "var(--ok)" }} onClick={() => void containerAction(c.id, "start")} disabled={isActing}>start</button>
-                          <button className="btn" style={{ fontSize: 8, padding: "1px 6px", borderColor: "var(--danger)", color: "var(--danger)", opacity: 0.6 }} onClick={() => void removeContainer(c.id)} disabled={isActing}>remove</button>
+                          <button className="btn" style={{ fontSize: 8, padding: "1px 6px", borderColor: "var(--ok)", color: "var(--ok)" }} onClick={() => void containerAction(c.id, "start")} disabled={isActing || !canControl} title={canControl ? "Start container" : "Admin role required for container controls"}>start</button>
+                          <button className="btn" style={{ fontSize: 8, padding: "1px 6px", borderColor: "var(--danger)", color: "var(--danger)", opacity: 0.6 }} onClick={() => void removeContainer(c.id)} disabled={isActing || !canControl} title={canControl ? "Remove container" : "Admin role required for container controls"}>remove</button>
                         </>
                       )}
                     </div>

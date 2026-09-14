@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useState } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../lib/api";
 import { useWorkspaces } from "../context/WorkspaceContext";
+import { useAuthorizedAction } from "../components/Elevation";
 import {
   ConfirmDialog,
   EmptyState,
@@ -152,6 +153,7 @@ function SBadge({ s }: { s: Strategy }) {
 
 export default function Agents() {
   const toast = useToast();
+  const authorizedAction = useAuthorizedAction();
   const { activeWorkspaceId } = useWorkspaces();
   const [tab, setTab] = useState(0);
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -237,9 +239,9 @@ export default function Agents() {
       } catch {
         config = { raw: editConfig, soul: editSoul, rules: editRules };
       }
-      await apiPut(`/v1/agents/${selected.id}`, {
+      await authorizedAction("agents.write", () => apiPut(`/v1/agents/${selected.id}`, {
         ...selected, config, description: editSoul || selected.description,
-      });
+      }));
       toast("Agent saved");
       setSelected(null);
       await load();
@@ -248,12 +250,12 @@ export default function Agents() {
     } finally {
       setSaving(false);
     }
-  }, [selected, editConfig, editSoul, editRules, load, toast]);
+  }, [selected, editConfig, editSoul, editRules, load, toast, authorizedAction]);
 
   const handleDelete = useCallback(async () => {
     if (!deleteId) return;
     try {
-      await apiDelete(`/v1/agents/${deleteId}`);
+      await authorizedAction("agents.delete", () => apiDelete(`/v1/agents/${deleteId}`));
       toast("Agent deleted");
       setSelected(null);
       await load();
@@ -261,14 +263,14 @@ export default function Agents() {
       toast("Delete failed", "error");
     }
     setDeleteId(null);
-  }, [deleteId, load, toast]);
+  }, [deleteId, load, toast, authorizedAction]);
 
   const handleScan = useCallback(async () => {
     if (!selected) return;
     setScanning(true);
     setScanFindings(null);
     try {
-      const res = await apiPost<{ findings: string[] }>(`/v1/agents/${selected.id}/scan`);
+      const res = await authorizedAction("agents.write", () => apiPost<{ findings: string[] }>(`/v1/agents/${selected.id}/scan`));
       setScanFindings(res.findings);
       if (res.findings.length === 0) toast("No issues found", "ok");
     } catch {
@@ -276,7 +278,7 @@ export default function Agents() {
     } finally {
       setScanning(false);
     }
-  }, [selected, toast]);
+  }, [selected, toast, authorizedAction]);
 
   const handleCreate = useCallback(async () => {
     setCBusy(true);
@@ -286,11 +288,11 @@ export default function Agents() {
       // workspace ("PM fleet is read-only in POC mode") and honours one with
       // it, subject to a workspace-owner check. The list call above has always
       // been workspace-scoped; the mutations were not (#129).
-      await apiPost("/v1/agents", {
+      await authorizedAction("agents.write", () => apiPost("/v1/agents", {
         name: cName, description: cDesc, model: cModel,
         capabilities: cCaps, strategy: cStrat,
         ...(activeWorkspaceId ? { workspace_id: activeWorkspaceId } : {}),
-      });
+      }));
       toast("Agent created");
       setShowCreate(false);
       setCName(""); setCDesc(""); setCModel("gpt-4o"); setCCaps([]); setCStrat("react");
@@ -300,7 +302,7 @@ export default function Agents() {
     } finally {
       setCBusy(false);
     }
-  }, [cName, cDesc, cModel, cCaps, cStrat, load, toast, activeWorkspaceId]);
+  }, [cName, cDesc, cModel, cCaps, cStrat, load, toast, activeWorkspaceId, authorizedAction]);
 
   const handleForge = useCallback(async () => {
     setBBusy(true);
@@ -309,10 +311,10 @@ export default function Agents() {
       // Warden-scans every field, and stores it with validation provenance
       // (config.forge) before answering (#294). Re-running with the same
       // inputs is idempotent — same agent, not another draft.
-      const res = await apiPost<Record<string, unknown>>("/v1/agents/forge", {
+      const res = await authorizedAction("agents.write", () => apiPost<Record<string, unknown>>("/v1/agents/forge", {
         description: bDesc, strategy: bStrat, model: bModel,
         ...(activeWorkspaceId ? { workspace_id: activeWorkspaceId } : {}),
-      });
+      }));
       const artifact = res as unknown as Agent;
       setBArtifact(artifact);
       setBConfig(JSON.stringify(res, null, 2));
@@ -325,7 +327,7 @@ export default function Agents() {
     } finally {
       setBBusy(false);
     }
-  }, [bDesc, bStrat, bModel, toast, activeWorkspaceId]);
+  }, [bDesc, bStrat, bModel, toast, activeWorkspaceId, authorizedAction]);
 
   const bProvenance: ForgeProvenance | null = (() => {
     if (!bArtifact) return null;
@@ -342,7 +344,7 @@ export default function Agents() {
     try {
       // Re-scan the *stored* artifact (the by-id route walks the saved
       // record), on top of the scan provenance it was stored with.
-      const res = await apiPost<{ findings?: string[] }>(`/v1/agents/${bArtifact.id}/scan`);
+      const res = await authorizedAction("agents.write", () => apiPost<{ findings?: string[] }>(`/v1/agents/${bArtifact.id}/scan`));
       if (!Array.isArray(res.findings)) {
         // A 200 whose body is not a findings list is a scan that did not
         // report, not a scan that found nothing.
@@ -355,7 +357,7 @@ export default function Agents() {
     } finally {
       setBBusy(false);
     }
-  }, [bArtifact, toast]);
+  }, [bArtifact, toast, authorizedAction]);
 
   const handleBuilderFinish = useCallback(async () => {
     setBStep(0); setBDesc(""); setBConfig(""); setBScan(null); setBArtifact(null);

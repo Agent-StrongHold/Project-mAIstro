@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { apiPost } from "../lib/api";
+import { useAuthorizedAction } from "./Elevation";
 
 type WizardAgent = {
   agent: string;
@@ -39,6 +40,7 @@ const STEPS = ["Basics", "Voice", "Scope", "Agents", "Interview", "Review"] as c
  * (e.g. pm_fleet), since both are read through the same
  * all_persona_templates(). */
 export function PersonaWizard() {
+  const authorizedAction = useAuthorizedAction();
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState(0);
   const [id, setId] = useState("");
@@ -114,7 +116,7 @@ export function PersonaWizard() {
     setBusy(true);
     setError(null);
     try {
-      await apiPost("/v1/workspaces/persona-templates", {
+      await authorizedAction("workspaces.write", () => apiPost("/v1/workspaces/persona-templates", {
         id: id.trim(),
         display_name: displayName.trim(),
         tagline: tagline.trim(),
@@ -133,7 +135,7 @@ export function PersonaWizard() {
           agent: q.agent.trim() || "intake",
           question: q.question.trim(),
         })),
-      });
+      }));
       setCreated(id.trim());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create persona");

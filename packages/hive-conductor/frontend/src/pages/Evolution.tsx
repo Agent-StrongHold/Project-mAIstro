@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 
 const API = "/v1/evolution";
 
+import { useUser } from "../App";
 import { PageHeader } from "../components/shared";
 
 type Genome = {
@@ -34,6 +35,8 @@ type LeaderEntry = {
 };
 
 export default function Evolution() {
+  const user = useUser();
+  const canRunEvolution = user?.role === "admin";
   const [status, setStatus] = useState<EvoStatus | null>(null);
   const [genomes, setGenomes] = useState<Genome[]>([]);
   const [champion, setChampion] = useState<Genome | null>(null);
@@ -96,7 +99,7 @@ export default function Evolution() {
 
   return (
     <div style={{ padding: 24, maxWidth: 1200 }}>
-      <PageHeader title="Evolution Engine" subtitle="Automatically improve agents over time using genetic algorithms" helpHref="/docs#evolution" />
+      <PageHeader title="Evolution Engine" subtitle={`Automatically improve agents over time using genetic algorithms${canRunEvolution ? "" : " · admin role required for runs"}`} helpHref="/docs#evolution" />
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
         <div style={{ display: "flex", gap: 8 }}>
           {(["overview", "population", "tournament"] as const).map((t) => (
@@ -115,7 +118,7 @@ export default function Evolution() {
           ))}
         </div>
         <div style={{ display: "flex", gap: 8, marginLeft: "auto" }}>
-          <button onClick={seedPop} disabled={loading} className="btn">
+          <button onClick={seedPop} disabled={loading || !canRunEvolution} title={canRunEvolution ? "Seed population" : "Admin role required for evolution controls"} className="btn">
             Seed {seedCount}
           </button>
           <input
@@ -126,7 +129,7 @@ export default function Evolution() {
             min={1}
             max={50}
           />
-          <button onClick={triggerCycle} disabled={loading} className="btn" style={{ background: "var(--accent)", color: "var(--paper)" }}>
+          <button onClick={triggerCycle} disabled={loading || !canRunEvolution} title={canRunEvolution ? "Run evolution cycle" : "Admin role required for evolution controls"} className="btn" style={{ background: "var(--accent)", color: "var(--paper)" }}>
             Run Cycle
           </button>
           <button onClick={refresh} disabled={loading} className="btn">

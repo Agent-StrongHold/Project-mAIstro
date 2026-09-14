@@ -151,6 +151,9 @@ def test_first_run_setup_still_works(monkeypatch: pytest.MonkeyPatch) -> None:
     assert out["setup_complete"] is True
     assert stores.users["admin"].username == "newadmin"
     assert stores.users["user"].username == "newuser"
+    from routes.setup import _DEFAULT_DAILY_USER_PERMISSIONS
+
+    assert stores.users["user"].permissions == _DEFAULT_DAILY_USER_PERMISSIONS
 
 
 def test_requested_identity_failure_aborts_before_creating_accounts(

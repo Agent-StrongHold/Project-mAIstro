@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { apiGet, apiPut } from "../lib/api";
+import { useAuthorizedAction } from "./Elevation";
 import { useUser } from "../App";
 import { useWorkspaces, type WorkspaceRole } from "../context/WorkspaceContext";
 
@@ -39,6 +40,7 @@ function parseCommaList(value: string): string[] {
  * tool the persona never declared) what one agent may call here. */
 export function WorkspaceToolBindings() {
   const user = useUser();
+  const authorizedAction = useAuthorizedAction();
   const { activeWorkspace, refresh } = useWorkspaces();
   const [open, setOpen] = useState(false);
   const [agents, setAgents] = useState<PersonaAgentOption[]>([]);
@@ -140,7 +142,7 @@ export function WorkspaceToolBindings() {
           prompt_fragment: draft?.promptFragment ?? "",
         };
       });
-      await apiPut(`/v1/workspaces/${workspaceId}/tool-bindings`, { bindings });
+      await authorizedAction("workspaces.write", () => apiPut(`/v1/workspaces/${workspaceId}/tool-bindings`, { bindings }));
       await refresh();
       setOpen(false);
     } catch (err) {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiGet, apiPatch } from "../lib/api";
 import { Hex, PageHeader, useToast } from "../components/shared";
+import { useAuthorizedAction } from "../components/Elevation";
 
 type Skill = {
   id: string; name: string; description: string; version: string; category: string;
@@ -12,20 +13,21 @@ type Skill = {
 export default function Skills() {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [sel, setSel] = useState<Skill | null>(null);
+  const authorizedAction = useAuthorizedAction();
   const toast = useToast();
   const load = useCallback(async () => { try { setSkills(await apiGet<Skill[]>("/v1/skills")); } catch { /* */ } }, []);
   useEffect(() => { const t = window.setTimeout(() => void load(), 0); return () => window.clearTimeout(t); }, [load]);
 
   const toggleSkill = useCallback(async (id: string) => {
     try {
-      const updated = await apiPatch<Skill>(`/v1/skills/${id}/toggle`);
+      const updated = await authorizedAction("skills.write", () => apiPatch<Skill>(`/v1/skills/${id}/toggle`));
       setSkills((prev) => prev.map((s) => s.id === id ? updated : s));
       setSel((prev) => prev?.id === id ? updated : prev);
       toast(updated.enabled ? "Skill enabled" : "Skill disabled");
     } catch {
       toast("Toggle failed", "error");
     }
-  }, [toast]);
+  }, [toast, authorizedAction]);
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: sel ? "300px 1fr" : "1fr", gap: 0, minHeight: "calc(100vh - 60px)" }}>

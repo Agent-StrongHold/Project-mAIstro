@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../lib/api";
 import { Hex, PageHeader, StatCard, ConfirmDialog, useToast } from "../components/shared";
+import { useAuthorizedAction } from "../components/Elevation";
 
 type Schedule = {
   id: string; name: string; description: string; cron_expression: string;
@@ -20,6 +21,7 @@ const CRON_PRESETS = [
 
 export default function Schedules() {
   const toast = useToast();
+  const authorizedAction = useAuthorizedAction();
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [tab, setTab] = useState<"schedules" | "history">("schedules");
   const [creating, setCreating] = useState(false);
@@ -34,7 +36,7 @@ export default function Schedules() {
   async function createSchedule() {
     if (!form.name.trim()) return;
     try {
-      await apiPost<Schedule>("/v1/schedules", { name: form.name.trim(), description: form.description.trim(), cron_expression: form.cron_expression, mission_template_id: form.mission_template_id || null, enabled: true });
+      await authorizedAction("schedules.write", () => apiPost<Schedule>("/v1/schedules", { name: form.name.trim(), description: form.description.trim(), cron_expression: form.cron_expression, mission_template_id: form.mission_template_id || null, enabled: true }));
       setCreating(false);
       setForm({ name: "", description: "", cron_expression: "0 * * * *", mission_template_id: "" });
       await load();
@@ -45,7 +47,7 @@ export default function Schedules() {
   async function updateSchedule() {
     if (!editing) return;
     try {
-      await apiPut<Schedule>(`/v1/schedules/${editing.id}`, editForm);
+      await authorizedAction("schedules.write", () => apiPut<Schedule>(`/v1/schedules/${editing.id}`, editForm));
       setEditing(null);
       await load();
       toast("Schedule updated", "ok");
@@ -54,7 +56,7 @@ export default function Schedules() {
 
   async function toggleSchedule(s: Schedule) {
     try {
-      await apiPut<Schedule>(`/v1/schedules/${s.id}`, { enabled: !s.enabled });
+      await authorizedAction("schedules.write", () => apiPut<Schedule>(`/v1/schedules/${s.id}`, { enabled: !s.enabled }));
       await load();
       toast(s.enabled ? "Disabled" : "Enabled", "ok");
     } catch { toast("Failed to toggle", "error"); }
@@ -62,7 +64,7 @@ export default function Schedules() {
 
   async function deleteSchedule(id: string) {
     try {
-      await apiDelete(`/v1/schedules/${id}`);
+      await authorizedAction("schedules.write", () => apiDelete(`/v1/schedules/${id}`));
       await load();
       toast("Schedule deleted", "ok");
     } catch { toast("Failed to delete", "error"); }
@@ -71,7 +73,7 @@ export default function Schedules() {
 
   async function runNow(s: Schedule) {
     try {
-      await apiPost<Schedule>(`/v1/schedules/${s.id}/run`);
+      await authorizedAction("schedules.write", () => apiPost<Schedule>(`/v1/schedules/${s.id}/run`));
       await load();
       toast("Schedule triggered", "ok");
     } catch { toast("Failed to trigger", "error"); }

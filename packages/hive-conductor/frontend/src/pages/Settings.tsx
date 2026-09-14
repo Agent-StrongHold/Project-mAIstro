@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiGet, apiPatch } from "../lib/api";
+import { useUser } from "../App";
 import { PageHeader, SecretField } from "../components/shared";
 
 type Settings = Record<string, unknown>;
 
 export default function Settings() {
+  const user = useUser();
+  const canEditSystemSettings = user?.role === "admin";
   const [settings, setSettings] = useState<Settings | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [editVal, setEditVal] = useState("");
@@ -122,7 +125,7 @@ export default function Settings() {
                   <button className="btn" style={{ fontSize: 9, padding: "2px 8px" }} onClick={() => setEditing(null)}>cancel</button>
                 </div>
               ) : (
-                <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--ink)", cursor: "pointer" }} onClick={() => startEdit(key)} title="click to edit">
+                <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: canEditSystemSettings ? "var(--ink)" : "var(--pencil)", cursor: canEditSystemSettings ? "pointer" : "not-allowed" }} onClick={() => { if (canEditSystemSettings) startEdit(key); }} title={canEditSystemSettings ? "click to edit" : "Admin role required to edit system settings"}>
                   {typeof value === "boolean" ? (
                     <span style={{ color: value ? "var(--ok)" : "var(--pencil)" }}>{value ? "true" : "false"}</span>
                   ) : typeof value === "number" ? (
@@ -135,7 +138,7 @@ export default function Settings() {
                 </div>
               )}
               {editing !== key && (
-                <button className="btn" style={{ fontSize: 8, padding: "1px 6px", opacity: 0.6 }} onClick={() => startEdit(key)}>edit</button>
+                <button className="btn" style={{ fontSize: 8, padding: "1px 6px", opacity: 0.6 }} disabled={!canEditSystemSettings} onClick={() => startEdit(key)} title={canEditSystemSettings ? "Edit setting" : "Admin role required to edit system settings"}>edit</button>
               )}
             </div>
           ))}

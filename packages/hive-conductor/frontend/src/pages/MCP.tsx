@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiGet, apiPost, apiDelete } from "../lib/api";
 import { Hex, PageHeader, StatCard, ConfirmDialog, useToast } from "../components/shared";
+import { useAuthorizedAction } from "../components/Elevation";
 const ROVO_MCP_URL = "https://mcp.atlassian.com/v1/mcp/authv2";
 
 type Server = {
@@ -16,6 +17,7 @@ type Tool = {
 
 export default function MCP() {
   const toast = useToast();
+  const authorizedAction = useAuthorizedAction();
   const [servers, setServers] = useState<Server[]>([]);
   const [tools, setTools] = useState<Tool[]>([]);
   const [sel, setSel] = useState<Server | null>(null);
@@ -36,7 +38,7 @@ export default function MCP() {
   async function addServer() {
     if (!form.name.trim() || !form.url.trim()) return;
     try {
-      await apiPost<Server>("/v1/mcp/servers", form);
+      await authorizedAction("mcp.write", () => apiPost<Server>("/v1/mcp/servers", form));
       setAdding(false);
       setForm({ name: "", description: "", url: "" });
       await load();
@@ -46,10 +48,10 @@ export default function MCP() {
 
   async function testConnections() {
     try {
-      const res = await apiPost<{ results?: { server_id: string; ok: boolean; detail?: string }[] }>(
+      const res = await authorizedAction("mcp.write", () => apiPost<{ results?: { server_id: string; ok: boolean; detail?: string }[] }>(
         "/v1/mcp/test",
         {},
-      );
+      ));
       const results = res.results ?? [];
       const ok = results.filter((r) => r.ok).length;
       toast(
@@ -64,7 +66,7 @@ export default function MCP() {
 
   async function removeServer(id: string) {
     try {
-      await apiDelete(`/v1/mcp/servers/${id}`);
+      await authorizedAction("mcp.delete", () => apiDelete(`/v1/mcp/servers/${id}`));
       if (sel?.id === id) setSel(null);
       await load();
       toast("Server removed", "ok");

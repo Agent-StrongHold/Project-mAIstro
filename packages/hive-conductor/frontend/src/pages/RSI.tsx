@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Play, Square, RefreshCw, Check, X, GitPullRequest, FileCode } from "lucide-react";
 
+import { useUser } from "../App";
 import { PageHeader } from "../components/shared";
 
 const API = "/v1/rsi";
@@ -49,6 +50,8 @@ const STATUS_TONE: Record<string, string> = {
 };
 
 export default function RSI() {
+  const user = useUser();
+  const canRunRsi = user?.role === "admin";
   const [status, setStatus] = useState<RsiStatus | null>(null);
   const [runs, setRuns] = useState<Run[]>([]);
   const [models, setModels] = useState<ModelOption[]>([]);
@@ -202,7 +205,7 @@ export default function RSI() {
     <div className="mx-auto max-w-6xl space-y-6 p-6">
       <PageHeader
         title="RSI — Recursive Self-Improvement"
-        subtitle="Start a cleanup run, review patches as they land, approve/deny to train Ralph."
+        subtitle={`Start a cleanup run, review patches as they land, approve/deny to train Ralph.${canRunRsi ? "" : " Admin role required for RSI controls."}`}
       />
 
       {/* status + Ralph */}
@@ -271,7 +274,7 @@ export default function RSI() {
             <label className="flex items-center gap-2"><input type="checkbox" checked={scout} onChange={(e) => setScout(e.target.checked)} /> Scout</label>
           </div>
         </div>
-        <button onClick={startRun} disabled={busy || !repoPath || !testProfile} className="inline-flex items-center gap-2 rounded bg-sky-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-40">
+        <button onClick={startRun} disabled={!canRunRsi || busy || !repoPath || !testProfile} title={canRunRsi ? "Start RSI run" : "Admin role required for RSI controls"} className="inline-flex items-center gap-2 rounded bg-sky-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-40">
           <Play className="h-4 w-4" />{busy ? "Starting…" : "Start run"}
         </button>
         {startError && (
@@ -297,7 +300,7 @@ export default function RSI() {
               <span className={`font-mono text-xs ${STATUS_TONE[r.status] ?? "text-slate-400"}`}>{r.status}</span>
               <span className="text-slate-500">{r.run_id}</span>
               <span className="ml-auto text-slate-300">{r.promotions}/{r.cycles} promoted</span>
-              {r.status === "running" && <span className="text-xs text-red-300" onClick={(e) => { e.stopPropagation(); fetch(`${API}/runs/${r.run_id}/stop`, { method: "POST" }); }}><Square className="h-3.5 w-3.5" /></span>}
+              {r.status === "running" && <span className={`text-xs text-red-300${canRunRsi ? "" : " opacity-40"}`} title={canRunRsi ? "Stop run" : "Admin role required for RSI controls"} onClick={(e) => { e.stopPropagation(); if (canRunRsi) void fetch(`${API}/runs/${r.run_id}/stop`, { method: "POST" }); }}><Square className="h-3.5 w-3.5" /></span>}
             </div>
             {r.last_error && <p className="mt-1 truncate text-xs text-red-400">{r.last_error}</p>}
           </button>
@@ -324,7 +327,7 @@ export default function RSI() {
           )}
 
           {allReviews.map((rev) => (
-            <PatchCard key={rev.sha} review={rev} onDecide={decide} />
+            <PatchCard key={rev.sha} review={rev} onDecide={decide} canRunRsi={canRunRsi} />
           ))}
         </section>
       )}
@@ -332,7 +335,7 @@ export default function RSI() {
   );
 }
 
-function PatchCard({ review, onDecide }: { review: Review; onDecide: (sha: string, d: "approve" | "deny", reason?: string) => void }) {
+function PatchCard({ review, onDecide, canRunRsi }: { review: Review; onDecide: (sha: string, d: "approve" | "deny", reason?: string) => void; canRunRsi: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const [reason, setReason] = useState("");
   const [showReason, setShowReason] = useState(false);
@@ -356,10 +359,10 @@ function PatchCard({ review, onDecide }: { review: Review; onDecide: (sha: strin
           </span>
         ) : (
           <div className="flex gap-2">
-            <button onClick={() => onDecide(review.sha, "approve", reason || undefined)} className="inline-flex items-center gap-1 rounded bg-emerald-600/80 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-500">
+            <button onClick={() => onDecide(review.sha, "approve", reason || undefined)} disabled={!canRunRsi} title={canRunRsi ? "Approve promotion" : "Admin role required for RSI controls"} className="inline-flex items-center gap-1 rounded bg-emerald-600/80 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-500">
               <Check className="h-3.5 w-3.5" /> Approve + PR
             </button>
-            <button onClick={() => setShowReason(!showReason)} className="inline-flex items-center gap-1 rounded bg-red-600/80 px-3 py-1 text-xs font-medium text-white hover:bg-red-500">
+            <button onClick={() => setShowReason(!showReason)} disabled={!canRunRsi} title={canRunRsi ? "Deny promotion" : "Admin role required for RSI controls"} className="inline-flex items-center gap-1 rounded bg-red-600/80 px-3 py-1 text-xs font-medium text-white hover:bg-red-500">
               <X className="h-3.5 w-3.5" /> Deny
             </button>
           </div>
@@ -384,7 +387,7 @@ function PatchCard({ review, onDecide }: { review: Review; onDecide: (sha: strin
             value={reason}
             onChange={(e) => setReason(e.target.value)}
           />
-          <button onClick={() => onDecide(review.sha, "deny", reason || undefined)} className="rounded bg-red-600 px-3 py-1 text-xs text-white">
+          <button onClick={() => onDecide(review.sha, "deny", reason || undefined)} disabled={!canRunRsi} title={canRunRsi ? "Deny promotion" : "Admin role required for RSI controls"} className="rounded bg-red-600 px-3 py-1 text-xs text-white">
             Confirm deny
           </button>
         </div>

@@ -1,4 +1,7 @@
 import { useEffect, useState } from "react";
+import { apiPost, apiPut } from "../lib/api";
+import { useUser } from "../App";
+import { useAuthorizedAction } from "./Elevation";
 import { SecretField } from "./shared";
 
 interface ProviderRow {
@@ -21,10 +24,13 @@ interface ProvidersResponse {
 // models with LiteLLM and runs a one-token test completion, the install
 // journey's "first model call". Both calls need admin (config.write).
 export function LlmProviders() {
+  const user = useUser();
+  const canManageProviders = user?.role === "admin";
   const [data, setData] = useState<ProvidersResponse | null>(null);
   const [keys, setKeys] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const authorizedAction = useAuthorizedAction();
 
   const load = () =>
     fetch("/v1/providers", { credentials: "same-origin" })
@@ -42,14 +48,7 @@ export function LlmProviders() {
     setBusy(name);
     setNotice(null);
     try {
-      const r = await fetch(`/v1/providers/${name}/key`, {
-        method: "PUT",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ api_key: keys[name] || "" }),
-      });
-      const body = await r.json();
-      if (!r.ok) throw new Error(body.detail || `HTTP ${r.status}`);
+      await authorizedAction("config.write", () => apiPut(`/v1/providers/${name}/key`, { api_key: keys[name] || "" }));
       setKeys((k) => ({ ...k, [name]: "" }));
       setNotice({ kind: "ok", text: `${name}: key stored in the encrypted vault.` });
       await load();
@@ -64,12 +63,7 @@ export function LlmProviders() {
     setBusy(name);
     setNotice(null);
     try {
-      const r = await fetch(`/v1/providers/${name}/activate`, {
-        method: "POST",
-        credentials: "same-origin",
-      });
-      const body = await r.json();
-      if (!r.ok) throw new Error(body.detail || `HTTP ${r.status}`);
+      const body = await authorizedAction("config.write", () => apiPost<{ first_model_call?: { model?: string } }>(`/v1/providers/${name}/activate`));
       const model = body.first_model_call?.model ?? "";
       setNotice({ kind: "ok", text: `${name}: activated — first model call succeeded on ${model}.` });
       await load();
@@ -92,6 +86,9 @@ export function LlmProviders() {
           <span style={{ color: "var(--danger)" }}>
             {" "}Vault unavailable on this host (age toolchain missing) — key storage is disabled.
           </span>
+        )}
+        {!canManageProviders && (
+          <span style={{ color: "var(--pencil)" }}> Provider keys are deployment-wide; an admin role is required.</span>
         )}
       </div>
       {notice && (
@@ -120,14 +117,14 @@ export function LlmProviders() {
               onChange={(next) => setKeys((k) => ({ ...k, [p.name]: next }))}
               stored={p.has_key}
               storedNote={`A key for ${p.label} is already stored. Entering a new one replaces it.`}
-              disabled={!data.vault_available || busy === p.name}
+              disabled={!canManageProviders || !data.vault_available || busy === p.name}
               className=""
               style={{ flex: 1, minWidth: 200 }}
             />
             <button
               className="btn"
               onClick={() => saveKey(p.name)}
-              disabled={!data.vault_available || !keys[p.name] || busy === p.name}
+              disabled={!canManageProviders || !data.vault_available || !keys[p.name] || busy === p.name}
               style={{ fontSize: 10, padding: "3px 10px" }}
             >
               Save key
@@ -135,7 +132,7 @@ export function LlmProviders() {
             <button
               className="btn-primary"
               onClick={() => activate(p.name)}
-              disabled={!p.has_key || busy === p.name}
+              disabled={!canManageProviders || !p.has_key || busy === p.name}
               style={{ fontSize: 10, padding: "3px 10px" }}
             >
               {busy === p.name ? "…" : p.activated ? "Re-test" : "Activate"}

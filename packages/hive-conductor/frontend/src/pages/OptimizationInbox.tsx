@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiGet, apiPost } from "../lib/api";
+import { useAuthorizedAction } from "../components/Elevation";
 import {
   EmptyState,
   Hex,
@@ -55,6 +56,7 @@ export default function OptimizationInbox() {
   const [filter, setFilter] = useState<Decision | "">("");
   const [decidingId, setDecidingId] = useState<string | null>(null);
   const toast = useToast();
+  const authorizedAction = useAuthorizedAction();
 
   const loadProposals = useCallback(async () => {
     setLoading(true);
@@ -77,7 +79,7 @@ export default function OptimizationInbox() {
     async (id: string, decision: "accept" | "reject") => {
       setDecidingId(id);
       try {
-        await apiPost(`/v1/optimizer/proposals/${id}/${decision}`, {});
+        await authorizedAction("dags.write", () => apiPost(`/v1/optimizer/proposals/${id}/${decision}`, {}));
         toast(
           `Proposal ${decision}ed`,
           decision === "accept" ? "ok" : "warn",
@@ -89,7 +91,7 @@ export default function OptimizationInbox() {
         setDecidingId(null);
       }
     },
-    [loadProposals, toast],
+    [loadProposals, toast, authorizedAction],
   );
 
   const grouped = useMemo(() => {
