@@ -1946,9 +1946,9 @@ async def _execute_workflow_with_approval(args: dict[str, Any], user_id: str) ->
     """Request workflow approval through the canonical capability provider.
 
     The request remains pending in the shared approval inbox while the caller
-    waits. Resolving it through the capabilities API supplies the typed
-    decision used by the chat dispatch gate; no chat-local approval store or
-    signature verifier is involved.
+    waits. Resolving it through the capabilities API supplies the typed,
+    cryptographically bound decision used by the chat dispatch gate; no
+    chat-local approval store or execution authority is involved.
     """
     from maistro.capabilities.approval_store import redact_approval_value
     from maistro.capabilities.slots.approval import ApprovalRequest
