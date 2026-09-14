@@ -33,7 +33,8 @@ class StaticKeyAuthProvider:
         if token is None:
             raise CredentialNotApplicable("Not a Bearer token")
 
-        if not hmac.compare_digest(token, self._api_key):
+        # Empty configured keys and empty credentials are never valid credentials.
+        if not token or not self._api_key or not hmac.compare_digest(token, self._api_key):
             raise AuthError("Invalid API key")
 
         if self._read_only:

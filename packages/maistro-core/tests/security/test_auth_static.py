@@ -42,6 +42,15 @@ class TestAuthenticate:
             await provider.authenticate(authorization)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("authorization", ["Bearer", "Bearer "])
+    async def test_empty_configured_key_does_not_accept_empty_bearer(
+        self, authorization: str
+    ) -> None:
+        provider = StaticKeyAuthProvider(api_key="")
+        with pytest.raises(AuthError, match="Invalid API key"):
+            await provider.authenticate(authorization)
+
+    @pytest.mark.asyncio
     async def test_wrong_key_raises(self) -> None:
         provider = StaticKeyAuthProvider(api_key="secret")
         with pytest.raises(AuthError, match="Invalid API key"):

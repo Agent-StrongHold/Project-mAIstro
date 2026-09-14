@@ -135,10 +135,13 @@ def test_owui_auth_method_not_header_derived():
     assert ctx == SYSTEM_AUTH
 
 
-def test_empty_key_matches_empty_bearer():
+def test_empty_key_never_matches_empty_bearer():
     provider = StaticKeyAuthProvider("")
-    ctx = asyncio.run(provider.authenticate("Bearer "))
-    assert ctx.user_id == "system"
+    try:
+        asyncio.run(provider.authenticate("Bearer "))
+        raise AssertionError("Expected AuthError")
+    except AuthError:
+        pass
 
 
 @given(key=st.text(min_size=1, max_size=40, alphabet=st.sampled_from(_ASCII)))
