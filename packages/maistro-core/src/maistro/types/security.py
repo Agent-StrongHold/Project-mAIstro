@@ -8,6 +8,7 @@ from enum import StrEnum
 from typing import Any
 
 from maistro.security.redact import redact as _redact
+from maistro.security.sentinel.integrity import DecisionSignature
 
 
 class TrustTier(StrEnum):
@@ -78,6 +79,11 @@ class AuditEntry:
     trace_id: str = ""
     request_id: str = ""
     detail: str = ""
+    action: str = ""
+    principal_id: str = ""
+    policy_snapshot: str = ""
+    payload: str = ""
+    integrity: DecisionSignature | None = None
 
 
 @dataclass(frozen=True)

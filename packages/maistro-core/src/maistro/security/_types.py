@@ -7,10 +7,12 @@ org_id stripped for single-tenant maistro-engine.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
 from maistro.security.redact import redact
+from maistro.security.sentinel.integrity import DecisionSignature
 
 
 class IdentityKind(StrEnum):
@@ -133,6 +135,13 @@ class AuditEntry:
     violations: tuple[Violation, ...] = ()
     detail: str = ""
     agent_id: str = ""
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+    action: str = ""
+    principal_id: str = ""
+    policy_snapshot: str = ""
+    payload: str = ""
+    org_id: str = ""
+    integrity: DecisionSignature | None = None
 
 
 @dataclass

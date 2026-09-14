@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
 
-from maistro.types.security import AuditEntry
+from maistro.security.sentinel.integrity import DecisionSignature
+from maistro.types.security import AuditEntry, Violation
 
 if TYPE_CHECKING:
     import asyncpg
@@ -29,18 +31,42 @@ class PgAuditLog:
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """INSERT INTO audit_log
-                   (boundary, user_id, team_id, agent_id,
-                    tool_name, verdict, detail, trace_id, request_id)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)""",
+                   (boundary, user_id, org_id, team_id, agent_id,
+                    tool_name, verdict, detail, trace_id, request_id, action,
+                    principal_id, policy_snapshot, payload, signature,
+                    signature_key_id, signature_algorithm, signature_public_key, violations)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)""",
                 entry.boundary,
                 entry.user_id,
+                getattr(entry, "org_id", ""),
                 getattr(entry, "team_id", ""),
                 entry.agent_id,
                 getattr(entry, "tool_name", "") or "",
                 entry.verdict,
                 entry.detail,
-                entry.trace_id,
-                entry.request_id,
+                getattr(entry, "trace_id", ""),
+                getattr(entry, "request_id", ""),
+                getattr(entry, "action", ""),
+                getattr(entry, "principal_id", "") or entry.user_id,
+                getattr(entry, "policy_snapshot", ""),
+                getattr(entry, "payload", ""),
+                getattr(getattr(entry, "integrity", None), "signature", None),
+                getattr(getattr(entry, "integrity", None), "key_id", None),
+                getattr(getattr(entry, "integrity", None), "algorithm", None),
+                getattr(getattr(entry, "integrity", None), "public_key", None),
+                json.dumps(
+                    [
+                        {
+                            "boundary": v.boundary,
+                            "rule": v.rule,
+                            "severity": v.severity,
+                            "detail": v.detail,
+                            "repair_action": v.repair_action,
+                        }
+                        for v in getattr(entry, "violations", ())
+                    ],
+                    sort_keys=True,
+                ),
             )
 
     async def get_entries(
@@ -81,6 +107,7 @@ class PgAuditLog:
                 timestamp=r["timestamp"],
                 boundary=r.get("boundary", ""),
                 user_id=r.get("user_id", ""),
+                org_id=r.get("org_id", ""),
                 team_id=r.get("team_id", ""),
                 agent_id=r.get("agent_id", ""),
                 tool_name=r.get("tool_name"),
@@ -88,6 +115,26 @@ class PgAuditLog:
                 detail=r.get("detail", ""),
                 trace_id=r.get("trace_id", ""),
                 request_id=r.get("request_id", ""),
+                action=r.get("action", ""),
+                principal_id=r.get("principal_id", ""),
+                policy_snapshot=r.get("policy_snapshot", ""),
+                payload=r.get("payload", ""),
+                integrity=(
+                    DecisionSignature(
+                        key_id=r["signature_key_id"],
+                        algorithm=r["signature_algorithm"],
+                        signature=r["signature"],
+                        public_key=r["signature_public_key"],
+                    )
+                    if r.get("signature")
+                    and r.get("signature_key_id")
+                    and r.get("signature_algorithm")
+                    and r.get("signature_public_key")
+                    else None
+                ),
+                violations=tuple(
+                    Violation(**item) for item in json.loads(r.get("violations", "[]") or "[]")
+                ),
             )
             for r in rows
         ]

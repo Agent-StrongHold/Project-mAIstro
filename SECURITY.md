@@ -242,10 +242,12 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
 2. **No dedicated tool-argument size cap.** Sentinel validates schema and permissions
    (`security/sentinel/validator.py`) but a JSON-bomb-sized tool-call argument is not rejected by
    a specific byte-size gate the way skill bodies (50 KB) and tool results (4,000 chars) are.
-3. **Sentinel decision signing is unimplemented.** ADR-073 specifies every Sentinel decision as a
-   signed VC; the current `InMemoryAuditLog` (`security/sentinel/audit.py`) records decisions but
-   does not sign them. A compromised process with write access to the audit store could forge
-   history.
+3. **Sentinel decision signing is process-local unless a deployment injects a durable key service.**
+   Sentinel signs every decision with Ed25519 and stores the signature, key id, and public key in
+   the audit record; `security/sentinel/integrity.py` retains retired public keys for rotation
+   verification. The default signer is generated at process start, so signatures remain
+   independently verifiable from durable rows but a deployment that needs continuity across
+   restarts must inject its key service. Private keys are never written to the audit store.
 4. **InMemory stores are the default.** Learning store, audit log, quota tracker, and session
    store all default to in-memory implementations; data is lost on restart. PostgreSQL
    implementations exist under `persistence/` but require explicit `database_url` configuration —

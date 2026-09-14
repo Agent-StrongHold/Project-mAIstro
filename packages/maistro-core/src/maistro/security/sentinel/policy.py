@@ -6,7 +6,9 @@ Post-call: Warden scan tool result, PII filter, token optimize, audit log.
 
 from __future__ import annotations
 
+import json
 import logging
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal
 
 from maistro.observability.metrics import maistro_security_block_total
@@ -21,6 +23,7 @@ from maistro.security.sentinel.approver_graph import ApproverGraph
 from maistro.security.sentinel.argument_limits import ToolArgumentLimits, check_argument_limits
 from maistro.security.sentinel.authz_types import AuthzDecision, Principal, Tier
 from maistro.security.sentinel.elevation import ElevationStore, hash_args
+from maistro.security.sentinel.integrity import DecisionSigner
 from maistro.security.sentinel.permission_source import PermissionSource, resolve_live_table
 from maistro.security.sentinel.pii_filter import scan_and_redact
 from maistro.security.sentinel.rlphd import RlphdModel, RlphdThresholdStore, RlphdVerdict
@@ -83,6 +86,7 @@ class Sentinel:
         rlphd_threshold_store: RlphdThresholdStore | None = None,
         argument_limits: ToolArgumentLimits | None = None,
         allow_on_miss: bool = False,
+        integrity_signer: DecisionSigner | None = None,
     ) -> None:
         self._warden = warden
         self._permission_table = permission_table
@@ -102,6 +106,10 @@ class Sentinel:
         self._rlphd_model = rlphd_model
         self._rlphd_threshold_store = rlphd_threshold_store
         self._argument_limits = argument_limits or ToolArgumentLimits.from_environment()
+        # Every Sentinel instance signs its decisions. Deployments may inject a
+        # durable-key-backed signer; the default still protects the audit record
+        # and exposes only public verification material.
+        self._integrity_signer = integrity_signer or DecisionSigner()
         # Fail-closed default (ADR-072726-0d6b, #1165): a tool absent from the
         # permission table is DENIED. allow_on_miss=True is the explicit
         # compatibility mode for non-production/test/demo wiring; it is never
@@ -129,26 +137,36 @@ class Sentinel:
             return self._permission_table
         return await resolve_live_table(self._permission_source)
 
-    async def _permission_denial_reason(self, action: str, principal: Principal) -> str | None:
-        """Why this (action, principal) is denied right now, or None when permitted.
-
-        The one fail-closed permission gate every authorize flows through: the
-        live permission source (#1165) is resolved here so the decision reads
-        canonical state at the moment it is made, an unavailable source denies,
-        and a capability miss denies.
-        """
-        table = await self._effective_table()
+    async def _permission_denial_reason(
+        self,
+        action: str,
+        principal: Principal,
+        table: PermissionTable | None = None,
+    ) -> str | None:
+        """Why this (action, principal) is denied right now, or None when permitted."""
+        if table is None:
+            table = await self._effective_table()
         if table is None:
             return f"permission source unavailable for '{action}'; denied fail-closed"
         authorized = check_permission(
-            _principal_auth_context(principal),
-            action,
-            table,
-            allow_on_miss=self._allow_on_miss,
+            _principal_auth_context(principal), action, table, allow_on_miss=self._allow_on_miss
         )
         if not authorized:
             return f"principal '{principal.id}' lacks capability for '{action}'"
         return None
+
+    def _policy_snapshot(self, table: PermissionTable | None) -> str:
+        """Capture the exact policy inputs used for this decision."""
+        snapshot = {
+            "permission_table": None
+            if table is None
+            else {name: sorted(roles) for name, roles in sorted(table.items())},
+            "tier_policy": {
+                f"{action}:{scope}": tier.value
+                for (action, scope), tier in sorted(self._tier_policy.items())
+            },
+        }
+        return json.dumps(snapshot, sort_keys=True, separators=(",", ":"))
 
     def resolve_tier(
         self,
@@ -177,12 +195,14 @@ class Sentinel:
         args: dict[str, Any] | None = None,
         rlphd_features: dict[str, float] | None = None,
     ) -> AuthzDecision:
-        """ADR-068 §F steps 1-4, short-circuiting on first deny."""
+        """ADR-068 steps 1-4, with a signed ``policy.decision`` record."""
         tier = self.resolve_tier(action, principal, reversibility=reversibility)
+        table = await self._effective_table()
+        policy_snapshot = self._policy_snapshot(table)
 
-        denial_reason = await self._permission_denial_reason(action, principal)
+        denial_reason = await self._permission_denial_reason(action, principal, table)
         if denial_reason is not None:
-            return AuthzDecision(
+            decision = AuthzDecision(
                 tier=tier,
                 authorized=False,
                 needs="none",
@@ -191,9 +211,10 @@ class Sentinel:
                 rlphd=None,
                 reason=denial_reason,
             )
+            return await self._record_authorization(action, principal, decision, policy_snapshot)
 
         if not within_budget:
-            return AuthzDecision(
+            decision = AuthzDecision(
                 tier=tier,
                 authorized=False,
                 needs="none",
@@ -202,9 +223,10 @@ class Sentinel:
                 rlphd=None,
                 reason="over budget",
             )
+            return await self._record_authorization(action, principal, decision, policy_snapshot)
 
         if tier == Tier.BLOCKED:
-            return AuthzDecision(
+            decision = AuthzDecision(
                 tier=tier,
                 authorized=False,
                 needs="none",
@@ -213,12 +235,13 @@ class Sentinel:
                 rlphd=None,
                 reason="action is blocked",
             )
+            return await self._record_authorization(action, principal, decision, policy_snapshot)
 
         needs = self._resolve_needs(tier, principal)
         if tier == Tier.SELF_ELEVATION:
             cleared = await self._check_elevation_grant(action, principal, needs, args)
             if cleared is not None:
-                return cleared
+                return await self._record_authorization(action, principal, cleared, policy_snapshot)
 
         approver_scope: str | None = None
         if tier == Tier.DELEGATED and self._approver_graph is not None:
@@ -231,9 +254,11 @@ class Sentinel:
                 action, principal, approver_scope, rlphd_features
             )
             if auto_acted_decision is not None:
-                return auto_acted_decision
+                return await self._record_authorization(
+                    action, principal, auto_acted_decision, policy_snapshot
+                )
 
-        return AuthzDecision(
+        decision = AuthzDecision(
             tier=tier,
             authorized=True,
             needs=needs,
@@ -242,6 +267,42 @@ class Sentinel:
             rlphd=rlphd_verdict,
             reason="",
         )
+        return await self._record_authorization(action, principal, decision, policy_snapshot)
+
+    async def _record_authorization(
+        self,
+        action: str,
+        principal: Principal,
+        decision: AuthzDecision,
+        policy_snapshot: str,
+    ) -> AuthzDecision:
+        verdict = "allowed" if decision.authorized else "denied"
+        if decision.needs != "none" and decision.authorized:
+            verdict = "elevate"
+        entry = await self._log_audit(
+            boundary="policy.decision",
+            user_id=principal.id,
+            team_id=principal.scopes[0] if principal.scopes else "",
+            tool_name=action,
+            action=action,
+            principal_id=principal.id,
+            verdict=verdict,
+            detail=decision.reason,
+            policy_snapshot=policy_snapshot,
+            payload=json.dumps(
+                {
+                    "tier": decision.tier.value,
+                    "authorized": decision.authorized,
+                    "needs": decision.needs,
+                    "approver_scope": decision.approver_scope,
+                    "within_budget": decision.within_budget,
+                    "reason": decision.reason,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
+        return replace(decision, integrity=entry.integrity)
 
     def _resolve_needs(
         self, tier: Tier, principal: Principal
@@ -341,9 +402,11 @@ class Sentinel:
                 boundary="pre_call",
                 user_id=auth.user_id,
                 team_id=auth.team_id,
+                org_id=auth.org_id,
                 tool_name=tool_name,
                 verdict="denied",
                 violations=tuple(violations),
+                policy_snapshot=self._policy_snapshot(table),
             )
             return verdict
 
@@ -355,10 +418,12 @@ class Sentinel:
                 boundary="pre_call",
                 user_id=auth.user_id,
                 team_id=auth.team_id,
+                org_id=auth.org_id,
                 tool_name=tool_name,
                 verdict="denied",
                 violations=tuple(violations),
                 detail=limit_violation.detail,
+                policy_snapshot=self._policy_snapshot(table),
             )
             return verdict
 
@@ -377,11 +442,13 @@ class Sentinel:
             boundary="pre_call",
             user_id=auth.user_id,
             team_id=auth.team_id,
+            org_id=auth.org_id,
             tool_name=tool_name,
             verdict="allowed" if verdict.allowed else "denied",
             violations=tuple(violations),
             detail=f"repaired={schema_verdict.repaired}" if schema_verdict.repaired else "",
             repaired_data=schema_verdict.repaired_data if schema_verdict.repaired else None,
+            policy_snapshot=self._policy_snapshot(table),
         )
 
         return verdict
@@ -523,30 +590,42 @@ class Sentinel:
         boundary: str,
         user_id: str,
         team_id: str = "",
+        org_id: str = "",
         tool_name: str,
         verdict: str,
         violations: tuple[Violation, ...] = (),
         detail: str = "",
         repaired_data: dict[str, Any] | None = None,
-    ) -> None:
-        if self._audit_log is None:
-            return
+        action: str = "",
+        principal_id: str = "",
+        policy_snapshot: str = "",
+        payload: str = "",
+    ) -> AuditEntry:
         if repaired_data and not detail:
             detail = f"repaired_data_keys={list(repaired_data.keys())}"
-        try:
-            await self._audit_log.log(
-                AuditEntry(
-                    boundary=boundary,
-                    user_id=user_id,
-                    team_id=team_id,
-                    tool_name=tool_name,
-                    verdict=verdict,
-                    violations=violations,
-                    detail=detail,
-                )
-            )
-        except Exception:
-            logger.error("Security audit log write failed")
+        entry = AuditEntry(
+            boundary=boundary,
+            user_id=user_id,
+            team_id=team_id,
+            org_id=org_id,
+            tool_name=tool_name,
+            verdict=verdict,
+            violations=violations,
+            detail=detail,
+            action=action or tool_name,
+            principal_id=principal_id or user_id,
+            policy_snapshot=policy_snapshot,
+            payload=payload,
+        )
+        # Sign before handing the record to any audit implementation. This
+        # keeps the guarantee independent of whether storage is durable.
+        entry.integrity = self._integrity_signer.sign(entry)
+        if self._audit_log is not None:
+            try:
+                await self._audit_log.log(entry)
+            except Exception:
+                logger.error("Security audit log write failed")
+        return entry
 
 
 def _detection_layer(verdict: WardenVerdict) -> str:

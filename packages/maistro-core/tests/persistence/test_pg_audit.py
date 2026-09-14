@@ -95,6 +95,7 @@ async def test_log_inserts_with_team_id_and_tool_name_defaults(
     assert call.args == (
         "tool_call",
         "u1",
+        "",
         "",  # team_id getattr default
         "a1",
         "bash",
@@ -102,6 +103,15 @@ async def test_log_inserts_with_team_id_and_tool_name_defaults(
         "ok",
         "t1",
         "r1",
+        "",
+        "u1",
+        "",
+        "",
+        None,
+        None,
+        None,
+        None,
+        "[]",
     )
 
 
@@ -112,7 +122,7 @@ async def test_log_tool_name_none_becomes_empty_string(
     entry = AuditEntry(boundary="b", user_id="u", agent_id="a", tool_name=None)
     await log.log(entry)
     call = conn.calls[0]
-    assert call.args[4] == ""
+    assert call.args[5] == ""
 
 
 @pytest.mark.asyncio
@@ -120,7 +130,7 @@ async def test_log_team_id_passthrough_when_present(log: PgAuditLog, conn: FakeC
     entry = AuditEntry(boundary="b", user_id="u", team_id="team-9", agent_id="a")
     await log.log(entry)
     call = conn.calls[0]
-    assert call.args[2] == "team-9"
+    assert call.args[3] == "team-9"
 
 
 @pytest.mark.asyncio
