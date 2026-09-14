@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -95,6 +96,32 @@ def test_direct_function_path_expression_is_not_invisible(checker, tmp_path: Pat
     )
 
     assert checker.Consumer("gate.py", "quality/debt.json") in checker.consumers(root)
+
+
+def test_candidate_added_exception_cannot_self_approve_a_new_consumer(
+    checker, tmp_path: Path
+) -> None:
+    root = _tree(
+        tmp_path,
+        "from pathlib import Path\nROOT = Path(__file__).resolve().parents[1]\n"
+        'BASELINE = ROOT / "quality" / "new-debt.json"\n',
+    )
+
+    assert checker.violations(
+        root,
+        candidate_authored={("gate.py", "quality/new-debt.json"): "candidate reason"},
+        trusted_exceptions={},
+        trusted_adapters={},
+    ) == [
+        "gate.py reads quality/new-debt.json from the candidate tree without "
+        "trusted-base resolution or a documented exception"
+    ]
+
+
+def test_trusted_policy_file_is_present_and_has_nonempty_reasons(checker) -> None:
+    payload = json.loads(checker.PROVENANCE_POLICY.read_text(encoding="utf-8"))
+    assert checker._policy_mapping(payload["candidate_authored"], label="candidate_authored")
+    assert checker._policy_mapping(payload["trusted_adapters"], label="trusted_adapters")
 
 
 def test_documented_candidate_authored_specification_is_allowed(
@@ -206,7 +233,7 @@ def test_delegated_adapter_is_executed(
 def test_inventory_only_does_not_execute_delegated_adapters(
     checker, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(checker, "violations", lambda _root: [])
+    monkeypatch.setattr(checker, "violations", lambda _root, **_kwargs: [])
     monkeypatch.setattr(checker, "consumers", lambda _root: set())
 
     def _must_not_run(_root):

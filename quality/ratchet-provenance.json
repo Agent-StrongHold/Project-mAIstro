@@ -1,0 +1,28 @@
+{
+  "candidate_authored": {
+    "check-retired-guidance.py|quality/retired-guidance.json": "retirement guidance is the reviewed specification being changed",
+    "check-image-inventory.py|quality/image-inventory.json": "image inventory is the reviewed current-tree specification and validates every Dockerfile disposition",
+    "pip_audit_gate.py|quality/direct-dependency-exceptions.json": "dependency exceptions are an explicitly reviewed specification",
+    "check-convergence-matrix.py|quality/reachability-baseline.json": "reachability is used for census attribution; the blocking reachability ratchet owns trusted debt comparison",
+    "check_ac_state_impl.py|quality/reachability-baseline.json": "criterion reachability is a measurement input; the blocking reachability ratchet prevents self-promotion",
+    "check_ac_state_impl.py|quality/ac-state.json": "generated AC-state report output, not a comparison oracle",
+    "check_ac_state_impl.py|quality/ratchet-authorizations.json": "the worktree copy rejects stale grants; permission is read from the trusted base",
+    "check-branch-independence.py|quality/branch-independence.json": "branch-independence is the reviewed representation specification",
+    "check-m1-convergence-freeze.py|quality/m1-convergence-freeze.json": "freeze policy is the reviewed specification being changed",
+    "check-autonomous-merge.py|quality/branch-independence.json": "the workflow executes the autonomous judge from the trusted base checkout",
+    "check_direct_effects.py|quality/direct-effect-call-sites.json": "direct-effect entries are per-call-site reviewed policy",
+    "check-shipped-surface-truth.py|quality/shipped-surface-truth.json": "shipped-surface entries are the reviewed per-surface truth specification"
+  },
+  "trusted_adapters": {
+    "check-citation-status.py|quality/citation-baseline.json": "check-citation-status-provenance",
+    "check-promotion-surface.py|quality/promotion-surface-baseline.json": "check-promotion-surface-provenance",
+    "check-shell-execution.py|quality/shell-execution.json": "check-shell-execution-provenance",
+    "check_contract_markers_impl.py|quality/contract-markers-baseline.json": "check-contract-markers-provenance",
+    "check_enumerations.py|quality/enumeration-baseline.json": "check-enumerations-provenance",
+    "check-reachability.py|quality/reachability-baseline.json": "check-reachability-provenance",
+    "check-reachability-dispositions.py|quality/reachability-baseline.json": "check-reachability-dispositions-provenance",
+    "check-reachability-dispositions.py|quality/reachability-dispositions.json": "check-reachability-dispositions-provenance",
+    "tools/lint_lifecycle.py|quality/lifecycle-baseline.json": "check-lifecycle-provenance",
+    "check-adr-status-language.py|quality/adr-status-language-baseline.json": "check-adr-status-language-provenance"
+  }
+}
