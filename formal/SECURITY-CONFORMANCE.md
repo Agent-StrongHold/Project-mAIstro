@@ -12,8 +12,9 @@ implementation text.
 | ADR-073 high-risk tools require detection | `dangerous_tools`, `safe_tools` | Dangerous names are recognized case-insensitively and benign names are not | `formal/models/test_dangerous_tools.py::test_dangerous_tool_oracle`, `test_safe_tool_oracle` |
 | SPEC-190 host boundary is denied | `blocked_paths`, `allowed_paths` | Boundary roots and descendants are denied while ordinary workspace paths remain allowed | `formal/models/test_dangerous_tools.py::test_blocked_path_oracle`, `test_allowed_path_oracle` |
 
-The fixture has 22 dangerous-command cases, matching the 22 semantic rules
-currently required by the security claim. The deletion property is a runtime
+The fixture has 23 dangerous-command cases covering the 22 semantic rules
+currently required by the security claim. The extra `rm -rf ~` case is a
+boundary witness for the destructive-command rule. The deletion property is a runtime
 mutation test: it removes each detector in turn and requires the independently
 authored expected behavior to change. This is the CI demonstration that the
 21-of-22 deletion mutation cannot pass by preserving a source-token count.

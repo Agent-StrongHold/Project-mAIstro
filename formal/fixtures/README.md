@@ -13,6 +13,11 @@ removal, weakening, shadowing, or unreachable detector changes a measured
 behavior and fails the gate.
 
 Changes to this directory require the CODEOWNER review configured in
-`.github/CODEOWNERS`. Implementation authors must not self-approve changes to
-the oracle. Update the one-to-one claim map in `formal/SECURITY-CONFORMANCE.md`
-when the governed security claims change.
+`.github/CODEOWNERS`, and the formal workflow rejects a PR that changes the
+oracle together with the security implementation or its conformance judge
+once the oracle exists at the PR base (the one-time bootstrap is permitted
+only when the trusted base has no oracle). Implementation authors must not
+self-approve changes
+to the oracle. Update the
+one-to-one claim map in `formal/SECURITY-CONFORMANCE.md` when the governed
+security claims change.

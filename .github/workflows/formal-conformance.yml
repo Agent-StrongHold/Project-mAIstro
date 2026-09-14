@@ -76,6 +76,16 @@ jobs:
           fi
           python scripts/check-m1-convergence-freeze.py "${args[@]}"
 
+      # The oracle is a governed baseline, not a candidate-controlled test
+      # input. After the initial contract lands, implementation and oracle
+      # changes must use separate PRs so a self-approving candidate cannot
+      # rewrite both sides of the judgment.
+      - name: Enforce formal oracle independence
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        env:
+          FORMAL_ORACLE_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: python scripts/check-formal-oracle-independence.py --base "$FORMAL_ORACLE_BASE"
+
       - name: Setup Python
         uses: actions/setup-python@v7
         with:

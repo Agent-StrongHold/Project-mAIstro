@@ -7,6 +7,7 @@
   ],
   "dangerous_commands": [
     {"id": "remove-root", "input": "rm -rf /", "expected_matches": 1},
+    {"id": "remove-home", "input": "rm -rf ~", "expected_matches": 1},
     {"id": "sudo", "input": "sudo apt install malware", "expected_matches": 1},
     {"id": "world-writable", "input": "chmod 777 /var/lib/app", "expected_matches": 1},
     {"id": "pipe-to-shell", "input": "echo untrusted | bash", "expected_matches": 1},

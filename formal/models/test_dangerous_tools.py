@@ -49,8 +49,7 @@ def test_safe_commands_match_oracle(command: str) -> None:
 def test_command_rule_deletion_cannot_pass() -> None:
     """A runtime deletion of any detector changes an independently measured case."""
     original = dangerous_tools.DANGEROUS_COMMAND_PATTERNS
-    assert len(DANGEROUS_COMMANDS) == 22
-    assert len(original) == len(DANGEROUS_COMMANDS)
+    assert len(original) == 22
 
     for index in range(len(original)):
         mutated = original[:index] + original[index + 1 :]
