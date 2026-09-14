@@ -23,10 +23,12 @@ import importlib.util
 import json
 import subprocess
 import sys
-from collections.abc import Iterable, Iterator
+from collections import ChainMap
+from collections.abc import Iterable, Iterator, Mapping, MutableMapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
+from typing import cast
 
 ROOT = Path(__file__).resolve().parents[1]
 LEDGER = ROOT / "quality" / "execution-lifecycles.json"
@@ -192,6 +194,8 @@ def _enum_member_values(node: ast.ClassDef) -> set[str]:
     """Collect member names and literal string values without executing an Enum."""
     values: set[str] = set()
     for statement in node.body:
+        targets: Iterable[ast.AST]
+        value: ast.expr | None
         if isinstance(statement, ast.Assign):
             targets = statement.targets
             value = statement.value
@@ -233,7 +237,7 @@ class _TypeBinding:
     """
 
     expression: ast.expr | None = None
-    environment: dict[str, _TypeBinding] = field(default_factory=dict)
+    environment: Mapping[str, _TypeBinding] = field(default_factory=dict)
     typing_form: str | None = None
     imported: str | None = None
     identity: str | None = None
@@ -242,7 +246,7 @@ class _TypeBinding:
 
 def _type_binding(
     node: ast.expr,
-    environment: dict[str, _TypeBinding],
+    environment: Mapping[str, _TypeBinding],
     resolving: frozenset[int] = frozenset(),
 ) -> _TypeBinding:
     """Look up names and supported qualified attributes without importing them."""
@@ -261,7 +265,7 @@ def _type_binding(
 
 
 def _mask_type_params(
-    environment: dict[str, _TypeBinding], type_params: Iterable[ast.type_param]
+    environment: MutableMapping[str, _TypeBinding], type_params: Iterable[ast.type_param]
 ) -> None:
     """Shadow PEP 695 type parameters so they never resolve to an outer binding.
 
@@ -304,7 +308,7 @@ def _resolve_binding(
     )
 
 
-def _type_operands(node: ast.expr, environment: dict[str, _TypeBinding]) -> list[ast.expr]:
+def _type_operands(node: ast.expr, environment: Mapping[str, _TypeBinding]) -> list[ast.expr]:
     """Extract only type operands; quoted union arms are not Literal data."""
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
         return [_type_expression(node.left), _type_expression(node.right)]
@@ -321,7 +325,7 @@ def _type_operands(node: ast.expr, environment: dict[str, _TypeBinding]) -> list
 
 def _resolve_expression(
     node: ast.expr,
-    environment: dict[str, _TypeBinding],
+    environment: Mapping[str, _TypeBinding],
     resolving: frozenset[int] = frozenset(),
     *,
     literal_member: bool = False,
@@ -359,7 +363,7 @@ def _resolve_expression(
 
 
 def _reuses_vocabulary(
-    node: ast.expr, states: set[str], environment: dict[str, _TypeBinding]
+    node: ast.expr, states: set[str], environment: Mapping[str, _TypeBinding]
 ) -> bool:
     """Share a named alias only when the complete type vocabulary is unchanged."""
     if isinstance(node, (ast.Name, ast.Attribute)):
@@ -390,7 +394,10 @@ def _is_meaningful(binding: _TypeBinding) -> bool:
 
 
 def _rebind(
-    environment: dict[str, _TypeBinding], name: str, binding: _TypeBinding, conditional: bool
+    environment: MutableMapping[str, _TypeBinding],
+    name: str,
+    binding: _TypeBinding,
+    conditional: bool,
 ) -> None:
     """Apply one binding, unless a conditional branch would erase a meaningful one.
 
@@ -443,24 +450,28 @@ class _LiteralCollector:
 
     module: str
     aliases: list[_TypeBinding] = field(default_factory=list)
-    annotations: list[tuple[str, ast.expr, dict[str, _TypeBinding]]] = field(default_factory=list)
-    functions: list[tuple[ast.AST, str, dict[str, _TypeBinding]]] = field(default_factory=list)
+    annotations: list[tuple[str, ast.expr, Mapping[str, _TypeBinding]]] = field(
+        default_factory=list
+    )
+    functions: list[tuple[ast.AST, str, Mapping[str, _TypeBinding]]] = field(default_factory=list)
 
     def _assignment(
         self,
         node: ast.Assign | ast.AnnAssign | ast.TypeAlias,
         prefix: str,
-        environment: dict[str, _TypeBinding],
+        environment: MutableMapping[str, _TypeBinding],
         global_names: frozenset[str] = frozenset(),
         conditional: bool = False,
     ) -> None:
         """Capture RHS names before changing any assignment target."""
+        targets: Iterable[ast.AST]
+        expression: ast.expr | None
         if isinstance(node, ast.TypeAlias):
-            targets, expression = [node.name], node.value
+            targets, expression = (node.name,), node.value
         elif isinstance(node, ast.Assign):
             targets, expression = node.targets, node.value
         else:
-            targets, expression = [node.target], node.value
+            targets, expression = (node.target,), node.value
             if (
                 isinstance(expression, ast.Constant)
                 and isinstance(expression.value, str)
@@ -474,7 +485,7 @@ class _LiteralCollector:
             return
         snapshot = environment if isinstance(node, ast.TypeAlias) else dict(environment)
         if isinstance(node, ast.TypeAlias) and node.type_params:
-            snapshot = dict(snapshot)
+            snapshot = ChainMap({}, snapshot)
             _mask_type_params(snapshot, node.type_params)
         for target in targets:
             for name in _assigned_names(target):
@@ -497,8 +508,8 @@ class _LiteralCollector:
         self,
         node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
         prefix: str,
-        environment: dict[str, _TypeBinding],
-        enclosing: dict[str, _TypeBinding],
+        environment: MutableMapping[str, _TypeBinding],
+        enclosing: Mapping[str, _TypeBinding],
         *,
         in_class: bool,
     ) -> None:
@@ -507,9 +518,10 @@ class _LiteralCollector:
         child_prefix = f"{prefix}{node.name}."
         if isinstance(node, ast.ClassDef):
             values = self.scope(node, child_prefix, parent)
-            namespace = {
-                name: value for name, value in values.items() if value is not parent.get(name)
-            }
+            # A class namespace exposes only bindings created in that class.
+            # The enclosing map remains available to lazy aliases but is not
+            # mistaken for Python's class-local namespace by child scopes.
+            namespace = dict(values.maps[0])
             environment[node.name] = _TypeBinding(namespace=namespace)
         else:
             environment[node.name] = _TypeBinding()
@@ -517,7 +529,7 @@ class _LiteralCollector:
             # rather than a snapshot of a class dictionary it cannot close over.
             self.functions.append((node, child_prefix, parent))
 
-    def _field(self, node: ast.AST, prefix: str, environment: dict[str, _TypeBinding]) -> None:
+    def _field(self, node: ast.AST, prefix: str, environment: Mapping[str, _TypeBinding]) -> None:
         """Keep the annotation's own binding snapshot, separate from its value."""
         if not isinstance(node, ast.AnnAssign) or not isinstance(node.target, ast.Name):
             return
@@ -527,7 +539,7 @@ class _LiteralCollector:
             )
 
     @staticmethod
-    def _mask_target(node: ast.AST, environment: dict[str, _TypeBinding]) -> None:
+    def _mask_target(node: ast.AST, environment: MutableMapping[str, _TypeBinding]) -> None:
         """Parameters and binding targets mask inherited type evidence."""
         if isinstance(node, ast.arg):
             environment[node.arg] = _TypeBinding()
@@ -542,8 +554,8 @@ class _LiteralCollector:
         self,
         node: ast.AST,
         prefix: str,
-        environment: dict[str, _TypeBinding],
-        enclosing: dict[str, _TypeBinding],
+        environment: MutableMapping[str, _TypeBinding],
+        enclosing: Mapping[str, _TypeBinding],
         *,
         in_class: bool,
         global_names: frozenset[str] = frozenset(),
@@ -563,10 +575,15 @@ class _LiteralCollector:
             self._mask_target(node, environment)
 
     def scope(
-        self, tree: ast.AST, prefix: str, enclosing: dict[str, _TypeBinding]
-    ) -> dict[str, _TypeBinding]:
+        self, tree: ast.AST, prefix: str, enclosing: Mapping[str, _TypeBinding]
+    ) -> ChainMap[str, _TypeBinding]:
         """Snapshot eager assignments while sharing only real lexical closures."""
-        environment = dict(enclosing)
+        # Keep a live local layer over the enclosing lexical bindings. PEP 695
+        # aliases are lazy, so their captured environment must observe later
+        # rebinding in an enclosing scope; eager aliases snapshot below.
+        environment: ChainMap[str, _TypeBinding] = ChainMap(
+            {}, cast(MutableMapping[str, _TypeBinding], enclosing)
+        )
         _mask_type_params(environment, getattr(tree, "type_params", ()))
         # `global NAME` can appear anywhere in a function body but applies to
         # the whole function, so it is collected once up front.
