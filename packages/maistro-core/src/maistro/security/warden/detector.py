@@ -186,19 +186,29 @@ def _bounded_untrusted_context(
     return selected
 
 
+_SINGLE_CHARACTER_RUN = re.compile(r"(?<!\w)(?:[A-Za-z0-9@$](?:[\s._-]+[A-Za-z0-9@$]){2,})(?!\w)")
+
+
 def _collapse_single_character_runs(text: str) -> str:
     """Remove separators only from long single-character runs.
 
     Requiring at least three characters and a non-word boundary prevents normal
-    prose such as "a cat" from being globally compacted. Compact phrase rules
-    then recognize a spaced-letter override without altering the primary view.
+    prose such as "a cat" from being globally compacted. Digits and the two
+    symbol substitutions supported by the bounded leetspeak fold are included
+    so a payload such as ``1 g n o r e 4 l l`` is compacted before that fold
+    runs again. Compact phrase rules then recognize the override without
+    altering the primary view.
     """
-    single_char_run = re.compile(r"(?<!\w)(?:[A-Za-z](?:[\s._-]+[A-Za-z]){2,})(?!\w)")
-    return single_char_run.sub(lambda match: re.sub(r"[\s._-]+", "", match.group()), text)
+    return _SINGLE_CHARACTER_RUN.sub(lambda match: re.sub(r"[\s._-]+", "", match.group()), text)
 
 
 def _detection_views(text: str) -> tuple[str, ...]:
     compact = _collapse_single_character_runs(text)
+    if compact != text:
+        # The first normalization pass cannot fold a digit that is a token by
+        # itself. Compacting first turns spaced leetspeak into mixed tokens,
+        # so one bounded second pass handles both obfuscation layers.
+        compact = normalize_for_detection(compact)
     return (text, compact) if compact != text else (text,)
 
 
