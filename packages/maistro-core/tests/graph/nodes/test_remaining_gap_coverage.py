@@ -29,7 +29,16 @@ from maistro.graph.nodes import (  # type: ignore[attr-defined]
 
 
 def _ctx(**o: Any) -> NodeContext:
-    base = {"run_id": "r", "dag_id": "d", "node_id": "n", "user_id": "u", "project_id": "p"}
+    base = {
+        "run_id": "r",
+        "dag_id": "d",
+        "node_id": "n",
+        "user_id": "u",
+        "workspace_id": "w1",
+        "project_id": "p1",
+        "node_run_id": "nr1",
+        "attempt_id": "a1",
+    }
     base.update(o)
     return NodeContext(**base)
 
@@ -108,16 +117,13 @@ async def test_jira_poll_cloud_with_email_basic_auth_path(
     node = get_node("jira.poll")()
     out = await node.run(
         {
-            "base_url": "https://acme.atlassian.net",
+            "binding_id": "test-jira-cloud-binding",
             "jql": "x",
-            "pat": "tk",
-            "flavor": "cloud",
-            "email": "a@b.com",
         },
         _ctx(),
     )
     assert out.success
-    assert seen["auth"] == ("a@b.com", "tk")
+    assert seen["auth"] == ("alice@example.com", "test-jira-secret")
     assert "Authorization" not in seen["headers"]
 
 
@@ -126,8 +132,8 @@ async def test_jira_poll_403_raises_permission(monkeypatch: pytest.MonkeyPatch) 
     _patch_jira(monkeypatch, status_code=403)
     node = get_node("jira.poll")()
     out = await node.run(
-        {"base_url": "https://x", "jql": "x", "pat": "p", "flavor": "server"},
-        _ctx(),
+        {"binding_id": "test-jira-binding", "jql": "x"},
+        _ctx(run_id="jira-403"),
     )
     assert out.success is False
     assert out.error_code == "PermissionError"
@@ -139,11 +145,11 @@ async def test_jira_poll_500_raises_runtime(monkeypatch: pytest.MonkeyPatch) -> 
     _patch_jira(monkeypatch, status_code=500)
     node = get_node("jira.poll")()
     out = await node.run(
-        {"base_url": "https://x", "jql": "x", "pat": "p", "flavor": "server"},
-        _ctx(),
+        {"binding_id": "test-jira-binding", "jql": "x"},
+        _ctx(run_id="jira-500"),
     )
     assert out.success is False
-    assert out.error_code == "RuntimeError"
+    assert out.error_code == "PollingHttpError"
     assert "status=500" in (out.error_message or "")
 
 

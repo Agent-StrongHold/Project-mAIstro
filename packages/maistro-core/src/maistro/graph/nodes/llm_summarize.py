@@ -166,6 +166,7 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
             attempt_id=ctx.attempt_id,
             effect_key=f"llm.summarize.complete:{inputs.model}",
             request=request,
+            actor_id=str(ctx.user_id or ""),
         )
 
         data: dict[str, Any] = result.body
