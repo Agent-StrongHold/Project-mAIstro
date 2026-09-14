@@ -376,9 +376,9 @@ def test_vulture_error_update_and_trusted_state_paths(
 
 def test_mutation_entry_validation_edges(tmp_path: Path) -> None:
     module = _load("scripts/check_mutation_baseline.py", "_edge_mutation_validation")
-    assert module._trusted_entry_failures("a", {}, {}, 0.9)
-    assert module._trusted_entry_failures("a", {"kill_rate": 0.9}, {"kill_rate": 0.8}, 0.8)
-    assert module._trusted_entry_failures("a", {"kill_rate": 0.9}, {"kill_rate": 1.0}, 0.9)
+    assert module._base_entry_failures("a", {}, {}, 0.9)
+    assert module._base_entry_failures("a", {"kill_rate": 0.9}, {"kill_rate": 0.8}, 0.8)
+    assert module._base_entry_failures("a", {"kill_rate": 0.9}, {"kill_rate": 1.0}, 0.9)
     assert module._new_candidate_entry_failures("a", {"kill_rate": 0.9}, None)
     assert module._new_candidate_entry_failures("a", {}, 0.9)
     assert module._new_candidate_entry_failures("a", {"kill_rate": 0.8}, 0.9)
