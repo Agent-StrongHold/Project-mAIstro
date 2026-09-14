@@ -70,11 +70,11 @@ def _get_client() -> ServiceKeyClient | None:
 
 
 def set_warden(warden: Warden | None) -> None:
-    """Bind the Container's Warden used by model re-entry handlers.
+    """Set the legacy direct-call seam for model re-entry handlers.
 
-    Event handlers are core code and must not discover or construct a second
-    detector. Container composition calls this once; ``None`` is a deliberate
-    fail-closed state for shutdown and unconfigured applications.
+    Container-owned EventBus handlers receive their Warden explicitly through
+    :func:`handlers_for_warden`; this compatibility seam is only for direct
+    callers and tests. ``None`` is a deliberate fail-closed state.
     """
     global _global_warden
     _global_warden = warden
@@ -88,10 +88,15 @@ def _get_warden() -> Warden:
     return _global_warden
 
 
-async def _scan_model_reentry(message: str) -> None:
-    """Scan the exact labelled content that will be sent to the model."""
+async def _scan_model_reentry(message: str, warden: Warden | None = None) -> None:
+    """Scan the exact labelled content that will be sent to the model.
+
+    Production EventBus handlers pass their Container-owned Warden explicitly.
+    The optional fallback is retained for direct legacy callers and tests only;
+    Container composition never writes that module-level compatibility binding.
+    """
     try:
-        verdict = await _get_warden().scan(message, "tool_result")
+        verdict = await (warden or _get_warden()).scan(message, "tool_result")
     except EventSecurityUnavailable:
         raise
     except Exception as exc:
@@ -133,7 +138,9 @@ async def webhook_action(trigger: Trigger, event: Event) -> None:
     logger.info("Webhook %s %s → %d", method, url, resp.status_code)
 
 
-async def conductor_chat_action(trigger: Trigger, event: Event) -> None:
+async def conductor_chat_action(
+    trigger: Trigger, event: Event, *, warden: Warden | None = None
+) -> None:
     base_url = trigger.action_config.get("conductor_url", "http://localhost:8100")
     api_key = trigger.action_config.get("api_key", "")
     model = trigger.action_config.get("model", "auto")
@@ -155,7 +162,7 @@ async def conductor_chat_action(trigger: Trigger, event: Event) -> None:
         f"{rendered}\n"
         "[/untrusted event payload]"
     )
-    await _scan_model_reentry(message)
+    await _scan_model_reentry(message, warden=warden)
 
     payload: dict[str, Any] = {
         "model": model,
@@ -274,6 +281,26 @@ async def log_action(trigger: Trigger, event: Event) -> None:
         event.source,
         event.payload,
     )
+
+
+def handlers_for_warden(warden: Warden) -> dict[str, Any]:
+    """Return built-in handlers bound to one Container security composition.
+
+    The event bus is Container-owned, so this closure carries the triggering
+    application's Warden instead of consulting process-global mutable state.
+    """
+
+    async def bound_conductor_chat(trigger: Trigger, event: Event) -> None:
+        await conductor_chat_action(trigger, event, warden=warden)
+
+    return {
+        "webhook": webhook_action,
+        "conductor_chat": bound_conductor_chat,
+        "coinswarm": coinswarm_action,
+        "ha": ha_action,
+        "ntfy": ntfy_action,
+        "log": log_action,
+    }
 
 
 BUILTIN_HANDLERS = {

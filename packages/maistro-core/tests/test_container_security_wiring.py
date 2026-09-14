@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from typing import Any
 
 import pytest  # type: ignore[import-not-found]
 
@@ -47,6 +48,47 @@ async def _container(**security_overrides: object) -> Container:
             security=SecurityConfig(**security_overrides),  # type: ignore[arg-type]
         )
     )
+
+
+async def test_container_warden_composition_reaches_l3_and_event_reentry() -> None:
+    """The application-provided judge must govern the Container event path too."""
+    from maistro.events.bus import Event, TriggerActionFailure
+    from maistro.events.recipes import security_event_escalation
+
+    class _SuspiciousJudge:
+        def __init__(self) -> None:
+            self.calls: list[tuple[list[dict[str, str]], str]] = []
+
+        async def complete(self, messages: list[dict[str, str]], model: str) -> dict[str, Any]:
+            self.calls.append((messages, model))
+            return {"choices": [{"message": {"content": "suspicious"}}]}
+
+    judge = _SuspiciousJudge()
+    container = await create_container(
+        AgentConfig(router_api_key="test-key"),
+        warden_llm=judge,  # type: ignore[arg-type]
+    )
+    container.event_bus.add_trigger(security_event_escalation())
+    replacement_judge = _SuspiciousJudge()
+    await create_container(
+        AgentConfig(router_api_key="test-key"),
+        warden_llm=replacement_judge,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(TriggerActionFailure) as exc_info:
+        await container.event_bus.emit(
+            Event(
+                event_type="warden_block",
+                source="chat",
+                payload={"severity": "high", "preview": "ordinary tool output"},
+            )
+        )
+
+    assert isinstance(exc_info.value.__cause__, Exception)
+    assert "event payload blocked by Warden" in str(exc_info.value.__cause__)
+    assert judge.calls, "the configured layer-3 judge was not consulted"
+    assert not replacement_judge.calls, "a replacement Container replaced the event Warden"
+    assert "Input preview: ordinary tool output" in judge.calls[0][0][-1]["content"]
 
 
 # --- Sentinel permission table wiring (C1) ----------------------------------

@@ -1,7 +1,7 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +4
-  packages/hive-conductor/backend/tests: +8
+  packages/maistro-core/tests: +5
+  packages/hive-conductor/backend/tests: +9
 ---
 # auto-1171 — canonical Warden composition at Conductor and event re-entry boundaries
 
@@ -16,4 +16,7 @@ Added regression coverage for the issue's security boundaries:
   returns a 503 when the composition is absent;
 - a cached manager is rejected after Container teardown, and one integration
   test sends identical malicious content through chat, agent-scan, harness,
-  and event re-entry using the same Warden instance.
+  and event re-entry using the same Warden instance;
+- Container wiring proves an injected LLM judge reaches layer 3 through the
+  per-Container event bus, and the Conductor bridge passes its configured
+  client into that composition.

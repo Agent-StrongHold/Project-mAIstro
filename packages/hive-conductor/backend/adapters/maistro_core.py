@@ -173,12 +173,18 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         ),
     )
 
-    container = await create_container(config)
-
     llm_client = _HttpOpenAILLMClient(
         base_url=llm_base or "http://localhost:4000/v1",
         api_key=llm_key or "sk-noop",
         model=model,
+    )
+    # The bridge is the application composition root. Only pass a client to
+    # Warden when the deployment actually configured an LLM credential; an
+    # absent client deliberately preserves Warden's pattern/heuristic layers
+    # without creating a route-local fallback.
+    container = await create_container(
+        config,
+        warden_llm=llm_client if llm_key else None,
     )
     prompt_manager = container.prompt_manager
 
