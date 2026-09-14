@@ -185,6 +185,9 @@ class Container:
     #: admitter because the two have different retention: a task's Run is kept
     #: as long as its receipt, a chat turn's is swept behind a small window.
     chat_admitter: ChatRunAdmitter = None  # type: ignore[assignment]
+    #: Per-Workspace chat admitters share the Container's one RunStore while
+    #: retaining their own bounded chat retention windows.
+    chat_admitters: dict[str, ChatRunAdmitter] = field(default_factory=dict)
     #: Where a Graph definition comes from when a Run is not trivial work — a
     #: schedule firing, or anything else that instantiates a drawn topology
     #: rather than a one-node stand-in (#132). Optional in the same way the rest
@@ -500,6 +503,74 @@ class Container:
             # the turn through the canonical spine, and is simply absent for a
             # container with no chat admitter wired.
             result["run_id"] = run.run_id
+        return result
+
+    async def route_conversation_request(
+        self,
+        messages: list[dict[str, Any]],
+        dispatch: ChatDispatch,
+        *,
+        workspace_id: str | None = None,
+        workspace_agent_id: str | None = None,
+        session_id: str | None = None,
+        request_id: str | None = None,
+        actor_principal_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Execute a contained model turn on the canonical Run spine.
+
+        This is the product-facing variant of :meth:`route_request`: the
+        caller owns the conversation-only model callback, while this Container
+        still owns admission, NodeRun/Attempt creation, and terminal truth.
+        Keeping the callback a thunk means a later governed egress path can
+        replace the model call without changing Workspace Agent or Run
+        admission.
+        """
+        if self.run_store is None:
+            return await dispatch()
+        selected_workspace = (workspace_id or self.config.workspace_id).strip()
+        if not selected_workspace:
+            raise ValueError("conversation turns require a Workspace")
+        admitter = self.chat_admitters.get(selected_workspace)
+        if admitter is None:
+            if selected_workspace == self.config.workspace_id and self.chat_admitter is not None:
+                admitter = self.chat_admitter
+            else:
+                admitter = ChatRunAdmitter(
+                    self.run_store,
+                    workspace_id=selected_workspace,
+                    project_store=self.project_scope_store,
+                    intents=self.intent_registry,
+                )
+            self.chat_admitters[selected_workspace] = admitter
+        run: Run | None = None
+        try:
+            run = await admitter.admit(
+                messages,
+                session_id=session_id,
+                request_id=request_id,
+                actor_principal_id=actor_principal_id,
+                agent_id=workspace_agent_id,
+            )
+            await self.run_store.transition_run(run.run_id, RunStatus.QUEUED)
+            run = await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+        except asyncio.CancelledError:
+            await asyncio.shield(self._cancel_incomplete_admission(run))
+            raise
+        except Exception:
+            await self._cancel_incomplete_admission(run)
+            raise
+        try:
+            result = await self._execute_chat_turn(run, messages, dispatch)
+        except BaseException as exc:
+            cancelled = isinstance(exc, asyncio.CancelledError)
+            await self._close_chat_run(
+                run,
+                error=None if cancelled else failure_category(exc),
+                cancelled=cancelled,
+            )
+            raise
+        await self._close_chat_run(run, result=chat_turn_outcome(result))
+        result["run_id"] = run.run_id
         return result
 
     async def _execute_chat_turn(

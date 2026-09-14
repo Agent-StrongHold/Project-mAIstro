@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 
 import stores
@@ -10,6 +11,10 @@ from models.schemas import ChatCompletionRequest, ChatMessage, ChatSession, Chat
 from pydantic import BaseModel, ConfigDict
 from services.chat_completion import build_llm_port
 from services.chat_completion import conversation_only as _conversation_only
+from services.chat_execution import (
+    execute_conversation_turn,
+    request_workspace_id,
+)
 from services.chat_gate import (
     REASON_BUDGET_EXCEEDED,
     REASON_SCANNER_ERROR,
@@ -18,6 +23,7 @@ from services.chat_gate import (
     openai_refusal,
 )
 from services.owned_records import chat_sessions_for
+from services.workspace_authority import is_member
 
 router = APIRouter(tags=["chat"])
 
@@ -114,7 +120,7 @@ def _dashboard_edit_requested(req: ChatCompletionRequest) -> bool:
     return extra.get("tools_scope") == _DASHBOARD_EDIT_SCOPE
 
 
-def _disabled_dashboard_response() -> dict:
+def _disabled_dashboard_response() -> dict[str, Any]:
     return {"choices": [{"message": {"role": "assistant", "content": _DASHBOARD_EDIT_DISABLED}}]}
 
 
@@ -141,22 +147,53 @@ async def _gate_messages(req: ChatCompletionRequest, request: Request, surface: 
     return openai_refusal(decision)
 
 
+async def _authorize_selected_workspace(req: ChatCompletionRequest, request: Request) -> None:
+    """Authorize an explicit Workspace before canonical admission or model work."""
+    workspace_id = request_workspace_id(req)
+    if workspace_id is None:
+        return
+    user = getattr(request.state, "user", None) or {}
+    user_id = str(user.get("id") or user.get("username") or "")
+    if not await is_member(user_id, workspace_id):
+        raise HTTPException(status_code=403, detail="only a workspace member can chat in it")
+
+
+async def _contained_response(
+    req: ChatCompletionRequest,
+    request: Request,
+    messages: list[dict[str, Any]],
+    response: dict[str, Any],
+) -> dict[str, Any]:
+    async def _dispatch() -> dict[str, Any]:
+        return response
+
+    return await execute_conversation_turn(req, request, messages, _dispatch)
+
+
 @router.post("/complete")
-async def complete(req: ChatCompletionRequest, request: Request) -> dict:
+async def complete(req: ChatCompletionRequest, request: Request) -> dict[str, Any]:
     """Non-streaming conversational completion; model-driven tools are M0-disabled."""
+    await _authorize_selected_workspace(req, request)
     if _dashboard_edit_requested(req):
         # Do not send the dashboard builder prompt to a model at all. The SPA
         # interprets textual ```widget_update``` blocks, so tool disabling alone
-        # would not contain model-authored widget mutations (#483).
-        return _disabled_dashboard_response()
+        # would not contain model-authored widget mutations (#483). It still
+        # gets a canonical completed Attempt as a contained user turn.
+        return await _contained_response(
+            req, request, list(req.messages), _disabled_dashboard_response()
+        )
     refusal = await _gate_messages(req, request, "chat_complete")
     if refusal is not None:
-        return refusal
+        return await _contained_response(req, request, list(req.messages), refusal)
     messages = list(req.messages)
     if not any(message.get("role") == "system" for message in messages):
         messages.insert(0, {"role": "system", "content": _CONVERSATION_SYSTEM_PROMPT})
-    llm = build_llm_port()
-    return await llm.complete(_conversation_only(req.model_copy(update={"messages": messages})))
+
+    async def _dispatch() -> dict[str, Any]:
+        llm = build_llm_port()
+        return await llm.complete(_conversation_only(req.model_copy(update={"messages": messages})))
+
+    return await execute_conversation_turn(req, request, messages, _dispatch)
 
 
 @router.post("/stream")
@@ -173,33 +210,40 @@ async def stream_complete(req: ChatCompletionRequest, request: Request):
 
     from fastapi.responses import StreamingResponse
 
+    await _authorize_selected_workspace(req, request)
     if _dashboard_edit_requested(req):
         return StreamingResponse(
-            _single_done_event(_DASHBOARD_EDIT_DISABLED),
+            _contained_done_event(req, request, list(req.messages), _disabled_dashboard_response()),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
     refusal = await _gate_messages(req, request, "chat_stream")
     if refusal is not None:
-        content = refusal["choices"][0]["message"]["content"]
         return StreamingResponse(
-            _single_done_event(content),
+            _contained_done_event(req, request, list(req.messages), refusal),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    async def event_gen():
+    async def event_gen() -> AsyncIterator[str]:
         try:
             messages = list(req.messages)
             if not any(message.get("role") == "system" for message in messages):
                 messages.insert(0, {"role": "system", "content": _CONVERSATION_SYSTEM_PROMPT})
-            llm = build_llm_port()
-            result = await llm.complete(
-                _conversation_only(req.model_copy(update={"messages": messages}))
-            )
+
+            async def _dispatch() -> dict[str, Any]:
+                llm = build_llm_port()
+                return await llm.complete(
+                    _conversation_only(req.model_copy(update={"messages": messages}))
+                )
+
+            result = await execute_conversation_turn(req, request, messages, _dispatch)
             choice = (result.get("choices") or [{}])[0]
             content = (choice.get("message") or {}).get("content") or ""
-            yield f"data: {json.dumps({'type': 'done', 'content': content})}\n\n"
+            event: dict[str, Any] = {"type": "done", "content": content}
+            if result.get("run_id"):
+                event["run_id"] = result["run_id"]
+            yield f"data: {json.dumps(event)}\n\n"
         except Exception as exc:
             yield f"data: {json.dumps({'type': 'done', 'content': f'Error: {type(exc).__name__}'})}\n\n"
 
@@ -210,11 +254,32 @@ async def stream_complete(req: ChatCompletionRequest, request: Request):
     )
 
 
-def _single_done_event(content: str):
-    """One `done` SSE frame — the shape every contained stream answer takes."""
+def _single_done_event(content: str) -> AsyncIterator[str]:
+    """One `done` SSE frame for a response with no canonical runtime."""
     import json
 
-    async def gen():
+    async def gen() -> AsyncIterator[str]:
         yield f"data: {json.dumps({'type': 'done', 'content': content})}\n\n"
+
+    return gen()
+
+
+def _contained_done_event(
+    req: ChatCompletionRequest,
+    request: Request,
+    messages: list[dict[str, Any]],
+    response: dict[str, Any],
+) -> AsyncIterator[str]:
+    """Run static/refused stream answers through the same canonical seam."""
+    import json
+
+    async def gen() -> AsyncIterator[str]:
+        result = await _contained_response(req, request, messages, response)
+        choice = (result.get("choices") or [{}])[0]
+        content = (choice.get("message") or {}).get("content") or ""
+        event: dict[str, Any] = {"type": "done", "content": content}
+        if result.get("run_id"):
+            event["run_id"] = result["run_id"]
+        yield f"data: {json.dumps(event)}\n\n"
 
     return gen()
