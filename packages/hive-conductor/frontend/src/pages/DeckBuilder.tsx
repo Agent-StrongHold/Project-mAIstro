@@ -6,7 +6,12 @@ import {
   useRef,
   useState,
 } from "react";
-import { escapeDeckText, sanitizeDeckMarkup } from "../lib/deckSanitizer";
+import {
+  createSanitizedVisualArtifactFragment,
+  escapeVisualArtifactText,
+  SanitizedVisualArtifact,
+  sanitizeVisualArtifactMarkup,
+} from "../lib/visualArtifactRenderer";
 import { DECK_TEMPLATES } from "../lib/deckTemplates";
 
 const C = { bg: "#0a0914", card: "#11101e", border: "rgba(196,166,97,0.14)", gold: "#c4a661", ink: "#f3f0fb", muted: "#8b83a8", dim: "#5a5478", acc: "#a78bfa", danger: "#e87c7c" };
@@ -16,7 +21,7 @@ interface Slide { id: string; html: string; notes: string; }
 function uid() { return crypto.randomUUID().replace(/-/g, "").slice(0, 12); }
 
 function safeSlide(slide: Slide): Slide {
-  return { ...slide, html: sanitizeDeckMarkup(slide.html) };
+  return { ...slide, html: sanitizeVisualArtifactMarkup(slide.html) };
 }
 
 const BLANK_SLIDE: () => Slide = () => ({ id: uid(), html: "<h1>Title</h1><p>Content</p>", notes: "" });
@@ -76,7 +81,7 @@ function DeckChat({ slides, onUpdateSlides, activeIdx }: { slides: Slide[]; onUp
         const newSlides = [...slides];
         for (const match of slideMatches) {
           const idx = match[1] ? parseInt(match[1]) - 1 : -1;
-          const html = sanitizeDeckMarkup(match[2].trim());
+          const html = sanitizeVisualArtifactMarkup(match[2].trim());
           if (idx >= 0 && idx < newSlides.length) {
             newSlides[idx] = { ...newSlides[idx], html };
           } else {
@@ -128,15 +133,13 @@ export default function DeckBuilder() {
   }, []);
 
   const updateSlide = useCallback((idx: number, html: string) => {
-    setSlides(s => s.map((sl, i) => i === idx ? { ...sl, html: sanitizeDeckMarkup(html) } : sl));
+    setSlides(s => s.map((sl, i) => i === idx ? { ...sl, html: sanitizeVisualArtifactMarkup(html) } : sl));
   }, []);
 
   const insertPreviewContent = useCallback((target: HTMLDivElement, raw: string, asHtml: boolean) => {
     const fragment = document.createDocumentFragment();
     if (asHtml) {
-      const template = document.createElement("template");
-      template.innerHTML = sanitizeDeckMarkup(raw);
-      fragment.appendChild(template.content);
+      fragment.appendChild(createSanitizedVisualArtifactFragment(raw));
     } else {
       fragment.appendChild(document.createTextNode(raw));
     }
@@ -182,13 +185,13 @@ export default function DeckBuilder() {
   };
 
   const exportHTML = () => {
-    const safeTitle = escapeDeckText(title);
+    const safeTitle = escapeVisualArtifactText(title);
     const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${safeTitle}</title><style>
 *{margin:0;padding:0;box-sizing:border-box}html,body{height:100%;overflow:hidden;font-family:system-ui,sans-serif;background:#0a0914;color:#f3f0fb}
 .deck{height:100vh;overflow-y:scroll;scroll-snap-type:y mandatory}.slide{height:100vh;scroll-snap-align:start;display:flex;align-items:center;justify-content:center;padding:4rem;flex-direction:column}
 .slide h1{font-size:3rem;margin-bottom:1rem;font-family:Georgia,serif}.slide h2{font-size:2rem;margin-bottom:0.75rem}.slide p{font-size:1.25rem;opacity:0.8;max-width:60ch;line-height:1.6}
 .slide ul,.slide ol{font-size:1.1rem;text-align:left;line-height:2}</style></head><body><div class="deck">
-${slides.map(s => `<div class="slide">${sanitizeDeckMarkup(s.html)}</div>`).join("\n")}</div></body></html>`;
+${slides.map(s => `<div class="slide">${sanitizeVisualArtifactMarkup(s.html)}</div>`).join("\n")}</div></body></html>`;
     const blob = new Blob([html], { type: "text/html" });
     const objectUrl = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -205,8 +208,8 @@ ${slides.map(s => `<div class="slide">${sanitizeDeckMarkup(s.html)}</div>`).join
       <div style={{ position: "fixed", inset: 0, background: C.bg, zIndex: 9999, overflow: "hidden" }}>
         <div style={{ height: "100vh", overflowY: "scroll", scrollSnapType: "y mandatory" }}>
           {slides.map((s) => (
-            <div key={s.id} style={{ height: "100vh", scrollSnapAlign: "start", display: "flex", alignItems: "center", justifyContent: "center", padding: "4rem", flexDirection: "column" }}
-              dangerouslySetInnerHTML={{ __html: sanitizeDeckMarkup(s.html) }} />
+            <SanitizedVisualArtifact key={s.id} markup={s.html}
+              style={{ height: "100vh", scrollSnapAlign: "start", display: "flex", alignItems: "center", justifyContent: "center", padding: "4rem", flexDirection: "column" }} />
           ))}
         </div>
         <button onClick={() => setPresenting(false)} style={{ position: "fixed", top: 12, right: 12, background: "rgba(0,0,0,0.6)", border: "none", color: C.ink, padding: "6px 12px", borderRadius: 6, cursor: "pointer", fontSize: "0.7rem" }}>Exit (Esc)</button>
@@ -244,11 +247,11 @@ ${slides.map(s => `<div class="slide">${sanitizeDeckMarkup(s.html)}</div>`).join
             <button onClick={() => moveSlide(active, 1)} disabled={active === slides.length - 1} style={{ background: "none", border: "none", color: active === slides.length - 1 ? C.dim : C.muted, cursor: "pointer", fontSize: "0.7rem" }}>Move ▶</button>
             <button onClick={() => removeSlide(active)} disabled={slides.length <= 1} style={{ background: "none", border: "none", color: slides.length <= 1 ? C.dim : C.danger, cursor: "pointer", fontSize: "0.7rem", marginLeft: "auto" }}>Delete</button>
           </div>
-          <div ref={previewRef} contentEditable suppressContentEditableWarning
+          <SanitizedVisualArtifact ref={previewRef} contentEditable suppressContentEditableWarning
             onPaste={handlePreviewPaste}
             onDrop={handlePreviewDrop}
             onBlur={e => updateSlide(active, e.currentTarget.innerHTML)}
-            dangerouslySetInnerHTML={{ __html: sanitizeDeckMarkup(slides[active]?.html || "") }}
+            markup={slides[active]?.html || ""}
             style={{ aspectRatio: "16/9", background: "#0a0914", border: `1px solid ${C.border}`, borderRadius: 12, padding: 0, overflow: "hidden", outline: "none", fontSize: "0.7rem" }} />
           <textarea value={slides[active]?.notes || ""} onChange={e => setSlides(s => s.map((sl, i) => i === active ? { ...sl, notes: e.target.value } : sl))}
             placeholder="Speaker notes..."
