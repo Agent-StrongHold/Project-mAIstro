@@ -63,6 +63,7 @@ async def _fixture(
     from maistro.graph.templates import InMemoryGraphTemplateStore
     from maistro.projects.scope_store import InMemoryProjectScopeStore
     from maistro.runs.store import InMemoryRunStore
+    from maistro.scheduling.admission import ScheduleRunAdmitter
     from maistro.scheduling.store import InMemoryScheduleStore
 
     projects = InMemoryProjectScopeStore()
@@ -92,6 +93,7 @@ async def _fixture(
         run_store=runs,
         template_store=templates,
         schedule_store=schedules,
+        schedule_admitter=ScheduleRunAdmitter(runs, templates, schedules),
         project_scope_store=projects,
     )
     row = _Row(
@@ -229,6 +231,37 @@ def test_run_creation_failure_keeps_occurrence_owed(monkeypatch: pytest.MonkeyPa
             assert recorded.last_fired_at == before
             assert recorded.last_run_id is None
             assert recorded.runs_so_far == 0
+        finally:
+            _remove_row(row)
+
+    asyncio.run(scenario())
+
+
+def test_half_wired_container_fails_closed_for_recurring_fire(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A configured Container must never make a tick use the compatibility path."""
+    from services.scheduler import ScheduleAdmissionUnavailable, _ScheduleRunner
+
+    async def scenario() -> None:
+        container, row, _root = await _fixture()
+        container.schedule_admitter = None
+        _install_row(row)
+        monkeypatch.setattr(
+            _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
+        )
+
+        async def _compatibility_path(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("configured recurring fire reached compatibility execution")
+
+        monkeypatch.setattr(_ScheduleRunner, "_fire_schedule", _compatibility_path)
+        try:
+            with pytest.raises(ScheduleAdmissionUnavailable):
+                await _ScheduleRunner()._evaluate_schedule(
+                    "s-1", row, now=datetime(2026, 8, 21, 12, 5, tzinfo=UTC)
+                )
+            assert len(container.run_store._runs) == 0  # type: ignore[attr-defined]
+            assert row.last_run_id is None
         finally:
             _remove_row(row)
 

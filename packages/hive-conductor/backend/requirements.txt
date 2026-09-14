@@ -26,6 +26,11 @@ cryptography>=50.0.0,<51
 # maistro-core's OAuth module imports PyJWT at import time; hive-conductor
 # consumes core via sys.path, so core's deps must be restated here (#839).
 pyjwt[crypto]>=2.10,<3
+# The backend imports maistro.identity through its auth wiring. The CI backend
+# suite uses the system interpreter after installing this file, so the core
+# identity extra must be restated here rather than relying on the uv workspace
+# environment (which already carries it).
+bip-utils>=2.9,<3
 # Transitive consumers may otherwise resolve 1.1.x. Trivy blocks 1.1.2 for
 # GHSA-6v7p-g79w-8964; 1.2.1 is the first fixed release.
 msgpack>=1.2.1,<2
