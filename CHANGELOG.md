@@ -214,6 +214,15 @@ or placeholder-only section.
   validates each legacy `resume_at` (ISO-8601 with an explicit offset) before
   casting, leaving malformed or timezone-less values unindexed rather than
   aborting the upgrade or reading them in the session zone.
+
+- **Ambiguous capability Invocations are recoverable, and the recovery is
+  safe to operate (#1118).** Reconciliation checks the caller's Workspace and
+  Project before returning a terminal Invocation, consults a provider adapter
+  outside the service-wide effect lock and refuses its evidence if the row
+  moved meanwhile, accepts and backfills scope on Invocations written before
+  scope was persisted, announces the reconciled terminal state on the event
+  stream, carries recovered usage into an APPLIED settlement, and reads naive
+  timestamps as UTC instead of raising during discovery.
 - **Project membership is one canonical row per `(project, principal)`, and
   is now explicitly revocable (#1148).** `ProjectScopeStore.set_membership`
   used to mint a fresh `membership_id` on every call, so a re-grant, role
