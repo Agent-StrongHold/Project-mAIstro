@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from datetime import UTC, datetime
@@ -95,14 +96,14 @@ def _get_kv() -> Any:
     return stores.sessions if stores.sessions._persisted else None
 
 
-def _flush_setup_marker() -> None:
-    """Drain a persisted setup marker before reporting bootstrap success.
+def _flush_setup_marker(config: dict[str, Any]) -> None:
+    """Drain and read back the setup marker before reporting success.
 
     ``JsonStore.__setitem__`` enqueues writes, so the in-memory marker can
     appear complete while a crash still loses it. That would let a restart
-    retry setup and overwrite the first owner's credentials. The policy and
-    settings stores already use this acknowledgement boundary; bootstrap must
-    apply it to its one-shot marker too.
+    retry setup and overwrite the first owner's credentials. A flush alone is
+    not an acknowledgement because the writer can fail or time out silently;
+    the marker must be read back from the authoritative store as well.
     """
     import stores
 
@@ -111,9 +112,13 @@ def _flush_setup_marker() -> None:
         return
     state = getattr(persisted, "_state", None)
     flush = getattr(state, "flush", None)
-    if not callable(flush):
-        raise RuntimeError("persisted setup marker has no flush boundary")
+    read_raw = getattr(persisted, "get_raw", None)
+    if not callable(flush) or not callable(read_raw):
+        raise RuntimeError("persisted setup marker has no acknowledgement boundary")
     flush(timeout=10.0)
+    expected = json.dumps(config, default=str)
+    if read_raw("sessions", _SETUP_KEY) != expected:
+        raise RuntimeError("persisted setup marker was not acknowledged")
 
 
 def _is_setup_complete() -> bool:
@@ -382,7 +387,7 @@ def _provision_first_run(
         kv[_SETUP_KEY] = config
         # The marker is the durable one-shot boundary for persisted setup. Do
         # not return success while this write is still only queued.
-        _flush_setup_marker()
+        _flush_setup_marker(config)
     else:
         # Unpersisted run: the claim was only ever an in-flight lock —
         # "setup happened" in this mode is signalled by the accounts it
