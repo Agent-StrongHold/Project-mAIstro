@@ -172,6 +172,16 @@ or placeholder-only section.
 
 ### Fixed
 
+- **A manual schedule fire claims its run before creating it, and never moves
+  the recurrence cursor (#1119).** `ScheduleStore` gains `reserve_fire` /
+  `settle_fire`: the quota is counted (and the schedule disabled on
+  exhaustion) atomically under the store's lock *before* the Run exists, so
+  two "run now" requests racing on the last run yield one Run and one refusal
+  instead of `runs_so_far` overshooting `max_runs`, and a failure after the
+  Run exists leaves the slot counted rather than a Run the next request
+  duplicates. `last_fired_at` and `next_due_at` are no longer stamped with the
+  manual fire's instant, so an occurrence the cron already owed is still
+  admitted by the next tick; `last_run_id` still points at the manual Run.
 - **A schedule's due cursor is recorded on every evaluation, and SQLite
   `record_fire` is serialized (#1199).** `ScheduleRunAdmitter` computed
   `next_due_at` on an evaluation that fired nothing but never persisted it, so
