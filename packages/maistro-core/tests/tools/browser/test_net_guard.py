@@ -188,6 +188,17 @@ async def test_websocket_upgrades_are_denied_regardless_of_destination() -> None
 # --- allowances are host-owned and stay narrow ------------------------------
 
 
+@pytest.mark.ac("SPEC-090326-b7e2/AC-4")
+async def test_a_browser_allowance_cannot_authorize_a_dangerous_scheme() -> None:
+    """Configured exceptions are network origins, never file/data URLs."""
+    guard, context = await _guarded_context(extra_origins=["file:///etc/passwd"])
+
+    route = await context.navigate("file:///etc/passwd")
+
+    assert route.action == ("abort", ABORT_REASON)
+    assert guard.events[-1].reason == BLOCK_SCHEME
+
+
 @pytest.mark.ac("SPEC-090326-b7e2/AC-6")
 async def test_a_configured_origin_is_allowed_and_the_allowance_stays_scoped() -> None:
     configure_outbound_policy("http://10.20.30.40:8443")

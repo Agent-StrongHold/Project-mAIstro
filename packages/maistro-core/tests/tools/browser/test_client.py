@@ -413,6 +413,20 @@ class TestBrowse:
         with pytest.raises(BrowserToolError, match="browse failed"):
             await client.browse("https://example.com", "find something")
 
+    @pytest.mark.asyncio
+    async def test_browse_honors_a_host_owned_internal_browser_allowance(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The early check must not contradict the route policy's exception."""
+        monkeypatch.setenv("BROWSER_USE_ALLOWED_ORIGINS", "http://wiki.internal:8080")
+        agent_cls, _created = make_agent_cls(run_result=SimpleNamespace(final_result="text"))
+        _install_stack(monkeypatch, agent_cls)
+
+        client = BrowserClient()
+        result = await client.browse("http://wiki.internal:8080/start", "summarize")
+
+        assert result.text == "text"
+
 
 # --- the governed session (#855) --------------------------------------------
 

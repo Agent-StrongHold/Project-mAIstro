@@ -75,6 +75,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 import structlog
 
@@ -83,7 +84,7 @@ from maistro.security.outbound import (
     current_outbound_policy,
     outbound_origin,
 )
-from maistro.security.ssrf import SSRFBlockedError, avalidate_outbound_url
+from maistro.security.ssrf import ALLOWED_SCHEMES, SSRFBlockedError, avalidate_outbound_url
 
 logger = structlog.get_logger()
 
@@ -227,8 +228,18 @@ class BrowserNetworkGuard:
         """The canonical decision: a configured origin passes, the rest prove
         themselves public. This is `enforce_outbound_policy`'s rule against
         this guard's snapshotted policy (which may carry browser allowances
-        the shared one does not)."""
-        if self._policy.allows(url):
+        the shared one does not).
+
+        A browser allowance is still restricted to the validator's network
+        schemes. The shared policy normally contains HTTP origins, but a
+        malformed or non-network operator value must never turn a browser
+        request for `file:`, `data:`, or another scheme into an allow.
+        """
+        try:
+            scheme = urlsplit(url).scheme.lower()
+        except ValueError:
+            scheme = ""
+        if scheme in ALLOWED_SCHEMES and self._policy.allows(url):
             return
         await avalidate_outbound_url(url)
 
