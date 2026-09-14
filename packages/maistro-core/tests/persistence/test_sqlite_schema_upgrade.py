@@ -92,6 +92,19 @@ _LEGACY_SCHEMA: dict[str, str] = {
     """,
 }
 
+_DURABLE_RUN_LEGACY_SCHEMA = """
+    CREATE TABLE durable_graph_runs (
+        run_id TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        active_node_id TEXT,
+        project_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        resume_at TEXT,
+        version INTEGER NOT NULL DEFAULT 0,
+        record_json TEXT NOT NULL
+    )
+"""
+
 
 def _ensure_worker(kind: str, path: str, barrier: Any, results: Any) -> None:
     """Open one legacy file in a fresh process and run its upgrade."""
@@ -122,11 +135,30 @@ def _ensure_worker(kind: str, path: str, barrier: Any, results: Any) -> None:
         results.put(("ok", kind))
 
 
+def _ensure_durable_run_worker(path: str, barrier: Any, results: Any) -> None:
+    """Open the synchronous durable-run store in a fresh process."""
+    try:
+        from maistro.graph.durable_runs.stores import SqliteDurableRunStore
+
+        barrier.wait()
+        SqliteDurableRunStore(path)
+    except BaseException:
+        results.put(("error", traceback.format_exc()))
+    else:
+        results.put(("ok", "durable_graph_runs"))
+
+
 def _make_legacy_database(path: Path, kind: str) -> None:
     with sqlite3.connect(path) as conn:
         for statement in _LEGACY_SCHEMA[kind].split(";"):
             if statement.strip():
                 conn.execute(statement)
+        conn.commit()
+
+
+def _make_legacy_durable_run_database(path: Path) -> None:
+    with sqlite3.connect(path) as conn:
+        conn.execute(_DURABLE_RUN_LEGACY_SCHEMA)
         conn.commit()
 
 
@@ -229,3 +261,32 @@ def test_two_processes_upgrade_each_legacy_sqlite_store(kind: str, tmp_path: Pat
 
     observed = [results.get(timeout=5) for _ in processes]
     assert observed == [("ok", kind), ("ok", kind)]
+
+
+def test_two_processes_upgrade_synchronous_durable_run_store(tmp_path: Path) -> None:
+    """The synchronous canonical initializer also serializes legacy upgrades."""
+    path = tmp_path / "durable_graph_runs.sqlite"
+    _make_legacy_durable_run_database(path)
+
+    context = multiprocessing.get_context("fork")
+    barrier = context.Barrier(2)
+    results = context.Queue()
+    processes = [
+        context.Process(target=_ensure_durable_run_worker, args=(str(path), barrier, results))
+        for _ in range(2)
+    ]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=20)
+    for process in processes:
+        if process.is_alive():
+            process.terminate()
+        assert process.exitcode == 0
+
+    observed = [results.get(timeout=5) for _ in processes]
+    assert observed == [("ok", "durable_graph_runs"), ("ok", "durable_graph_runs")]
+
+    with sqlite3.connect(path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(durable_graph_runs)")}
+    assert "hitl_deadline_at" in columns
