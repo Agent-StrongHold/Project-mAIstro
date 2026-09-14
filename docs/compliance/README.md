@@ -25,15 +25,19 @@ Every claim has:
 The validator requires unique control IDs, non-empty owners and scopes, valid dates, resolvable
 evidence references, and exact coverage between the document and registry. Every `tests/...` or
 `formal/...` artifact cited in a status row must resolve to a repository-artifact record and that
-record must be referenced by the row's claim; an immutable execution record must instead carry a
-structured execution ID. A malformed Markdown table row or empty/invalid status is an error; it
-cannot silently disappear.
+record must be referenced by the row's claim; an immutable execution record must carry a
+structured execution ID plus a hashed, repository-owned JSON receipt containing the matching ID,
+result, and observation time. Claim `last_verified` dates are checked against
+`stale_after_days`. A malformed Markdown table row or empty/invalid status is an error; it cannot
+silently disappear.
 
 ## Evidence vocabulary
 
 Evidence records point to a repository-owned file and include its SHA-256 digest. This prevents a
 free-form path in a prose table from being treated as proof after the artifact changes. An
-`immutable_execution` record may additionally carry a structured immutable execution identifier.
+`immutable_execution` record uses its path as a local execution receipt and must carry a structured
+immutable execution identifier whose ID, result, and observation time match the receipt. An ID
+without an inspectable receipt is invalid, even when its syntax looks plausible.
 
 `state` has these meanings:
 

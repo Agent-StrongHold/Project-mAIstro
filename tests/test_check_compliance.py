@@ -81,6 +81,7 @@ def _findings(tmp_path: Path) -> list[check_compliance.Finding]:
         "| X-1 | control |\n",
         "X-1 | control | implemented |\n",
         "Y-1 | malformed row with no status and no closing pipe\n",
+        "AT-99 missing separators and status\n",
     ],
 )
 def test_malformed_table_row_fails_instead_of_disappearing(tmp_path: Path, row: str) -> None:
@@ -173,19 +174,49 @@ def test_cited_test_path_requires_a_typed_record_in_the_claim(tmp_path: Path) ->
     assert any("no typed repository evidence record" in str(finding) for finding in findings)
 
 
-def test_immutable_execution_evidence_is_structured_without_free_form_prose(
-    tmp_path: Path,
-) -> None:
+def test_immutable_execution_requires_an_inspectable_receipt(tmp_path: Path) -> None:
     _write_repository(tmp_path)
     payload = json.loads((tmp_path / "registry.json").read_text())
     record = payload["evidence"][0]
-    record.pop("path")
-    record.pop("sha256")
     record["kind"] = "immutable_execution"
     record["execution_id"] = "github:run/123456"
+    receipt = {
+        "execution_id": record["execution_id"],
+        "result": record["result"],
+        "observed_at": record["observed_at"],
+    }
+    receipt_path = tmp_path / "execution-receipt.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    record["path"] = receipt_path.name
+    record["sha256"] = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
     (tmp_path / "registry.json").write_text(json.dumps(payload))
 
     assert _findings(tmp_path) == []
+
+
+def test_immutable_execution_id_without_a_receipt_fails_closed(tmp_path: Path) -> None:
+    _write_repository(tmp_path)
+    payload = json.loads((tmp_path / "registry.json").read_text())
+    record = payload["evidence"][0]
+    record["kind"] = "immutable_execution"
+    record["execution_id"] = "forged:run/123456"
+    record.pop("path")
+    record.pop("sha256")
+    (tmp_path / "registry.json").write_text(json.dumps(payload))
+
+    assert any(
+        "missing required field(s): path, sha256" in str(finding) for finding in _findings(tmp_path)
+    )
+
+
+def test_last_verified_staleness_is_reported(tmp_path: Path) -> None:
+    _write_repository(tmp_path)
+    payload = json.loads((tmp_path / "registry.json").read_text())
+    payload["claims"][0]["last_verified"] = "1900-01-01"
+    payload["claims"][0]["stale_after_days"] = 0
+    (tmp_path / "registry.json").write_text(json.dumps(payload))
+
+    assert any("claim verification is stale" in str(finding) for finding in _findings(tmp_path))
 
 
 def test_all_claim_statuses_are_distinct_schema_values() -> None:

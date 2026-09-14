@@ -104,6 +104,41 @@ def _relative_artifact(root: Path, value: Any, subject: str) -> tuple[Path | Non
     return resolved, []
 
 
+def _validate_execution_receipt(path: Path, record: dict[str, Any], subject: str) -> list[Finding]:
+    """Require an immutable execution ID to be backed by a typed local receipt."""
+    try:
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        return [Finding(subject, f"execution receipt is not valid JSON: {exc}")]
+    if not isinstance(receipt, dict):
+        return [Finding(subject, "execution receipt must be a JSON object")]
+    findings: list[Finding] = []
+    required = {"execution_id", "result", "observed_at"}
+    findings.extend(
+        Finding(f"{subject}.receipt", reason)
+        for reason in _require_keys(receipt, required, f"{subject}.receipt")
+    )
+    if receipt.get("execution_id") != record.get("execution_id"):
+        findings.append(Finding(subject, "execution receipt ID does not match execution_id"))
+    if not isinstance(receipt.get("result"), str) or not receipt["result"].strip():
+        findings.append(Finding(subject, "execution receipt result must be a non-empty string"))
+    elif "result" in record and receipt["result"] != record["result"]:
+        findings.append(Finding(subject, "execution receipt result does not match result"))
+    try:
+        receipt_observed = _parse_datetime(
+            receipt.get("observed_at"), "observed_at", f"{subject}.receipt"
+        )
+        record_observed = _parse_datetime(record.get("observed_at"), "observed_at", subject)
+        if receipt_observed != record_observed:
+            findings.append(
+                Finding(subject, "execution receipt observed_at does not match evidence")
+            )
+    except ValueError:
+        # The main evidence validation reports malformed record timestamps.
+        pass
+    return findings
+
+
 def _validate_evidence(  # noqa: C901
     root: Path, evidence: Any, as_of: datetime
 ) -> tuple[list[Finding], dict[str, dict[str, Any]]]:
@@ -134,22 +169,41 @@ def _validate_evidence(  # noqa: C901
             findings.append(
                 Finding(subject, "kind must be repository_artifact or immutable_execution")
             )
-        if kind == "repository_artifact" or "path" in raw or "sha256" in raw:
+        artifact_path: Path | None = None
+        if kind == "repository_artifact":
+            required_artifact_keys = {"path", "sha256"}
+        elif kind == "immutable_execution":
+            # An ID alone is just prose. The receipt is the locally inspectable
+            # record that binds the immutable execution identity to its result.
+            required_artifact_keys = {"path", "sha256", "execution_id"}
+        else:
+            required_artifact_keys = set()
+        if required_artifact_keys:
             findings.extend(
                 Finding(subject, reason)
-                for reason in _require_keys(raw, {"path", "sha256"}, subject)
+                for reason in _require_keys(raw, required_artifact_keys, subject)
             )
-            path, path_findings = _relative_artifact(root, raw.get("path"), subject)
+            artifact_path, path_findings = _relative_artifact(root, raw.get("path"), subject)
             findings.extend(Finding(subject, reason) for reason in path_findings)
             digest = raw.get("sha256")
             if not isinstance(digest, str) or not SHA256_RE.fullmatch(digest):
                 findings.append(Finding(subject, "sha256 must be a lowercase SHA-256 digest"))
-            elif path is not None:
-                actual = hashlib.sha256(path.read_bytes()).hexdigest()
+            elif artifact_path is not None:
+                actual = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
                 if actual != digest:
                     findings.append(
                         Finding(subject, "sha256 does not match the repository artifact")
                     )
+        if kind == "immutable_execution":
+            execution_id = raw.get("execution_id")
+            if not isinstance(execution_id, str) or not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9._:/-]{5,127}", execution_id
+            ):
+                findings.append(
+                    Finding(subject, "immutable_execution requires a structured execution_id")
+                )
+            if artifact_path is not None:
+                findings.extend(_validate_execution_receipt(artifact_path, raw, subject))
         if raw.get("state") not in EVIDENCE_STATES:
             findings.append(Finding(subject, f"state must be one of {sorted(EVIDENCE_STATES)}"))
         if raw.get("mode") not in {"automated", "manual"}:
@@ -160,14 +214,6 @@ def _validate_evidence(  # noqa: C901
                 findings.append(Finding(subject, "observed_at cannot be in the future"))
         except ValueError as exc:
             findings.append(Finding(subject, str(exc)))
-        if raw.get("kind") == "immutable_execution":
-            execution_id = raw.get("execution_id")
-            if not isinstance(execution_id, str) or not re.fullmatch(
-                r"[A-Za-z0-9][A-Za-z0-9._:/-]{5,127}", execution_id
-            ):
-                findings.append(
-                    Finding(subject, "immutable_execution requires a structured execution_id")
-                )
         if "expires_at" in raw:
             try:
                 expires = _parse_datetime(raw["expires_at"], "expires_at", subject)
@@ -225,6 +271,7 @@ def _validate_claims(  # noqa: C901
         ):
             findings.append(Finding(subject, "evidence_refs must be a non-empty list of ids"))
             refs = []
+        last_verified: date | None = None
         try:
             last_verified = _parse_date(raw.get("last_verified"), "last_verified", subject)
             if last_verified > as_of.date():
@@ -247,18 +294,35 @@ def _validate_claims(  # noqa: C901
                 findings.append(Finding(subject, f"evidence reference does not resolve: {ref}"))
             else:
                 resolved.append(evidence[ref])
-        if isinstance(stale_after, int) and not isinstance(stale_after, bool) and stale_after >= 0:
-            for record in resolved:
-                if record.get("state") != "current":
-                    continue
-                try:
-                    observed = _parse_datetime(record.get("observed_at"), "observed_at", subject)
-                except ValueError:
-                    continue
-                if as_of - observed > timedelta(days=stale_after):
-                    findings.append(
-                        Finding(subject, f"evidence is stale for this claim: {record.get('id')}")
-                    )
+        if (
+            isinstance(stale_after, int)
+            and not isinstance(stale_after, bool)
+            and stale_after >= 0
+            and isinstance(last_verified, date)
+            and as_of.date() - last_verified > timedelta(days=stale_after)
+        ):
+            findings.append(
+                Finding(
+                    subject,
+                    "claim verification is stale: last_verified is outside its freshness window",
+                )
+            )
+        for record in resolved:
+            if record.get("state") != "current":
+                continue
+            try:
+                observed = _parse_datetime(record.get("observed_at"), "observed_at", subject)
+            except ValueError:
+                continue
+            if (
+                isinstance(stale_after, int)
+                and not isinstance(stale_after, bool)
+                and stale_after >= 0
+                and as_of - observed > timedelta(days=stale_after)
+            ):
+                findings.append(
+                    Finding(subject, f"evidence is stale for this claim: {record.get('id')}")
+                )
         if status in GREEN_STATUSES:
             for record in resolved:
                 state = record.get("state")
@@ -318,9 +382,9 @@ def _cited_artifact_paths(cells: list[str]) -> set[str]:
 
 def _looks_like_table_row(line: str) -> bool:
     stripped = line.strip()
-    # Once a status table has started, a pipe-bearing line is a row attempt even
-    # when it has too few cells or lacks the closing pipe.
-    return bool(stripped) and "|" in stripped
+    # A recognizable control ID is still a row attempt when all separators are
+    # missing; otherwise malformed input could terminate the table silently.
+    return bool(stripped) and ("|" in stripped or _control_id(stripped) is not None)
 
 
 def _parse_status_row(
