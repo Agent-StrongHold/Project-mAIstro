@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -247,7 +248,9 @@ TOOL_EFFECTS: dict[str, str] = {
     "web_search": TOOL_EFFECT_NETWORK,
     "browse_url": TOOL_EFFECT_NETWORK,
     "analyze_dashboard": TOOL_EFFECT_NETWORK,
-    "run_workflow": TOOL_EFFECT_NETWORK,
+    # A workflow creates durable Run history and may execute mutating nodes;
+    # transport is not the effect classification (#1094).
+    "run_workflow": TOOL_EFFECT_MUTATE,
     # mutate — privileged effect, approval independent of the model required
     "save_as_action": TOOL_EFFECT_MUTATE,
     "create_agent_button": TOOL_EFFECT_MUTATE,
@@ -276,7 +279,13 @@ def tool_effect(tool_name: str) -> str:
 
 
 def gate_tool_dispatch(
-    tool_name: str, user_id: str, *, approved: bool = False, gate_id: str | None = None
+    tool_name: str,
+    user_id: str,
+    *,
+    approved: bool = False,
+    approval_evidence: Mapping[str, Any] | None = None,
+    workflow_id: str | None = None,
+    gate_id: str | None = None,
 ) -> GateDecision | None:
     """The authorization decision for dispatching one tool, or None to run.
 
@@ -287,14 +296,27 @@ def gate_tool_dispatch(
     """
     effect = tool_effect(tool_name)
     if effect in (TOOL_EFFECT_DESTROY, TOOL_EFFECT_MUTATE):
+        # Workflow approval must carry the upstream human/delegation evidence;
+        # a bare boolean is not an approval boundary for durable execution.
+        if tool_name == "run_workflow" and approved and not approval_evidence:
+            approved = False
         if approved:
+            # Approval is supplied by the trusted caller after its human or
+            # delegated-authority verifier has run. Model arguments never reach
+            # this branch, and the evidence is scoped to this dispatch only.
+            evidence = dict(approval_evidence or {})
+            evidence.setdefault("source", "caller_presented")
             log_audit(
                 "chat_tool_privilege_approved",
                 user_id or "anonymous",
                 target=tool_name,
                 detail={
                     "gate_id": gate_id or new_gate_id(),
+                    "principal": user_id or "anonymous",
                     "effect": effect,
+                    "workflow_id": workflow_id,
+                    "approval_evidence": evidence,
+                    "approval_scope": "tool_dispatch_only",
                     "policy_version": POLICY_VERSION,
                 },
             )
@@ -313,7 +335,10 @@ def gate_tool_dispatch(
             target=tool_name,
             detail={
                 "gate_id": decision.gate_id,
+                "principal": user_id or "anonymous",
                 "effect": effect,
+                "workflow_id": workflow_id,
+                "refusal_reason": decision.reason,
                 "policy_version": POLICY_VERSION,
             },
             severity="warning",

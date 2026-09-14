@@ -483,6 +483,162 @@ async def test_nonstreaming_tool_loop_refuses_injected_inbound(
 
 
 @pytest.mark.asyncio
+async def test_scan_config_visits_nested_airtable_field_name_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.agent_materialization as materialization
+
+    class _RecordingWarden:
+        def __init__(self) -> None:
+            self.texts: list[str] = []
+
+        async def scan(self, text: str, boundary: str) -> SimpleNamespace:
+            self.texts.append(text)
+            return SimpleNamespace(clean=True, flags=[])
+
+    warden = _RecordingWarden()
+    monkeypatch.setattr(materialization, "_warden_instance", warden)
+    verdict = await materialization.scan_config(
+        {"records": [{"fields": {INJECTION: "safe value"}}]}, boundary="tool_result"
+    )
+
+    assert verdict["status"] == "clean"
+    assert INJECTION in warden.texts
+
+
+@pytest.mark.asyncio
+async def test_airtable_field_name_in_nested_mapping_key_is_withheld(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Airtable field names are result data, not trusted scanner paths."""
+
+    async def airtable_result(tool_name: str, args: dict, user_id: str) -> dict:
+        return {
+            "records": [
+                {
+                    "id": "rec-1",
+                    "fields": {INJECTION: "attacker-controlled field value"},
+                }
+            ]
+        }
+
+    monkeypatch.setattr(service, "_execute_tool", airtable_result)
+    result, summary = await service._gated_execute_tool(
+        "airtable_query", {"source": "airtable", "table": "Accounts"}, "user-1", "gate-airtable"
+    )
+
+    assert result == {"error": "tool result withheld by security gate", "blocked": True}
+    assert "withheld" in summary
+
+
+@pytest.mark.asyncio
+async def test_tool_result_gate_scans_exact_serialized_mapping_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[object] = []
+
+    async def clean_gate(payload: object, **kwargs: Any) -> chat_gate.GateDecision:
+        seen.append(payload)
+        return chat_gate.GateDecision(
+            allowed=True,
+            reason=chat_gate.REASON_CLEAN,
+            surface=kwargs["surface"],
+        )
+
+    async def airtable_result(tool_name: str, args: dict, user_id: str) -> dict:
+        return {"records": [{"fields": {"Account Owner": "Ada"}}]}
+
+    monkeypatch.setattr(service, "gate_untrusted", clean_gate)
+    monkeypatch.setattr(service, "_execute_tool", airtable_result)
+    result, _summary = await service._gated_execute_tool(
+        "airtable_query", {"source": "airtable"}, "user-1", "gate-json"
+    )
+
+    serialized = seen[-1]
+    assert isinstance(serialized, str)
+    assert json.loads(serialized) == result
+    assert '"Account Owner"' in serialized
+
+
+def test_run_workflow_is_privileged_and_requires_scoped_approval() -> None:
+    _reset_audit()
+    refused = chat_gate.gate_tool_dispatch("run_workflow", "user-1", workflow_id="dag-1")
+    assert refused is not None
+    assert refused.reason == "approval_required"
+    bare_boolean = chat_gate.gate_tool_dispatch(
+        "run_workflow", "user-1", approved=True, workflow_id="dag-1"
+    )
+    assert bare_boolean is not None
+    assert bare_boolean.reason == "approval_required"
+    assert chat_gate.tool_effect("run_workflow") == chat_gate.TOOL_EFFECT_MUTATE
+
+    import stores
+
+    blocked = [
+        e for e in stores.audit_log.values() if e["action"] == "chat_tool_privilege_blocked"
+    ][-1]
+    assert blocked["detail"]["principal"] == "user-1"
+    assert blocked["detail"]["workflow_id"] == "dag-1"
+    assert blocked["detail"]["refusal_reason"] == "approval_required"
+
+    approved = chat_gate.gate_tool_dispatch(
+        "run_workflow",
+        "user-1",
+        approved=True,
+        workflow_id="dag-1",
+        gate_id="gate-workflow",
+        approval_evidence={"kind": "human", "approval_id": "approval-1"},
+    )
+    assert approved is None
+
+    approval = [
+        e for e in stores.audit_log.values() if e["action"] == "chat_tool_privilege_approved"
+    ][-1]
+    assert approval["actor"] == "user-1"
+    assert approval["detail"]["workflow_id"] == "dag-1"
+    assert approval["detail"]["approval_evidence"]["approval_id"] == "approval-1"
+    assert approval["detail"]["approval_scope"] == "tool_dispatch_only"
+
+
+@pytest.mark.asyncio
+async def test_workflow_approval_does_not_authorize_model_only_dispatch_or_hide_run_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _reset_audit()
+    called: list[str] = []
+
+    async def workflow_handler(args: dict, user_id: str, jira_pat: str | None) -> dict:
+        called.append(user_id)
+        return {"run_id": "run-1", "dag_id": args["dag_id"], "status": "completed"}
+
+    monkeypatch.setattr(service, "_TOOL_HANDLERS", {"run_workflow": workflow_handler})
+    refused = await service._execute_tool("run_workflow", {"dag_id": "dag-1"}, "user-1")
+    assert refused["blocked"] is True
+    assert called == []
+
+    completed = await service._execute_tool(
+        "run_workflow",
+        {"dag_id": "dag-1"},
+        "user-1",
+        approved=True,
+        approval_evidence={"kind": "delegated", "approval_id": "approval-2"},
+    )
+    assert completed["run_id"] == "run-1"
+    assert called == ["user-1"]
+
+    import stores
+
+    execution = [e for e in stores.audit_log.values() if e["action"] == "chat_workflow_execution"][
+        -1
+    ]
+    assert execution["actor"] == "user-1"
+    assert execution["detail"]["workflow_id"] == "dag-1"
+    assert execution["detail"]["run_id"] == "run-1"
+    assert execution["detail"]["approval_evidence"]["approval_id"] == "approval-2"
+    assert execution["detail"]["approval_scope"] == "tool_dispatch_only"
+
+
+@pytest.mark.asyncio
 async def test_destructive_tool_requires_approval_model_cannot_mint() -> None:
     result = await service._execute_tool("remove_agent_button", {"agent_id": "all"}, "user-1")
     assert result.get("blocked") is True

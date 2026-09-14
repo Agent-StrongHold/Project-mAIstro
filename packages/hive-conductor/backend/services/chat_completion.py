@@ -1854,29 +1854,79 @@ _TOOL_HANDLERS["hill_climb"] = tool_hill_climb
 _TOOL_HANDLERS["mutate_workflow"] = tool_mutate_workflow
 
 
-async def _execute_tool(tool_name: str, args: dict[str, Any], user_id: str) -> dict[str, Any]:
+def _serialize_tool_result(result: object) -> str:
+    """Serialize exactly the payload that the next model turn receives."""
+    return json.dumps(result)
+
+
+async def _execute_tool(
+    tool_name: str,
+    args: dict[str, Any],
+    user_id: str,
+    *,
+    approved: bool = False,
+    approval_evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Execute a PM tool for real. No stubs. Calls Jira REST API directly.
 
     The #315 dispatch policy is enforced here rather than in each caller, so
     every path that reaches a handler has crossed the same authorization:
     privileged effects (destroy/mutate) need an approval the model cannot
-    mint, and networked effects need a principal. Handler-level tests that
-    monkeypatch this function replace the policy with the fake, exactly as
-    they replaced the dispatch before.
+    mint, and networked effects need a principal. ``approved`` and its evidence
+    are trusted caller inputs, never model arguments; approval covers this
+    dispatch only, not effects a workflow may initiate downstream.
     """
-    refusal = gate_tool_dispatch(tool_name, user_id)
+    workflow_id = (
+        str(args.get("dag_id") or args.get("id") or "") if tool_name == "run_workflow" else None
+    )
+    approval_record = dict(approval_evidence or {}) if approved else None
+    if approval_record is not None:
+        approval_record.setdefault("source", "caller_presented")
+    refusal = gate_tool_dispatch(
+        tool_name,
+        user_id,
+        approved=approved,
+        approval_evidence=approval_evidence,
+        workflow_id=workflow_id or None,
+    )
     if refusal is not None:
         return {
             "error": f"tool '{tool_name}' was not run: {refusal.reason}",
             "blocked": True,
+            **({"workflow_id": workflow_id} if workflow_id else {}),
         }
     jira_pat = _get_jira_pat(user_id)
     handler = _TOOL_HANDLERS.get(tool_name, _tool_poll_jira)
-    return await handler(args, user_id, jira_pat)
+    result = await handler(args, user_id, jira_pat)
+    if tool_name == "run_workflow":
+        # This records the canonical execution identity without granting its
+        # approval to any node-level effect inside the graph.
+        log_audit(
+            "chat_workflow_execution",
+            user_id or "anonymous",
+            target=str(result.get("run_id") or workflow_id or ""),
+            detail={
+                "workflow_id": workflow_id,
+                "run_id": result.get("run_id"),
+                "principal": user_id or "anonymous",
+                "approval_evidence": approval_record,
+                "approval_scope": "tool_dispatch_only",
+                "status": result.get("status"),
+                "refusal_reason": result.get("error"),
+            },
+            severity="warning" if result.get("error") else "info",
+        )
+    return result
 
 
 async def _gated_execute_tool(
-    tool_name: str, args: dict[str, Any], user_id: str, gate_id: str
+    tool_name: str,
+    args: dict[str, Any],
+    user_id: str,
+    gate_id: str,
+    *,
+    approved: bool = False,
+    approval_evidence: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], str]:
     """One model-authored tool call through the #315 boundaries.
 
@@ -1902,13 +1952,27 @@ async def _gated_execute_tool(
         )
 
     try:
-        result = await _execute_tool(tool_name, args, user_id)
+        if approved or approval_evidence is not None:
+            result = await _execute_tool(
+                tool_name,
+                args,
+                user_id,
+                approved=approved,
+                approval_evidence=approval_evidence,
+            )
+        else:
+            # Keep the ordinary loop's narrow call seam compatible with
+            # trusted test/internal adapters that replace the executor.
+            result = await _execute_tool(tool_name, args, user_id)
     except Exception as tool_exc:
         logger.warning("tool_execution_error name=%s error=%s", tool_name, tool_exc)
         result = {"error": f"Tool '{tool_name}' failed: {type(tool_exc).__name__}: {tool_exc}"}
 
+    # Scan the exact JSON representation appended below. This makes mapping
+    # keys and values share one canonical model-visible representation.
+    serialized_result = _serialize_tool_result(result)
     result_gate = await gate_untrusted(
-        result,
+        serialized_result,
         boundary="tool_result",
         surface="chat_tool_result",
         user_id=user_id,
@@ -2071,7 +2135,7 @@ async def _run_chat_completion_inner(
                 {
                     "role": "tool",
                     "tool_call_id": tc.get("id", ""),
-                    "content": json.dumps(result),
+                    "content": _serialize_tool_result(result),
                 }
             )
 
@@ -2420,7 +2484,7 @@ async def run_chat_completion_streaming(  # noqa: C901  streaming state machine
                 {
                     "role": "tool",
                     "tool_call_id": tc.get("id", ""),
-                    "content": json.dumps(result),
+                    "content": _serialize_tool_result(result),
                 }
             )
 
