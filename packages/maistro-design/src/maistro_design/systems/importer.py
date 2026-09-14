@@ -213,9 +213,11 @@ def _resolve_catalog_system_dir(slug: str) -> Path:
         raise CatalogImportPolicyError("catalog slug is not a valid catalog identifier")
 
     try:
-        root = CATALOG_ROOT.resolve()
+        root = CATALOG_ROOT.resolve(strict=True)
         if CATALOG_ROOT.is_symlink():
             raise CatalogImportPolicyError("catalog root must not be a symlink")
+        if not root.is_dir():
+            raise CatalogImportPolicyError("catalog root must be a directory")
         system_dir = (root / slug).resolve()
         if not system_dir.is_relative_to(root):
             raise CatalogImportPolicyError("catalog slug resolves outside the catalog root")

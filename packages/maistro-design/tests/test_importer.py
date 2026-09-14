@@ -358,6 +358,20 @@ class TestCatalog:
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("integration")
+    def test_non_directory_catalog_root_is_rejected(self, monkeypatch, tmp_path):
+        from maistro_design.systems import importer
+        from maistro_design.systems.registry import InMemoryDesignSystemRegistry
+        from maistro_design.types import CatalogImportPolicyError
+
+        root = tmp_path / "catalog-file"
+        root.write_text("not a catalog", encoding="utf-8")
+        monkeypatch.setattr(importer, "CATALOG_ROOT", root)
+
+        with pytest.raises(CatalogImportPolicyError, match="catalog root"):
+            importer.import_from_catalog("airbnb", InMemoryDesignSystemRegistry())
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("integration")
     def test_catalog_payload_symlink_escape_is_rejected(self, monkeypatch, tmp_path):
         from maistro_design.systems import importer
         from maistro_design.systems.registry import InMemoryDesignSystemRegistry
