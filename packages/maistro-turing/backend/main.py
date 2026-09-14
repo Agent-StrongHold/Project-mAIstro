@@ -14,7 +14,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from maistro.security.warden.detector import Warden
+from maistro.security.composition import build_canonical_security_dependencies
 
 from .config import build_registry, cors_origins
 from .middleware.auth import TuringAuthMiddleware
@@ -23,10 +23,15 @@ from .security import TuringInboundSecurity, TuringInboundSecurityMiddleware
 from .state import reset_state
 
 
-def create_app() -> FastAPI:
-    # Canonical composition owns the Warden. Constructing the application
-    # fails here if that protected dependency cannot be provided.
-    inbound_security = TuringInboundSecurity(warden=Warden())
+def create_app(*, inbound_security: TuringInboundSecurity | None = None) -> FastAPI:
+    # The application root receives the shared canonical detector and audit
+    # sink. A missing composition is a startup failure, never an allow-all.
+    if inbound_security is None:
+        dependencies = build_canonical_security_dependencies()
+        inbound_security = TuringInboundSecurity(
+            warden=dependencies.warden,
+            audit_log=dependencies.audit_log,
+        )
     reset_state(inbound_security=inbound_security)
     app = FastAPI(title="Turing Backend", version="0.9.0")
     app.state.turing_security = inbound_security

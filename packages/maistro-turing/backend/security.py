@@ -17,8 +17,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from maistro.security._types import AuditEntry, WardenVerdict
-from maistro.security.sentinel.audit import InMemoryAuditLog
+from maistro.security._types import AuditEntry, AuditLog, WardenVerdict
 from maistro.security.warden.detector import Warden
 
 
@@ -38,11 +37,13 @@ class TuringSecurityContext:
 class TuringInboundSecurity:
     """Use the canonical Warden and canonical audit record for Turing ingress."""
 
-    def __init__(self, *, warden: Warden, audit_log: Any | None = None) -> None:
+    def __init__(self, *, warden: Warden, audit_log: AuditLog) -> None:
         if warden is None:
             raise RuntimeError("canonical Warden is required for Turing backend startup")
+        if audit_log is None:
+            raise RuntimeError("canonical audit log is required for Turing backend startup")
         self.warden = warden
-        self.audit_log = audit_log if audit_log is not None else InMemoryAuditLog()
+        self.audit_log = audit_log
 
     @property
     def policy_version(self) -> str:

@@ -77,13 +77,14 @@ def test_chat_scans_model_result_before_return_or_memory(authed_client, monkeypa
     assert len(failed) == 1
     from ..main import app
 
-    model_entries = _await(app.state.turing_security.audit_log.get_entries(user_id="turing"))
+    model_entries = _await(app.state.turing_security.audit_log.get_entries(user_id="user"))
     assert any(
         entry.action == "turing.tool_result"
         and entry.run_id == failed[0].run_id
         and entry.policy_version
         for entry in model_entries
     )
+    assert not _await(app.state.turing_security.audit_log.get_entries(user_id="turing"))
     assert "Ignore previous" not in response.text
 
 

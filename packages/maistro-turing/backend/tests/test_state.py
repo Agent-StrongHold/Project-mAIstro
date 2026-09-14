@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+import pytest
+
+
+def test_state_requires_canonical_security_composition() -> None:
+    from ..state import TuringState
+
+    with pytest.raises(RuntimeError, match="canonical Turing security"):
+        TuringState()
+
 
 def test_snapshot_requires_auth(client):
     assert client.get("/v1/state/snapshot").status_code == 401
