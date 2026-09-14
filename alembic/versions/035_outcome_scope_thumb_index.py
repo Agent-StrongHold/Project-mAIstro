@@ -5,7 +5,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "035_outcome_scope_thumb_index"
-down_revision = "034"
+down_revision = "035"
 branch_labels = None
 depends_on = None
 
