@@ -407,6 +407,7 @@ def _builtin_agent_row(identity: Any, full_soul: str, rules: str) -> dict[str, A
         "model_fallbacks": list(identity.model_fallbacks),
         "model_constraints": dict(identity.model_constraints),
         "tools": list(identity.tools),
+        "write_scopes": list(identity.write_scopes),
         "skills": list(identity.skills),
         "max_tool_rounds": identity.max_tool_rounds,
         "memory_config": dict(identity.memory_config),

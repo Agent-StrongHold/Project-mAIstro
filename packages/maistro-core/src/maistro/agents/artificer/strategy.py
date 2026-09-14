@@ -266,13 +266,13 @@ class ArtificerStrategy:
             return tool_args, f"Error: tool arguments exceed {_MAX_ARG_BYTES} byte limit"
 
         tool_blocked = False
-        if tools is not None:
-            try:
-                schema = _find_tool_schema(tools, tool_name)
-            except ToolSchemaError as exc:
-                return tool_args, f"Error: {exc}"
-        else:
-            schema = {}
+        # A strategy is not an authority.  In particular, ``tools=None`` means
+        # that no governed exposure was supplied; it must never turn into an
+        # empty schema that permits an arbitrary callback invocation.
+        try:
+            schema = _find_tool_schema(tools, tool_name)
+        except ToolSchemaError as exc:
+            return tool_args, f"Error: {exc}"
         if sentinel is not None and auth is not None:
             sentinel_verdict = await sentinel.pre_call(tool_name, tool_args, auth, schema)
             if not sentinel_verdict.allowed:

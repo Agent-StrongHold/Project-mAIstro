@@ -83,6 +83,38 @@ def test_write_scope_narrows_declared_write_tool() -> None:
         authority.check("write_file", {"path": "docs/README.md"})
 
 
+def test_write_scope_rejects_traversal_before_glob_matching() -> None:
+    authority = ToolAuthority(("write_file",), write_scopes=("**",))
+
+    with pytest.raises(ToolAuthorityError):
+        authority.check("write_file", {"path": "src/../secrets.txt"})
+
+
+def test_current_host_policy_can_only_narrow_declarations() -> None:
+    authority = ToolAuthority(("read_file", "github"))
+
+    narrowed = authority.narrowed(("read_file",))
+    narrowed.check("read_file", {})
+    with pytest.raises(ToolAuthorityError):
+        narrowed.check("github", {})
+
+
+def test_agent_resolves_host_policy_at_invocation_time() -> None:
+    identity = AgentIdentity(name="agent", tools=("read_file", "github"))
+    agent = Agent(
+        identity=identity,
+        strategy=object(),
+        llm=None,
+        context_builder=None,
+        prompt_manager=None,
+        warden=None,
+        host_tools=lambda _auth: ("read_file",),
+    )
+
+    effective = agent._authority_for(object())
+    assert effective.allowed_tools == ("read_file",)
+
+
 def test_missing_schema_is_typed_configuration_error() -> None:
     with pytest.raises(ToolSchemaError):
         _find_tool_schema([], "missing")

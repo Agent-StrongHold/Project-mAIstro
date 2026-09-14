@@ -118,6 +118,18 @@ def test_with_defaults_does_not_overwrite_explicit_tools_allowed() -> None:
     assert spec.tools_allowed == ["custom.tool"]
 
 
+def test_effective_tool_authority_intersects_host_and_write_scope() -> None:
+    spec = _spec(
+        tools_allowed=["file_ops.write", "github"],
+        write_scopes=["src/**"],
+    )
+    authority = spec.effective_tool_authority(host_tools=["file_ops.write"])
+
+    authority.check("file_ops.write", {"path": "src/main.py"})
+    with pytest.raises(PermissionError):
+        authority.check("github", {})
+
+
 def test_with_defaults_does_not_overwrite_explicit_prompt_name() -> None:
     spec = _spec(role=AgentRole.CODER, prompt_name="custom.prompt").with_defaults()
     assert spec.prompt_name == "custom.prompt"

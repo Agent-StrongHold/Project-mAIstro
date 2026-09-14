@@ -7,7 +7,7 @@ handle() runs: Warden scan -> build context -> strategy.reason() -> post-turn.
 from __future__ import annotations
 
 import logging as _logging
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
@@ -214,7 +214,7 @@ class Agent:
         coin_ledger: Any = None,
         tracer: TracingBackend | None = None,
         tool_executor: Any = None,
-        host_tools: Iterable[str] | None = None,
+        host_tools: Iterable[str] | Callable[[Any], Iterable[str]] | None = None,
         tool_registry: Any = None,
         agent_resolver: Any = None,
     ) -> None:
@@ -235,11 +235,15 @@ class Agent:
         self._quota_tracker = quota_tracker
         self._coin_ledger = coin_ledger
         self._tool_executor = tool_executor
-        self._tool_authority = ToolAuthority(
+        self._declared_tool_authority = ToolAuthority(
             identity.tools,
             write_scopes=getattr(identity, "write_scopes", ()),
-            host_tools=host_tools,
+            host_tools=host_tools if not callable(host_tools) else None,
         )
+        self._host_tools = host_tools
+        # Kept as a compatibility seam for callers that inspect the runtime;
+        # each handle() derives a fresh authority from the current principal.
+        self._tool_authority = self._declared_tool_authority
         self._governed_tool_executor = (
             self._tool_authority.wrap(tool_executor) if callable(tool_executor) else None
         )
@@ -358,11 +362,12 @@ class Agent:
             messages, org_id, team_id, trace, session_id
         )
 
+        tool_authority = self._authority_for(auth)
         tool_defs: list[dict[str, Any]] | None = None
-        if self._tool_authority.allowed_tools:
+        if tool_authority.allowed_tools:
             tool_defs = [
                 _build_tool_schema(name, registry=self._tool_registry)
-                for name in self._tool_authority.allowed_tools
+                for name in tool_authority.allowed_tools
             ]
 
         model = model_override or self.identity.model
@@ -371,7 +376,14 @@ class Agent:
         )
 
         result = await self._run_strategy(
-            context_messages, model, tool_defs, strategy_kwargs, trace
+            context_messages,
+            model,
+            tool_defs,
+            strategy_kwargs,
+            trace,
+            tool_executor=(
+                tool_authority.wrap(self._tool_executor) if callable(self._tool_executor) else None
+            ),
         )
         if result is None:
             # `_run_strategy` already caught and logged; mark it failed so this
@@ -569,6 +581,12 @@ class Agent:
             )
         return context_messages, injected_learning_ids
 
+    def _authority_for(self, auth: Any) -> ToolAuthority:
+        """Resolve the host ceiling at invocation time, never at model setup."""
+        if callable(self._host_tools):
+            return self._declared_tool_authority.narrowed(self._host_tools(auth))
+        return self._declared_tool_authority
+
     async def _run_strategy(
         self,
         context_messages: list[dict[str, Any]],
@@ -576,9 +594,13 @@ class Agent:
         tool_defs: list[dict[str, Any]] | None,
         strategy_kwargs: dict[str, Any],
         trace: Any,
+        *,
+        tool_executor: Any = None,
     ) -> Any:
         """Run the reasoning strategy. Returns the result, or ``None`` on a
         handled error (caller returns a generic error response)."""
+        if tool_executor is None:
+            tool_executor = self._governed_tool_executor
         try:
             if not trace:
                 return await self._strategy.reason(
@@ -586,7 +608,7 @@ class Agent:
                     model,
                     self._llm,
                     tools=tool_defs,
-                    tool_executor=self._governed_tool_executor,
+                    tool_executor=tool_executor,
                     **strategy_kwargs,
                 )
             with trace.span("strategy.reason") as ss:
@@ -596,7 +618,7 @@ class Agent:
                     model,
                     self._llm,
                     tools=tool_defs,
-                    tool_executor=self._governed_tool_executor,
+                    tool_executor=tool_executor,
                     **strategy_kwargs,
                 )
                 ss.set_output(
