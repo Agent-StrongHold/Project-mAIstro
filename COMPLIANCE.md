@@ -58,4 +58,4 @@
 
 CI validates the registry on every change. The release workflow runs the same check with `--require-release-evidence --release-digest <tag commit>`, which fails closed until every release-required claim has passing evidence bound to that exact immutable digest.
 
-An evidence link must identify an immutable CI artifact or run, carry its SHA-256, record the observed date and result, and name the exact release commit digest. A test path alone is not evidence that the test ran.
+An evidence link must identify an immutable GitHub Actions artifact or run in this repository, carry its SHA-256, record the observed date and result, and name the exact release commit digest. The checker derives workflow enabled/manual-only state from the checked-in workflow rather than trusting registry booleans, rejects observations older than 90 days for green claims, and verifies the release digest exists in the checkout. A test path alone is not evidence that the test ran.

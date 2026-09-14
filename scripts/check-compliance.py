@@ -13,15 +13,20 @@ import argparse
 import datetime as dt
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = ROOT / "quality" / "compliance-registry.json"
 DOCUMENT = ROOT / "COMPLIANCE.md"
 SCHEMA_VERSION = 1
+MAX_EVIDENCE_AGE = dt.timedelta(days=90)
+GITHUB_REPOSITORY = "Agent-StrongHold/Project-mAIstro"
 STATUSES = frozenset(
     {
         "implemented",
@@ -52,6 +57,7 @@ REQUIRED_CONTROL_FIELDS = frozenset(
         "release_required",
     }
 )
+REQUIRED_REGISTRY_FIELDS = frozenset({"schema_version", "release_digest", "controls"})
 REQUIRED_EVIDENCE_FIELDS = frozenset(
     {
         "url",
@@ -94,8 +100,77 @@ def _date(value: Any, field: str, where: str, errors: list[str]) -> dt.date | No
 
 
 def _is_link(value: str) -> bool:
+    if not isinstance(value, str):
+        return False
     parsed = urlparse(value)
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _is_immutable_evidence_link(value: str) -> bool:
+    """Accept only immutable GitHub Actions run or artifact URLs for evidence."""
+    if not isinstance(value, str):
+        return False
+    parsed = urlparse(value)
+    if parsed.scheme != "https" or parsed.netloc != "github.com" or parsed.query:
+        return False
+    expected_prefix = f"/{GITHUB_REPOSITORY}/actions/runs/"
+    if not parsed.path.startswith(expected_prefix):
+        return False
+    suffix = parsed.path[len(expected_prefix) :].strip("/").split("/")
+    return (
+        bool(suffix)
+        and suffix[0].isdigit()
+        and (
+            len(suffix) == 1
+            or (len(suffix) == 3 and suffix[1] == "artifacts" and suffix[2].isdigit())
+        )
+    )
+
+
+def _workflow_state(workflow_ref: str, root: Path) -> tuple[bool, bool] | None:
+    """Derive whether a workflow can run automatically from its checked-in YAML."""
+    path = root / workflow_ref
+    try:
+        source = path.read_text(encoding="utf-8")
+        workflow = yaml.safe_load(source)
+    except (OSError, yaml.YAMLError):
+        return None
+    if not isinstance(workflow, dict):
+        return None
+    # PyYAML's YAML 1.1 loader parses the GitHub Actions ``on`` key as True.
+    trigger_config = workflow.get("on", workflow.get(True))
+    if isinstance(trigger_config, str):
+        triggers = {trigger_config}
+    elif isinstance(trigger_config, (list, dict)):
+        triggers = {value for value in trigger_config if isinstance(value, str)}
+    else:
+        return None
+    manual_only = triggers == {"workflow_dispatch"}
+    header = "\n".join(source.splitlines()[:20]).lower()
+    explicitly_disabled = any(
+        phrase in header
+        for phrase in (
+            "temporarily disabled",
+            "explicitly disabled",
+            "disabled until",
+            "do not run automatically",
+        )
+    )
+    return not manual_only and not explicitly_disabled, manual_only
+
+
+def _git_commit_exists(digest: str, root: Path) -> bool:
+    """Check release provenance when the checkout contains a Git object database."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "cat-file", "-e", f"{digest}^{{commit}}"],
+            capture_output=True,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
 
 
 def _local_ref_exists(value: str, root: Path) -> bool:
@@ -104,8 +179,10 @@ def _local_ref_exists(value: str, root: Path) -> bool:
     return (root / value).is_file()
 
 
-def _is_executable_ref(value: str) -> bool:
-    return value.startswith(("packages/", "scripts/", "formal/", "tests/", ".github/workflows/"))
+def _is_executable_ref(value: Any) -> bool:
+    return isinstance(value, str) and value.startswith(
+        ("packages/", "scripts/", "formal/", "tests/", ".github/workflows/")
+    )
 
 
 def validate_registry(  # noqa: C901 - this is the single fail-closed schema/evidence gate
@@ -121,6 +198,12 @@ def validate_registry(  # noqa: C901 - this is the single fail-closed schema/evi
     today = today or dt.date.today()
     if not isinstance(registry, dict):
         return ["registry must be a JSON object"]
+    unknown_registry_fields = set(registry) - REQUIRED_REGISTRY_FIELDS
+    missing_registry_fields = REQUIRED_REGISTRY_FIELDS - set(registry)
+    if unknown_registry_fields:
+        errors.append("registry has unknown fields: " + ", ".join(sorted(unknown_registry_fields)))
+    if missing_registry_fields:
+        errors.append("registry is missing fields: " + ", ".join(sorted(missing_registry_fields)))
     if registry.get("schema_version") != SCHEMA_VERSION:
         errors.append(f"registry schema_version must be {SCHEMA_VERSION}")
     registry_digest = registry.get("release_digest")
@@ -157,7 +240,7 @@ def validate_registry(  # noqa: C901 - this is the single fail-closed schema/evi
             if not isinstance(control[field], str) or not control[field].strip():
                 errors.append(f"{where}.{field} must be a non-empty string")
         status = control["status"]
-        if status not in STATUSES:
+        if not isinstance(status, str) or status not in STATUSES:
             errors.append(f"{where}.status {status!r} is not a supported status")
         if not isinstance(control["release_required"], bool):
             errors.append(f"{where}.release_required must be boolean")
@@ -178,14 +261,20 @@ def validate_registry(  # noqa: C901 - this is the single fail-closed schema/evi
                     errors.append(f"{where}.test_refs contains a missing reference: {ref!r}")
         last_verified = _date(control["last_verified"], "last_verified", where, errors)
         expires = _date(control["expires"], "expires", where, errors)
+        if last_verified is not None and last_verified > today:
+            errors.append(f"{ident} has a future last_verified date ({control['last_verified']})")
+        if expires is not None and last_verified is not None and expires < last_verified:
+            errors.append(f"{ident} expires before it was last verified")
         if expires is not None and expires < today and status == "implemented":
             errors.append(f"{ident} has expired evidence ({control['expires']})")
         if (
-            status in {"implemented", "partially_implemented", "documented"}
+            isinstance(status, str)
+            and status in {"implemented", "partially_implemented", "documented"}
             and last_verified is None
         ):
             errors.append(f"{ident} requires last_verified for status {status}")
         evidence = control["evidence"]
+        observed_dates: list[dt.date] = []
         if isinstance(evidence, list):
             for evidence_index, item in enumerate(evidence):
                 evidence_where = f"{where}.evidence[{evidence_index}]"
@@ -203,17 +292,34 @@ def validate_registry(  # noqa: C901 - this is the single fail-closed schema/evi
                         f"{evidence_where} is missing fields: {', '.join(sorted(evidence_missing))}"
                     )
                     continue
-                if not isinstance(item["url"], str) or not _is_link(item["url"]):
-                    errors.append(f"{evidence_where}.url must be an absolute HTTP(S) link")
+                if not isinstance(item["url"], str) or not _is_immutable_evidence_link(item["url"]):
+                    errors.append(
+                        f"{evidence_where}.url must be an immutable GitHub Actions run or artifact link"
+                    )
+                workflow_ref = item["workflow_ref"]
                 if (
-                    not isinstance(item["workflow_ref"], str)
-                    or not item["workflow_ref"].startswith(".github/workflows/")
-                    or not _local_ref_exists(item["workflow_ref"], root)
+                    not isinstance(workflow_ref, str)
+                    or not workflow_ref.startswith(".github/workflows/")
+                    or not _local_ref_exists(workflow_ref, root)
                 ):
                     errors.append(f"{evidence_where}.workflow_ref must name an existing workflow")
                 for field in ("workflow_enabled", "manual_only", "ran"):
                     if not isinstance(item[field], bool):
                         errors.append(f"{evidence_where}.{field} must be boolean")
+                if isinstance(workflow_ref, str) and _local_ref_exists(workflow_ref, root):
+                    workflow_state = _workflow_state(workflow_ref, root)
+                    if workflow_state is None:
+                        errors.append(f"{evidence_where} cannot derive workflow execution state")
+                    else:
+                        actual_enabled, actual_manual_only = workflow_state
+                        if item["workflow_enabled"] != actual_enabled:
+                            errors.append(
+                                f"{evidence_where}.workflow_enabled does not match the workflow"
+                            )
+                        if item["manual_only"] != actual_manual_only:
+                            errors.append(
+                                f"{evidence_where}.manual_only does not match the workflow"
+                            )
                 if not isinstance(item["sha256"], str) or not SHA256_RE.fullmatch(item["sha256"]):
                     errors.append(f"{evidence_where}.sha256 must be a 64 character SHA-256 digest")
                 evidence_digest = item["release_digest"]
@@ -221,8 +327,24 @@ def validate_registry(  # noqa: C901 - this is the single fail-closed schema/evi
                     evidence_digest
                 ):
                     errors.append(f"{evidence_where}.release_digest must be a git digest")
-                _date(item["observed_at"], "observed_at", evidence_where, errors)
-                if item["result"] not in {"passed", "failed"}:
+                observed_at = _date(item["observed_at"], "observed_at", evidence_where, errors)
+                if observed_at is not None:
+                    observed_dates.append(observed_at)
+                if observed_at is not None and observed_at > today:
+                    errors.append(f"{evidence_where}.observed_at cannot be in the future")
+                if (
+                    status == "implemented"
+                    and observed_at is not None
+                    and today - observed_at > MAX_EVIDENCE_AGE
+                ):
+                    errors.append(
+                        f"{ident} has stale evidence ({item['observed_at']}); "
+                        f"evidence is limited to {MAX_EVIDENCE_AGE.days} days"
+                    )
+                if not isinstance(item["result"], str) or item["result"] not in {
+                    "passed",
+                    "failed",
+                }:
                     errors.append(f"{evidence_where}.result must be 'passed' or 'failed'")
                 if status == "implemented":
                     if item.get("result") != "passed":
@@ -243,6 +365,20 @@ def validate_registry(  # noqa: C901 - this is the single fail-closed schema/evi
                         )
                 if registry_digest and evidence_digest != registry_digest:
                     errors.append(f"{ident} evidence is not bound to registry.release_digest")
+        if (
+            status == "implemented"
+            and isinstance(registry_digest, str)
+            and HEX_DIGEST_RE.fullmatch(registry_digest)
+            and not _git_commit_exists(registry_digest, root)
+        ):
+            errors.append(f"{ident} release_digest does not name a commit in this checkout")
+        if (
+            status == "implemented"
+            and last_verified is not None
+            and observed_dates
+            and last_verified != max(observed_dates)
+        ):
+            errors.append(f"{ident}.last_verified must match the newest evidence observation")
         if status == "implemented":
             if not registry_digest:
                 errors.append(f"{ident} is implemented but has no release digest")
@@ -328,6 +464,9 @@ def validate_document(document: str, registry: Any) -> list[str]:
         if control is None:
             errors.append(f"COMPLIANCE.md names unknown control ID {ident}")
             continue
+        if not REQUIRED_CONTROL_FIELDS.issubset(control):
+            errors.append(f"registry control {ident} is incomplete; document comparison skipped")
+            continue
         expected = (
             control["framework"],
             control["requirement"],
@@ -351,7 +490,17 @@ def validate_document(document: str, registry: Any) -> list[str]:
 def _evidence_cell(evidence: Any) -> str:
     if not evidence:
         return "none"
-    return "; ".join(f"[{item['sha256'][:12]}]({item['url']})" for item in evidence)
+    cells: list[str] = []
+    for item in evidence:
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("sha256"), str)
+            or not isinstance(item.get("url"), str)
+        ):
+            cells.append("invalid")
+        else:
+            cells.append(f"[{item['sha256'][:12]}]({item['url']})")
+    return "; ".join(cells)
 
 
 def load_registry(path: Path = REGISTRY) -> Any:

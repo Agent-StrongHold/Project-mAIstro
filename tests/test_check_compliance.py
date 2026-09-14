@@ -161,6 +161,32 @@ def test_document_unknown_id_is_rejected(checker: ModuleType) -> None:
     assert any("unknown control ID UNKNOWN-CONTROL" in error for error in errors)
 
 
+def test_forged_disabled_stale_evidence_fails_closed(checker: ModuleType, registry: dict) -> None:
+    control = registry["controls"][0]
+    control["status"] = "implemented"
+    control["last_verified"] = "2000-01-01"
+    digest = "1e264a7a39e9f87bdbd165c4f35510b4a72de7f4"
+    control["evidence"] = [
+        {
+            "url": "https://example.invalid/evidence/1",
+            "sha256": "a" * 64,
+            "release_digest": digest,
+            "observed_at": "2000-01-01",
+            "result": "passed",
+            "workflow_ref": ".github/workflows/mutation.yml",
+            "workflow_enabled": True,
+            "manual_only": False,
+            "ran": True,
+        }
+    ]
+    registry["release_digest"] = digest
+    errors = checker.validate_registry(registry, today=dt.date(2026, 8, 25))
+    assert any("immutable GitHub Actions" in error for error in errors)
+    assert any("stale evidence" in error for error in errors)
+    assert any("workflow_enabled does not match" in error for error in errors)
+    assert any("manual_only does not match" in error for error in errors)
+
+
 def test_evidence_schema_requires_immutable_http_link(checker: ModuleType, registry: dict) -> None:
     control = registry["controls"][0]
     control["evidence"] = [
@@ -178,7 +204,9 @@ def test_evidence_schema_requires_immutable_http_link(checker: ModuleType, regis
     ]
     registry["release_digest"] = "b" * 40
     errors = checker.validate_registry(registry, today=dt.date(2026, 8, 25))
-    assert any("url must be an absolute HTTP(S) link" in error for error in errors)
+    assert any(
+        "url must be an immutable GitHub Actions run or artifact link" in error for error in errors
+    )
 
 
 def test_duplicate_control_ids_are_rejected(checker: ModuleType, registry: dict) -> None:
