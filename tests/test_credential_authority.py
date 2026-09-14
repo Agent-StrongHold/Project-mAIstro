@@ -63,7 +63,7 @@ def test_retired_module_cannot_be_imported_again(
         package_fixture = package_root / "demo" / "adapter.py"
         package_fixture.parent.mkdir(parents=True)
         package_fixture.write_text(
-            "from services import credential_store_v2\n",
+            "from services.credential_store_v2 import CredentialV2\n",
             encoding="utf-8",
         )
         monkeypatch.setattr(_checker, "ROOT", Path(directory))

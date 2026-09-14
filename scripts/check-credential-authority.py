@@ -188,7 +188,9 @@ def _imports_module_stem(path: Path, stem: str) -> bool:
         if isinstance(node, ast.Import):
             imported = (alias.name.rsplit(".", 1)[-1] for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
-            imported = (alias.name for alias in node.names)
+            imported = [alias.name for alias in node.names]
+            if node.module:
+                imported.append(node.module.rsplit(".", 1)[-1])
         else:
             continue
         if stem in imported:
