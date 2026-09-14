@@ -2,20 +2,32 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+from maistro.security.sentinel.signing import AuditSigner
 
 if TYPE_CHECKING:
     from maistro.security._types import AuditEntry
 
 
 class InMemoryAuditLog:
-    """In-memory audit log for testing."""
+    """In-memory audit log with tamper-evident Sentinel decision proofs.
 
-    def __init__(self) -> None:
+    The default generated key is intentionally process-local. A deployment
+    using this store for anything beyond tests must pass the same externally
+    managed signer key it uses for its durable audit store.
+    """
+
+    def __init__(self, *, signer: AuditSigner | None = None) -> None:
         self._entries: list[AuditEntry] = []
+        self.signer = signer or AuditSigner()
 
     async def log(self, entry: AuditEntry) -> None:
-        self._entries.append(entry)
+        self._entries.append(self.signer.sign(entry))
+
+    def verify(self, entry: Any) -> bool:
+        """Verify an entry with this store's public verification key."""
+        return self.signer.verify(entry)
 
     async def get_entries(
         self,

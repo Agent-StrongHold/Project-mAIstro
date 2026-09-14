@@ -102,6 +102,9 @@ async def test_log_inserts_with_team_id_and_tool_name_defaults(
         "ok",
         "t1",
         "r1",
+        log.signer.sign(entry).signature,
+        log.signer.key_id,
+        "Ed25519Signature2020",
     )
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from maistro.security.sentinel.signing import AuditSigner
 from maistro.types.security import AuditEntry
 
 if TYPE_CHECKING:
@@ -21,17 +22,33 @@ _ALLOWED_FILTER_COLUMNS: frozenset[str] = frozenset(
 class PgAuditLog:
     """PostgreSQL-backed immutable audit log."""
 
-    def __init__(self, pool: asyncpg.Pool) -> None:
+    def __init__(self, pool: asyncpg.Pool, *, signer: AuditSigner | None = None) -> None:
         self._pool = pool
+        self.signer = signer or AuditSigner.from_environment()
+
+    async def ensure_schema(self) -> None:
+        """Add proof columns to databases created before signed audit records."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signature TEXT NOT NULL DEFAULT ''"
+            )
+            await conn.execute(
+                "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signing_key_id TEXT NOT NULL DEFAULT ''"
+            )
+            await conn.execute(
+                "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS proof_type TEXT NOT NULL DEFAULT ''"
+            )
 
     async def log(self, entry: AuditEntry) -> None:
-        """Record an audit entry."""
+        """Sign and record an audit entry."""
+        signed = self.signer.sign(entry)
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """INSERT INTO audit_log
                    (boundary, user_id, team_id, agent_id,
-                    tool_name, verdict, detail, trace_id, request_id)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)""",
+                    tool_name, verdict, detail, trace_id, request_id,
+                   signature, signing_key_id, proof_type)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)""",
                 entry.boundary,
                 entry.user_id,
                 getattr(entry, "team_id", ""),
@@ -40,7 +57,10 @@ class PgAuditLog:
                 entry.verdict,
                 entry.detail,
                 entry.trace_id,
-                entry.request_id,
+                signed.request_id,
+                signed.signature,
+                signed.signing_key_id,
+                signed.proof_type,
             )
 
     async def get_entries(
@@ -88,6 +108,13 @@ class PgAuditLog:
                 detail=r.get("detail", ""),
                 trace_id=r.get("trace_id", ""),
                 request_id=r.get("request_id", ""),
+                signature=r.get("signature", ""),
+                signing_key_id=r.get("signing_key_id", ""),
+                proof_type=r.get("proof_type", ""),
             )
             for r in rows
         ]
+
+    def verify(self, entry: AuditEntry) -> bool:
+        """Verify a row returned by this store against its configured key."""
+        return self.signer.verify(entry)

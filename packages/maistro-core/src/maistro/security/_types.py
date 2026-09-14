@@ -133,6 +133,11 @@ class AuditEntry:
     violations: tuple[Violation, ...] = ()
     detail: str = ""
     agent_id: str = ""
+    # ADR-073 decision proof. These are populated by the configured audit
+    # store immediately before the entry is retained or persisted.
+    signature: str = ""
+    signing_key_id: str = ""
+    proof_type: str = ""
 
 
 @dataclass

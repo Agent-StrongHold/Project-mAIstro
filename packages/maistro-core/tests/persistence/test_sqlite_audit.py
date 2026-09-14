@@ -45,6 +45,8 @@ async def test_log_and_get_entries_roundtrip(log: SqliteAuditLog) -> None:
     assert e.detail == "ok"
     assert e.trace_id == "t1"
     assert e.request_id == "r1"
+    assert e.proof_type == "Ed25519Signature2020"
+    assert log.verify(e)
 
 
 @pytest.mark.asyncio

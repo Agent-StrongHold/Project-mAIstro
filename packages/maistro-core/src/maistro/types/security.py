@@ -78,6 +78,10 @@ class AuditEntry:
     trace_id: str = ""
     request_id: str = ""
     detail: str = ""
+    # ADR-073 decision proof. The audit store signs before retaining this row.
+    signature: str = ""
+    signing_key_id: str = ""
+    proof_type: str = ""
 
 
 @dataclass(frozen=True)

@@ -6,6 +6,7 @@ import pytest
 
 from maistro.security._types import AuditEntry
 from maistro.security.sentinel.audit import InMemoryAuditLog
+from maistro.security.sentinel.signing import AuditSigner
 
 
 class TestInMemoryAuditLog:
@@ -59,3 +60,31 @@ class TestInMemoryAuditLog:
     async def test_no_entries_returns_empty_list(self) -> None:
         log = InMemoryAuditLog()
         assert await log.get_entries() == []
+
+    @pytest.mark.asyncio
+    async def test_decisions_are_signed_and_tampering_is_rejected(self) -> None:
+        log = InMemoryAuditLog(signer=AuditSigner(b"k" * 32))
+        entry = AuditEntry(boundary="tool_call", user_id="u1", verdict="denied")
+
+        await log.log(entry)
+        [stored] = await log.get_entries()
+
+        assert stored.signature
+        assert stored.proof_type == "Ed25519Signature2020"
+        assert stored.signing_key_id == log.signer.key_id
+        assert log.verify(stored)
+
+        stored.detail = "forged"
+        assert not log.verify(stored)
+
+    @pytest.mark.asyncio
+    async def test_a_different_key_cannot_verify_a_decision(self) -> None:
+        first = InMemoryAuditLog(signer=AuditSigner(b"a" * 32))
+        second = InMemoryAuditLog(signer=AuditSigner(b"b" * 32))
+        entry = AuditEntry(boundary="tool_call", user_id="u1")
+
+        await first.log(entry)
+        [stored] = await first.get_entries()
+
+        assert first.verify(stored)
+        assert not second.verify(stored)

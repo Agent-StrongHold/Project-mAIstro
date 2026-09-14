@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from maistro.security.sentinel.signing import AuditSigner
 from maistro.types.security import AuditEntry
 
 if TYPE_CHECKING:
@@ -21,7 +22,10 @@ CREATE TABLE IF NOT EXISTS audit_log (
     verdict TEXT NOT NULL DEFAULT 'allowed',
     detail TEXT NOT NULL DEFAULT '',
     trace_id TEXT NOT NULL DEFAULT '',
-    request_id TEXT NOT NULL DEFAULT ''
+    request_id TEXT NOT NULL DEFAULT '',
+    signature TEXT NOT NULL DEFAULT '',
+    signing_key_id TEXT NOT NULL DEFAULT '',
+    proof_type TEXT NOT NULL DEFAULT ''
 )
 """
 
@@ -36,32 +40,47 @@ _ALLOWED_FILTER_COLUMNS: frozenset[str] = frozenset(
 class SqliteAuditLog:
     """SQLite-backed immutable audit log implementing the same protocol as PgAuditLog."""
 
-    def __init__(self, conn: aiosqlite.Connection) -> None:
+    def __init__(self, conn: aiosqlite.Connection, *, signer: AuditSigner | None = None) -> None:
         self._conn = conn
+        self.signer = signer or AuditSigner.from_environment()
 
     async def ensure_schema(self) -> None:
-        """Create the audit_log table if it doesn't exist."""
+        """Create the audit_log table and upgrade pre-signature databases."""
         await self._conn.execute(_SCHEMA)
+        columns = {
+            row[1]
+            for row in await (await self._conn.execute("PRAGMA table_info(audit_log)")).fetchall()
+        }
+        for name in ("signature", "signing_key_id", "proof_type"):
+            if name not in columns:
+                await self._conn.execute(
+                    f"ALTER TABLE audit_log ADD COLUMN {name} TEXT NOT NULL DEFAULT ''"  # nosec B608
+                )
         await self._conn.commit()
 
     async def log(self, entry: AuditEntry) -> None:
-        """Record an audit entry."""
+        """Sign and record an audit entry."""
+        signed = self.signer.sign(entry)
         await self._conn.execute(
             """INSERT INTO audit_log
                (timestamp, boundary, user_id, team_id, agent_id,
-                tool_name, verdict, detail, trace_id, request_id)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                tool_name, verdict, detail, trace_id, request_id,
+                signature, signing_key_id, proof_type)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
-                entry.timestamp.isoformat(),
-                entry.boundary,
-                entry.user_id,
-                getattr(entry, "team_id", ""),
-                entry.agent_id,
-                getattr(entry, "tool_name", "") or "",
-                entry.verdict,
-                entry.detail,
-                entry.trace_id,
-                entry.request_id,
+                signed.timestamp.isoformat(),
+                signed.boundary,
+                signed.user_id,
+                getattr(signed, "team_id", ""),
+                signed.agent_id,
+                getattr(signed, "tool_name", "") or "",
+                signed.verdict,
+                signed.detail,
+                signed.trace_id,
+                signed.request_id,
+                signed.signature,
+                signed.signing_key_id,
+                signed.proof_type,
             ),
         )
         await self._conn.commit()
@@ -94,7 +113,8 @@ class SqliteAuditLog:
         params.append(limit)
         query = (
             f"SELECT timestamp, boundary, user_id, team_id, agent_id, tool_name, "
-            f"verdict, detail, trace_id, request_id FROM audit_log "
+            f"verdict, detail, trace_id, request_id, signature, signing_key_id, proof_type "
+            f"FROM audit_log "
             f"WHERE {where} ORDER BY timestamp DESC LIMIT ?"  # nosec B608
         )
 
@@ -115,6 +135,13 @@ class SqliteAuditLog:
                 detail=r[7] or "",
                 trace_id=r[8] or "",
                 request_id=r[9] or "",
+                signature=r[10] or "",
+                signing_key_id=r[11] or "",
+                proof_type=r[12] or "",
             )
             for r in rows
         ]
+
+    def verify(self, entry: AuditEntry) -> bool:
+        """Verify a row returned by this store against its configured key."""
+        return self.signer.verify(entry)
