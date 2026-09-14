@@ -12,7 +12,7 @@ verified.
 | Deployment | Identity contract | Health status | Supported behavior |
 | --- | --- | --- | --- |
 | Engine library with `maistro-core[identity]` | Caller supplies a supported Python and the identity extra | Importable and caller-owned | `ConductorSeed` and lifecycle APIs are available; the engine does not own setup or a product identity store |
-| Conductor image (default) | CPython 3.13.15 plus the pinned wheel set | `operational` after crypto setup | Setup generates and vault-persists the seed, returns the one-time mnemonic, and records the DID; a vault write failure returns 503 before accounts are created |
+| Conductor image (default) | CPython 3.13.15 plus the pinned wheel set | `operational` after crypto setup and seed/DID verification | Setup generates and vault-persists the seed, returns the one-time mnemonic, and records the DID; health decrypts and derives the seed before reporting operational, and a vault write failure returns 503 before accounts are created |
 | Conductor image with crypto identity deselected | Same image, no seed provisioned | `disabled` | Normal Conductor auth/vault operation remains supported; DID/seed-dependent controls are not enabled |
 | Conductor image with a missing or broken identity runtime | Not a shipped profile | `unavailable` or `misconfigured` | Setup refuses crypto identity before creating accounts, and the setup UI does not offer the failing action |
 
