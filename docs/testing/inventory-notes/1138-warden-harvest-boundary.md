@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-rsi/tests: +10
+  packages/maistro-rsi/tests: +12
 ---
 # Issue #1138 Warden harvest boundary
 

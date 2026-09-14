@@ -474,33 +474,46 @@ def _validated_export(
     a check and the thing it checked drift apart.
     """
     resolved: dict[str, Path] = {}
-    for declared_file, group in groups.items():
-        for patch in group:
-            entry = patch.patch_file
-            path = resolve_export_path(export, entry)
-            patch_text = path.read_text(encoding="utf-8", errors="replace")
-            # Validate the exact artifact that will later be handed to git and
-            # include manifest-derived labels, not just its diff body. This is
-            # content admission, distinct from the later quarantine/promotion
-            # gate, and covers attacker-controlled keys and filenames too.
-            admission = boundary.scan_sync(
-                {
-                    "patch_file": patch.patch_file,
-                    "declared_file": declared_file,
-                    "subject": patch.subject,
-                    "patch": patch_text,
-                }
-            )
-            if not admission.admitted:
-                raise ExportPolicyError(
-                    f"refusing {entry}: Warden did not admit harvested content "
-                    f"({admission.outcome})"
+    snapshots: list[Path] = []
+    try:
+        for declared_file, group in groups.items():
+            for patch in group:
+                entry = patch.patch_file
+                path = resolve_export_path(export, entry)
+                raw_patch = path.read_bytes()
+                patch_text = raw_patch.decode("utf-8", errors="replace")
+                # Validate the exact artifact that will later be handed to git
+                # and include manifest-derived labels, not just its diff body.
+                # Keep a private snapshot for git-am so the checked bytes cannot
+                # be swapped after Warden admission.
+                admission = boundary.scan_sync(
+                    {
+                        "patch_file": patch.patch_file,
+                        "declared_file": declared_file,
+                        "subject": patch.subject,
+                        "patch": patch_text,
+                    }
                 )
-            verdict = validate_patch(patch_text, declared_file=declared_file)
-            if not verdict.ok:
-                reasons = "\n".join(f"  - {reason}" for reason in verdict.reasons)
-                raise ExportPolicyError(f"refusing {entry}:\n{reasons}")
-            resolved[entry] = path
+                if not admission.admitted:
+                    raise ExportPolicyError(
+                        f"refusing {entry}: Warden did not admit harvested content "
+                        f"({admission.outcome})"
+                    )
+                verdict = validate_patch(patch_text, declared_file=declared_file)
+                if not verdict.ok:
+                    reasons = "\n".join(f"  - {reason}" for reason in verdict.reasons)
+                    raise ExportPolicyError(f"refusing {entry}:\n{reasons}")
+                with tempfile.NamedTemporaryFile(
+                    mode="wb", prefix="maistro-rsi-admitted-", suffix=".patch", delete=False
+                ) as snapshot_file:
+                    snapshot_file.write(raw_patch)
+                    snapshot = Path(snapshot_file.name)
+                snapshots.append(snapshot)
+                resolved[entry] = snapshot
+    except Exception:
+        for snapshot in snapshots:
+            snapshot.unlink(missing_ok=True)
+        raise
     return resolved
 
 
@@ -510,7 +523,13 @@ def _harvest(args: argparse.Namespace) -> int:  # noqa: C901  clone/repo setup +
     from datetime import UTC, datetime
 
     from maistro_evolve.doc_regression import doc_regressions
-    from maistro_rsi.harvest import branch_slug, group_by_file, load_manifest, pr_body, pr_title
+    from maistro_rsi.harvest import (
+        branch_slug,
+        group_by_file,
+        manifest_records,
+        pr_body,
+        pr_title,
+    )
 
     export = Path(args.export_dir)
     manifest = export / "manifest.json"
@@ -542,7 +561,9 @@ def _harvest(args: argparse.Namespace) -> int:  # noqa: C901  clone/repo setup +
             file=sys.stderr,
         )
         return 3
-    groups = group_by_file(load_manifest(manifest))
+    # Use the exact manifest value admitted above; rereading the file here
+    # would create a scan/use TOCTOU gap for attacker-controlled metadata.
+    groups = group_by_file(manifest_records(manifest_value))
     if not groups:
         print("no promotions to harvest")
         return 0
@@ -647,16 +668,22 @@ def _harvest(args: argparse.Namespace) -> int:  # noqa: C901  clone/repo setup +
             # A patch from an older run may no longer apply once the base has
             # moved past it (even with --3way). Skip it and keep harvesting —
             # one stale patch must not sink the rest of the run's promotions.
-            am = git("am", "--3way", str(patch_paths_by_entry[patch.patch_file]), check=False)
-            if am.returncode != 0:
-                git("am", "--abort", check=False)
-                unappliable += 1
-                continue
-            if args.skip_doc_regressions and _regresses_docs(file):
-                git("reset", "--hard", "HEAD~1")  # drop the doc-specificity regression
-                skipped += 1
-                continue
-            kept_patches.append(patch)
+            admitted_patch = patch_paths_by_entry[patch.patch_file]
+            try:
+                am = git("am", "--3way", str(admitted_patch), check=False)
+                if am.returncode != 0:
+                    git("am", "--abort", check=False)
+                    unappliable += 1
+                    continue
+                if args.skip_doc_regressions and _regresses_docs(file):
+                    git("reset", "--hard", "HEAD~1")  # drop the doc-specificity regression
+                    skipped += 1
+                    continue
+                kept_patches.append(patch)
+            finally:
+                # The snapshot was the immutable input to git-am, not a
+                # second trust boundary. Remove it after this manifest entry.
+                admitted_patch.unlink(missing_ok=True)
         if not kept_patches:
             print(f"[skipped] {branch}  <- {file}  (0 of {len(group)} promotion(s) kept)")
             continue

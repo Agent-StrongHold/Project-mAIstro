@@ -54,6 +54,7 @@ from maistro_rsi.contained_validation import (
 )
 from maistro_rsi.harvest_boundary import (
     HarvestCorrelation,
+    HarvestInputRefused,
     WardenGuardedCallable,
     WardenHarvestBoundary,
 )
@@ -671,7 +672,9 @@ def make_builders_apply_patch(
     ``MAISTRO_BUILDERS_MODEL``/``DEFAULT_MODEL`` from the loaded ``.env``).
     """
 
-    async def _run_turns(session: object, cycle_model: str | None = None) -> None:
+    async def _run_turns(
+        session: object, cycle_model: str | None = None, *, workspace: str
+    ) -> None:
         from maistro_bootstrap.builders.agent_loop import AgentLoopConfig, TurnRunner
         from maistro_bootstrap.builders.responses_callable import ResponsesAPICallable
 
@@ -696,7 +699,10 @@ def make_builders_apply_patch(
         # refuses both a Warden block and an unavailable policy.
         boundary = WardenHarvestBoundary(
             Warden(),
-            correlation=HarvestCorrelation(candidate_id=effective_model),
+            correlation=HarvestCorrelation(
+                workspace_id=workspace,
+                candidate_id=effective_model,
+            ),
         )
         system_content = system_prompt or config.system_prompt
         system_admission = await boundary.scan({"system_prompt": system_content})
@@ -742,14 +748,18 @@ def make_builders_apply_patch(
             from maistro_bootstrap.builders.container_sandbox import ContainerBuilderSandbox
 
             with ContainerBuilderSandbox(work_path, image=image) as csbx:
-                await _run_turns(BuilderSession(sandbox=csbx), cycle_model)
+                await _run_turns(BuilderSession(sandbox=csbx), cycle_model, workspace=workspace)
                 # Agent ran isolated in the container; bring its edits back to the
                 # host worktree so the loop can stage/commit/test them.
                 csbx.sync_to_host()
         else:
             from maistro_bootstrap.builders.sandbox import LocalWorktreeSandbox
 
-            await _run_turns(BuilderSession(sandbox=LocalWorktreeSandbox(work_path)), cycle_model)
+            await _run_turns(
+                BuilderSession(sandbox=LocalWorktreeSandbox(work_path)),
+                cycle_model,
+                workspace=workspace,
+            )
 
     return apply
 
@@ -2073,8 +2083,20 @@ class LocalRsiLoop:
         callable_ = ResponsesAPICallable(
             model=self._config.scout_model or self._config.model, timeout=300.0
         )
+        hyper_boundary = WardenHarvestBoundary(
+            Warden(),
+            correlation=HarvestCorrelation(
+                source_repository=self._config.repo_path,
+                candidate_id=self._config.scout_model or self._config.model,
+            ),
+        )
 
         async def llm(prompt: str) -> str:
+            # Hyper-mutation prompts include persisted candidate lineage and the
+            # operator goal; admit the exact serialized prompt before the model.
+            admission = await hyper_boundary.scan({"prompt": prompt})
+            if not admission.admitted:
+                raise HarvestInputRefused(admission)
             result = await asyncio.to_thread(callable_, [{"role": "user", "content": prompt}])
             content = result.get("content", "") if isinstance(result, dict) else result
             return content if isinstance(content, str) else str(content)

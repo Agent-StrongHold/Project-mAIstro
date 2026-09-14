@@ -50,6 +50,7 @@ def make_gateway_llm_call(
     *,
     timeout: float = 60.0,
     on_response: Callable[[dict[str, object], httpx.Response], None] | None = None,
+    correlation: HarvestCorrelation | None = None,
 ) -> LlmCall:
     """Return an async ``llm_call`` that routes to ``model`` via the gateway.
 
@@ -66,7 +67,7 @@ def make_gateway_llm_call(
 
     boundary = WardenHarvestBoundary(
         Warden(),
-        correlation=HarvestCorrelation(candidate_id=model),
+        correlation=correlation or HarvestCorrelation(candidate_id=model),
     )
 
     async def llm_call(

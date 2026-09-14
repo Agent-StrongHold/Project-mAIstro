@@ -76,7 +76,8 @@ class HarvestInputRefused(RuntimeError):
 
 def _safe_value(value: Any, active: set[int] | None = None) -> Any:
     """Convert arbitrary structured input without dropping keys or values."""
-    active = active or set()
+    if active is None:
+        active = set()
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     identity = id(value)
