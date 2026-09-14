@@ -51,7 +51,7 @@ def _wire_self_repair():
     from services.engine import get_engine
 
     from maistro.capabilities.bootstrap import default_capability_registry
-    from maistro.capabilities.effect_context import new_effect_context
+    from maistro.capabilities.effect_context import binding_scope_policy, new_effect_context
     from maistro.capabilities.http_client import HttpxAsyncHttp
     from maistro.capabilities.providers.host_health import HostHealthAction, HostHealthMonitor
 
@@ -80,7 +80,7 @@ def _wire_self_repair():
     reg.register(mon)
     reg.register(act)
 
-    effects = new_effect_context()
+    effects = new_effect_context(policy_evaluator=binding_scope_policy)
     _register_self_repair(reg, Settings(infra_autonomy="auto_safe"), effects)
 
     engine = get_engine()
@@ -109,9 +109,26 @@ def test_run_503_when_no_provider() -> None:
 
 
 def test_disable_infra_action_after_repair_initialization_blocks_effect() -> None:
-    engine, saved, calls, effects = _wire_self_repair()
+    engine, saved, calls, _effects = _wire_self_repair()
     try:
         engine.capabilities.set_enabled("infra_action", False)
+        c = _config_writer("sr-disabled")
+
+        response = c.post("/v1/capabilities/self-repair/run")
+
+        assert response.status_code == 200, response.text
+        assert "/full" in calls
+        assert not any(path.startswith("/action/") for path in calls)
+        proposal = response.json()["proposals"][0]
+        assert proposal["decision"] == "failed"
+        assert "unavailable" in proposal["detail"]
+    finally:
+        engine._capabilities = saved
+
+
+def test_revoke_infra_action_after_repair_initialization_blocks_effect() -> None:
+    engine, saved, calls, effects = _wire_self_repair()
+    try:
         asyncio.run(effects.bindings.revoke("builtin:self-repair:infra-action"))
         c = _config_writer("sr-revoked")
 

@@ -8,7 +8,7 @@ from pydantic import SecretStr
 from services.capabilities_wiring import _register_self_repair, wire_capabilities
 
 from maistro.capabilities.bootstrap import default_capability_registry
-from maistro.capabilities.effect_context import new_effect_context
+from maistro.capabilities.effect_context import binding_scope_policy, new_effect_context
 from maistro.capabilities.slots.infra import (
     ActionResult,
     InfraAction,
@@ -215,7 +215,7 @@ async def test_self_repair_wiring_uses_canonical_invocation() -> None:
     action = _WiringAction()
     reg.register(_WiringMonitor())
     reg.register(action)
-    effects = new_effect_context()
+    effects = new_effect_context(policy_evaluator=binding_scope_policy)
 
     _register_self_repair(reg, _cfg(), effects)
     repair = reg.provider("self_repair", "rule_based_repair")

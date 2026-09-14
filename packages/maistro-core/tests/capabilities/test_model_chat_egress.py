@@ -18,7 +18,10 @@ import httpx
 import pytest
 
 from maistro.capabilities.binding import Binding
-from maistro.capabilities.effect_context import new_in_memory_effect_context
+from maistro.capabilities.effect_context import (
+    binding_scope_policy,
+    new_in_memory_effect_context,
+)
 from maistro.capabilities.invocation import (
     CapabilityUnavailable,
     InvocationStatus,
@@ -105,7 +108,7 @@ def _patch_gateway(monkeypatch: pytest.MonkeyPatch, body: Any = None, status: in
 async def test_governed_call_creates_invocation_with_usage_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    effects = new_in_memory_effect_context()
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
     registry = _registry()
     _patch_gateway(monkeypatch, _OK_BODY)
     egress = ModelChatEgress(
@@ -153,7 +156,7 @@ async def test_unpinned_unaliased_request_uses_router_selection(
     registry.mark_unavailable("fast-model")
     router = CostAwareRouter(registry)
     _patch_gateway(monkeypatch, _OK_BODY)
-    effects = new_in_memory_effect_context()
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
     egress = ModelChatEgress(
         effects, registry=registry, router=router, endpoint=GatewayEndpoint(base_url="http://gw")
     )
@@ -200,7 +203,7 @@ async def test_router_selection_matches_resolver_selection_exactly() -> None:
 async def test_binding_pin_outranks_router_preference(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    effects = new_in_memory_effect_context()
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
     registry = _registry()
     _patch_gateway(monkeypatch, _OK_BODY)
     egress = ModelChatEgress(
@@ -238,7 +241,7 @@ async def test_unregistered_alias_still_reaches_gateway_with_absent_cost(
 ) -> None:
     """Gateway aliases absent from the registry keep today's passthrough."""
 
-    effects = new_in_memory_effect_context()
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
     registry = _registry()
     _patch_gateway(monkeypatch, _OK_BODY)
     egress = ModelChatEgress(
@@ -268,7 +271,7 @@ async def test_unregistered_alias_still_reaches_gateway_with_absent_cost(
 async def test_completed_effect_deduplicates_repeat_invocation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    effects = new_in_memory_effect_context()
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
     registry = _registry()
     calls: list[str] = []
 
@@ -316,7 +319,7 @@ async def test_completed_effect_deduplicates_repeat_invocation(
 async def test_unreachable_gateway_records_failed_retryable_invocation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    effects = new_in_memory_effect_context()
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
     registry = _registry()
 
     class _Client:
@@ -381,7 +384,7 @@ async def test_unreachable_gateway_records_failed_retryable_invocation(
 async def test_unknown_outcome_blocks_repeat() -> None:
     """A 500 leaves the Invocation UNKNOWN; recovery must not repeat it."""
 
-    effects = new_in_memory_effect_context()
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
     registry = _registry()
     resolve = resolve_model_chat_provider(registry, CostAwareRouter(registry))
 
@@ -455,7 +458,7 @@ async def test_unavailable_selection_refuses_before_any_gateway_call(
     ``CapabilityUnavailable`` before any HTTP is attempted.
     """
 
-    effects = new_in_memory_effect_context()
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
     registry = _registry()
     registry.mark_unavailable("fast-model")
     calls: list[str] = []

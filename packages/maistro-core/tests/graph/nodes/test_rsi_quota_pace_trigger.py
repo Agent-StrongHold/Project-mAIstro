@@ -202,9 +202,12 @@ async def test_base_context_survives_the_handoff_into_a_real_spawn_harness_node(
     # binding authorizes capability harness_runner for exactly this
     # Workspace/Project/Node, and dispatch reaches the adapter only through it.
     from maistro.capabilities.binding import Binding
-    from maistro.capabilities.effect_context import new_in_memory_effect_context
+    from maistro.capabilities.effect_context import (
+        binding_scope_policy,
+        new_in_memory_effect_context,
+    )
 
-    effects = new_in_memory_effect_context()
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
     await effects.bindings.put(
         Binding(
             binding_id="b-rsi-pace",
