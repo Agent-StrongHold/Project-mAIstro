@@ -2355,6 +2355,8 @@ name = "maistro-bootstrap"
 version = "0.9.0"
 source = { editable = "packages/maistro-bootstrap" }
 dependencies = [
+    { name = "httpx" },
+    { name = "maistro-core" },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "questionary" },
@@ -2371,6 +2373,8 @@ builders = [
 [package.metadata]
 requires-dist = [
     { name = "anthropic", marker = "extra == 'builders'", specifier = ">=0.28,<1" },
+    { name = "httpx", specifier = ">=0.28,<1" },
+    { name = "maistro-core", editable = "packages/maistro-core" },
     { name = "pydantic", specifier = ">=2.7,<3" },
     { name = "pyyaml", specifier = ">=6.0,<7" },
     { name = "questionary", specifier = ">=2.0,<3" },
@@ -2589,6 +2593,7 @@ version = "0.9.0"
 source = { editable = "packages/maistro-evolve" }
 dependencies = [
     { name = "httpx" },
+    { name = "maistro-core" },
     { name = "pydantic" },
     { name = "pyyaml" },
 ]
@@ -2607,6 +2612,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27,<1" },
     { name = "immutabledict", marker = "extra == 'ifeval'", specifier = ">=4.0" },
     { name = "langdetect", marker = "extra == 'ifeval'", specifier = ">=1.0.9" },
+    { name = "maistro-core", editable = "packages/maistro-core" },
     { name = "nltk", marker = "extra == 'ifeval'", specifier = ">=3.9" },
     { name = "pydantic", specifier = ">=2.0,<3" },
     { name = "pyyaml", specifier = ">=6.0,<7" },
@@ -2619,6 +2625,7 @@ version = "0.9.0"
 source = { editable = "packages/maistro-registry" }
 dependencies = [
     { name = "httpx" },
+    { name = "maistro-core" },
     { name = "pydantic" },
     { name = "pyyaml" },
 ]
@@ -2626,6 +2633,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.28,<1" },
+    { name = "maistro-core", editable = "packages/maistro-core" },
     { name = "pydantic", specifier = ">=2.0,<3" },
     { name = "pyyaml", specifier = ">=6.0,<7" },
 ]

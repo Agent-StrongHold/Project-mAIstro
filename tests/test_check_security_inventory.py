@@ -338,6 +338,9 @@ class TestTheSeamCensus:
             gate._outbound_fetch_modules()
         )
 
+    def test_the_sibling_package_census_has_no_direct_httpx_network_calls(self, gate):
+        assert gate._sibling_unguarded_httpx_calls() == []
+
     def test_the_pool_itself_is_not_counted_as_a_bypass(self, gate):
         """`http.py` constructs the clients everything else borrows — the ones
         the outbound policy wraps. Counting it would make the seam permanently

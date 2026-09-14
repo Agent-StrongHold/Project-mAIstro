@@ -29,6 +29,8 @@ from dataclasses import dataclass
 
 import httpx
 
+from maistro.http import get_shared_client
+from maistro.security.outbound import configure_outbound_policy
 from maistro_design.renderers import RendererDiscovery
 from maistro_design.trust import TrustTier
 from maistro_design.types import (
@@ -69,8 +71,12 @@ class OpenDesignProvider:
         client_factory: Callable[[], httpx.AsyncClient] | None = None,
     ) -> None:
         self.config = config or OpenDesignConfig()
-        # injectable for tests (httpx.MockTransport); defaults to a real client
-        self._client_factory = client_factory or (lambda: httpx.AsyncClient())
+        configure_outbound_policy(self.config.base_url)
+        # Injectable for tests (httpx.MockTransport); production uses the pooled,
+        # guarded client seam so both health and render calls share the policy.
+        self._client_factory = client_factory or (
+            lambda: get_shared_client(timeout=self.config.timeout)
+        )
 
     @property
     def _auth(self) -> dict[str, str]:

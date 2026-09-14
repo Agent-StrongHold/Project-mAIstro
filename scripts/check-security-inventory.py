@@ -199,6 +199,17 @@ _POOL_OWNER = "http.py"
 #: Constructing one of these is opening a connection outside the shared pool,
 #: and therefore outside the transport the outbound policy wraps.
 _PRIVATE_CLIENT_CTORS = frozenset({"AsyncClient", "Client"})
+_HTTPX_OUTBOUND_METHODS = frozenset({"get", "post", "put", "patch", "delete", "request"})
+_SIBLING_SRC_ROOTS = tuple(
+    ROOT / "packages" / package / "src"
+    for package in (
+        "maistro-registry",
+        "maistro-bootstrap",
+        "maistro-evolve",
+        "maistro-rsi",
+        "maistro-design",
+    )
+)
 
 
 def _constructs_private_client(tree: ast.Module) -> bool:
@@ -242,6 +253,36 @@ def _unpooled_fetch_modules() -> int:
         if _constructs_private_client(ast.parse(path.read_text(encoding="utf-8"))):
             count += 1
     return count
+
+
+def _sibling_unguarded_httpx_calls() -> list[str]:
+    """Return direct httpx network calls in the five sibling packages.
+
+    These packages are intentionally measured separately from SECURITY.md's
+    historical core counts. A direct module-level call cannot pass through the
+    core transport seam, whether it is ``httpx.post`` or a private client
+    constructor, so the completion gate must fail on either form.
+    """
+    findings: list[str] = []
+    for root in _SIBLING_SRC_ROOTS:
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*.py")):
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except (OSError, SyntaxError):
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                if not isinstance(func, ast.Attribute) or not isinstance(func.value, ast.Name):
+                    continue
+                if func.value.id != "httpx":
+                    continue
+                if func.attr in _PRIVATE_CLIENT_CTORS or func.attr in _HTTPX_OUTBOUND_METHODS:
+                    findings.append(f"{path.relative_to(ROOT)}:{node.lineno}: httpx.{func.attr}")
+    return findings
 
 
 def _pooled_fetch_modules() -> int:
@@ -336,6 +377,7 @@ class Findings:
     contradicted_absences: list[str] = field(default_factory=list)
     drifted_counts: list[str] = field(default_factory=list)
     unchecked_rows: list[str] = field(default_factory=list)
+    unguarded_httpx_calls: list[str] = field(default_factory=list)
 
     def total(self) -> int:
         return sum(
@@ -348,6 +390,7 @@ class Findings:
                 self.contradicted_absences,
                 self.drifted_counts,
                 self.unchecked_rows,
+                self.unguarded_httpx_calls,
             )
         )
 
@@ -776,6 +819,7 @@ def main() -> int:
     check_inventory(text, findings)
     check_absence_claims(text, findings)
     check_counted_claims(text, findings)
+    findings.unguarded_httpx_calls.extend(_sibling_unguarded_httpx_calls())
 
     if findings.total() == 0:
         rows = len(_inventory_rows(text))
@@ -811,6 +855,11 @@ def main() -> int:
             "Inventory rows that check nothing",
             findings.unchecked_rows,
             "cite a named constant, or add the cell to _PROSE_VALUE_CELLS with a reason",
+        ),
+        (
+            "Direct httpx calls in guarded sibling packages",
+            findings.unguarded_httpx_calls,
+            "route through maistro.http or an equivalent guarded seam",
         ),
     ):
         if not bucket:
