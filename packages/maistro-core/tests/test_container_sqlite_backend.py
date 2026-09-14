@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from maistro.container import create_container
 from maistro.types.config import AgentConfig
 
@@ -19,6 +21,21 @@ async def test_create_container_defaults_to_in_memory_backend() -> None:
     container = await create_container(AgentConfig(router_api_key="test-key"))
     assert container.db_pool is None
     assert type(container.prompt_manager).__name__ == "InMemoryPromptManager"
+
+
+async def test_sqlite_usage_log_flushes_and_restores_with_container(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'usage.db'}"
+    first = await create_container(
+        AgentConfig(router_api_key="test-key", database_url=database_url)
+    )
+    first.usage_log.record("openai:gpt-5", input_tokens=7, output_tokens=5)
+    await first.aclose()
+
+    second = await create_container(
+        AgentConfig(router_api_key="test-key", database_url=database_url)
+    )
+    assert second.usage_log.count_since("openai:gpt-5", 60, now=time.time()) == 1.0
+    await second.aclose()
 
 
 async def test_sqlite_backend_quota_tracker_write_then_read_back() -> None:

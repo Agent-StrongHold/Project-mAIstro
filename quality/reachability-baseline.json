@@ -130,7 +130,6 @@
     "maistro.quota.ambient",
     "maistro.quota.reconciliation",
     "maistro.quota.recorder",
-    "maistro.quota.sqlite_usage_log",
     "maistro.quota.verifiers",
     "maistro.quota.verifiers.mistral",
     "maistro.quota.verifiers.openrouter",

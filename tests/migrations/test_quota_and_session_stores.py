@@ -182,7 +182,7 @@ async def pool(migrated_url):
 
     pool = await asyncpg.create_pool(migrated_url, min_size=1, max_size=8)
     try:
-        await pool.execute("TRUNCATE quota_usage, sessions")
+        await pool.execute("TRUNCATE quota_usage_events, quota_usage, sessions")
         yield pool
     finally:
         await pool.close()

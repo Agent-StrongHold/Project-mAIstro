@@ -238,7 +238,7 @@ class RsiCycle:
         usage_in = int(getattr(llm_call, "usage_input", 0) or 0)
         usage_out = int(getattr(llm_call, "usage_output", 0) or 0)
         if model and (usage_in or usage_out):
-            await self._scheduler.record_attempt(model, usage_in, usage_out)
+            await self._scheduler.record_attempt(model, usage_in, usage_out, event_id=run_id)
 
         result = RsiCycleResult(
             run_id=run_id,

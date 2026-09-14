@@ -133,6 +133,26 @@ async def test_usage_accumulates_across_calls(quota_tracker: Any) -> None:
     assert row["request_count"] == 2
 
 
+async def test_retrying_one_event_does_not_double_count(quota_tracker: Any) -> None:
+    await quota_tracker.record_usage(
+        provider="anthropic",
+        billing_cycle="monthly",
+        input_tokens=7,
+        output_tokens=5,
+        event_id="invocation-1",
+    )
+    row = await quota_tracker.record_usage(
+        provider="anthropic",
+        billing_cycle="monthly",
+        input_tokens=7,
+        output_tokens=5,
+        event_id="invocation-1",
+    )
+
+    assert row["total_tokens"] == 12
+    assert row["request_count"] == 1
+
+
 async def test_providers_are_tracked_separately(quota_tracker: Any) -> None:
     await quota_tracker.record_usage(
         provider="anthropic", billing_cycle="monthly", input_tokens=10, output_tokens=0
