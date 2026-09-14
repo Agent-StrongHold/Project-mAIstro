@@ -117,6 +117,8 @@ class HybridLearningStore:
         user_text: str,
         *,
         agent_id: str | None = None,
+        user_id: str | None = None,
+        team_id: str | None = None,
         org_id: str = "",
         max_results: int = 10,
     ) -> list[Learning]:
@@ -131,6 +133,8 @@ class HybridLearningStore:
         keyword_results = await self._store.find_relevant(
             user_text,
             agent_id=agent_id,
+            user_id=user_id,
+            team_id=team_id,
             org_id=org_id,
             max_results=max_results * 2,
         )
