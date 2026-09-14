@@ -1212,11 +1212,11 @@ class TestFailedCycleIsAudited:
         assert report.evidence.tests_passed is False
 
         entries = [json.loads(line) for line in audit.path.read_text().splitlines() if line]
-        assert len(entries) == 1
-        assert entries[0]["outcome"] == "failed"
-        assert entries[0]["hypothesis"] == "a doomed hypothesis"
-        assert entries[0]["error_type"] == "ApplyPatchError"
-        assert "opencode exited 1" in entries[0]["error"]
+        failures = [entry for entry in entries if entry.get("outcome") == "failed"]
+        assert len(failures) == 1
+        assert failures[0]["hypothesis"] == "a doomed hypothesis"
+        assert failures[0]["error_type"] == "ApplyPatchError"
+        assert "opencode exited 1" in failures[0]["error"]
 
     @pytest.mark.asyncio
     async def test_completed_cycles_are_labelled_too(self, tmp_path, monkeypatch):
@@ -1236,9 +1236,10 @@ class TestFailedCycleIsAudited:
         executor = build_executor(_config(available_models=["m"]), audit=audit)
         await executor(_context())
 
-        entry = json.loads(audit.path.read_text().splitlines()[0])
-        assert entry["outcome"] == "completed"
-        assert entry["run_id"] == "run1"
+        entries = [json.loads(line) for line in audit.path.read_text().splitlines() if line]
+        completed = [entry for entry in entries if entry.get("outcome") == "completed"]
+        assert len(completed) == 1
+        assert completed[0]["run_id"] == "run1"
 
 
 class TestFrontierExhaustedIsTyped:

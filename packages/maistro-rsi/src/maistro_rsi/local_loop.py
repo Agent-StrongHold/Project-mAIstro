@@ -55,6 +55,7 @@ from maistro_rsi.contained_validation import (
 from maistro_rsi.harvest_boundary import (
     HarvestCorrelation,
     HarvestInputRefused,
+    JsonlAuditSink,
     WardenGuardedCallable,
     WardenHarvestBoundary,
 )
@@ -651,6 +652,7 @@ def make_builders_apply_patch(
     max_agent_turns: int = 6,
     isolation: str = "local",
     image: str = "maistro-builders:latest",
+    source_repository: str | None = None,
 ) -> ApplyPatchFn:
     """Build an `ApplyPatchFn` that drives the native builders agent loop.
 
@@ -701,8 +703,10 @@ def make_builders_apply_patch(
             Warden(),
             correlation=HarvestCorrelation(
                 workspace_id=workspace,
+                source_repository=source_repository,
                 candidate_id=effective_model,
             ),
+            audit_sink=JsonlAuditSink(str(Path(workspace).parent / "rsi-warden-audit.jsonl")),
         )
         system_content = system_prompt or config.system_prompt
         system_admission = await boundary.scan({"system_prompt": system_content})
@@ -933,6 +937,8 @@ class LocalRsiConfig:
     # an isolated run without exposing them to the agent.
     report_every: int = 0
     report_dir: str | None = None
+    # Durable Warden admission evidence for standalone RSI runs.
+    audit_path: str | None = None
 
 
 @dataclass
@@ -1147,6 +1153,9 @@ class LocalRsiLoop:
         self._config = config
         self._injected_apply = apply_patch
         self._baseline = Path(config.work_root) / "baseline"
+        self._warden_audit_sink = JsonlAuditSink(
+            config.audit_path or str(Path(config.work_root) / "rsi-warden-audit.jsonl")
+        )
         self._baseline_cov: float | None = None  # cached; invalidated on promote
         # Protected test inventory of the current baseline (#306): cached the
         # same way as coverage — collection only (cheap), invalidated on
@@ -1383,6 +1392,7 @@ class LocalRsiLoop:
                 llm,
                 spec_gaps=self._spec_gaps_text(),
                 max_items=3,
+                audit_sink=self._warden_audit_sink,
             )
             if items:
                 scout_used = model
@@ -1591,6 +1601,7 @@ class LocalRsiLoop:
             max_agent_turns=turns,
             isolation=self._config.isolation,
             image=self._config.sandbox_image,
+            source_repository=self._config.repo_path,
         )
 
     def _changed_files(self, cwd: Path) -> list[str]:
@@ -1619,6 +1630,16 @@ class LocalRsiLoop:
             export_dir=str(export_dir),
         )
         applied = 0
+        boundary = WardenHarvestBoundary(
+            Warden(),
+            correlation=HarvestCorrelation(
+                workspace_id=str(self._baseline),
+                source_repository=self._config.repo_path,
+                source_base=self._start_ref,
+                campaign_id=self._config.baseline_branch,
+            ),
+            audit_sink=self._warden_audit_sink,
+        )
         for patch_file in patches:
             # Plain `git apply` (NOT --reject) is ATOMIC: a patch that doesn't
             # apply cleanly writes NOTHING and leaves the tree untouched. This is
@@ -1627,13 +1648,26 @@ class LocalRsiLoop:
             # partial changes + `.rej` files would then be swept into the resume
             # commit below and poison the baseline. It stays idempotent, too:
             # an already-applied patch simply fails cleanly and is skipped.
-            result = _git(
-                self._baseline,
-                "apply",
-                str(patch_file),
-                check=False,
+            try:
+                patch_bytes = patch_file.read_bytes()
+                patch_text = patch_bytes.decode("utf-8", errors="replace")
+            except OSError:
+                logger.warning("rsi_local_patch_read_failed", patch=patch_file.name)
+                continue
+            admission = boundary.scan_sync(
+                {"patch_file": patch_file.name, "patch": patch_text}, allow_thread=True
             )
-            if result.returncode == 0:
+            if not admission.admitted:
+                logger.warning(
+                    "rsi_local_patch_warden_refused",
+                    patch=patch_file.name,
+                    outcome=admission.outcome,
+                )
+                continue
+            # Apply the exact bytes that were admitted, avoiding a read/check/use
+            # race on the export directory and preserving git apply atomicity.
+            result = _git_apply(self._baseline, patch_text)
+            if result:
                 applied += 1
                 logger.info("rsi_local_patch_applied", patch=patch_file.name)
             else:
@@ -2089,6 +2123,7 @@ class LocalRsiLoop:
                 source_repository=self._config.repo_path,
                 candidate_id=self._config.scout_model or self._config.model,
             ),
+            audit_sink=self._warden_audit_sink,
         )
 
         async def llm(prompt: str) -> str:
@@ -2284,7 +2319,9 @@ class LocalRsiLoop:
             from maistro_bootstrap.builders.responses_callable import ResponsesAPICallable
 
             llm = ResponsesAPICallable(model=self._config.scout_model or self._config.model)
-            verdict = judge_regression_verdict(diff_text, target, llm)
+            verdict = judge_regression_verdict(
+                diff_text, target, llm, audit_sink=self._warden_audit_sink
+            )
         except Exception:
             verdict = JudgeVerdict(
                 status="unavailable",

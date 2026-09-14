@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import pytest
 
+from maistro.events import InMemoryEventStore
 from maistro.security._types import WardenVerdict
 from maistro.security.warden.detector import Warden
 from maistro_rsi.harvest_boundary import (
     HarvestCorrelation,
+    JsonlAuditSink,
     WardenGuardedCallable,
     WardenHarvestBoundary,
     serialize_harvest_input,
@@ -122,6 +124,45 @@ async def test_missing_warden_policy_fails_closed_and_records_truthful_outcome()
     assert "clean-looking text" not in str(records[0])
     assert records[0]["policy_version"] == "warden-rsi-harvest-v1"
     assert records[0]["run_id"] == "run-1"
+
+
+@pytest.mark.asyncio
+async def test_canonical_event_store_sink_persists_correlated_admission() -> None:
+    store = InMemoryEventStore()
+    boundary = WardenHarvestBoundary(
+        StubWarden(),
+        correlation=HarvestCorrelation(
+            workspace_id="workspace-1", project_id="project-1", run_id="run-1"
+        ),
+        event_store=store,
+    )
+
+    result = await boundary.scan({"path": "src/example.py"})
+
+    assert result.admitted is True
+    events = await store.list_stream("workspace:workspace-1")
+    assert len(events) == 1
+    assert events[0].type == "rsi.harvest.warden_admission"
+    assert events[0].workspace_id == "workspace-1"
+    assert events[0].project_id == "project-1"
+    assert events[0].run_id == "run-1"
+    assert events[0].payload["content_digest"] == result.digest
+
+
+@pytest.mark.asyncio
+async def test_jsonl_sink_persists_admission_without_content(tmp_path) -> None:
+    path = tmp_path / "warden.jsonl"
+    boundary = WardenHarvestBoundary(
+        StubWarden(),
+        correlation=HarvestCorrelation(run_id="run-1"),
+        audit_sink=JsonlAuditSink(path),
+    )
+
+    await boundary.scan({"review": "clean text", "secret": "must not be recorded"})
+
+    record = path.read_text(encoding="utf-8").strip()
+    assert '"run_id": "run-1"' in record
+    assert "must not be recorded" not in record
 
 
 @pytest.mark.asyncio

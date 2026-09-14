@@ -193,7 +193,9 @@ _MAX_CONSECUTIVE_FALLBACKS = 3
 
 
 def make_llm_proposer(
-    model: str | None = None, prior_learnings: Sequence[str] = ()
+    model: str | None = None,
+    prior_learnings: Sequence[str] = (),
+    audit_sink: Callable[[dict[str, object]], object] | None = None,
 ) -> HypothesisProposer:
     """An LLM-backed proposer over the connected LiteLLM instance.
 
@@ -204,7 +206,7 @@ def make_llm_proposer(
     the run instead of funding it.
     """
     consecutive_fallbacks = 0
-    proposal_boundary = WardenHarvestBoundary(Warden())
+    proposal_boundary = WardenHarvestBoundary(Warden(), audit_sink=audit_sink)
 
     def _propose(context: HtrContext) -> str:
         nonlocal consecutive_fallbacks
@@ -315,6 +317,13 @@ class AuditLog:
             "depth": context.node.depth,
             "hypothesis": context.node.hypothesis,
         }
+
+    def record_security_event(self, record: dict[str, object]) -> None:
+        """Persist a Warden decision in the run's append-only audit trail."""
+        event_type = (
+            "security.violation" if not record.get("admitted") else "rsi.harvest.warden_admission"
+        )
+        self._append({"event_type": event_type, **record})
 
     def record_failure(self, context: HtrContext, error: BaseException) -> None:
         """Record an experiment that never produced an ``RsiCycleResult``.
@@ -529,9 +538,15 @@ def build_executor(
     async def _quarantine_check(diff: str, touched_paths: list[str]) -> QuarantineVerdict:
         return await quarantine_scan(diff, touched_paths, active_warden)
 
+    audit_sink = (
+        getattr(audit, "record_security_event", None)
+        if getattr(audit, "path", None) is not None
+        else None
+    )
     prompt_boundary = WardenHarvestBoundary(
         active_warden,
         correlation=HarvestCorrelation(source_repository=config.repo_url),
+        audit_sink=audit_sink,
     )
 
     async def _execute(context: HtrContext) -> ExecutionReport:
@@ -706,12 +721,19 @@ async def run_autonomous(
     # ledger file sits on disk between runs, and an entry tampered with after
     # append (or written by an older version that never scanned) would
     # otherwise ride straight into this run's prompts.
+    active_audit = audit or AuditLog(Path(config.workspace_root) / f"autorun-{run_id}.jsonl")
+    audit_sink = (
+        getattr(active_audit, "record_security_event", None)
+        if getattr(active_audit, "path", None) is not None
+        else None
+    )
     ledger_boundary = WardenHarvestBoundary(
         Warden(),
         correlation=HarvestCorrelation(
             campaign_id=run_id,
             source_repository=config.repo_url,
         ),
+        audit_sink=audit_sink,
     )
     prior_learnings: list[str] = []
     for insight in active_ledger.recall(config.recall_top_k, repo_url=config.repo_url):
@@ -725,11 +747,14 @@ async def run_autonomous(
                 flags=list(admission.verdict.flags) if admission.verdict else [],
             )
 
-    active_audit = audit or AuditLog(Path(config.workspace_root) / f"autorun-{run_id}.jsonl")
     active_executor = executor or build_executor(
         config, audit=active_audit, prior_learnings=prior_learnings
     )
-    active_proposer = proposer or make_llm_proposer(config.model, prior_learnings=prior_learnings)
+    active_proposer = proposer or make_llm_proposer(
+        config.model,
+        prior_learnings=prior_learnings,
+        audit_sink=audit_sink,
+    )
 
     tree = _load_or_create_tree(config, tree_path)
 

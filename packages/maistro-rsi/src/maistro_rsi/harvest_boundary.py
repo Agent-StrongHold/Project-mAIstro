@@ -18,9 +18,11 @@ import hashlib
 import inspect
 import json
 import logging
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, fields, is_dataclass
+from pathlib import Path
 from typing import Any, Literal, cast
 from urllib.parse import urlsplit, urlunsplit
 
@@ -37,6 +39,61 @@ HARVEST_BOUNDARY = "rsi_harvest_input"
 
 AdmissionOutcome = Literal["admitted", "blocked", "warden_unavailable", "audit_unavailable"]
 AuditSink = Callable[[dict[str, object]], object]
+
+
+class JsonlAuditSink:
+    """Small durable adapter for standalone RSI composition roots.
+
+    The canonical application can supply ``event_store_audit_sink`` instead;
+    standalone RSI runs have no application event store, so they must still
+    persist admission evidence rather than relying on process logs.
+    """
+
+    def __init__(self, path: str | Path) -> None:
+        self._path = Path(path)
+        self._lock = threading.Lock()
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+
+    def __call__(self, record: dict[str, object]) -> None:
+        line = json.dumps(record, ensure_ascii=True, sort_keys=True) + "\n"
+        with self._lock, self._path.open("a", encoding="utf-8") as handle:
+            handle.write(line)
+            handle.flush()
+
+
+def event_store_audit_sink(event_store: Any) -> AuditSink:
+    """Adapt the canonical EventStore without creating a second event authority."""
+
+    async def record(admission: dict[str, object]) -> None:
+        from maistro.events import EventEnvelope
+
+        workspace_id = str(admission.get("workspace_id") or "")
+        stream_scope = (
+            ""
+            if workspace_id
+            else (f"rsi:{admission.get('campaign_id') or admission.get('run_id') or 'harvest'}")
+        )
+        correlation = str(admission.get("run_id") or admission.get("campaign_id") or "")
+        event_type = (
+            "security.violation"
+            if not admission.get("admitted")
+            else str(admission.get("event") or "rsi.harvest.warden_admission")
+        )
+        await event_store.append(
+            EventEnvelope(
+                type=event_type,
+                payload=dict(admission),
+                workspace_id=workspace_id,
+                stream_scope=stream_scope,
+                project_id=str(admission.get("project_id") or ""),
+                run_id=str(admission.get("run_id") or ""),
+                attempt_id=str(admission.get("attempt_id") or ""),
+                correlation_id=correlation,
+                source="maistro_rsi.harvest_boundary",
+            )
+        )
+
+    return record
 
 
 @dataclass(frozen=True)
@@ -166,11 +223,16 @@ class WardenHarvestBoundary:
         *,
         correlation: HarvestCorrelation | None = None,
         audit_sink: AuditSink | None = None,
+        event_store: Any | None = None,
         policy_version: str = WARDEN_POLICY_VERSION,
     ) -> None:
+        if audit_sink is not None and event_store is not None:
+            raise ValueError("provide audit_sink or event_store, not both")
         self._warden = Warden() if warden is _UNSET_WARDEN else cast(Warden | None, warden)
         self._correlation = correlation or HarvestCorrelation()
-        self._audit_sink = audit_sink
+        self._audit_sink = audit_sink or (
+            event_store_audit_sink(event_store) if event_store is not None else None
+        )
         self._policy_version = policy_version
 
     async def scan(self, value: Any) -> HarvestAdmission:
@@ -337,8 +399,10 @@ __all__ = [
     "HarvestAdmission",
     "HarvestCorrelation",
     "HarvestInputRefused",
+    "JsonlAuditSink",
     "WardenGuardedCallable",
     "WardenHarvestBoundary",
+    "event_store_audit_sink",
     "guarded_async_call",
     "serialize_harvest_input",
 ]

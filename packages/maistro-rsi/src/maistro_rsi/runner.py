@@ -28,7 +28,13 @@ from maistro_evolve.tournament import EloTournament, GenomeBattle
 from maistro_evolve.types import EvalResult, PipelineGenome
 from maistro_rsi.benchmarks import RSI_BENCHMARKS
 from maistro_rsi.gateway import LlmCall, make_gateway_llm_call
-from maistro_rsi.harvest_boundary import HarvestCorrelation
+from maistro_rsi.harvest_boundary import (
+    HarvestCorrelation,
+    JsonlAuditSink,
+    Warden,
+    WardenHarvestBoundary,
+    guarded_async_call,
+)
 from maistro_rsi.protocols import ApplyPatchFn, MicroVmSandbox, WorkspaceProbeFn
 from maistro_rsi.quota_burn import QuotaBurnScheduler
 from maistro_rsi.sandbox.microvm import create_rsi_sandbox
@@ -99,6 +105,9 @@ class RsiCycleConfig:
     # measured battles replace the stock genome benchmarks — the tournament
     # then scores what the patch actually did to the checkout.
     benchmark_commands: dict[str, str] = field(default_factory=dict)
+    # Durable Warden admission evidence for standalone RSI runs. Application
+    # composition roots may instead pass an EventStore-backed sink.
+    audit_path: str | None = None
 
 
 @dataclass
@@ -186,16 +195,48 @@ class RsiCycle:
         # headroom) actually drive the eval instead of being decorative. If no
         # model is available, leave it None and the benchmarks score
         # heuristically (loudly non-real).
+        audit_sink = JsonlAuditSink(
+            self._config.audit_path
+            or str(_Path(self._config.workspace_root) / "rsi-warden-audit.jsonl")
+        )
         llm_call = self._llm_call
         if llm_call is None and model:
             llm_call = make_gateway_llm_call(
                 model,
                 correlation=HarvestCorrelation(
+                    workspace_id=workspace,
                     run_id=run_id,
                     source_repository=self._config.repo_url,
+                    source_base=self._config.base_branch,
                     candidate_id=model,
                 ),
+                audit_sink=audit_sink,
             )
+        elif llm_call is not None:
+            # The constructor is an injection seam used by production adapters
+            # and tests alike. Do not let it bypass the harvest boundary.
+            boundary = WardenHarvestBoundary(
+                Warden(),
+                correlation=HarvestCorrelation(
+                    workspace_id=workspace,
+                    run_id=run_id,
+                    source_repository=self._config.repo_url,
+                    source_base=self._config.base_branch,
+                    candidate_id=model,
+                ),
+                audit_sink=audit_sink,
+            )
+            inner_llm_call = llm_call
+
+            async def guarded_llm_call(messages, **kwargs):
+                result = await guarded_async_call(inner_llm_call, messages, boundary, **kwargs)
+                for attr in ("usage_input", "usage_output"):
+                    setattr(guarded_llm_call, attr, getattr(inner_llm_call, attr, 0))
+                return result
+
+            for attr in ("usage_input", "usage_output"):
+                setattr(guarded_llm_call, attr, getattr(inner_llm_call, attr, 0))
+            llm_call = guarded_llm_call
 
         sandbox = await create_rsi_sandbox(workspace)
         try:

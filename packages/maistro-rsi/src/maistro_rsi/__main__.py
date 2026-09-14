@@ -31,7 +31,7 @@ from maistro_rsi.export_policy import (
     validate_patch,
 )
 from maistro_rsi.free_router import FREE_ROUTER_ALIASES, expand_free_router, make_free_selector
-from maistro_rsi.harvest_boundary import WardenHarvestBoundary
+from maistro_rsi.harvest_boundary import JsonlAuditSink, WardenHarvestBoundary
 from maistro_rsi.local_loop import LocalRsiConfig, LocalRsiLoop
 from maistro_rsi.model_identifiers import (
     MAX_ROSTER_SIZE,
@@ -425,6 +425,7 @@ def _evolve(args: argparse.Namespace) -> int:
         mutator_boundary = WardenHarvestBoundary(
             Warden(),
             correlation=HarvestCorrelation(candidate_id=mutator_model, source_repository=str(repo)),
+            audit_sink=JsonlAuditSink(str(work_root / "rsi-warden-audit.jsonl")),
         )
 
         async def llm_call(prompt: str) -> str:
@@ -547,6 +548,7 @@ def _harvest(args: argparse.Namespace) -> int:  # noqa: C901  clone/repo setup +
             run_id=session,
             source_repository=args.clone_url or args.repo_dir,
         ),
+        audit_sink=JsonlAuditSink(str(export / "warden-audit.jsonl")),
     )
     try:
         manifest_value = json.loads(manifest.read_text(encoding="utf-8"))

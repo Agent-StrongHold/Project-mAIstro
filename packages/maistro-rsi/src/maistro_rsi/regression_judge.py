@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from maistro.security.warden.detector import Warden
-from maistro_rsi.harvest_boundary import WardenHarvestBoundary
+from maistro_rsi.harvest_boundary import AuditSink, WardenHarvestBoundary
 
 LlmCall = Callable[..., dict[str, Any]]
 
@@ -91,6 +91,7 @@ def judge_regression_verdict(
     llm_call: LlmCall,
     *,
     warden_boundary: WardenHarvestBoundary | None = None,
+    audit_sink: AuditSink | None = None,
 ) -> JudgeVerdict:
     """Single-candidate LLM judge of regression risk for an already-passing diff.
 
@@ -114,7 +115,7 @@ def judge_regression_verdict(
         {"role": "system", "content": _SYSTEM},
         {"role": "user", "content": f"Target: {target}\n\nDiff:\n{sliced}"},
     ]
-    boundary = warden_boundary or WardenHarvestBoundary(Warden())
+    boundary = warden_boundary or WardenHarvestBoundary(Warden(), audit_sink=audit_sink)
     # The system rubric is code-owned. Diff and target are harvested material
     # and are admitted separately before the model call.
     admission = boundary.scan_sync({"target": target, "diff": sliced}, allow_thread=True)
