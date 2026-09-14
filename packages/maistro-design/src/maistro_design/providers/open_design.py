@@ -24,12 +24,13 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 import httpx
 
-from maistro.http import get_shared_client
+from maistro.http import shared_client
 from maistro.security.outbound import configure_outbound_policy
 from maistro_design.renderers import RendererDiscovery
 from maistro_design.trust import TrustTier
@@ -74,9 +75,21 @@ class OpenDesignProvider:
         configure_outbound_policy(self.config.base_url)
         # Injectable for tests (httpx.MockTransport); production uses the pooled,
         # guarded client seam so both health and render calls share the policy.
-        self._client_factory = client_factory or (
-            lambda: get_shared_client(timeout=self.config.timeout)
-        )
+        self._client_factory = client_factory
+
+    @asynccontextmanager
+    async def _client(self) -> AsyncIterator[httpx.AsyncClient]:
+        """Borrow the pool without closing it; close injected test clients."""
+        if self._client_factory is None:
+            async with shared_client(timeout=self.config.timeout) as client:
+                yield client
+            return
+
+        client = self._client_factory()
+        try:
+            yield client
+        finally:
+            await client.aclose()
 
     @property
     def _auth(self) -> dict[str, str]:
@@ -86,7 +99,7 @@ class OpenDesignProvider:
         if not self.config.enabled:
             return RendererDiscovery.down()
         try:
-            async with self._client_factory() as client:
+            async with self._client() as client:
                 resp = await client.get(
                     f"{self.config.base_url}/api/health",
                     headers=self._auth,
@@ -107,7 +120,7 @@ class OpenDesignProvider:
 
         Raises ``httpx.HTTPStatusError`` / transport errors on failure — the substrate
         circuit-breaks the provider on that (failure is not silent)."""
-        async with self._client_factory() as client:
+        async with self._client() as client:
             resp = await client.post(
                 f"{self.config.base_url}/api/chat",
                 headers=self._auth,
