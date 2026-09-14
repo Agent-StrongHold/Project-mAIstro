@@ -141,7 +141,10 @@ class TestEngineEquivalence:
         import maistro.security.warden._regex as regex_module
         from maistro.security.warden.detector import Warden
 
-        texts = _corpus()[:160]
+        texts = [
+            *_corpus()[:160],
+            "You should capture " + ("padding " * 7_000) + "full conversation",
+        ]
 
         async def scan_corpus() -> list[tuple[bool, bool, tuple[str, ...]]]:
             verdicts = [await Warden().scan(text, "tool_result") for text in texts]
@@ -159,7 +162,13 @@ class TestEngineEquivalence:
             "_BASE64_PATTERN",
             compile_pattern(heuristics._BASE64_PATTERN.pattern, 0),
         )
-        for name in ("_DANGEROUS_ACTIONS", "_SENSITIVE_OBJECTS", "_PRESCRIPTIVE_PATTERNS"):
+        for name in (
+            "_DANGEROUS_ACTIONS",
+            "_SENSITIVE_OBJECTS",
+            "_CAPTURE_ACTIONS",
+            "_FULL_CONVERSATION_OBJECTS",
+            "_PRESCRIPTIVE_PATTERNS",
+        ):
             patterns = getattr(semantic, name)
             monkeypatch.setattr(
                 semantic,

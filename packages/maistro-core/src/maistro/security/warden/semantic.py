@@ -38,8 +38,6 @@ _DANGEROUS_ACTIONS: list[PatternLike] = [
         r"allow\s+all\s+(?:egress|ingress|traffic|access)",
         r"(?:suppress|silently\s+remov|automatically\s+suppress)",
         r"default\s+to\s+(?:enabl|allow|open|permissive)",
-        r"(?:capture|export|include).*(?:full|complete|entire)\s+"
-        r"(?:conversation|history|body|request|response|content|record)",
         r"\.npmrc|\.env\b|\.aws|\.ssh",
         r"(?:do\s+not\s+flag|do\s+not\s+modify|do\s+not\s+restrict)",
     ]
@@ -65,6 +63,20 @@ _SENSITIVE_OBJECTS: list[PatternLike] = [
     ]
 ]
 
+# Keep the capture/full-conversation relationship bounded. The old single
+# pattern used ``.*`` and both made an unbounded fallback search and lost the
+# signal when a padded payload crossed Warden's scan-window boundary.
+_CAPTURE_ACTIONS: list[PatternLike] = [
+    compile_pattern(r"\b(?:capture|export|include)\b", re.IGNORECASE),
+]
+_FULL_CONVERSATION_OBJECTS: list[PatternLike] = [
+    compile_pattern(
+        r"\b(?:full|complete|entire)\s+(?:conversation|history|body|request|response|content|record)\b",
+        re.IGNORECASE,
+    ),
+]
+
+
 _PRESCRIPTIVE_PATTERNS: list[PatternLike] = [
     compile_pattern(p, re.IGNORECASE)
     for p in [
@@ -80,11 +92,22 @@ _PRESCRIPTIVE_PATTERNS: list[PatternLike] = [
 ]
 
 
+def semantic_tool_poisoning_capture_signals(text: str) -> tuple[bool, bool]:
+    """Return bounded signals for a capture of a complete conversation."""
+    text_lower = text.lower()
+    return (
+        any(p.search(text_lower) for p in _CAPTURE_ACTIONS),
+        any(p.search(text_lower) for p in _FULL_CONVERSATION_OBJECTS),
+    )
+
+
 def semantic_tool_poisoning_signals(text: str) -> tuple[bool, bool, bool]:
     """Return the three independent signals used by the semantic verdict."""
     text_lower = text.lower()
+    capture_action, full_conversation = semantic_tool_poisoning_capture_signals(text)
     return (
-        any(p.search(text_lower) for p in _DANGEROUS_ACTIONS),
+        any(p.search(text_lower) for p in _DANGEROUS_ACTIONS)
+        or (capture_action and full_conversation),
         any(p.search(text_lower) for p in _SENSITIVE_OBJECTS),
         any(p.search(text_lower) for p in _PRESCRIPTIVE_PATTERNS),
     )

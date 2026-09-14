@@ -18,7 +18,10 @@ from maistro.security._types import WardenVerdict
 from maistro.security.normalize import normalize_for_detection
 from maistro.security.warden.heuristics import heuristic_scan
 from maistro.security.warden.patterns import REJECT_PATTERNS
-from maistro.security.warden.semantic import semantic_tool_poisoning_signals
+from maistro.security.warden.semantic import (
+    semantic_tool_poisoning_capture_signals,
+    semantic_tool_poisoning_signals,
+)
 
 if TYPE_CHECKING:
     import regex
@@ -103,15 +106,27 @@ def _scan_semantic_windowed(content: str) -> tuple[bool, list[str]]:
     has_actions = False
     has_objects = False
     has_prescriptive = False
+    has_capture_action = False
+    has_full_conversation = False
     for window in _windows(content):
         window_actions, window_objects, window_prescriptive = semantic_tool_poisoning_signals(
+            window
+        )
+        window_capture_action, window_full_conversation = semantic_tool_poisoning_capture_signals(
             window
         )
         has_actions = has_actions or window_actions
         has_objects = has_objects or window_objects
         has_prescriptive = has_prescriptive or window_prescriptive
+        has_capture_action = has_capture_action or window_capture_action
+        has_full_conversation = has_full_conversation or window_full_conversation
         if has_actions and has_objects and has_prescriptive:
             break
+
+    # The action and target may be in different bounded windows. This is the
+    # streaming equivalent of the old ``capture.*full conversation`` rule;
+    # no regex call ever sees the attacker-controlled padding between them.
+    has_actions = has_actions or (has_capture_action and has_full_conversation)
 
     flags: list[str] = []
     if has_prescriptive and has_actions:
