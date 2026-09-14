@@ -96,7 +96,7 @@ class HarnessSessionManager:
         return SafeHarnessRunner(provider, warden=self._warden, gate=self._gate(session_id))
 
     async def _resolve_binding(self, binding: Binding) -> Binding | Unavailable:
-        """Resolve the live Binding before policy/provider admission."""
+        """Resolve the live Binding during policy/provider admission."""
         if self._binding_store is None:
             return binding
         try:
@@ -116,10 +116,12 @@ class HarnessSessionManager:
     async def start(self, agent_spec: AgentSpec, *, workdir: str) -> str | Unavailable:
         """Resolve + start a safety-wrapped harness session, or ``Unavailable``."""
         if self._invocation_service is not None and self._invocation_binding is not None:
-            authorized = await self._resolve_binding(self._invocation_binding)
-            if isinstance(authorized, Unavailable):
-                return authorized
-            return await self._start_invocation(agent_spec, workdir=workdir, binding=authorized)
+            # Binding resolution belongs inside Invocation admission. Keeping
+            # this check out of the caller ensures a revoked Binding still
+            # produces the canonical policy/audit decision before refusal.
+            return await self._start_invocation(
+                agent_spec, workdir=workdir, binding=self._invocation_binding
+            )
         provider = await self._registry.resolve(SLOT_NAME)
         if not isinstance(provider, HarnessRunner):
             return Unavailable(slot=SLOT_NAME, reason="no active harness_runner provider")
@@ -176,13 +178,10 @@ class HarnessSessionManager:
         self, session_id: str, messages: list[dict[str, Any]]
     ) -> dict[str, Any] | Unavailable:
         if self._invocation_service is not None and self._invocation_binding is not None:
-            authorized = await self._resolve_binding(self._invocation_binding)
-            if isinstance(authorized, Unavailable):
-                return authorized
             return await self.send_invocation(
                 session_id,
                 messages,
-                binding=authorized,
+                binding=self._invocation_binding,
                 run_id=f"harness:{session_id}",
                 node_run_id=session_id,
                 attempt_id=uuid4().hex,
@@ -309,11 +308,64 @@ class HarnessSessionManager:
             raise EffectNotApplied("Warden blocked harness input before dispatch") from exc
 
     async def stream(self, session_id: str) -> AsyncIterator[dict[str, Any]]:
+        if self._invocation_service is not None and self._invocation_binding is not None:
+            events = await self._stream_invocation(session_id)
+            if isinstance(events, Unavailable):
+                return
+            for event in events:
+                yield event
+            return
+
         safe = await self._safe_for_session(session_id)
         if isinstance(safe, Unavailable):
             return
         async for event in safe.stream(session_id):
             yield event
+
+    async def _stream_invocation(self, session_id: str) -> list[dict[str, Any]] | Unavailable:
+        """Admit and fully consume one provider stream through Invocation.
+
+        Invocation owns the provider-call lifecycle, so the stream is buffered
+        before it is exposed. This preserves the async-generator API without
+        allowing provider work to begin after policy or Binding admission.
+        """
+        service = self._invocation_service
+        binding = self._invocation_binding
+        assert service is not None and binding is not None
+        if self._sessions.get(session_id) is None:
+            return Unavailable(slot=SLOT_NAME, reason=f"unknown harness session: {session_id}")
+
+        async def resolver(candidate: Binding) -> SafeHarnessRunner | Unavailable:
+            return await self._resolve_invocation_provider(session_id, candidate)
+
+        async def executor(
+            provider: ResolvedCapabilityProvider, _request: Any
+        ) -> list[dict[str, Any]]:
+            if not isinstance(provider, SafeHarnessRunner):
+                raise TypeError("harness Invocation must execute through SafeHarnessRunner")
+            events: list[dict[str, Any]] = []
+            async for event in provider.stream(session_id):
+                if not isinstance(event, dict):
+                    raise TypeError("harness stream events must be mappings")
+                events.append(event)
+            return events
+
+        try:
+            invocation = await service.invoke(
+                binding=binding,
+                run_id=f"harness:{session_id}",
+                node_run_id=session_id,
+                attempt_id=uuid4().hex,
+                effect_key=f"harness:stream:{session_id}:{uuid4().hex}",
+                request={"session_id": session_id},
+                resolver=resolver,
+                executor=executor,
+            )
+        except (CapabilityUnavailable, InvocationDenied) as exc:
+            return Unavailable(slot=SLOT_NAME, reason=str(exc))
+        if not isinstance(invocation.result, list):
+            raise TypeError("harness stream Invocation result must be an event list")
+        return invocation.result
 
     async def stop(self, session_id: str) -> Unavailable | None:
         if self._invocation_service is not None and self._invocation_binding is not None:
@@ -328,9 +380,6 @@ class HarnessSessionManager:
         binding = self._invocation_binding
         service = self._invocation_service
         assert binding is not None and service is not None
-        authorized = await self._resolve_binding(binding)
-        if isinstance(authorized, Unavailable):
-            return authorized
         if self._sessions.get(session_id) is None:
             return Unavailable(slot=SLOT_NAME, reason=f"unknown harness session: {session_id}")
 
@@ -344,7 +393,7 @@ class HarnessSessionManager:
 
         try:
             await service.invoke(
-                binding=authorized,
+                binding=binding,
                 run_id=f"harness:{session_id}",
                 node_run_id=session_id,
                 attempt_id=uuid4().hex,

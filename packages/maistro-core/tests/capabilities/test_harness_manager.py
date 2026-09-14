@@ -9,6 +9,7 @@ import pytest
 
 from maistro.agents.spec.agent_spec import AgentRole, AgentSpec
 from maistro.capabilities.binding import Binding
+from maistro.capabilities.binding_store import InMemoryBindingStore
 from maistro.capabilities.bootstrap import default_capability_registry
 from maistro.capabilities.governed_invocation import GovernedInvocationExecutionService
 from maistro.capabilities.harness_manager import HarnessSessionManager
@@ -45,6 +46,7 @@ class _FakeHarness:
         self._actions = actions or []
         self.started: list[str] = []
         self.stopped: list[str] = []
+        self.streamed: list[str] = []
         self.sent: list[list[dict[str, Any]]] = []
 
     @property
@@ -77,6 +79,7 @@ class _FakeHarness:
         return {"role": "assistant", "content": "ok", "actions": list(self._actions)}
 
     async def stream(self, session_id: str) -> AsyncIterator[dict[str, Any]]:
+        self.streamed.append(session_id)
         yield {"type": "token", "text": "x"}
 
     async def stop(self, session_id: str) -> None:
@@ -171,6 +174,46 @@ async def test_policy_engine_gates_actions_per_session():
     assert not isinstance(resp, Unavailable)
     tools = [a["tool"] for a in resp["actions"]]
     assert tools == ["ls"]
+
+
+async def test_revoked_binding_after_start_denies_stream_without_provider_call():
+    harness = _FakeHarness()
+    registry = _registry_with(harness)
+    bindings = InMemoryBindingStore()
+    binding = Binding(
+        binding_id="binding-harness-stream",
+        workspace_id="ws-1",
+        project_id="project-1",
+        capability=SLOT_NAME,
+        provider_name="fake",
+    )
+    bindings.register(binding)
+
+    async def allow(_binding: Binding, _request: Any, _context: Any) -> PolicyVerdict:
+        return PolicyVerdict(Decision.ALLOW, reason="within scope", rule="harness-stream")
+
+    governed = GovernedInvocationExecutionService(
+        invocation_service=InvocationExecutionService(store=InMemoryInvocationStore()),
+        event_store=InMemoryEventStore(),
+        policy_evaluator=allow,
+    )
+    mgr = HarnessSessionManager(
+        registry,
+        warden=_StubWarden(),
+        policy=SequencePolicyEngine([]),
+        invocation_service=governed,
+        invocation_binding=binding,
+        binding_store=bindings,
+    )
+
+    sid = await mgr.start(_spec(), workdir="/w")
+    assert isinstance(sid, str)
+    await bindings.revoke(binding.binding_id)
+
+    assert [event async for event in mgr.stream(sid)] == []
+    assert harness.streamed == []
+    events = await governed._events.list_stream("workspace:ws-1")
+    assert events[-1].type == "capability.invocation.policy_decision"
 
 
 async def test_send_invocation_preserves_safety_and_canonical_correlation():

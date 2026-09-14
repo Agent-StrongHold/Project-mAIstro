@@ -17,7 +17,9 @@ from maistro.security._types import WardenVerdict
 class _FakeHarness:
     def __init__(self, *, healthy: bool = True) -> None:
         self._healthy = healthy
+        self.started: list[str] = []
         self.sent: list[list[dict[str, Any]]] = []
+        self.streamed = 0
 
     @property
     def name(self) -> str:
@@ -38,6 +40,7 @@ class _FakeHarness:
         return ProviderHealth(healthy=self._healthy)
 
     async def start_session(self, agent_spec: Any, *, workdir: str) -> str:
+        self.started.append(workdir)
         return "sess-http"
 
     async def send(self, session_id: str, messages: list[dict[str, Any]]) -> dict[str, Any]:
@@ -45,6 +48,7 @@ class _FakeHarness:
         return {"role": "assistant", "content": "pong", "actions": []}
 
     async def stream(self, session_id: str) -> AsyncIterator[dict[str, Any]]:
+        self.streamed += 1
         yield {"type": "token", "text": "hi"}
 
     async def stop(self, session_id: str) -> None:
@@ -69,6 +73,22 @@ def _install_harness(*, warden: Any, healthy: bool = True, enabled: bool = True)
     reg.set_enabled(SLOT_NAME, enabled)
     harness_mod._manager = HarnessSessionManager(reg, warden=warden)
     return reg, harness
+
+
+def _install_shipped_effect_context() -> tuple[Any, Any]:
+    """Give the route factory the same explicit policy seam as production."""
+    from types import SimpleNamespace
+
+    from maistro.capabilities.effect_context import binding_scope_policy, new_effect_context
+
+    engine = get_engine()
+    saved_port = engine._agent_port
+    engine._agent_port = SimpleNamespace(
+        container=SimpleNamespace(
+            capability_effects=new_effect_context(policy_evaluator=binding_scope_policy)
+        )
+    )
+    return engine, saved_port
 
 
 def test_start_returns_503_when_no_active_harness(admin_client):
@@ -125,8 +145,57 @@ def test_disable_after_route_session_start_makes_send_unavailable(admin_client):
     reg.set_enabled(SLOT_NAME, True)
 
 
+def test_shipped_route_without_effect_policy_fails_closed(admin_client):
+    from types import SimpleNamespace
+
+    engine = get_engine()
+    saved_port = engine._agent_port
+    engine._agent_port = SimpleNamespace(container=None)
+    reg = engine.capabilities
+    harness = _FakeHarness()
+    reg.register(harness)
+    reg.activate(SLOT_NAME, "fake")
+    reg.set_enabled(SLOT_NAME, True)
+    harness_mod._manager = None
+    try:
+        r = admin_client.post("/v1/harness/sessions", json={"description": "x"})
+
+        assert r.status_code == 503
+        assert harness.started == []
+    finally:
+        harness_mod._manager = None
+        reg.set_enabled(SLOT_NAME, True)
+        engine._agent_port = saved_port
+
+
+def test_shipped_route_factory_rechecks_disabled_capability_for_stream(admin_client):
+    engine, saved_port = _install_shipped_effect_context()
+    reg = engine.capabilities
+    harness = _FakeHarness()
+    reg.register(harness)
+    reg.activate(SLOT_NAME, "fake")
+    reg.set_enabled(SLOT_NAME, True)
+    harness_mod._manager = None
+    try:
+        r = admin_client.post("/v1/harness/sessions", json={"description": "x"})
+        assert r.status_code == 200, r.text
+        sid = r.json()["session_id"]
+        reg.set_enabled(SLOT_NAME, False)
+
+        r = admin_client.get(f"/v1/harness/sessions/{sid}/stream")
+
+        assert r.status_code == 200
+        assert "hi" not in r.text
+        assert harness.streamed == 0
+    finally:
+        harness_mod._manager = None
+        reg.set_enabled(SLOT_NAME, True)
+        engine._agent_port = saved_port
+
+
 def test_shipped_route_factory_rechecks_revoked_binding(admin_client):
-    reg = get_engine().capabilities
+    engine, saved_port = _install_shipped_effect_context()
+    reg = engine.capabilities
     harness = _FakeHarness()
     reg.register(harness)
     reg.activate(SLOT_NAME, "fake")
@@ -147,11 +216,15 @@ def test_shipped_route_factory_rechecks_revoked_binding(admin_client):
 
         assert r.status_code == 503
         assert harness.sent == []
+        r = admin_client.get(f"/v1/harness/sessions/{sid}/stream")
+        assert r.status_code == 200 and "hi" not in r.text
+        assert harness.streamed == 0
         r = admin_client.delete(f"/v1/harness/sessions/{sid}")
         assert r.status_code == 503
     finally:
         harness_mod._manager = None
         reg.set_enabled(SLOT_NAME, True)
+        engine._agent_port = saved_port
 
 
 def test_send_unknown_session_returns_404(admin_client):

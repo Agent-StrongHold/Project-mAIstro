@@ -25,7 +25,7 @@ from maistro.capabilities.binding import Binding
 from maistro.capabilities.binding_store import InMemoryBindingStore
 from maistro.capabilities.effect_context import new_effect_context
 from maistro.capabilities.slots.harness_runner import HarnessInputBlocked
-from maistro.policy import Action, BudgetRule, Decision, PolicyVerdict, SequencePolicyEngine
+from maistro.policy import BudgetRule, SequencePolicyEngine
 from maistro.security.warden.detector import Warden
 
 router = APIRouter(tags=["harness"])
@@ -43,29 +43,6 @@ def _configured_harness_policy() -> SequencePolicyEngine:
     return SequencePolicyEngine([BudgetRule(dimension="count", limit=0)])
 
 
-def _configured_harness_invocation_policy() -> Any:
-    """Return the bounded policy used to admit route provider calls."""
-    policy = SequencePolicyEngine([BudgetRule(dimension="count", limit=1000)])
-
-    async def evaluate(binding: Binding, request: Any, context: Any) -> PolicyVerdict:
-        del request, context
-        try:
-            return policy.charge(
-                f"harness-route:{binding.binding_id}",
-                Action(kind="harness_invocation"),
-            )
-        except Exception:
-            # Policy dependencies are part of effect admission, never a reason
-            # to grant the route a provider call.
-            return PolicyVerdict(
-                Decision.DENY,
-                reason="harness invocation policy unavailable",
-                rule="harness.fail-closed",
-            )
-
-    return evaluate
-
-
 async def _get_manager() -> HarnessSessionManager:
     """Lazily build a process-wide manager over the engine registry + Warden."""
     global _manager
@@ -74,9 +51,10 @@ async def _get_manager() -> HarnessSessionManager:
         container = getattr(engine.agent_port, "container", None)
         effects = getattr(container, "capability_effects", None)
         if effects is None:
-            effects = new_effect_context(policy_evaluator=_configured_harness_invocation_policy())
-        else:
-            effects = effects.with_policy_evaluator(_configured_harness_invocation_policy())
+            # Stub/degraded engine mode has no policy authority. Keep the route
+            # explicitly available only through a configured effect context;
+            # the context default denies rather than granting the provider call.
+            effects = new_effect_context()
         binding = Binding(
             binding_id="builtin:harness-route",
             workspace_id="default",
