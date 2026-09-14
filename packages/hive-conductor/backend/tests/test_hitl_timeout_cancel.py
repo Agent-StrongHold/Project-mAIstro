@@ -33,13 +33,17 @@ def _paused_node_run(run_id: str) -> NodeRun:
 
 
 def _paused_record(
-    run_id: str, *, deadline: datetime, workspace_id: str = "ws-hitl-settlement"
+    run_id: str,
+    *,
+    deadline: datetime,
+    workspace_id: str = "ws-hitl-settlement",
+    project_id: str = "project-hitl-settlement",
 ) -> Any:
     from maistro.graph.durable_runs.types import DurableRunRecord
 
     graph = Graph(
         workspace_id=workspace_id,
-        project_id="project-hitl-settlement",
+        project_id=project_id,
         name="approval",
         nodes=[Node(node_id="ask", node_type="human.ask_question")],
     )
@@ -93,7 +97,17 @@ def seeded(admin_client: Any) -> Iterator[_Seeded]:
             theme_id="default",
             voice_tone_override=None,
         )
-        await store.create(_paused_record(run_id, deadline=deadline, workspace_id=workspace.id))
+        from services.workspace_authority import canonical_store_for_tests
+
+        root = await canonical_store_for_tests().project_store.root_for_workspace(workspace.id)
+        await store.create(
+            _paused_record(
+                run_id,
+                deadline=deadline,
+                workspace_id=workspace.id,
+                project_id=root.project_id,
+            )
+        )
         created.append(run_id)
 
     yield admin_client, store, _seed

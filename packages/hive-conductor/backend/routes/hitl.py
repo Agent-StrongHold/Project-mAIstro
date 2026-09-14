@@ -29,7 +29,14 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from middleware.auth import resolve_principal
 from pydantic import BaseModel, ConfigDict, Field
-from services.workspace_authority import is_member, list_views_for_user
+from services.hitl_authorization import (
+    HITL_ANSWER,
+    HITL_CANCEL,
+    HitlAuthorizationDenied,
+    authorize_project,
+    authorized_project_ids,
+)
+from services.workspace_authority import list_views_for_user
 
 from maistro.graph.durable_runs import expire_hitl_pauses
 from maistro.runs.model import RunStatus
@@ -85,12 +92,28 @@ def _request_user_id(request: Request) -> str:
     return user_id
 
 
-async def _require_workspace_access(request: Request, workspace_id: str) -> None:
-    if not await is_member(_request_user_id(request), workspace_id):
-        # Do not confirm that an out-of-scope Run exists. This matches the
-        # scoped DAG inspection door: missing and unauthorized ids are one
-        # answer, while membership remains the canonical authorization check.
-        raise HTTPException(status_code=404, detail="run not found")
+async def _require_project_access(
+    request: Request, *, workspace_id: str, project_id: str, permission: str
+) -> None:
+    try:
+        await authorize_project(
+            principal_id=_request_user_id(request),
+            workspace_id=workspace_id,
+            project_id=project_id,
+            permission=permission,
+        )
+    except HitlAuthorizationDenied as exc:
+        # The Run and Project are deliberately indistinguishable from a missing
+        # target. The audit entry below records only the target class, never the
+        # paused payload or the authorization reason.
+        log_audit(
+            "hitl_authorization_denied",
+            _session_principal(request),
+            target=project_id,
+            detail={"target_class": "project", "permission": permission},
+            severity="warning",
+        )
+        raise HTTPException(status_code=404, detail="run not found") from exc
 
 
 def _session_principal(request: Request) -> str:
@@ -156,32 +179,51 @@ async def list_pending_human_work(
     """
     user_id = _request_user_id(request)
 
-    # Workspace membership is the canonical visibility boundary for Run data,
-    # not the coarse `dags.write` route permission. Resolve every Workspace the
-    # principal may see; selecting one default Workspace would hide legitimate
-    # work, while omitting this filter leaks every tenant's paused payload.
+    # Workspace membership alone is not enough to expose a Project's pause
+    # payload. Resolve inspectable Projects from canonical Workspace + Project
+    # authority before asking the durable store for records.
     allowed_workspace_ids = {workspace.id for workspace in await list_views_for_user(user_id)}
     if not allowed_workspace_ids:
+        log_audit(
+            "hitl_authorization_denied",
+            _session_principal(request),
+            target=project_id or "pending",
+            detail={"target_class": "pending", "permission": "hitl.inspect"},
+            severity="warning",
+        )
         return []
 
     store = _store()
     bounded_limit = max(1, min(limit, 200))
     records: list[Any] = []
-    # Ask the durable store to apply Workspace scope before its page limit.
-    # Filtering a globally limited page would let another tenant's backlog
-    # hide this caller's pending work indefinitely.
     for workspace_id in sorted(allowed_workspace_ids):
-        remaining = bounded_limit - len(records)
-        if remaining <= 0:
-            break
-        records.extend(
-            await store.list_by_status(
-                RunStatus.PAUSED,
-                limit=remaining,
-                project_id=project_id,
-                workspace_id=workspace_id,
-            )
+        project_ids = await authorized_project_ids(
+            principal_id=user_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
         )
+        if project_id is not None and not project_ids:
+            log_audit(
+                "hitl_authorization_denied",
+                _session_principal(request),
+                target=project_id,
+                detail={"target_class": "project", "permission": "hitl.inspect"},
+                severity="warning",
+            )
+        for authorized_project_id in project_ids:
+            remaining = bounded_limit - len(records)
+            if remaining <= 0:
+                break
+            records.extend(
+                await store.list_by_status(
+                    RunStatus.PAUSED,
+                    limit=remaining,
+                    project_id=authorized_project_id,
+                    workspace_id=workspace_id,
+                )
+            )
+        if len(records) >= bounded_limit:
+            break
     return [item for record in records for item in _pending_items(record)]
 
 
@@ -202,7 +244,12 @@ async def cancel_human_work(run_id: str, node_id: str, request: Request) -> dict
     record = await store.get(run_id)
     if record is None:
         raise HTTPException(status_code=404, detail="run not found")
-    await _require_workspace_access(request, record.run.workspace_id)
+    await _require_project_access(
+        request,
+        workspace_id=record.run.workspace_id,
+        project_id=record.run.project_id,
+        permission=HITL_CANCEL,
+    )
     try:
         updated = await store.cancel_hitl(run_id, node_id)
     except KeyError as exc:
@@ -245,7 +292,12 @@ async def answer_human_work(
     record = await store.get(run_id)
     if record is None:
         raise HTTPException(status_code=404, detail="run not found")
-    await _require_workspace_access(request, record.run.workspace_id)
+    await _require_project_access(
+        request,
+        workspace_id=record.run.workspace_id,
+        project_id=record.run.project_id,
+        permission=HITL_ANSWER,
+    )
     if record.run.status is not RunStatus.PAUSED:
         raise HTTPException(
             status_code=409, detail=f"run is {record.run.status.value}, not paused on human input"
@@ -263,9 +315,9 @@ async def answer_human_work(
     if verdict["status"] != "clean":
         log_audit(
             "hitl_answer_blocked",
-            "system",
+            _session_principal(request),
             target=run_id,
-            detail={"node_id": node_id, "findings": verdict["findings"]},
+            detail={"target_class": "run", "node_id": node_id, "findings": verdict["findings"]},
         )
         raise HTTPException(
             status_code=422,
