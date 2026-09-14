@@ -436,6 +436,56 @@ async def test_nothing_relevant_is_an_empty_list(learning_store: Any) -> None:
     assert await learning_store.find_relevant("entirely unrelated text") == []
 
 
+async def test_relevant_learnings_apply_org_team_and_user_scope(learning_store: Any) -> None:
+    """Every backend must apply the same three scope axes before ranking."""
+    await learning_store.store(
+        _learning(
+            learning="target",
+            org_id="org-a",
+            team_id="team-a",
+            user_id="user-a",
+            agent_id="agent-a",
+        )
+    )
+    await learning_store.store(
+        _learning(
+            learning="other team",
+            org_id="org-a",
+            team_id="team-b",
+            user_id="user-a",
+            agent_id="agent-a",
+        )
+    )
+    await learning_store.store(
+        _learning(
+            learning="other user",
+            org_id="org-a",
+            team_id="team-a",
+            user_id="user-b",
+            agent_id="agent-a",
+        )
+    )
+    await learning_store.store(
+        _learning(
+            learning="other org",
+            org_id="org-b",
+            team_id="team-a",
+            user_id="user-a",
+            agent_id="agent-a",
+        )
+    )
+
+    found = await learning_store.find_relevant(
+        "please deploy",
+        org_id="org-a",
+        team_id="team-a",
+        user_id="user-a",
+        agent_id="agent-a",
+    )
+
+    assert [item.learning for item in found] == ["target"]
+
+
 async def test_marking_an_outcome_is_accepted(learning_store: Any) -> None:
     """`mark_outcome` writes success/failure counters that the PostgreSQL table
     did not have columns for."""

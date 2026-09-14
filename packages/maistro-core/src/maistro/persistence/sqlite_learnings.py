@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 from typing import TYPE_CHECKING, Any
 
@@ -10,6 +11,7 @@ from maistro.persistence.learning_contract import (
     LEARNING_GENERATED_FIELDS,
     LEARNING_PERSISTED_FIELDS,
 )
+from maistro.persistence.learning_scope import learning_scope_predicate
 from maistro.sqlite_schema import serialized_schema_upgrade
 from maistro.types.memory import Learning, MemoryScope
 
@@ -122,6 +124,13 @@ class SqliteLearningStore:
             await self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_learnings_scope ON learnings (org_id, agent_id, status)"
             )
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_learnings_scope ON learnings (org_id, agent_id, status)"
+            )
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_learnings_scope_axes "
+                "ON learnings (org_id, team_id, user_id, agent_id, status)"
+            )
 
     async def store(self, learning: Learning) -> int:
         """Store a learning, naming the execution that produced it.
@@ -140,8 +149,15 @@ class SqliteLearningStore:
         # insert.
         cursor = await self._conn.execute(
             "SELECT id, trigger_keys FROM learnings "
-            "WHERE tool_name = ? AND org_id = ? AND status = 'active'",
-            (learning.tool_name, learning.org_id or ""),
+            "WHERE tool_name = ? AND org_id = ? AND team_id IS ? "
+            "AND user_id IS ? AND agent_id IS ? AND status = 'active'",
+            (
+                learning.tool_name,
+                learning.org_id or "",
+                learning.team_id or "",
+                learning.user_id,
+                learning.agent_id or "",
+            ),
         )
         existing = await cursor.fetchall()
         new_keys = set(learning.trigger_keys)
@@ -193,40 +209,31 @@ class SqliteLearningStore:
         user_text: str,
         *,
         agent_id: str | None = None,
+        user_id: str | None = None,
+        team_id: str | None = None,
         org_id: str = "",
         max_results: int = 10,
     ) -> list[Learning]:
-        """Find relevant learnings by keyword match, within `org_id`'s scope.
+        """Find relevant learnings by keyword match within the requested scope.
 
-        `org_id` was accepted and ignored: the query was
-        `SELECT * FROM learnings WHERE status = 'active'` with no scope
-        predicate at all, and the results are interpolated into the agent's
-        *system* prompt. Filtering matters here more than in a normal read path
-        because a learning is an instruction, not a datum.
+        The org predicate is always exact, including for an empty `org_id`, so
+        an unscoped caller cannot read another org's instruction. Optional
+        team, user and agent predicates are also exact and are applied in SQL
+        before keyword scoring. This matters because a learning is an
+        instruction interpolated into the agent's *system* prompt, not a datum.
 
-        Org matching is exact: `org_id` matches only rows carrying that same
-        `org_id`, and an empty `org_id` matches only rows that have none. There
-        is deliberately no global bucket. An earlier form of this predicate
-        also admitted `org_id = ''` rows to every caller, mirroring the
-        `agent_id = ''` convention on the line below, but the two are not
-        analogous — `agent_id = ''` widens within one org, while `org_id = ''`
-        crosses the tenancy boundary that SPEC-216 names a non-goal ("cross-org
-        learning sharing of any kind"). Any write path that failed to set
-        `org_id` silently published into that bucket, and a learning is an
-        instruction interpolated into the system prompt, not a datum.
-
-        This matches `InMemoryLearningStore`, the reference implementation the
-        spec describes; the SQL stores had drifted from it.
+        The predicate is shared with `InMemoryLearningStore`; keeping one
+        visibility rule prevents the backends from drifting again.
         """
-        query = "SELECT * FROM learnings WHERE status = 'active'"
-        params: list[Any] = []
-        query += " AND org_id = ?"
-        params.append(org_id)
-        if agent_id:
-            query += " AND (agent_id = ? OR agent_id = '')"
-            params.append(agent_id)
-
-        cursor = await self._conn.execute(query, params)
+        scope_sql, scope_params = learning_scope_predicate(
+            org_id=org_id,
+            team_id=team_id,
+            user_id=user_id,
+            agent_id=agent_id,
+            placeholders=itertools.repeat("?"),
+        )
+        query = f"SELECT * FROM learnings WHERE status = 'active' AND {scope_sql}"
+        cursor = await self._conn.execute(query, scope_params)
         columns = [d[0] for d in cursor.description]
         rows = await cursor.fetchall()
 

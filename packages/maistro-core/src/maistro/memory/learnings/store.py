@@ -10,6 +10,7 @@ import logging
 
 from maistro.memory.types import Learning
 from maistro.observability.correlation import observed_provenance
+from maistro.persistence.learning_scope import matches_learning_scope
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,8 @@ class InMemoryLearningStore:
                 continue
             if existing.org_id != learning.org_id:
                 continue
+            if existing.team_id != learning.team_id or existing.user_id != learning.user_id:
+                continue
             if existing.status != "active":
                 continue
             existing_keys = set(existing.trigger_keys)
@@ -89,21 +92,25 @@ class InMemoryLearningStore:
         user_text: str,
         *,
         agent_id: str | None = None,
+        user_id: str | None = None,
+        team_id: str | None = None,
         org_id: str = "",
         max_results: int = 10,
     ) -> list[Learning]:
-        """Find learnings relevant to user text, scoped by org."""
+        """Find learnings by keyword, applying the requested scope axes."""
         text_lower = user_text.lower()
         scored: list[tuple[float, Learning]] = []
 
         for learning in self._learnings:
             if learning.status != "active":
                 continue
-            if agent_id and learning.agent_id != agent_id:
-                continue
-            if org_id and learning.org_id != org_id:
-                continue
-            if not org_id and learning.org_id:
+            if not matches_learning_scope(
+                learning,
+                org_id=org_id,
+                team_id=team_id,
+                user_id=user_id,
+                agent_id=agent_id,
+            ):
                 continue
 
             score = sum(1 for k in learning.trigger_keys if k and k in text_lower)

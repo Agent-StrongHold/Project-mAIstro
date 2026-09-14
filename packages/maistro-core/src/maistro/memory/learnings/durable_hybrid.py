@@ -75,6 +75,8 @@ class DurableHybridLearningStore:
         user_text: str,
         *,
         agent_id: str | None = None,
+        user_id: str | None = None,
+        team_id: str | None = None,
         org_id: str = "",
         max_results: int = 10,
     ) -> list[Learning]:
@@ -96,13 +98,23 @@ class DurableHybridLearningStore:
         try:
             vector = await self._embeddings.embed(user_text)
             found = await self._store.find_similar(
-                vector, org_id=org_id, agent_id=agent_id, max_results=max_results
+                vector,
+                org_id=org_id,
+                agent_id=agent_id,
+                user_id=user_id,
+                team_id=team_id,
+                max_results=max_results,
             )
         except Exception:
             logger.debug("query embedding failed; keyword results only")
 
         keyword = await self._store.find_relevant(
-            user_text, agent_id=agent_id, org_id=org_id, max_results=max_results
+            user_text,
+            agent_id=agent_id,
+            user_id=user_id,
+            team_id=team_id,
+            org_id=org_id,
+            max_results=max_results,
         )
 
         seen = {learning.id for learning in found if learning.id is not None}

@@ -33,6 +33,8 @@ class LearningStore(Protocol):
         user_text: str,
         *,
         agent_id: str | None = None,
+        user_id: str | None = None,
+        team_id: str | None = None,
         org_id: str = "",
         max_results: int = 10,
     ) -> list[Learning]:
