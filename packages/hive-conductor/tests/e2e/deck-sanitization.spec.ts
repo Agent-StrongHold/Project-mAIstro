@@ -322,6 +322,29 @@ test("mutation, encoded, SVG, and CSS payload families fail closed while present
   expect(attackerRequests).toEqual([]);
 });
 
+test("CSS obfuscation and active SVG families fail closed", async () => {
+  await loadFresh();
+  const outputs = await page.evaluate(() => {
+    const sanitize = (
+      window as Window & { __sanitizeDeckMarkup: (markup: string) => string }
+    ).__sanitizeDeckMarkup;
+    return [
+      sanitize('<div style="background-image:u\\72l(http://attacker.invalid/css);color:#fff">CSS survives as text</div>'),
+      sanitize('<svg><animate attributeName="x" onbegin="window.__deckPwned=14" /><image href="http://attacker.invalid/image" /><circle cx="5" cy="5" r="4" fill="#fff" /></svg>'),
+      sanitize('<object data="http://attacker.invalid/object"></object><embed src="http://attacker.invalid/embed"><p>safe</p>'),
+    ];
+  });
+
+  for (const output of outputs) expectNoExecutableMarkup(output);
+  expect(outputs[0]).toContain("CSS survives as text");
+  expect(outputs[1]).toContain("<circle");
+  expect(outputs[2]).toContain("<p>safe</p>");
+  expect(attackerRequests).toEqual([]);
+  expect(
+    await page.evaluate(() => (window as Window & { __deckPwned?: number }).__deckPwned),
+  ).toBe(0);
+});
+
 test("built-in Deck templates remain renderable through the sanitizer", async () => {
   await loadFresh();
   await page.getByRole("button", { name: /Hero KPI/ }).click();

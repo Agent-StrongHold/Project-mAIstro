@@ -22,6 +22,8 @@ The existing `/decks` route/navigation containment remains in place until parent
 - Sanitization is applied to model-authored slide markup, slide-state updates, editable preview state, presentation rendering, built-in templates, and HTML export.
 - Rich paste and drop prevent the browser's default insertion/navigation behavior and sanitize before any untrusted HTML reaches the live DOM.
 - Exported document titles are escaped as text before interpolation.
+- No sanitizer dependency is required: the boundary uses the browser's DOM/CSS parsers plus a local reviewed allowlist, so there is no new package or license surface to pin.
+- CSS escapes/comments are rejected before CSSOM normalization because the supported presentation templates do not need obfuscated declarations.
 - The sanitizer reparses and scrubs serialized output a second time so parser mutation cannot introduce an unexamined executable construct.
 
 ## Adversarial browser evidence

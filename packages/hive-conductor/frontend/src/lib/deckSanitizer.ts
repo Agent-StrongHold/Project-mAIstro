@@ -205,8 +205,14 @@ const STYLE_PROPERTIES = new Set([
 
 const NETWORK_OR_CODE_CSS = /(?:url\s*\(|image-set\s*\(|cross-fade\s*\(|element\s*\(|paint\s*\(|expression\s*\(|javascript\s*:|vbscript\s*:|data\s*:|@import|behavior\s*:|-moz-binding|var\s*\(|env\s*\()/i;
 const NETWORK_OR_CODE_ATTRIBUTE = /(?:url\s*\(|javascript\s*:|vbscript\s*:|data\s*:|https?\s*:|\/\/)/i;
+// CSS escapes/comments can hide a blocked function from a lexical check. They
+// are not needed by the supported templates, so reject them before CSSOM
+// normalization rather than trying to decode every browser CSS grammar.
+const OBFUSCATED_CSS = /\\|\/\*/;
 
 function sanitizeStyle(styleText: string): string {
+  if (OBFUSCATED_CSS.test(styleText)) return "";
+
   const source = document.createElement("div");
   source.setAttribute("style", styleText);
   const target = document.createElement("div");
@@ -291,7 +297,9 @@ function sanitizeOnce(markup: string): string {
  * final browser interpretation.
  */
 export function sanitizeDeckMarkup(markup: string): string {
-  if (!markup) return "";
+  // Stored or model-produced state is untrusted at runtime too; malformed
+  // values must fail closed instead of reaching DOMParser or a render sink.
+  if (typeof markup !== "string" || !markup) return "";
   return sanitizeOnce(sanitizeOnce(markup));
 }
 
