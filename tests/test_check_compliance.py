@@ -92,6 +92,16 @@ def test_malformed_table_row_fails_instead_of_disappearing(tmp_path: Path, row: 
     assert any("malformed table row" in str(finding) for finding in _findings(tmp_path))
 
 
+def test_missing_status_cell_fails_closed(tmp_path: Path) -> None:
+    _write_repository(tmp_path)
+    (tmp_path / "COMPLIANCE.md").write_text(
+        "| ID | Engine control | Status |\n|---|---|---|\n| X-1 | control | |\n",
+        encoding="utf-8",
+    )
+
+    assert any("missing or invalid status cell" in str(finding) for finding in _findings(tmp_path))
+
+
 @pytest.mark.parametrize(
     "field",
     ["owner", "control_id"],
