@@ -197,6 +197,22 @@ or placeholder-only section.
 
 ### Fixed
 
+- **The migration chain has one head again, and the debt ledger matches the
+  shipped tree (no linked issue: base-branch repair).** Merging #1263 carried
+  a renumber made against an older base: it renamed
+  `033_project_membership_unique_per_principal.py` to `034_…` and moved its
+  `revision` with it, colliding with the `034_hitl_deadline_index` already on
+  develop. Git merged it without a conflict — different files — so the chain
+  silently grew two `034`s, lost `033`, and forked `035`, and `alembic
+  upgrade` could not resolve a path. Project membership is restored to `033`
+  (down `032`) and `035_outcome_scope_thumb_index` follows `035` again, so the
+  chain is linear: `032 → 033 → 034 → 035 → 035_outcome_scope_thumb_index`.
+  No migration body changed; nothing already applied is rewritten. The same
+  repair banks the three `capabilities/invocation.py` identities #1310
+  introduced without authorizing (`observed_at`, `_validate_reconciliation`,
+  `_validate_evidence`), un-breaking the `exact-debt-ledger` gate for every
+  candidate.
+
 - **A manual schedule fire claims its run before creating it, and never moves
   the recurrence cursor (#1119).** `ScheduleStore` gains `reserve_fire` /
   `settle_fire`: the quota is counted (and the schedule disabled on
