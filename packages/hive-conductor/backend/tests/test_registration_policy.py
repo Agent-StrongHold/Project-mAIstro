@@ -796,6 +796,40 @@ class TestSetupGuardEdges:
         assert "Setup already complete" in exc_info.value.detail
         assert len(stores.users) == 0
 
+    def test_settings_failure_releases_accounts_and_username_claims(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A post-allocation setup failure must not make retry report a taken name."""
+        import stores
+        from routes.setup import complete_setup
+        from services import settings_store
+
+        self._retryable_instance(monkeypatch)
+
+        real_save = settings_store.save
+
+        def _lost(_settings: object) -> None:
+            raise settings_store.SettingsPersistenceError("simulated write loss")
+
+        monkeypatch.setattr(settings_store, "save", _lost)
+        with pytest.raises(HTTPException) as exc_info:
+            complete_setup(self._full_body())
+
+        assert exc_info.value.status_code == 503
+        assert len(stores.users) == 0
+        assert "username:guardadmin" not in stores.username_claims
+        assert "username:guarduser" not in stores.username_claims
+        assert "__hive_setup_claim__" not in stores.sessions
+
+        # The same names are available after the failed account transaction.
+        monkeypatch.setattr(settings_store, "save", real_save)
+        retry = complete_setup(self._full_body())
+        assert retry["setup_complete"] is True
+        for user_id in ("admin", "user"):
+            stores.users.pop(user_id, None)
+        for username in ("guardadmin", "guarduser"):
+            stores.username_claims.pop(f"username:{username}", None)
+
     def test_policy_closeout_that_cannot_persist_fails_setup(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

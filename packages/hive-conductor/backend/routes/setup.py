@@ -39,6 +39,21 @@ _SEED_VAULT_KEY = "CONDUCTOR_SEED_MNEMONIC"
 _DEFAULT_DAILY_USER_PERMISSIONS = ["dags.write"]
 
 
+class SetupRollbackError(RuntimeError):
+    """Setup could not safely release accounts after a later failure."""
+
+
+def _rollback_setup_accounts(accounts: list[Any]) -> None:
+    """Release setup accounts only through the canonical claim transaction."""
+    from services import username_registry
+
+    try:
+        username_registry.rollback_users(accounts)
+    except Exception as exc:
+        logger.error("setup account rollback failed; preserving the setup claim: %s", exc)
+        raise SetupRollbackError("setup accounts require operator reconciliation") from exc
+
+
 def _vault_paths() -> tuple[str, str]:
     from config import get_settings
 
@@ -334,12 +349,14 @@ def _provision_first_run(
             settings_store.current().model_copy(update={"default_model": chosen_default_model})
         )
     except settings_store.SettingsPersistenceError as exc:
+        _rollback_setup_accounts([admin, daily_user])
         logging.getLogger("hive.setup").error("setup could not persist settings: %s", exc)
         raise HTTPException(
             status_code=503,
             detail=f"setup did not complete: settings were not persisted ({exc})",
         ) from exc
     except settings_store.SettingsSecretError as exc:
+        _rollback_setup_accounts([admin, daily_user])
         raise HTTPException(
             status_code=400,
             detail=(
@@ -358,6 +375,7 @@ def _provision_first_run(
     try:
         registration_policy.close_after_setup()
     except registration_policy.RegistrationPolicyError as exc:
+        _rollback_setup_accounts([admin, daily_user])
         logging.getLogger("hive.setup").error(
             "setup could not persist the registration policy: %s", exc
         )
@@ -371,7 +389,11 @@ def _provision_first_run(
 
     kv = _get_kv()
     if kv is not None:
-        kv[_SETUP_KEY] = config
+        try:
+            kv[_SETUP_KEY] = config
+        except BaseException:
+            _rollback_setup_accounts([admin, daily_user])
+            raise
     else:
         # Unpersisted run: the claim was only ever an in-flight lock —
         # "setup happened" in this mode is signalled by the accounts it
@@ -436,18 +458,18 @@ def complete_setup(body: SetupCompleteBody) -> dict[str, Any]:
             user_username=user_username,
             user_password=user_password,
         )
-    except BaseException:
-        # Release the claim so a failed first run stays retryable: the failure
-        # modes inside (identity runtime missing, settings or policy not
-        # persisted) are operator-fixable, and a claimed-but-abandoned instance
-        # would lock bootstrap behind manual database surgery. The handler
-        # re-raises everything it catches — it is a rollback, not a swallow.
+    except BaseException as exc:
+        # Release the claim so a failed first run stays retryable. If account
+        # rollback itself failed, keep the claim: the durable accounts and
+        # reservation then remain a closed, operator-reconcilable state rather
+        # than allowing a second setup attempt to compete with them.
         # The delete is enqueued, so a crash in the instant between failure
         # and flush can resurrect the claim — fail-closed (setup stays locked,
         # registration stays closed) rather than fail-open, which is the only
         # direction this endpoint is allowed to fail in.
-        with _SETUP_LOCK:
-            stores.sessions.pop(_SETUP_CLAIM_KEY, None)
+        if not isinstance(exc, SetupRollbackError):
+            with _SETUP_LOCK:
+                stores.sessions.pop(_SETUP_CLAIM_KEY, None)
         raise
 
     result = {"setup_complete": True, "config": config}

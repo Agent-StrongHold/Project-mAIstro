@@ -9,6 +9,7 @@ connections that never contend with the writer.
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import queue
 import shutil
@@ -26,6 +27,22 @@ if TYPE_CHECKING:
 T = TypeVar("T", bound="BaseModel")
 
 logger = logging.getLogger(__name__)
+
+
+def _claim_has_owner(
+    conn: sqlite3.Connection, store_name: str, key: str, expected_user_id: str
+) -> bool:
+    row = conn.execute(
+        "SELECT value FROM kv_store WHERE store_name = ? AND key = ?",
+        (store_name, key),
+    ).fetchone()
+    if row is None:
+        return False
+    try:
+        claim = json.loads(row[0])
+    except (TypeError, json.JSONDecodeError):
+        return False
+    return isinstance(claim, dict) and claim.get("user_id") == expected_user_id
 
 
 class MigrationFailedError(Exception):
@@ -465,6 +482,60 @@ class PersistedStore:
         if errors:
             raise RuntimeError("atomic username allocation failed") from errors[0]
         return inserted == [True]
+
+    def delete_raw_with_unique_claims(
+        self,
+        claims: list[tuple[str, str, str]],
+        records: list[tuple[str, str]],
+        *,
+        timeout: float = 30.0,
+    ) -> bool:
+        """Delete an account row and its matching username claim atomically.
+
+        This is intentionally restricted to a claim that still names the
+        expected user id. It is a rollback primitive for setup failures, not a
+        general delete path that could silently release another account's name.
+        """
+        if not claims or not records:
+            raise ValueError("an atomic claim rollback needs claims and records")
+        completed = threading.Event()
+        removed: list[bool] = []
+        errors: list[Exception] = []
+
+        def _delete_claims_and_records(conn: sqlite3.Connection) -> None:
+            try:
+                if not all(_claim_has_owner(conn, *claim) for claim in claims):
+                    conn.rollback()
+                    removed.append(False)
+                    return
+                before = conn.total_changes
+                conn.executemany(
+                    "DELETE FROM kv_store WHERE store_name = ? AND key = ?",
+                    [(store_name, key) for store_name, key, _ in claims],
+                )
+                conn.executemany(
+                    "DELETE FROM kv_store WHERE store_name = ? AND key = ?",
+                    records,
+                )
+                if conn.total_changes - before != len(claims) + len(records):
+                    conn.rollback()
+                    removed.append(False)
+                    return
+                conn.commit()
+                removed.append(True)
+            except Exception as exc:
+                with contextlib.suppress(Exception):
+                    conn.rollback()
+                errors.append(exc)
+            finally:
+                completed.set()
+
+        self._state.submit(_delete_claims_and_records)
+        if not completed.wait(timeout=timeout):
+            raise TimeoutError("timed out waiting for atomic username rollback")
+        if errors:
+            raise RuntimeError("atomic username rollback failed") from errors[0]
+        return removed == [True]
 
     def get_raw(self, store_name: str, key: str) -> str | None:
         reader = self._state.open_reader()

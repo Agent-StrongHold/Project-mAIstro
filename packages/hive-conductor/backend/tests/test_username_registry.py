@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from models.schemas import HiveUser
@@ -81,6 +82,46 @@ def test_many_case_variants_have_one_winner_on_shared_persistence(tmp_path) -> N
     assert registries[0].resolve("aLiCe") is not None
     for state in states:
         state.close()
+
+
+def test_allocator_calls_storage_atomic_claim_seam(tmp_path) -> None:
+    """A scan-then-write mutation cannot satisfy the allocation contract."""
+    from maistro.state import PersistedStore, State
+
+    state = State(tmp_path / "atomic-seam.db")
+    persisted = PersistedStore(state)
+    persisted.initialize()
+    atomic = Mock(wraps=persisted.put_raw_with_unique_claims)
+    persisted.put_raw_with_unique_claims = atomic
+    registry = UsernameRegistry(
+        ModelStore("users", HiveUser, persisted=persisted),
+        JsonStore("username_claims", persisted=persisted),
+    )
+    registry.create_users([_user("atomic", "Alice")])
+
+    atomic.assert_called_once()
+    assert persisted.get_raw("username_claims", "username:alice") is not None
+    assert persisted.get_raw("users", "atomic") is not None
+    state.close()
+
+
+def test_registry_rollback_releases_claim_and_account_together(tmp_path) -> None:
+    from maistro.state import PersistedStore, State
+
+    state = State(tmp_path / "rollback-registry.db")
+    persisted = PersistedStore(state)
+    persisted.initialize()
+    users = ModelStore("users", HiveUser, persisted=persisted)
+    claims = JsonStore("username_claims", persisted=persisted)
+    registry = UsernameRegistry(users, claims)
+    account = _user("rollback", "RetryName")
+    registry.create_users([account])
+    registry.rollback_users([account])
+
+    assert persisted.get_raw("username_claims", "username:retryname") is None
+    assert persisted.get_raw("users", "rollback") is None
+    registry.create_users([_user("retry", "retryname")])
+    state.close()
 
 
 def test_atomic_allocation_rolls_back_claim_when_user_insert_fails(tmp_path) -> None:

@@ -232,6 +232,55 @@ class UsernameRegistry:
                 self._claims._data[key] = json.loads(raw)
                 self._users._data[user.id] = user
 
+    def _rollback_durable(
+        self,
+        claims: list[tuple[str, str, str]],
+        records: list[tuple[str, str]],
+    ) -> None:
+        backend = getattr(self._users, "_persisted", None)
+        atomic = getattr(backend, "delete_raw_with_unique_claims", None)
+        if not callable(atomic):
+            raise UsernameAllocationError(
+                "configured persistence cannot atomically roll back usernames"
+            )
+        if not atomic(claims, records):
+            raise UsernameAllocationError("username rollback did not match its accounts")
+
+    def _rollback_memory(self, batch: list[HiveUser], claims: list[tuple[str, str, str]]) -> None:
+        for _, key, expected_id in claims:
+            record = self._claims.get(key)
+            if not isinstance(record, dict) or record.get("user_id") != expected_id:
+                raise UsernameAllocationError("username rollback did not match its accounts")
+        if any(self._users.get(user.id) is None for user in batch):
+            raise UsernameAllocationError("username rollback account is missing")
+        for _, key, _ in claims:
+            self._claims._data.pop(key, None)
+        for user in batch:
+            self._users._data.pop(user.id, None)
+
+    def rollback_users(self, users: Iterable[HiveUser]) -> None:
+        """Remove accounts and claims after a later setup step fails.
+
+        The durable backend verifies each claim still belongs to the supplied
+        user ids before deleting either side. A rollback that cannot prove that
+        ownership fails closed, leaving the durable claim and account for
+        operator reconciliation rather than releasing a live username.
+        """
+        batch = list(users)
+        if not batch:
+            return
+        claims = [(CLAIM_STORE, claim_key(user.username), user.id) for user in batch]
+        records = [("users", user.id) for user in batch]
+        with _LOCK:
+            if getattr(self._users, "_persisted", None) is not None:
+                self._rollback_durable(claims, records)
+                for _, key, _ in claims:
+                    self._claims._data.pop(key, None)
+                for user in batch:
+                    self._users._data.pop(user.id, None)
+            else:
+                self._rollback_memory(batch, claims)
+
     def migrate_or_index_one(self, username: str) -> None:
         """Index a legacy row encountered after startup migration."""
         normalized = normalize_username(username)
@@ -279,3 +328,7 @@ def is_claimed(username: str) -> bool:
 
 def create_users(users: Iterable[HiveUser]) -> None:
     _default_registry().create_users(users)
+
+
+def rollback_users(users: Iterable[HiveUser]) -> None:
+    _default_registry().rollback_users(users)
