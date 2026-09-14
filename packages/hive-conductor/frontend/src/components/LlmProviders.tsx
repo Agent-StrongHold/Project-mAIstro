@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { useAuthorization } from "../context/AuthorizationContext";
+import { AuthorizationNotice } from "./Authorization";
 import { SecretField } from "./shared";
 
 interface ProviderRow {
@@ -25,6 +27,7 @@ export function LlmProviders() {
   const [keys, setKeys] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const { can } = useAuthorization();
 
   const load = () =>
     fetch("/v1/providers", { credentials: "same-origin" })
@@ -81,7 +84,9 @@ export function LlmProviders() {
   }
 
   return (
-    <div className="card" style={{ marginBottom: 14, padding: 12, borderLeft: "3px solid var(--accent)" }}>
+    <>
+      <AuthorizationNotice permission="config.write" label="LLM provider changes" />
+      <div className="card" style={{ marginBottom: 14, padding: 12, borderLeft: "3px solid var(--accent)" }}>
       <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginBottom: 6 }}>
         LLM PROVIDERS
       </div>
@@ -120,14 +125,14 @@ export function LlmProviders() {
               onChange={(next) => setKeys((k) => ({ ...k, [p.name]: next }))}
               stored={p.has_key}
               storedNote={`A key for ${p.label} is already stored. Entering a new one replaces it.`}
-              disabled={!data.vault_available || busy === p.name}
+              disabled={!can("config.write") || !data.vault_available || busy === p.name}
               className=""
               style={{ flex: 1, minWidth: 200 }}
             />
             <button
               className="btn"
               onClick={() => saveKey(p.name)}
-              disabled={!data.vault_available || !keys[p.name] || busy === p.name}
+              disabled={!can("config.write") || !data.vault_available || !keys[p.name] || busy === p.name}
               style={{ fontSize: 10, padding: "3px 10px" }}
             >
               Save key
@@ -135,7 +140,7 @@ export function LlmProviders() {
             <button
               className="btn-primary"
               onClick={() => activate(p.name)}
-              disabled={!p.has_key || busy === p.name}
+              disabled={!can("config.write") || !p.has_key || busy === p.name}
               style={{ fontSize: 10, padding: "3px 10px" }}
             >
               {busy === p.name ? "…" : p.activated ? "Re-test" : "Activate"}
@@ -146,6 +151,7 @@ export function LlmProviders() {
           </div>
         ))}
       </div>
-    </div>
+      </div>
+    </>
   );
 }

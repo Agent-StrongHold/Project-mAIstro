@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiGet, apiPatch } from "../lib/api";
+import { AuthorizationNotice } from "../components/Authorization";
+import { useAuthorization } from "../context/AuthorizationContext";
 import { PageHeader, SecretField } from "../components/shared";
 
 type Settings = Record<string, unknown>;
@@ -13,32 +15,45 @@ export default function Settings() {
   const [elevating, setElevating] = useState(false);
   const [elevPassword, setElevPassword] = useState("");
   const [elevatingFor, setElevatingFor] = useState<string | null>(null);
+  const authorization = useAuthorization();
+  const configPermission = authorization.surfacePermission("settings") ?? "config.write";
   const load = useCallback(async () => { try { setSettings(await apiGet<Settings>("/v1/settings")); } catch { /* */ } }, []);
   useEffect(() => { void load(); apiGet<{ models: string[] }>("/v1/settings/models").then((r) => setAvailableModels(r.models)).catch(() => {}); }, [load]);
 
-  async function saveSetting(key: string) {
+  async function saveSetting(key: string, elevationConfirmed = false) {
     if (!settings) return;
+    if (!elevationConfirmed && !authorization.can(configPermission)) {
+      if (authorization.canElevate(configPermission)) {
+        setElevatingFor(key);
+        setElevating(true);
+      }
+      return;
+    }
     try {
       await apiPatch("/v1/settings", { [key]: parseVal(editVal, settings[key]) });
       setEditing(null);
       await load();
     } catch {
-      setElevatingFor(key);
-      setElevating(true);
+      // Refresh before offering elevation: a grant may have expired or been
+      // revoked between the capability snapshot and this write.
+      await authorization.refresh();
+      setEditing(null);
     }
   }
 
   async function elevateAndSave(key: string) {
     try {
-      await fetch("/v1/auth/elevate", {
+      const response = await fetch("/v1/auth/elevate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
-        body: JSON.stringify({ password: elevPassword, permissions: ["config.write"], task_id: `settings-edit-${key}-${Date.now()}` }),
+        body: JSON.stringify({ password: elevPassword, permissions: [configPermission], task_id: `settings-edit-${key}` }),
       });
+      if (!response.ok) throw new Error("Elevation failed");
+      await authorization.refresh();
       setElevating(false);
       setElevPassword("");
-      await saveSetting(key);
+      await saveSetting(key, true);
     } catch {
       setElevPassword("");
     }
@@ -70,6 +85,8 @@ export default function Settings() {
           card is a working shortcut to a page that exists for every workspace,
           and "keep the generic branch" would have removed it — which is a
           product call, not the mechanical one that rule is for. */}
+      <AuthorizationNotice permission={configPermission} label="Settings changes" />
+
       <div className="card" style={{ marginBottom: 16, maxWidth: 480 }}>
         <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginBottom: 6 }}>
           Integration tokens (Jira, GitHub, …) are stored encrypted on the server per account.
@@ -118,7 +135,7 @@ export default function Settings() {
                   ) : (
                     <input aria-label={`New value for ${key}`} className="input-field" value={editVal} onChange={(e) => setEditVal(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void saveSetting(key); if (e.key === "Escape") setEditing(null); }} />
                   )}
-                  <button className="btn btn-accent" style={{ fontSize: 9, padding: "2px 8px" }} onClick={() => void saveSetting(key)}>save</button>
+                  <button className="btn btn-accent" disabled={!authorization.can(configPermission)} style={{ fontSize: 9, padding: "2px 8px" }} onClick={() => void saveSetting(key)}>save</button>
                   <button className="btn" style={{ fontSize: 9, padding: "2px 8px" }} onClick={() => setEditing(null)}>cancel</button>
                 </div>
               ) : (
@@ -135,7 +152,7 @@ export default function Settings() {
                 </div>
               )}
               {editing !== key && (
-                <button className="btn" style={{ fontSize: 8, padding: "1px 6px", opacity: 0.6 }} onClick={() => startEdit(key)}>edit</button>
+                <button className="btn" disabled={!authorization.can(configPermission)} style={{ fontSize: 8, padding: "1px 6px", opacity: authorization.can(configPermission) ? 0.6 : 0.35 }} onClick={() => startEdit(key)}>edit</button>
               )}
             </div>
           ))}

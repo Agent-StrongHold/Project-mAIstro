@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiGet, apiPost, apiDelete } from "../lib/api";
+import { AuthorizationNotice } from "../components/Authorization";
+import { useAuthorization } from "../context/AuthorizationContext";
 import { Hex, PageHeader, StatCard, ConfirmDialog, useToast } from "../components/shared";
 const ROVO_MCP_URL = "https://mcp.atlassian.com/v1/mcp/authv2";
 
@@ -23,6 +25,9 @@ export default function MCP() {
   const [adding, setAdding] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Server | null>(null);
   const [form, setForm] = useState({ name: "", description: "", url: "" });
+  const authorization = useAuthorization();
+  const mcpPermission = authorization.surfacePermission("integrations") ?? "mcp.write";
+  const deletePermission = "mcp.delete";
 
   const load = useCallback(async () => {
     try {
@@ -76,17 +81,19 @@ export default function MCP() {
     <div>
       <ConfirmDialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={() => { if (deleteTarget) void removeServer(deleteTarget.id); }} title="Remove Server" message={`Remove "${deleteTarget?.name ?? ""}" from MCP?`} />
 
+      <AuthorizationNotice permission={mcpPermission} label="Integration changes" />
+
       <PageHeader
         title="MCP"
         subtitle={`${servers.length} servers · ${tools.length} tools — multi-MCP orchestration in this sandbox`}
         helpHref="/docs#mcp"
         actions={
           <div style={{ display: "flex", gap: 6 }}>
-            <button className="btn" style={{ fontSize: 9, padding: "2px 8px" }} onClick={() => void testConnections()}>
+            <button className="btn" disabled={!authorization.can(mcpPermission)} style={{ fontSize: 9, padding: "2px 8px" }} onClick={() => void testConnections()}>
               Test connection
             </button>
             {/* POC mode *hid* this; retiring the flag restores it for everyone (#190). */}
-            <button className="btn btn-accent" style={{ fontSize: 9, padding: "2px 8px" }} onClick={() => setAdding(true)}>
+            <button className="btn btn-accent" disabled={!authorization.can(mcpPermission)} style={{ fontSize: 9, padding: "2px 8px" }} onClick={() => setAdding(true)}>
               + add server
             </button>
           </div>
@@ -156,7 +163,7 @@ export default function MCP() {
                   </div>
                   <span style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", textAlign: "center" }}>{s.tools_count} tools</span>
                   <Hex variant={s.status === "connected" ? "ok" : "danger"}>{s.status}</Hex>
-                  <button className="btn" style={{ fontSize: 8, padding: "1px 6px", borderColor: "var(--danger)", color: "var(--danger)", opacity: 0.5 }} onClick={(e) => { e.stopPropagation(); setDeleteTarget(s); }}>remove</button>
+                  <button className="btn" disabled={!authorization.can(deletePermission)} style={{ fontSize: 8, padding: "1px 6px", borderColor: "var(--danger)", color: "var(--danger)", opacity: authorization.can(deletePermission) ? 0.5 : 0.25 }} onClick={(e) => { e.stopPropagation(); setDeleteTarget(s); }}>remove</button>
                 </div>
 
                 {sel?.id === s.id && (

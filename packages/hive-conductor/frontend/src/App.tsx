@@ -2,6 +2,8 @@ import { createContext, useContext, useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { PermissionBoundary } from "./components/Authorization";
+import { AuthorizationProvider } from "./context/AuthorizationContext";
 import { ModeProvider } from "./components/ModeToggle";
 import { Onboarding } from "./components/Onboarding";
 import { ToastProvider } from "./components/shared";
@@ -106,10 +108,12 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 
   return (
     <UserCtx.Provider value={user}>
-      <WorkspaceProvider>
-        <OnboardingGate />
-        {children}
-      </WorkspaceProvider>
+      <AuthorizationProvider>
+        <WorkspaceProvider>
+          <OnboardingGate />
+          {children}
+        </WorkspaceProvider>
+      </AuthorizationProvider>
     </UserCtx.Provider>
   );
 }
@@ -161,7 +165,7 @@ function AppRoutes() {
                 <Route path="containers" element={<Containers />} />
                 <Route path="docs" element={<Docs />} />
                 <Route path="evolution" element={<Evolution />} />
-                <Route path="rsi" element={<RSI />} />
+                <Route path="rsi" element={<PermissionBoundary permission="rsi.execute"><RSI /></PermissionBoundary>} />
                 <Route path="memory" element={<Memory />} />
                 <Route path="settings" element={<Settings />} />
                 <Route path="profile" element={<Profile />} />

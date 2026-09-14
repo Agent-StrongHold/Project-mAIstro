@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiDelete, apiGet, apiPut } from "../lib/api";
+import { AuthorizationNotice } from "../components/Authorization";
 import { LlmProviders } from "../components/LlmProviders";
+import { useAuthorization } from "../context/AuthorizationContext";
 import { PageHeader, SecretField } from "../components/shared";
 
 type ConfigField = {
@@ -34,6 +36,8 @@ export default function Credentials() {
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const authorization = useAuthorization();
+  const credentialPermission = authorization.surfacePermission("credentials") ?? "credentials.write";
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -113,6 +117,8 @@ export default function Credentials() {
         title="Integration credentials"
         subtitle="Encrypted at rest in this container — used by Hive agents and MCP at runtime. Never sent back to the browser."
       />
+
+      <AuthorizationNotice permission={credentialPermission} label="Credential changes" />
 
       <LlmProviders />
 
@@ -198,7 +204,7 @@ export default function Credentials() {
                 <button
                   type="button"
                   className="btn btn-accent"
-                  disabled={saving === row.id || !drafts[row.id]?.trim()}
+                  disabled={!authorization.can(credentialPermission) || saving === row.id || !drafts[row.id]?.trim()}
                   onClick={() => void save(row.id)}
                   style={{ fontSize: 9 }}
                 >
@@ -208,7 +214,7 @@ export default function Credentials() {
                   <button
                     type="button"
                     className="btn"
-                    disabled={saving === row.id}
+                    disabled={!authorization.can(credentialPermission) || saving === row.id}
                     onClick={() => void remove(row.id)}
                     style={{ fontSize: 9 }}
                   >
@@ -290,7 +296,7 @@ export default function Credentials() {
                   <button
                     type="button"
                     className="btn"
-                    disabled={saving === row.id}
+                    disabled={!authorization.can(credentialPermission) || saving === row.id}
                     onClick={() => void saveConfig(row.id)}
                     style={{ fontSize: 9, marginTop: 4 }}
                   >

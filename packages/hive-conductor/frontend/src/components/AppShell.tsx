@@ -1,6 +1,7 @@
 import { type ReactNode, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { useUser } from "../App";
+import { useAuthorization } from "../context/AuthorizationContext";
 import { ModeToggle } from "./ModeToggle";
 import { AppearanceToggle } from "./AppearanceToggle";
 import { WorkspaceTabs } from "./WorkspaceTabs";
@@ -39,7 +40,7 @@ const fullNav = [
   { to: "/knowledge", icon: Brain, label: "Inner Temple" },
   // M0 containment for #311: Deck Builder is intentionally absent until
   // model-authored HTML/SVG has a canonical sanitizer/structured renderer.
-  { to: "/rsi", icon: Repeat, label: "RSI" },
+  { to: "/rsi", icon: Repeat, label: "RSI", surface: "rsi" },
   { to: "/mcp", icon: Plug, label: "Integrations" },
   { to: "/credentials", icon: KeyRound, label: "Credentials" },
   { to: "/settings", icon: Settings, label: "Settings" },
@@ -59,8 +60,16 @@ async function logout() {
 
 export function AppShell({ children }: { children?: ReactNode }) {
   const user = useUser();
+  const authorization = useAuthorization();
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const nav = fullNav;
+  const nav = fullNav.filter((item) => {
+    if (!item.surface) return true;
+    const permission = authorization.surfacePermission(item.surface);
+    if (!permission) return false;
+    // Keep a grant that only needs self-elevation reachable so the user can
+    // see the explanation and elevate; hide surfaces they cannot ever use.
+    return authorization.can(permission) || authorization.canElevate(permission);
+  });
   const shellTitle = "Hive Conductor";
 
   return (
@@ -100,9 +109,10 @@ export function AppShell({ children }: { children?: ReactNode }) {
               className={({ isActive }) => `drawer-link${isActive ? " active" : ""}`}
               end={item.to === "/cli"}
               onClick={() => setDrawerOpen(false)}
+              title={item.surface && !authorization.can(authorization.surfacePermission(item.surface)) ? "Requires elevation" : item.label}
             >
               <span className="drawer-link-icon"><item.icon size={16} strokeWidth={1.5} /></span>
-              <span>{item.label}</span>
+              <span>{item.label}{item.surface && !authorization.can(authorization.surfacePermission(item.surface)) ? " · locked" : ""}</span>
             </NavLink>
           ))}
         </div>

@@ -16,7 +16,7 @@ from config import get_settings, is_valid_oauth_provider_name
 from fastapi import Request
 from routes import auth as auth_routes
 from routes import setup as setup_routes
-from services import voice_identity
+from services import authorization, voice_identity
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import JSONResponse, Response
 
@@ -56,123 +56,8 @@ _PUBLIC_EXACT = frozenset(
 
 _ADMIN_CHAT_BLOCKED = ("/v1/chat/",)
 
-_PROTECTED_OPS: dict[str, dict[str, str]] = {
-    "GET": {
-        # Reading another principal's harness/RSI session stream exposes
-        # in-flight code, agent reasoning, and secrets in transit — the same
-        # sensitivity as starting the run, so it takes the same scope. Plain
-        # authentication is not enough for these read routes.
-        "/v1/harness": "harness.execute",
-        "/v1/rsi": "rsi.execute",
-        "/v1/evolution": "rsi.execute",
-        # The pending-work queue names which Runs are blocked and carries the
-        # payload each node is asking a human — in-flight graph execution
-        # content, the same sensitivity as the harness stream above. Scoped to
-        # match the answer route: seeing a question you have no scope to answer
-        # serves nobody and leaks what the Run is doing (#244).
-        "/v1/hitl": "dags.write",
-    },
-    "DELETE": {
-        "/v1/settings": "config.delete",
-        "/v1/agents": "agents.delete",
-        "/v1/skills": "skills.delete",
-        "/v1/mcp": "mcp.delete",
-        # Killing another principal's harness session is a denial of service on
-        # in-flight work, so it needs the same scope that starting one does.
-        "/v1/harness": "harness.execute",
-        "/v1/containers": "containers.control",
-        "/v1/credentials": "credentials.write",
-        "/v1/dags": "dags.write",
-        "/v1/schedules": "schedules.write",
-        # Removing a workspace member is the same write-scope decision as
-        # creating the workspace in the first place (Persona/Workspace Phase G).
-        "/v1/workspaces": "workspaces.write",
-    },
-    "POST": {
-        "/v1/settings": "config.write",
-        # The whole /v1/mcp mutating surface, not just /servers: discover and
-        # test connect to operator-supplied endpoints, which is the same
-        # trust decision as registering one.
-        "/v1/mcp": "mcp.write",
-        "/v1/agents": "agents.write",
-        "/v1/skills": "skills.write",
-        # Talks to the Docker socket directly — host infrastructure control.
-        "/v1/containers": "containers.control",
-        # DAGs execute graphs whose nodes include harness/synth-DAG kinds:
-        # creating or running one is agent execution, and an unscoped DAG run
-        # would be a bypass of harness.execute via composition.
-        "/v1/dags": "dags.write",
-        # Accepting an optimizer proposal rewrites a DAG — same surface.
-        "/v1/optimizer": "dags.write",
-        # Answering a human pause resumes the Run that was waiting on it, and
-        # the nodes that run next are the same graph nodes `/v1/dags` gates —
-        # so an unscoped answer would be DAG execution reached by replying to
-        # a prompt instead of by starting a run (#244). The answer is also
-        # untrusted input written into graph state that later nodes read,
-        # which is why the route Warden-scans it as well.
-        "/v1/hitl": "dags.write",
-        # A schedule is recurring autonomous execution.
-        "/v1/schedules": "schedules.write",
-        # Workspace sub-resource mutations (membership, persona authoring, etc.)
-        # remain privileged. Creating one's own workspace tab is handled as an
-        # ordinary authenticated operation in _required_permission() below.
-        "/v1/workspaces": "workspaces.write",
-        # The evolution tournament is the self-improvement loop's other door.
-        "/v1/evolution": "rsi.execute",
-        # Executes GitHub/GitLab tools with stored credentials against real
-        # external trackers.
-        # Audit entries name an arbitrary `actor`: an unscoped writer is a
-        # log-forgery primitive, and the app writes its own entries in-process,
-        # not over HTTP — no product flow needs this route unelevated.
-        "/v1/audit": "audit.write",
-        # The inbound harness starts a coding agent against an operator-supplied
-        # `workdir`: POST /v1/harness/sessions is code execution on this host,
-        # and .../send steers it. Authentication alone was already required
-        # (dispatch 401s any unauthenticated /v1/ path), but *every*
-        # authenticated principal could reach it — including a role="user"
-        # account with permissions=[]. Deliberately its own scope rather than
-        # agents.write: being cleared to edit an agent's configuration is not
-        # the same as being cleared to execute code as it.
-        "/v1/harness": "harness.execute",
-        # RSI runs are the self-modification loop — they push branches and can
-        # open PRs. Separate scope again, because granting code execution on a
-        # scratch workdir is a smaller decision than granting the loop that
-        # rewrites this repository.
-        "/v1/rsi": "rsi.execute",
-        # Capability discovery + approval resolution (approving a destructive
-        # infra action is high-stakes) — gate behind config.write.
-        "/v1/capabilities": "config.write",
-        # Provider activation uses the LiteLLM master key, mutates the global
-        # model registry, and can trigger billed calls (SPEC-072726-3439).
-        "/v1/providers": "config.write",
-    },
-    "PUT": {
-        "/v1/settings": "config.write",
-        # Storing a deployment-wide LLM key in the vault — same decision
-        # weight as activating it.
-        "/v1/providers": "config.write",
-        "/v1/mcp/servers": "mcp.write",
-        "/v1/agents": "agents.write",
-        "/v1/skills": "skills.write",
-        "/v1/credentials": "credentials.write",
-        "/v1/dags": "dags.write",
-        "/v1/schedules": "schedules.write",
-        # Setting a workspace's sticky per-agent tool bindings changes what
-        # tools that agent may call — same write-scope posture as every
-        # other workspace-settings mutation (Persona/Workspace system).
-        "/v1/workspaces": "workspaces.write",
-    },
-    "PATCH": {
-        "/v1/settings": "config.write",
-        "/v1/mcp/servers": "mcp.write",
-        "/v1/capabilities": "config.write",
-        # Toggling a skill changes what every future agent run may do.
-        "/v1/skills": "skills.write",
-        # Archiving a workspace is the same write-scope decision as creating
-        # or deleting one (Persona/Workspace system).
-        "/v1/workspaces": "workspaces.write",
-    },
-}
+# Compatibility export for tests and callers that inspect the policy table.
+_PROTECTED_OPS = authorization.PROTECTED_OPS
 
 
 def _matches_public_prefix(path: str, prefix: str) -> bool:
@@ -218,14 +103,7 @@ def resolve_principal(
         return None
 
 
-def principal_has_permission(user: dict[str, Any], perm: str) -> bool:
-    if user.get("role") == "admin":
-        return True
-    user_perms = user.get("permissions", [])
-    if perm not in user_perms:
-        return False
-    elevated = user.get("elevated_permissions", [])
-    return perm in elevated
+principal_has_permission = authorization.principal_has_permission
 
 
 def origin_allowed(origin: str | None, host: str | None = None) -> bool:
@@ -354,55 +232,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         return any(path.startswith(p) for p in _ADMIN_CHAT_BLOCKED)
 
     def _required_permission(self, request: Request) -> str | None:
-        method_perms = _PROTECTED_OPS.get(request.method, {})
-        path = request.url.path
-        # Creating a workspace tab is a normal authenticated-user action. The
-        # route makes the caller its owner, so requiring task-scoped elevation
-        # here made the first-run daily account's workspace UI unusable.
-        if request.method == "POST" and path.rstrip("/") == "/v1/workspaces":
-            return None
-        # Agent invoke (POST /v1/agents/{id}/invoke) is autonomous read — don't
-        # gate behind elevation. Match the trailing segment, not a bare
-        # substring: "in path" would also exempt any future route that merely
-        # contains "/invoke" elsewhere (e.g. "/v1/agents/invoke-history").
-        if path.endswith("/invoke"):
-            return None
-        # Thumbs +/- feedback (POST /v1/dag-runs/{id}/feedback,
-        # POST /v1/workspaces/{id}/feedback) is a low-stakes reaction, not a
-        # mutating operation on the thing itself — any authenticated member
-        # can leave it, same posture as dag-runs' pre-existing unrestricted
-        # feedback route. The route itself still checks workspace membership.
-        if path.endswith("/feedback"):
-            return None
-        # DAG-Run inspection — GET /v1/dag-runs (list), GET /v1/dag-runs/{id}
-        # (detail), GET /v1/dag-runs/{id}/events (SSE) — and the eval-judge
-        # read side over the same runs (GET /v1/eval-judge verdict list,
-        # GET /v1/eval-judge/{run_id}) — is deliberately NOT elevation-gated,
-        # because elevation adds no boundary here: the responses are scoped to
-        # the caller's canonical Workspace universe inside the routes
-        # themselves, through services/dag_run_inspection (#1174) — the same
-        # authority the workspace/agents routes answer through. Authentication
-        # alone is not authorization: a member of no Workspace sees an empty
-        # list, and an out-of-scope run id gets the same 404 a missing run
-        # gets, so the response never confirms a run exists beyond the
-        # caller's boundary. (Spell the GET match out rather than listing the
-        # routes in _PROTECTED_OPS: these routes stay None on purpose, and the
-        # comment above is the reason.) The /feedback POST sub-routes above
-        # keep their own pre-existing posture; /v1/dag-runs/retention is
-        # covered by this match too and carries deployment constants, not run
-        # data. The eval-judge trigger (POST /v1/eval-judge/{run_id}) is
-        # likewise authenticated-only and scoped in-route by the same
-        # inspection door before anything is scored.
-        if request.method == "GET" and (path == "/v1/dag-runs" or path.startswith("/v1/dag-runs/")):
-            return None
-        if request.method == "GET" and (
-            path == "/v1/eval-judge" or path.startswith("/v1/eval-judge/")
-        ):
-            return None
-        for prefix, perm in method_perms.items():
-            if path.startswith(prefix):
-                return perm
-        return None
+        return authorization.required_permission(request.method, request.url.path)
 
     def _check_permission(self, user: dict[str, Any], perm: str) -> bool:
         return principal_has_permission(user, perm)
