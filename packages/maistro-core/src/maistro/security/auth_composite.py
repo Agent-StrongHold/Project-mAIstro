@@ -16,9 +16,6 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.protocols.auth import AuthError, CredentialNotApplicable
 
-_SAFE_SCHEME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.:-")
-_SAFE_SCHEME_MAX_LENGTH = 64
-
 if TYPE_CHECKING:
     from maistro.security._types import AuthContext
 
@@ -26,17 +23,28 @@ logger = logging.getLogger("maistro.auth.composite")
 
 
 def _provider_scheme(provider: Any) -> str:
-    """Return provider metadata suitable for audit logs, never instance data."""
-    # Read the declaration from the provider class, not an instance attribute that
-    # could be populated from the request credential being authenticated.
-    scheme = getattr(type(provider), "scheme", None)
-    if (
-        isinstance(scheme, str)
-        and 0 < len(scheme) <= _SAFE_SCHEME_MAX_LENGTH
-        and all(char in _SAFE_SCHEME_CHARS for char in scheme)
-    ):
-        return scheme
-    return type(provider).__name__
+    """Return a trusted scheme label for credential-free audit records.
+
+    Provider instances and classes are not trusted configuration: a provider
+    implementation can expose a mutable ``scheme`` attribute, and a dynamic
+    class name can contain request data. Only the built-in provider types get
+    labels here; unknown implementations use a constant safe label rather than
+    echoing metadata into logs.
+    """
+    # Keep this import local so the experimental composite does not become an
+    # import dependency of the individual providers.
+    from maistro.security.auth_cookie import CookieAuthProvider
+    from maistro.security.auth_demo_cookie import DemoCookieAuthProvider
+    from maistro.security.auth_jwt import JWTAuthProvider
+    from maistro.security.auth_static import StaticKeyAuthProvider
+
+    built_in_schemes = {
+        StaticKeyAuthProvider: "static_api_key",
+        JWTAuthProvider: "jwt_bearer",
+        CookieAuthProvider: "session_cookie",
+        DemoCookieAuthProvider: "demo_session",
+    }
+    return built_in_schemes.get(type(provider), "custom_provider")
 
 
 class CompositeAuthProvider:

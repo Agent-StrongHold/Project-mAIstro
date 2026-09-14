@@ -206,14 +206,14 @@ class TestCompositeAuthProvider:
         assert all(secret not in message for message in messages)
 
     @pytest.mark.asyncio
-    async def test_audit_scheme_ignores_credential_derived_instance_metadata(
-        self, caplog: pytest.LogCaptureFixture
+    async def test_audit_scheme_ignores_credential_derived_class_metadata(
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from maistro.security.auth_static import StaticKeyAuthProvider
 
         secret = "credential-derived-secret"
         provider = StaticKeyAuthProvider(secret)
-        provider.scheme = f"Bearer {secret}"  # type: ignore[attr-defined]
+        monkeypatch.setattr(StaticKeyAuthProvider, "scheme", f"Bearer {secret}")
         composite = CompositeAuthProvider([provider])
         with caplog.at_level("INFO", logger="maistro.auth.composite"), pytest.raises(AuthError):
             await composite.authenticate(f"Bearer {secret}-wrong")
