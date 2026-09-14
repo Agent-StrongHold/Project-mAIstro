@@ -64,7 +64,10 @@ class SqlitePromptManager:
         not making, which is the shape of the whole defect this store is being
         fixed for.
         """
+        from maistro.persistence.sqlite_schema import begin_schema_upgrade
+
         await self._conn.execute("PRAGMA foreign_keys = ON")
+        await begin_schema_upgrade(self._conn)
         await self._conn.executescript(_SCHEMA)
         await self._conn.commit()
 

@@ -12,6 +12,7 @@ this is a pure record of what we actually observed locally.
 from __future__ import annotations
 
 import time
+import uuid
 from collections import defaultdict, deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -29,6 +30,9 @@ _TOKEN_UNITS: tuple[LimitUnit, ...] = (
 @dataclass(frozen=True)
 class UsageEvent:
     timestamp: float
+    # Stable identity lets write-behind persistence retry a flush without
+    # counting the same logical provider call twice.
+    event_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     input_tokens: int = 0
     output_tokens: int = 0
     images: int = 0
@@ -77,12 +81,14 @@ class InMemoryUsageLog:
         images: int = 0,
         cost_usd: float = 0.0,
         now: float | None = None,
+        event_id: str | None = None,
     ) -> None:
         now = now if now is not None else time.time()
         log = self._scopes[scope_key]
         log.events.append(
             UsageEvent(
                 timestamp=now,
+                event_id=event_id or uuid.uuid4().hex,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 images=images,

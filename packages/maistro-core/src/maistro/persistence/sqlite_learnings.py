@@ -6,6 +6,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from maistro.observability.correlation import observed_provenance
+from maistro.persistence.sqlite_schema import begin_schema_upgrade
 from maistro.types.memory import Learning, MemoryScope
 
 if TYPE_CHECKING:
@@ -56,6 +57,7 @@ class SqliteLearningStore:
         `ALTER TABLE ... ADD COLUMN` with a constant default is a metadata-only
         operation, so this is cheap even on a large table.
         """
+        await begin_schema_upgrade(self._conn)
         await self._conn.execute(_SCHEMA)
         cursor = await self._conn.execute("PRAGMA table_info(learnings)")
         columns = {row[1] for row in await cursor.fetchall()}

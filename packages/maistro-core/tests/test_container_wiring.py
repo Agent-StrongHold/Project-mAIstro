@@ -58,11 +58,19 @@ async def test_container_exposes_all_new_subsystems() -> None:
 
 async def test_sqlite_backend_wires_sqlite_durable_event_stores() -> None:
     container = await _container(database_url="sqlite://")
+    assert type(container.elevation_store).__name__ == "SqliteElevationStore"
+    assert type(container.usage_log_persistence).__name__ == "SqliteUsageLog"
     assert type(container.durable_event_log).__name__ == "SqliteEventLog"
     assert type(container.trigger_store).__name__ == "SqliteTriggerStore"
     assert type(container.invocation_store).__name__ == "SqliteInvocationStore"
     event = await container.durable_event_log.append("task.created", source="test")
     assert (await container.durable_event_log.get(event.id)) is not None
+    container.usage_log.record("provider:model", input_tokens=7, now=1000.0)
+    await container.flush_usage_log()
+    restored = await container.usage_log_persistence.restore()
+    from maistro.quota.rate_profile import LimitUnit
+
+    assert restored.tokens_since("provider:model", 3600, LimitUnit.INPUT_TOKENS, now=1000.0) == 7
 
 
 # --- Resilience (ADR-066) ----------------------------------------------------
