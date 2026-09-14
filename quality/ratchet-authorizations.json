@@ -61,6 +61,21 @@
     }
   },
   "vulture": {
+    "packages/maistro-core/src/maistro/capabilities/invocation.py::unused variable 'observed_at'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1118",
+      "reason": "InvocationReconciliation.observed_at is a Pydantic model field with a default_factory, not a local variable. Vulture reads the class body statically and cannot see that Pydantic's metaclass collects the annotation into model_fields and populates it on every construction; the field is persisted on the audit record and read back by reconciliation history. Same declarative shape as the 424 already-banked pydantic-declarative-field identities."
+    },
+    "packages/maistro-core/src/maistro/capabilities/invocation.py::unused method '_validate_reconciliation'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1118",
+      "reason": "InvocationReconciliation._validate_reconciliation is a @model_validator(mode='after'). Pydantic registers and invokes it during validation; there is no in-repo call site by design, exactly as with every other model validator in this package. It enforces #1118's required-field contract on the audit record, and packages/maistro-core/tests/capabilities exercises it directly."
+    },
+    "packages/maistro-core/src/maistro/capabilities/invocation.py::unused method '_validate_evidence'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1118",
+      "reason": "InvocationReconciliationEvidence._validate_evidence is a @model_validator(mode='after'), invoked by Pydantic during validation and never called directly in-repo. It refuses provider evidence missing source/actor/reason, which is what keeps an unattributed reconciliation out of the audit trail."
+    },
     "packages/maistro-core/src/maistro/graph/nodes/agent_delegate_remote.py::unused class 'AgentDelegateRemoteNode'": {
       "owner": "@BlakeMatthews-dev",
       "issue": "#1193",
