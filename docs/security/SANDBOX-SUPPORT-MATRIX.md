@@ -16,15 +16,16 @@ untrusted code badly — it is a host on which untrusted code does not run.
 
 | Tier | ADR-093 name | Backend shipped | Host requirements | Status |
 |---|---|---|---|---|
-| 1 | Hardware VM | *none yet* | `/dev/kvm` readable/writable **and** one of `firecracker`, `cloud-hypervisor`, `qemu-system-x86_64` on `PATH` | Detected, not implemented — see below |
+| 1 | Hardware VM | `KataSandboxBackend` (`docker --runtime=kata`) | `/dev/kvm` readable/writable; `kata-runtime` and `docker` on `PATH`; Docker daemon reports a configured Kata runtime; a preloaded OCI image | **Shipped**, selected by the canonical selector |
 | 2 | User-space kernel | *none yet* | `runsc` on `PATH` | Detected, not implemented |
 | 3 | OS sandbox | `BubblewrapSandboxBackend` | `bwrap` on `PATH` **and able to build a namespace** — see below | **Shipped** |
 | — | Fake | `FakeSandboxBackend` | none | Dev/test only, never registered automatically |
 
-Tiers 1 and 2 are *probed* but have no backend. That is deliberate and is the
-honest state: `detect_host_capabilities()` will report `vm` or `gvisor` where
-the host has them, and `build_selector` will simply not register a tier it
-cannot construct. The result is a refusal, not a silent downgrade.
+Tier 2 is *probed* but has no backend. Tier 1 is supported only through the
+Kata deployment profile named above: a generic VMM binary is not enough to
+claim support. `detect_host_capabilities()` and `build_selector` refuse a host
+that cannot construct that exact profile. The result is a refusal, not a
+silent downgrade.
 
 ## What each workload requires
 
@@ -32,17 +33,17 @@ From `maistro.sandbox.policy`:
 
 | Policy | Minimum tier | Runs on a Tier-3-only host? |
 |---|---|---|
-| `UNTRUSTED_CODE` | `vm` | **No** — refused |
-| `BENCHMARK_EVAL` | `vm` | **No** — refused |
-| `TRUSTED_TOOL` | `container` | No — refused (no container backend is shipped) |
-| `BROWSER_AUTOMATION` | `container` | No — refused |
+| `UNTRUSTED_CODE` | `vm` | **Yes, when the Kata profile is available; otherwise refused** |
+| `BENCHMARK_EVAL` | `vm` | **Yes, when the Kata profile is available; otherwise refused** |
+| `TRUSTED_TOOL` | `container` | **Yes, selected on Kata (VM is stronger); otherwise refused** |
+| `BROWSER_AUTOMATION` | `container` | **Yes, selected on Kata (VM is stronger); otherwise refused** |
 | `DEV_ONLY` | `fake` | Only when the process opted into the fake |
 
-On a host with only bubblewrap, every policy above `bubblewrap` refuses. This
-reads as restrictive because it is: ADR-093's Tier 3 is "a guardrail against
-accidents and prompt-injection mistakes, **not** a security boundary against
-hostile code", so a Tier-3 host is not permitted to run the workloads whose
-stated reason for existing is containment of hostile code.
+On a host with only bubblewrap, every standard policy refuses. This reads as
+restrictive because it is: ADR-093's Tier 3 is "a guardrail against accidents
+and prompt-injection mistakes, **not** a security boundary against hostile
+code", so a Tier-3 host is not permitted to run the workloads whose stated
+reason for existing is containment of hostile code.
 
 ## Execution-mode floors (ADR-093 decision 6)
 
@@ -172,9 +173,11 @@ a host write with no sandbox involved.
   namespace, device, host socket, credential, privilege — plus resource
   exhaustion and cleanup, and every expectation in it was measured against a
   live sandbox before it was written down. The bubblewrap lane in CI *is* the
-  designated conformance lane: Tiers 1 and 2 have no backend to conform, so
-  there is nothing a hardware-capable runner would additionally exercise until
-  one ships.
+  designated conformance lane for Tier 3. The canonical Kata backend has the
+  same protocol-level launch assertions in
+  `packages/maistro-core/tests/sandbox/test_kata_backend.py`; live VM and
+  escape coverage is required on the Kata deployment profile and is skipped
+  when this host does not expose Kata/KVM evidence.
 
   What it establishes, concretely: the host's `/etc/passwd` and `/home` are not
   there to read; `/usr` is read-only; `/proc/1/root` is the sandbox's root and

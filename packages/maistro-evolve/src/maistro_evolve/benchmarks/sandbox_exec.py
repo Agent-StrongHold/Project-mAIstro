@@ -74,7 +74,7 @@ async def run_function_checks(
 
     try:
         from maistro.config.settings import SandboxSettings
-        from maistro.tools.sandbox.docker import create_sandbox
+        from maistro.tools.sandbox.canonical import create_sandbox
     except ImportError as exc:
         return False, f"isolated sandbox unavailable: {exc}"[:_MAX_OUTPUT_CHARS]
 

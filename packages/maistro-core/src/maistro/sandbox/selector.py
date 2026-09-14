@@ -115,14 +115,16 @@ class SandboxSelector:
         """
         memory_mb = min(int(overrides.get("memory_mb", policy.max_memory_mb)), policy.max_memory_mb)
         timeout_s = min(int(overrides.get("timeout_s", policy.max_timeout_s)), policy.max_timeout_s)
-        network = bool(overrides.get("network", policy.network_allowed)) and policy.network_allowed
+        # ``network`` is accepted only for source compatibility. It is never
+        # copied into the config; egress is the sole authority and comes from
+        # the policy decided before the sandbox exists.
+        _requested_network = overrides.get("network", False)
         # The grant is never taken from overrides: it is the policy's, decided
         # before the sandbox exists, so there is nothing for candidate code to
         # widen later.
         return SandboxConfig(
             memory_mb=memory_mb,
             timeout_s=timeout_s,
-            network=network and policy.egress.grants_network,
             min_isolation=policy.effective_min_tier,
             egress=policy.egress,
         )

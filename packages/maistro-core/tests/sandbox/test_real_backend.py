@@ -206,11 +206,8 @@ def test_a_bare_network_boolean_does_not_grant_egress(tmp_path: Path) -> None:
     """`network=True` used to be the whole story. It is not any more (#77):
     egress comes from an explicit `EgressGrant` carrying a reason, so a config
     that merely says "network" gets none."""
-    backend = _backend(tmp_path)
-
-    argv = backend.build_argv(SandboxConfig(network=True), tmp_path, ["true"])
-
-    assert "--share-net" not in argv
+    with pytest.raises(ValueError, match="network is unsupported"):
+        SandboxConfig(network=True)
 
 
 def test_an_explicit_host_grant_is_what_shares_the_network(tmp_path: Path) -> None:
@@ -439,53 +436,35 @@ def test_the_probe_runs_bwrap_under_the_spawn_budgets(
     import subprocess
 
     from maistro.sandbox import detect
-    from maistro.sandbox.backends import bubblewrap as bwrap_module
     from maistro.sandbox.backends.bubblewrap import resource_limits
 
-    applied: dict[int, tuple[int, int]] = {}
-    calls: list[dict[str, object]] = []
+    calls: list[tuple[object, dict[str, object]]] = []
 
-    def _record_setrlimit(which: int, limits: tuple[int, int]) -> None:
-        applied[which] = limits
-
-    def _fake_run(*_args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        calls.append(kwargs)
-        preexec = kwargs.get("preexec_fn")
-        assert callable(preexec)
-        # Resolves through the monkeypatched setrlimit, so nothing real is
-        # applied to the test process -- only recorded.
-        preexec()
+    def _fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        calls.append((args[0], kwargs))
+        assert "preexec_fn" not in kwargs
         return subprocess.CompletedProcess(args=[], returncode=0, stdout=b"", stderr=b"")
 
-    monkeypatch.setattr(detect, "_which", lambda binary: "/usr/bin/bwrap")
     monkeypatch.setattr(detect.subprocess, "run", _fake_run)
-    monkeypatch.setattr(bwrap_module.resource, "setrlimit", _record_setrlimit)
-
-    caps = detect.detect_host_capabilities()
-
-    assert caps.supports("bubblewrap")
-    assert len(calls) == 1
-    assert applied == resource_limits(SandboxConfig())
+    assert detect._bubblewrap_isolates("/usr/bin/bwrap", SandboxConfig())[0]
+    argv = calls[0][0]
+    assert isinstance(argv, list)
+    limits = resource_limits(SandboxConfig())
+    assert all(str(soft) in argv for soft, _hard in limits.values())
 
 
-def test_the_shared_preexec_hook_applies_exactly_the_limits_given(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """One hook for `exec` and the probe, so the two cannot drift apart."""
+def test_limits_use_a_single_thread_safe_execing_helper() -> None:
+    """The async backend must not use Python's unsafe ``preexec_fn`` hook."""
     import resource
+    import sys
 
-    from maistro.sandbox.backends.bubblewrap import preexec_for
+    from maistro.sandbox.backends.bubblewrap import limited_argv
 
-    applied: dict[int, tuple[int, int]] = {}
-
-    def _record_setrlimit(which: int, limits: tuple[int, int]) -> None:
-        applied[which] = limits
-
-    monkeypatch.setattr(resource, "setrlimit", _record_setrlimit)
-
-    preexec_for({resource.RLIMIT_NOFILE: (64, 128)})()
-
-    assert applied == {resource.RLIMIT_NOFILE: (64, 128)}
+    argv = limited_argv({resource.RLIMIT_NOFILE: (64, 128)}, ["bwrap", "true"])
+    assert argv[0] == sys.executable
+    assert argv[1:3] == ["-m", "maistro.sandbox.backends._rlimit_exec"]
+    assert argv[3:6] == [str(resource.RLIMIT_NOFILE), "64", "128"]
+    assert argv[-3:] == ["--", "bwrap", "true"]
 
 
 def test_an_eagain_namespace_failure_is_reported_as_an_absent_tier(
@@ -530,34 +509,20 @@ def test_the_probe_applies_the_configured_budgets_not_the_defaults(
     import subprocess
 
     from maistro.sandbox import detect
-    from maistro.sandbox.backends import bubblewrap as bwrap_module
     from maistro.sandbox.backends.bubblewrap import resource_limits
 
     tight = SandboxConfig(memory_mb=16, cpu_cores=0.1, max_processes=1)
-    applied: dict[int, tuple[int, int]] = {}
+    captured: list[list[str]] = []
 
-    def _record_setrlimit(which: int, limits: tuple[int, int]) -> None:
-        applied[which] = limits
-
-    def _fake_run(*_args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        preexec = kwargs.get("preexec_fn")
-        assert callable(preexec)
-        # Resolves through the monkeypatched setrlimit, so nothing real is
-        # applied to the test process -- only recorded.
-        preexec()
+    def _fake_run(*args: object, **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        captured.append(args[0])
         return subprocess.CompletedProcess(args=[], returncode=0, stdout=b"", stderr=b"")
 
-    monkeypatch.setattr(detect, "_which", lambda binary: "/usr/bin/bwrap")
     monkeypatch.setattr(detect.subprocess, "run", _fake_run)
-    monkeypatch.setattr(bwrap_module.resource, "setrlimit", _record_setrlimit)
-
-    caps = detect.detect_host_capabilities(tight)
-
-    assert caps.supports("bubblewrap")
-    assert applied == resource_limits(tight)
-    # The tight config's budgets, not the defaults -- the disagreement the
-    # review flagged is exactly `applied == resource_limits(SandboxConfig())`.
-    assert applied != resource_limits(SandboxConfig())
+    assert detect._bubblewrap_isolates("/usr/bin/bwrap", tight)[0]
+    argv = captured[0]
+    assert all(str(soft) in argv for soft, _hard in resource_limits(tight).values())
+    assert str(next(iter(resource_limits(SandboxConfig()).values()))[0]) not in argv
 
 
 def test_an_unsupported_preexec_hook_reads_as_absent_not_an_abort(

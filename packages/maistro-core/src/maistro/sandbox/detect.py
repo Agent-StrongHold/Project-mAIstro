@@ -34,9 +34,11 @@ logger = logging.getLogger("maistro.sandbox.detect")
 #: Device node that makes hardware virtualization (Tier 1) possible at all.
 KVM_DEVICE = "/dev/kvm"
 
-#: Tier-1 VMMs, in no particular preference order — any one of them, with KVM,
-#: is a hardware-virtualization boundary.
-VMM_BINARIES = ("firecracker", "cloud-hypervisor", "qemu-system-x86_64")
+#: The shipped Tier-1 backend is Kata through Docker's OCI runtime. Other VMM
+#: binaries are intentionally detected only as useful operator diagnostics;
+#: they are not enough to claim this protocol can launch a workload.
+KATA_RUNTIME_BINARY = "kata-runtime"
+VMM_BINARIES = (KATA_RUNTIME_BINARY, "firecracker", "cloud-hypervisor", "qemu-system-x86_64")
 
 #: Tier-2: gVisor's runtime binary. Its user-space kernel is what removes the
 #: host kernel from the direct syscall path.
@@ -124,9 +126,8 @@ def _bubblewrap_isolates(
     defaults; a caller that knows the config execution will run under passes
     that, and the probe answers for *it*.
 
-    Every way the probe itself cannot run -- including a `RuntimeError` out
-    of `subprocess`, which is what CPython raises from `preexec_fn` inside a
-    subinterpreter before bwrap ever starts (#1328) -- reads as Tier 3
+    Every way the probe itself cannot run -- including a `RuntimeError` from
+    the process launcher before bwrap ever starts (#1328) -- reads as Tier 3
     absent with the reason, never as an abort of detection.
     """
     truth = shutil.which("true")
@@ -152,27 +153,23 @@ def _bubblewrap_isolates(
 
     # Imported here rather than at module level: the backend imports this
     # module's `BUBBLEWRAP_BINARY`, so a module-level edge would be a cycle.
-    from maistro.sandbox.backends.bubblewrap import preexec_for, resource_limits
+    from maistro.sandbox.backends.bubblewrap import limited_argv, resource_limits
 
     # The budgets spawn will enforce for *this* config, so the probe's "yes"
     # is one the sandbox can reproduce under the config it was asked about.
     # Nothing else about the probe changes: still fixed argv, no shell, no
     # user input, still bounded by the wall-clock timeout.
-    preexec = preexec_for(resource_limits(config))
-
     try:
         completed = subprocess.run(  # nosec B603 — fixed argv, no shell, no user input
-            argv,
+            limited_argv(resource_limits(config), argv),
             capture_output=True,
             timeout=PROBE_TIMEOUT_S,
             check=False,
-            preexec_fn=preexec,
         )
     except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
-        # `RuntimeError` is not exotic here: it is what CPython raises from
-        # `preexec_fn` when detection runs in a subinterpreter (an embedded
-        # server worker), before bwrap starts. Reporting it as absent-with-
-        # reason is the contract; propagating would abort detection and the
+        # A launcher RuntimeError is not exotic in an embedded server worker;
+        # reporting it as absent-with-reason is the contract. Propagating would
+        # abort detection and the
         # selector construction that asked the question (#1328).
         return False, f"bubblewrap probe could not run: {exc}"
 
@@ -186,12 +183,36 @@ def _bubblewrap_isolates(
 
 
 def _probe_vm(_config: SandboxConfig) -> tuple[bool, str]:
-    """Tier 1 needs KVM this process can open *and* a VMM to drive it."""
+    """Tier 1 needs usable KVM and the shipped Kata deployment profile."""
     kvm_ok, kvm_note = _kvm_usable()
     if not kvm_ok:
         return False, kvm_note
-    if next((name for name in VMM_BINARIES if _which(name)), None) is None:
-        return False, f"{KVM_DEVICE} is usable but no VMM found on PATH ({', '.join(VMM_BINARIES)})"
+    kata = _which(KATA_RUNTIME_BINARY)
+    docker = _which("docker")
+    if kata is None or docker is None:
+        if next((name for name in VMM_BINARIES if _which(name)), None) is None:
+            return (
+                False,
+                f"{KVM_DEVICE} is usable but no VMM found on PATH ({', '.join(VMM_BINARIES)})",
+            )
+        return False, (
+            f"{KVM_DEVICE} is usable but the supported Kata profile requires "
+            "kata-runtime and docker on PATH"
+        )
+    try:
+        completed = subprocess.run(
+            [docker, "info", "--format", "{{json .Runtimes}}"],
+            capture_output=True,
+            timeout=PROBE_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"Kata Docker runtime probe failed: {exc}"
+    if completed.returncode != 0:
+        return False, "Kata Docker runtime probe failed; docker daemon is unavailable"
+    runtimes = completed.stdout.decode(errors="replace").lower()
+    if "kata" not in runtimes:
+        return False, "docker is available but its configured runtimes do not include Kata"
     return True, ""
 
 
@@ -253,6 +274,7 @@ def detect_host_capabilities(config: SandboxConfig | None = None) -> HostCapabil
 __all__ = [
     "BUBBLEWRAP_BINARY",
     "GVISOR_BINARY",
+    "KATA_RUNTIME_BINARY",
     "KVM_DEVICE",
     "VMM_BINARIES",
     "HostCapabilities",

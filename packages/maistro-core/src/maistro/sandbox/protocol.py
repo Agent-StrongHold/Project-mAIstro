@@ -55,14 +55,26 @@ class SandboxConfig:
     #: Best-effort process ceiling. Set as `RLIMIT_NPROC`, which the kernel
     #: does not enforce for a privileged parent -- see `resource_limits`.
     max_processes: int = 128
+    # Legacy callers must use ``egress`` for network authority.  The field is
+    # retained only as a mechanically rejected compatibility input; it cannot
+    # silently widen a policy.
     network: bool = False
     writable_paths: list[str] = field(default_factory=list)
+    #: Optional host workspace bind-mounted by backends that support it.
+    workspace_host: str | None = None
+    #: Preloaded OCI image selected by deployment configuration.
+    image: str | None = None
     env: dict[str, str] = field(default_factory=dict)
     min_isolation: IsolationTier = "container"
     #: The egress grant this sandbox runs under. Default-deny (#77), and
     #: frozen with the rest of the config so nothing can widen it after the
     #: sandbox is running.
     egress: EgressGrant = DENY_ALL
+
+    def __post_init__(self) -> None:
+        if self.network:
+            raise ValueError("SandboxConfig.network is unsupported; use an explicit egress grant")
+
     #: The Attempt fence this sandbox executes under (#79). Injected into
     #: the sandbox environment so anything it publishes can prove it is
     #: still the current execution. `None` for work with nothing to commit.

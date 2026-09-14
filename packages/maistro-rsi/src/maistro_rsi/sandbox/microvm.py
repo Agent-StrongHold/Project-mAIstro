@@ -18,7 +18,7 @@ import uuid
 import structlog
 
 from maistro.config.settings import SandboxSettings
-from maistro.tools.sandbox.docker import SandboxContainer, create_sandbox
+from maistro.tools.sandbox.canonical import CanonicalSandboxContainer, create_sandbox
 from maistro_rsi.protocols import MicroVmSandbox
 from maistro_rsi.sandbox.local import LocalSandbox
 
@@ -104,7 +104,7 @@ class DockerMicroVmSandbox:
     genuine pause/resume here without changing this class's interface.
     """
 
-    def __init__(self, container: SandboxContainer) -> None:
+    def __init__(self, container: CanonicalSandboxContainer) -> None:
         self._container = container
         self._snapshots: dict[str, str] = {}
 

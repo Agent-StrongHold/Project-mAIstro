@@ -51,6 +51,16 @@ def build_selector(
     caps = capabilities if capabilities is not None else detect_host_capabilities(sandbox_config)
     selector = SandboxSelector()
 
+    if caps.supports("vm"):
+        from maistro.sandbox.backends.kata import KataSandboxBackend, KataUnavailableError
+
+        try:
+            selector.register("vm", KataSandboxBackend())
+        except KataUnavailableError as exc:
+            # Capability probing is deliberately advisory; construction wins
+            # when the daemon/runtime changed between the two operations.
+            logger.warning("sandbox_backend_unavailable tier=vm reason=%s", exc)
+
     if caps.supports("bubblewrap"):
         from maistro.sandbox.backends.bubblewrap import (
             BubblewrapSandboxBackend,
