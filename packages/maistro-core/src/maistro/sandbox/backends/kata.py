@@ -93,7 +93,7 @@ class KataSandboxBackend:
         container_id = stdout.decode(errors="replace").strip()
         if not container_id:
             if owned:
-                await asyncio.to_thread(__import__("shutil").rmtree, workdir, True)
+                await asyncio.to_thread(shutil.rmtree, workdir, True)
             raise RuntimeError("Kata runtime returned no container id")
         self._instances[sid] = (config, workdir, owned)
         logger.info("sandbox_spawned id=%s tier=vm runtime=kata", sid)
