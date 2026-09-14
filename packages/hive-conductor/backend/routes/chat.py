@@ -8,7 +8,7 @@ import stores
 from fastapi import APIRouter, HTTPException, Request
 from models.schemas import ChatCompletionRequest, ChatMessage, ChatSession, ChatSessionSummary
 from pydantic import BaseModel, ConfigDict
-from services.chat_completion import build_llm_port
+from services.chat_completion import _execute_workflow_with_approval, build_llm_port
 from services.chat_completion import conversation_only as _conversation_only
 from services.chat_gate import (
     REASON_BUDGET_EXCEEDED,
@@ -21,14 +21,11 @@ from services.owned_records import chat_sessions_for
 
 router = APIRouter(tags=["chat"])
 
-# The input half of #315 has landed: every message crosses the Warden boundary
-# (`_gate_messages` → `services.chat_gate`) before the model is called. The
-# tool half is still contained — external Conductor chat stays conversational-
-# only until model-driven tool use is re-enabled behind the dispatch policy in
-# `services.chat_gate` (privileged effects need an approval the model cannot
-# mint; networked effects need a principal). The tool-capable agent loop
-# remains implemented behind services.chat_completion for trusted/internal
-# callers, but this public route must not invoke it.
+# The input half of #315 has landed: every conversational message crosses the
+# Warden boundary (`_gate_messages` -> `services.chat_gate`) before the model is
+# called. External completion stays conversational-only; the separate workflow
+# route below is explicitly permission- and approval-gated before it enters the
+# existing canonical DAG execution path.
 _DASHBOARD_EDIT_SCOPE = "dashboard_edit"
 _DASHBOARD_EDIT_DISABLED = "AI dashboard editing is temporarily disabled until the governed widget capability boundary is enabled."
 _CONVERSATION_SYSTEM_PROMPT = (
@@ -83,6 +80,26 @@ def get_session(session_id: str, request: Request) -> ChatSession:
 @router.delete("/sessions/{session_id}", status_code=204)
 def delete_session(session_id: str, request: Request) -> None:
     chat_sessions_for(request).discard(session_id)
+
+
+class RunWorkflowBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    dag_id: str
+    goal: str = ""
+
+
+@router.post("/workflows/run")
+async def run_workflow(body: RunWorkflowBody, request: Request) -> dict:
+    """Run a chat-selected workflow only after the shared approval inbox settles it."""
+    user = getattr(request.state, "user", None) or {}
+    user_id = str(user.get("id") or user.get("username") or "")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    args = {"dag_id": body.dag_id}
+    if body.goal:
+        args["goal"] = body.goal
+    return await _execute_workflow_with_approval(args, user_id)
 
 
 class AppendMessageBody(BaseModel):

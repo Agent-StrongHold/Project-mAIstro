@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from models.schemas import CapabilitySetting
 from pydantic import BaseModel, ConfigDict
 from services.engine import get_engine
@@ -265,18 +265,29 @@ class ResolveApprovalBody(BaseModel):
 
 
 @router.post("/approvals/{request_id}")
-def resolve_approval(request_id: str, body: ResolveApprovalBody) -> dict[str, Any]:
+def resolve_approval(
+    request_id: str,
+    body: ResolveApprovalBody,
+    request: Request,
+) -> dict[str, Any]:
     inbox = _approval_inbox()
     if inbox is None:
         raise HTTPException(status_code=503, detail="no approval inbox available")
-    resolved = inbox.resolve(request_id, approved=body.approved, actor=body.actor)
+    # HTTP callers cannot choose the audit actor. Direct provider tests may
+    # omit Request, but production resolution always uses the authenticated
+    # session principal that AuthMiddleware already verified.
+    user = getattr(getattr(request, "state", None), "user", None) or {}
+    actor = str(user.get("id") or user.get("username") or "") or body.actor
+    if request is not None and not actor:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    resolved = inbox.resolve(request_id, approved=body.approved, actor=actor)
     if not resolved:
         raise HTTPException(status_code=404, detail=f"no pending approval '{request_id}'")
     log_audit(
         "approval_resolve",
-        body.actor or "system",
+        actor or "system",
         target=request_id,
-        detail={"approved": body.approved},
+        detail={"approved": body.approved, "principal": actor or "unverified"},
         severity="warning",
     )
     return {"resolved": True, "request_id": request_id, "approved": body.approved}

@@ -119,6 +119,10 @@ _PROTECTED_OPS: dict[str, dict[str, str]] = {
         "/v1/workspaces": "workspaces.write",
         # The evolution tournament is the self-improvement loop's other door.
         "/v1/evolution": "rsi.execute",
+        # Chat workflow execution creates durable Run history and can invoke
+        # mutating nodes. It uses the shared approval capability before the
+        # existing chat dispatch path, so authentication alone is not enough.
+        "/v1/chat/workflows": "dags.write",
         # Executes GitHub/GitLab tools with stored credentials against real
         # external trackers.
         # Audit entries name an arbitrary `actor`: an unscoped writer is a

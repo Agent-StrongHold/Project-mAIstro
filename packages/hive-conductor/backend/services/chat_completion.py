@@ -1867,6 +1867,8 @@ async def _execute_tool(
     *,
     approved: bool = False,
     approval_evidence: dict[str, Any] | None = None,
+    approval_request: Any | None = None,
+    approval_decision: Any | None = None,
 ) -> dict[str, Any]:
     """Execute a PM tool for real. No stubs. Calls Jira REST API directly.
 
@@ -1881,14 +1883,26 @@ async def _execute_tool(
         str(args.get("dag_id") or args.get("id") or "") if tool_name == "run_workflow" else None
     )
     request_digest = _workflow_request_digest(args) if tool_name == "run_workflow" else None
-    approval_record = dict(approval_evidence or {}) if approval_evidence else None
-    if approval_record is not None:
-        approval_record.setdefault("source", "caller_presented")
+    approval_record = (
+        {
+            "request_id": approval_request.request_id,
+            "action": approval_request.action,
+            "principal": approval_request.requester,
+            "workflow_id": approval_request.params.get("workflow_id"),
+            "request_digest": approval_request.params.get("request_digest"),
+            "actor": approval_decision.actor,
+            "source": "capability_approval",
+        }
+        if approval_request is not None and approval_decision is not None
+        else (dict(approval_evidence) if approval_evidence else None)
+    )
     refusal = gate_tool_dispatch(
         tool_name,
         user_id,
         approved=approved,
         approval_evidence=approval_evidence,
+        approval_request=approval_request,
+        approval_decision=approval_decision,
         workflow_id=workflow_id or None,
         request_digest=request_digest,
     )
@@ -1920,6 +1934,81 @@ async def _execute_tool(
             severity="warning" if result.get("error") else "info",
         )
     return result
+
+
+async def _execute_workflow_with_approval(args: dict[str, Any], user_id: str) -> dict[str, Any]:
+    """Request workflow approval through the canonical capability provider.
+
+    The request remains pending in the shared approval inbox while the caller
+    waits. Resolving it through the capabilities API supplies the typed
+    decision used by the chat dispatch gate; no chat-local approval store or
+    signature verifier is involved.
+    """
+    from maistro.capabilities.approval_store import redact_approval_value
+    from maistro.capabilities.slots.approval import ApprovalRequest
+    from services.engine import get_engine
+
+    workflow_id = str(args.get("dag_id") or args.get("id") or "")
+    request_digest = _workflow_request_digest(args)
+    provider = await get_engine().capabilities.resolve("approval")
+    if provider is None or not hasattr(provider, "request"):
+        return {
+            "error": "workflow approval capability unavailable",
+            "blocked": True,
+            "workflow_id": workflow_id,
+        }
+    approval_request = ApprovalRequest(
+        action="run_workflow",
+        params={
+            "workflow_id": workflow_id,
+            "request_digest": request_digest,
+            "request": redact_approval_value(args),
+        },
+        tier="policy",
+        requester=user_id,
+        rationale="Chat requested durable workflow execution",
+    )
+    log_audit(
+        "chat_workflow_approval_requested",
+        user_id or "anonymous",
+        target=workflow_id,
+        detail={
+            "request_id": approval_request.request_id,
+            "principal": user_id or "anonymous",
+            "workflow_id": workflow_id,
+            "request_digest": request_digest,
+            "effect": "mutate",
+        },
+    )
+    decision = await provider.request(approval_request)
+    if not decision.approved or not decision.actor:
+        log_audit(
+            "chat_workflow_approval_refused",
+            user_id or "anonymous",
+            target=workflow_id,
+            detail={
+                "request_id": approval_request.request_id,
+                "principal": user_id or "anonymous",
+                "workflow_id": workflow_id,
+                "request_digest": request_digest,
+                "actor": decision.actor,
+                "refusal_reason": "approval_denied" if not decision.approved else "missing_actor",
+            },
+            severity="warning",
+        )
+        return {
+            "error": "workflow execution refused by approval",
+            "blocked": True,
+            "workflow_id": workflow_id,
+            "approval_request_id": approval_request.request_id,
+        }
+    return await _execute_tool(
+        "run_workflow",
+        args,
+        user_id,
+        approval_request=approval_request,
+        approval_decision=decision,
+    )
 
 
 async def _gated_execute_tool(
@@ -1955,7 +2044,9 @@ async def _gated_execute_tool(
         )
 
     try:
-        if approved or approval_evidence is not None:
+        if tool_name == "run_workflow" and not approved and approval_evidence is None:
+            result = await _execute_workflow_with_approval(args, user_id)
+        elif approved or approval_evidence is not None:
             result = await _execute_tool(
                 tool_name,
                 args,
