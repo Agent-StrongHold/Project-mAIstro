@@ -176,8 +176,7 @@ def test_denylist_covers_the_ambient_credential_surfaces() -> None:
         "./.git",  # refs, credential helpers, and host-authored hooks
         ".git",  # nested submodule metadata, any depth
         ".env",  # dotenv secrets, any depth
-        ".env.local",
-        ".env.*.local",
+        ".env.*",  # environment-specific dotenv variants
         ".ssh",
         ".aws",
         ".npmrc",
@@ -186,6 +185,7 @@ def test_denylist_covers_the_ambient_credential_surfaces() -> None:
         "id_ed25519",
         "*.pem",
         "*.key",
+        "secrets",  # application-specific secret material, any depth
     ):
         assert pattern in _SEED_EXCLUDES
 

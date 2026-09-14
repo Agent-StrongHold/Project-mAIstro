@@ -79,11 +79,16 @@ _SEED_EXCLUDES = (
     # by the builder's git tools is created separately inside /tmp.
     "./.git",
     ".git",  # nested submodule metadata is ambient host control data too.
-    # dotenv secrets (the gitignored kind), at any depth.
+    # dotenv secrets (including environment-specific variants), at any depth.
+    # Do not rely on callers to distinguish `.env.example` from a production
+    # variant: a host-side seed is a credential boundary, so all variants stay
+    # out of the untrusted workspace.
     ".env",
-    ".env.local",
-    ".env.*.local",
-    # ambient credential directories and registry logins, at any depth.
+    ".env.*",
+    # Ambient credential directories and registry logins, at any depth. A
+    # directory named `secrets` is deliberately excluded wholesale: filenames
+    # inside it are application-specific and cannot be safely identified by
+    # extension (for example, `production-token.txt`).
     ".ssh",
     ".aws",
     ".gnupg",
@@ -91,6 +96,7 @@ _SEED_EXCLUDES = (
     ".npmrc",
     ".netrc",
     "_netrc",
+    "secrets",
     # bare key material, at any depth.
     "id_rsa",
     "id_dsa",

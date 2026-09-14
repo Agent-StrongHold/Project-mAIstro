@@ -164,7 +164,13 @@ def test_seed_leaves_ambient_credentials_on_the_host(tmp_path: Path) -> None:
         check=True,
     )
     (tmp_path / ".env").write_text("GITHUB_TOKEN=ambient-secret\n", encoding="utf-8")
+    (tmp_path / ".env.production").write_text(
+        "DATABASE_PASSWORD=ambient-secret\n", encoding="utf-8"
+    )
     (tmp_path / "server.pem").write_text("PRIVATE KEY material\n", encoding="utf-8")
+    secrets = tmp_path / "secrets"
+    secrets.mkdir()
+    (secrets / "production-token.txt").write_text("TOKEN=ambient-secret\n", encoding="utf-8")
     with (tmp_path / ".git" / "config").open("a") as cfg:
         cfg.write("\tcredential.helper = !leak-token\n")
     (tmp_path / ".git" / "hooks" / "pre-commit").write_text(
@@ -182,7 +188,11 @@ def test_seed_leaves_ambient_credentials_on_the_host(tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):
             sb.read_file(".env")
         with pytest.raises(FileNotFoundError):
+            sb.read_file(".env.production")
+        with pytest.raises(FileNotFoundError):
             sb.read_file("server.pem")
+        with pytest.raises(FileNotFoundError):
+            sb.read_file("secrets/production-token.txt")
         rc, _ = sb.run_argv_status(["test", "!", "-e", "/workspace/.git"])
         assert rc == 0, "host .git metadata was seeded"
 
