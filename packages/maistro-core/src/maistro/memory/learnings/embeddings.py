@@ -190,5 +190,19 @@ class HybridLearningStore:
     async def check_auto_promotions(self, threshold: int = 5) -> list[Learning]:
         return await self._store.check_auto_promotions(threshold)
 
-    async def get_promoted(self, task_type: str | None = None) -> list[Learning]:
-        return await self._store.get_promoted(task_type)
+    async def get_promoted(
+        self,
+        task_type: str | None = None,
+        *,
+        org_id: str = "",
+        team_id: str | None = None,
+        user_id: str | None = None,
+        agent_id: str | None = None,
+    ) -> list[Learning]:
+        return await self._store.get_promoted(
+            task_type,
+            org_id=org_id,
+            team_id=team_id,
+            user_id=user_id,
+            agent_id=agent_id,
+        )
