@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +2
+  packages/hive-conductor/backend/tests: +1
   packages/maistro-turing/backend/tests: +3
   tests/: +15
 ---
