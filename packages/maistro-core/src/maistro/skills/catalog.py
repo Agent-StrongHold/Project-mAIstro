@@ -7,12 +7,13 @@ Filesystem watcher detects new/modified skill files without restart.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-from maistro.skills.parser import parse_skill_file
+from maistro.skills.parser import parse_skill_file, security_scan
 from maistro.types.skill import SkillDefinition
 
 logger = logging.getLogger("maistro.skills.catalog")
@@ -103,13 +104,24 @@ class SkillCatalog:
         count = 0
         for path in sorted(directory.glob("*.md")):
             try:
+                if path.is_symlink():
+                    logger.warning("Skipping symlinked skill: %s", path)
+                    continue
                 content = path.read_text(encoding="utf-8")
+                safe, findings = security_scan(content)
+                if not safe:
+                    logger.warning("Skipping untrusted skill: %s (%s)", path, findings)
+                    continue
                 skill_def = parse_skill_file(content)
                 if skill_def is None:
                     logger.warning("Skill parse returned None: %s", path)
                     continue
                 entry = SkillCatalogEntry(
-                    definition=skill_def,
+                    definition=replace(
+                        skill_def,
+                        content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                        provenance=str(path),
+                    ),
                     scope=scope,
                     tenant_id=tenant_id,
                     user_id=user_id,
@@ -152,15 +164,29 @@ class SkillCatalog:
             return
         for path in directory.glob("*.md"):
             key = str(path)
+            if path.is_symlink():
+                logger.warning("Skipping symlinked skill during reload: %s", path)
+                continue
             mtime = path.stat().st_mtime
             old_mtime = self._file_mtimes.get(key)
             if old_mtime is None or mtime > old_mtime:
                 try:
                     content = path.read_text(encoding="utf-8")
+                    safe, findings = security_scan(content)
+                    if not safe:
+                        logger.warning("Rejected untrusted skill reload: %s (%s)", path, findings)
+                        continue
                     skill_def = parse_skill_file(content)
                     if skill_def is None:
                         continue
-                    entry = SkillCatalogEntry(definition=skill_def, scope="builtin")
+                    entry = SkillCatalogEntry(
+                        definition=replace(
+                            skill_def,
+                            content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                            provenance=str(path),
+                        ),
+                        scope="builtin",
+                    )
                     with self._lock:
                         self._entries = [
                             e

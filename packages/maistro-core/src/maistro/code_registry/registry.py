@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import re
 
-from maistro.code_registry.types import CodeEntry, CodeRefUnresolved, InvalidSignature
+from maistro.code_registry.types import (
+    CodeEntry,
+    CodeEntryConflict,
+    CodeRefUnresolved,
+    InvalidSignature,
+)
 from maistro.code_registry.verify import SignatureVerifier
 
 _SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
@@ -28,22 +33,45 @@ def _parse_semver(version: str) -> tuple[int, int, int]:
 
 
 class CodeRegistry:
-    def __init__(self) -> None:
+    def __init__(self, *, verifier: SignatureVerifier | None = None) -> None:
         self._entries: dict[str, CodeEntry] = {}
+        self._verifiers: dict[str, SignatureVerifier] = {}
+        self._default_verifier = verifier
 
-    def register(self, entry: CodeEntry, *, verifier: SignatureVerifier) -> None:
-        if not entry.version:
-            raise CodeRefUnresolved(f"unversioned entry: {entry.name!r}")
+    @staticmethod
+    def _verify(entry: CodeEntry, verifier: SignatureVerifier) -> None:
         payload = f"{entry.name}@{entry.version}:{entry.code_sha256}".encode()
         if not verifier.verify(payload, entry.signature):
             raise InvalidSignature(f"invalid signature for {entry.name}@{entry.version}")
-        self._entries[f"{entry.name}@{entry.version}"] = entry
+
+    def register(self, entry: CodeEntry, *, verifier: SignatureVerifier | None = None) -> None:
+        if not entry.version:
+            raise CodeRefUnresolved(f"unversioned entry: {entry.name!r}")
+        active_verifier = verifier or self._default_verifier
+        if active_verifier is None:
+            raise InvalidSignature(f"no verifier configured for {entry.name}@{entry.version}")
+        self._verify(entry, active_verifier)
+        ref = f"{entry.name}@{entry.version}"
+        existing = self._entries.get(ref)
+        if existing is not None and existing != entry:
+            # A rediscovery must not replace the code or its approval history.
+            raise CodeEntryConflict(f"code ref already registered: {ref}")
+        self._entries[ref] = entry
+        self._verifiers[ref] = active_verifier
+
+    load = register
 
     def resolve(self, ref: str) -> CodeEntry:
         _parse_ref(ref)
         entry = self._entries.get(ref)
         if entry is None:
             raise CodeRefUnresolved(f"no registered entry for ref: {ref!r}")
+        verifier = self._verifiers.get(ref) or self._default_verifier
+        if verifier is None:
+            raise InvalidSignature(f"no verifier configured for {ref}")
+        # Verification is repeated at the execution admission point. This
+        # catches tampering of an entry between registration and resolution.
+        self._verify(entry, verifier)
         return entry
 
     def compatible(self, base_ref: str, overlay_ref: str) -> bool:

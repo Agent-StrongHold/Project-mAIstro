@@ -20,8 +20,14 @@ logger = logging.getLogger("maistro.capabilities.registry")
 class _SlotState:
     spec: SlotSpec
     providers: dict[str, CapabilityProvider] = field(default_factory=dict)
+    # These facts belong to the host registry, not provider-reported metadata.
+    provider_trust: dict[str, str] = field(default_factory=dict)
+    provider_provenance: dict[str, str] = field(default_factory=dict)
     active: str | None = None
     enabled: bool = True
+
+
+_TIER_RANK = {"t0": 0, "t1": 1, "t2": 2, "t3": 3, "t4": 4, "t5": 5}
 
 
 class CapabilityRegistry:
@@ -42,12 +48,48 @@ class CapabilityRegistry:
             raise KeyError(f"Unknown slot '{slot}'")
         return state
 
-    def register(self, provider: CapabilityProvider) -> None:
-        """Register a provider as INSTALLED but INACTIVE (never auto-activates)."""
+    def register(
+        self,
+        provider: CapabilityProvider,
+        *,
+        trust_tier: str | None = None,
+        provenance: str = "",
+    ) -> bool:
+        """Register an installed provider without replacing host trust state.
+
+        A duplicate rediscovery is a no-op. Third-party providers default to
+        the untrusted floor; only a host-supplied tier can promote them. The
+        built-in package keeps its explicit tiers for compatibility with the
+        core baseline providers.
+        """
         with self._lock:
             state = self._slot(provider.slot)
+            if provider.name in state.providers:
+                return False
+            if trust_tier is None:
+                module = type(provider).__module__
+                declared = getattr(provider, "trust_tier", "t3")
+                trust_tier = declared if module.startswith("maistro.") else "t3"
+            if trust_tier not in _TIER_RANK:
+                trust_tier = "t3"
             state.providers[provider.name] = provider
-        logger.debug("Registered provider %s -> slot %s (inactive)", provider.name, provider.slot)
+            state.provider_trust[provider.name] = trust_tier
+            state.provider_provenance[provider.name] = provenance or type(provider).__module__
+        logger.debug(
+            "Registered provider %s -> slot %s (inactive, tier=%s)",
+            provider.name,
+            provider.slot,
+            trust_tier,
+        )
+        return True
+
+    def provider_trust(self, slot: str, name: str) -> tuple[str, str] | None:
+        """Return host-owned trust and provenance for an installed provider."""
+        with self._lock:
+            state = self._slot(slot)
+            if name not in state.providers:
+                return None
+            return state.provider_trust[name], state.provider_provenance[name]
 
     def activate(self, slot: str, provider_name: str) -> None:
         with self._lock:
@@ -110,7 +152,13 @@ class CapabilityRegistry:
             return _baseline()
 
         if chosen_name is None:
-            candidates = sorted(providers.values(), key=lambda p: p.trust_tier)
+            candidates = sorted(
+                providers.values(),
+                key=lambda p: (
+                    _TIER_RANK.get(state.provider_trust.get(p.name, "t3"), 3),
+                    p.name,
+                ),
+            )
             chosen = candidates[0] if candidates else None
         else:
             chosen = providers.get(chosen_name)

@@ -8,6 +8,7 @@ Uses an injectable HTTP client protocol for testability.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from pathlib import Path
@@ -125,6 +126,8 @@ class SkillMarketplace:
             msg = f"Failed to parse skill from {url}"
             raise ValueError(msg)
 
+        # Marketplace metadata is untrusted and cannot choose an effective
+        # tier. Imported content always enters at the registry floor.
         skill = SkillDefinition(
             name=skill.name,
             description=skill.description,
@@ -134,14 +137,26 @@ class SkillMarketplace:
             auth_key_env=skill.auth_key_env,
             system_prompt=skill.system_prompt,
             source=url,
-            trust_tier=trust_tier,
+            trust_tier="t3",
+            provenance=url,
+            content_hash=hashlib.sha256(fixed.encode("utf-8")).hexdigest(),
         )
 
         self._skills_dir.mkdir(parents=True, exist_ok=True)
-        filepath = self._skills_dir / f"{skill.name}.md"
+        root = self._skills_dir.resolve()
+        candidate = root / f"{skill.name}.md"
+        if candidate.is_symlink():
+            raise ValueError(f"Refusing to overwrite symlink for {skill.name!r}")
+        filepath = candidate.resolve()
+        try:
+            filepath.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"Invalid skill path for {skill.name!r}") from exc
+        if not self._registry.register(
+            skill, content_hash=skill.content_hash, provenance=skill.provenance
+        ):
+            raise ValueError(f"Skill trust policy rejected registration for {skill.name!r}")
         filepath.write_text(fixed, encoding="utf-8")
-
-        self._registry.register(skill)
 
         logger.info(
             "Installed skill '%s' from %s (tier=%s, warnings=%d, fixes=%d)",

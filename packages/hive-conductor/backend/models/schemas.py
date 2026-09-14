@@ -185,6 +185,14 @@ class MCPServer(BaseModel):
     last_ping: datetime | None = None
     version: str | None = None
     capabilities: list[str] = Field(default_factory=list)
+    # Host-owned supply-chain facts. A request body cannot set these because
+    # CreateServerBody deliberately has a smaller schema.
+    approved: bool = False
+    approved_by: str = ""
+    trust_tier: str = "t3"
+    provenance: str = ""
+    content_hash: str = ""
+    allowed_tools: list[str] = Field(default_factory=list)
 
 
 class MCPTool(BaseModel):
@@ -197,6 +205,7 @@ class MCPTool(BaseModel):
     description: str
     input_schema: dict[str, Any] = Field(default_factory=dict)
     category: str = "general"
+    content_hash: str = ""
 
 
 class Container(BaseModel):

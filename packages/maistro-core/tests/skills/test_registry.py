@@ -165,3 +165,28 @@ def test_contains_checks_membership() -> None:
     registry.register(_skill())
     assert "s1" in registry
     assert "ghost" not in registry
+
+
+def test_changed_content_loses_host_approval_and_returns_to_floor() -> None:
+    registry = InMemorySkillRegistry()
+    first = _skill(trust_tier="t1")
+    registry.register(first, content_hash="a" * 64, provenance="admin", approved=True)
+    changed = _skill(trust_tier="t1")
+    assert registry.register(changed, content_hash="b" * 64, provenance="forge") is True
+    metadata = registry.trust_metadata("s1")
+    assert metadata is not None
+    assert metadata.trust_tier == "t3"
+    assert metadata.approved is False
+    assert metadata.provenance == "forge"
+    assert metadata.content_hash == "b" * 64
+
+
+def test_untrusted_registration_cannot_overwrite_t0() -> None:
+    registry = InMemorySkillRegistry()
+    original = _skill(trust_tier="t0")
+    registry.register(original, approved=True)
+    assert (
+        registry.register(_skill(trust_tier="t3"), content_hash="b" * 64, provenance="url") is False
+    )
+    assert registry.get("s1") is original
+    assert registry.trust_metadata("s1").approved is True  # type: ignore[union-attr]

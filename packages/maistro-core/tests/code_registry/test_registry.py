@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from maistro.code_registry.registry import CodeRegistry
-from maistro.code_registry.types import CodeEntry, CodeKind, CodeRefUnresolved, InvalidSignature
+from maistro.code_registry.types import (
+    CodeEntry,
+    CodeEntryConflict,
+    CodeKind,
+    CodeRefUnresolved,
+    InvalidSignature,
+)
 from maistro.code_registry.verify import Ed25519Verifier
 
 
@@ -94,6 +101,39 @@ class TestRegisterAndResolve:
         registry = CodeRegistry()
         with pytest.raises(CodeRefUnresolved):
             registry.register(entry, verifier=verifier)
+
+
+def test_resolve_rechecks_signature_after_registration() -> None:
+    class RotatingVerifier:
+        valid = True
+
+        def verify(self, message: bytes, signature: bytes) -> bool:
+            return self.valid
+
+    signer = Ed25519PrivateKey.generate()
+    entry = _make_signed_entry(signer=signer)
+    verifier = RotatingVerifier()
+    registry = CodeRegistry()
+    registry.register(entry, verifier=verifier)
+    verifier.valid = False
+    with pytest.raises(InvalidSignature):
+        registry.resolve("my_compensator@1.0.0")
+
+
+def test_register_does_not_replace_an_existing_ref() -> None:
+    signer = Ed25519PrivateKey.generate()
+    verifier = Ed25519Verifier(signer.public_key().public_bytes_raw())
+    registry = CodeRegistry()
+    entry = _make_signed_entry(signer=signer)
+    registry.register(entry, verifier=verifier)
+    changed_hash = hashlib.sha256(b"changed").hexdigest()
+    replacement = replace(
+        entry,
+        code_sha256=changed_hash,
+        signature=signer.sign(f"{entry.name}@{entry.version}:{changed_hash}".encode()),
+    )
+    with pytest.raises(CodeEntryConflict, match="already registered"):
+        registry.register(replacement, verifier=verifier)
 
 
 class TestCompatible:

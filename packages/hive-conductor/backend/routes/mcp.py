@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -167,9 +168,45 @@ def add_server(body: CreateServerBody) -> MCPServer:
         url=body.url,
         status="connecting",
         tools_count=0,
+        # Registration is not approval. The admin approval action below is the
+        # only route that can make a remote server callable.
+        approved=False,
+        approved_by="",
+        trust_tier="t3",
+        provenance="user:mcp_registration",
+        content_hash=hashlib.sha256(
+            f"{body.name}\x00{body.description}\x00{body.url}".encode()
+        ).hexdigest(),
+        allowed_tools=[],
     )
     stores.mcp_servers[sid] = server
     return server
+
+
+class ApproveServerBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    allowed_tools: list[str] = []
+
+
+@router.post("/servers/{server_id}/approve", response_model=MCPServer)
+def approve_server(server_id: str, body: ApproveServerBody) -> MCPServer:
+    """Explicitly approve a server and bind its finite tool exposure."""
+    server = stores.mcp_servers.get(server_id)
+    if server is None:
+        raise HTTPException(status_code=404, detail="server not found")
+    known = {tool.name for tool in stores.mcp_tools.values() if tool.server_id == server_id}
+    requested = list(dict.fromkeys(body.allowed_tools))
+    if not requested or any(name not in known for name in requested):
+        raise HTTPException(
+            status_code=400,
+            detail="approval requires a non-empty allowlist of discovered tool names",
+        )
+    approved = server.model_copy(
+        update={"approved": True, "approved_by": "admin", "allowed_tools": requested}
+    )
+    stores.mcp_servers[server_id] = approved
+    return approved
 
 
 @router.delete("/servers/{server_id}", status_code=204)
@@ -202,17 +239,30 @@ async def test_mcp_connection(body: McpTestBody, request: Request) -> dict:
         if body.server_id not in stores.mcp_servers:
             raise HTTPException(status_code=404, detail="server not found")
         srv = stores.mcp_servers[body.server_id]
+        if not srv.approved:
+            raise HTTPException(status_code=403, detail="MCP server is not approved")
         return await test_mcp_server(srv.id, user_id=uid, url=srv.url)
 
     results = []
     for srv in stores.mcp_servers.values():
+        if not srv.approved:
+            continue
         results.append(await test_mcp_server(srv.id, user_id=uid, url=srv.url))
     return {"results": results}
 
 
 @router.get("/tools", response_model=list[MCPTool])
 def list_tools() -> list[MCPTool]:
-    return list(stores.mcp_tools.values())
+    """Expose only tools inside an approved server's host-owned ceiling."""
+    visible: list[MCPTool] = []
+    for tool in stores.mcp_tools.values():
+        server = stores.mcp_servers.get(tool.server_id)
+        # Keep orphaned local catalog fixtures backwards compatible; a remote
+        # server record always needs explicit approval and a named tool.
+        if server is not None and (not server.approved or tool.name not in server.allowed_tools):
+            continue
+        visible.append(tool)
+    return visible
 
 
 class DiscoverBody(BaseModel):

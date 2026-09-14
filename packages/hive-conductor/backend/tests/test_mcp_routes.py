@@ -39,7 +39,14 @@ def _clear_mcp_stores():
 
 def _make_server(sid: str = "s1", url: str = "http://example.invalid") -> MCPServer:
     return MCPServer(
-        id=sid, name="Server", description="d", url=url, status="connecting", tools_count=0
+        id=sid,
+        name="Server",
+        description="d",
+        url=url,
+        status="connecting",
+        tools_count=0,
+        approved=True,
+        approved_by="test-admin",
     )
 
 
@@ -123,7 +130,43 @@ def test_add_server(admin_client: Any) -> None:
     body = r.json()
     assert body["name"] == "New"
     assert body["status"] == "connecting"
+    assert body["approved"] is False
     assert body["id"] in stores.mcp_servers
+
+
+def test_unapproved_server_cannot_be_tested(admin_client: Any) -> None:
+    created = admin_client.post(
+        "/v1/mcp/servers", json={"name": "New", "description": "d", "url": "http://x"}
+    ).json()
+    response = admin_client.post("/v1/mcp/test", json={"server_id": created["id"]})
+    assert response.status_code == 403
+
+
+def test_unapproved_server_tools_are_not_exposed(admin_client: Any) -> None:
+    stores.mcp_servers["s1"] = _make_server()
+    stores.mcp_tools["allowed"] = MCPTool(
+        id="allowed", server_id="s1", name="safe_tool", description="d"
+    )
+    stores.mcp_tools["other"] = MCPTool(
+        id="other", server_id="s1", name="other_tool", description="d"
+    )
+    assert admin_client.get("/v1/mcp/tools").json() == []
+
+
+def test_approval_binds_a_finite_tool_allowlist(admin_client: Any) -> None:
+    stores.mcp_servers["s1"] = _make_server()
+    stores.mcp_tools["allowed"] = MCPTool(
+        id="allowed", server_id="s1", name="safe_tool", description="d"
+    )
+    stores.mcp_tools["other"] = MCPTool(
+        id="other", server_id="s1", name="other_tool", description="d"
+    )
+    response = admin_client.post(
+        "/v1/mcp/servers/s1/approve", json={"allowed_tools": ["safe_tool"]}
+    )
+    assert response.status_code == 200
+    assert response.json()["approved"] is True
+    assert [tool["name"] for tool in admin_client.get("/v1/mcp/tools").json()] == ["safe_tool"]
 
 
 # --------------------------------------------------------------------------- #

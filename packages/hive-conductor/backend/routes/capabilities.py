@@ -41,7 +41,14 @@ async def _provider_view(reg: Any, slot: str, name: str) -> dict[str, Any]:
     except Exception as exc:  # health probe must never break the listing
         logger.debug("healthcheck failed for %s/%s: %s", slot, name, exc)
         healthy = False
-    return {"name": name, "trust_tier": provider.trust_tier, "healthy": healthy}
+    metadata = reg.provider_trust(slot, name) if hasattr(reg, "provider_trust") else None
+    trust_tier, provenance = metadata or ("t3", "unknown")
+    return {
+        "name": name,
+        "trust_tier": trust_tier,
+        "provenance": provenance,
+        "healthy": healthy,
+    }
 
 
 async def _slot_view(reg: Any, slot: str) -> dict[str, Any]:

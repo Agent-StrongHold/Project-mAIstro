@@ -15,11 +15,13 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from maistro.skills.parser import parse_skill_file, security_scan
+from maistro.skills.parser import parse_skill_file, security_scan, validate_skill_name
 from maistro.types.skill import SkillDefinition
 
 if TYPE_CHECKING:
     from maistro.protocols.llm import LLMClient
+    from maistro.skills.import_pipeline import PolicyAttachmentStore
+    from maistro.skills.registry import InMemorySkillRegistry
     from maistro.types.memory import Learning
 
 logger = logging.getLogger("maistro.skills.forge")
@@ -95,10 +97,14 @@ class SkillForge:
         llm: LLMClient,
         skills_dir: Path,
         forge_model: str = "auto",
+        registry: InMemorySkillRegistry | None = None,
+        policy_store: PolicyAttachmentStore | None = None,
     ) -> None:
         self._llm = llm
         self._skills_dir = skills_dir
         self._forge_model = forge_model
+        self._registry = registry
+        self._policy_store = policy_store
 
     async def forge(self, request: str) -> SkillDefinition:
         """Generate a new skill from a natural language request.
@@ -143,15 +149,38 @@ class SkillForge:
             system_prompt=skill.system_prompt,
             source="forge",
             trust_tier="t3",
+            provenance="forge",
+            content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
         )
 
+        if self._registry is not None and not self._registry.register(
+            skill, content_hash=skill.content_hash, provenance="forge"
+        ):
+            raise ValueError(f"Skill trust policy rejected registration for {skill.name!r}")
         self._skills_dir.mkdir(parents=True, exist_ok=True)
+        root = self._skills_dir.resolve()
+        candidate = root / f"{skill.name}.md"
+        if candidate.is_symlink():
+            raise ValueError(f"Refusing to overwrite symlink for skill: {skill.name}")
+        filepath = candidate.resolve()
+        if not filepath.is_relative_to(root):
+            raise ValueError(f"Invalid skill path: {skill.name}")
         filepath.write_text(content, encoding="utf-8")
+        if self._policy_store is not None:
+            from maistro.skills.import_pipeline import PolicyAttachment
+
+            self._policy_store.attach(
+                PolicyAttachment(
+                    skill_name=skill.name,
+                    content_hash=skill.content_hash,
+                    provenance="forge",
+                )
+            )
         logger.info("Forged skill '%s' saved to %s", skill.name, filepath)
 
         return skill
 
-    async def mutate(
+    async def mutate(  # noqa: C901 - mutation is one fail-closed pipeline
         self,
         skill_name: str,
         learning: Learning,
@@ -172,13 +201,27 @@ class SkillForge:
                 "Only T2+ skills support learning-driven mutation.",
             }
 
-        filepath = self._skills_dir / f"{skill_name}.md"
+        if not validate_skill_name(skill_name):
+            return {"status": "blocked", "reason": f"Invalid skill name: {skill_name!r}"}
+        root = self._skills_dir.resolve()
+        filepath = root / f"{skill_name}.md"
         if not filepath.exists():
-            filepath = self._skills_dir / "community" / f"{skill_name}.md"
+            filepath = root / "community" / f"{skill_name}.md"
             if not filepath.exists():
                 return {"status": "skipped", "reason": f"No SKILL.md for '{skill_name}'"}
+        if filepath.is_symlink():
+            return {"status": "blocked", "reason": "Refusing to mutate symlinked skill"}
+        filepath = filepath.resolve()
+        if not filepath.is_relative_to(root):
+            return {"status": "blocked", "reason": "Skill path escapes skills directory"}
 
         current_content = filepath.read_text(encoding="utf-8")
+        current_safe, current_findings = security_scan(current_content)
+        if not current_safe:
+            return {
+                "status": "blocked",
+                "reason": "Existing skill failed supply-chain scan: " + ", ".join(current_findings),
+            }
         old_hash = hashlib.sha256(current_content.encode()).hexdigest()[:16]
 
         learning_text = learning.learning if hasattr(learning, "learning") else str(learning)
@@ -205,8 +248,27 @@ class SkillForge:
             return output_error
 
         new_hash = hashlib.sha256(new_content.encode()).hexdigest()[:16]
+        full_hash = hashlib.sha256(new_content.encode()).hexdigest()
+        if self._registry is not None:
+            mutated_skill = parse_skill_file(new_content, source="forge")
+            if mutated_skill is None or not self._registry.register(
+                mutated_skill,
+                content_hash=full_hash,
+                provenance="forge",
+            ):
+                return {"status": "blocked", "reason": "Skill trust policy rejected mutation"}
 
         filepath.write_text(new_content, encoding="utf-8")
+        if self._policy_store is not None:
+            from maistro.skills.import_pipeline import PolicyAttachment
+
+            self._policy_store.attach(
+                PolicyAttachment(
+                    skill_name=skill_name,
+                    content_hash=full_hash,
+                    provenance="forge",
+                )
+            )
         logger.info(
             "Mutated skill '%s' (%s -> %s)",
             skill_name,

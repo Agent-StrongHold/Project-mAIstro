@@ -148,6 +148,14 @@ async def test_mutate_blocked_for_t1_tier(skills_dir: Path) -> None:
     assert result["status"] == "blocked"
 
 
+async def test_mutate_rejects_path_traversal_before_llm(skills_dir: Path) -> None:
+    llm = _StubLLMClient()
+    forge = SkillForge(llm=llm, skills_dir=skills_dir)
+    result = await forge.mutate("../../outside", Learning(learning="be careful"))
+    assert result["status"] == "blocked"
+    assert llm.calls == []
+
+
 async def test_mutate_skipped_when_skill_file_missing(skills_dir: Path) -> None:
     skills_dir.mkdir(parents=True)
     llm = _StubLLMClient()
