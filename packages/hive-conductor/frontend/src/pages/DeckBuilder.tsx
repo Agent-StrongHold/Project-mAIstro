@@ -13,7 +13,7 @@ const C = { bg: "#0a0914", card: "#11101e", border: "rgba(196,166,97,0.14)", gol
 
 interface Slide { id: string; html: string; notes: string; }
 
-function uid() { return Math.random().toString(36).slice(2, 10); }
+function uid() { return crypto.randomUUID().replace(/-/g, "").slice(0, 12); }
 
 function safeSlide(slide: Slide): Slide {
   return { ...slide, html: sanitizeDeckMarkup(slide.html) };

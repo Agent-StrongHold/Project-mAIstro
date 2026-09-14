@@ -225,7 +225,9 @@ def test_run_dag_pre_admission_failure_has_no_fake_execution_id(
     response = admin_client.post(f"/v1/dags/{dag_id}/run")
     assert response.status_code == 200
     body = response.json()
-    assert body == {"status": "failed", "error": "cyclic DAG rejected before execution"}
+    # The exception kind, never its text: messages carry paths and provider
+    # replies, which stay in the server log (CodeQL py/stack-trace-exposure).
+    assert body == {"status": "failed", "error": "ValueError: execution failed; see server logs"}
 
 
 def test_run_dag_projection_failure_does_not_rewrite_execution(
@@ -283,7 +285,8 @@ def test_run_champion_failure(admin_client: Any, monkeypatch: pytest.MonkeyPatch
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "failed"
-    assert "champion crash" in body["error"]
+    assert body["error"] == "RuntimeError: execution failed; see server logs"
+    assert "champion crash" not in body["error"]
 
 
 @pytest.mark.asyncio

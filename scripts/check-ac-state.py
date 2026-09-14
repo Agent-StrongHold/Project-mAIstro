@@ -99,11 +99,11 @@ def _candidate_note_fold_weakening() -> list[str]:
     bound = _impl.ac_state_notes.bounds()
     floors, _reasons = _impl.authorized_floors(bound.base_sha)
     candidate = dict(_impl._banked().counters)
-    trusted = _impl._lowered(bound.counters, floors)
+    bounded_base = _impl._lowered(bound.counters, floors)
     missing = [name for name in (*_impl.RATCHETED, *_impl.FLOORED) if name not in candidate]
     if missing:
         return [f"candidate note fold omits bounded counter {name}" for name in missing]
-    regressions, _improvements = _impl._compare(trusted, candidate)
+    regressions, _improvements = _impl._compare(bounded_base, candidate)
     return regressions
 
 

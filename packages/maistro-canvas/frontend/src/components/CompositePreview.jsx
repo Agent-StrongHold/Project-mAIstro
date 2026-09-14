@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { api } from "../lib/api";
 
+const EXPORT_FORMATS = ["png", "webp", "jpg"];
+
 export default function CompositePreview({ canvas, onClose }) {
   const [image, setImage] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -25,10 +27,14 @@ export default function CompositePreview({ canvas, onClose }) {
   });
 
   const handleExport = () => {
-    const url = api.exportUrl(canvas.id, format, quality);
+    // The DOM-sourced controls are reduced to an allowlisted format and a
+    // bounded number before they reach a URL.
+    const safeFormat = EXPORT_FORMATS.includes(format) ? format : "png";
+    const safeQuality = Math.min(100, Math.max(1, Number.parseInt(String(quality), 10) || 90));
+    const url = api.exportUrl(canvas.id, safeFormat, safeQuality);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${canvas.name || "canvas"}.${format}`;
+    a.download = `${canvas.name || "canvas"}.${safeFormat}`;
     a.click();
   };
 

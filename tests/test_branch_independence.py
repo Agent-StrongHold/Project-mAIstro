@@ -141,7 +141,7 @@ def test_trusted_base_refuses_candidate_expansion_even_if_candidate_edits_freeze
         frozen=(old, new),
     )
 
-    assert mod.trusted_base_errors(candidate, base) == [
+    assert mod.base_registry_errors(candidate, base) == [
         "candidate expands the trusted legacy freeze: quality/new.json"
     ]
 

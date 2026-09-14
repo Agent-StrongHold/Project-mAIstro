@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import ClassVar
 
@@ -22,6 +23,8 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from services import dashboard_layouts
 from services.dashboard_safety import sanitize_dashboard_layout
+
+_DEMO_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 router = APIRouter(prefix="/v1/dashboard", tags=["dashboard"])
 logger = logging.getLogger("hive.dashboard")
@@ -171,12 +174,18 @@ async def list_demo_dashboards() -> list[dict]:
 @router.get("/demos/{demo_id}")
 async def get_demo_dashboard(demo_id: str) -> dict:
     """Load a demo dashboard template."""
+    import os
     from pathlib import Path
 
-    path = Path(__file__).parent.parent / "data" / "demo_dashboards" / f"{demo_id}.json"
-    if not path.exists():
+    # `demo_id` is a URL segment: only a bare template name reaches the
+    # filesystem, and the resolved file must sit inside the demo directory.
+    if not _DEMO_ID.fullmatch(demo_id):
         return {"error": "not found"}
-    return sanitize_dashboard_layout(json.loads(path.read_text()))
+    demos = os.path.normpath(str(Path(__file__).parent.parent / "data" / "demo_dashboards"))
+    candidate = os.path.normpath(os.path.join(demos, f"{demo_id}.json"))
+    if not candidate.startswith(demos + os.sep) or not os.path.isfile(candidate):
+        return {"error": "not found"}
+    return sanitize_dashboard_layout(json.loads(Path(candidate).read_text()))
 
 
 @router.get("/deck-templates")

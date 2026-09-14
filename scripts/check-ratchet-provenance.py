@@ -83,7 +83,7 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
 # identity in the same form as check-reachability.py's tooling graph means the
 # dynamic load below is visible as a real edge instead of making live CI tooling
 # look unreachable merely because Python loads it from a filename.
-TRUSTED_ADAPTERS: dict[tuple[str, str], str] = {
+DELEGATED_ADAPTERS: dict[tuple[str, str], str] = {
     ("check-citation-status.py", "quality/citation-baseline.json"): (
         "check-citation-status-provenance"
     ),
@@ -294,7 +294,7 @@ def violations(root: Path = ROOT) -> list[str]:
         key = (consumer.script, consumer.ledger)
         if key in CANDIDATE_AUTHORED:
             continue
-        adapter_name = TRUSTED_ADAPTERS.get(key)
+        adapter_name = DELEGATED_ADAPTERS.get(key)
         if adapter_name is not None:
             if adapter_name not in checked_adapters:
                 problem = _adapter_problem(root, adapter_name)
@@ -318,7 +318,7 @@ def violations(root: Path = ROOT) -> list[str]:
         errors.extend(
             stale_mapping_errors(live_keys, CANDIDATE_AUTHORED, label="provenance exception")
         )
-        errors.extend(stale_mapping_errors(live_keys, TRUSTED_ADAPTERS, label="trusted adapter"))
+        errors.extend(stale_mapping_errors(live_keys, DELEGATED_ADAPTERS, label="trusted adapter"))
     return errors
 
 
@@ -340,7 +340,7 @@ def run_delegated(root: Path = ROOT) -> list[str]:
     live_keys = {(c.script, c.ledger) for c in consumers(root)}
     failures: list[str] = []
     seen_adapters: set[str] = set()
-    for index, (key, adapter_name) in enumerate(sorted(TRUSTED_ADAPTERS.items())):
+    for index, (key, adapter_name) in enumerate(sorted(DELEGATED_ADAPTERS.items())):
         if key not in live_keys or adapter_name in seen_adapters:
             continue
         seen_adapters.add(adapter_name)
