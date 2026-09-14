@@ -27,7 +27,11 @@ class AuthContext:
     user_id: str = ""
     username: str = ""
     roles: frozenset[str] = field(default_factory=frozenset)
+    # Soft scope carried with the authenticated principal. These are optional
+    # for legacy callers, but scoped prompt reads never use an absent value.
+    org_id: str = ""
     team_id: str = ""
+    project_id: str = ""
     kind: IdentityKind = IdentityKind.USER
     auth_method: str = ""
     on_behalf_of: str = ""
