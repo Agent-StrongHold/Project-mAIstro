@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +43
+  packages/hive-conductor/backend/tests: +44
 ---
 # 313-registration-policy
 
@@ -21,9 +21,11 @@ route-level 401 for bearer-only callers, and 503s for a policy change or
 invitation issue whose write was not observed back (3); setup guard edges
 — missing-field 422s parametrized over the three required fields, the
 deterministic claim-race 409, and the un-persisted close-out 503 with its
-released claim (5); and one-shot setup against the persisted KV record on
-real SQLite (1). The persisted one-shot case also opens a second SQLite
-reader before the original writer closes, proving the setup marker was
+released claim (5); one-shot setup against the persisted KV
+record on real SQLite (1); and a route-level lost-marker fault followed by a
+fresh SQLite reader/restart, proving the retained claim and persisted accounts
+cannot be taken over (1). The persisted one-shot case also opens a second
+SQLite reader before the original writer closes, proving the setup marker was
 flushed before success. One additional node pins the explicit persisted-state
 flush boundary used by that setup marker, and one pins refusal when the flushed
 marker cannot be read back.

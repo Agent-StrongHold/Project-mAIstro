@@ -590,7 +590,7 @@ class TestAdminSurfaceFailClosedOnLostWrites:
 
 
 class TestFirstSetupIsOneShot:
-    """Bootstrap: first owner via setup only, exactly once, retryably."""
+    """Bootstrap: first owner via setup only, exactly once, fail-closed."""
 
     @staticmethod
     def _fresh_instance(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -817,7 +817,8 @@ class TestSetupGuardEdges:
 
         assert exc_info.value.status_code == 503
         assert "registration policy was not persisted" in str(exc_info.value.detail)
-        # The rollback released the claim: a failed first run stays retryable.
+        # This test uses an ephemeral store, so the failed run remains
+        # retryable; a persisted run retains the claim (covered below).
         assert "__hive_setup_claim__" not in stores.sessions
 
 
@@ -884,6 +885,95 @@ class TestPersistedSetupIsOneShot:
             stores.sessions = original_sessions
             state.flush()
             state.close()
+
+
+class TestLostSetupMarkerCannotReopenBootstrap:
+    def test_lost_marker_and_restart_cannot_take_over_persisted_accounts(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+    ) -> None:
+        """A marker fault after account writes must fail closed across restart."""
+        import stores
+        from models.schemas import HiveUser
+        from routes import setup as setup_routes
+        from services.model_store import JsonStore, ModelStore
+
+        from maistro.state import PersistedStore, State
+
+        original_users = stores.users
+        original_sessions = stores.sessions
+        state: State | None = None
+        restarted_state: State | None = None
+        try:
+            db = tmp_path / "lost-setup-marker.db"
+            state = State(db_path=db)
+            persisted = PersistedStore(state)
+            persisted.initialize()
+            first_users = ModelStore("users", HiveUser, persisted=persisted)
+            first_users.initialize()
+            first_sessions = JsonStore("sessions", persisted=persisted)
+            first_sessions.initialize()
+            stores.users = first_users
+            stores.sessions = first_sessions
+
+            real_put_raw = persisted.put_raw
+
+            def drop_setup_marker(store_name: str, key: str, document: str) -> None:
+                if store_name == "sessions" and key == "__hive_setup__":
+                    return
+                real_put_raw(store_name, key, document)
+
+            # Simulate the real failure shape: account writes are accepted and
+            # flushed, but the one-shot completion marker is silently lost.
+            monkeypatch.setattr(persisted, "put_raw", drop_setup_marker)
+            with pytest.raises(RuntimeError, match="not acknowledged"):
+                setup_routes.complete_setup(
+                    {
+                        "hardware_preset": "auto",
+                        "admin_username": "firstadmin",
+                        "admin_password": "s3cret-admin",
+                        "user_username": "firstuser",
+                        "user_password": "s3cret-user",
+                    }
+                )
+
+            state.close()
+            state = None
+
+            # Rehydrate the same stores as a fresh process would. The marker is
+            # absent, while both accounts and the retained claim are durable.
+            restarted_state = State(db_path=db)
+            restarted = PersistedStore(restarted_state)
+            restarted.initialize()
+            restarted_users = ModelStore("users", HiveUser, persisted=restarted)
+            restarted_users.initialize()
+            restarted_sessions = JsonStore("sessions", persisted=restarted)
+            restarted_sessions.initialize()
+            stores.users = restarted_users
+            stores.sessions = restarted_sessions
+
+            assert len(restarted_users) == 2
+            assert "__hive_setup__" not in restarted_sessions
+            assert "__hive_setup_claim__" in restarted_sessions
+
+            with pytest.raises(HTTPException) as exc_info:
+                setup_routes.complete_setup(
+                    {
+                        "hardware_preset": "auto",
+                        "admin_username": "attacker-admin",
+                        "admin_password": "s3cret-admin",
+                        "user_username": "attacker-user",
+                        "user_password": "s3cret-user",
+                    }
+                )
+            assert exc_info.value.status_code == 409
+            assert restarted_users["admin"].username == "firstadmin"
+        finally:
+            stores.users = original_users
+            stores.sessions = original_sessions
+            if state is not None:
+                state.close()
+            if restarted_state is not None:
+                restarted_state.close()
 
 
 class TestPersistedSetupMarkerBoundary:
