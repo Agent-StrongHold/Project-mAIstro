@@ -148,9 +148,9 @@ def test_agent_execs_run_as_unprivileged_user(tmp_path: Path) -> None:
 
 def test_seed_leaves_ambient_credentials_on_the_host(tmp_path: Path) -> None:
     """#77/#78: the seed must not carry the repo's ambient credential surface
-    into the container — `.git` config/hooks, dotenv files, root-level key
-    material — while the working tree itself (and nested test fixtures) still
-    arrives, and `git diff` keeps working off the seeded refs."""
+    into the container — `.git`, dotenv files, root-level key material — while
+    the working tree itself (and nested test fixtures) still arrives. Builder
+    git tools use a sanitized in-container baseline."""
     (tmp_path / "hello.py").write_text('print("original")\n', encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     subprocess.run(
@@ -173,6 +173,9 @@ def test_seed_leaves_ambient_credentials_on_the_host(tmp_path: Path) -> None:
     fixtures = tmp_path / "tests" / "fixtures"
     fixtures.mkdir(parents=True)
     (fixtures / "fixture.pem").write_text("test fixture not a credential\n", encoding="utf-8")
+    nested_git = fixtures / "nested-repo" / ".git"
+    nested_git.mkdir(parents=True)
+    (nested_git / "config").write_text("credential.helper=leak\n", encoding="utf-8")
 
     with ContainerBuilderSandbox(tmp_path) as sb:
         # Ambient credential surface: absent inside.
@@ -180,10 +183,8 @@ def test_seed_leaves_ambient_credentials_on_the_host(tmp_path: Path) -> None:
             sb.read_file(".env")
         with pytest.raises(FileNotFoundError):
             sb.read_file("server.pem")
-        rc, _ = sb.run_argv_status(["cat", "/workspace/.git/config"])
-        assert rc != 0, ".git/config (credential helpers, remote tokens) was seeded"
-        rc, _ = sb.run_argv_status(["cat", "/workspace/.git/hooks/pre-commit"])
-        assert rc != 0, ".git/hooks (host-authored scripts) was seeded"
+        rc, _ = sb.run_argv_status(["test", "!", "-e", "/workspace/.git"])
+        assert rc == 0, "host .git metadata was seeded"
 
         # Working tree: still seeded.
         assert "original" in sb.read_file("hello.py")
@@ -192,9 +193,107 @@ def test_seed_leaves_ambient_credentials_on_the_host(tmp_path: Path) -> None:
         # test failure beats a silent credential leak.
         with pytest.raises(FileNotFoundError):
             sb.read_file("tests/fixtures/fixture.pem")
+        with pytest.raises(FileNotFoundError):
+            sb.read_file("tests/fixtures/nested-repo/.git/config")
 
-        # git diff still works off the seeded refs/objects (config stripped).
+        # Builder git tools use an in-container baseline, not host metadata.
         sb.edit_file("hello.py", "original", "EDITED")
         patch = sb.diff()
         assert "fatal" not in patch
         assert '+print("EDITED")' in patch
+
+
+def _repo_with_file(tmp_path: Path) -> None:
+    (tmp_path / "hello.py").write_text('print("original")\n', encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+
+
+def test_container_environment_is_credential_default_deny(tmp_path: Path) -> None:
+    """Only the sandbox's deliberate HOME reaches candidate code."""
+    _repo_with_file(tmp_path)
+    with ContainerBuilderSandbox(tmp_path) as sb:
+        env = sb.run_command("env")
+
+    names = {line.split("=", 1)[0] for line in env.splitlines() if "=" in line}
+    assert "HOME" in names
+    assert not names.intersection(
+        {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN", "OPENAI_API_KEY"}
+    )
+    assert "HOME=/tmp" in env
+
+
+def test_rootfs_and_writable_scope_are_explicit(tmp_path: Path) -> None:
+    """The live Docker config, not permissions in the image, sets the scope."""
+    _repo_with_file(tmp_path)
+    with ContainerBuilderSandbox(tmp_path) as sb:
+        inspect = subprocess.run(
+            [
+                "docker",
+                "inspect",
+                "-f",
+                "{{.HostConfig.ReadonlyRootfs}} {{.HostConfig.Memory}} {{.HostConfig.PidsLimit}}",
+                sb._require_cid(),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        assert inspect == "true 2147483648 512"
+        rc, _ = sb.run_argv_status(["sh", "-c", "touch /usr/escape"])
+        assert rc != 0
+        assert sb.run_argv_status(["touch", "/workspace/allowed"])[0] == 0
+        assert sb.run_argv_status(["touch", "/tmp/scratch"])[0] == 0
+
+
+def test_process_namespace_devices_and_host_socket_are_not_reachable(tmp_path: Path) -> None:
+    """Exercise the Docker backend's namespace, device and socket surfaces."""
+    _repo_with_file(tmp_path)
+    with ContainerBuilderSandbox(tmp_path) as sb:
+        rc, out = sb.run_argv_status(["sh", "-c", "ls /proc | grep -Ec '^[0-9]+$'"])
+        assert rc == 0 and int(out.strip()) < 20
+        assert (
+            sb.run_argv_status(
+                ["sh", "-c", "mkdir -p /workspace/m && mount -t tmpfs none /workspace/m"]
+            )[0]
+            != 0
+        )
+        assert sb.run_argv_status(["chroot", "/", "/bin/true"])[0] != 0
+        assert sb.run_argv_status(["test", "!", "-e", "/dev/kvm"])[0] == 0
+        assert sb.run_argv_status(["mknod", "/workspace/device", "b", "8", "0"])[0] != 0
+        assert sb.run_argv_status(["test", "!", "-e", "/var/run/docker.sock"])[0] == 0
+        assert sb.run_argv_status(["test", "!", "-e", "/run/docker.sock"])[0] == 0
+        rc, caps = sb.run_argv_status(["grep", "CapEff", "/proc/self/status"])
+        assert rc == 0 and caps.split()[-1].strip("0") == ""
+        rc, nnp = sb.run_argv_status(["grep", "NoNewPrivs", "/proc/self/status"])
+        assert rc == 0 and nnp.split()[-1] == "1"
+
+
+def test_timeout_kills_the_command_and_context_cleanup_removes_container(tmp_path: Path) -> None:
+    """A timed-out candidate does not survive its exec or its sandbox."""
+    _repo_with_file(tmp_path)
+    cid: str
+    with ContainerBuilderSandbox(tmp_path) as sb:
+        cid = sb._require_cid()
+        rc, _ = sb.run_argv_status(
+            ["sh", "-c", "echo $$ > /workspace/pid; exec sleep 30"], timeout=1
+        )
+        assert rc != 0
+        pid = sb.read_file("pid").strip()
+        assert sb.run_argv_status(["kill", "-0", pid])[0] != 0
+    assert subprocess.run(["docker", "inspect", cid], capture_output=True).returncode != 0
+
+
+def test_memory_exhaustion_is_contained_by_the_container_limit(tmp_path: Path) -> None:
+    """An allocation above the configured cgroup budget fails in the container."""
+    _repo_with_file(tmp_path)
+    with ContainerBuilderSandbox(tmp_path) as sb:
+        rc, _ = sb.run_argv_status(
+            [
+                "python",
+                "-c",
+                "b=bytearray(3 * 1024 * 1024 * 1024); "
+                "[b.__setitem__(i, 1) for i in range(0, len(b), 4096)]",
+            ],
+            timeout=30,
+        )
+        assert rc != 0

@@ -390,6 +390,17 @@ jobs:
             age-keygen --help > /dev/null && echo "✓ age-keygen ready" || exit 1
           fi
       - run: uv sync --locked --extra dev --extra bootstrap
+      # The Builder conformance module targets the production
+      # ContainerBuilderSandbox, not a fake. Build its minimal supported image
+      # from the test directory so the repository (and any ambient secrets) is
+      # never sent as a Docker build context (#80).
+      - name: Build the real Builder sandbox image
+        run: >-
+          docker build --tag maistro-builders:latest
+          --file packages/maistro-bootstrap/tests/Dockerfile.sandbox
+          packages/maistro-bootstrap/tests
+      - name: Run the real Builder sandbox conformance lane
+        run: uv run pytest packages/maistro-bootstrap/tests/test_container_sandbox.py -v --tb=short
       - run: uv run pytest packages/maistro-bootstrap/tests -v --tb=short
       - run: uv run pytest packages/maistro-core/tests -v --tb=short
         env:

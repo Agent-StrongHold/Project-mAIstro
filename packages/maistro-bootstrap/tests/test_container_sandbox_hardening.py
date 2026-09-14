@@ -100,7 +100,11 @@ def test_container_creation_pins_the_unprivileged_user(
     assert "--cap-drop=ALL" in run
     assert "--security-opt=no-new-privileges" in run
     assert "--memory=2g" in run
+    assert "--memory-swap=2g" in run
     assert "--pids-limit=512" in run
+    assert "--read-only" in run
+    assert "--init" in run
+    assert "--tmpfs" in run
 
 
 def test_the_only_root_exec_is_the_pre_seed_chown(recorder: _Recording, tmp_path: Path) -> None:
@@ -135,8 +139,8 @@ def test_seed_is_a_host_side_tar_with_the_full_denylist(
     recorder: _Recording, tmp_path: Path
 ) -> None:
     """#77/#78: the sandbox used to seed with a full `docker cp` of the repo —
-    `.git/config` credential helpers, hooks, `.env` files and all. The archive
-    must be built host-side (the trust boundary) carrying every exclude
+    `.git` metadata, `.env` files and all. The archive must be built host-side
+    (the trust boundary) carrying every exclude
     pattern, and extracted as the agent uid."""
     with ContainerBuilderSandbox(tmp_path):
         pass
@@ -157,7 +161,7 @@ def test_seed_is_a_host_side_tar_with_the_full_denylist(
         for argv in _docker_calls(recorder)
         if argv[1] == "exec" and "tar" in argv and "-xf" in argv
     ]
-    assert len(extracts) == 1
+    assert len(extracts) == 2  # workspace plus the sanitized in-container baseline
     extract = extracts[0]
     assert extract[extract.index("-u") + 1] == _AGENT_UID_GID
     assert "--no-same-owner" in extract
@@ -169,8 +173,8 @@ def test_denylist_covers_the_ambient_credential_surfaces() -> None:
     GNU tar 1.35 and bsdtar 3.5.3: `./`-prefixed = repo root, bare = any
     depth)."""
     for pattern in (
-        "./.git/config",  # credential helpers, fsmonitor/pager, remote URLs w/ tokens
-        "./.git/hooks",  # host-authored scripts that would execute inside
+        "./.git",  # refs, credential helpers, and host-authored hooks
+        ".git",  # nested submodule metadata, any depth
         ".env",  # dotenv secrets, any depth
         ".env.local",
         ".env.*.local",

@@ -3,8 +3,10 @@
 `LocalWorktreeSandbox` operates on the host filesystem — fine for trusted use,
 but ADR-093 mandates hardware-VM-class isolation for *untrusted agent code*
 (the architecture-fit judge flagged the local path as violating it). This is the
-Docker-backed implementation ADR-093 names as satisfying the isolation contract
-today (Firecracker/E2B/gVisor remain an open backend choice): the repo's working
+transitional Docker-backed Builder backend behind the isolation seam. It provides
+Tier-3-style defense in depth for the supervised Builder path; it is not a
+hardware-VM or user-space-kernel boundary for hostile autonomous workloads
+(ADR-093). The repo's working
 tree is seeded into an ephemeral container (minus a credential denylist — see
 `_SEED_EXCLUDES`) and every read/write/edit/command the agent issues runs
 *there*, so agent-controlled code never executes against the host.
@@ -48,6 +50,9 @@ _DEFAULT_TIMEOUT = 120
 # suites) are heavier than a single code-exec call.
 _MEMORY_LIMIT = "2g"
 _PIDS_LIMIT = "512"
+_WORKSPACE_TMPFS = "size=2g,rw,nosuid,nodev"
+_TMP_TMPFS = "size=512m,rw,nosuid,nodev"
+_BASELINE_DIR = "/tmp/.maistro-baseline"
 
 # Every command that can run candidate-influenced code executes as this
 # unprivileged identity (#77: the sandbox used to run the agent as container
@@ -69,12 +74,11 @@ _AGENT_HOME = "/tmp"  # 1777 in the base images; outside the synced workspace
 # content (e.g. `.env.example`) is already public; only the secret-shaped
 # names below are dropped.
 _SEED_EXCLUDES = (
-    # git metadata that carries host-side code or credentials. HEAD/index/
-    # objects stay so `git diff`/`git status` keep working inside; config
-    # (credential helpers, fsmonitor/pager command hooks, remote URLs with
-    # embedded tokens) and hooks (host-authored scripts) do not.
-    "./.git/config",
-    "./.git/hooks",
+    # No host VCS metadata crosses the boundary. Besides credentials in config,
+    # refs and hooks are host-authored control data. A sanitized baseline used
+    # by the builder's git tools is created separately inside /tmp.
+    "./.git",
+    ".git",  # nested submodule metadata is ambient host control data too.
     # dotenv secrets (the gitignored kind), at any depth.
     ".env",
     ".env.local",
@@ -138,50 +142,68 @@ class ContainerBuilderSandbox:
     # -- lifecycle -----------------------------------------------------------
 
     def __enter__(self) -> ContainerBuilderSandbox:
-        cid = _docker(
-            [
-                "run",
-                "-d",
-                "--workdir",
-                _WORKDIR,
-                # Default-deny egress (#77): no interface beyond loopback, so
-                # external, DNS, link-local and private paths all fail.
-                "--network=none",
-                # Nobody in this container runs as root — not PID 1, not any
-                # exec — and no capability survives the drop (CHOWN returns
-                # solely for the one-shot root bootstrap below; caps granted
-                # to uid 0 cannot be exercised by the agent's uid).
-                "--user",
-                _AGENT_UID_GID,
-                "--cap-drop=ALL",
-                "--cap-add=CHOWN",
-                "--security-opt=no-new-privileges",
-                f"--memory={_MEMORY_LIMIT}",
-                f"--pids-limit={_PIDS_LIMIT}",
-                "-e",
-                f"HOME={_AGENT_HOME}",
-                self._image,
-                "sleep",
-                "infinity",
-            ]
-        ).stdout.strip()
-        self._cid = cid
-        # One explicit, auditable root exec: make the (empty) workspace
-        # writable by the agent uid. Runs before any repo content or candidate
-        # code exists; everything after this is unprivileged.
-        _docker(
-            [
-                "exec",
-                "-u",
-                "0:0",
-                cid,
-                "chown",
-                _AGENT_UID_GID,
-                _WORKDIR,
-            ]
-        )
-        self._seed(cid)
-        return self
+        try:
+            cid = _docker(
+                [
+                    "run",
+                    "-d",
+                    "--init",
+                    "--workdir",
+                    _WORKDIR,
+                    # Default-deny egress (#77): no interface beyond loopback, so
+                    # external, DNS, link-local and private paths all fail.
+                    "--network=none",
+                    # A read-only image root leaves only the explicit workspace
+                    # and scratch tmpfs mounts writable. Candidate code cannot
+                    # turn an image path into durable host state.
+                    "--read-only",
+                    "--tmpfs",
+                    f"{_WORKDIR}:{_WORKSPACE_TMPFS}",
+                    "--tmpfs",
+                    f"/tmp:{_TMP_TMPFS}",
+                    # Nobody in this container runs as root -- not PID 1, not any
+                    # exec -- and no capability survives the drop (CHOWN returns
+                    # solely for the one-shot root bootstrap below; caps granted
+                    # to uid 0 cannot be exercised by the agent's uid).
+                    "--user",
+                    _AGENT_UID_GID,
+                    "--cap-drop=ALL",
+                    "--cap-add=CHOWN",
+                    "--security-opt=no-new-privileges",
+                    f"--memory={_MEMORY_LIMIT}",
+                    # Prevent the runtime's default swap allowance from turning
+                    # the memory budget into a soft hint.
+                    f"--memory-swap={_MEMORY_LIMIT}",
+                    f"--pids-limit={_PIDS_LIMIT}",
+                    "-e",
+                    f"HOME={_AGENT_HOME}",
+                    self._image,
+                    "sleep",
+                    "infinity",
+                ]
+            ).stdout.strip()
+            self._cid = cid
+            # One explicit, auditable root exec: make the (empty) workspace
+            # writable by the agent uid. Runs before any repo content or candidate
+            # code exists; everything after this is unprivileged.
+            _docker(
+                [
+                    "exec",
+                    "-u",
+                    "0:0",
+                    cid,
+                    "chown",
+                    _AGENT_UID_GID,
+                    _WORKDIR,
+                ]
+            )
+            self._seed(cid)
+            return self
+        except BaseException:
+            # A failed bootstrap must not leave a live container behind. This is
+            # also important when the seed tar or image fails halfway through.
+            self.__exit__(None, None, None)
+            raise
 
     def _seed(self, cid: str) -> None:
         """Seed the workspace with the repo, minus the `_SEED_EXCLUDES` denylist.
@@ -210,7 +232,42 @@ class ContainerBuilderSandbox:
         if archive.returncode != 0:
             self.__exit__(None, None, None)
             raise RuntimeError(f"seed tar failed: {archive.stderr.decode(errors='replace')[:300]}")
-        extract = subprocess.run(
+        extract = self._extract_seed(cid, archive.stdout, _WORKDIR)
+        if extract.returncode != 0:
+            self.__exit__(None, None, None)
+            raise RuntimeError(
+                f"container tar extract failed: {extract.stderr.decode(errors='replace')[:300]}"
+            )
+        # Keep a clean, in-container git index for the builder's status/diff
+        # tools without importing the host's .git directory. It lives on the
+        # scratch tmpfs and is never synced back to the host.
+        baseline = self._extract_seed(cid, archive.stdout, _BASELINE_DIR)
+        if baseline.returncode != 0:
+            self.__exit__(None, None, None)
+            raise RuntimeError(
+                f"container baseline extract failed: {baseline.stderr.decode(errors='replace')[:300]}"
+            )
+        _docker(
+            [
+                *self._exec_prefix(),
+                cid,
+                "sh",
+                "-c",
+                (
+                    f"git -C {_sh_quote(_BASELINE_DIR)} init -q && "
+                    f"git -C {_sh_quote(_BASELINE_DIR)} add -A && "
+                    f"git -C {_sh_quote(_BASELINE_DIR)} -c user.name=maistro "
+                    f"-c user.email=maistro@localhost commit -qm seed"
+                ),
+            ]
+        )
+
+    def _extract_seed(
+        self, cid: str, archive: bytes, destination: str
+    ) -> subprocess.CompletedProcess[bytes]:
+        """Extract a host-built seed as the agent, never as container root."""
+        _docker([*self._exec_prefix(), cid, "mkdir", "-p", destination])
+        return subprocess.run(
             [
                 "docker",
                 "exec",
@@ -225,17 +282,12 @@ class ContainerBuilderSandbox:
                 "-",
                 "--no-same-owner",
                 "-C",
-                _WORKDIR,
+                destination,
             ],
-            input=archive.stdout,
+            input=archive,
             capture_output=True,
             timeout=_SEED_TIMEOUT,
         )
-        if extract.returncode != 0:
-            self.__exit__(None, None, None)
-            raise RuntimeError(
-                f"container tar extract failed: {extract.stderr.decode(errors='replace')[:300]}"
-            )
 
     def __exit__(self, *exc: object) -> None:
         if self._cid:
@@ -316,12 +368,40 @@ class ContainerBuilderSandbox:
             raise SandboxEscapeError(f"Path {path!r} escapes sandbox root")
         return f"{_WORKDIR}/{p.as_posix()}"
 
-    def _exec(self, argv: list[str], *, timeout: int = _DEFAULT_TIMEOUT) -> tuple[int, str]:
+    def _exec(
+        self,
+        argv: list[str],
+        *,
+        timeout: int = _DEFAULT_TIMEOUT,
+        git_tools: bool = False,
+    ) -> tuple[int, str]:
+        # GNU timeout runs inside the container, so killing the docker CLI on a
+        # host-side timeout cannot leave candidate processes behind.
+        command = [
+            # Put timeout and the candidate in one process group. Without the
+            # outer setsid, a shell can leave background children behind when
+            # timeout kills only its direct child.
+            "setsid",
+            "--wait",
+            "timeout",
+            "--signal=KILL",
+            "--kill-after=1s",
+            str(timeout),
+            *argv,
+        ]
+        prefix = self._exec_prefix()
+        if git_tools:
+            prefix += [
+                "-e",
+                f"GIT_DIR={_BASELINE_DIR}/.git",
+                "-e",
+                f"GIT_WORK_TREE={_WORKDIR}",
+            ]
         proc = subprocess.run(
-            ["docker", *self._exec_prefix(), self._require_cid(), *argv],
+            ["docker", *prefix, self._require_cid(), *command],
             capture_output=True,
             text=True,
-            timeout=timeout,
+            timeout=timeout + 5,
         )
         return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
@@ -393,10 +473,10 @@ class ContainerBuilderSandbox:
         a pass from a failure that printed something — so the RSI loop runs its
         candidate test vector through this instead (#305).
         """
-        return self._exec(argv, timeout=timeout)
+        return self._exec(argv, timeout=timeout, git_tools=bool(argv and argv[0] == "git"))
 
     def diff(self) -> str:
-        _, out = self._exec(["git", "-C", _WORKDIR, "diff"])
+        _, out = self._exec(["git", "-C", _WORKDIR, "diff"], git_tools=True)
         return out
 
     def search(self, pattern: str, *, glob: str = "**/*.py") -> list[str]:
