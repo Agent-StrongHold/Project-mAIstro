@@ -6,13 +6,15 @@ scope. Configure the scraper identity through the existing service-key
 registry, for example:
 
 ```dotenv
-SERVICE_KEY_PROMETHEUS=replace-with-a-random-secret
+SERVICE_KEY_PROMETHEUS=sk-svc-replace-with-a-random-secret
 SERVICE_SCOPES_PROMETHEUS=admin:metrics
 ```
 
 The scraper sends either `X-Service-Key: <secret>` or
-`Authorization: Bearer <secret>`. Do not grant `admin:*` when
-`admin:metrics` is sufficient. A missing or invalid key receives a generic
+`Authorization: Bearer <secret>`. The Bearer form must use the service-key
+format with the `sk-svc-` prefix; an arbitrary user Bearer token is not a
+metrics credential. Do not grant `admin:*` when `admin:metrics` is sufficient.
+A missing or invalid key receives a generic
 `401`; a valid service key without `admin:metrics` receives a generic `403`.
 Neither response contains metric data or deployment details.
 
@@ -47,7 +49,9 @@ families are not exposed through public health responses.
 Metric labels are reviewed as low-cardinality dimensions. They must not carry
 tenant IDs, user IDs, prompts, model names, credentials, raw URLs, or other
 request-controlled identifiers. HTTP instrumentation uses matched route
-templates and the `unrouted` fallback. The core registry also caps distinct
-label sets per metric at `DEFAULT_MAX_SERIES_PER_METRIC`; samples beyond that
-cap are dropped and counted in `metrics_series_overflow_total`. This cap is a
-last-resort memory backstop, not permission to use unbounded labels.
+templates and the `unrouted` fallback. SLO instrumentation emits only a fixed-width
+opaque digest of its configured service key, never the credential text itself.
+The core registry also caps distinct label sets per metric at
+`DEFAULT_MAX_SERIES_PER_METRIC`; samples beyond that cap are dropped and counted
+in `metrics_series_overflow_total`. This cap is a last-resort memory backstop,
+not permission to use unbounded labels.
