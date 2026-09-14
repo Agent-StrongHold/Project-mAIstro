@@ -37,7 +37,7 @@ BUILT_DOCKERFILES = ("Dockerfile", "packages/hive-conductor/Dockerfile")
 #: live develop protected push found missing: `hive-conductor-e2e` and
 #: `hive-conductor-e2e-ui` run `docker compose --build` directly, never call
 #: this script, and one failed outright on the exact registry-reset signature
-#: #204 exists to survive -- `cgr.dev/chainguard/python:latest: ... connection
+#: #204 exists to survive -- `python:3.13.15-slim-bookworm: ... connection
 #: reset by peer`.
 COMPOSE_DOCKERFILES = (
     "packages/hive-conductor/Dockerfile",

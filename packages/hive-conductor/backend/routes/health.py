@@ -98,6 +98,16 @@ def health() -> dict:
         privilege_available = False
         reactor_available = False
     llm_configured, allow_stub_llm = _llm_state()
+    try:
+        from services.identity_health import identity_health, identity_is_required
+
+        identity = identity_health()
+        identity_required = identity_is_required(identity)
+    except Exception:
+        # A public liveness probe must not turn a probe implementation failure
+        # into a 500; an unreadable identity status is explicitly degraded.
+        identity = {"status": "misconfigured", "reason": "health_probe_failed"}
+        identity_required = True
     memory_decay = _memory_decay_state()
     memory_decay_enabled = _memory_decay_running(memory_decay)
     log_redaction = _log_redaction_active()
@@ -126,7 +136,14 @@ def health() -> dict:
         # ADR-064: off means log lines carry API keys and connection strings
         # verbatim, which SECURITY.md says they do not. Degraded, never silent.
         "log_redaction_active": log_redaction,
-        "degraded": (not llm_configured) or (not memory_decay_enabled) or (not log_redaction),
+        # Identity is optional in the supported no-crypto profile, but a
+        # selected identity module must never disappear into a generic 200.
+        "identity": identity,
+        "identity_required": identity_required,
+        "degraded": (not llm_configured)
+        or (not memory_decay_enabled)
+        or (not log_redaction)
+        or identity_required,
     }
 
 
@@ -149,5 +166,11 @@ def ready() -> ReadyResponse:
     # degrades the conductor without taking it out of rotation.
     checks["llm"] = _llm_state()[0]
     checks["memory_decay"] = _memory_decay_running(_memory_decay_state())
+    try:
+        from services.identity_health import identity_health
+
+        checks["identity"] = identity_health()["status"] in {"operational", "disabled"}
+    except Exception:
+        checks["identity"] = False
     checks["log_redaction"] = _log_redaction_active()
     return ReadyResponse(ready=checks["api"], checks=checks)

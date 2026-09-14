@@ -199,19 +199,17 @@ jobs:
           --load --cache-from type=gha,scope=rsi-runner
           --cache-to type=gha,scope=rsi-runner,mode=max .
 
-      - name: Verify live Python packages supersede base-image SBOM inventory
+      - name: Verify live Python packages and Conductor identity contract
         run: |
           docker run --rm --entrypoint python \
             "hive-conductor:pr-${CANDIDATE_TAG}" \
-            -c "import importlib.metadata as m; from packaging.version import Version; assert Version(m.version('msgpack')) >= Version('1.2.1'), m.version('msgpack'); assert Version(m.version('setuptools')) >= Version('78.1.1'), m.version('setuptools'); print('live msgpack='+m.version('msgpack')+', setuptools='+m.version('setuptools'))"
+            -c "import importlib.metadata as m, sys; from packaging.version import Version; assert sys.version_info[:2] == (3, 13), sys.version; assert m.version('bip-utils') == '2.12.1', m.version('bip-utils'); assert m.version('coincurve') == '21.0.0', m.version('coincurve'); assert Version(m.version('msgpack')) >= Version('1.2.1'), m.version('msgpack'); assert Version(m.version('setuptools')) >= Version('78.1.1'), m.version('setuptools'); from maistro.identity import ConductorSeed; seed = ConductorSeed.generate(); assert seed.did_key().startswith('did:key:z'); seed.zero(); print('identity=operational python='+sys.version.split()[0]+' bip-utils='+m.version('bip-utils')+' coincurve='+m.version('coincurve'))"
 
       - name: Trivy scan (HIGH/CRITICAL only)
-        # Keep Chainguard's embedded SBOMs intact. The checked-in YAML ignore is
-        # deliberately version-scoped to the two stale Python package records
-        # from the pre-overlay base environment. The step above proves the live
-        # runtime has patched versions before those exact duplicate records are
-        # filtered. All other vendor-SBOM, filesystem, OS and binary findings
-        # remain blocking.
+        # The step above verifies the versions of the packages installed into
+        # the runtime venv before this image-level gate runs. The checked-in
+        # ignore remains limited to its named, documented findings; all other
+        # filesystem, OS and binary findings remain blocking.
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           version: v0.73.0

@@ -2,12 +2,11 @@
 #   docker build -f packages/hive-conductor/Dockerfile . -t hive-conductor
 # Or via docker-compose (context is set to monorepo root in docker-compose.yml).
 #
-# Runtime is a Chainguard/Wolfi base (glibc, nonroot uid 65532, no shell/pip,
-# near-zero CVEs) so the image scan finds no fixable HIGH/CRITICAL CVEs — the
-# CVE-laden debian-slim base was the sole source of the container-scan failures.
-# Pattern mirrors Dockerfile.chainguard: fat -dev builder makes a self-contained
-# venv; thin runtime copies only the venv + app sources.
-
+# The Conductor identity contract is pinned to CPython 3.13: coincurve 21.0.0
+# publishes the required Linux wheels for cp313, but not cp314. Keep the exact
+# patch version here so a moving base tag cannot silently change that contract.
+# A fat builder makes a self-contained venv; the runtime copies only the venv and
+# app sources.
 # ---- frontend build ----
 FROM node:22-alpine AS frontend
 WORKDIR /build
@@ -40,8 +39,8 @@ RUN apk add --no-cache git && \
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/age ./cmd/age && \
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/age-keygen ./cmd/age-keygen
 
-# ---- fat Wolfi builder: self-contained venv (has shell/pip/apk, glibc) ----
-FROM cgr.dev/chainguard/python:latest-dev AS pybuild
+# ---- builder: self-contained venv (has shell/pip) ----
+FROM python:3.13.15-slim-bookworm AS pybuild
 WORKDIR /app
 ENV PATH="/app/venv/bin:$PATH"
 RUN python -m venv /app/venv
@@ -55,14 +54,17 @@ COPY packages/maistro-bootstrap /packages/maistro-bootstrap
 COPY packages/maistro-canvas /packages/maistro-canvas
 COPY packages/maistro-design /packages/maistro-design
 COPY packages/maistro-evolve /packages/maistro-evolve
-# NOTE: maistro-core's [identity] extra (bip-utils → coincurve) cannot install
-# here yet: coincurve publishes no cp314 wheels (21.0.0 caps at cp313), this
-# base image is Python 3.14, and coincurve's source build is broken against
-# current cffi. Until a cp314 wheel exists, setup surfaces the gap loudly via
-# identity_unavailable instead of a silently-missing mnemonic
-# (SPEC-072726-3439 Phase 3 tracks restoring in-image identity).
+# Pin the identity wheel set as one install contract. The explicit pins make a
+# dependency refresh fail at review time rather than selecting a new native
+# extension without a corresponding CPython/wheel check.
+ARG BIP_UTILS_VERSION=2.12.1
+ARG COINCURVE_VERSION=21.0.0
+ARG PYNACL_VERSION=1.6.2
 RUN pip install --no-cache-dir \
-    /packages/maistro-core \
+    "/packages/maistro-core[identity]" \
+    "bip-utils==${BIP_UTILS_VERSION}" \
+    "coincurve==${COINCURVE_VERSION}" \
+    "pynacl==${PYNACL_VERSION}" \
     /packages/maistro-bootstrap \
     /packages/maistro-canvas \
     /packages/maistro-design \
@@ -87,17 +89,24 @@ ARG INSTALL_OBSERVABILITY=0
 RUN if [ "$INSTALL_OBSERVABILITY" = "1" ]; then \
         pip install --no-cache-dir "/packages/maistro-core[observability]"; \
     fi
+# The image build is the first contract test: exercise the same identity import
+# and derivation that setup uses, and fail if a native wheel was not selected.
+RUN python -c "import importlib.metadata as m, sys; from maistro.identity import ConductorSeed; assert sys.version_info[:2] == (3, 13); assert m.version('bip-utils') == '${BIP_UTILS_VERSION}'; assert m.version('coincurve') == '${COINCURVE_VERSION}'; seed = ConductorSeed.generate(); assert seed.did_key().startswith('did:key:z'); seed.zero()" && \
+    if [ "$INSTALL_OBSERVABILITY" = "1" ]; then \
+        python -c "import opentelemetry, opentelemetry.sdk, opentelemetry.exporter.otlp"; \
+    fi
 # Seed dir for conductor state (SQLite/vault/state). Created under the writable
 # /app workdir because the -dev base runs as nonroot and cannot write to /. The
 # runtime stage COPY --chown's it to /data so a mounted named volume inherits
 # writable nonroot ownership.
 RUN mkdir -p /app/state_seed
 
-# ---- thin Wolfi runtime: near-0-CVE base, nonroot, no shell/pip ----
-FROM cgr.dev/chainguard/python:latest
+# ---- thin runtime: same pinned CPython ABI, nonroot ----
+FROM python:3.13.15-slim-bookworm
 WORKDIR /app
 ENV PATH="/app/venv/bin:$PATH" \
     PYTHONPATH=/app/backend:/app \
+    CONDUCTOR_DATA_DIR=/data \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 COPY --from=pybuild /app/venv /app/venv
@@ -111,10 +120,9 @@ COPY --from=frontend /build/dist /app/frontend/dist
 COPY --from=pybuild --chown=65532:65532 /app/state_seed /data
 EXPOSE 8101
 WORKDIR /app/backend
-# Chainguard runs as nonroot (uid 65532) by default; make it explicit so the
-# image is unambiguously non-root.
+# Keep the app nonroot even though the pinned runtime is a slim Python image.
 USER 65532
-# exec-form, stdlib healthcheck — no curl/shell in the image.
+# exec-form, stdlib healthcheck — no curl/shell dependency.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD ["python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8101/health/ready', timeout=4).status==200 else 1)"]
 # Base image's ENTRYPOINT is `python`, so invoke uvicorn via `python -m`.

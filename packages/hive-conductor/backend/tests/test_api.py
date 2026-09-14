@@ -21,6 +21,13 @@ def test_health() -> None:
     data = r.json()
     assert data["status"] == "ok"
     assert "uptime_seconds" in data
+    assert data["identity"]["status"] in {
+        "operational",
+        "disabled",
+        "misconfigured",
+        "unavailable",
+    }
+    assert "identity_required" in data
 
 
 @pytest.mark.ac("SPEC-176/AC-1")
@@ -30,6 +37,7 @@ def test_health_ready() -> None:
     body = r.json()
     assert body["ready"] is True
     assert "checks" in body
+    assert "identity" in body["checks"]
 
 
 def test_health_reports_degraded_when_no_llm_configured(
