@@ -172,6 +172,20 @@ or placeholder-only section.
 
 ### Fixed
 
+- **The migration chain has one head again (no linked issue: base-branch
+  repair).** `033` had gone missing. Merging #1263 carried a renumber that
+  branch had made against an older base: it renamed
+  `033_project_membership_unique_per_principal.py` to `034_…` and moved its
+  `revision` with it, colliding with the `034_hitl_deadline_index` already on
+  develop. Git merged it without a conflict — different files, no overlapping
+  text — so nothing announced that the chain now had two `034`s, no `033`, and
+  no single head; `alembic upgrade` could not resolve a path. Project
+  membership is restored to `033` (down `032`), exactly as develop carried it
+  before that merge, and `035_outcome_scope_thumb_index` now follows `035`
+  instead of forking from `034`, so the chain is linear again:
+  `032 → 033 → 034 → 035 → 035_outcome_scope_thumb_index`. No migration body
+  changed; nothing already applied is rewritten.
+
 - **A manual schedule fire claims its run before creating it, and never moves
   the recurrence cursor (#1119).** `ScheduleStore` gains `reserve_fire` /
   `settle_fire`: the quota is counted (and the schedule disabled on
