@@ -7,10 +7,14 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import deque
 from typing import TYPE_CHECKING, Any
 
 from maistro.quota.usage_report import reported_usage
+from maistro.security.warden.detector import WardenContext
 from maistro.types.agent import ReasoningResult
+
+_TOOL_CONTEXT_MAX_TURNS = 8
 
 if TYPE_CHECKING:
     from maistro.protocols.llm import LLMClient
@@ -64,6 +68,10 @@ class ReactStrategy:
         # stores one summed pair, so without the count a turn whose providers
         # reported nothing is stored as one that cost nothing (#717).
         reported_calls = 0
+        # Keep the analysis context separate from the model message list. Tool
+        # output is untrusted; assistant/system messages must not become part of
+        # the detector's authority-labelled input.
+        tool_context: deque[WardenContext] = deque(maxlen=_TOOL_CONTEXT_MAX_TURNS)
 
         tool_choice = "required" if self.force_tool_first else "auto"
 
@@ -110,7 +118,9 @@ class ReactStrategy:
                     warden=warden,
                     sentinel=kwargs.get("sentinel"),
                     auth=kwargs.get("auth"),
+                    context=list(tool_context),
                 )
+                tool_context.append(WardenContext(tool_result_str))
 
                 tool_history.append(
                     {
@@ -217,14 +227,21 @@ class ReactStrategy:
         sentinel: Any,
         auth: Any,
         warden: Any,
+        context: list[WardenContext],
     ) -> str:
-        """Apply sentinel post-call (or warden scan + PII redaction) to a result."""
+        """Apply the shared output gate with bounded prior tool context."""
+        scan_kwargs = {"context": context} if context else {}
         if sentinel is not None and auth is not None:
-            sanitized: str = await sentinel.post_call(tool_name, tool_result_str, auth)
+            if scan_kwargs:
+                sanitized: str = await sentinel.post_call(
+                    tool_name, tool_result_str, auth, **scan_kwargs
+                )
+            else:
+                sanitized = await sentinel.post_call(tool_name, tool_result_str, auth)
             return sanitized
 
         if warden is not None:
-            verdict = await warden.scan(tool_result_str, "tool_result")
+            verdict = await warden.scan(tool_result_str, "tool_result", **scan_kwargs)
             if not verdict.clean:
                 tool_result_str = (
                     f"[BLOCKED: tool result contained suspicious content: "
@@ -248,6 +265,7 @@ class ReactStrategy:
         warden: Any,
         sentinel: Any,
         auth: Any,
+        context: list[WardenContext],
     ) -> tuple[dict[str, Any], str]:
         """Process a single tool call end-to-end: parse args, sentinel pre-call,
         execute, truncate, sanitize. Returns ``(tool_args, tool_result_str)``."""
@@ -286,5 +304,6 @@ class ReactStrategy:
             sentinel=sentinel,
             auth=auth,
             warden=warden,
+            context=context,
         )
         return tool_args, tool_result_str

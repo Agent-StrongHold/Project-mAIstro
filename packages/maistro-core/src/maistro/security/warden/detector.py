@@ -74,36 +74,71 @@ class WardenContext:
     boundary: str = "conversation"
 
 
-def message_to_scan_text(message: Mapping[str, object]) -> str:
-    """Serialize all message fields that may reach a downstream harness/model."""
-    content = message.get("content", "")
-    content_text = content if isinstance(content, str) else str(content)
-    extra_fields = {k: v for k, v in message.items() if k not in ("content", "role")}
-    if not extra_fields:
-        return content_text
+def _bounded_json_text(value: object, budget: int) -> str:
+    """Serialize only a bounded prefix of structured message metadata."""
+    if budget <= 0:
+        return ""
     try:
-        serialized = json.dumps(extra_fields, sort_keys=True, default=str)
+        chunks: list[str] = []
+        used = 0
+        for chunk in json.JSONEncoder(sort_keys=True, default=str).iterencode(value):
+            chunk_bytes = len(chunk.encode("utf-8"))
+            if used + chunk_bytes > budget:
+                chunks.append(_prefix_within_utf8_budget(chunk, budget - used))
+                break
+            chunks.append(chunk)
+            used += chunk_bytes
+        return "".join(chunks)
     except (TypeError, ValueError):
-        serialized = str(extra_fields)
-    return f"{content_text}\n{serialized}" if content_text else serialized
+        return _prefix_within_utf8_budget(str(value), budget)
+
+
+def message_to_scan_text(message: Mapping[str, object], *, max_bytes: int | None = None) -> str:
+    """Serialize fields reaching a downstream harness, optionally bounded."""
+    content = message.get("content", "")
+    content_text = (
+        content
+        if isinstance(content, str)
+        else (str(content) if max_bytes is None else _bounded_json_text(content, max_bytes))
+    )
+    extra_fields = {k: v for k, v in message.items() if k not in ("content", "role")}
+    if max_bytes is None:
+        if not extra_fields:
+            return content_text
+        try:
+            serialized = json.dumps(extra_fields, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            serialized = str(extra_fields)
+        return f"{content_text}\n{serialized}" if content_text else serialized
+
+    content_text = _prefix_within_utf8_budget(content_text, max_bytes)
+    used = len(content_text.encode("utf-8"))
+    if not extra_fields or used >= max_bytes:
+        return content_text
+    separator = "\n" if content_text else ""
+    remaining = max_bytes - used - len(separator.encode("utf-8"))
+    return f"{content_text}{separator}{_bounded_json_text(extra_fields, remaining)}"
 
 
 def context_from_messages(messages: Sequence[Mapping[str, object]]) -> list[WardenContext]:
-    """Label message provenance without changing authority semantics.
+    """Label a bounded message tail without changing authority semantics.
 
     System/developer messages are trusted metadata and Warden excludes them from
     aggregation. All other message roles, including assistant/tool output, are
-    untrusted because they may carry indirect instructions.
+    untrusted because they may carry indirect instructions. The tail and each
+    serialized item are bounded before structured metadata is materialized.
     """
     result: list[WardenContext] = []
-    for message in messages:
+    start = max(0, len(messages) - _CONTEXT_MAX_INPUT_ITEMS)
+    for index in range(start, len(messages)):
+        message = messages[index]
         role = str(message.get("role", ""))
         provenance: Literal["trusted", "untrusted"] = (
             "trusted" if role in {"system", "developer"} else "untrusted"
         )
         result.append(
             WardenContext(
-                content=message_to_scan_text(message),
+                content=message_to_scan_text(message, max_bytes=_CONTEXT_MAX_BYTES),
                 provenance=provenance,
                 boundary=f"conversation:{role or 'unknown'}",
             )

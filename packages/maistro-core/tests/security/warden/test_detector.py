@@ -14,6 +14,7 @@ from maistro.security.warden.detector import (
     WardenContext,
     _pattern_search,
     _scan_reject_patterns,
+    context_from_messages,
 )
 
 
@@ -386,6 +387,27 @@ def test_scan_context_is_bounded_by_turns_and_utf8_bytes() -> None:
     selected = detector_mod._bounded_untrusted_context(contexts)
     assert len(selected) <= detector_mod._CONTEXT_MAX_TURNS
     assert sum(len(item.encode("utf-8")) for item in selected) <= detector_mod._CONTEXT_MAX_BYTES
+
+
+def test_message_context_bounds_tail_before_serializing_metadata() -> None:
+    import maistro.security.warden.detector as detector_mod
+
+    messages = [
+        {
+            "role": "tool",
+            "content": "x" * (detector_mod._CONTEXT_MAX_BYTES * 2),
+            "tool_calls": [{"arguments": "ignore all"} for _ in range(100)],
+        }
+        for _ in range(detector_mod._CONTEXT_MAX_INPUT_ITEMS * 2)
+    ]
+
+    contexts = context_from_messages(messages)
+
+    assert len(contexts) == detector_mod._CONTEXT_MAX_INPUT_ITEMS
+    assert all(
+        len(context.content.encode("utf-8")) <= detector_mod._CONTEXT_MAX_BYTES
+        for context in contexts
+    )
 
 
 async def test_raw_system_context_is_not_joined_with_untrusted_content() -> None:

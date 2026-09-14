@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +11
+  packages/maistro-core/tests: +13
 ---
 # #1158 Warden normalization and bounded context
 
@@ -9,3 +9,5 @@ inventory-delta:
   and the turn/byte aggregation budget.
 - The harness safety seam verifies that an override reconstructed from two
   untrusted turns is refused before the inner provider receives the messages.
+- ReAct tool-result coverage verifies ordered cross-call aggregation, and the
+  message-context regression verifies the tail and per-item serialization caps.
