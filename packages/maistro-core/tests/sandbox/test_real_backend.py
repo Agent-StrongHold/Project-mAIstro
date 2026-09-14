@@ -202,15 +202,10 @@ def test_the_sandbox_is_unshared_capability_dropped_and_detached(tmp_path: Path)
     assert "--new-session" in argv
 
 
-def test_a_bare_network_boolean_does_not_grant_egress(tmp_path: Path) -> None:
-    """`network=True` used to be the whole story. It is not any more (#77):
-    egress comes from an explicit `EgressGrant` carrying a reason, so a config
-    that merely says "network" gets none."""
-    backend = _backend(tmp_path)
-
-    argv = backend.build_argv(SandboxConfig(network=True), tmp_path, ["true"])
-
-    assert "--share-net" not in argv
+def test_the_retired_network_boolean_is_rejected(tmp_path: Path) -> None:
+    """There is one network authority: the policy's explicit egress grant."""
+    with pytest.raises(ValueError, match="network is retired"):
+        SandboxConfig(network=True)
 
 
 def test_an_explicit_host_grant_is_what_shares_the_network(tmp_path: Path) -> None:
@@ -369,7 +364,7 @@ async def test_a_real_sandbox_times_out_rather_than_running_forever(tmp_path: Pa
 @requires_bwrap
 async def test_a_real_sandbox_has_no_network_by_default(tmp_path: Path) -> None:
     backend = BubblewrapSandboxBackend(root=tmp_path)
-    instance = await backend.spawn(config=SandboxConfig(network=False))
+    instance = await backend.spawn(config=SandboxConfig())
 
     result = await backend.exec(
         instance,

@@ -11,6 +11,7 @@ This FastMCP server provides tools for:
 from __future__ import annotations
 
 import asyncio
+import posixpath
 import shlex
 from typing import Annotated, Any
 
@@ -19,20 +20,68 @@ from fastmcp import FastMCP
 from pydantic import Field
 
 from maistro.observability.metrics import sandbox_containers_active
+from maistro.sandbox import TRUSTED_TOOL, build_selector
+from maistro.sandbox.paths import validate_host_root
+from maistro.sandbox.protocol import SandboxInstance
 from maistro.security.dangerous_tools import is_blocked_path, is_dangerous_command
 from maistro.tools.result import fail, ok
-from maistro.tools.sandbox.docker import SandboxContainer, create_sandbox
+
+
+class CanonicalSandbox:
+    """String-command compatibility facade over the canonical protocol."""
+
+    def __init__(self, backend: Any, instance: SandboxInstance) -> None:
+        self._backend = backend
+        self._instance = instance
+        self._created = asyncio.get_running_loop().time()
+
+    @property
+    def expired(self) -> bool:
+        return asyncio.get_running_loop().time() - self._created > 3600
+
+    async def exec(self, command: str, timeout: int = 60) -> tuple[int, str]:
+        result = await self._backend.exec(
+            self._instance,
+            ["/bin/sh", "-c", command],
+            timeout_s=timeout,
+        )
+        return result.exit_code, result.stdout + result.stderr
+
+    async def read_file(self, path: str) -> str:
+        content = await self._backend.read_file(self._instance, path)
+        return content.decode("utf-8", errors="replace")
+
+    async def write_file(self, path: str, content: str) -> None:
+        await self._backend.write_file(self._instance, path, content.encode())
+
+    async def destroy(self) -> None:
+        await self._backend.destroy(self._instance)
+
+
+async def create_sandbox(workspace: str) -> CanonicalSandbox:
+    """Create the tool sandbox through the one selector/policy authority."""
+    authorized = validate_host_root(workspace, create=True)
+    selector = build_selector()
+    _tier, backend = selector.select(TRUSTED_TOOL)
+    config = selector.build_config(
+        TRUSTED_TOOL,
+        writable_paths=[str(authorized)],
+        env={},
+    )
+    instance = await backend.spawn(config=config)
+    return CanonicalSandbox(backend, instance)
+
 
 logger = structlog.get_logger()
 
 mcp = FastMCP("sandbox", instructions="Docker sandbox for isolated code execution")
 
-# Active sandbox containers, keyed by workspace path
-_containers: dict[str, SandboxContainer] = {}
+# Active canonical sandbox sessions, keyed by workspace path
+_containers: dict[str, CanonicalSandbox] = {}
 _container_lock = asyncio.Lock()
 
 
-async def _get_or_create(workspace: str) -> SandboxContainer:
+async def _get_or_create(workspace: str) -> CanonicalSandbox:
     """Get an existing container for this workspace or create one."""
     async with _container_lock:
         existing = _containers.get(workspace)
@@ -72,12 +121,22 @@ def _blocked_path_result(path: str) -> dict[str, Any]:
     )
 
 
+def _safe_workspace_path(path: str) -> str:
+    """Return a guest workspace path after lexical traversal validation."""
+    if posixpath.isabs(path):
+        raise ValueError("absolute paths are not allowed")
+    normalized = posixpath.normpath(path)
+    if normalized == ".." or normalized.startswith("../"):
+        raise ValueError("path traversal is not allowed")
+    return f"/work/{normalized}"
+
+
 def _check_path(path: str) -> dict[str, Any] | None:
     """Return a fail result if path is blocked, else None."""
     if is_blocked_path(path):
         return _blocked_path_result(path)
     try:
-        SandboxContainer._safe_path("/workspace", path)
+        _safe_workspace_path(path)
     except ValueError:
         return _blocked_path_result(path)
     return None
@@ -181,7 +240,7 @@ async def sandbox_glob(workspace: str, pattern: str) -> dict[str, Any]:
     if err := _check_path(pattern):
         return err
     container = await _get_or_create(workspace)
-    safe_pattern = shlex.quote(SandboxContainer._safe_path("/workspace", pattern))
+    safe_pattern = shlex.quote(_safe_workspace_path(pattern))
     _exit_code, output = await container.exec(
         f"find /workspace -path {safe_pattern} -type f 2>/dev/null | head -100"
     )
@@ -201,7 +260,7 @@ async def sandbox_grep(workspace: str, pattern: str, path: str = ".") -> dict[st
         return err
     container = await _get_or_create(workspace)
     safe_pattern = shlex.quote(pattern)
-    safe_path = shlex.quote(SandboxContainer._safe_path("/workspace", path))
+    safe_path = shlex.quote(_safe_workspace_path(path))
     _exit_code, output = await container.exec(
         f"grep -rn -- {safe_pattern} {safe_path} 2>/dev/null | head -50"
     )

@@ -1,5 +1,9 @@
 """Sandbox subsystem — protocol, policy, selector, backends."""
 
+from maistro.sandbox.backends.container import (
+    ContainerSandboxBackend,
+    ContainerUnavailableError,
+)
 from maistro.sandbox.commit import fenced_commit
 from maistro.sandbox.credential_boundary import (
     CANDIDATE_BASE_ENV,
@@ -59,6 +63,8 @@ __all__ = [
     "OUTPUT_LIMIT_EXIT_CODE",
     "TRUSTED_TOOL",
     "UNTRUSTED_CODE",
+    "ContainerSandboxBackend",
+    "ContainerUnavailableError",
     "EgressGrant",
     "EgressMode",
     "EgressNotEnforceableError",

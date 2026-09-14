@@ -23,7 +23,7 @@ import os
 import shutil
 import subprocess
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from maistro.sandbox.policy import _TIER_ORDER, IsolationTier
@@ -44,6 +44,9 @@ GVISOR_BINARY = "runsc"
 
 #: Tier-3: the OS-sandbox binary this repository supports.
 BUBBLEWRAP_BINARY = "bwrap"
+#: Transitional Tier-3 container launchers. The backend still refuses socket
+#: mounts and remains behind the canonical protocol.
+CONTAINER_BINARIES = ("docker", "podman")
 
 
 @dataclass(frozen=True)
@@ -52,6 +55,9 @@ class HostCapabilities:
 
     tiers: tuple[IsolationTier, ...]
     notes: dict[IsolationTier, str]
+    #: Resolved launchers are evidence passed to wiring; injected capability
+    #: fixtures may omit this and therefore remain explicitly unsupported.
+    binaries: dict[IsolationTier, str] = field(default_factory=dict)
 
     @property
     def strongest(self) -> IsolationTier | None:
@@ -201,6 +207,30 @@ def _probe_gvisor(_config: SandboxConfig) -> tuple[bool, str]:
     return True, ""
 
 
+def _probe_container(_config: SandboxConfig) -> tuple[bool, str]:
+    """Require a reachable runtime, not merely a CLI on PATH."""
+    seen: list[str] = []
+    for binary in CONTAINER_BINARIES:
+        resolved = _which(binary)
+        if resolved is None or Path(resolved).name != binary:
+            continue
+        seen.append(binary)
+        try:
+            probe = subprocess.run(  # nosec B603 - fixed argv, no shell
+                [resolved, "info"],
+                capture_output=True,
+                timeout=PROBE_TIMEOUT_S,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if probe.returncode == 0:
+            return True, ""
+    if seen:
+        return False, f"container runtime is not reachable ({', '.join(seen)})"
+    return False, "no Docker or Podman CLI is on PATH"
+
+
 def _probe_bubblewrap(config: SandboxConfig) -> tuple[bool, str]:
     bwrap = _which(BUBBLEWRAP_BINARY)
     if bwrap is None:
@@ -215,6 +245,7 @@ def _probe_bubblewrap(config: SandboxConfig) -> tuple[bool, str]:
 _PROBES: tuple[tuple[IsolationTier, Callable[[SandboxConfig], tuple[bool, str]]], ...] = (
     ("vm", _probe_vm),
     ("gvisor", _probe_gvisor),
+    ("container", _probe_container),
     ("bubblewrap", _probe_bubblewrap),
 )
 
@@ -241,7 +272,14 @@ def detect_host_capabilities(config: SandboxConfig | None = None) -> HostCapabil
         else:
             notes[tier] = why
 
-    capabilities = HostCapabilities(tiers=tuple(tiers), notes=notes)
+    binaries: dict[IsolationTier, str] = {}
+    if "container" in tiers:
+        for binary in CONTAINER_BINARIES:
+            resolved = _which(binary)
+            if resolved is not None:
+                binaries["container"] = resolved
+                break
+    capabilities = HostCapabilities(tiers=tuple(tiers), notes=notes, binaries=binaries)
     logger.info(
         "sandbox_host_capabilities tiers=%s strongest=%s",
         ",".join(capabilities.tiers) or "none",
@@ -252,6 +290,7 @@ def detect_host_capabilities(config: SandboxConfig | None = None) -> HostCapabil
 
 __all__ = [
     "BUBBLEWRAP_BINARY",
+    "CONTAINER_BINARIES",
     "GVISOR_BINARY",
     "KVM_DEVICE",
     "VMM_BINARIES",

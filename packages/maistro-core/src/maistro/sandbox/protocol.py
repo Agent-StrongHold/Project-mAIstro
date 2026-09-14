@@ -74,7 +74,10 @@ class SandboxConfig:
     #: Best-effort process ceiling. Set as `RLIMIT_NPROC`, which the kernel
     #: does not enforce for a privileged parent -- see `resource_limits`.
     max_processes: int = 128
-    network: bool = False
+    #: Retained as a mechanically rejected compatibility input. Egress is
+    #: authoritative; accepting a second boolean would let callers believe
+    #: they had granted or denied networking without an auditable policy.
+    network: bool | None = None
     writable_paths: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
     min_isolation: IsolationTier = "container"
@@ -93,6 +96,10 @@ class SandboxConfig:
     max_stderr_bytes: int = DEFAULT_OUTPUT_CAPTURE_BYTES
 
     def __post_init__(self) -> None:
+        if self.network is not None:
+            raise ValueError(
+                "SandboxConfig.network is retired; set an explicit EgressGrant on the policy"
+            )
         stdout_bytes, stderr_bytes = output_capture_limits(
             self.max_stdout_bytes, self.max_stderr_bytes
         )

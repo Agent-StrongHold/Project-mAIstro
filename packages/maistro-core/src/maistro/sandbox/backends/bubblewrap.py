@@ -36,6 +36,7 @@ from uuid import uuid4
 from maistro.sandbox.capture import capture_process
 from maistro.sandbox.detect import BUBBLEWRAP_BINARY
 from maistro.sandbox.network import EgressMode, resolve_grant
+from maistro.sandbox.paths import validate_host_root
 from maistro.sandbox.protocol import (
     OUTPUT_LIMIT_EXIT_CODE,
     ExecResult,
@@ -230,8 +231,12 @@ class BubblewrapSandboxBackend:
         # The sandbox's writable surface is exactly its own workdir, mounted at
         # a fixed path so a command does not need to know the host layout.
         argv += ["--bind", str(workdir), "/work", "--chdir", "/work"]
-        for extra in config.writable_paths:
-            argv += ["--bind", extra, extra]
+        for index, extra in enumerate(config.writable_paths):
+            # A caller-supplied mount is still host authority. Authorize it
+            # before building argv and give it a fixed guest name rather than
+            # exposing its host path inside the candidate.
+            authorized = validate_host_root(extra)
+            argv += ["--bind", str(authorized), f"/work-extra-{index}"]
         if config.egress.mode is EgressMode.HOST:
             # `--unshare-all` already removed the network namespace; sharing it
             # back is the only way this backend can grant egress, and it grants
