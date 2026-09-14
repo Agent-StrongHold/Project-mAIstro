@@ -327,6 +327,7 @@ test("CSS obfuscation and active SVG families fail closed in preview and present
   const hostile = `<slide index="1">
     <div style="background-image:u\\72l(http://${ATTACKER}/css);color:#fff">CSS survives as text</div>
     <svg><animate attributeName="x" onbegin="window.__deckPwned=14" /><image href="http://${ATTACKER}/image" /><circle cx="5" cy="5" r="4" fill="#fff" /></svg>
+    <a href="jav&#x61;script:window.__deckPwned=15">Encoded navigation</a>
     <object data="http://${ATTACKER}/object"></object><embed src="http://${ATTACKER}/embed"><p>Embedded-safe text</p>
   </slide>`;
 
@@ -361,14 +362,26 @@ test("CSS obfuscation and active SVG families fail closed in preview and present
   ).toBe(0);
 });
 
-test("built-in Deck templates remain renderable through the sanitizer", async () => {
+test("all built-in Deck templates remain renderable through the sanitizer", async () => {
   await loadFresh();
-  await page.getByRole("button", { name: /Hero KPI/ }).click();
-
   const preview = page.locator('[contenteditable="true"]');
-  await expect(preview).toContainText("Portfolio Snapshot");
-  await expect(preview).toContainText("Active Use Cases");
-  const html = await preview.innerHTML();
-  expect(html).toContain("linear-gradient");
-  expectNoExecutableMarkup(html);
+  const templates = [
+    { button: /Hero KPI/, text: "Portfolio Snapshot" },
+    { button: /Status Funnel/, text: "Lifecycle Funnel" },
+    { button: /Category Mix/, text: "Automations & Agents" },
+    { button: /Migration Progress/, text: "Platform v2 Migration" },
+    { button: /PM Load/, text: "PM Workload Distribution" },
+    { button: /Record List/, text: "Closest to Migration" },
+    { button: /Title Slide/, text: "Use Case Portfolio Health" },
+    { button: /Thank You/, text: "Thank You" },
+  ];
+
+  for (const template of templates) {
+    await page.getByRole("button", { name: template.button }).click();
+    await expect(preview).toContainText(template.text);
+    const html = await preview.innerHTML();
+    expect(html).toContain("style");
+    expectNoExecutableMarkup(html);
+  }
+  expect(attackerRequests).toEqual([]);
 });
