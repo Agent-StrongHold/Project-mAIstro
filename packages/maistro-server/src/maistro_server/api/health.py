@@ -126,8 +126,8 @@ async def readiness(
 
     # The outbound pool is a process resource rather than an external
     # dependency, so observing it cannot make readiness fail through a network
-    # probe. Surface its live occupancy and configured ceilings so operators can
-    # distinguish provider latency from local connection-pool pressure.
+    # probe. Include it in the aggregate readiness decision without returning
+    # its occupancy or configured ceilings to anonymous callers.
     http_stats = shared_client_stats()
     http_pool_result = ProbeResult(
         status="ok",
