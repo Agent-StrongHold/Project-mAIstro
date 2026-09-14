@@ -23,6 +23,7 @@ from services.tool_primitives import (
 )
 
 from maistro.http import shared_client
+from maistro.tools.browser.guard import BrowserNetworkGuard
 
 
 def _public_failure(exc: BaseException) -> str:
@@ -444,7 +445,15 @@ async def capture_screenshot(request: Request) -> dict[str, Any]:
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
-            ctx = await browser.new_context(viewport={"width": 1440, "height": 900})
+            # The dashboard is a host-owned internal endpoint. Allow exactly
+            # this origin; all other Chromium destinations use the canonical
+            # browser policy, including redirect and subresource hops.
+            ctx = await browser.new_context(
+                viewport={"width": 1440, "height": 900},
+                service_workers="block",
+            )
+            guard = BrowserNetworkGuard(extra_origins=("http://localhost:5173",))
+            await guard.attach(ctx)
             await ctx.add_cookies(
                 [{"name": "hive_session", "value": session_id, "domain": "localhost", "path": "/"}]
             )

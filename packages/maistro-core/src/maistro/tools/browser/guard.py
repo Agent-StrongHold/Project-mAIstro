@@ -72,6 +72,7 @@ either seam.
 
 from __future__ import annotations
 
+import os
 from collections import deque
 from dataclasses import dataclass
 from typing import Any
@@ -117,6 +118,17 @@ MAX_AUDIT_EVENTS = 1000
 #: Refusing a longer chain is safer than handing control back to Chromium,
 #: whose redirect hops do not re-enter a context route handler.
 MAX_REDIRECT_HOPS = 20
+
+
+def browser_allowed_origins() -> tuple[str, ...]:
+    """Return host-owned browser origins allowed in addition to the shared policy.
+
+    The environment is operator configuration, never browser/model input. Keep
+    this resolver at the shared browser seam so every Playwright caller uses the
+    same narrowly scoped allowlist.
+    """
+    raw = os.environ.get("BROWSER_USE_ALLOWED_ORIGINS", "")
+    return tuple(part.strip() for part in raw.split(",") if part.strip())
 
 
 @dataclass(frozen=True)
@@ -313,4 +325,5 @@ __all__ = [
     "WEBSOCKET_BLOCK_REASON",
     "BrowserNetEvent",
     "BrowserNetworkGuard",
+    "browser_allowed_origins",
 ]
