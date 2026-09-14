@@ -8,8 +8,8 @@ the *create-time configuration* of the sandbox container:
   cannot be widened by anything that happens later, including candidate code);
 - every exec that can run candidate-influenced code carries the unprivileged
   `-u`/HOME prefix, and the only root exec is the one-shot pre-seed `chown`;
-- the repo seed is built host-side through the `_SEED_EXCLUDES` denylist, not
-  a blind `docker cp` of the whole tree.
+- the repo seed is built host-side from the Git-index allowlist plus
+  `_SEED_EXCLUDES`, not a blind `docker cp` of the whole tree.
 
 The behavioral proof that an agent command actually cannot connect out under
 this policy lives in `test_container_sandbox.py` (Docker-gated, the real
@@ -45,6 +45,8 @@ class _Recording:
         stdout: Any = ""
         if argv[:2] == ["docker", "run"]:
             stdout = "fake-cid\n"  # text mode
+        elif argv[0] == "git" and "ls-files" in argv:
+            stdout = b"x.py\0"  # binary NUL-delimited index listing
         elif argv[0] == "tar" and "-cf" in argv:
             stdout = b"SEED-ARCHIVE"  # binary pipe (no text=True)
         return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
@@ -54,6 +56,9 @@ class _Recording:
 def recorder(monkeypatch: pytest.MonkeyPatch) -> _Recording:
     rec = _Recording()
     monkeypatch.setattr(csbx_mod.subprocess, "run", rec)
+    # These tests lock Docker argv shape only; the live suite proves the
+    # host-side index allowlist against the real backend.
+    monkeypatch.setattr(csbx_mod.ContainerBuilderSandbox, "_tracked_seed_files", lambda _: b"")
     return rec
 
 
@@ -135,13 +140,13 @@ def test_the_only_root_exec_is_the_pre_seed_chown(recorder: _Recording, tmp_path
         assert "-e" in argv and "HOME=" in argv[argv.index("-e") + 1]
 
 
-def test_seed_is_a_host_side_tar_with_the_full_denylist(
+def test_seed_is_a_host_side_tar_with_index_allowlist_and_denylist(
     recorder: _Recording, tmp_path: Path
 ) -> None:
     """#77/#78: the sandbox used to seed with a full `docker cp` of the repo —
     `.git` metadata, `.env` files and all. The archive must be built host-side
-    (the trust boundary) carrying every exclude
-    pattern, and extracted as the agent uid."""
+    from the Git-index allowlist, carry every explicit exclusion pattern, and
+    be extracted as the agent uid."""
     with ContainerBuilderSandbox(tmp_path):
         pass
 
@@ -150,8 +155,12 @@ def test_seed_is_a_host_side_tar_with_the_full_denylist(
     create = tar_creates[0]
     for pattern in _SEED_EXCLUDES:
         assert f"--exclude={pattern}" in create, f"denylist pattern missing from seed: {pattern}"
-    # Host-side: rooted at the repo, not at / or the container.
+    # Host-side: rooted at the repo, not at / or the container, and fed only
+    # by the NUL-delimited Git-index listing.
     assert create[create.index("-C") + 1] == str(tmp_path)
+    assert "--null" in create
+    assert "--verbatim-files-from" in create
+    assert "--files-from=-" in create
     # macOS bsdtar must not smugggle ._* AppleDouble files into the seed.
     create_env = recorder.envs[recorder.calls.index(create)]
     assert create_env is not None and create_env.get("COPYFILE_DISABLE") == "1"
@@ -177,6 +186,7 @@ def test_denylist_covers_the_ambient_credential_surfaces() -> None:
         ".git",  # nested submodule metadata, any depth
         ".env",  # dotenv secrets, any depth
         ".env.*",  # environment-specific dotenv variants
+        ".envrc",
         ".ssh",
         ".aws",
         ".npmrc",
@@ -216,8 +226,16 @@ def test_container_env_is_home_and_nothing_else(recorder: _Recording, tmp_path: 
 
     for argv in _docker_calls(recorder):
         envs = _env_assignments(argv)
-        # HOME=/tmp is the ONLY env assignment anywhere — create and execs
-        # alike. (The pre-seed root chown sets none at all, which is fine.)
-        assert all(e == f"HOME={csbx_mod._AGENT_HOME}" for e in envs), argv
+        # HOME=/tmp and blank proxy variables are the ONLY assignments on
+        # create/exec. Blank values defeat Docker client's proxy-config
+        # injection without exposing its credentials to the candidate.
+        allowed = {
+            f"HOME={csbx_mod._AGENT_HOME}",
+            *[f"{name}=" for name in csbx_mod._PROXY_ENV_NAMES],
+        }
+        assert set(envs) <= allowed, argv
         if argv[1] == "run":
-            assert envs == [f"HOME={csbx_mod._AGENT_HOME}"], argv
+            assert envs == [
+                f"HOME={csbx_mod._AGENT_HOME}",
+                *[f"{name}=" for name in csbx_mod._PROXY_ENV_NAMES],
+            ], argv

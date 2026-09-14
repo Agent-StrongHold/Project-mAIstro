@@ -42,6 +42,7 @@ pytestmark = pytest.mark.skipif(
 def test_agent_edits_are_isolated_from_host(tmp_path: Path) -> None:
     (tmp_path / "hello.py").write_text('print("original")\n', encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "hello.py"], cwd=tmp_path, check=True)
     host_before = (tmp_path / "hello.py").read_text(encoding="utf-8")
 
     with ContainerBuilderSandbox(tmp_path) as sb:
@@ -63,6 +64,7 @@ def test_agent_edits_are_isolated_from_host(tmp_path: Path) -> None:
 def test_path_escape_blocked(tmp_path: Path) -> None:
     (tmp_path / "f.py").write_text("x = 1\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "f.py"], cwd=tmp_path, check=True)
     from maistro_bootstrap.builders.errors import SandboxEscapeError
 
     with ContainerBuilderSandbox(tmp_path) as sb:
@@ -105,6 +107,7 @@ def test_agent_commands_cannot_reach_any_network_by_default(tmp_path: Path) -> N
     default policy — external, DNS, link-local/metadata, or private."""
     (tmp_path / "hello.py").write_text('print("original")\n', encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "hello.py"], cwd=tmp_path, check=True)
 
     with ContainerBuilderSandbox(tmp_path) as sb:
         # The policy is the container's create-time config, not a filter the
@@ -135,6 +138,7 @@ def test_agent_execs_run_as_unprivileged_user(tmp_path: Path) -> None:
     only root can do."""
     (tmp_path / "hello.py").write_text('print("original")\n', encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "hello.py"], cwd=tmp_path, check=True)
 
     with ContainerBuilderSandbox(tmp_path) as sb:
         rc, out = sb.run_argv_status(["id", "-u"])
@@ -148,8 +152,8 @@ def test_agent_execs_run_as_unprivileged_user(tmp_path: Path) -> None:
 
 def test_seed_leaves_ambient_credentials_on_the_host(tmp_path: Path) -> None:
     """#77/#78: the seed must not carry the repo's ambient credential surface
-    into the container — `.git`, dotenv files, root-level key material — while
-    the working tree itself (and nested test fixtures) still arrives. Builder
+    into the container — `.git`, dotenv files, root-level key material, and
+    unrelated untracked host files — while indexed worktree files arrive. Builder
     git tools use a sanitized in-container baseline."""
     (tmp_path / "hello.py").write_text('print("original")\n', encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
@@ -166,6 +170,10 @@ def test_seed_leaves_ambient_credentials_on_the_host(tmp_path: Path) -> None:
     (tmp_path / ".env").write_text("GITHUB_TOKEN=ambient-secret\n", encoding="utf-8")
     (tmp_path / ".env.production").write_text(
         "DATABASE_PASSWORD=ambient-secret\n", encoding="utf-8"
+    )
+    (tmp_path / ".envrc").write_text("export TOKEN=ambient-secret\n", encoding="utf-8")
+    (tmp_path / "unrelated-host-secret.txt").write_text(
+        "HOST_SECRET=ambient-secret\n", encoding="utf-8"
     )
     (tmp_path / "server.pem").write_text("PRIVATE KEY material\n", encoding="utf-8")
     secrets = tmp_path / "secrets"
@@ -189,6 +197,10 @@ def test_seed_leaves_ambient_credentials_on_the_host(tmp_path: Path) -> None:
             sb.read_file(".env")
         with pytest.raises(FileNotFoundError):
             sb.read_file(".env.production")
+        with pytest.raises(FileNotFoundError):
+            sb.read_file(".envrc")
+        with pytest.raises(FileNotFoundError):
+            sb.read_file("unrelated-host-secret.txt")
         with pytest.raises(FileNotFoundError):
             sb.read_file("server.pem")
         with pytest.raises(FileNotFoundError):
@@ -216,6 +228,7 @@ def test_seed_leaves_ambient_credentials_on_the_host(tmp_path: Path) -> None:
 def _repo_with_file(tmp_path: Path) -> None:
     (tmp_path / "hello.py").write_text('print("original")\n', encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "hello.py"], cwd=tmp_path, check=True)
 
 
 def test_container_environment_is_credential_default_deny(tmp_path: Path) -> None:
@@ -224,12 +237,22 @@ def test_container_environment_is_credential_default_deny(tmp_path: Path) -> Non
     with ContainerBuilderSandbox(tmp_path) as sb:
         env = sb.run_command("env")
 
-    names = {line.split("=", 1)[0] for line in env.splitlines() if "=" in line}
-    assert "HOME" in names
-    assert not names.intersection(
+    values = dict(line.split("=", 1) for line in env.splitlines() if "=" in line)
+    assert values.get("HOME") == "/tmp"
+    assert not set(values).intersection(
         {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN", "OPENAI_API_KEY"}
     )
-    assert "HOME=/tmp" in env
+    for name in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+    ):
+        assert values.get(name, "") == "", f"Docker proxy leaked through {name}"
 
 
 def test_rootfs_and_writable_scope_are_explicit(tmp_path: Path) -> None:

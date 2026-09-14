@@ -35,7 +35,9 @@ exists) is explicit and auditable below.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path, PurePosixPath
 
 from maistro_bootstrap.builders.errors import SandboxEscapeError
@@ -62,17 +64,16 @@ _BASELINE_DIR = "/tmp/.maistro-baseline"
 _AGENT_UID_GID = "65532:65532"
 _AGENT_HOME = "/tmp"  # 1777 in the base images; outside the synced workspace
 
-# The seed denylist (#77/#78: the sandbox used to hand the container the whole
-# repo via `docker cp`, ambient credentials included). Applied HOST-side when
-# the seed archive is built — the trust boundary — never container-side.
+# The seed is a positive allowlist (#77/#78): only files tracked by the
+# worktree's Git index are archived. This prevents an independently-created
+# untracked host file with an application-specific name from crossing the
+# boundary. The explicit exclusions remain a second layer for credential-shaped
+# paths that were accidentally committed. Both are applied HOST-side when the
+# seed archive is built — the trust boundary — never container-side.
 # Pattern semantics verified identical on GNU tar 1.35 and bsdtar 3.5.3 (so
 # macOS hosts and Linux CI behave the same): patterns prefixed `./` are exact
 # root-relative paths; bare names (`.env`, `id_rsa`, `.ssh`) and bare
-# `*.ext` patterns match at ANY depth. Secret-shaped material is excluded
-# wherever it sits — the failure mode of over-excluding is a visible test
-# failure, while under-excluding leaks silently. Committed placeholder
-# content (e.g. `.env.example`) is already public; only the secret-shaped
-# names below are dropped.
+# `*.ext` patterns match at ANY depth.
 _SEED_EXCLUDES = (
     # No host VCS metadata crosses the boundary. Besides credentials in config,
     # refs and hooks are host-authored control data. A sanitized baseline used
@@ -85,6 +86,7 @@ _SEED_EXCLUDES = (
     # out of the untrusted workspace.
     ".env",
     ".env.*",
+    ".envrc",
     # Ambient credential directories and registry logins, at any depth. A
     # directory named `secrets` is deliberately excluded wholesale: filenames
     # inside it are application-specific and cannot be safely identified by
@@ -107,7 +109,17 @@ _SEED_EXCLUDES = (
     "*.p12",
     "*.pfx",
 )
-_SEED_TIMEOUT = 300  # tar create+extract through one pipe ≈ 2x the old `docker cp`
+_SEED_TIMEOUT = 300  # Git listing + tar create/extract through one pipe.
+_PROXY_ENV_NAMES = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+)
 
 
 def _docker(
@@ -133,7 +145,7 @@ class ContainerBuilderSandbox:
     """A `BuilderSandbox` whose operations execute inside an ephemeral container.
 
     Use as a context manager: entering creates the container and seeds it with
-    the (denylist-filtered) working tree; exiting force-removes the container
+    the tracked, credential-filtered working tree; exiting force-removes the container
     (nothing persists). The host repo is only read once (to seed the container)
     and only written by an explicit `sync_to_host()` — the agent itself never
     touches it. Every command the agent can reach runs as `_AGENT_UID_GID`
@@ -183,6 +195,10 @@ class ContainerBuilderSandbox:
                     f"--pids-limit={_PIDS_LIMIT}",
                     "-e",
                     f"HOME={_AGENT_HOME}",
+                    # Docker clients can inject proxy configuration from
+                    # ~/.docker/config.json. Explicitly blank every spelling
+                    # so credentials in that config cannot reach the candidate.
+                    *[arg for name in _PROXY_ENV_NAMES for arg in ("-e", f"{name}=")],
                     self._image,
                     "sleep",
                     "infinity",
@@ -212,15 +228,16 @@ class ContainerBuilderSandbox:
             raise
 
     def _seed(self, cid: str) -> None:
-        """Seed the workspace with the repo, minus the `_SEED_EXCLUDES` denylist.
+        """Seed only indexed worktree files, excluding credential-shaped paths.
 
-        The archive is built HOST-side (the trust boundary — an inside-the-
-        container filter would run as the party being contained) and extracted
-        *as the agent uid*, so every seeded file is owned by the unprivileged
-        user from the start — no root-owned files, no later `chown -R` pass,
-        and `git` sees consistent ownership. `COPYFILE_DISABLE` keeps macOS
-        bsdtar from smuggling `._*` AppleDouble metadata files into the seed.
+        The file list and archive are built HOST-side (the trust boundary — an
+        inside-the-container filter would run as the party being contained) and
+        extracted *as the agent uid*, so every seeded file is owned by the
+        unprivileged user from the start. Untracked files are intentionally not
+        seeded: candidate-created files appear in the container after startup,
+        while ambient host files need an explicit, trusted Git-index decision.
         """
+        tracked = self._tracked_seed_files()
         archive = subprocess.run(
             [
                 "tar",
@@ -229,8 +246,11 @@ class ContainerBuilderSandbox:
                 *[f"--exclude={pattern}" for pattern in _SEED_EXCLUDES],
                 "-C",
                 str(self._repo_root),
-                ".",
+                "--null",
+                "--verbatim-files-from",
+                "--files-from=-",
             ],
+            input=tracked,
             capture_output=True,
             timeout=_SEED_TIMEOUT,
             env={**os.environ, "COPYFILE_DISABLE": "1"},
@@ -267,6 +287,84 @@ class ContainerBuilderSandbox:
                 ),
             ]
         )
+
+    def _git_index_path(self) -> Path:
+        """Locate the worktree index without asking Git to parse its config."""
+        git_marker = self._repo_root / ".git"
+        if git_marker.is_dir():
+            index_path = git_marker / "index"
+        elif git_marker.is_file():
+            marker = git_marker.read_text(encoding="utf-8").strip()
+            if not marker.startswith("gitdir:"):
+                raise RuntimeError(".git is not a valid worktree gitdir marker")
+            gitdir = Path(marker.removeprefix("gitdir:").strip())
+            index_path = (
+                self._repo_root / gitdir if not gitdir.is_absolute() else gitdir
+            ) / "index"
+        else:
+            raise RuntimeError("sandbox seed requires a Git worktree with an index")
+        if not index_path.is_file():
+            raise RuntimeError(f"sandbox Git index is missing: {index_path}")
+        return index_path
+
+    def _list_indexed_paths(self, index_path: Path) -> bytes:
+        """List an index copy without allowing the host repo config to run."""
+        isolated_env = {
+            **os.environ,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_SYSTEM": os.devnull,
+        }
+        with tempfile.TemporaryDirectory(prefix="maistro-seed-index-") as isolated_git:
+            initialized = subprocess.run(
+                ["git", "init", "--bare", "--template=/dev/null", "-q", isolated_git],
+                capture_output=True,
+                timeout=_SEED_TIMEOUT,
+                env=isolated_env,
+            )
+            if initialized.returncode != 0:
+                raise RuntimeError(
+                    f"temporary Git index setup failed: "
+                    f"{initialized.stderr.decode(errors='replace')[:300]}"
+                )
+            shutil.copyfile(index_path, Path(isolated_git) / "index")
+            listed = subprocess.run(
+                [
+                    "git",
+                    "--git-dir",
+                    isolated_git,
+                    "--work-tree",
+                    str(self._repo_root),
+                    "-c",
+                    "core.fsmonitor=false",
+                    "ls-files",
+                    "--cached",
+                    "-z",
+                ],
+                capture_output=True,
+                timeout=_SEED_TIMEOUT,
+                env=isolated_env,
+            )
+            if listed.returncode != 0:
+                raise RuntimeError(
+                    f"git seed listing failed: {listed.stderr.decode(errors='replace')[:300]}"
+                )
+            return listed.stdout
+
+    def _tracked_seed_files(self) -> bytes:
+        """Return a NUL-delimited allowlist of existing indexed paths."""
+        listed = self._list_indexed_paths(self._git_index_path())
+        existing: list[bytes] = []
+        for raw_path in listed.split(b"\0"):
+            if not raw_path:
+                continue
+            path = PurePosixPath(os.fsdecode(raw_path))
+            if path.is_absolute() or ".." in path.parts:
+                raise RuntimeError(f"git returned an unsafe seed path: {path}")
+            candidate = self._repo_root.joinpath(*path.parts)
+            if candidate.exists() or candidate.is_symlink():
+                existing.append(raw_path)
+        return b"".join(path + b"\0" for path in existing)
 
     def _extract_seed(
         self, cid: str, archive: bytes, destination: str

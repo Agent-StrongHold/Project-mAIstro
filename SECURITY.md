@@ -297,8 +297,9 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    SPEC-190 conformance and escape suites run against real backends in CI (#80):
    `packages/maistro-bootstrap/tests/test_container_sandbox.py` exercises the production
    `ContainerBuilderSandbox` Docker backend's filesystem, process, namespace, network, device,
-   host-socket, credential and privilege surfaces, read-only rootfs, resource budget, timeout
-   kill and cleanup behavior. `packages/maistro-core/tests/sandbox/test_escape_conformance.py`
+   host-socket, credential and privilege surfaces (including tracked-only seed inputs and blanked
+   Docker proxy variables), read-only rootfs, resource budget, timeout kill and cleanup behavior.
+   `packages/maistro-core/tests/sandbox/test_escape_conformance.py`
    provides the corresponding live Bubblewrap Tier-3 lane. These are real-kernel/container
    assertions, not selector or fake-backend tests. The Docker backend remains a shared-kernel
    guardrail rather than a Tier-1/Tier-2 hostile-code boundary; ADR-093 requires those stronger
