@@ -37,7 +37,7 @@ from maistro.tools.browser.guard import (
     BrowserNetworkGuard,
 )
 
-from .fakes import FakePwContext
+from .fakes import FakeHttpResponse, FakePwContext, FakePwRequest, FakePwRoute
 
 # A public host these tests can resolve without a socket. The existing
 # outbound-policy suite leans on the same fact.
@@ -50,8 +50,9 @@ def _clean_policy() -> None:
 
 
 async def _guarded_context(**kwargs) -> tuple[BrowserNetworkGuard, FakePwContext]:
+    responses = kwargs.pop("responses", None)
     guard = BrowserNetworkGuard(**kwargs)
-    context = FakePwContext()
+    context = FakePwContext(responses=responses)
     await guard.attach(context)
     return guard, context
 
@@ -106,6 +107,7 @@ async def test_a_navigation_the_model_invented_is_governed_too() -> None:
         "file:///etc/passwd",  # not http(s) at all
         "gopher://127.0.0.1:70/x",  # a scheme nobody reasoned about
         "http://",  # no host
+        "http://[::1",  # malformed IPv6 must fail closed before policy lookup
     ],
 )
 async def test_every_notation_of_a_private_or_dangerous_target_is_denied(url: str) -> None:
@@ -119,14 +121,19 @@ async def test_every_notation_of_a_private_or_dangerous_target_is_denied(url: st
 
 @pytest.mark.ac("SPEC-090326-b7e2/AC-2")
 async def test_a_redirect_hop_from_public_to_private_is_denied_at_that_hop() -> None:
-    """Start public, land private: the hop that matters is the one refused."""
-    guard, context = await _guarded_context()
+    """The controlled wire follows a public redirect through the real route handler."""
+    guard, context = await _guarded_context(
+        # A continued request receives this response from the controlled wire;
+        # the redirect is not a second hand-dispatched test request.
+        responses={
+            _PUBLIC: FakeHttpResponse(302, location="http://169.254.169.254/latest/meta-data/iam")
+        }
+    )
 
-    first = await context.navigate(_PUBLIC)
-    hop = await context.navigate("http://169.254.169.254/latest/meta-data/iam")
+    final_route = await context.navigate(_PUBLIC)
 
-    assert first.action == ("continue",)
-    assert hop.action == ("abort", ABORT_REASON)
+    assert final_route.action == ("abort", ABORT_REASON)
+    assert context.network_urls == [_PUBLIC]
     decisions = [e.decision for e in guard.events]
     assert decisions == [ALLOWED, DENIED]
 
@@ -342,23 +349,10 @@ async def test_attach_without_web_socket_support_says_so() -> None:
 
 async def test_the_handler_accepts_the_single_argument_form() -> None:
     """Playwright accepts handlers of one or two parameters; both must work."""
-    from types import SimpleNamespace
-
     guard = BrowserNetworkGuard()
-    answered: list[str] = []
-    route = SimpleNamespace(
-        request=SimpleNamespace(url=_PUBLIC, resource_type="document"),
-    )
-
-    async def _abort(code: str) -> None:
-        answered.append(f"abort:{code}")
-
-    async def _continue() -> None:
-        answered.append("continue")
-
-    route.abort = _abort  # type: ignore[method-assign]
-    route.continue_ = _continue  # type: ignore[method-assign]
+    context = FakePwContext()
+    route = FakePwRoute(FakePwRequest(_PUBLIC), context)
 
     await guard.handle_route(route)  # no request argument
 
-    assert answered == ["continue"]
+    assert route.action == ("continue",)

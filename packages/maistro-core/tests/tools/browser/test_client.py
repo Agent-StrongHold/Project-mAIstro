@@ -349,6 +349,12 @@ class TestSearchWeb:
 
 
 class TestBrowseSSRFGuard:
+    @pytest.mark.parametrize("url", ["file:///etc/passwd", "http://[::1"])
+    def test_browser_policy_early_check_fails_closed_for_non_network_urls(self, url: str) -> None:
+        from maistro.tools.browser.client import _browser_policy_allows
+
+        assert _browser_policy_allows(url) is False
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "url",
