@@ -10,6 +10,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from maistro.quota.usage_report import reported_usage
+from maistro.tools.contracts import ToolArgumentError, validate_tool_arguments
 from maistro.types.agent import ReasoningResult
 
 if TYPE_CHECKING:
@@ -17,6 +18,40 @@ if TYPE_CHECKING:
     from maistro.protocols.tracing import Trace
 
 logger = logging.getLogger("maistro.strategies.react")
+
+
+def _raw_arguments_error(raw_args: str, tool_name: str) -> str | None:
+    try:
+        parsed = json.loads(raw_args)
+    except json.JSONDecodeError:
+        return f"Error: malformed arguments for tool '{tool_name}'"
+    if not isinstance(parsed, dict):
+        return f"Error: arguments for tool '{tool_name}' must be an object"
+    return None
+
+
+def _validate_model_tool_call(
+    tools: list[dict[str, Any]] | None,
+    tool_name: str,
+    tool_args: dict[str, Any],
+    allowed_tools: frozenset[str] | None,
+    raw_error: str | None,
+) -> tuple[bool, str | None, dict[str, Any]]:
+    """Return a refusal, if any, before Sentinel/provider dispatch."""
+    schema = _find_tool_schema(tools, tool_name)
+    if allowed_tools is None:
+        return False, None, schema
+    if raw_error is not None:
+        return True, raw_error, schema
+    if tool_name not in allowed_tools:
+        return True, f"Error: tool '{tool_name}' is not in the Agent allowlist", schema
+    if not schema:
+        return True, f"Error: no schema is registered for tool '{tool_name}'", schema
+    try:
+        validate_tool_arguments(schema, tool_args)
+    except ToolArgumentError as exc:
+        return True, f"Error: invalid arguments for tool '{tool_name}': {exc}", schema
+    return False, None, schema
 
 
 def _find_tool_schema(
@@ -110,6 +145,9 @@ class ReactStrategy:
                     warden=warden,
                     sentinel=kwargs.get("sentinel"),
                     auth=kwargs.get("auth"),
+                    allowed_tools=(
+                        frozenset(kwargs["allowed_tools"]) if "allowed_tools" in kwargs else None
+                    ),
                 )
 
                 tool_history.append(
@@ -184,10 +222,13 @@ class ReactStrategy:
             logger.warning("Tool args too large for %s: %d bytes", tool_name, len(raw_args))
             return {}, f"Error: Tool arguments too large ({len(raw_args)} bytes)"
         try:
-            return json.loads(raw_args), None
+            parsed = json.loads(raw_args)
         except json.JSONDecodeError:
             logger.warning("Malformed tool arguments for %s: %s", tool_name, raw_args[:200])
             return {}, None
+        if not isinstance(parsed, dict):
+            return {}, f"Error: arguments for tool '{tool_name}' must be an object"
+        return parsed, None
 
     async def _run_tool(
         self,
@@ -248,6 +289,7 @@ class ReactStrategy:
         warden: Any,
         sentinel: Any,
         auth: Any,
+        allowed_tools: frozenset[str] | None = None,
     ) -> tuple[dict[str, Any], str]:
         """Process a single tool call end-to-end: parse args, sentinel pre-call,
         execute, truncate, sanitize. Returns ``(tool_args, tool_result_str)``."""
@@ -255,20 +297,29 @@ class ReactStrategy:
         tool_name = fn.get("name", "")
         tool_args, error_result = self._parse_tool_args(tool_name, fn.get("arguments", "{}"))
 
-        # NOTE: a parse error sets a placeholder result but does NOT block — the
-        # original behavior falls through to execution with the (possibly empty)
-        # parsed args. Only a sentinel denial blocks execution.
-        tool_result: Any = error_result
-        tool_blocked = False
+        # The model can return a name outside the Agent declaration or a name
+        # absent from the host schema even when the provider accepts it. Both
+        # cases are hard refusals before Sentinel/provider dispatch.
+        raw_error = _raw_arguments_error(fn.get("arguments", "{}"), tool_name)
+        tool_blocked, refusal, tool_schema = _validate_model_tool_call(
+            tools, tool_name, tool_args, allowed_tools, raw_error
+        )
+        tool_result: Any = refusal or error_result
+        tool_blocked = tool_blocked or error_result is not None
 
-        if sentinel is not None and auth is not None:
-            tool_schema = _find_tool_schema(tools, tool_name)
+        if not tool_blocked and sentinel is not None and auth is not None:
             sentinel_verdict = await sentinel.pre_call(tool_name, tool_args, auth, tool_schema)
             if not sentinel_verdict.allowed:
                 tool_result = f"Error: Permission denied for tool '{tool_name}'"
                 tool_blocked = True
             elif sentinel_verdict.repaired_data:
                 tool_args = sentinel_verdict.repaired_data
+                if tool_schema:
+                    try:
+                        validate_tool_arguments(tool_schema, tool_args)
+                    except ToolArgumentError as exc:
+                        tool_result = f"Error: repaired arguments are invalid: {exc}"
+                        tool_blocked = True
 
         if not tool_blocked:
             tool_result = await self._run_tool(tool_name, tool_args, tool_executor, trace)

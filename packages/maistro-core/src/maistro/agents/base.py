@@ -441,6 +441,9 @@ class Agent:
         if status_callback:
             strategy_kwargs["status_callback"] = status_callback
         strategy_kwargs["identity"] = self.identity
+        # The declaration is an effective allowlist at execution time; a model
+        # response cannot add names merely because a provider accepts them.
+        strategy_kwargs["allowed_tools"] = frozenset(self.identity.tools)
         if classified_task_type:
             strategy_kwargs["classified_task_type"] = classified_task_type
         return strategy_kwargs

@@ -8,6 +8,7 @@ import logging
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
+from maistro.tools.contracts import ToolArgumentError, validate_tool_arguments
 from maistro.types.agent import ReasoningResult
 
 if TYPE_CHECKING:
@@ -21,6 +22,79 @@ StatusCallback = Callable[[str], Coroutine[Any, Any, None]]
 
 async def _noop_status(msg: str) -> None:
     pass
+
+
+def _prepare_tool_args(
+    raw_args: str, tool_name: str, *, strict: bool
+) -> tuple[dict[str, Any], str | None]:
+    try:
+        parsed = json.loads(raw_args)
+    except json.JSONDecodeError:
+        logger.warning("Malformed tool arguments for %s: %s", tool_name, raw_args[:200])
+        return {}, _raw_arguments_error(raw_args, tool_name) if strict else None
+    if not isinstance(parsed, dict):
+        return {}, _raw_arguments_error(raw_args, tool_name) if strict else None
+    return parsed, None
+
+
+def _raw_arguments_error(raw_args: str, tool_name: str) -> str | None:
+    try:
+        parsed = json.loads(raw_args)
+    except json.JSONDecodeError:
+        return f"Error: malformed arguments for tool '{tool_name}'"
+    if not isinstance(parsed, dict):
+        return f"Error: arguments for tool '{tool_name}' must be an object"
+    return None
+
+
+async def _apply_sentinel(
+    sentinel: Any,
+    auth: Any,
+    tool_name: str,
+    tool_args: dict[str, Any],
+    tool_schema: dict[str, Any],
+) -> tuple[bool, str | None, dict[str, Any]]:
+    if sentinel is None or auth is None:
+        return False, None, tool_args
+    verdict = await sentinel.pre_call(tool_name, tool_args, auth, tool_schema)
+    if not verdict.allowed:
+        return True, f"Error: Permission denied for tool '{tool_name}'", tool_args
+    repaired = verdict.repaired_data or tool_args
+    if not tool_schema:
+        return False, None, repaired
+    try:
+        validate_tool_arguments(tool_schema, repaired)
+    except ToolArgumentError as exc:
+        return True, f"Error: repaired arguments are invalid: {exc}", repaired
+    return False, None, repaired
+
+
+def _validate_model_tool_call(
+    tool_name: str,
+    tool_args: dict[str, Any],
+    tools: list[dict[str, Any]] | None,
+    allowed_tools: frozenset[str] | None,
+) -> tuple[bool, str | None, dict[str, Any]]:
+    """Return a refusal, if any, before Sentinel/provider dispatch."""
+    if allowed_tools is None:
+        return False, None, {}
+    schema: dict[str, Any] = next(
+        (
+            item.get("function", {}).get("parameters", {})
+            for item in (tools or [])
+            if item.get("function", {}).get("name") == tool_name
+        ),
+        {},
+    )
+    if tool_name not in allowed_tools:
+        return True, f"Error: tool '{tool_name}' is not in the Agent allowlist", schema
+    if not schema:
+        return True, f"Error: no schema is registered for tool '{tool_name}'", schema
+    try:
+        validate_tool_arguments(schema, tool_args)
+    except ToolArgumentError as exc:
+        return True, f"Error: invalid arguments for tool '{tool_name}': {exc}", schema
+    return False, None, schema
 
 
 _MAX_ARG_BYTES = 32_768
@@ -117,12 +191,16 @@ class ArtificerStrategy:
             for tc in tool_calls:
                 tool_args, result_str = await self._handle_tool_call(
                     tc,
+                    tools=tools,
                     tool_executor=tool_executor,
                     trace=trace,
                     status=status,
                     sentinel=kwargs.get("sentinel"),
                     auth=kwargs.get("auth"),
                     warden=kwargs.get("warden"),
+                    allowed_tools=(
+                        frozenset(kwargs["allowed_tools"]) if "allowed_tools" in kwargs else None
+                    ),
                 )
                 tool_history.append(
                     {
@@ -235,23 +313,24 @@ class ArtificerStrategy:
         self,
         tc: dict[str, Any],
         *,
+        tools: list[dict[str, Any]] | None = None,
         tool_executor: Any,
         trace: Trace | None,
         status: Any,
         sentinel: Any,
         auth: Any,
         warden: Any,
+        allowed_tools: frozenset[str] | None = None,
     ) -> tuple[dict[str, Any], str]:
         """Process a single tool call end-to-end. Returns ``(tool_args, result_str)``."""
         fn = tc.get("function", {})
         tool_name = fn.get("name", "")
         raw_args = fn.get("arguments", "{}")
-        try:
-            tool_args = json.loads(raw_args)
-        except json.JSONDecodeError:
-            logger.warning("Malformed tool arguments for %s: %s", tool_name, raw_args[:200])
-            tool_args = {}
-
+        tool_args, parse_error = _prepare_tool_args(
+            raw_args, tool_name, strict=allowed_tools is not None
+        )
+        if parse_error is not None:
+            return tool_args, parse_error
         if len(raw_args.encode("utf-8")) > _MAX_ARG_BYTES:
             logger.warning(
                 "Tool %s arg size %d exceeds %d limit",
@@ -261,14 +340,16 @@ class ArtificerStrategy:
             )
             return tool_args, f"Error: tool arguments exceed {_MAX_ARG_BYTES} byte limit"
 
-        tool_blocked = False
-        if sentinel is not None and auth is not None:
-            sentinel_verdict = await sentinel.pre_call(tool_name, tool_args, auth, {})
-            if not sentinel_verdict.allowed:
-                tool_result: Any = f"Error: Permission denied for tool '{tool_name}'"
-                tool_blocked = True
-            elif sentinel_verdict.repaired_data:
-                tool_args = sentinel_verdict.repaired_data
+        tool_blocked, refusal, tool_schema = _validate_model_tool_call(
+            tool_name, tool_args, tools, allowed_tools
+        )
+        tool_result: Any = refusal
+        if not tool_blocked:
+            tool_blocked, sentinel_error, tool_args = await _apply_sentinel(
+                sentinel, auth, tool_name, tool_args, tool_schema
+            )
+            if sentinel_error is not None:
+                tool_result = sentinel_error
 
         await status(f"Running {tool_name}...")
         logger.info("Tool call: %s(%s)", tool_name, list(tool_args.keys()))

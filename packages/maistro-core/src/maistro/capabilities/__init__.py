@@ -24,6 +24,7 @@ from maistro.capabilities.http_client import HttpxAsyncHttp
 from maistro.capabilities.invocation import (
     CapabilityUnavailable,
     EffectNotApplied,
+    ExpectedEffectEvidence,
     InMemoryInvocationStore,
     Invocation,
     InvocationExecutionService,
@@ -81,6 +82,7 @@ __all__ = [
     "CapabilityUnavailable",
     "DurableApproval",
     "EffectNotApplied",
+    "ExpectedEffectEvidence",
     "FallbackPolicy",
     "GovernedInvocationExecutionService",
     "GuardedHarnessRunner",

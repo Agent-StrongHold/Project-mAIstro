@@ -44,7 +44,15 @@ async def _m1_binding_authorized_policy(
     reachable.
     """
 
-    del binding, request, context
+    del binding, context
+    # Tool reversibility is resolved from the host-owned ToolContractRegistry
+    # and carried as an admission fact; model arguments never choose it.
+    if isinstance(request, dict) and request.get("_tool_reversibility") == "irreversible":
+        return PolicyVerdict(
+            Decision.REQUIRE_APPROVAL,
+            reason="irreversible tool effect requires approval",
+            rule="tool.reversibility",
+        )
     return PolicyVerdict(
         Decision.ALLOW,
         reason="canonical Binding scope resolved before provider invocation",
