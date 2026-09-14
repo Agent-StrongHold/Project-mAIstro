@@ -58,6 +58,7 @@ class TuringInboundSecurity:
         *,
         boundary: str,
         context: TuringSecurityContext,
+        audit: bool = True,
     ) -> WardenVerdict:
         try:
             verdict = await self.warden.scan(content, boundary)
@@ -70,15 +71,16 @@ class TuringInboundSecurity:
                 flags=("warden_unavailable",),
             )
 
-        try:
-            await self._audit(verdict, content, boundary=boundary, context=context)
-        except Exception:
-            # An unrecorded security verdict is not an auditable allow.
-            return WardenVerdict(
-                clean=False,
-                blocked=True,
-                flags=("security_audit_unavailable",),
-            )
+        if audit:
+            try:
+                await self._audit(verdict, content, boundary=boundary, context=context)
+            except Exception:
+                # An unrecorded security verdict is not an auditable allow.
+                return WardenVerdict(
+                    clean=False,
+                    blocked=True,
+                    flags=("security_audit_unavailable",),
+                )
         return verdict
 
     async def scan_payload(
@@ -87,6 +89,7 @@ class TuringInboundSecurity:
         *,
         boundary: str,
         context: TuringSecurityContext,
+        audit: bool = True,
     ) -> WardenVerdict:
         """Scan consumed strings and attacker-controlled mapping keys in place.
 
@@ -97,7 +100,9 @@ class TuringInboundSecurity:
         async def walk(value: Any) -> WardenVerdict:
             if isinstance(value, Mapping):
                 for key, nested in value.items():
-                    key_verdict = await walk(str(key))
+                    key_verdict = await self.scan_text(
+                        str(key), boundary=boundary, context=context, audit=audit
+                    )
                     if not key_verdict.clean:
                         return key_verdict
                     nested_verdict = await walk(nested)
@@ -111,7 +116,7 @@ class TuringInboundSecurity:
                         return nested_verdict
                 return WardenVerdict()
             if isinstance(value, str):
-                return await self.scan_text(value, boundary=boundary, context=context)
+                return await self.scan_text(value, boundary=boundary, context=context, audit=audit)
             return WardenVerdict()
 
         return await walk(payload)
@@ -180,14 +185,17 @@ class TuringInboundSecurityMiddleware(BaseHTTPMiddleware):
             raw = await request.body()
             payload = json.loads(raw)
             principal = _principal(request)
+            defer_audit = request.url.path == "/v1/chat"
+            context = TuringSecurityContext(
+                principal=principal,
+                route=request.url.path,
+                action=action,
+            )
             verdict = await self._security.scan_payload(
                 payload,
                 boundary="user_input",
-                context=TuringSecurityContext(
-                    principal=principal,
-                    route=request.url.path,
-                    action=action,
-                ),
+                context=context,
+                audit=not defer_audit,
             )
         except Exception:
             # Malformed/unavailable security input is refused rather than
@@ -196,6 +204,24 @@ class TuringInboundSecurityMiddleware(BaseHTTPMiddleware):
 
         request.state.turing_inbound_verdict = verdict
         if not verdict.clean:
+            if request.url.path == "/v1/chat":
+                # Chat has a canonical Run only after the route admits it. Keep
+                # the blocked verdict auditable without emitting uncorrelated
+                # allowed entries for every JSON field.
+                try:
+                    await self._security.audit_verdict(
+                        verdict,
+                        "<request blocked>",
+                        boundary="user_input",
+                        context=context,
+                    )
+                except Exception:
+                    # A blocked request remains refused if its evidence sink is
+                    # unavailable; do not turn an audit error into a 500.
+                    return JSONResponse(
+                        status_code=503,
+                        content={"detail": "request refused by Warden"},
+                    )
             return JSONResponse(status_code=400, content={"detail": "request refused by Warden"})
         return await call_next(request)
 

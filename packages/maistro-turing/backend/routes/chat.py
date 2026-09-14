@@ -79,8 +79,9 @@ async def chat(
         session = get_state().new_chat_session()
         _SESSIONS[key] = session
 
+    plane = get_execution_plane()
     try:
-        record = await get_execution_plane().run_chat(
+        record = await plane.run_chat(
             session=session,
             user_id=str(user["id"]),
             session_id=session_id,
@@ -91,6 +92,30 @@ async def chat(
         # spine. Never dispatch a turn when its Run evidence is unavailable.
         logger.warning("Turing chat canonical admission unavailable", exc_info=True)
         raise HTTPException(status_code=503, detail=_PUBLIC_CHAT_FAILURE) from exc
+
+    # The middleware scans before Run admission, but chat audit correlation is
+    # deferred until the canonical Run supplies Workspace/Project/Run identity.
+    # This also records the ingress verdict when execution later fails.
+    inbound_verdict = getattr(request.state, "turing_inbound_verdict", None)
+    if inbound_verdict is not None:
+        try:
+            root = await plane.project_store.root_for_workspace(record.run.workspace_id)
+            await get_state().inbound_security.audit_verdict(
+                inbound_verdict,
+                message,
+                boundary="user_input",
+                context=TuringSecurityContext(
+                    principal=str(user["id"]),
+                    route="/v1/chat",
+                    action="chat",
+                    workspace_id=record.run.workspace_id,
+                    project_id=root.project_id,
+                    run_id=record.run_id,
+                ),
+            )
+        except Exception as exc:
+            logger.warning("canonical Turing chat security audit failed", exc_info=True)
+            raise HTTPException(status_code=503, detail=_PUBLIC_CHAT_FAILURE) from exc
 
     if record.run.status is not RunStatus.COMPLETED:
         logger.warning(
@@ -105,25 +130,5 @@ async def chat(
     except RuntimeError as exc:
         logger.warning("canonical Turing chat result projection failed", exc_info=True)
         raise HTTPException(status_code=503, detail=_PUBLIC_CHAT_FAILURE) from exc
-
-    # The ingress scan runs before Run admission so the message cannot enter
-    # graph parameters unscanned. Add a correlated, metadata-only audit record
-    # once canonical Workspace/Project/Run identity exists.
-    inbound_verdict = getattr(request.state, "turing_inbound_verdict", None)
-    if inbound_verdict is not None:
-        root = await get_execution_plane().project_store.root_for_workspace(record.run.workspace_id)
-        await get_state().inbound_security.audit_verdict(
-            inbound_verdict,
-            message,
-            boundary="user_input",
-            context=TuringSecurityContext(
-                principal=str(user["id"]),
-                route="/v1/chat",
-                action="chat",
-                workspace_id=record.run.workspace_id,
-                project_id=root.project_id,
-                run_id=record.run_id,
-            ),
-        )
 
     return {"session_id": session_id, "run_id": record.run_id, "reply": reply}

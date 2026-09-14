@@ -103,16 +103,17 @@ def test_chat_audit_correlates_to_canonical_run(authed_client, monkeypatch):
 
     entries = _await(app.state.turing_security.audit_log.get_entries(user_id="user"))
     correlated = [entry for entry in entries if entry.route == "/v1/chat"]
-    assert correlated
-    assert any(
-        entry.run_id == response.json()["run_id"]
-        and entry.workspace_id
-        and entry.project_id
-        and entry.policy_version
-        and entry.content_sha256
-        and entry.content_length == len("hello")
-        for entry in correlated
-    )
+    # The middleware scans the raw payload, while the runtime scans the
+    # consumed message. Only the deferred route audit represents the inbound
+    # payload, and it must never remain an unscoped allow.
+    assert len(correlated) == 1
+    entry = correlated[0]
+    assert entry.run_id == response.json()["run_id"]
+    assert entry.workspace_id
+    assert entry.project_id
+    assert entry.policy_version
+    assert entry.content_sha256
+    assert entry.content_length == len("hello")
 
 
 def test_chat_with_fake_provider_has_canonical_execution_evidence(authed_client, monkeypatch):
