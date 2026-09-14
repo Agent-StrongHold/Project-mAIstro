@@ -818,6 +818,8 @@ class Container:
                 a2a_delegator=self.a2a_delegator,
                 guest_peers=self.guest_peers,
                 run_store=self.run_store,
+                warden=self.warden,
+                audit_log=self.audit_log,
                 effect_context=self.capability_effects,
             ),
         )
@@ -894,6 +896,8 @@ class Container:
                 a2a_delegator=self.a2a_delegator,
                 guest_peers=self.guest_peers,
                 run_store=self.run_store,
+                warden=self.warden,
+                audit_log=self.audit_log,
                 effect_context=self.capability_effects,
             ),
         )
@@ -1559,7 +1563,7 @@ async def create_container(
     # GuestPeerManager defaults its own audit logger. There is no configuration
     # decision behind either, so neither is made optional (ADR-082526-3ca6).
     a2a_delegator = A2ADelegator()
-    guest_peers = GuestPeerManager()
+    guest_peers = GuestPeerManager(warden=warden)
 
     container = Container(
         config=config,
@@ -2311,6 +2315,8 @@ def _di_node(
     a2a_delegator: Any,
     guest_peers: Any,
     run_store: RunStore | None,
+    warden: Any,
+    audit_log: Any,
     effect_context: CapabilityEffectContext | None,
 ) -> Any:
     """Construct a dependency-injected node kind, or None for registry kinds.
@@ -2344,7 +2350,11 @@ def _di_node(
         # surfaced it (#147). `run_store` is what lets the node file the
         # delegated work as a canonical child Run.
         return AgentDelegateRemoteNode(
-            a2a_delegator=a2a_delegator, guest_peers=guest_peers, run_store=run_store
+            a2a_delegator=a2a_delegator,
+            guest_peers=guest_peers,
+            run_store=run_store,
+            warden=warden,
+            audit_log=audit_log,
         )
     return None
 
@@ -2356,6 +2366,8 @@ def build_node_resolver(
     a2a_delegator: Any = None,
     guest_peers: Any = None,
     run_store: RunStore | None = None,
+    warden: Any = None,
+    audit_log: Any = None,
     effect_context: CapabilityEffectContext | None = None,
 ) -> Callable[[str, Any], Any]:
     """Build the production durable-executor node resolver.
@@ -2412,6 +2424,8 @@ def build_node_resolver(
             a2a_delegator=a2a_delegator,
             guest_peers=guest_peers,
             run_store=run_store,
+            warden=warden,
+            audit_log=audit_log,
             effect_context=resolved_effect_context,
         )
         return injected if injected is not None else get_node(kind)()

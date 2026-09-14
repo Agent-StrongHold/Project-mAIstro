@@ -15,13 +15,13 @@ Two delegation paths, matching the two delegation models already in
     `GuestPeerManager`'s registered `PeerTrust`s (`a2a/guest_peers.py`), and
     dispatched over HTTP to the remote Conductor/session.
 
-Audit trail goes through the existing `AuditLogger` Protocol from
-`guest_peers.py` (used only on the cross-instance path, since that's the
-only path that already defines one) rather than a new one.
+Inbound verdicts use the container's canonical security audit log on both
+transports; the transport receipt remains separate from the canonical child Run.
 """
 
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 
 from maistro.a2a.delegate import A2ADelegator, DelegationMode
 from maistro.a2a.guest_peers import GuestPeerManager
+from maistro.a2a.inbound import InboundWarden, default_warden, scan_inbound
 
 from . import register_node
 from .base import (
@@ -43,6 +44,10 @@ if TYPE_CHECKING:
     from maistro.graph.definitions import Graph
     from maistro.runs.model import Run
     from maistro.runs.store import RunStore
+
+
+logger = logging.getLogger("maistro.graph.nodes.agent_delegate_remote")
+_WARDEN_UNSET = object()
 
 
 class DelegationNotConfiguredError(RuntimeError):
@@ -156,6 +161,8 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         a2a_delegator: A2ADelegator | None = None,
         guest_peers: GuestPeerManager | None = None,
         run_store: RunStore | None = None,
+        warden: InboundWarden | None | object = _WARDEN_UNSET,
+        audit_log: Any = None,
     ) -> None:
         """Wire in the delegator, the guest-peer manager and the Run store.
 
@@ -167,19 +174,41 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         self._a2a_delegator = a2a_delegator
         self._guest_peers = guest_peers
         self._run_store = run_store
+        self._warden = (
+            default_warden() if warden is _WARDEN_UNSET else cast(InboundWarden | None, warden)
+        )
+        self._audit_log = audit_log
 
     async def _execute(self, inputs: DelegateRemoteIn, ctx: NodeContext) -> DelegateRemoteOut:
         """Dispatch on first run, or return the resumed delegation result."""
         answers = (ctx.metadata or {}).get("hitl_answers") or {}
         resumed = answers.get(ctx.node_id)
         if resumed is not None:
-            return await self._resume(resumed)
+            return await self._resume(resumed, inputs, ctx)
+
+        verdict = await scan_inbound(self._warden, inputs.model_dump(mode="json"))
+        if not verdict.clean:
+            await self._record_scan(
+                inputs,
+                ctx,
+                verdict=verdict,
+                decision="denied",
+            )
+            return DelegateRemoteOut(
+                status="rejected",
+                error="inbound A2A content refused by Warden",
+            )
 
         if inputs.peer_name is not None:
-            return await self._dispatch_cross_instance(inputs, ctx)
-        return await self._dispatch_in_process(inputs, ctx)
+            return await self._dispatch_cross_instance(inputs, ctx, verdict)
+        return await self._dispatch_in_process(inputs, ctx, verdict)
 
-    async def _resume(self, resumed: dict[str, Any]) -> DelegateRemoteOut:
+    async def _resume(
+        self,
+        resumed: dict[str, Any],
+        inputs: DelegateRemoteIn,
+        ctx: NodeContext,
+    ) -> DelegateRemoteOut:
         """Settle the child Run, then report what the delegate answered.
 
         The Run id comes from `resumed["_pause"]`, which the store stamps from
@@ -190,8 +219,40 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         ignored rather than compared -- there is nothing to gain from a
         mismatch except a second way to be wrong.
         """
+        verdict = await scan_inbound(self._warden, resumed)
+        if not isinstance(resumed, dict):
+            await self._record_scan(
+                inputs,
+                ctx,
+                verdict=verdict,
+                decision="denied",
+            )
+            return DelegateRemoteOut(
+                status="rejected",
+                error="inbound A2A result has an invalid representation",
+            )
         pause = resumed.get("_pause")
         run_id = str(pause.get("run_id") or "") if isinstance(pause, dict) else ""
+        if not verdict.clean:
+            out = DelegateRemoteOut(
+                status="rejected",
+                task_id=str(resumed.get("task_id") or ""),
+                run_id=run_id,
+                error="inbound A2A result refused by Warden",
+            )
+            await self._terminalize_child(run_id, out)
+            await self._record_scan(
+                inputs,
+                ctx,
+                verdict=verdict,
+                decision="denied",
+                task_id=out.task_id,
+                child_run_id=run_id,
+            )
+            # Do not copy any peer-controlled result into the node output.
+            out.result = None
+            return out
+
         raw_status = str(resumed.get("status", "completed"))
         status = _coerce_status(raw_status)
         error = resumed.get("error")
@@ -210,6 +271,14 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             timed_out=bool(resumed.get("timed_out", False)),
         )
         await self._terminalize_child(run_id, out)
+        await self._record_scan(
+            inputs,
+            ctx,
+            verdict=verdict,
+            decision="allowed",
+            task_id=out.task_id,
+            child_run_id=run_id,
+        )
         return out
 
     async def _terminalize_child(self, run_id: str, out: DelegateRemoteOut) -> None:
@@ -254,7 +323,10 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         )
 
     async def _dispatch_cross_instance(
-        self, inputs: DelegateRemoteIn, ctx: NodeContext
+        self,
+        inputs: DelegateRemoteIn,
+        ctx: NodeContext,
+        verdict: Any,
     ) -> DelegateRemoteOut:
         """Delegate to a trusted external peer via `GuestPeerManager`, then pause."""
         if self._guest_peers is None:
@@ -276,6 +348,13 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             # No child Run: nothing was admitted, so there is no execution to
             # give an identity to. The peer declining is a legitimate outcome
             # the Graph may branch on, unlike the misconfiguration above.
+            await self._record_scan(
+                inputs,
+                ctx,
+                verdict=verdict,
+                decision="allowed",
+                task_id=result.task_id,
+            )
             return DelegateRemoteOut(
                 status=result.status,
                 task_id=result.task_id,
@@ -290,11 +369,22 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             mode="guest_peer",
             target=inputs.peer_name or "",
         )
+        await self._record_scan(
+            inputs,
+            ctx,
+            verdict=verdict,
+            decision="allowed",
+            task_id=result.task_id,
+            child_run_id=run_id,
+        )
         self._pause(inputs, task_id=result.task_id, mode="guest_peer", run_id=run_id)
         return DelegateRemoteOut()  # unreachable
 
     async def _dispatch_in_process(
-        self, inputs: DelegateRemoteIn, ctx: NodeContext
+        self,
+        inputs: DelegateRemoteIn,
+        ctx: NodeContext,
+        verdict: Any,
     ) -> DelegateRemoteOut:
         """Delegate to another agent in the same Conductor instance, then pause."""
         if self._a2a_delegator is None:
@@ -317,6 +407,12 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
                 else DelegationMode.ALLOW_LIST,
             )
         except ValueError as exc:
+            await self._record_scan(
+                inputs,
+                ctx,
+                verdict=verdict,
+                decision="allowed",
+            )
             return DelegateRemoteOut(status="rejected", error=str(exc))
 
         run_id = await self._create_child_run(
@@ -326,6 +422,14 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             task_id=task_id,
             mode="in_process",
             target=self._admitted_target(task_id, inputs),
+        )
+        await self._record_scan(
+            inputs,
+            ctx,
+            verdict=verdict,
+            decision="allowed",
+            task_id=task_id,
+            child_run_id=run_id,
         )
         self._pause(inputs, task_id=task_id, mode="in_process", run_id=run_id)
         return DelegateRemoteOut()  # unreachable
@@ -494,6 +598,59 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
                 )
             ],
         )
+
+    async def _record_scan(
+        self,
+        inputs: DelegateRemoteIn,
+        ctx: NodeContext,
+        *,
+        verdict: Any,
+        decision: str,
+        task_id: str = "",
+        child_run_id: str = "",
+    ) -> None:
+        """Record a bounded verdict without persisting peer-controlled content."""
+        if self._audit_log is None:
+            return
+        import json
+
+        from maistro.types.security import AuditEntry
+
+        detail = json.dumps(
+            {
+                "decision": decision,
+                "parent_run_id": ctx.run_id,
+                "child_run_id": child_run_id,
+                "node_run_id": ctx.node_run_id,
+                "attempt_id": ctx.attempt_id,
+                "principal": inputs.from_agent,
+                "peer": inputs.peer_name or "",
+                "transport": "guest_peer" if inputs.peer_name is not None else "in_process",
+                "task_id": task_id,
+                "workspace_id": inputs.to_workspace_id or ctx.workspace_id or "",
+                "project_id": inputs.to_project_id or ctx.project_id or "",
+                "policy_version": getattr(self._warden, "policy_version", "warden-default"),
+                "flags": list(verdict.flags),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        try:
+            await self._audit_log.log(
+                AuditEntry(
+                    boundary="a2a_inbound",
+                    user_id=ctx.user_id or "",
+                    agent_id=inputs.from_agent,
+                    verdict=decision,
+                    detail=detail,
+                    trace_id=str((ctx.metadata or {}).get("trace_id") or ""),
+                    request_id=task_id,
+                )
+            )
+        except Exception:
+            # An audit backend outage must not turn a denied payload into an
+            # allow, but it also must not expose raw peer data in an exception.
+            logger.warning("A2A inbound audit write failed", exc_info=True)
 
     def _pause(self, inputs: DelegateRemoteIn, *, task_id: str, mode: str, run_id: str) -> None:
         """Checkpoint the DAG until the delegated task completes or times out."""

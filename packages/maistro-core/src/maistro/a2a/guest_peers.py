@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Protocol, cast, runtime_checkable
 
+from maistro.a2a.inbound import InboundWarden, default_warden, scan_inbound
 from maistro.http import shared_client
 
 logger = logging.getLogger("maistro.a2a.guest_peers")
+_WARDEN_UNSET = object()
 
 
 @dataclass(frozen=True)
@@ -74,9 +76,20 @@ class InMemoryAuditLogger:
 class GuestPeerManager:
     """Registry of trusted external A2A peers with secure delegation."""
 
-    def __init__(self, audit: AuditLogger | None = None) -> None:
+    def __init__(
+        self,
+        audit: AuditLogger | None = None,
+        *,
+        warden: InboundWarden | None | object = _WARDEN_UNSET,
+    ) -> None:
         self._peers: dict[str, PeerTrust] = {}
         self._audit = audit or InMemoryAuditLogger()
+        # A peer response is untrusted even after transport authentication. The
+        # default is the canonical detector; an explicitly unavailable policy
+        # is handled fail-closed by scan_inbound.
+        self._warden = (
+            default_warden() if warden is _WARDEN_UNSET else cast(InboundWarden | None, warden)
+        )
 
     def register_peer(self, peer: PeerTrust) -> None:
         self._peers[peer.peer_name] = peer
@@ -150,6 +163,20 @@ class GuestPeerManager:
                 )
                 resp.raise_for_status()
                 data = resp.json()
+
+            verdict = await scan_inbound(self._warden, data)
+            if not verdict.clean:
+                await self._audit.log_delegation(
+                    peer_name,
+                    agent_id,
+                    "warden refused a2a response",
+                )
+                return DelegationResult(
+                    task_id="",
+                    peer_name=peer_name,
+                    status="rejected",
+                    error="inbound A2A response refused by Warden",
+                )
 
             await self._audit.log_delegation(
                 peer_name,

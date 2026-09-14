@@ -113,11 +113,15 @@ def _scan_reject_patterns(scan_content: str) -> list[str]:
 
 
 class Warden:
-    """Threat detector. Runs at user_input and tool_result boundaries only.
+    """Threat detector used by every wired trust boundary.
 
     Layers 1-2.5 are always active (free, instant).
     Layer 3 (LLM) is optional -- requires an LLM client and model to be configured.
     """
+
+    # Stable identifier included in boundary audit evidence. Detector changes
+    # must update this value when the applicable policy meaningfully changes.
+    policy_version = "warden-v1"
 
     def __init__(
         self,
