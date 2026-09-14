@@ -20,6 +20,12 @@ from maistro.security._types import (
 from maistro.security.sentinel.approver_graph import ApproverGraph
 from maistro.security.sentinel.argument_limits import ToolArgumentLimits, check_argument_limits
 from maistro.security.sentinel.authz_types import AuthzDecision, Principal, Tier
+from maistro.security.sentinel.delegation import (
+    DelegationAuthority,
+    DelegationDecision,
+    DelegationRequest,
+    utc_now,
+)
 from maistro.security.sentinel.elevation import ElevationStore, hash_args
 from maistro.security.sentinel.permission_source import PermissionSource, resolve_live_table
 from maistro.security.sentinel.pii_filter import scan_and_redact
@@ -83,6 +89,7 @@ class Sentinel:
         rlphd_threshold_store: RlphdThresholdStore | None = None,
         argument_limits: ToolArgumentLimits | None = None,
         allow_on_miss: bool = False,
+        delegation_authority: DelegationAuthority | None = None,
     ) -> None:
         self._warden = warden
         self._permission_table = permission_table
@@ -102,6 +109,10 @@ class Sentinel:
         self._rlphd_model = rlphd_model
         self._rlphd_threshold_store = rlphd_threshold_store
         self._argument_limits = argument_limits or ToolArgumentLimits.from_environment()
+        # AgentIdentity manifests are requests, never grants. A missing host
+        # authority therefore refuses delegation rather than consulting roster
+        # state as an implicit allow-list.
+        self._delegation_authority = delegation_authority
         # Fail-closed default (ADR-072726-0d6b, #1165): a tool absent from the
         # permission table is DENIED. allow_on_miss=True is the explicit
         # compatibility mode for non-production/test/demo wiring; it is never
@@ -150,22 +161,77 @@ class Sentinel:
             return f"principal '{principal.id}' lacks capability for '{action}'"
         return None
 
+    async def authorize_delegation(
+        self,
+        *,
+        principal: Principal,
+        owner_id: str,
+        delegating_agent_id: str,
+        target_agent_id: str,
+        goal_id: str,
+        run_id: str,
+        invocation_id: str,
+        scope: str,
+        requested_actions: frozenset[str],
+        artifact: str,
+    ) -> DelegationDecision:
+        """Resolve delegated authority from host policy, never agent metadata."""
+        if self._delegation_authority is None:
+            return DelegationDecision(False, reason="delegation authority is not configured")
+        request = DelegationRequest(
+            principal=principal,
+            owner_id=owner_id,
+            delegating_agent_id=delegating_agent_id,
+            target_agent_id=target_agent_id,
+            goal_id=goal_id,
+            run_id=run_id,
+            invocation_id=invocation_id,
+            scope=scope,
+            action="agent.delegate",
+            requested_actions=requested_actions,
+            artifact=artifact,
+            requested_at=utc_now(),
+        )
+        return self._delegation_authority.authorize(request, now=request.requested_at)
+
     def resolve_tier(
         self,
         action: str,
         principal: Principal,
         *,
         reversibility: str = "reversible",
+        default: Tier | None = None,
     ) -> Tier:
-        """Most-specific static policy entry for (action, principal scope/role); else
-        falls back to the ADR-050 reversibility default (SPEC-245 §Decision)."""
+        """Resolve host policy; caller declarations are never inputs.
+
+        ``default`` is used for compatibility adapters whose untrusted shape
+        must be denied unless a host policy entry explicitly opts it in.
+        """
         for scope in (*principal.scopes, *principal.roles):
             tier = self._tier_policy.get((action, scope))
             if tier is not None:
                 return tier
+        if default is not None:
+            return default
         if reversibility == "irreversible":
             return Tier.SELF_ELEVATION
         return Tier.OPEN
+
+    def resolve_execution_mode(
+        self,
+        action: str,
+        principal: Principal,
+        *,
+        reversibility: str = "reversible",
+        default: Tier | None = None,
+    ) -> str:
+        """Map a host-resolved tier to the adapter's isolation floor."""
+        tier = self.resolve_tier(action, principal, reversibility=reversibility, default=default)
+        if tier == Tier.BLOCKED:
+            return "blocked"
+        if tier in (Tier.OPEN, Tier.ROLE_AUTO):
+            return "async"
+        return "sandbox"
 
     async def authorize(
         self,

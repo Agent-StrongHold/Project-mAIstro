@@ -55,16 +55,16 @@ class TestDefaultDenyNodeClassification:
         result = _classify_node_execution(node, "test-node")
         assert result == "blocked"
 
-    def test_untrusted_with_approval_gets_sandbox(self):
+    def test_untrusted_with_request_approval_stays_blocked(self):
         from services.graph_runner import _classify_node_execution
 
         node = {"config": {"untrusted": True, "tier_approved_by": "admin"}}
         result = _classify_node_execution(node, "test-node")
-        assert result == "sandbox"
+        assert result == "blocked"
 
-    def test_explicitly_safe_gets_async(self):
+    def test_explicitly_safe_does_not_select_async(self):
         from services.graph_runner import _classify_node_execution
 
         node = {"config": {"execution_tier": "safe"}}
         result = _classify_node_execution(node, "test-node")
-        assert result == "async"
+        assert result == "sandbox"

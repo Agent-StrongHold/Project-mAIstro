@@ -366,6 +366,8 @@ def _resolver(
     execution_mode: str,
     on_response: OnResponseHook | None,
     llm_builder: Callable[[OnResponseHook | None], Any] | None,
+    sentinel: Any = None,
+    host_mode: str | None = None,
 ):
     def resolve(node_id: str, _graph: Graph) -> LegacyConductorNode:
         try:
@@ -379,6 +381,8 @@ def _resolver(
             execution_mode=execution_mode,
             on_response=on_response,
             llm_builder=llm_builder,
+            sentinel=sentinel,
+            host_mode=host_mode,
         )
 
     return resolve
@@ -414,6 +418,8 @@ def _recovery_resolver(run: Run):
         execution_mode=execution_mode,
         on_response=None,
         llm_builder=None,
+        sentinel=getattr(_container(), "sentinel", None),
+        host_mode="async",
     )
 
 
@@ -555,6 +561,8 @@ async def execute_dag(
             execution_mode=execution_mode,
             on_response=on_response,
             llm_builder=llm_builder,
+            sentinel=getattr(_container(), "sentinel", None),
+            host_mode="async",
         ),
         actor_principal_id=user_id or None,
         run_id=admitted_run_id,

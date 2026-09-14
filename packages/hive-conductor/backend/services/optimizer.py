@@ -551,10 +551,9 @@ def _apply_node_field_mutation(node: dict[str, Any], kind: str, tp: dict[str, An
     elif kind == "change_role":
         node["role"] = tp.get("to_value", node.get("role"))
     elif kind == "upgrade_execution_tier":
-        # REQUIRES ADMIN APPROVAL — optimizer can propose but never auto-apply
-        # Upgrading from light→heavy or heavy→container is a security decision
+        # This records a model proposal only. Sentinel resolves the effective
+        # isolation and any approval from host-owned policy records.
         node.setdefault("config", {})["execution_tier"] = tp.get("to_value", "")
-        node["config"]["tier_approved_by"] = "admin"  # must be set by admin accept
 
 
 def _apply_edge_field_mutation(edge: dict[str, Any], kind: str, tp: dict[str, Any]) -> None:
