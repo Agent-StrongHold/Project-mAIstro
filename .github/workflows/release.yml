@@ -90,6 +90,15 @@ jobs:
       - name: Release consistency (VERSION, CHANGELOG, README and tags)
         run: python scripts/check-release-consistency.py --releasing "$GITHUB_REF_NAME"
 
+      # Compliance is intentionally fail-closed. A test path or a green CI job
+      # is not immutable release evidence; each release-required claim must be
+      # bound to this exact tag commit by the registry before anything builds.
+      - name: Compliance evidence must cover this release digest
+        run: >-
+          python scripts/check-compliance.py
+          --require-release-evidence
+          --release-digest "$GITHUB_SHA"
+
       # ADR §2: a final tag may only point at a commit on `main`; an rc is the
       # sole exception and may point at `integration` so a candidate can soak.
       # `merge-base --is-ancestor` accepts the branch tip itself, so "the tag
