@@ -29,11 +29,18 @@ _manager: HarnessSessionManager | None = None
 
 
 def _get_manager() -> HarnessSessionManager:
-    """Build the manager over the engine registry and canonical Container Warden."""
+    """Return a manager bound to the current canonical Container composition.
+
+    Do not let a process-wide manager preserve an old Warden across Container
+    replacement or teardown. Existing sessions are intentionally discarded when
+    their security composition changes; continuing them would use stale policy.
+    """
     global _manager
-    if _manager is None:
-        engine = get_engine()
-        _manager = HarnessSessionManager(engine.capabilities, warden=engine.warden)
+    engine = get_engine()
+    warden = engine.warden
+    capabilities = engine.capabilities
+    if _manager is None or not _manager.uses_composition(capabilities, warden):
+        _manager = HarnessSessionManager(capabilities, warden=warden)
     return _manager
 
 

@@ -47,6 +47,16 @@ class HarnessSessionManager:
         self._policy = policy
         self._sessions: dict[str, SafeHarnessRunner] = {}
 
+    def uses_composition(self, registry: CapabilityRegistry, warden: Warden) -> bool:
+        """Report whether this manager still belongs to the active app wiring.
+
+        A harness session captures its safety wrapper at creation time. If the
+        application replaces its Container, retaining that manager would keep
+        using the old Warden (or keep sessions alive after security wiring was
+        removed), so the route must discard it instead.
+        """
+        return self._registry is registry and self._warden is warden
+
     async def start(self, agent_spec: AgentSpec, *, workdir: str) -> str | Unavailable:
         """Resolve + start a safety-wrapped harness session, or ``Unavailable``."""
         provider = await self._registry.resolve(SLOT_NAME)
