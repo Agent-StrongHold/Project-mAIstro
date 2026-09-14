@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +3
+  tests/: +4
   packages/hive-conductor/backend/tests/: credential-store isolation fixture
 ---
 

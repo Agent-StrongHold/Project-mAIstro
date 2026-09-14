@@ -177,6 +177,25 @@ def _relative(path: Path) -> str:
     return path.relative_to(ROOT).as_posix()
 
 
+def _imports_module_stem(path: Path, stem: str) -> bool:
+    """Return whether a production module imports a retired module stem."""
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return False
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported = (alias.name.rsplit(".", 1)[-1] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            imported = (alias.name for alias in node.names)
+        else:
+            continue
+        if stem in imported:
+            return True
+    return False
+
+
 def _surface_entries(ledger: dict[str, object]) -> list[dict[str, object]]:
     entries = ledger.get("reachable")
     if not isinstance(entries, list):
@@ -270,6 +289,14 @@ def audit(  # noqa: C901 -- this is the closed-world ledger gate
                 failures.append(f"{path_text}: retired credential implementation still exists")
             if path_text in detected:
                 failures.append(f"{path_text}: retired credential implementation is reachable")
+
+            stem = Path(path_text).stem
+            for module_path in modules.values():
+                if not module_path.is_file() or not _imports_module_stem(module_path, stem):
+                    continue
+                failures.append(
+                    f"{_relative(module_path)}: imports retired credential module {stem}"
+                )
 
     return sorted(set(failures))
 

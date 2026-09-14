@@ -54,6 +54,30 @@ def test_reachable_credential_surfaces_are_classified_and_scoped() -> None:
     assert _checker.audit() == []
 
 
+def test_retired_module_cannot_be_imported_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The retirement ledger also blocks stale production imports."""
+    with tempfile.TemporaryDirectory() as directory:
+        package_root = Path(directory) / "packages" / "demo" / "src"
+        package_fixture = package_root / "demo" / "adapter.py"
+        package_fixture.parent.mkdir(parents=True)
+        package_fixture.write_text(
+            "from services import credential_store_v2\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(_checker, "ROOT", Path(directory))
+        failures = _checker.audit(
+            {
+                "reachable": [],
+                "retired": [{"path": "packages/demo/credential_store_v2.py"}],
+            },
+            modules={"demo.adapter": package_fixture},
+            reachable=set(),
+        )
+        assert any("imports retired credential module" in failure for failure in failures)
+
+
 def test_renamed_reachable_style_store_is_detected_by_behavior(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
