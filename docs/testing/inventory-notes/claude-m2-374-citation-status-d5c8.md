@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +28
+  tests/: +30
 ---
 # claude-m2-374-citation-status
 
@@ -9,7 +9,7 @@ stronger question: does an **active** document rest its authority on something
 that is not itself active — a Superseded ADR, a Deprecated one, or a decision
 still merely Proposed.
 
-**`tests/test_check_citation_status.py` (+28)**
+**`tests/test_check_citation_status.py` (+30)**
 
 *The rule, across status combinations.* Accepted and Implemented are authority;
 Proposed, Deprecated, Deferred and Denied are not. The asymmetry is the
@@ -31,7 +31,10 @@ Superseded. Chains are followed to their active end and reported where they
 actually broke, not at the citation three links away. A cycle is reported
 rather than looped — bounded by a seen-set, because a cycle has no depth at
 which it becomes legitimate. Two live claimants to one superseded decision is
-a fork nobody can follow, and fails.
+a fork nobody can follow, and fails. The same-status case is covered too:
+two Accepted (or two Implemented) replacements are still contradictory, rather
+than being collapsed into one set member. The source-status matrix exercises
+every lifecycle state, not just the representative Proposed case.
 
 *One defect, one voice.* A citation to a document that does not exist is left
 to `linker.check_links`, which already reports dangling references.
@@ -48,10 +51,10 @@ and will be reworded, and keying on it would turn every improvement to an
 error message into a wave of phantom findings. A fixed citation must shrink
 the ledger in the same change.
 
-**47 pre-existing violations are baselined, not fixed.** Each is a governance
+**46 pre-existing violations are baselined, not fixed.** Each is a governance
 judgement — "SPEC-182 implements ADR-058, which is Proposed" is answered either
 by accepting ADR-058 or by demoting the claim, and those say different things
-about what shipped. A blanket rewrite would launder 47 such judgements into one
+about what shipped. A blanket rewrite would launder 46 such judgements into one
 unreviewable diff. #374 therefore stays open; what this buys immediately is
 that no *new* one can land.
 

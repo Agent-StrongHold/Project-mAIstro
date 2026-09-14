@@ -27,6 +27,7 @@ sys.path.insert(0, str(ROOT / "packages" / "maistro-registry" / "src"))
 
 from maistro_registry.citations import (  # noqa: E402
     ACTIVE_AUTHORITY_STATUSES,
+    ACTIVE_SOURCE_STATUSES,
     GOVERNING_FIELDS,
     CitationBaseline,
     CitationProblem,
@@ -104,6 +105,16 @@ def test_a_proposed_source_may_rest_on_a_proposed_decision() -> None:
     source = _doc("ADR-001", Status.PROPOSED, substrate=[_ref("ADR-002")])
 
     assert check_citations([source, target]) == []
+
+
+@pytest.mark.parametrize("source_status", sorted(Status, key=str))
+def test_only_active_sources_claim_live_authority(source_status: Status) -> None:
+    target = _doc("ADR-002", Status.PROPOSED)
+    source = _doc("ADR-001", source_status, substrate=[_ref("ADR-002")])
+
+    problems = check_citations([source, target])
+
+    assert bool(problems) is (source_status in ACTIVE_SOURCE_STATUSES)
 
 
 @pytest.mark.parametrize("field_name", GOVERNING_FIELDS)
@@ -196,9 +207,27 @@ def test_a_chain_ending_somewhere_inactive_is_reported_at_its_end() -> None:
     assert "Deprecated" in problems[0].reason
 
 
+@pytest.mark.parametrize("replacement_status", [Status.ACCEPTED, Status.IMPLEMENTED])
+def test_contradictory_active_replacements_with_same_status_are_refused(
+    replacement_status: Status,
+) -> None:
+    """Two live claimants remain contradictory even when their statuses match."""
+    forked = _doc(
+        "ADR-002",
+        Status.SUPERSEDED,
+        superseded_by=[_ref("ADR-003"), _ref("ADR-004")],
+    )
+    one = _doc("ADR-003", replacement_status)
+    two = _doc("ADR-004", replacement_status)
+    source = _doc("ADR-001", Status.ACCEPTED, substrate=[_ref("ADR-002")])
+
+    problems = check_citations([source, forked, one, two])
+
+    assert "more than one active replacement" in problems[0].reason
+
+
 def test_contradictory_active_replacements_are_refused() -> None:
-    """ "Fails contradictory active authority": two live claimants to the same
-    superseded decision is not a chain, it is a fork nobody can follow."""
+    """Two live claimants to the same superseded decision are a fork."""
     forked = _doc(
         "ADR-002",
         Status.SUPERSEDED,
