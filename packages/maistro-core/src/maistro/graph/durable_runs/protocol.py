@@ -35,6 +35,10 @@ class DurableRunStore(Protocol):
         """Return persisted graph continuations whose timed resume is due."""
         ...
 
+    async def list_hitl_due(self, *, now: datetime, limit: int = 100) -> list[DurableRunRecord]:
+        """Return paused Runs whose indexed HITL deadline is due."""
+        ...
+
     async def list_for_project(
         self, project_id: str, *, limit: int = 25
     ) -> list[DurableRunRecord]: ...
@@ -47,7 +51,7 @@ class DurableRunStore(Protocol):
         *,
         at: datetime | None = None,
     ) -> DurableRunRecord:
-        """Attach an answer and queue the paused canonical Run for resume."""
+        """Persist an answer and queue only a valid paused Run for resume."""
         ...
 
     async def timeout_hitl(
