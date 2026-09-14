@@ -7,7 +7,13 @@ from typing import Any, Protocol, runtime_checkable
 
 @runtime_checkable
 class AuthProvider(Protocol):
-    """Authenticates requests and returns auth context."""
+    """Authenticates requests and returns auth context.
+
+    Providers raise ``CredentialNotApplicable`` only when the presented
+    credential is not their scheme. Once a provider recognizes its scheme, a
+    failed verification raises ``AuthError`` so a composite cannot reinterpret
+    the credential through another provider.
+    """
 
     async def authenticate(
         self,

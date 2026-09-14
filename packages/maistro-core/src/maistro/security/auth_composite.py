@@ -1,9 +1,12 @@
-"""Composite authentication provider: tries multiple providers in order.
+"""Experimental composite authentication provider: tries providers in order.
 
-Exception handling (fix #13):
-- CredentialNotApplicable: "not my format" → try next provider
-- AuthError: "valid format, rejected" → abort immediately (don't fall through)
-- Other exceptions: infrastructure failure → abort (don't mask as auth miss)
+This provider family is currently not wired into a shipped service. Keep that
+boundary explicit until every provider implements the distinction below.
+
+Exception handling (fix #13, #1190):
+- CredentialNotApplicable: "not my format" -> try next provider
+- AuthError: "recognized format, rejected" -> abort immediately
+- Other exceptions: infrastructure failure -> abort (don't mask as auth miss)
 """
 
 from __future__ import annotations
@@ -17,12 +20,20 @@ if TYPE_CHECKING:
 logger = logging.getLogger("maistro.auth.composite")
 
 
+def _provider_scheme(provider: Any) -> str:
+    """Return a bounded scheme label suitable for audit logs."""
+    scheme = getattr(provider, "scheme", None)
+    if isinstance(scheme, str) and scheme:
+        return scheme
+    return type(provider).__name__
+
+
 class CredentialNotApplicable(Exception):
-    """Raised when a provider cannot handle this credential format at all."""
+    """Raised when a provider cannot recognize this credential scheme."""
 
 
 class AuthError(Exception):
-    """Raised when a provider recognized the credential but rejected it."""
+    """Raised when a provider recognized the scheme but rejected the credential."""
 
 
 class CompositeAuthProvider:
@@ -42,27 +53,33 @@ class CompositeAuthProvider:
         headers: dict[str, str] | None = None,
     ) -> AuthContext:
         for provider in self._providers:
+            scheme = _provider_scheme(provider)
             try:
                 result: AuthContext = await provider.authenticate(authorization, headers=headers)
+                # This is audit evidence about the scheme, never the credential.
+                logger.info("auth_provider_accepted scheme=%s", scheme)
                 return result
             except CredentialNotApplicable:
-                # This provider can't handle this credential type — try next
+                logger.info("auth_provider_not_applicable scheme=%s", scheme)
                 continue
-            except AuthError:
-                # Provider recognized the credential but rejected it — hard fail
-                raise
-            except ValueError as e:
-                # Legacy providers raise ValueError for both "not my format" and "rejected"
-                # Treat as "not applicable" for backward compat during migration
-                logger.debug("provider=%s raised ValueError: %s", type(provider).__name__, e)
-                continue
-            except Exception as e:
-                # Infrastructure failure (JWKS down, import error, etc.) — DO NOT fall through
-                logger.error(
-                    "auth_provider_infrastructure_failure provider=%s error=%s",
-                    type(provider).__name__,
-                    e,
+            except AuthError as error:
+                # Recognition is terminal: an invalid credential must not be
+                # reinterpreted by a later provider.
+                logger.info(
+                    "auth_provider_rejected scheme=%s error_type=%s",
+                    scheme,
+                    type(error).__name__,
                 )
-                raise AuthError(f"Authentication infrastructure failure: {type(e).__name__}") from e
+                raise
+            except Exception as error:
+                # Infrastructure failure (JWKS down, import error, etc.) — DO NOT fall through.
+                logger.error(
+                    "auth_provider_infrastructure_failure scheme=%s error_type=%s",
+                    scheme,
+                    type(error).__name__,
+                )
+                raise AuthError(
+                    f"Authentication infrastructure failure: {type(error).__name__}"
+                ) from error
 
         raise AuthError("No authentication provider accepted the credentials")

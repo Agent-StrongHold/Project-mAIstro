@@ -10,6 +10,8 @@ import logging
 from http.cookies import SimpleCookie
 from typing import TYPE_CHECKING
 
+from maistro.security.auth_composite import AuthError, CredentialNotApplicable
+
 if TYPE_CHECKING:
     from maistro.security._types import AuthContext
     from maistro.security.auth_jwt import JWTAuthProvider
@@ -19,6 +21,8 @@ logger = logging.getLogger("maistro.auth.cookie")
 
 class CookieAuthProvider:
     """Authenticates via HttpOnly session cookie containing a JWT."""
+
+    scheme = "session_cookie"
 
     def __init__(
         self,
@@ -35,25 +39,24 @@ class CookieAuthProvider:
         headers: dict[str, str] | None = None,
     ) -> AuthContext:
         if not headers:
-            msg = "No headers provided (cookie auth requires headers)"
-            raise ValueError(msg)
+            raise CredentialNotApplicable("No headers provided (cookie auth requires headers)")
 
         cookie_header = headers.get("cookie", "")
         if not cookie_header:
-            msg = "No cookie header present"
-            raise ValueError(msg)
+            raise CredentialNotApplicable("No cookie header present")
 
         token = self._extract_cookie(cookie_header)
+        if token is None:
+            raise CredentialNotApplicable(f"Cookie '{self._cookie_name}' not found")
         if not token:
-            msg = f"Cookie '{self._cookie_name}' not found"
-            raise ValueError(msg)
+            raise AuthError("Empty session cookie")
 
         ctx = await self._jwt.authenticate(f"Bearer {token}", headers=headers)
 
         logger.debug("Cookie auth succeeded for user=%s", ctx.user_id)
         return ctx
 
-    def _extract_cookie(self, cookie_header: str) -> str:
+    def _extract_cookie(self, cookie_header: str) -> str | None:
         try:
             sc: SimpleCookie = SimpleCookie()
             sc.load(cookie_header)
@@ -62,4 +65,4 @@ class CookieAuthProvider:
                 return str(morsel.value)
         except Exception:
             logger.warning("Failed to parse cookie header")
-        return ""
+        return None

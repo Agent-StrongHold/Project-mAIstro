@@ -20,6 +20,8 @@ logger = logging.getLogger("maistro.auth.jwt")
 class JWTAuthProvider:
     """Authenticates via JWT tokens from any OIDC-compliant IdP."""
 
+    scheme = "jwt_bearer"
+
     def __init__(
         self,
         *,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from maistro.security._types import SYSTEM_AUTH, IdentityKind
+from maistro.security.auth_composite import AuthError, CredentialNotApplicable
 from maistro.security.auth_static import StaticKeyAuthProvider
 
 
@@ -18,25 +19,25 @@ class TestAuthenticate:
     @pytest.mark.asyncio
     async def test_missing_authorization_raises(self) -> None:
         provider = StaticKeyAuthProvider(api_key="secret")
-        with pytest.raises(ValueError, match="Missing Authorization header"):
+        with pytest.raises(CredentialNotApplicable, match="Missing Authorization header"):
             await provider.authenticate(None)
 
     @pytest.mark.asyncio
     async def test_empty_authorization_raises(self) -> None:
         provider = StaticKeyAuthProvider(api_key="secret")
-        with pytest.raises(ValueError, match="Missing Authorization header"):
+        with pytest.raises(CredentialNotApplicable, match="Missing Authorization header"):
             await provider.authenticate("")
 
     @pytest.mark.asyncio
     async def test_non_bearer_format_raises(self) -> None:
         provider = StaticKeyAuthProvider(api_key="secret")
-        with pytest.raises(ValueError, match="Invalid authorization format"):
+        with pytest.raises(CredentialNotApplicable, match="Not a Bearer token"):
             await provider.authenticate("Basic secret")
 
     @pytest.mark.asyncio
     async def test_wrong_key_raises(self) -> None:
         provider = StaticKeyAuthProvider(api_key="secret")
-        with pytest.raises(ValueError, match="Invalid API key"):
+        with pytest.raises(AuthError, match="Invalid API key"):
             await provider.authenticate("Bearer wrong")
 
     @pytest.mark.asyncio
