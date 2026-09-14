@@ -95,8 +95,7 @@ class SqliteLearningStore:
         an earlier version needs an in-place upgrade. SQLite has no
         `ADD COLUMN IF NOT EXISTS`, so the column list is inspected first.
         The late fields are added without a default: existing rows have unknown
-        scope or
-        provenance and must not be silently fabricated.
+        scope or provenance and must not be silently fabricated.
         """
         async with serialized_schema_upgrade(self._conn):
             await self._conn.execute(_SCHEMA)
