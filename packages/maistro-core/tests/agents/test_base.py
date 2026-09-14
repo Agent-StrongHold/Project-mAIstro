@@ -69,6 +69,24 @@ class _RecordingStrategy:
         return self._result
 
 
+class _ToolReturningStrategy:
+    def __init__(self) -> None:
+        self.tool_result = ""
+
+    async def reason(
+        self,
+        _messages: list[dict[str, Any]],
+        _model: str,
+        _llm: Any,
+        **kwargs: Any,
+    ) -> ReasoningResult:
+        self.tool_result = await kwargs["tool_executor"]("lookup", {})
+        return ReasoningResult(
+            response=f"answer: {self.tool_result}",
+            tool_history=[{"tool_name": "lookup", "result": self.tool_result}],
+        )
+
+
 class _FakeSessionStore:
     def __init__(self, history: list[dict[str, str]] | None = None) -> None:
         self._history = history or []
@@ -233,11 +251,14 @@ def _make_agent(
     tracer: Any = None,
     tool_registry: Any = None,
     agent_resolver: Any = None,
+    tool_executor: Any = None,
+    sentinel: Any = None,
+    llm: Any = None,
 ) -> Agent:
     return Agent(
         identity=identity or _identity(),
         strategy=strategy,
-        llm=object(),
+        llm=llm if llm is not None else object(),
         context_builder=context_builder or _FakeContextBuilder(),
         prompt_manager=_FakePromptManager(),
         warden=warden or _FakeWarden(),
@@ -251,6 +272,8 @@ def _make_agent(
         tracer=tracer,
         tool_registry=tool_registry,
         agent_resolver=agent_resolver,
+        tool_executor=tool_executor,
+        sentinel=sentinel,
     )
 
 
@@ -318,6 +341,146 @@ class TestBuildToolSchema:
 
         schema = _build_tool_schema("read_file", registry=_EmptyRegistry())
         assert schema["function"]["description"].startswith("Read the contents")
+
+
+class TestHandleCanonicalTrustPipeline:
+    async def test_user_tool_and_final_content_are_governed_once_at_agent_seams(self) -> None:
+        strategy = _ToolReturningStrategy()
+        warden = _FakeWarden()
+
+        async def raw_tool(_name: str, _args: dict[str, Any]) -> str:
+            return "tool contact someone@example.com"
+
+        agent = _make_agent(
+            strategy,
+            identity=_identity(tools=("lookup",)),
+            warden=warden,
+            tool_executor=raw_tool,
+        )
+
+        result = await agent.handle(
+            messages=[{"role": "user", "content": "user@example.com"}],
+            auth=_Auth(),
+        )
+
+        assert result.content == "answer: tool contact [REDACTED:email]"
+        assert strategy.tool_result == "tool contact [REDACTED:email]"
+        assert warden.scanned == [
+            "user@example.com",
+            "tool contact someone@example.com",
+            "answer: tool contact [REDACTED:email]",
+        ]
+
+    async def test_sentinel_authorizes_before_raw_tool_and_then_sanitizes_result(self) -> None:
+        strategy = _ToolReturningStrategy()
+        warden = _FakeWarden()
+        raw_calls: list[str] = []
+
+        class SentinelVerdict:
+            allowed = False
+            repaired_data = None
+
+        class Sentinel:
+            def __init__(self) -> None:
+                self.pre_calls: list[str] = []
+                self.post_calls: list[str] = []
+
+            async def pre_call(
+                self, tool_name: str, _args: dict[str, Any], _auth: Any, _schema: Any
+            ) -> SentinelVerdict:
+                self.pre_calls.append(tool_name)
+                return SentinelVerdict()
+
+            async def post_call(self, tool_name: str, result: str, _auth: Any) -> str:
+                self.post_calls.append(tool_name)
+                return f"sanitized:{result}"
+
+        sentinel = Sentinel()
+
+        async def raw_tool(tool_name: str, _args: dict[str, Any]) -> str:
+            raw_calls.append(tool_name)
+            return "must not run"
+
+        agent = _make_agent(
+            strategy,
+            identity=_identity(tools=("lookup",)),
+            warden=warden,
+            tool_executor=raw_tool,
+            sentinel=sentinel,
+        )
+
+        await agent.handle(messages=[{"role": "user", "content": "lookup"}], auth=_Auth())
+
+        assert raw_calls == []
+        assert sentinel.pre_calls == ["lookup"]
+        assert sentinel.post_calls == ["lookup"]
+        assert strategy.tool_result == "sanitized:Error: Permission denied for tool 'lookup'"
+
+    async def test_final_output_is_redacted_before_session_persistence(self) -> None:
+        session_store = _FakeSessionStore()
+        agent = _make_agent(
+            _RecordingStrategy(ReasoningResult(response="reply to bob@example.com")),
+            session_store=session_store,
+        )
+
+        result = await agent.handle(
+            messages=[{"role": "user", "content": "hello"}],
+            auth=_Auth(),
+            session_id="s1",
+        )
+
+        assert result.content == "reply to [REDACTED:email]"
+        assert session_store.appended[0][1][-1] == {
+            "role": "assistant",
+            "content": "reply to [REDACTED:email]",
+        }
+
+
+class TestStrategyIndependentFinalBoundary:
+    @pytest.mark.parametrize(
+        "strategy_name", ["direct", "react", "artificer", "plan_execute", "builders_learning"]
+    )
+    async def test_all_shipped_strategies_receive_the_same_final_output_gate(
+        self, strategy_name: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from maistro.agents.artificer.strategy import ArtificerStrategy
+        from maistro.agents.strategies.builders_learning import BuildersLearningStrategy
+        from maistro.agents.strategies.direct import DirectStrategy
+        from maistro.agents.strategies.plan_execute import PlanExecuteStrategy
+        from maistro.agents.strategies.react import ReactStrategy
+        from maistro.testing.faux_provider import FauxProvider, FauxResponse
+
+        strategies = {
+            "direct": DirectStrategy,
+            "react": ReactStrategy,
+            "artificer": ArtificerStrategy,
+            "plan_execute": PlanExecuteStrategy,
+            "builders_learning": BuildersLearningStrategy,
+        }
+        provider = FauxProvider()
+        if strategy_name == "artificer":
+            provider.seed(FauxResponse(content="plan"))
+            provider.seed(FauxResponse(content="final assistant@example.com"))
+
+            async def no_sleep(_seconds: float) -> None:
+                return None
+
+            monkeypatch.setattr("maistro.agents.artificer.strategy.asyncio.sleep", no_sleep)
+        else:
+            provider.seed(FauxResponse(content="final assistant@example.com"))
+
+        agent = _make_agent(
+            strategies[strategy_name](),
+            llm=provider,
+            warden=_FakeWarden(),
+        )
+        result = await agent.handle(
+            messages=[{"role": "user", "content": "user@example.com"}],
+            auth=_Auth(),
+        )
+
+        assert "assistant@example.com" not in result.content
+        assert "[REDACTED:email]" in result.content
 
 
 class TestHandleWardenGate:

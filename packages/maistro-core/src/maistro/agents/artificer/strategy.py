@@ -61,6 +61,7 @@ class ArtificerStrategy:
     ) -> ReasoningResult:
         tool_history: list[dict[str, Any]] = []
         status = status_callback or _noop_status
+        security_pipeline = bool(kwargs.get("security_pipeline", False))
 
         await status("Planning...")
         if trace:
@@ -123,6 +124,7 @@ class ArtificerStrategy:
                     sentinel=kwargs.get("sentinel"),
                     auth=kwargs.get("auth"),
                     warden=kwargs.get("warden"),
+                    security_pipeline=security_pipeline,
                 )
                 tool_history.append(
                     {
@@ -207,8 +209,11 @@ class ArtificerStrategy:
         sentinel: Any,
         auth: Any,
         warden: Any,
+        security_pipeline: bool = False,
     ) -> str:
-        """Apply sentinel post-call, or warden scan, to a tool result string."""
+        """Keep standalone strategy calls safe; Agent owns production policy."""
+        if security_pipeline:
+            return result_str
         if sentinel is not None and auth is not None:
             sanitized: str = await sentinel.post_call(tool_name, result_str, auth)
             return sanitized
@@ -241,6 +246,7 @@ class ArtificerStrategy:
         sentinel: Any,
         auth: Any,
         warden: Any,
+        security_pipeline: bool = False,
     ) -> tuple[dict[str, Any], str]:
         """Process a single tool call end-to-end. Returns ``(tool_args, result_str)``."""
         fn = tc.get("function", {})
@@ -262,7 +268,7 @@ class ArtificerStrategy:
             return tool_args, f"Error: tool arguments exceed {_MAX_ARG_BYTES} byte limit"
 
         tool_blocked = False
-        if sentinel is not None and auth is not None:
+        if not security_pipeline and sentinel is not None and auth is not None:
             sentinel_verdict = await sentinel.pre_call(tool_name, tool_args, auth, {})
             if not sentinel_verdict.allowed:
                 tool_result: Any = f"Error: Permission denied for tool '{tool_name}'"
@@ -284,7 +290,12 @@ class ArtificerStrategy:
             )
 
         result_str = await self._sanitize_result(
-            tool_name, result_str, sentinel=sentinel, auth=auth, warden=warden
+            tool_name,
+            result_str,
+            sentinel=sentinel,
+            auth=auth,
+            warden=warden,
+            security_pipeline=security_pipeline,
         )
         await self._emit_result_status(tool_name, result_str, status)
         return tool_args, result_str

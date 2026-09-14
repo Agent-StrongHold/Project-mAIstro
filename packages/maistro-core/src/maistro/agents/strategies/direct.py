@@ -82,8 +82,9 @@ class DirectStrategy:
         choices = response.get("choices", [])
         choice = choices[0] if choices else {}
         content = choice.get("message", {}).get("content", "")
+        security_pipeline = bool(kwargs.get("security_pipeline", False))
 
-        if warden is not None and content:
+        if not security_pipeline and warden is not None and content:
             verdict = await warden.scan(content, "tool_result")
             if not verdict.clean:
                 flags_str = ", ".join(verdict.flags)
@@ -100,7 +101,7 @@ class DirectStrategy:
                     usage_reported_calls=reported_calls,
                 )
 
-        if content:
+        if content and not security_pipeline:
             try:
                 from maistro.security.sentinel.pii_filter import scan_and_redact
 
