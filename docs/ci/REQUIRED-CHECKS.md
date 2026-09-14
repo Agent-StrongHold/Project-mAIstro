@@ -122,9 +122,11 @@ wait forever for an `Expected` result.
 
 ## Deliberate base-coupled checks
 
-`Analyze (actions)`, `Analyze (javascript-typescript)`, `Analyze (python)`, and
-`Container scan + SBOM + cosign` are required on `main` only. They do not report
-as real executed checks on a `develop`-based PR or develop merge group.
+`Analyze (actions)`, `Analyze (javascript-typescript)`, and `Analyze (python)` are
+required on `main` only. `Container scan + SBOM + cosign` also runs for
+`develop`-based PRs and develop merge groups (and on pushes to `develop`) so
+license and final-filesystem evidence exists before release promotion; branch
+protection still requires the check on `main`.
 
 `DevSkim` is a documented advisory check for `develop`-based PRs. It is
 intentionally excluded from both protected required-check sets until the owner

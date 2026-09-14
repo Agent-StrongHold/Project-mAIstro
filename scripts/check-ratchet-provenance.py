@@ -34,6 +34,10 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
         "each Dockerfile's disposition and named build/scan jobs rather than comparing "
         "against a tolerated prior-state oracle"
     ),
+    ("check-license-inventory.py", "quality/license-policy.json"): (
+        "license policy is the reviewed legal classification and resolution specification; "
+        "the checker derives component evidence from immutable final-artifact SBOMs"
+    ),
     ("pip_audit_gate.py", "quality/direct-dependency-exceptions.json"): (
         "dependency exceptions are an explicitly reviewed specification"
     ),

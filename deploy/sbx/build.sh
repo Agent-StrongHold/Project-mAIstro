@@ -50,3 +50,30 @@ elif command -v sbx >/dev/null 2>&1; then
 else
     info "Built $TEMPLATE_TAG. Install sbx and run 'sbx template load', or re-run with PUSH_TAG=... to push."
 fi
+
+# The template and nested test image are DISTRIBUTED surfaces too. Do not let
+# this operator-only build path be the one image path with no license evidence.
+# CI's four-image job cannot build the sandbox because Docker Sandboxes creates
+# the preseed daemon during this script, so the producer owns this scan.
+command -v syft >/dev/null 2>&1 || {
+    echo "syft 1.49.0 is required to produce the sbx license inventory" >&2
+    exit 1
+}
+syft version | grep -F '1.49.0' >/dev/null || {
+    echo "syft 1.49.0 is required; refusing an unpinned license inventory" >&2
+    exit 1
+}
+LICENSE_OUTPUT_DIR="${LICENSE_OUTPUT_DIR:-$REPO_ROOT/deploy/sbx/license-inventory}"
+mkdir -p "$LICENSE_OUTPUT_DIR/sboms"
+syft "$TEMPLATE_TAG" -o cyclonedx-json > "$LICENSE_OUTPUT_DIR/sboms/sbx-template.json"
+syft "$TESTS_TAG" -o cyclonedx-json > "$LICENSE_OUTPUT_DIR/sboms/sbx-tests.json"
+python3 "$REPO_ROOT/scripts/check-license-inventory.py" \
+    --policy "$REPO_ROOT/quality/license-policy.json" \
+    --only sbx-template \
+    --only sbx-tests \
+    --sbom "sbx-template=$LICENSE_OUTPUT_DIR/sboms/sbx-template.json" \
+    --sbom "sbx-tests=$LICENSE_OUTPUT_DIR/sboms/sbx-tests.json" \
+    --artifact "sbx-template=$TEMPLATE_TAG" \
+    --artifact "sbx-tests=$TESTS_TAG" \
+    --output "$LICENSE_OUTPUT_DIR/license-inventory.json"
+info "License inventory: $LICENSE_OUTPUT_DIR/license-inventory.json"

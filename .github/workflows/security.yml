@@ -138,9 +138,13 @@ jobs:
     name: Container scan + SBOM + cosign
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # License and container evidence is required before code reaches either
+    # protected development or release branch. Release tags are checked again
+    # against their pushed digest in release.yml.
     if: >-
-      (github.event_name == 'pull_request' && github.base_ref == 'main') ||
-      (github.event_name == 'merge_group' && github.event.merge_group.base_ref == 'refs/heads/main') ||
+      (github.event_name == 'pull_request' && (github.base_ref == 'main' || github.base_ref == 'develop')) ||
+      (github.event_name == 'merge_group' && (github.event.merge_group.base_ref == 'refs/heads/main' || github.event.merge_group.base_ref == 'refs/heads/develop')) ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/develop') ||
       github.event_name == 'schedule'
     env:
       CANDIDATE_TAG: ${{ github.event.pull_request.number || github.event.merge_group.head_sha || 'nightly' }}
@@ -270,35 +274,78 @@ jobs:
             echo "::endgroup::"
           done
 
-      - name: SBOM (syft CycloneDX-JSON)
+      - name: Setup Node for frontend license surfaces
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            packages/hive-conductor/frontend/package-lock.json
+            packages/maistro-canvas/frontend/package-lock.json
+
+      # Build both bundles and materialise both npm trees. Scanning only the
+      # workspace would miss the dependencies that Vite emits into a shipped
+      # bundle; scanning only the bundle would lose package identities.
+      - name: Build frontend license surfaces
         run: |
+          set -euo pipefail
+          (
+            cd packages/hive-conductor/frontend
+            npm ci
+            npm run build
+          )
+          (
+            cd packages/maistro-canvas/frontend
+            npm ci
+            npm run build
+          )
+
+      - name: Generate final-filesystem SBOMs and license inventory
+        run: |
+          set -euo pipefail
           curl -sSfL -o syft.tgz https://github.com/anchore/syft/releases/download/v1.49.0/syft_1.49.0_linux_amd64.tar.gz
           echo "7aa2f03ee92739cf643279ba3990548b9925d4e22cae13f46831ee62821147fe  syft.tgz" | sha256sum --check
           tar -xzf syft.tgz syft && sudo mv syft /usr/local/bin/
-          syft "hive-conductor:pr-${CANDIDATE_TAG}" \
-            -o cyclonedx-json > sbom-hive-conductor.json
-          syft "maistro-engine:pr-${CANDIDATE_TAG}" \
-            -o cyclonedx-json > sbom-maistro-engine.json
-          syft "maistro-engine-research:pr-${CANDIDATE_TAG}" \
-            -o cyclonedx-json > sbom-maistro-engine-research.json
-          syft "maistro-rsi-runner:pr-${CANDIDATE_TAG}" \
-            -o cyclonedx-json > sbom-maistro-rsi-runner.json
+          mkdir -p license-sboms
+          for image in hive-conductor maistro-engine maistro-engine-research maistro-rsi-runner; do
+            syft "${image}:pr-${CANDIDATE_TAG}" -o cyclonedx-json > "license-sboms/${image}.json"
+          done
 
-      - name: Upload SBOMs as artifacts
+          # The final image, not the frontend build stage, is the legal surface.
+          container="license-hive-conductor"
+          docker create --name "$container" "hive-conductor:pr-${CANDIDATE_TAG}" >/dev/null
+          rm -rf /tmp/hive-conductor-dist
+          docker cp "$container:/app/frontend/dist" /tmp/hive-conductor-dist
+          docker rm "$container" >/dev/null
+          syft dir:/tmp/hive-conductor-dist -o cyclonedx-json > license-sboms/hive-conductor-frontend-bundle.json
+          syft dir:packages/hive-conductor/frontend -o cyclonedx-json > license-sboms/hive-conductor-npm-tree.json
+          syft dir:packages/maistro-canvas/frontend/dist -o cyclonedx-json > license-sboms/canvas-frontend-bundle.json
+          syft dir:packages/maistro-canvas/frontend -o cyclonedx-json > license-sboms/canvas-npm-tree.json
+
+          python scripts/check-license-inventory.py \
+            --policy quality/license-policy.json \
+            --sbom maistro-engine=license-sboms/maistro-engine.json \
+            --sbom hive-conductor=license-sboms/hive-conductor.json \
+            --sbom maistro-engine-research=license-sboms/maistro-engine-research.json \
+            --sbom maistro-rsi-runner=license-sboms/maistro-rsi-runner.json \
+            --sbom hive-conductor-frontend-bundle=license-sboms/hive-conductor-frontend-bundle.json \
+            --sbom canvas-frontend-bundle=license-sboms/canvas-frontend-bundle.json \
+            --sbom hive-conductor-npm-tree=license-sboms/hive-conductor-npm-tree.json \
+            --sbom canvas-npm-tree=license-sboms/canvas-npm-tree.json \
+            --artifact maistro-engine=maistro-engine:pr-${CANDIDATE_TAG} \
+            --artifact hive-conductor=hive-conductor:pr-${CANDIDATE_TAG} \
+            --artifact maistro-engine-research=maistro-engine-research:pr-${CANDIDATE_TAG} \
+            --artifact maistro-rsi-runner=maistro-rsi-runner:pr-${CANDIDATE_TAG} \
+            --output license-inventory.json
+
+      - name: Upload license inventory and SBOMs
         uses: actions/upload-artifact@v7
         with:
-          name: sboms-${{ env.CANDIDATE_TAG }}
-          path: sbom-*.json
-
-      - name: Install uv + Python
-        uses: ./.github/actions/setup-uv
-      - name: Setup Python 3.12
-        run: uv python install 3.12
-      - name: License compliance (no GPL/AGPL on new deps)
-        run: |
-          uv run pip install pip-licenses
-          uv run pip-licenses --fail-on='GPL;LGPL;AGPL' --format=markdown \
-            --output-file=licenses.md
+          name: license-inventory-${{ env.CANDIDATE_TAG }}
+          path: |
+            license-inventory.json
+            license-sboms/
+          if-no-files-found: error
 
       # Image signing was removed, not fixed: the old step ran `cosign sign`
       # against local Docker tags that were never pushed to a registry, so no

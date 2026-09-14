@@ -1,0 +1,149 @@
+{
+  "schema_version": 1,
+  "legal": {
+    "unknown_license_action": "fail",
+    "copyleft_action": "review",
+    "copyleft_note": "A copyleft finding is surfaced for legal review. This automation does not decide compatibility or grant a license exception."
+  },
+  "coverage": [
+    "transitive-packages",
+    "extras",
+    "vendored-code",
+    "os-packages",
+    "fonts-and-assets",
+    "npm-trees"
+  ],
+  "dependency_classes": {
+    "runtime-distribution": {
+      "description": "Code and assets present in a final image or shipped frontend bundle.",
+      "evidence": "CycloneDX SBOM generated from the final filesystem or extracted bundle.",
+      "review_owner": "Procurement and Legal"
+    },
+    "build-only-tooling": {
+      "description": "Compilers, package managers, and build dependencies used only before the final stage.",
+      "evidence": "Multi-stage Dockerfile builder stages plus the lockfile or package manifest used by that stage.",
+      "review_owner": "Release Engineering"
+    },
+    "external-cli-invocation": {
+      "description": "Binaries or tools invoked through an external process boundary, including copied static CLIs.",
+      "evidence": "Dockerfile COPY --from sources and the source call site that invokes the CLI.",
+      "review_owner": "Security and Legal"
+    },
+    "source-only-development": {
+      "description": "Development and test dependencies retained in source manifests but not shipped by a final artifact.",
+      "evidence": "Root and package development extras, frontend devDependencies, and their lockfiles.",
+      "review_owner": "Engineering"
+    }
+  },
+  "surfaces": [
+    {
+      "id": "maistro-engine",
+      "kind": "final-image",
+      "classification": "runtime-distribution",
+      "source": "Dockerfile",
+      "required": true
+    },
+    {
+      "id": "hive-conductor",
+      "kind": "final-image",
+      "classification": "runtime-distribution",
+      "source": "packages/hive-conductor/Dockerfile",
+      "required": true
+    },
+    {
+      "id": "maistro-engine-research",
+      "kind": "final-image",
+      "classification": "runtime-distribution",
+      "source": "Dockerfile.research",
+      "required": true
+    },
+    {
+      "id": "maistro-rsi-runner",
+      "kind": "final-image",
+      "classification": "runtime-distribution",
+      "source": "Dockerfile.rsi-runner",
+      "required": true
+    },
+    {
+      "id": "hive-conductor-frontend-bundle",
+      "kind": "frontend-bundle",
+      "classification": "runtime-distribution",
+      "source": "packages/hive-conductor/frontend",
+      "artifact_path": "packages/hive-conductor/frontend/dist",
+      "asset_evidence": "final bundle files plus the npm tree that supplies fonts and static assets",
+      "required": true
+    },
+    {
+      "id": "canvas-frontend-bundle",
+      "kind": "frontend-bundle",
+      "classification": "runtime-distribution",
+      "source": "packages/maistro-canvas/frontend",
+      "artifact_path": "packages/maistro-canvas/frontend/dist",
+      "asset_evidence": "final bundle files plus the npm tree that supplies fonts and static assets",
+      "required": true
+    },
+    {
+      "id": "hive-conductor-npm-tree",
+      "kind": "npm-tree",
+      "classification": "source-only-development",
+      "source": "packages/hive-conductor/frontend/package-lock.json",
+      "required": true
+    },
+    {
+      "id": "canvas-npm-tree",
+      "kind": "npm-tree",
+      "classification": "source-only-development",
+      "source": "packages/maistro-canvas/frontend/package-lock.json",
+      "required": true
+    },
+    {
+      "id": "sbx-template",
+      "kind": "operator-final-image",
+      "classification": "runtime-distribution",
+      "source": "deploy/sbx/template/Dockerfile",
+      "required": false
+    },
+    {
+      "id": "sbx-tests",
+      "kind": "operator-final-image",
+      "classification": "runtime-distribution",
+      "source": "deploy/sbx/template/Dockerfile.tests",
+      "required": false
+    }
+  ],
+  "evidence_classes": {
+    "build-only-tooling": [
+      "Dockerfile builder stages",
+      "packages/hive-conductor/frontend/package.json devDependencies",
+      "packages/maistro-canvas/frontend/package.json devDependencies"
+    ],
+    "external-cli-invocation": [
+      "Dockerfile COPY --from=docker:27-cli",
+      "Dockerfile.research COPY --from=docker:27-cli",
+      "packages/maistro-core/src/maistro/tools/git.py",
+      "packages/maistro-core/src/maistro/tools/sandbox.py"
+    ],
+    "source-only-development": [
+      "pyproject.toml [project.optional-dependencies].dev",
+      "requirements-dev-tools.txt",
+      "packages/hive-conductor/frontend/package.json devDependencies",
+      "packages/maistro-canvas/frontend/package.json devDependencies"
+    ]
+  },
+  "reviewed_resolutions": [
+    {
+      "identity": "pkg:npm/hive-conductor-ui@0.1.0",
+      "license": "Apache-2.0",
+      "reason": "This private frontend is first-party source in this Apache-2.0 repository; its package metadata omits the inherited license.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-02-01"
+    },
+    {
+      "identity": "pkg:npm/canvas-studio-poc@0.0.0",
+      "license": "Apache-2.0",
+      "reason": "This private frontend is first-party source in this Apache-2.0 repository; its package metadata omits the inherited license.",
+      "owner": "Engineering and Legal",
+      "reviewed_on": "2026-02-01"
+    }
+  ]
+}

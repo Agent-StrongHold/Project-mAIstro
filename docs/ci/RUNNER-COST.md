@@ -88,7 +88,7 @@ These were already named and machine-checked before this measurement;
 
 | check | scope | why |
 |---|---|---|
-| `Container scan + SBOM + cosign` | base `main` | job `if:` on `base_ref`; scans the image that is about to be released, which only a `main`-based PR is doing. Required on `main`, not on `develop`, so its `skipped` conclusion never has to be interpreted. |
+| `Container scan + SBOM + cosign` | base `main`/`develop` + pushes to `develop` | job `if:` on `base_ref`; scans every final image and frontend bundle on develop as well as the release candidate. It is required on `main`; develop runs provide the earlier license evidence. |
 | `Analyze (actions)` | base `main` | CodeQL, same release-gate reasoning |
 | `Analyze (javascript-typescript)` | base `main` | " |
 | `Analyze (python)` | base `main` | " |

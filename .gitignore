@@ -72,3 +72,6 @@ code-worth-implementing-from-*/
 # conflict, and nothing reads the committed copy as an oracle now that the
 # bound is folded from quality/ac-state-notes/ (#585, ADR-082926-25a2).
 quality/ac-state.json
+
+# Operator-produced SBOMs for the Docker Sandbox template.
+deploy/sbx/license-inventory/
