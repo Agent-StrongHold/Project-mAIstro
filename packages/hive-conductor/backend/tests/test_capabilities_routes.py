@@ -30,14 +30,18 @@ def _config_writer(task_id: str) -> TestClient:
         password_hash=hash_password("pw"),
         role="user",
         is_active=True,
-        permissions=["config.write"],
+        permissions=["config.write", "approvals.resolve"],
         created_at=datetime.now(UTC),
     )
     c = TestClient(app)
     assert c.post("/v1/auth/login", json={"username": uid, "password": "pw"}).status_code == 200
     e = c.post(
         "/v1/auth/elevate",
-        json={"password": "pw", "permissions": ["config.write"], "task_id": task_id},
+        json={
+            "password": "pw",
+            "permissions": ["config.write", "approvals.resolve"],
+            "task_id": task_id,
+        },
     )
     assert e.status_code == 200, e.text
     return c

@@ -602,6 +602,11 @@ def test_run_workflow_is_privileged_and_requires_scoped_approval() -> None:
 def _canonical_workflow_approval(
     *, principal: str, workflow_id: str, args: dict[str, Any], actor: str
 ) -> tuple[Any, Any]:
+    from maistro.capabilities.authority import (
+        ApprovalAuthority,
+        approval_signing_secret,
+        sign_approval_authority,
+    )
     from maistro.capabilities.slots.approval import ApprovalDecision, ApprovalRequest
 
     request = ApprovalRequest(
@@ -613,7 +618,45 @@ def _canonical_workflow_approval(
         tier="policy",
         requester=principal,
     )
-    return request, ApprovalDecision(request_id=request.request_id, approved=True, actor=actor)
+    authority = ApprovalAuthority(
+        kind="human",
+        principal=actor,
+        scope="run_workflow",
+        evidence_id=request.request_id,
+    )
+    authority = ApprovalAuthority(
+        **{
+            **authority.__dict__,
+            "signature": sign_approval_authority(authority, approval_signing_secret()),
+        }
+    )
+    return request, ApprovalDecision(
+        request_id=request.request_id,
+        approved=True,
+        actor=actor,
+        authority=authority,
+    )
+
+
+def test_actor_string_without_typed_authority_cannot_approve_workflow() -> None:
+    args = {"dag_id": "dag-1", "goal": "approved goal"}
+    request, decision = _canonical_workflow_approval(
+        principal="user-1", workflow_id="dag-1", args=args, actor="admin-1"
+    )
+    from maistro.capabilities.slots.approval import ApprovalDecision
+
+    refused = chat_gate.gate_tool_dispatch(
+        "run_workflow",
+        "user-1",
+        approval_request=request,
+        approval_decision=ApprovalDecision(
+            request_id=decision.request_id, approved=True, actor="admin-1"
+        ),
+        workflow_id="dag-1",
+        request_digest=chat_gate._workflow_request_digest(args),
+    )
+    assert refused is not None
+    assert refused.reason == chat_gate.REASON_APPROVAL_REQUIRED
 
 
 def test_canonical_human_approval_is_exactly_scoped_and_audited() -> None:
@@ -729,17 +772,99 @@ async def test_chat_workflow_route_waits_on_shared_inbox_then_executes(
         assert pending[0].requester == "user-1"
         assert not task.done()
 
-        assert inbox.resolve(pending[0].request_id, approved=True, actor="admin-1")
+        from routes import capabilities as cap_routes
+
+        resolved = cap_routes.resolve_approval(
+            pending[0].request_id,
+            cap_routes.ResolveApprovalBody(approved=True, actor="forged"),
+            SimpleNamespace(state=SimpleNamespace(user={"id": "admin-1", "role": "admin"})),
+        )
+        assert resolved["resolved"] is True
         result = await asyncio.wait_for(task, timeout=1.0)
         assert result["run_id"] == "run-route-approved"
     finally:
         engine._capabilities = saved
 
 
+def test_workflow_approval_route_rejects_config_editor_as_approver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from routes import capabilities as cap_routes
+
+    from maistro.capabilities.slots.approval import ApprovalRequest
+
+    request = ApprovalRequest(
+        action="run_workflow",
+        params={"workflow_id": "dag-1", "request_digest": "digest"},
+        tier="policy",
+        requester="requester-1",
+        request_id="approval-1",
+    )
+    resolved: list[str] = []
+
+    class _Inbox:
+        def pending(self) -> list[ApprovalRequest]:
+            return [request]
+
+        def resolve(self, request_id: str, **_: Any) -> bool:
+            resolved.append(request_id)
+            return True
+
+    monkeypatch.setattr(cap_routes, "_approval_inbox", lambda: _Inbox())
+    with pytest.raises(HTTPException) as exc:
+        cap_routes.resolve_approval(
+            "approval-1",
+            cap_routes.ResolveApprovalBody(approved=True, actor="forged"),
+            SimpleNamespace(
+                state=SimpleNamespace(
+                    user={
+                        "id": "editor-1",
+                        "role": "user",
+                        "permissions": ["config.write"],
+                        "elevated_permissions": ["config.write"],
+                    }
+                )
+            ),
+        )
+    assert exc.value.status_code == 403
+    assert resolved == []
+
+
+@pytest.mark.asyncio
+async def test_unavailable_workflow_approval_is_audited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.engine
+    import stores
+
+    class _Capabilities:
+        async def resolve(self, _: str) -> None:
+            return None
+
+    class _Engine:
+        capabilities = _Capabilities()
+
+    _reset_audit()
+    monkeypatch.setattr(services.engine, "get_engine", lambda: _Engine())
+    result = await service._execute_workflow_with_approval({"dag_id": "dag-1"}, "user-1")
+    assert result["blocked"] is True
+    rows = [
+        entry
+        for entry in stores.audit_log.values()
+        if entry["action"] == "chat_workflow_approval_refused"
+    ]
+    assert rows[-1]["detail"]["refusal_reason"] == "approval_capability_unavailable"
+
+
 @pytest.mark.asyncio
 async def test_reachable_workflow_approval_uses_canonical_inbox(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from maistro.capabilities.authority import (
+        ApprovalAuthority,
+        approval_signing_secret,
+        sign_approval_authority,
+    )
     from maistro.capabilities.slots.approval import ApprovalDecision
 
     seen: list[Any] = []
@@ -747,7 +872,24 @@ async def test_reachable_workflow_approval_uses_canonical_inbox(
     class _ApprovalProvider:
         async def request(self, request: Any) -> ApprovalDecision:
             seen.append(request)
-            return ApprovalDecision(request_id=request.request_id, approved=True, actor="admin-1")
+            authority = ApprovalAuthority(
+                kind="human",
+                principal="admin-1",
+                scope="run_workflow",
+                evidence_id=request.request_id,
+            )
+            authority = ApprovalAuthority(
+                **{
+                    **authority.__dict__,
+                    "signature": sign_approval_authority(authority, approval_signing_secret()),
+                }
+            )
+            return ApprovalDecision(
+                request_id=request.request_id,
+                approved=True,
+                actor="admin-1",
+                authority=authority,
+            )
 
     class _Capabilities:
         async def resolve(self, _: str) -> _ApprovalProvider:

@@ -48,6 +48,7 @@ from typing import Any
 from routes.agents import ScanBudgetExceeded, scan_config
 from routes.audit import log_audit
 
+from maistro.capabilities.authority import approval_signing_secret, verify_approval_authority
 from maistro.capabilities.slots.approval import ApprovalDecision, ApprovalRequest
 
 #: Bumped whenever the policy below changes shape — new refusal reason,
@@ -306,16 +307,25 @@ def _canonical_approval_matches(
     argument digest binding prevents an approval for one run being replayed for
     another. The provider owns human/delegated authority and its audit record.
     """
+    if not isinstance(request, ApprovalRequest) or not isinstance(decision, ApprovalDecision):
+        return False
+    authority = decision.authority
+    authority_valid = bool(
+        authority
+        and authority.evidence_id == request.request_id
+        and authority.scope == "run_workflow"
+        and authority.principal == decision.actor
+        and verify_approval_authority(authority, approval_signing_secret())
+    )
     return bool(
-        isinstance(request, ApprovalRequest)
-        and isinstance(decision, ApprovalDecision)
-        and request.action == "run_workflow"
+        request.action == "run_workflow"
         and request.requester == user_id
         and request.params.get("workflow_id") == workflow_id
         and request.params.get("request_digest") == request_digest
         and decision.request_id == request.request_id
         and decision.approved
         and decision.actor
+        and authority_valid
     )
 
 
@@ -332,6 +342,8 @@ def _approval_audit_details(
         "workflow_id": request.params.get("workflow_id") if request else None,
         "request_digest": request.params.get("request_digest") if request else None,
         "actor": decision.actor if decision else None,
+        "authority_kind": (decision.authority.kind if decision and decision.authority else None),
+        "authority_scope": (decision.authority.scope if decision and decision.authority else None),
         "source": "capability_approval",
     }
 

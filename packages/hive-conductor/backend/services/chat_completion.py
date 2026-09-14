@@ -1891,6 +1891,12 @@ async def _execute_tool(
             "workflow_id": approval_request.params.get("workflow_id"),
             "request_digest": approval_request.params.get("request_digest"),
             "actor": approval_decision.actor,
+            "authority_kind": (
+                approval_decision.authority.kind if approval_decision.authority else None
+            ),
+            "authority_scope": (
+                approval_decision.authority.scope if approval_decision.authority else None
+            ),
             "source": "capability_approval",
         }
         if approval_request is not None and approval_decision is not None
@@ -1952,6 +1958,22 @@ async def _execute_workflow_with_approval(args: dict[str, Any], user_id: str) ->
     request_digest = _workflow_request_digest(args)
     provider = await get_engine().capabilities.resolve("approval")
     if provider is None or not hasattr(provider, "request"):
+        # Refusal must be observable even when the canonical capability is not
+        # installed; otherwise an operator cannot distinguish a denied action
+        # from a wiring outage.
+        log_audit(
+            "chat_workflow_approval_refused",
+            user_id or "anonymous",
+            target=workflow_id,
+            detail={
+                "principal": user_id or "anonymous",
+                "workflow_id": workflow_id,
+                "request_digest": request_digest,
+                "refusal_reason": "approval_capability_unavailable",
+                "effect": "mutate",
+            },
+            severity="warning",
+        )
         return {
             "error": "workflow approval capability unavailable",
             "blocked": True,
@@ -1992,7 +2014,12 @@ async def _execute_workflow_with_approval(args: dict[str, Any], user_id: str) ->
                 "workflow_id": workflow_id,
                 "request_digest": request_digest,
                 "actor": decision.actor,
-                "refusal_reason": "approval_denied" if not decision.approved else "missing_actor",
+                "authority_kind": (decision.authority.kind if decision.authority else None),
+                "refusal_reason": (
+                    "approval_denied"
+                    if not decision.approved
+                    else ("missing_authority" if decision.authority is None else "missing_actor")
+                ),
             },
             severity="warning",
         )
