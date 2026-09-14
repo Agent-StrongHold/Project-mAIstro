@@ -92,9 +92,16 @@ export default function Schedules() {
         helpHref="/docs#schedules"
         actions={<button className="btn btn-accent" style={{ fontSize: 9, padding: "2px 8px" }} onClick={() => setCreating(true)}>+ new</button>}
       />
-      <div style={{ display: "flex", gap: 0, borderBottom: "1px solid var(--rule)", marginBottom: -8 }}>
+      <div role="tablist" aria-label="Schedule views" style={{ display: "flex", gap: 0, borderBottom: "1px solid var(--rule)", marginBottom: -8 }}>
         {(["schedules", "history"] as const).map((t) => (
-          <div key={t} onClick={() => setTab(t)} style={{ padding: "7px 16px", fontFamily: "var(--mono)", fontSize: 10, cursor: "pointer", borderBottom: tab === t ? "2px solid var(--accent)" : "2px solid transparent", color: tab === t ? "var(--ink)" : "var(--pencil)", textTransform: "capitalize" }}>{t}</div>
+          <button
+            key={t}
+            type="button"
+            role="tab"
+            aria-selected={tab === t}
+            onClick={() => setTab(t)}
+            style={{ padding: "7px 16px", fontFamily: "var(--mono)", fontSize: 10, cursor: "pointer", border: 0, borderRadius: 0, borderBottom: tab === t ? "2px solid var(--accent)" : "2px solid transparent", color: tab === t ? "var(--ink)" : "var(--pencil)", textTransform: "capitalize", background: "transparent", boxShadow: "none" }}
+          >{t}</button>
         ))}
       </div>
 
@@ -109,7 +116,7 @@ export default function Schedules() {
                   <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginBottom: 3 }}>PRESETS</div>
                   <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                     {CRON_PRESETS.map((p) => (
-                      <span key={p.cron} className={`hex-badge${form.cron_expression === p.cron ? " hex-badge-accent" : ""}`} style={{ cursor: "pointer" }} onClick={() => setForm((f) => ({ ...f, cron_expression: p.cron }))}>{p.label}</span>
+                      <button key={p.cron} type="button" className={`hex-badge${form.cron_expression === p.cron ? " hex-badge-accent" : ""}`} aria-pressed={form.cron_expression === p.cron} onClick={() => setForm((f) => ({ ...f, cron_expression: p.cron }))} style={{ cursor: "pointer", border: 0 }}>{p.label}</button>
                     ))}
                   </div>
                 </div>
@@ -157,7 +164,14 @@ export default function Schedules() {
                   </div>
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6, marginLeft: 12 }}>
-                  <div className={`toggle${s.enabled ? " on" : ""}`} onClick={() => void toggleSchedule(s)} style={{ cursor: "pointer" }} />
+                  <button
+                    type="button"
+                    className={`toggle toggle-button${s.enabled ? " on" : ""}`}
+                    role="switch"
+                    aria-checked={s.enabled}
+                    aria-label={`${s.name}: ${s.enabled ? "enabled" : "disabled"}`}
+                    onClick={() => void toggleSchedule(s)}
+                  />
                   <Hex variant={s.enabled ? "ok" : "muted"}>{s.enabled ? "active" : "off"}</Hex>
                   <div style={{ display: "flex", gap: 3 }}>
                     <button className="btn" style={{ fontSize: 8, padding: "1px 6px" }} onClick={() => void runNow(s)}>run now</button>

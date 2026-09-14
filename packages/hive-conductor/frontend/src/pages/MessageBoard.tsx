@@ -249,15 +249,15 @@ export default function MessageBoard() {
               <EmptyState icon="🐝" title="No messages" />
             ) : (
               filteredMessages.map((msg) => (
-                <div
+                <article
                   key={msg.id}
-                  onClick={() => handleSelect(msg)}
                   style={{
                     padding: "10px 12px", borderBottom: "1px solid var(--rule)",
-                    cursor: "pointer", background: selected?.id === msg.id ? "var(--paper-2, #f5f5f0)" : "transparent",
+                    background: selected?.id === msg.id ? "var(--paper-2, #f5f5f0)" : "transparent",
                     borderLeft: selected?.id === msg.id ? "3px solid var(--accent)" : "3px solid transparent",
                   }}
                 >
+                  <button type="button" onClick={() => handleSelect(msg)} aria-label={`Open message: ${msg.subject}`} style={{ marginBottom: 6, padding: "2px 6px", fontSize: 9 }}>Open</button>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                       {!msg.read && (
@@ -290,7 +290,7 @@ export default function MessageBoard() {
                     </span>
                     {categoryBadge(msg.category)}
                   </div>
-                </div>
+                </article>
               ))
             )}
           </div>

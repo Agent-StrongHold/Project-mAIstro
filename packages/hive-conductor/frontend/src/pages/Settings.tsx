@@ -122,7 +122,7 @@ export default function Settings() {
                   <button className="btn" style={{ fontSize: 9, padding: "2px 8px" }} onClick={() => setEditing(null)}>cancel</button>
                 </div>
               ) : (
-                <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--ink)", cursor: "pointer" }} onClick={() => startEdit(key)} title="click to edit">
+                <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--ink)" }}>
                   {typeof value === "boolean" ? (
                     <span style={{ color: value ? "var(--ok)" : "var(--pencil)" }}>{value ? "true" : "false"}</span>
                   ) : typeof value === "number" ? (

@@ -986,7 +986,7 @@ function WidgetCard({ widget, agents, metrics, editing, onRemove, onUpdate }: {
       </div>
       {configOpen && (
         <div style={{ position: "fixed", inset: 0, zIndex: 999 }}>
-          <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.25)" }} onClick={() => setConfigOpen(false)} />
+          <div aria-hidden="true" style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.25)" }} onClick={() => setConfigOpen(false)} />
           <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)", zIndex: 1000, background: "var(--paper)", borderRadius: 16, padding: 20, display: "flex", flexDirection: "column", gap: 10, overflowY: "auto", border: "1px solid var(--rule)", width: 340, maxHeight: "85vh", boxShadow: "0 12px 40px rgba(0,0,0,0.15)" }}>
           <div style={{ display: "flex", justifyContent: "space-between" }}>
             <span style={{ fontSize: "0.6rem", fontWeight: 600, color: C.gold, textTransform: "uppercase" }}>Configure Widget</span>
@@ -1145,7 +1145,7 @@ function AddWidget({ onAdd }: { onAdd: (type: string, size: Widget["size"], conf
       <button onClick={() => setOpen(!open)} style={{ width: "100%", padding: 16, borderRadius: 14, border: `2px dashed ${C.border}`, background: "transparent", color: C.muted, fontSize: "0.72rem", cursor: "pointer" }}>+ Add</button>
       {open && !browsing && (
         <>
-        <div style={{ position: "fixed", inset: 0, zIndex: 19 }} onClick={() => setOpen(false)} />
+        <div aria-hidden="true" style={{ position: "fixed", inset: 0, zIndex: 19 }} onClick={() => setOpen(false)} />
         <div style={{ position: "absolute", zIndex: 40, marginTop: 4, background: "var(--paper)", border: `1px solid ${C.border}`, borderRadius: 8, padding: 6, width: 180, boxShadow: "0 8px 24px rgba(0,0,0,0.12)" }}>
           {CATALOG.map(c => (
             <button key={c.type} onClick={() => { onAdd(c.type, c.size); setOpen(false); }}
@@ -1164,7 +1164,7 @@ function AddWidget({ onAdd }: { onAdd: (type: string, size: Widget["size"], conf
       )}
       {open && browsing && (
         <>
-        <div style={{ position: "fixed", inset: 0, zIndex: 19 }} onClick={() => { setBrowsing(false); setOpen(false); }} />
+        <div aria-hidden="true" style={{ position: "fixed", inset: 0, zIndex: 19 }} onClick={() => { setBrowsing(false); setOpen(false); }} />
         <div style={{ position: "absolute", zIndex: 40, marginTop: 4, background: "var(--paper)", border: `1px solid ${C.border}`, borderRadius: 12, padding: 10, width: 360, maxHeight: 420, overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: "0 8px 24px rgba(0,0,0,0.12)" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
             <span style={{ fontSize: "0.65rem", fontWeight: 600, color: C.gold, textTransform: "uppercase" }}>Widget Examples ({filtered.length})</span>
@@ -1316,12 +1316,14 @@ export default function Dashboard() {
       {/* Tabs */}
       <div style={{ display: "flex", alignItems: "center", gap: 2, marginBottom: "0.8rem", borderBottom: `1px solid ${C.border}`, paddingBottom: 6, overflowX: "auto", scrollbarWidth: "none" }}>
         {tabs.map((t, i) => (
-          <button key={i} onClick={() => setActiveIdx(i)} onDoubleClick={() => editing && renameTab(i)}
+          <button
+            key={i}
+            onClick={() => setActiveIdx(i)}
+            onDoubleClick={() => editing && renameTab(i)}
+            onKeyDown={(event) => { if (editing && tabs.length > 1 && i === activeIdx && (event.key === "Delete" || event.key === "Backspace")) { event.preventDefault(); removeTab(i); } }}
+            aria-label={`${t.name}${editing && tabs.length > 1 && i === activeIdx ? ", press Delete to remove" : ""}`}
             style={{ padding: "4px 12px", borderRadius: "8px 8px 0 0", border: "none", background: i === activeIdx ? C.card : "transparent", color: i === activeIdx ? C.gold : C.muted, fontSize: "0.68rem", fontWeight: i === activeIdx ? 600 : 400, cursor: "pointer", position: "relative", whiteSpace: "nowrap", flexShrink: 0 }}>
-            {t.name}
-            {editing && tabs.length > 1 && i === activeIdx && (
-              <span onClick={(e) => { e.stopPropagation(); removeTab(i); }} style={{ marginLeft: 6, color: C.danger, fontSize: "0.55rem", cursor: "pointer" }}>✕</span>
-            )}
+            {t.name}{editing && tabs.length > 1 && i === activeIdx ? " x" : ""}
           </button>
         ))}
         {editing && <button onClick={addTab} style={{ padding: "4px 8px", border: "none", background: "transparent", color: C.muted, fontSize: "0.68rem", cursor: "pointer" }}>+ Tab</button>}

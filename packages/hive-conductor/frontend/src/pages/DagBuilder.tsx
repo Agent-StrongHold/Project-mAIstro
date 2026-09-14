@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../lib/api";
 import {
   ConfirmDialog,
@@ -431,6 +431,32 @@ export default function DagBuilder() {
     dragRef.current = null;
   }, [dag, handleSaveDag]);
 
+  const handleNodeKeyDown = useCallback((nodeId: string, event: KeyboardEvent<SVGGElement>) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      setSelectedNode(nodeId);
+      setPropsOpen(true);
+      return;
+    }
+    const delta = event.key === "ArrowLeft" ? { x: -10, y: 0 }
+      : event.key === "ArrowRight" ? { x: 10, y: 0 }
+      : event.key === "ArrowUp" ? { x: 0, y: -10 }
+      : event.key === "ArrowDown" ? { x: 0, y: 10 }
+      : null;
+    if (!delta || !dag) return;
+    event.preventDefault();
+    const next = {
+      ...dag,
+      nodes: dag.nodes.map((node) => {
+        if (node.id !== nodeId) return node;
+        const pos = nodePos(node);
+        return setNodePos(node, pos.x + delta.x, pos.y + delta.y);
+      }),
+    };
+    setDag(next);
+    void handleSaveDag(next);
+  }, [dag, handleSaveDag]);
+
   const isEntry = (nodeId: string) => dag?.entry_node === nodeId;
   const isTerminal = (nodeId: string) =>
     dag ? !dag.edges.some((e) => e.from_node === nodeId) : false;
@@ -487,8 +513,12 @@ export default function DagBuilder() {
     return (
       <g
         key={node.id}
+        role="button"
+        tabIndex={0}
+        aria-label={`Open ${node.role} node ${node.id}`}
         onMouseDown={(e) => handleMouseDown(node.id, e)}
         onClick={(e) => { e.stopPropagation(); setSelectedNode(node.id); setPropsOpen(true); }}
+        onKeyDown={(e) => handleNodeKeyDown(node.id, e)}
         style={{ cursor: "grab" }}
       >
         <rect
@@ -557,16 +587,16 @@ export default function DagBuilder() {
                 <EmptyState icon="△" title="No DAGs" action="Create One" onAction={() => setShowCreate(true)} />
               ) : (
                 dags.map((d) => (
-                  <div
+                  <article
                     key={d.id}
-                    onClick={() => { setSelectedId(d.id); setSelectedNode(null); }}
                     style={{
-                      padding: "10px 12px", cursor: "pointer",
+                      padding: "10px 12px",
                       borderBottom: "1px solid var(--rule)",
                       borderLeft: selectedId === d.id ? "3px solid var(--accent)" : "3px solid transparent",
                       background: selectedId === d.id ? "rgba(var(--accent-rgb, 212,160,23),0.06)" : "transparent",
                     }}
                   >
+                    <button type="button" onClick={() => { setSelectedId(d.id); setSelectedNode(null); }} aria-label={`Open DAG ${d.name}`} style={{ padding: "2px 6px", fontSize: 9 }}>Open</button>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                       <span style={{ fontFamily: "var(--hand)", fontSize: 14, fontWeight: 700 }}>
                         {d.name}
@@ -579,13 +609,13 @@ export default function DagBuilder() {
                     </div>
                     <div style={{ marginTop: 6, display: "flex", justifyContent: "flex-end" }}>
                       <button
-                        onClick={(e) => { e.stopPropagation(); setDeleteId(d.id); }}
+                        onClick={() => setDeleteId(d.id)}
                         style={{ background: "none", border: "none", cursor: "pointer", color: "var(--pencil)", fontSize: 12, padding: "2px 4px" }}
                       >
                         {"\uD83D\uDDD1\uFE0F"}
                       </button>
                     </div>
-                  </div>
+                  </article>
                 ))
               )}
             </div>
@@ -792,19 +822,14 @@ export default function DagBuilder() {
                                   {otherNodes
                                     .filter((n) => !existingTargets.has(n.id))
                                     .map((n) => (
-                                      <div
+                                      <button
+                                        type="button"
                                         key={n.id}
                                         onClick={() => handleAddEdge(n.id)}
-                                        style={{
-                                          padding: "6px 10px", cursor: "pointer",
-                                          fontFamily: "var(--mono)", fontSize: 10, color: "var(--ink)",
-                                          borderBottom: "1px solid var(--rule)",
-                                        }}
-                                        onMouseEnter={(e) => (e.currentTarget.style.background = "var(--paper-2, #f5f5f0)")}
-                                        onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                                        style={{ display: "block", width: "100%", padding: "6px 10px", cursor: "pointer", textAlign: "left", fontFamily: "var(--mono)", fontSize: 10, color: "var(--ink)", border: 0, borderBottom: "1px solid var(--rule)", borderRadius: 0, background: "transparent", boxShadow: "none" }}
                                       >
                                         {ROLE_ICONS[n.role]} {n.name}
-                                      </div>
+                                      </button>
                                     ))}
                                 </div>
                               )}
@@ -817,16 +842,17 @@ export default function DagBuilder() {
                 })()}
 
                 {!propsOpen && selectedNode && (
-                  <div
+                  <button
+                    type="button"
                     onClick={() => setPropsOpen(true)}
                     style={{
-                      height: 28, borderTop: "1.3px solid var(--rule)", background: "var(--paper)",
+                      height: 28, width: "100%", borderTop: "1.3px solid var(--rule)", background: "var(--paper)",
                       display: "flex", alignItems: "center", justifyContent: "center",
                       cursor: "pointer", fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)",
                     }}
                   >
                     {"\u25B2 Show Properties"}
-                  </div>
+                  </button>
                 )}
               </>
             ) : (

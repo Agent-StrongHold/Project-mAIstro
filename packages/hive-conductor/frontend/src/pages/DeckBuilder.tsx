@@ -231,9 +231,9 @@ ${slides.map(s => `<div class="slide">${sanitizeDeckMarkup(s.html)}</div>`).join
       <div style={{ display: "flex", gap: "1rem" }}>
         <div style={{ width: 140, flexShrink: 0 }}>
           {slides.map((s, i) => (
-            <div key={s.id} onClick={() => setActive(i)} style={{ padding: "8px 10px", borderRadius: 8, marginBottom: 4, cursor: "pointer", border: `1px solid ${i === active ? C.acc : C.border}`, background: i === active ? "rgba(167,139,250,0.08)" : C.card, fontSize: "0.65rem", color: i === active ? C.ink : C.muted }}>
+            <button type="button" key={s.id} aria-pressed={i === active} onClick={() => setActive(i)} style={{ display: "block", width: "100%", padding: "8px 10px", borderRadius: 8, marginBottom: 4, cursor: "pointer", border: `1px solid ${i === active ? C.acc : C.border}`, background: i === active ? "rgba(167,139,250,0.08)" : C.card, fontSize: "0.65rem", color: i === active ? C.ink : C.muted, textAlign: "left" }}>
               Slide {i + 1}
-            </div>
+            </button>
           ))}
           <button onClick={addSlide} style={{ width: "100%", padding: "6px", borderRadius: 6, border: `1px dashed ${C.border}`, background: "transparent", color: C.muted, fontSize: "0.65rem", cursor: "pointer", marginTop: 4 }}>+ Add Slide</button>
         </div>

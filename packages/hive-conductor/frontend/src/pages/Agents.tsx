@@ -387,11 +387,10 @@ export default function Agents() {
               const role = agentRole(a);
               const strategy = inferStrategy(a);
               return (
-                <div
+                <article
                   key={a.id}
                   className="card"
-                  onClick={() => setSelected(a)}
-                  style={{ cursor: "pointer", border: selected?.id === a.id ? "1.5px solid var(--accent)" : undefined }}
+                  style={{ border: selected?.id === a.id ? "1.5px solid var(--accent)" : undefined }}
                 >
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                     <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -421,7 +420,10 @@ export default function Agents() {
                   <div style={{ marginTop: 6, fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", fontStyle: "italic" }}>
                     {soulExcerpt(a)}
                   </div>
-                </div>
+                  <button type="button" className="btn" onClick={() => setSelected(a)} aria-label={`Open ${a.name} details`} style={{ marginTop: 8, fontSize: 9, padding: "3px 8px" }}>
+                    View details
+                  </button>
+                </article>
               );
             })}
           </div>
@@ -454,14 +456,14 @@ export default function Agents() {
               <label style={lbl}>Choose a strategy</label>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10 }}>
                 {STRATEGIES.map((s) => (
-                  <div key={s.key} onClick={() => setBStrat(s.key)} style={{
-                    padding: 14, borderRadius: 6, cursor: "pointer",
+                  <button type="button" key={s.key} aria-pressed={bStrat === s.key} onClick={() => setBStrat(s.key)} style={{
+                    padding: 14, borderRadius: 6, cursor: "pointer", textAlign: "left",
                     border: bStrat === s.key ? `2px solid ${STRATEGY_COLORS[s.key]}` : "1.3px solid var(--rule)",
                     background: bStrat === s.key ? `${STRATEGY_COLORS[s.key]}11` : "var(--paper)",
                   }}>
-                    <div style={{ fontFamily: "var(--hand)", fontSize: 15, fontWeight: 700, color: STRATEGY_COLORS[s.key] }}>{s.label}</div>
-                    <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginTop: 4 }}>{s.desc}</div>
-                  </div>
+                    <span style={{ display: "block", fontFamily: "var(--hand)", fontSize: 15, fontWeight: 700, color: STRATEGY_COLORS[s.key] }}>{s.label}</span>
+                    <span style={{ display: "block", fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginTop: 4 }}>{s.desc}</span>
+                  </button>
                 ))}
               </div>
               <div style={{ marginTop: 12, display: "flex", justifyContent: "space-between" }}>
@@ -593,7 +595,7 @@ export default function Agents() {
             {intents.map((row) => (
               <tr key={row.intent} style={{ borderBottom: "1px solid var(--rule)" }}>
                 <td style={{ padding: "8px 12px", fontFamily: "var(--hand)", fontSize: 13, fontWeight: 600 }}>{row.intent}</td>
-                <td style={{ padding: "8px 12px", cursor: "pointer" }} onClick={() => setEditIntent(editIntent === row.intent ? null : row.intent)}>
+                <td style={{ padding: "8px 12px" }}>
                   {editIntent === row.intent ? (
                     <select
                       value={row.agent}
@@ -613,7 +615,9 @@ export default function Agents() {
                       }
                     </select>
                   ) : (
-                    <span style={{ color: "var(--accent)" }}>{row.agent}</span>
+                    <button type="button" onClick={() => setEditIntent(row.intent)} style={{ padding: 0, border: 0, background: "transparent", boxShadow: "none", color: "var(--accent)", cursor: "pointer" }}>
+                      {row.agent}
+                    </button>
                   )}
                 </td>
                 <td style={{ padding: "8px 12px", color: "var(--pencil)" }}>{row.model}</td>

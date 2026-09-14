@@ -1,4 +1,4 @@
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { useUser } from "../App";
 import { ModeToggle } from "./ModeToggle";
@@ -60,22 +60,56 @@ async function logout() {
 export function AppShell({ children }: { children?: ReactNode }) {
   const user = useUser();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
+  const drawerRef = useRef<HTMLElement>(null);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
   const nav = fullNav;
+
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 900px)");
+    const update = () => setIsMobile(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+
+  useEffect(() => {
+    if (drawerOpen) {
+      drawerRef.current?.querySelector<HTMLElement>("a, button")?.focus();
+    } else if (isMobile) {
+      menuButtonRef.current?.focus();
+    }
+  }, [drawerOpen, isMobile]);
   const shellTitle = "Hive Conductor";
 
   return (
     <div className="app-shell">
+      <a className="skip-link" href="#main-content">Skip to main content</a>
       <button
+        ref={menuButtonRef}
         className="hamburger"
         onClick={() => setDrawerOpen(true)}
         aria-label="Open menu"
+        aria-expanded={drawerOpen}
+        aria-controls="mobile-navigation"
       >
         <span /><span /><span />
       </button>
 
-      <div className={`drawer-overlay${drawerOpen ? " open" : ""}`} onClick={() => setDrawerOpen(false)} />
+      <div
+        className={`drawer-overlay${drawerOpen ? " open" : ""}`}
+        onClick={() => setDrawerOpen(false)}
+        aria-hidden="true"
+      />
 
-      <nav className={`drawer${drawerOpen ? " open" : ""}`}>
+      <nav
+        ref={drawerRef}
+        id="mobile-navigation"
+        className={`drawer${drawerOpen ? " open" : ""}`}
+        aria-label="Primary navigation"
+        aria-hidden={isMobile && !drawerOpen}
+        inert={isMobile && !drawerOpen ? true : undefined}
+      >
         <div className="drawer-header">
           <span style={{ fontFamily: "var(--hand)", fontSize: 20, fontWeight: 700 }}>{shellTitle}</span>
           <ModeToggle />
@@ -113,7 +147,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
         </button>
       </nav>
 
-      <nav className="icon-sidebar">
+      <nav className="icon-sidebar" aria-label="Primary navigation">
         {nav.map((item) => (
           <NavLink
             key={item.to}
@@ -181,7 +215,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
           <span className="nav-icon-label" style={{ color: "var(--danger)" }}>Sign out</span>
         </button>
       </nav>
-      <main className="main-content">
+      <main id="main-content" className="main-content" tabIndex={-1}>
         <div className="workspace-toolbar">
           <WorkspaceTabs />
           <WorkspaceShare />

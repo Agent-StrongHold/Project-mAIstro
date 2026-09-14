@@ -184,6 +184,7 @@ export default function ChatPage() {
   const [sessions, setSessions] = useState<Session[]>([createSession()]);
   const [activeId, setActiveId] = useState(sessions[0].id);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [model, setModel] = useState("");
@@ -373,12 +374,25 @@ export default function ChatPage() {
     setTimeout(() => textareaRef.current?.focus(), 0);
   };
 
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 767px)");
+    const update = () => setIsMobile(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+
   const isEmpty = activeSession.messages.length === 0;
 
   return (
     <div className="chat-layout">
       {drawerOpen && <div className="drawer-backdrop" onClick={() => setDrawerOpen(false)} aria-hidden="true" />}
-      <aside className={`drawer${drawerOpen ? " drawer--open" : ""}`} aria-label="Chat sessions">
+      <aside
+        className={`drawer${drawerOpen ? " drawer--open" : ""}`}
+        aria-label="Chat sessions"
+        aria-hidden={isMobile && !drawerOpen}
+        inert={isMobile && !drawerOpen ? true : undefined}
+      >
         <div className="drawer-header">
           <span className="drawer-title">Sessions</span>
           <button className="btn-icon" onClick={newSession} aria-label="New chat">
@@ -423,17 +437,17 @@ export default function ChatPage() {
             {modelOpen && (
               <ul className="model-dropdown" role="listbox" aria-label="Select model">
                 {MODELS.map((m) => (
-                  <li
-                    key={m}
-                    role="option"
-                    aria-selected={m === model}
-                    className={`model-option${m === model ? " model-option--active" : ""}`}
-                    onClick={() => {
-                      setModel(m);
-                      setModelOpen(false);
-                    }}
-                  >
-                    {m}
+                  <li key={m} role="option" aria-selected={m === model}>
+                    <button
+                      type="button"
+                      className={`model-option${m === model ? " model-option--active" : ""}`}
+                      onClick={() => {
+                        setModel(m);
+                        setModelOpen(false);
+                      }}
+                    >
+                      {m}
+                    </button>
                   </li>
                 ))}
               </ul>

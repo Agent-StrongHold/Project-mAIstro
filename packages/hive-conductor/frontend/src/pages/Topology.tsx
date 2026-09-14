@@ -459,8 +459,12 @@ export default function Topology() {
             return (
               <g
                 key={agent.id}
+                role="button"
+                tabIndex={0}
+                aria-label={`Open ${agent.name} in Agents`}
                 style={{ cursor: "pointer" }}
                 onClick={() => navigate("/agents")}
+                onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); navigate("/agents"); } }}
                 onMouseEnter={() => setHoveredId(agent.id)}
                 onMouseLeave={() => { setHoveredId(null); setTooltip(null); }}
                 onMouseMove={(e) => {

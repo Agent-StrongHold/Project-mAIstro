@@ -122,9 +122,16 @@ export default function MCP() {
           </a>
         </div>
       </div>
-      <div style={{ display: "flex", gap: 0, borderBottom: "1px solid var(--rule)", marginBottom: 12 }}>
+      <div role="tablist" aria-label="MCP content" style={{ display: "flex", gap: 0, borderBottom: "1px solid var(--rule)", marginBottom: 12 }}>
         {(["servers", "tools"] as const).map((t) => (
-          <div key={t} onClick={() => setTab(t)} style={{ padding: "7px 16px", fontFamily: "var(--mono)", fontSize: 10, cursor: "pointer", borderBottom: tab === t ? "2px solid var(--accent)" : "2px solid transparent", color: tab === t ? "var(--ink)" : "var(--pencil)", textTransform: "capitalize" }}>{t}</div>
+          <button
+            key={t}
+            type="button"
+            role="tab"
+            aria-selected={tab === t}
+            onClick={() => setTab(t)}
+            style={{ padding: "7px 16px", fontFamily: "var(--mono)", fontSize: 10, cursor: "pointer", border: 0, borderRadius: 0, borderBottom: tab === t ? "2px solid var(--accent)" : "2px solid transparent", color: tab === t ? "var(--ink)" : "var(--pencil)", textTransform: "capitalize", background: "transparent", boxShadow: "none" }}
+          >{t}</button>
         ))}
       </div>
 
@@ -147,16 +154,24 @@ export default function MCP() {
           {servers.map((s) => {
             const serverTools = tools.filter((t) => t.server_id === s.id);
             return (
-              <div key={s.id} className="card" onClick={() => setSel(sel?.id === s.id ? null : s)} style={{ cursor: "pointer" }}>
-                <div style={{ display: "grid", gridTemplateColumns: "12px 1fr auto auto auto", gap: 10, alignItems: "center" }}>
-                  <div style={{ width: 10, height: 10, borderRadius: "50%", background: s.status === "connected" ? "var(--ok)" : "var(--danger)" }} />
-                  <div>
-                    <div style={{ fontFamily: "var(--hand)", fontSize: 15, fontWeight: 600 }}>{s.name}</div>
-                    <div style={{ fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)" }}>{s.description}</div>
-                  </div>
+              <article key={s.id} className="card">
+                <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto auto", gap: 10, alignItems: "center" }}>
+                  <button
+                    type="button"
+                    className="mcp-server-select"
+                    aria-expanded={sel?.id === s.id}
+                    onClick={() => setSel(sel?.id === s.id ? null : s)}
+                    style={{ display: "grid", gridTemplateColumns: "12px 1fr", gap: 10, alignItems: "center", textAlign: "left", padding: 0, border: 0, background: "transparent", boxShadow: "none", color: "inherit" }}
+                  >
+                    <span aria-hidden="true" style={{ width: 10, height: 10, borderRadius: "50%", background: s.status === "connected" ? "var(--ok)" : "var(--danger)" }} />
+                    <span>
+                      <span style={{ display: "block", fontFamily: "var(--hand)", fontSize: 15, fontWeight: 600 }}>{s.name}</span>
+                      <span style={{ display: "block", fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)" }}>{s.description}</span>
+                    </span>
+                  </button>
                   <span style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", textAlign: "center" }}>{s.tools_count} tools</span>
                   <Hex variant={s.status === "connected" ? "ok" : "danger"}>{s.status}</Hex>
-                  <button className="btn" style={{ fontSize: 8, padding: "1px 6px", borderColor: "var(--danger)", color: "var(--danger)", opacity: 0.5 }} onClick={(e) => { e.stopPropagation(); setDeleteTarget(s); }}>remove</button>
+                  <button type="button" className="btn" style={{ fontSize: 8, padding: "1px 6px", borderColor: "var(--danger)", color: "var(--danger)", opacity: 0.5 }} onClick={() => setDeleteTarget(s)}>remove</button>
                 </div>
 
                 {sel?.id === s.id && (
@@ -191,7 +206,7 @@ export default function MCP() {
                     )}
                   </div>
                 )}
-              </div>
+              </article>
             );
           })}
           {servers.length === 0 && !adding && <div style={{ fontFamily: "var(--hand)", fontSize: 16, color: "var(--pencil)", padding: 20 }}>no MCP servers configured</div>}

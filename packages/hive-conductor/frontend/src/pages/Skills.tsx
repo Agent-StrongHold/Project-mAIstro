@@ -36,7 +36,7 @@ export default function Skills() {
           helpHref="/docs#skills"
         />
         {skills.map((s) => (
-          <div key={s.id} className="card" onClick={() => setSel(s)} style={{ cursor: "pointer", opacity: s.enabled ? 1 : 0.6, borderColor: sel?.id === s.id ? "var(--accent)" : undefined }}>
+          <article key={s.id} className="card" style={{ opacity: s.enabled ? 1 : 0.6, borderColor: sel?.id === s.id ? "var(--accent)" : undefined }}>
             <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 8, alignItems: "center" }}>
               <div>
                 <div style={{ fontFamily: "var(--hand)", fontSize: 15 }}>{s.name}</div>
@@ -49,7 +49,8 @@ export default function Skills() {
               <Hex variant="accent">{s.category}</Hex>
               {s.tags.map((t) => <Hex key={t} variant="muted">{t}</Hex>)}
             </div>
-          </div>
+            <button type="button" className="btn" onClick={() => setSel(s)} style={{ marginTop: 8, fontSize: 9, padding: "2px 8px" }} aria-label={`Open ${s.name} details`}>View details</button>
+          </article>
         ))}
       </div>
 
@@ -59,7 +60,7 @@ export default function Skills() {
             <h2 style={{ fontFamily: "var(--hand)", fontSize: 22, fontWeight: 600, margin: "0 0 8px" }}>{sel.name}</h2>
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
               <button className="btn" style={{ fontSize: 9, padding: "2px 10px", background: sel.enabled ? "var(--danger, #c4452a)" : "var(--ok, #5a9a4a)", color: "#fff", border: "none" }} onClick={() => void toggleSkill(sel.id)}>{sel.enabled ? "Disable" : "Enable"}</button>
-              <span className="btn" style={{ fontSize: 9, padding: "2px 8px" }} onClick={() => setSel(null)}>close</span>
+              <button type="button" className="btn" style={{ fontSize: 9, padding: "2px 8px" }} onClick={() => setSel(null)}>close</button>
             </div>
           </div>
           <div style={{ fontFamily: "var(--hand)", fontSize: 14, color: "var(--pencil)", marginBottom: 14 }}>{sel.description}</div>
