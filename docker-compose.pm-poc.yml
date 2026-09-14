@@ -11,6 +11,7 @@ services:
       # published in this repository (#367). `:?` makes compose refuse to
       # start rather than start insecurely.
       - API_KEYS=${API_KEYS:?Run ./install.sh to generate API_KEYS, or set it in .env}
+      - ADMIN_API_KEYS=${ADMIN_API_KEYS:?Set ADMIN_API_KEYS in .env (use [] when no admin keys)}
       - CORS_ORIGINS=http://localhost:8101,http://localhost:5173,http://127.0.0.1:8101
       - REQUIRE_AUTH=true
     profiles:

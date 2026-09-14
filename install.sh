@@ -349,6 +349,7 @@ write_new_env() {
 # API access
 MAISTRO_ACCESS_TOKEN=${token}
 API_KEYS=["conductor:${token}"]
+ADMIN_API_KEYS=[]
 ROUTER_API_KEY=${router_key}
 REQUIRE_AUTH=true
 MAISTRO_BIND_HOST=${BIND_HOST}
@@ -441,6 +442,7 @@ repair_existing_env() {
     # an older install (same secret, now attributed), then ensure membership.
     secret_env_run migrate-api-keys "$token" "conductor"
     ensure_api_keys_contains "conductor:${token}"
+    append_env_once ADMIN_API_KEYS "[]"
     append_env_once REQUIRE_AUTH "true"
     append_env_once MAISTRO_BIND_HOST "$BIND_HOST"
     append_env_once MAISTRO_PORT "$PORT"

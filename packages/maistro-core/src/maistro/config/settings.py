@@ -224,7 +224,17 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8000
 
-    api_keys: list[str] = Field(default_factory=list, description="Valid API bearer tokens")
+    api_keys: list[str] = Field(
+        default_factory=list,
+        description="Valid API bearer tokens (principal:secret entries)",
+    )
+    admin_api_keys: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Explicit administrator bearer tokens (principal:secret entries); "
+            "authority is selected by this separate configuration list"
+        ),
+    )
     require_auth: bool = Field(
         default=True,
         description="Refuse to start without API keys. Set REQUIRE_AUTH=false for local dev only.",

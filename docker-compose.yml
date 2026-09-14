@@ -32,6 +32,7 @@ services:
       - CHAT_DEFAULT_MODEL=${CHAT_DEFAULT_MODEL:-${DEFAULT_MODEL:-gemini/gemini-2.5-flash}}
       - MAISTRO_BUILDERS_MODEL=${MAISTRO_BUILDERS_MODEL:-${DEFAULT_MODEL:-gemini/gemini-2.5-flash}}
       - API_KEYS=${API_KEYS:?Run ./install.sh to generate API_KEYS}
+      - ADMIN_API_KEYS=${ADMIN_API_KEYS:?Set ADMIN_API_KEYS in .env (use [] when no admin keys)}
       - ROUTER_API_KEY=${ROUTER_API_KEY:?Run ./install.sh to generate ROUTER_API_KEY}
       # Hive signs explicit Workspace admission bindings with a dedicated
       # capability. Unconfigured deployments remain fail-closed for named scope

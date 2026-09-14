@@ -73,8 +73,17 @@ class TestExplicitPrincipalStartupGate:
             _validate_startup(settings)
 
     def test_prefixed_keys_pass_the_gate(self) -> None:
-        settings = Settings(api_keys=["ops:secret-a", "alice:admin:secret-b"], require_auth=True)
+        settings = Settings(
+            api_keys=["ops:secret-a", "alice:admin:secret-b"],
+            admin_api_keys=["root:secret-c"],
+            require_auth=True,
+        )
         _validate_startup(settings)  # Should not raise
+
+    def test_empty_legacy_admin_form_refuses_to_start(self) -> None:
+        settings = Settings(api_keys=["alice:admin:"], require_auth=True)
+        with pytest.raises(RuntimeError, match="empty secret"):
+            _validate_startup(settings)
 
 
 @pytest.mark.contract("behavioral")

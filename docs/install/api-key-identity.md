@@ -4,12 +4,16 @@ Every entry in `API_KEYS` names its **explicit canonical principal**
 ([#843](https://github.com/Agent-StrongHold/Project-mAIstro/issues/843)):
 
 ```dotenv
-API_KEYS=["ops:9f2c1d0e…", "alice:7b3a9e11…", "build:admin:5d8f2c40…"]
+API_KEYS=["ops:9f2c1d0e…", "alice:7b3a9e11…", "build:5d8f2c40…"]
+ADMIN_API_KEYS=["root:8a4d2c10…"]
 ```
 
 * `principal:secret` — the principal is everything before the first colon,
-  the secret is everything after it (secrets containing colons keep working).
-* `principal:admin:secret` — additionally grants the `admin` role.
+  and the secret is everything after it. Every later colon is secret material.
+* `ADMIN_API_KEYS` uses the same syntax; membership in this separate setting
+  grants the `admin` role. Authority is never inferred from a secret segment.
+* `principal:admin:` is rejected as the empty-secret spelling of the retired
+  role form, rather than being accepted with a different meaning.
 
 Clients still present only the **bare secret** as the bearer token
 (`Authorization: Bearer 9f2c1d0e…`). The principal prefix is server-side
@@ -63,11 +67,24 @@ rotation does not reset that principal's quota or abuse history.
 
 ## Rules the server enforces
 
-* Every entry must parse as `principal:secret` (or `principal:admin:secret`);
-  `sk-`-prefixed entries are secret-shaped and rejected as plain.
+* Every entry must parse as `principal:secret`; `sk-`-prefixed entries are
+  secret-shaped and rejected as plain.
 * Empty principals (`":secret"`) and empty secrets (`"alice:"`) are rejected.
 * Key material is never a principal id, log label, metric label, or
   rate-limit bucket id — boot errors describe a bad entry by position and
   defect, never by content.
 * Revocation is removing the entry; the secret immediately resolves to
   nothing.
+
+## Ownership migration
+
+The installer migration from the historical plain key is a database migration,
+not only an `.env` rewrite. On the next container start, Alembic records the
+explicit `default -> conductor` mapping and migrates live ownership columns for
+Workspace memberships, Project memberships, memory/outcome records, Canvas
+scope, and other durable ownership references in one transaction. Canonical Run
+and event actor references are migrated as well; the mapping row preserves the
+historical `default -> conductor` identity fact. The migration is idempotent and runs under
+the entrypoint's PostgreSQL advisory migration lock, so a crashed process rolls
+back and two replicas converge before either serves requests. Mixed old/new
+rows are merged without dropping existing grants.

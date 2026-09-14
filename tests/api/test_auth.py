@@ -172,14 +172,26 @@ class TestExplicitPrincipalContract:
             assert principal is not None
             assert principal.user_id == expected
 
-    def test_admin_role_form(self) -> None:
-        """``principal:admin:secret`` grants the admin role (the old parser's
-        ``:admin`` branch was unreachable; it is live under #843's parser)."""
-        settings = Settings(api_keys=["alice:admin:s3cr3t"])
-        principal = resolve_token_principal("s3cr3t", settings)
+    def test_admin_secret_segment_is_not_a_role_marker(self) -> None:
+        """A legacy colon-containing secret remains ordinary user material."""
+        settings = Settings(api_keys=["ops:admin:token"])
+        principal = resolve_token_principal("admin:token", settings)
+        assert principal is not None
+        assert principal.user_id == "ops"
+        assert not principal.is_admin
+        assert resolve_token_principal("token", settings) is None
+
+    def test_explicit_admin_configuration_grants_admin(self) -> None:
+        settings = Settings(admin_api_keys=["alice:admin-secret"])
+        principal = resolve_token_principal("admin-secret", settings)
         assert principal is not None
         assert principal.user_id == "alice"
         assert principal.is_admin
+
+    def test_empty_legacy_admin_form_is_invalid(self) -> None:
+        settings = Settings(api_keys=["alice:admin:"])
+        assert resolve_token_principal("admin:", settings) is None
+        assert "empty secret" in invalid_api_key_entries(settings)[0]
 
     def test_malformed_entries_fail_closed(self) -> None:
         """Empty entries, a missing principal, a missing secret, and
@@ -216,7 +228,10 @@ class TestInvalidEntryDescriptions:
     ever echoing key material."""
 
     def test_valid_configuration_yields_no_problems(self) -> None:
-        settings = Settings(api_keys=["ops:secret-a", "alice:admin:secret-b", "bob:weird:secret"])
+        settings = Settings(
+            api_keys=["ops:secret-a", "alice:admin:secret-b", "bob:weird:secret"],
+            admin_api_keys=["root:secret-c"],
+        )
         assert invalid_api_key_entries(settings) == []
 
     def test_plain_and_malformed_entries_are_described(self) -> None:
