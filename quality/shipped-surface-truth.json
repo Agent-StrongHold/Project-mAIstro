@@ -366,7 +366,7 @@
       "disposition": "domain-state",
       "production_enabled": true,
       "reason": "persists per-user provider config within allow-listed fields",
-      "effect_owner": "services.user_credentials.UserCredentialStore + audit log"
+      "effect_owner": "stores.user_provider_config + audit log"
     },
     {
       "source": "packages/hive-conductor/backend/routes/dag_runs.py",
