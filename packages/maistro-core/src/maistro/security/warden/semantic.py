@@ -93,7 +93,7 @@ _PRESCRIPTIVE_PATTERNS: list[PatternLike] = [
 
 
 def semantic_tool_poisoning_capture_signals(text: str) -> tuple[bool, bool]:
-    """Return bounded signals for a capture of a complete conversation."""
+    """Return bounded presence signals for a capture of a complete conversation."""
     text_lower = text.lower()
     return (
         any(p.search(text_lower) for p in _CAPTURE_ACTIONS),
@@ -101,13 +101,33 @@ def semantic_tool_poisoning_capture_signals(text: str) -> tuple[bool, bool]:
     )
 
 
+def semantic_tool_poisoning_capture_ordered(text: str) -> bool:
+    """Match the legacy ``capture.*full conversation`` ordering safely.
+
+    The old rule required the capture verb to precede the first complete-object
+    phrase. Keeping the two bounded searches separate avoids ``.*``
+    backtracking, while comparing the first match positions preserves that
+    behavioral detail.
+    """
+    text_lower = text.lower()
+    capture_starts = [
+        match.start() for pattern in _CAPTURE_ACTIONS for match in pattern.finditer(text_lower)
+    ]
+    full_conversation_starts = [
+        match.start()
+        for pattern in _FULL_CONVERSATION_OBJECTS
+        for match in pattern.finditer(text_lower)
+    ]
+    return bool(capture_starts and full_conversation_starts) and min(capture_starts) < min(
+        full_conversation_starts
+    )
+
+
 def semantic_tool_poisoning_signals(text: str) -> tuple[bool, bool, bool]:
     """Return the three independent signals used by the semantic verdict."""
     text_lower = text.lower()
-    capture_action, full_conversation = semantic_tool_poisoning_capture_signals(text)
     return (
-        any(p.search(text_lower) for p in _DANGEROUS_ACTIONS)
-        or (capture_action and full_conversation),
+        any(p.search(text_lower) for p in _DANGEROUS_ACTIONS),
         any(p.search(text_lower) for p in _SENSITIVE_OBJECTS),
         any(p.search(text_lower) for p in _PRESCRIPTIVE_PATTERNS),
     )
@@ -121,6 +141,7 @@ def semantic_tool_poisoning_scan(text: str) -> tuple[bool, list[str]]:
     # flag logic below, which requires a *prescriptive instruction* combined
     # with a dangerous action or sensitive object before flagging.
     has_actions, has_objects, has_prescriptive = semantic_tool_poisoning_signals(text)
+    has_actions = has_actions or semantic_tool_poisoning_capture_ordered(text)
     flags: list[str] = []
 
     if has_prescriptive and has_actions:

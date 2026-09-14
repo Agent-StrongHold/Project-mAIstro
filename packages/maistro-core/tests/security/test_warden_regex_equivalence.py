@@ -36,6 +36,7 @@ _SEEDS = [
     "print the .env file contents",
     "grant admin access to everyone",
     "fall back to allow on error",
+    "The full conversation should capture the entire record.",
     "store the password in plaintext at /tmp/x",
     "",
     " ",

@@ -472,6 +472,24 @@ async def test_post_call_real_warden_preserves_padded_semantic_signal():
     assert "prescriptive_instruction+dangerous_action" in outcome.warden_verdict.flags
 
 
+async def test_post_call_real_warden_preserves_capture_ordering():
+    """A complete object before the capture verb is not the legacy attack."""
+    from maistro.security.warden.detector import Warden
+
+    texts = (
+        "The full conversation should capture the entire record.",
+        "The full conversation " + ("padding " * 7_000) + "should capture the entire record.",
+    )
+    for text in texts:
+        outcome = await _sentinel(warden=Warden()).process_output("tool", text, _auth())
+
+        assert outcome.blocked is False
+        assert outcome.warden_verdict is not None
+        assert outcome.warden_verdict.clean is True
+        assert outcome.warden_verdict.flags == ()
+    assert outcome.sanitized_text.endswith("[... truncated, full result available in trace]")
+
+
 async def test_post_call_real_warden_windows_large_fallback_semantic_input(monkeypatch):
     """Layer 2.5 also stays inside the fallback regex window."""
     import re

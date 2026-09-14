@@ -119,9 +119,12 @@ inspecting constants. `packages/maistro-core/tests/security/test_sentinel_policy
 uses the Sentinel output gate with the real `Warden`: its pathological-regex
 cases prove both overlapping reject windows and the `regex` timeout fail closed,
 and its large-input cases record that heuristic and semantic fallback passes are
-at most `_SCAN_WINDOW_CHARS`; `test_post_call_real_warden_preserves_padded_semantic_signal`
-also proves a capture/full-conversation instruction cannot hide across those
-windows. The Warden test suite also
+at most `_SCAN_WINDOW_CHARS`;
+`test_post_call_real_warden_preserves_padded_semantic_signal` also proves a
+capture/full-conversation instruction cannot hide across those windows, while
+`test_post_call_real_warden_preserves_capture_ordering` proves the legacy
+capture-before-object ordering does not create a false positive. The Warden test
+suite also
 covers the no-tail window invariant and runs the accelerated-versus-stdlib corpus
 comparison in `test_warden_regex_equivalence.py` (the root dev extra installs
 `google-re2`, while the fallback cases force `re`).

@@ -19,6 +19,7 @@ from maistro.security.normalize import normalize_for_detection
 from maistro.security.warden.heuristics import heuristic_scan
 from maistro.security.warden.patterns import REJECT_PATTERNS
 from maistro.security.warden.semantic import (
+    semantic_tool_poisoning_capture_ordered,
     semantic_tool_poisoning_capture_signals,
     semantic_tool_poisoning_signals,
 )
@@ -108,6 +109,7 @@ def _scan_semantic_windowed(content: str) -> tuple[bool, list[str]]:
     has_prescriptive = False
     has_capture_action = False
     has_full_conversation = False
+    has_ordered_capture = False
     for window in _windows(content):
         window_actions, window_objects, window_prescriptive = semantic_tool_poisoning_signals(
             window
@@ -118,15 +120,24 @@ def _scan_semantic_windowed(content: str) -> tuple[bool, list[str]]:
         has_actions = has_actions or window_actions
         has_objects = has_objects or window_objects
         has_prescriptive = has_prescriptive or window_prescriptive
-        has_capture_action = has_capture_action or window_capture_action
+        # Preserve the legacy action-before-object relationship both inside a
+        # window and when the two bounded matches land in adjacent windows.
+        window_ordered_capture = semantic_tool_poisoning_capture_ordered(window)
+        if not has_full_conversation:
+            has_ordered_capture = has_ordered_capture or window_ordered_capture
+        has_ordered_capture = has_ordered_capture or (
+            has_capture_action and not has_full_conversation and window_full_conversation
+        )
+        # Do not carry an action found after the first complete-object phrase
+        # into a later window; that would recreate the old ordering bug.
+        if not has_full_conversation and (not window_full_conversation or window_ordered_capture):
+            has_capture_action = has_capture_action or window_capture_action
         has_full_conversation = has_full_conversation or window_full_conversation
         if has_actions and has_objects and has_prescriptive:
             break
 
-    # The action and target may be in different bounded windows. This is the
-    # streaming equivalent of the old ``capture.*full conversation`` rule;
-    # no regex call ever sees the attacker-controlled padding between them.
-    has_actions = has_actions or (has_capture_action and has_full_conversation)
+    # No regex call ever sees the attacker-controlled padding between them.
+    has_actions = has_actions or has_ordered_capture
 
     flags: list[str] = []
     if has_prescriptive and has_actions:

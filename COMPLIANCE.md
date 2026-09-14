@@ -51,9 +51,10 @@ flip to `gap-test`/`gap-impl` in the same PR that breaks it.
 The scanner/resource-limit claim above is exercised at the Sentinel output
 boundary, rather than inferred from Warden constants: the real Warden is invoked
 by the output gate against a catastrophic regex in overlapping windows, a
-multi-window benign result, and a padded semantic instruction whose action and
-object cross a window boundary. The accelerated/fallback pattern contract includes
-a complete Warden verdict comparison in
+multi-window benign result, a padded semantic instruction whose action and
+object cross a window boundary, and the product-path capture/object ordering
+regression. The accelerated/fallback pattern contract includes a complete Warden
+verdict comparison in
 `packages/maistro-core/tests/security/test_warden_regex_equivalence.py`.
 PII/secret handling is also exercised on `Sentinel.post_call`, `DirectStrategy`,
 and `ReactStrategy`; `test_sentinel_policy.py` proves the raw credential is not

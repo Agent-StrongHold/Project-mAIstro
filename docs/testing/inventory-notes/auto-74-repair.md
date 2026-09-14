@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +5
+  packages/maistro-core/tests: +6
 ---
 # Issue #74 repair evidence
 
-Three product-path security regressions extend the initial #74 evidence:
+Four product-path security regressions extend the initial #74 evidence:
 
 - Sentinel's real Warden scans a pathological reject pattern across overlapping
   windows, records a fail-closed timeout, and never hands a search more than the
@@ -15,3 +15,6 @@ Three product-path security regressions extend the initial #74 evidence:
   regex engines, rather than comparing only individual pattern APIs.
 - Sentinel output redaction is paired with a `PIIMatch` masking assertion so the
   raw credential is absent from both the product result and match metadata.
+- The prior semantic false positive is reproduced through `Sentinel.post_call`: a
+  complete-object phrase before `capture` remains clean, while the ordered
+  capture/full-conversation form remains blocked.
