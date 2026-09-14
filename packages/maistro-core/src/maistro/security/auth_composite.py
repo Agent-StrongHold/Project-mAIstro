@@ -14,6 +14,9 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+_SAFE_SCHEME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.:-")
+_SAFE_SCHEME_MAX_LENGTH = 64
+
 if TYPE_CHECKING:
     from maistro.security._types import AuthContext
 
@@ -21,9 +24,15 @@ logger = logging.getLogger("maistro.auth.composite")
 
 
 def _provider_scheme(provider: Any) -> str:
-    """Return a bounded scheme label suitable for audit logs."""
-    scheme = getattr(provider, "scheme", None)
-    if isinstance(scheme, str) and scheme:
+    """Return provider metadata suitable for audit logs, never instance data."""
+    # Read the declaration from the provider class, not an instance attribute that
+    # could be populated from the request credential being authenticated.
+    scheme = getattr(type(provider), "scheme", None)
+    if (
+        isinstance(scheme, str)
+        and 0 < len(scheme) <= _SAFE_SCHEME_MAX_LENGTH
+        and all(char in _SAFE_SCHEME_CHARS for char in scheme)
+    ):
         return scheme
     return type(provider).__name__
 

@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +10
+  packages/maistro-core/tests: +11
 ---
 
 # #1190 composite authentication fail-closed contract
@@ -15,3 +15,5 @@ and demo-session providers. JWT coverage also proves that an empty recognized
 Bearer credential terminates a composite chain rather than falling through.
 Additional demo-session tests cover empty recognized credentials, empty cookie
 headers, and missing dependency propagation for the classified provider paths.
+Audit coverage also verifies that instance metadata derived from a credential is
+not used as the logged scheme label.
