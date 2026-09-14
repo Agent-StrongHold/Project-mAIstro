@@ -688,6 +688,54 @@ async def test_reachable_chat_workflow_route_passes_verified_principal(
 
 
 @pytest.mark.asyncio
+async def test_chat_workflow_route_waits_on_shared_inbox_then_executes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maistro.capabilities.bootstrap import default_capability_registry
+    from services.engine import get_engine
+
+    engine = get_engine()
+    registry = default_capability_registry()
+    inbox = registry.provider("approval", "inbox")
+    saved = engine._capabilities
+    engine._capabilities = registry
+
+    async def execute(
+        tool_name: str,
+        args: dict[str, Any],
+        user_id: str,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        assert tool_name == "run_workflow"
+        assert kwargs["approval_request"].action == "run_workflow"
+        assert kwargs["approval_decision"].actor == "admin-1"
+        return {"run_id": "run-route-approved", "status": "completed"}
+
+    monkeypatch.setattr(service, "_execute_tool", execute)
+    try:
+        task = asyncio.create_task(
+            chat.run_workflow(
+                chat.RunWorkflowBody(dag_id="dag-1", goal="approved goal"), FakeRequest()
+            )
+        )
+        for _ in range(100):
+            if inbox.pending():
+                break
+            await asyncio.sleep(0.005)
+        pending = inbox.pending()
+        assert len(pending) == 1
+        assert pending[0].action == "run_workflow"
+        assert pending[0].requester == "user-1"
+        assert not task.done()
+
+        assert inbox.resolve(pending[0].request_id, approved=True, actor="admin-1")
+        result = await asyncio.wait_for(task, timeout=1.0)
+        assert result["run_id"] == "run-route-approved"
+    finally:
+        engine._capabilities = saved
+
+
+@pytest.mark.asyncio
 async def test_reachable_workflow_approval_uses_canonical_inbox(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
