@@ -56,7 +56,7 @@ class SqliteAuditLog:
                 "ALTER TABLE audit_log ADD COLUMN org_id TEXT NOT NULL DEFAULT ''"
             )
         await self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_audit_log_scope ON audit_log (org_id, timestamp)"
+            "CREATE INDEX IF NOT EXISTS ix_audit_log_scope ON audit_log (org_id, timestamp)"
         )
         await self._conn.commit()
 

@@ -76,7 +76,7 @@ async def test_ensure_schema_upgrades_legacy_table_with_scope_index() -> None:
         assert "org_id" in {row[1] for row in await cursor.fetchall()}
         cursor = await conn.execute("PRAGMA index_list(audit_log)")
         indexes = {row[1] for row in await cursor.fetchall()}
-        assert "idx_audit_log_scope" in indexes
+        assert "ix_audit_log_scope" in indexes
     finally:
         await conn.close()
 
