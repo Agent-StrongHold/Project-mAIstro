@@ -170,6 +170,38 @@ async def test_configured_sqlite_schema_failure_propagates(tmp_path: Path) -> No
             )
 
 
+@pytest.mark.asyncio
+async def test_legacy_capability_invocation_schema_adds_revision(tmp_path: Path) -> None:
+    """The shared transaction also covers late columns outside memory stores."""
+    import aiosqlite
+
+    from maistro.capabilities.invocation_store import SqliteInvocationStore
+
+    path = tmp_path / "invocations.sqlite"
+    async with aiosqlite.connect(path) as conn:
+        await conn.execute(
+            """
+            CREATE TABLE capability_invocations (
+                invocation_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                node_run_id TEXT NOT NULL,
+                attempt_id TEXT NOT NULL,
+                binding_id TEXT NOT NULL,
+                effect_key TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                payload_json TEXT NOT NULL
+            )
+            """
+        )
+        await conn.commit()
+        await SqliteInvocationStore(conn).ensure_schema()
+
+        cursor = await conn.execute("PRAGMA table_info(capability_invocations)")
+        columns = {str(row[1]): row[4] for row in await cursor.fetchall()}
+        assert columns["revision"] == "0"
+
+
 @pytest.mark.parametrize("kind", sorted(_LEGACY_SCHEMA))
 def test_two_processes_upgrade_each_legacy_sqlite_store(kind: str, tmp_path: Path) -> None:
     """Both first opens must succeed when they race on the same old file."""
