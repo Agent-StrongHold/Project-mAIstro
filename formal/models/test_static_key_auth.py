@@ -8,6 +8,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
 
+from maistro.protocols.auth import AuthError, CredentialNotApplicable
 from maistro.security._types import SYSTEM_AUTH, IdentityKind
 from maistro.security.auth_static import StaticKeyAuthProvider
 
@@ -31,7 +32,9 @@ class StaticKeyMachine(RuleBasedStateMachine):
         try:
             asyncio.run(self.provider.authenticate(f"Bearer {token}", headers={}))
             assert token == API_KEY
-        except ValueError:
+        except AuthError:
+            # Bearer scheme recognized: a wrong key is terminal (fix #1190),
+            # never reinterpreted as "not applicable".
             assert token != API_KEY
 
     @invariant()
@@ -49,8 +52,8 @@ class StaticKeyMachine(RuleBasedStateMachine):
     def wrong_key_always_fails(self):
         try:
             asyncio.run(self.provider.authenticate("Bearer wrong-key"))
-            raise AssertionError("Expected ValueError")
-        except ValueError:
+            raise AssertionError("Expected AuthError")
+        except AuthError:
             pass
 
 
@@ -74,8 +77,8 @@ def test_wrong_key_raises():
     provider = StaticKeyAuthProvider(API_KEY)
     try:
         asyncio.run(provider.authenticate("Bearer wrong-key"))
-        raise AssertionError("Expected ValueError")
-    except ValueError:
+        raise AssertionError("Expected AuthError")
+    except AuthError:
         pass
 
 
@@ -83,8 +86,8 @@ def test_missing_authorization_raises():
     provider = StaticKeyAuthProvider(API_KEY)
     try:
         asyncio.run(provider.authenticate(None))
-        raise AssertionError("Expected ValueError")
-    except ValueError:
+        raise AssertionError("Expected CredentialNotApplicable")
+    except CredentialNotApplicable:
         pass
 
 
@@ -92,8 +95,8 @@ def test_non_bearer_raises():
     provider = StaticKeyAuthProvider(API_KEY)
     try:
         asyncio.run(provider.authenticate("Basic abc123"))
-        raise AssertionError("Expected ValueError")
-    except ValueError:
+        raise AssertionError("Expected CredentialNotApplicable")
+    except CredentialNotApplicable:
         pass
 
 
@@ -148,6 +151,6 @@ def test_only_correct_key_passes(key):
     else:
         try:
             asyncio.run(provider.authenticate(f"Bearer {key}"))
-            raise AssertionError("Expected ValueError")
-        except ValueError:
+            raise AssertionError("Expected AuthError")
+        except AuthError:
             pass
