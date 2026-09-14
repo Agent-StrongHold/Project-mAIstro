@@ -9,11 +9,30 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from maistro.capabilities.types import FallbackPolicy, SlotSpec
+from maistro.security.trust import is_known_trust_tier, trust_rank
 
 if TYPE_CHECKING:
     from maistro.capabilities.protocols import CapabilityProvider
 
 logger = logging.getLogger("maistro.capabilities.registry")
+
+
+@dataclass(frozen=True)
+class ProviderReplacementDecision:
+    """Authenticated, human-readable authority to replace a provider.
+
+    Discovery has no way to construct this decision. The composition root or
+    an admin workflow must supply both an actor and a reason explicitly.
+    """
+
+    approved_by: str
+    reason: str
+
+    def __post_init__(self) -> None:
+        if not self.approved_by.strip():
+            raise ValueError("approved_by must be a non-empty string")
+        if not self.reason.strip():
+            raise ValueError("reason must be a non-empty string")
 
 
 @dataclass
@@ -33,6 +52,13 @@ class CapabilityRegistry:
 
     def define(self, spec: SlotSpec) -> None:
         with self._lock:
+            existing = self._slots.get(spec.name)
+            if existing is not None:
+                if existing.spec != spec:
+                    raise ValueError(f"Slot '{spec.name}' is already defined differently")
+                # Re-discovery is idempotent. In particular, do not recreate
+                # the state and silently reset approval or enabled status.
+                return
             self._slots[spec.name] = _SlotState(spec=spec)
         logger.debug("Defined slot: %s (%s)", spec.name, spec.fallback_policy)
 
@@ -42,12 +68,47 @@ class CapabilityRegistry:
             raise KeyError(f"Unknown slot '{slot}'")
         return state
 
-    def register(self, provider: CapabilityProvider) -> None:
-        """Register a provider as INSTALLED but INACTIVE (never auto-activates)."""
+    def register(self, provider: CapabilityProvider) -> bool:
+        """Register an installed provider without replacing existing authority.
+
+        Entry-point discovery can run repeatedly, so registration is an
+        admission operation rather than an update operation. A provider with
+        an existing logical identity is retained exactly as installed; use
+        :meth:`replace` with a governed decision for an intentional change.
+        Returns ``True`` only when a new provider was admitted.
+        """
         with self._lock:
             state = self._slot(provider.slot)
+            if provider.name in state.providers:
+                logger.warning(
+                    "Ignored rediscovery of installed provider %s -> slot %s",
+                    provider.name,
+                    provider.slot,
+                )
+                return False
             state.providers[provider.name] = provider
         logger.debug("Registered provider %s -> slot %s (inactive)", provider.name, provider.slot)
+        return True
+
+    def replace(
+        self,
+        provider: CapabilityProvider,
+        *,
+        decision: ProviderReplacementDecision,
+    ) -> None:
+        """Replace a provider only through an explicit governed decision."""
+        with self._lock:
+            state = self._slot(provider.slot)
+            if provider.name not in state.providers:
+                raise KeyError(f"Provider '{provider.name}' is not installed")
+            state.providers[provider.name] = provider
+        logger.info(
+            "Replaced provider %s -> slot %s by %s: %s",
+            provider.name,
+            provider.slot,
+            decision.approved_by,
+            decision.reason,
+        )
 
     def activate(self, slot: str, provider_name: str) -> None:
         with self._lock:
@@ -110,12 +171,19 @@ class CapabilityRegistry:
             return _baseline()
 
         if chosen_name is None:
-            candidates = sorted(providers.values(), key=lambda p: p.trust_tier)
+            # Provider metadata is untrusted input. Use a finite host-owned
+            # ordering and a name tie-breaker; unknown/blank values sort last.
+            candidates = sorted(
+                providers.values(),
+                key=lambda p: (trust_rank(getattr(p, "trust_tier", None)), p.name),
+            )
             chosen = candidates[0] if candidates else None
         else:
             chosen = providers.get(chosen_name)
 
-        if chosen is None:
+        if chosen is None or not is_known_trust_tier(getattr(chosen, "trust_tier", None)):
+            # Unknown provider metadata is not merely low priority: it is not
+            # admissible for an implicit or pinned live resolution.
             return _baseline()
 
         health = await chosen.healthcheck()

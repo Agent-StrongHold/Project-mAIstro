@@ -12,7 +12,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from maistro.skills.parser import parse_skill_file
+from maistro.skills.parser import parse_skill_file, security_scan
 from maistro.types.skill import SkillDefinition
 
 logger = logging.getLogger("maistro.skills.catalog")
@@ -50,9 +50,16 @@ class SkillCatalog:
         self._watch_stop = threading.Event()
         self._file_mtimes: dict[str, float] = {}
 
-    def register(self, entry: SkillCatalogEntry) -> None:
+    def register(self, entry: SkillCatalogEntry) -> bool:
+        # Direct callers do not necessarily come through load_directory, so
+        # the catalog remains a scan boundary even for in-memory entries.
+        safe, findings = security_scan(entry.definition.system_prompt)
+        if not safe:
+            logger.warning("Rejected skill entry failed security scan: %s", ", ".join(findings))
+            return False
         with self._lock:
             self._entries.append(entry)
+        return True
 
     def resolve(
         self,
@@ -101,10 +108,22 @@ class SkillCatalog:
         if not directory.is_dir():
             return 0
         count = 0
+        root = directory.resolve()
         for path in sorted(directory.glob("*.md")):
             try:
+                if path.is_symlink() or not path.resolve().is_relative_to(root):
+                    logger.warning("Skipping unauthorized skill path: %s", path)
+                    continue
                 content = path.read_text(encoding="utf-8")
-                skill_def = parse_skill_file(content)
+                safe, findings = security_scan(content)
+                if not safe:
+                    logger.warning(
+                        "Skipping skill failed security scan: %s (%s)",
+                        path,
+                        ", ".join(findings),
+                    )
+                    continue
+                skill_def = parse_skill_file(content, source=str(path))
                 if skill_def is None:
                     logger.warning("Skill parse returned None: %s", path)
                     continue
@@ -150,14 +169,26 @@ class SkillCatalog:
     def _check_for_changes(self, directory: Path) -> None:
         if not directory.is_dir():
             return
+        root = directory.resolve()
         for path in directory.glob("*.md"):
             key = str(path)
+            if path.is_symlink() or not path.resolve().is_relative_to(root):
+                logger.warning("Skipping unauthorized skill path: %s", path)
+                continue
             mtime = path.stat().st_mtime
             old_mtime = self._file_mtimes.get(key)
             if old_mtime is None or mtime > old_mtime:
                 try:
                     content = path.read_text(encoding="utf-8")
-                    skill_def = parse_skill_file(content)
+                    safe, findings = security_scan(content)
+                    if not safe:
+                        logger.warning(
+                            "Skipping reloaded skill failed security scan: %s (%s)",
+                            path,
+                            ", ".join(findings),
+                        )
+                        continue
+                    skill_def = parse_skill_file(content, source=str(path))
                     if skill_def is None:
                         continue
                     entry = SkillCatalogEntry(definition=skill_def, scope="builtin")

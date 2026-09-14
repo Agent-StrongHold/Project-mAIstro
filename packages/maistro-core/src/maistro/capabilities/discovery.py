@@ -36,8 +36,8 @@ def discover_into(
         try:
             factory = ep.load()
             provider = factory()
-            registry.register(provider)
-            count += 1
+            if registry.register(provider):
+                count += 1
         except Exception as exc:  # discovery must be resilient — never raise on one bad EP
             logger.warning("Skipping capability entry point %r: %s", ep.name, exc)
     return count

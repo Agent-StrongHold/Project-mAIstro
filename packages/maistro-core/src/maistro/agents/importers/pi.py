@@ -24,6 +24,8 @@ from typing import Any
 
 import yaml
 
+from maistro.security.trust import imported_trust_tier
+from maistro.skills.parser import security_scan
 from maistro.types.agent import AgentIdentity
 
 _NAME_SANITIZE_RE = re.compile(r"[^a-z0-9_]+")
@@ -78,6 +80,10 @@ class PiAgentImporter:
 
         tools_raw = data.get("tools", [])
         tools = tuple(str(t) for t in tools_raw) if isinstance(tools_raw, list) else ()
+        instructions = str(data.get("instructions", ""))
+        safe, findings = security_scan(instructions)
+        if not safe:
+            raise ValueError(f"Pi agent instructions failed security scan: {', '.join(findings)}")
 
         return AgentIdentity(
             name=sanitize_agent_name(name_raw),
@@ -85,10 +91,12 @@ class PiAgentImporter:
             description=str(data.get("description", "")),
             model=model,
             tools=tools,
-            trust_tier=str(data.get("trust_tier", "t2")),
+            # Pi metadata is foreign input; it may describe trust but cannot
+            # grant effective delegation authority.
+            trust_tier=imported_trust_tier(data.get("trust_tier")),
             model_constraints={
                 "harness_runner": "pi",
-                "instructions": str(data.get("instructions", "")),
+                "instructions": instructions,
             },
             provenance="import:pi",
         )
