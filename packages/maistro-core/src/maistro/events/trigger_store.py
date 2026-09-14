@@ -17,6 +17,8 @@ from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from uuid import uuid4
 
+from maistro.persistence.sqlite_schema import serialized_schema_upgrade
+
 if TYPE_CHECKING:
     import aiosqlite
 
@@ -124,8 +126,8 @@ class SqliteTriggerStore:
         self._conn = conn
 
     async def ensure_schema(self) -> None:
-        await self._conn.execute(_SCHEMA)
-        await self._conn.commit()
+        async with serialized_schema_upgrade(self._conn):
+            await self._conn.execute(_SCHEMA)
 
     async def add(self, trigger: TriggerDefinition) -> None:
         await self._conn.execute(
