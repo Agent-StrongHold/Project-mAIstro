@@ -249,6 +249,12 @@ def _resolve_session(
         if expiries is None or current >= min(expiries):
             stores.sessions.pop(session_id, None)
             return None
+        # Deactivation is revocation: remove the opaque session while the
+        # account is inactive so reactivation cannot resurrect it.
+        user = stores.users.get(sess.get("user_id"))
+        if user is None or not user.is_active:
+            stores.sessions.pop(session_id, None)
+            return None
         if refresh_activity:
             previous = _session_timestamp(sess.get("last_activity_at"))
             # A wall-clock correction must not move activity backwards. The
@@ -261,6 +267,11 @@ def _resolve_session(
 def _active_grants(sess: dict[str, Any]) -> dict[str, list[str]]:
     grants = sess.get("elevated_grants", {})
     return {tid: perms for tid, perms in grants.items() if isinstance(perms, list)}
+
+
+def refresh_session_activity(session_id: str | None) -> bool:
+    """Refresh one eligible session, failing closed on concurrent revocation."""
+    return _resolve_session(session_id or "", refresh_activity=True) is not None
 
 
 def get_current_user(

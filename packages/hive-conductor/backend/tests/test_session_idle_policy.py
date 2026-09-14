@@ -144,6 +144,22 @@ def test_authenticated_api_activity_slides_idle_expiry_but_not_absolute_expiry(
     assert session_id not in stores.sessions
 
 
+def test_rejected_authenticated_polling_does_not_refresh_idle_expiry(
+    logged_in: tuple[TestClient, str], clock
+) -> None:
+    client, session_id = logged_in
+    original_activity = stores.sessions[session_id]["last_activity_at"]
+
+    clock.advance(seconds=auth_routes._SESSION_IDLE_TIMEOUT - 1)
+    response = client.get("/v1/harness")
+    assert response.status_code == 403
+    assert stores.sessions[session_id]["last_activity_at"] == original_activity
+
+    clock.advance(seconds=1)
+    assert client.get("/v1/auth/whoami").json()["authenticated"] is False
+    assert session_id not in stores.sessions
+
+
 def test_deactivation_takes_effect_for_an_existing_session(
     logged_in: tuple[TestClient, str],
 ) -> None:
@@ -152,6 +168,8 @@ def test_deactivation_takes_effect_for_an_existing_session(
     stores.users["user"] = user.model_copy(update={"is_active": False})
     try:
         assert client.get("/v1/tasks").status_code == 401
+        assert session_id not in stores.sessions
+        stores.users["user"] = user
         assert client.get("/v1/auth/whoami").json()["authenticated"] is False
     finally:
         stores.users["user"] = user
