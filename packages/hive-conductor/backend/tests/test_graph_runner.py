@@ -1,15 +1,12 @@
 """Boy Scout coverage: services/graph_runner.py (was 10% line/branch).
 
 Covers:
-- execute_dag with stub maistro.graph: builds GraphConfig + invokes run_graph
-- execute_dag entry_node fallback: when not set, uses first node's id
-- genome_to_dag: maps PipelineGenome → DAG dict with all node + edge fields
-- execute_champion: 4 branches (no svc / no population / no champion / success)
-- _build_llm_call: no base URL → refuses (F3) unless ALLOW_STUB_LLM opt-in,
-  in which case the stub payload is labelled `"stub": true`
-- _build_llm_call: with base URL → real httpx fn
-- _build_llm_call inner _httpx_llm: posts, parses content
-- _build_llm_call with SecretStr-like api key (get_secret_value path)
+- execute_dag with the canonical durable graph runner
+- execute_dag entry_node fallback: when not set, uses the first node's id
+- genome_to_dag: maps PipelineGenome -> DAG dict with node and edge fields
+- execute_champion: no service / no population / no champion / success
+- _build_llm_call: no gateway -> refuses unless explicit stub opt-in
+- _build_llm_call: adapts an injected governed caller and propagates failures
 - execute_dag_streaming: yields started + per-node + completed
 - execute_dag_streaming: catches inner exception and yields failed
 """
@@ -185,241 +182,30 @@ async def test_execute_dag_streaming_fails_when_llm_unconfigured(
     assert "ALLOW_STUB_LLM" in events[-1]["error"]
 
 
-async def test_build_llm_call_real_httpx_posts_and_extracts(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import httpx
+async def test_build_llm_call_uses_governed_caller_contract() -> None:
     from services.graph_runner import _build_llm_call
-
-    monkeypatch.setenv("LITELLM_API_BASE", "http://stub.example")
-    monkeypatch.delenv("LITELLM_PROXY_URL", raising=False)
-    monkeypatch.setenv("LITELLM_API_KEY", "k")
-    monkeypatch.delenv("LITELLM_PROXY_KEY", raising=False)
-    monkeypatch.setenv("CHAT_DEFAULT_MODEL", "default-model")
 
     captured: dict[str, Any] = {}
 
-    class _Resp:
-        def raise_for_status(self) -> None:
-            pass
+    async def governed(messages: list[dict], **kwargs: Any) -> str:
+        captured["messages"] = messages
+        captured.update(kwargs)
+        return "governed answer"
 
-        def json(self) -> Any:
-            return {"choices": [{"message": {"content": "out"}}]}
-
-    class _Client:
-        def __init__(self, *a: Any, **kw: Any) -> None: ...
-        async def __aenter__(self) -> _Client:
-            return self
-
-        async def __aexit__(self, *a: Any) -> None: ...
-        async def post(self, url: str, *, json: Any, headers: Any) -> _Resp:
-            captured["url"] = url
-            captured["headers"] = headers
-            captured["model"] = json["model"]
-            return _Resp()
-
-    monkeypatch.setattr(httpx, "AsyncClient", _Client)
-    fn = _build_llm_call()
-    out = await fn([{"role": "user", "content": "hi"}], model="picked-model")
-    assert out == "out"
-    assert captured["url"] == "http://stub.example/v1/chat/completions"
-    assert captured["headers"]["Authorization"] == "Bearer k"
+    fn = _build_llm_call(model_call=governed)
+    assert await fn([{"role": "user", "content": "hi"}], model="picked-model") == "governed answer"
     assert captured["model"] == "picked-model"
 
 
-async def test_build_llm_call_on_response_hook_receives_body_and_response(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import httpx
+async def test_build_llm_call_does_not_swallow_governed_failure() -> None:
     from services.graph_runner import _build_llm_call
 
-    monkeypatch.setenv("LITELLM_API_BASE", "http://stub.example")
-    monkeypatch.delenv("LITELLM_PROXY_URL", raising=False)
-    monkeypatch.setenv("LITELLM_API_KEY", "k")
-    monkeypatch.delenv("LITELLM_PROXY_KEY", raising=False)
+    async def failed(*_args: Any, **_kwargs: Any) -> str:
+        raise RuntimeError("provider failed")
 
-    class _Resp:
-        def raise_for_status(self) -> None:
-            pass
-
-        def json(self) -> Any:
-            return {
-                "choices": [{"message": {"content": "out"}}],
-                "usage": {"prompt_tokens": 5, "completion_tokens": 7},
-            }
-
-    class _Client:
-        def __init__(self, *a: Any, **kw: Any) -> None: ...
-        async def __aenter__(self) -> _Client:
-            return self
-
-        async def __aexit__(self, *a: Any) -> None: ...
-        async def post(self, url: str, *, json: Any, headers: Any) -> _Resp:
-            return _Resp()
-
-    monkeypatch.setattr(httpx, "AsyncClient", _Client)
-
-    captured: dict[str, Any] = {}
-
-    def on_response(data: dict, response: Any) -> None:
-        captured["data"] = data
-
-    fn = _build_llm_call(on_response)
-    out = await fn([{"role": "user", "content": "hi"}], model="picked-model")
-    assert out == "out"
-    assert captured["data"]["usage"] == {"prompt_tokens": 5, "completion_tokens": 7}
-
-
-async def test_build_llm_call_on_response_hook_failure_is_swallowed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import httpx
-    from services.graph_runner import _build_llm_call
-
-    monkeypatch.setenv("LITELLM_API_BASE", "http://stub.example")
-    monkeypatch.delenv("LITELLM_PROXY_URL", raising=False)
-    monkeypatch.setenv("LITELLM_API_KEY", "k")
-    monkeypatch.delenv("LITELLM_PROXY_KEY", raising=False)
-
-    class _Resp:
-        def raise_for_status(self) -> None:
-            pass
-
-        def json(self) -> Any:
-            return {"choices": [{"message": {"content": "out"}}]}
-
-    class _Client:
-        def __init__(self, *a: Any, **kw: Any) -> None: ...
-        async def __aenter__(self) -> _Client:
-            return self
-
-        async def __aexit__(self, *a: Any) -> None: ...
-        async def post(self, url: str, *, json: Any, headers: Any) -> _Resp:
-            return _Resp()
-
-    monkeypatch.setattr(httpx, "AsyncClient", _Client)
-
-    def broken_hook(data: dict, response: Any) -> None:
-        raise RuntimeError("recording hook blew up")
-
-    fn = _build_llm_call(broken_hook)
-    out = await fn([{"role": "user", "content": "hi"}], model="picked-model")
-    assert out == "out"
-
-
-async def test_build_llm_call_uses_default_model_when_kwarg_missing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Without model kwarg, falls back to CHAT_DEFAULT_MODEL env var."""
-    import httpx
-    from services.graph_runner import _build_llm_call
-
-    monkeypatch.setenv("LITELLM_API_BASE", "http://x")
-    monkeypatch.delenv("LITELLM_PROXY_URL", raising=False)
-    monkeypatch.setenv("LITELLM_API_KEY", "k")
-    monkeypatch.delenv("LITELLM_PROXY_KEY", raising=False)
-    monkeypatch.setenv("CHAT_DEFAULT_MODEL", "the-default")
-
-    captured: dict[str, Any] = {}
-
-    class _Resp:
-        def raise_for_status(self) -> None:
-            pass
-
-        def json(self) -> Any:
-            return {"choices": [{"message": {"content": "ok"}}]}
-
-    class _Client:
-        def __init__(self, *a: Any, **kw: Any) -> None: ...
-        async def __aenter__(self) -> _Client:
-            return self
-
-        async def __aexit__(self, *a: Any) -> None: ...
-        async def post(self, url: str, *, json: Any, headers: Any) -> _Resp:
-            captured["model"] = json["model"]
-            return _Resp()
-
-    monkeypatch.setattr(httpx, "AsyncClient", _Client)
-    fn = _build_llm_call()
-    await fn([{"role": "user", "content": "hi"}])
-    assert captured["model"] == "the-default"
-
-
-async def test_build_llm_call_secret_str_api_key_path(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """When LITELLM_API_KEY is set, it is passed as Bearer token."""
-    import httpx
-    from services.graph_runner import _build_llm_call
-
-    monkeypatch.setenv("LITELLM_API_BASE", "http://x")
-    monkeypatch.delenv("LITELLM_PROXY_URL", raising=False)
-    monkeypatch.setenv("LITELLM_API_KEY", "from-secret")
-    monkeypatch.delenv("LITELLM_PROXY_KEY", raising=False)
-    monkeypatch.setenv("CHAT_DEFAULT_MODEL", "m")
-
-    captured: dict[str, Any] = {}
-
-    class _Resp:
-        def raise_for_status(self) -> None:
-            pass
-
-        def json(self) -> Any:
-            return {"choices": [{"message": {"content": "ok"}}]}
-
-    class _Client:
-        def __init__(self, *a: Any, **kw: Any) -> None: ...
-        async def __aenter__(self) -> _Client:
-            return self
-
-        async def __aexit__(self, *a: Any) -> None: ...
-        async def post(self, url: str, *, json: Any, headers: Any) -> _Resp:
-            captured["auth"] = headers.get("Authorization")
-            return _Resp()
-
-    monkeypatch.setattr(httpx, "AsyncClient", _Client)
-    fn = _build_llm_call()
-    await fn([{"role": "user", "content": "x"}])
-    assert captured["auth"] == "Bearer from-secret"
-
-
-async def test_build_llm_call_no_api_key_no_auth_header(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """If LITELLM_API_KEY is empty, Authorization header is 'Bearer '."""
-    import httpx
-    from services.graph_runner import _build_llm_call
-
-    monkeypatch.setenv("LITELLM_API_BASE", "http://x")
-    monkeypatch.delenv("LITELLM_PROXY_URL", raising=False)
-    monkeypatch.delenv("LITELLM_API_KEY", raising=False)
-    monkeypatch.delenv("LITELLM_PROXY_KEY", raising=False)
-    monkeypatch.setenv("CHAT_DEFAULT_MODEL", "m")
-
-    captured: dict[str, Any] = {}
-
-    class _Resp:
-        def raise_for_status(self) -> None:
-            pass
-
-        def json(self) -> Any:
-            return {"choices": [{"message": {"content": "ok"}}]}
-
-    class _Client:
-        def __init__(self, *a: Any, **kw: Any) -> None: ...
-        async def __aenter__(self) -> _Client:
-            return self
-
-        async def __aexit__(self, *a: Any) -> None: ...
-        async def post(self, url: str, *, json: Any, headers: Any) -> _Resp:
-            captured["headers"] = dict(headers)
-            return _Resp()
-
-    monkeypatch.setattr(httpx, "AsyncClient", _Client)
-    fn = _build_llm_call()
-    await fn([{"role": "user", "content": "x"}])
-    # With no API key set, raw_key is "" — header is still present but value is "Bearer "
-    assert captured["headers"].get("Authorization") == "Bearer "
+    fn = _build_llm_call(model_call=failed)
+    with pytest.raises(RuntimeError, match="provider failed"):
+        await fn([{"role": "user", "content": "hi"}])
 
 
 # --- execute_dag --------------------------------------------------------

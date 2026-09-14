@@ -22,9 +22,7 @@
     "services.chat_completion",
     "services.eval_bootstrap",
     "services.evolution",
-    "services.legacy_dag_node",
     "services.skill_optimizer",
-    "services.tool_executor",
     "services.ui_auto_climb",
     "services.ui_hill_climber"
   ]
