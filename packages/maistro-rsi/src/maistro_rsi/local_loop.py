@@ -44,12 +44,18 @@ from typing import Any
 
 import structlog
 
+from maistro.security.warden.detector import Warden
 from maistro_evolve._candidate_env import candidate_env
 from maistro_evolve.improvement import BudgetTier, ImprovementKind
 from maistro_rsi.competitors import Competitor
 from maistro_rsi.contained_validation import (
     ContainmentUnavailable,
     run_validation_in_container,
+)
+from maistro_rsi.harvest_boundary import (
+    HarvestCorrelation,
+    WardenGuardedCallable,
+    WardenHarvestBoundary,
 )
 from maistro_rsi.merge import greedy_merge
 from maistro_rsi.protocols import ApplyPatchFn, MicroVmSandbox
@@ -678,21 +684,33 @@ def make_builders_apply_patch(
         # 300s timeout: the code group load-balances across reasoning deployments
         # (gpt-oss-120b on Cerebras at 5 RPM) whose queueing + long generations
         # overran the default 120s in a live run (httpx.ReadTimeout).
-        runner.set_llm(
-            ResponsesAPICallable(
-                model=effective_model,
-                temperature=temperature,
-                reasoning_effort=reasoning_effort,
-                timeout=300.0,
-                prompt_cache=_prompt_cache_enabled(),
-            )
+        model_call = ResponsesAPICallable(
+            model=effective_model,
+            temperature=temperature,
+            reasoning_effort=reasoning_effort,
+            timeout=300.0,
+            prompt_cache=_prompt_cache_enabled(),
         )
+        # Tool results contain repository text and attacker-controlled filenames;
+        # this wrapper scans the exact transcript before every model call and
+        # refuses both a Warden block and an unavailable policy.
+        boundary = WardenHarvestBoundary(
+            Warden(),
+            correlation=HarvestCorrelation(candidate_id=effective_model),
+        )
+        system_content = system_prompt or config.system_prompt
+        system_admission = await boundary.scan({"system_prompt": system_content})
+        if not system_admission.admitted:
+            raise RuntimeError(
+                f"Warden did not admit RSI builder system context ({system_admission.outcome})"
+            )
+        runner.set_llm(WardenGuardedCallable(model_call, boundary, skip_system=True))
 
         # The genome's evolvable strategy prompt (when supplied) becomes the system
         # message; otherwise the builders default. The task (objective) is the user
         # message either way, so mutation tunes *approach*, not the task contract.
         messages: list[dict[str, object]] = [
-            {"role": "system", "content": system_prompt or config.system_prompt},
+            {"role": "system", "content": system_content},
             {"role": "user", "content": objective},
         ]
         for turn in range(max_agent_turns):
