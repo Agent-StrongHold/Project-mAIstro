@@ -29,8 +29,12 @@ pyjwt[crypto]>=2.10,<3
 # The backend imports maistro.identity through its auth wiring. The CI backend
 # suite uses the system interpreter after installing this file, so the core
 # identity extra must be restated here rather than relying on the uv workspace
-# environment (which already carries it).
-bip-utils>=2.9,<3
+# environment (which already carries it). These versions are the cp312/cp313
+# wheel set used by the shipped Python 3.13 image; update them with the image
+# import smoke test, not as an unlocked transitive refresh.
+bip-utils==2.12.1
+coincurve==21.0.0
+pynacl==1.6.2
 # Transitive consumers may otherwise resolve 1.1.x. Trivy blocks 1.1.2 for
 # GHSA-6v7p-g79w-8964; 1.2.1 is the first fixed release.
 msgpack>=1.2.1,<2

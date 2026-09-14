@@ -100,13 +100,11 @@ sqlite = [
 # BIP39/BIP32 HD root of trust for maistro.identity (ADR-021): Ed25519 signing
 # plus secp256k1 derivation for the BTC/ETH coin types.
 #
-# An extra rather than a base dependency, reluctantly. bip-utils requires
-# coincurve, a secp256k1 C extension whose newest release (21.0.0) publishes
-# wheels only for cp39-cp313 and whose sdist build is broken against the cffi
-# that Python 3.14 resolves. The API image's base (cgr.dev/chainguard/python,
-# Wolfi) is 3.14-only, so a base dependency here makes that image unbuildable.
-# maistro.identity raises an ImportError naming this extra when it is missing —
-# loud and actionable, not a silent fallback.
+# An extra rather than a base dependency, because downstream engine consumers
+# may not need cryptographic identity. The shipped Conductor profile pins
+# CPython 3.13 and coincurve 21.0.0, whose cp312/cp313 wheels are tested by the
+# image smoke test. maistro.identity raises an ImportError naming this extra
+# when it is missing — loud and actionable, not a silent fallback.
 identity = [
     "pynacl>=1.5,<2",
     "bip-utils>=2.9,<3",
