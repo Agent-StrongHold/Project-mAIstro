@@ -26,7 +26,8 @@ class _FakeWarden:
         self._flags = flags
         self.scanned: list[str] = []
 
-    async def scan(self, text: str, _surface: str) -> _Verdict:
+    async def scan(self, text: str, _surface: str, **kwargs: Any) -> _Verdict:
+        del kwargs
         self.scanned.append(text)
         return _Verdict(clean=self._clean, flags=self._flags)
 
