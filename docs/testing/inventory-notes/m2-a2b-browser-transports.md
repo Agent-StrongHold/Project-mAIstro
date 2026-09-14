@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +2
+  packages/hive-conductor/backend/tests: +2
 ---
 
 Adds two focused Conductor transport tests. The dashboard screenshot route is
