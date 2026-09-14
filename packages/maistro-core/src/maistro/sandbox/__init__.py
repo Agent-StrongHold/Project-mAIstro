@@ -31,7 +31,15 @@ from maistro.sandbox.policy import (
     floor_for_mode,
     tier_satisfies,
 )
-from maistro.sandbox.protocol import ExecResult, SandboxConfig, SandboxInstance, SandboxProtocol
+from maistro.sandbox.protocol import (
+    DEFAULT_OUTPUT_CAPTURE_BYTES,
+    MAX_OUTPUT_CAPTURE_BYTES,
+    OUTPUT_LIMIT_EXIT_CODE,
+    ExecResult,
+    SandboxConfig,
+    SandboxInstance,
+    SandboxProtocol,
+)
 from maistro.sandbox.selector import (
     NoSuitableBackendError,
     SandboxSelector,
@@ -43,9 +51,12 @@ __all__ = [
     "BENCHMARK_EVAL",
     "BROWSER_AUTOMATION",
     "CANDIDATE_BASE_ENV",
+    "DEFAULT_OUTPUT_CAPTURE_BYTES",
     "DENY_ALL",
     "DEV_ONLY",
+    "MAX_OUTPUT_CAPTURE_BYTES",
     "MODE_FLOORS",
+    "OUTPUT_LIMIT_EXIT_CODE",
     "TRUSTED_TOOL",
     "UNTRUSTED_CODE",
     "EgressGrant",
