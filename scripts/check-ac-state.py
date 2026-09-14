@@ -136,9 +136,7 @@ def _review_slack_policy(improvements: list[str]) -> list[str]:
 
     event = os.environ.get("GITHUB_EVENT_NAME")
     relaxes_slack = (
-        event == "merge_group"
-        or _canonical_develop_pr_ci()
-        or _canonical_topic_push_ci()
+        event == "merge_group" or _canonical_develop_pr_ci() or _canonical_topic_push_ci()
     )
     if not relaxes_slack:
         return _ORIGINAL_SLACK_POLICY(improvements)
