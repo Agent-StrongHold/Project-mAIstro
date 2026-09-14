@@ -63,6 +63,13 @@ def test_implemented_requires_an_executable_control_reference(
     assert any("no executable control reference" in error for error in errors)
 
 
+def test_test_refs_must_identify_test_modules(checker: ModuleType, registry: dict) -> None:
+    control = registry["controls"][0]
+    control["test_refs"] = ["scripts/release_guard.py"]
+    errors = checker.validate_registry(registry, today=dt.date(2026, 8, 25))
+    assert any("non-test executable reference" in error for error in errors)
+
+
 def test_failing_evidence_cannot_support_implemented(checker: ModuleType, registry: dict) -> None:
     control = registry["controls"][0]
     control["status"] = "implemented"

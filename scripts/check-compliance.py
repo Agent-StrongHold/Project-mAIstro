@@ -265,6 +265,18 @@ def _is_executable_ref(value: Any) -> bool:
     )
 
 
+def _is_test_ref(value: Any) -> bool:
+    """Accept only repository paths that identify a runnable test module."""
+    if not _is_executable_ref(value) or not isinstance(value, str):
+        return False
+    path = Path(value)
+    return (
+        path.suffix == ".py"
+        and path.name.startswith("test_")
+        and (value.startswith("tests/") or "/tests/" in value or value.startswith("formal/"))
+    )
+
+
 def validate_registry(  # noqa: C901 - this is the single fail-closed schema/evidence gate
     registry: Any,
     *,
@@ -339,6 +351,10 @@ def validate_registry(  # noqa: C901 - this is the single fail-closed schema/evi
             for ref in test_refs:
                 if not isinstance(ref, str) or not _local_ref_exists(ref, root):
                     errors.append(f"{where}.test_refs contains a missing reference: {ref!r}")
+                elif not _is_test_ref(ref):
+                    errors.append(
+                        f"{where}.test_refs contains a non-test executable reference: {ref!r}"
+                    )
         last_verified = _date(control["last_verified"], "last_verified", where, errors)
         expires = _date(control["expires"], "expires", where, errors)
         if last_verified is not None and last_verified > today:
@@ -483,7 +499,7 @@ def validate_registry(  # noqa: C901 - this is the single fail-closed schema/evi
                 errors.append(f"{ident} is implemented but has no executable test reference")
             if not any(_is_executable_ref(ref) for ref in control["control_refs"]):
                 errors.append(f"{ident} is implemented but has no executable control reference")
-            if not any(_is_executable_ref(ref) for ref in control["test_refs"]):
+            if not any(_is_test_ref(ref) for ref in control["test_refs"]):
                 errors.append(f"{ident} is implemented but has no executable test reference")
             if expires is not None and expires < today:
                 errors.append(f"{ident} is implemented but its evidence expiry has passed")
