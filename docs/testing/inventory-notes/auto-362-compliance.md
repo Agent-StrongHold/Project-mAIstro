@@ -1,11 +1,11 @@
 ---
 inventory-delta:
-  tests/: +20
+  tests/: +21
 ---
 
 # Issue #362 compliance registry gate
 
-Adds twenty root tests covering registry schema validation, explicit statuses,
-immutable evidence requirements, release-digest fail-closed behavior, disabled
-or stale evidence, GitHub artifact provenance, test-reference shape, and
-malformed or drifting COMPLIANCE.md table rows.
+Adds twenty-one root tests covering registry schema validation, explicit
+statuses, immutable evidence requirements, release-digest fail-closed behavior,
+disabled or stale evidence, evidence scope and GitHub artifact provenance,
+test-reference shape, and malformed or drifting COMPLIANCE.md table rows.

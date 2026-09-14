@@ -70,12 +70,37 @@ def test_test_refs_must_identify_test_modules(checker: ModuleType, registry: dic
     assert any("non-test executable reference" in error for error in errors)
 
 
+def test_evidence_scope_must_match_control_id(checker: ModuleType, registry: dict) -> None:
+    control = registry["controls"][0]
+    control["evidence"] = [
+        {
+            "url": "https://example.invalid/evidence/1",
+            "control_id": "OTHER-CONTROL",
+            "control_refs": control["control_refs"],
+            "test_refs": control["test_refs"],
+            "sha256": "a" * 64,
+            "release_digest": "b" * 40,
+            "observed_at": "2026-08-25",
+            "result": "passed",
+            "workflow_ref": ".github/workflows/ci.yml",
+            "workflow_enabled": True,
+            "manual_only": False,
+            "ran": True,
+        }
+    ]
+    errors = checker.validate_registry(registry, today=dt.date(2026, 8, 25))
+    assert any("control_id does not match control ID" in error for error in errors)
+
+
 def test_failing_evidence_cannot_support_implemented(checker: ModuleType, registry: dict) -> None:
     control = registry["controls"][0]
     control["status"] = "implemented"
     control["evidence"] = [
         {
             "url": "https://example.invalid/evidence/1",
+            "control_id": control["id"],
+            "control_refs": control["control_refs"],
+            "test_refs": control["test_refs"],
             "sha256": "a" * 64,
             "release_digest": "b" * 40,
             "observed_at": "2026-08-25",
@@ -105,6 +130,9 @@ def test_disabled_workflow_evidence_cannot_be_green(checker: ModuleType, registr
     control["evidence"] = [
         {
             "url": "https://example.invalid/evidence/1",
+            "control_id": control["id"],
+            "control_refs": control["control_refs"],
+            "test_refs": control["test_refs"],
             "sha256": "a" * 64,
             "release_digest": digest,
             "observed_at": "2026-08-25",
@@ -128,6 +156,9 @@ def test_expired_implemented_evidence_fails(checker: ModuleType, registry: dict)
     control["evidence"] = [
         {
             "url": "https://example.invalid/evidence/1",
+            "control_id": control["id"],
+            "control_refs": control["control_refs"],
+            "test_refs": control["test_refs"],
             "sha256": "a" * 64,
             "release_digest": digest,
             "observed_at": "2026-08-20",
@@ -176,6 +207,9 @@ def test_forged_disabled_stale_evidence_fails_closed(checker: ModuleType, regist
     control["evidence"] = [
         {
             "url": "https://example.invalid/evidence/1",
+            "control_id": control["id"],
+            "control_refs": control["control_refs"],
+            "test_refs": control["test_refs"],
             "sha256": "a" * 64,
             "release_digest": digest,
             "observed_at": "2000-01-01",
@@ -199,6 +233,9 @@ def test_evidence_schema_requires_immutable_http_link(checker: ModuleType, regis
     control["evidence"] = [
         {
             "url": "./mutable-log.txt",
+            "control_id": control["id"],
+            "control_refs": control["control_refs"],
+            "test_refs": control["test_refs"],
             "sha256": "a" * 64,
             "release_digest": "b" * 40,
             "observed_at": "2026-08-25",
@@ -226,6 +263,9 @@ def test_green_artifact_must_match_github_provenance(
     control["evidence"] = [
         {
             "url": "https://github.com/Agent-StrongHold/Project-mAIstro/actions/runs/123/artifacts/456",
+            "control_id": control["id"],
+            "control_refs": control["control_refs"],
+            "test_refs": control["test_refs"],
             "sha256": "a" * 64,
             "release_digest": digest,
             "observed_at": "2026-08-25",
@@ -267,6 +307,9 @@ def test_forged_artifact_digest_cannot_support_green(
     control["evidence"] = [
         {
             "url": "https://github.com/Agent-StrongHold/Project-mAIstro/actions/runs/123/artifacts/456",
+            "control_id": control["id"],
+            "control_refs": control["control_refs"],
+            "test_refs": control["test_refs"],
             "sha256": "a" * 64,
             "release_digest": digest,
             "observed_at": "2026-08-25",
@@ -307,6 +350,9 @@ def test_green_run_link_is_not_artifact_evidence(checker: ModuleType, registry: 
     control["evidence"] = [
         {
             "url": "https://github.com/Agent-StrongHold/Project-mAIstro/actions/runs/123",
+            "control_id": control["id"],
+            "control_refs": control["control_refs"],
+            "test_refs": control["test_refs"],
             "sha256": "a" * 64,
             "release_digest": digest,
             "observed_at": "2026-08-25",

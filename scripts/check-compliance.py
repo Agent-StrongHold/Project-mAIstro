@@ -66,6 +66,9 @@ REQUIRED_EVIDENCE_FIELDS = frozenset(
         "url",
         "sha256",
         "release_digest",
+        "control_id",
+        "control_refs",
+        "test_refs",
         "observed_at",
         "result",
         "workflow_ref",
@@ -388,6 +391,14 @@ def validate_registry(  # noqa: C901 - this is the single fail-closed schema/evi
                         f"{evidence_where} is missing fields: {', '.join(sorted(evidence_missing))}"
                     )
                     continue
+                if item["control_id"] != ident:
+                    errors.append(f"{evidence_where}.control_id does not match control ID {ident}")
+                for field in ("control_refs", "test_refs"):
+                    refs = item[field]
+                    if not isinstance(refs, list) or not all(isinstance(ref, str) for ref in refs):
+                        errors.append(f"{evidence_where}.{field} must be a list of strings")
+                    elif refs != control[field]:
+                        errors.append(f"{evidence_where}.{field} is not bound to control {ident}")
                 if not isinstance(item["url"], str) or not _is_immutable_evidence_link(item["url"]):
                     errors.append(
                         f"{evidence_where}.url must be an immutable GitHub Actions run or artifact link"
