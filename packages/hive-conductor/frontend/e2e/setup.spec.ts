@@ -50,6 +50,40 @@ test.describe("Setup Wizard", () => {
     await expect(page.locator("text=Confirm configuration")).toBeVisible();
   });
 
+  test("does not offer crypto identity when the runtime is unavailable", async ({ page }) => {
+    await page.route("**/health", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ identity: { status: "unavailable", reason: "identity_runtime_missing" } }),
+    }));
+    await page.goto("/");
+    await page.locator('input[placeholder="Hive Conductor"]').fill("Test Hive");
+    await page.locator("button", { hasText: "next" }).click();
+    await page.locator("text=Beast").click();
+    await page.locator("button", { hasText: "next" }).click();
+
+    const cryptoCard = page.locator(".card").filter({ hasText: "Crypto Identity" });
+    await expect(cryptoCard).toContainText("unavailable in this deployment; no action offered");
+    await expect(cryptoCard.getByRole("button", { name: "Toggle Crypto Identity" })).toBeDisabled();
+  });
+
+  test("does not offer crypto identity when the deployment is misconfigured", async ({ page }) => {
+    await page.route("**/health", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ identity: { status: "misconfigured", reason: "identity_seed_missing" } }),
+    }));
+    await page.goto("/");
+    await page.locator('input[placeholder="Hive Conductor"]').fill("Test Hive");
+    await page.locator("button", { hasText: "next" }).click();
+    await page.locator("text=Beast").click();
+    await page.locator("button", { hasText: "next" }).click();
+
+    const cryptoCard = page.locator(".card").filter({ hasText: "Crypto Identity" });
+    await expect(cryptoCard).toContainText("unavailable in this deployment; no action offered");
+    await expect(cryptoCard.getByRole("button", { name: "Toggle Crypto Identity" })).toBeDisabled();
+  });
+
   test("can complete setup and unlock the hive", async ({ page }) => {
     await page.goto("/");
     await page.locator('input[placeholder="Hive Conductor"]').fill("Test Hive");

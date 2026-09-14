@@ -12,4 +12,7 @@ DID-mismatched roots, missing records, and unavailable vaults are all
 misconfigured. The existing API health tests also assert that identity status is
 exposed on both liveness and readiness without making optional identity an
 outage before setup. Setup still refuses to create accounts when identity
-persistence fails.
+persistence fails. Browser coverage now verifies that unavailable and
+misconfigured health responses disable the Crypto Identity action. Security CI
+builds and imports both the default and documented observability image
+profiles.

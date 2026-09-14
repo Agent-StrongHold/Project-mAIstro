@@ -404,7 +404,13 @@ export default function Setup() {
                       {m.requires.length > 0 && <div style={{ fontFamily: "var(--mono)", fontSize: 8, color: "var(--pencil)", marginTop: 2 }}>requires: {m.requires.join(", ")}</div>}
                       {identityUnavailable && <div style={{ fontFamily: "var(--mono)", fontSize: 8, color: "var(--danger)", marginTop: 2 }}>{identityStatus === "checking" ? "checking deployment support; action unavailable" : "unavailable in this deployment; no action offered"}</div>}
                     </div>
-                    <div className={`toggle${enabled ? " on" : ""}`} onClick={() => { if (!identityUnavailable && (depsMet || enabled)) setModules(enabled ? modules.filter((x) => x !== m.id) : [...modules, m.id]); }} />
+                    <button
+                      type="button"
+                      className={`toggle${enabled ? " on" : ""}`}
+                      aria-label={`Toggle ${m.name}`}
+                      disabled={identityUnavailable || !(depsMet || enabled)}
+                      onClick={() => setModules(enabled ? modules.filter((x) => x !== m.id) : [...modules, m.id])}
+                    />
                   </div>
                 );
               })}
