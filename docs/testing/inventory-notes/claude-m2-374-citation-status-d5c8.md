@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +34
+  tests/: +36
 ---
 # claude-m2-374-citation-status
 
@@ -31,13 +31,16 @@ supersession self-contradictory.
 *Supersession chains.* A Superseded citation names its active replacement, so
 the error does the lookup rather than reporting only that the target is
 Superseded. Chains are followed to their active end and reported where they
-actually broke, not at the citation three links away. A cycle is reported
-rather than looped — bounded by a seen-set, because a cycle has no depth at
-which it becomes legitimate. Two live claimants to one superseded decision is
-a fork nobody can follow, and fails. The same-status case is covered too:
-two Accepted (or two Implemented) replacements are still contradictory, rather
-than being collapsed into one set member. The source-status matrix exercises
-every lifecycle state, not just the representative Proposed case.
+actually broke, not at the citation three links away. Every supersession branch
+is traversed, including branches hidden behind an immediate active replacement.
+A cycle is reported rather than looped — bounded by a path set, because a cycle
+has no depth at which it becomes legitimate. Two live claimants to one
+superseded decision is a fork nobody can follow, and fails. The same-status case
+is covered too: two Accepted (or two Implemented) replacements are still
+contradictory, rather than being collapsed into one set member. A transition
+test confirms that a replacement remains invalid while Proposed and becomes the
+named active replacement only after Accepted. The source-status matrix
+exercises every lifecycle state, not just the representative Proposed case.
 
 *One defect, one voice.* A citation to a document that does not exist is left
 to `linker.check_links`, which already reports dangling references.

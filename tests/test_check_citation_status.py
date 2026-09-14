@@ -247,6 +247,41 @@ def test_contradictory_active_replacements_are_refused() -> None:
     assert "more than one active replacement" in problems[0].reason
 
 
+def test_all_supersession_branches_are_checked_for_contradictory_authority() -> None:
+    """An immediate active replacement must not hide an active grandchild."""
+    forked = _doc(
+        "ADR-002",
+        Status.SUPERSEDED,
+        superseded_by=[_ref("ADR-003"), _ref("ADR-004")],
+    )
+    direct = _doc("ADR-003", Status.ACCEPTED)
+    indirect = _doc("ADR-004", Status.SUPERSEDED, superseded_by=[_ref("ADR-005")])
+    grandchild = _doc("ADR-005", Status.ACCEPTED)
+    source = _doc("ADR-001", Status.ACCEPTED, substrate=[_ref("ADR-002")])
+
+    problems = check_citations([source, forked, direct, indirect, grandchild])
+
+    assert len(problems) == 1
+    assert "more than one active replacement" in problems[0].reason
+    assert "ADR-003" in problems[0].reason
+    assert "ADR-005" in problems[0].reason
+
+
+def test_supersession_transition_requires_the_new_active_replacement() -> None:
+    """A replacement is invalid while Proposed and valid once Accepted."""
+    superseded = _doc("ADR-002", Status.SUPERSEDED, superseded_by=[_ref("ADR-003")])
+    proposed = _doc("ADR-003", Status.PROPOSED)
+    source = _doc("ADR-001", Status.ACCEPTED, substrate=[_ref("ADR-002")])
+
+    before = check_citations([source, superseded, proposed])
+    after = check_citations([source, superseded, _doc("ADR-003", Status.ACCEPTED)])
+
+    assert len(before) == 1
+    assert "Proposed" in before[0].reason
+    assert after[0].target == _ref("ADR-002")
+    assert "ADR-003" in after[0].reason
+
+
 def test_a_citation_to_a_document_that_does_not_exist_is_left_to_the_linker() -> None:
     """One defect, one voice. `linker.check_links` already reports dangling
     references, and reporting them here too would double every such finding."""

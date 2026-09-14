@@ -75,67 +75,81 @@ def _index(front_matters: list[FrontMatter]) -> dict[str, FrontMatter]:
     return {f"{fm.repo.value}#{fm.id}": fm for fm in front_matters}
 
 
-def _next_in_chain(
-    current: FrontMatter, key: str, index: dict[str, FrontMatter]
-) -> tuple[FrontMatter | None, str | None]:
-    """Find the one replacement that can carry forward the authority.
+def _walk_replacement(
+    current: FrontMatter,
+    path: tuple[str, ...],
+    index: dict[str, FrontMatter],
+    cache: dict[str, tuple[dict[str, FrontMatter], tuple[str, ...]]],
+) -> tuple[dict[str, FrontMatter], tuple[str, ...]]:
+    """Collect active endpoints and broken links from one supersession branch."""
+    key = f"{current.repo.value}#{current.id}"
+    if key in path:
+        return {}, (f"supersession chain cycles at {key}",)
+    if key in cache:
+        return cache[key]
 
-    A supersession must not silently choose one of two live replacements. The
-    status set is not enough to detect that fork: two Accepted documents (or
-    two Implemented documents) are still two contradictory authorities.
-    """
+    if current.status in ACTIVE_AUTHORITY_STATUSES:
+        result = ({key: current}, ())
+        cache[key] = result
+        return result
+    if current.status is not Status.SUPERSEDED:
+        result = ({}, (f"chain ends at {key}, which is {current.status.value}",))
+        cache[key] = result
+        return result
+
     successors = list(dict.fromkeys(current.superseded_by))
     if not successors:
-        return None, f"{key} is Superseded but names no replacement"
+        result = ({}, (f"{key} is Superseded but names no replacement",))
+        cache[key] = result
+        return result
 
-    resolved = [index[ref] for ref in successors if ref in index]
-    active = [
-        replacement for replacement in resolved if replacement.status in ACTIVE_AUTHORITY_STATUSES
-    ]
-    if len(active) > 1:
-        return None, f"{key} names more than one active replacement: {successors}"
-    if active:
-        return active[0], None
+    authorities: dict[str, FrontMatter] = {}
+    problems: list[str] = []
+    next_path = (*path, key)
+    for successor in successors:
+        replacement = index.get(successor)
+        if replacement is None:
+            problems.append(f"{key} names replacement {successor} which does not exist")
+            continue
+        branch_authorities, branch_problems = _walk_replacement(
+            replacement, next_path, index, cache
+        )
+        authorities.update(branch_authorities)
+        problems.extend(branch_problems)
 
-    if len(resolved) > 1:
-        return None, f"{key} names multiple replacements with no active authority: {successors}"
-
-    nxt = index.get(successors[0])
-    if nxt is None:
-        return None, f"{key} names replacement {successors[0]} which does not exist"
-    return nxt, None
+    result = (authorities, tuple(dict.fromkeys(problems)))
+    cache[key] = result
+    return result
 
 
 def _replacement_chain(
     start: FrontMatter, index: dict[str, FrontMatter]
 ) -> tuple[FrontMatter | None, str | None]:
-    """Walk `superseded-by` to the document that now holds the authority.
+    """Resolve every supersession branch to its active authority.
 
-    Returns `(active_replacement, problem)`; exactly one is not `None`.
-
-    The walk is bounded by a seen-set rather than a depth limit because the
-    failure it guards against is a cycle — A superseded by B superseded by A —
-    and a cycle has no depth at which it becomes legitimate. A chain that ends
-    somewhere inactive is reported at its end, not at its start, so the reader
-    is told which link actually broke.
+    A supersession can have more than one successor, and each successor can in
+    turn branch again. Walking only the first active successor would hide a
+    contradictory authority on another branch (or hide a cycle behind it), so
+    this is a graph walk rather than a single-chain lookup. Converging branches
+    are deduplicated by document identity; two distinct active endpoints remain
+    contradictory even when their statuses match.
     """
-    seen: set[str] = set()
-    current = start
-    while True:
-        key = f"{current.repo.value}#{current.id}"
-        if key in seen:
-            return None, f"supersession chain cycles at {key}"
-        seen.add(key)
-
-        if current.status in ACTIVE_AUTHORITY_STATUSES:
-            return current, None
-        if current.status is not Status.SUPERSEDED:
-            return None, f"chain ends at {key}, which is {current.status.value}"
-
-        nxt, problem = _next_in_chain(current, key, index)
-        if nxt is None:
-            return None, problem
-        current = nxt
+    # Cache completed subgraphs so a shared successor is traversed once. The
+    # path tuple is still checked before the cache: a back-edge is a cycle only
+    # when it returns to the current recursion path.
+    cache: dict[str, tuple[dict[str, FrontMatter], tuple[str, ...]]] = {}
+    key = f"{start.repo.value}#{start.id}"
+    authorities, problems = _walk_replacement(start, (), index, cache)
+    if len(authorities) > 1:
+        replacements = sorted(authorities)
+        return None, f"{key} names more than one active replacement: {replacements}"
+    if problems:
+        return None, "; ".join(problems)
+    if authorities:
+        return next(iter(authorities.values())), None
+    # The walk can only reach this state if the status vocabulary changes
+    # without adding a terminal outcome; keep the checker fail-closed.
+    return None, f"{key} has no active replacement"
 
 
 def check_citations(front_matters: list[FrontMatter]) -> list[CitationProblem]:
