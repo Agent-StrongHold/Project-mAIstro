@@ -147,19 +147,29 @@ def scan_and_record(
     banish_list: InMemoryTrustBanishList | None = None,
     review_queue: InMemoryTrustReviewQueue | None = None,
 ) -> TrustTier:
-    """Run a lightweight pre-scan (banish list + simple heuristics) and enqueue review.
+    """Pre-scan content and enqueue the same trust classification used by callers.
 
-    Returns the assigned TrustTier (T3 or SKULL).
-    Full Warden integration (4-layer pipeline) is wired when Warden is injected into
-    DesignEngine; this function handles the pre-scan path.
+    Visual markup is checked before an admin recommendation is produced. The
+    browser-side renderer remains the final sink, but active elements, handlers,
+    dangerous URLs, and CSS/network primitives must never receive an ``upgrade``
+    recommendation merely because this queue cannot build a DOM.
     """
+    from maistro_design.scan import scan_blocking_patterns, scan_visual_artifact_markup
+
+    flags_list: list[str] = []
     if banish_list and banish_list.is_banned(content):
+        flags_list.append("banish_list_match")
+
+    # Use the shared visual reason vocabulary first, then retain the existing
+    # general prompt/script heuristics for non-visual discovery content.
+    flags_list.extend(scan_visual_artifact_markup(content))
+    flags_list.extend(scan_blocking_patterns(source_key, content, banish_list=None))
+    flags = tuple(dict.fromkeys(flags_list))
+    if flags:
         tier = TrustTier.SKULL
-        flags: tuple[str, ...] = ("banish_list_match",)
         confidence = 1.0
     else:
         tier = TrustTier.T3
-        flags = ()
         confidence = 0.0
 
     if review_queue is not None:

@@ -2,6 +2,7 @@ import { useCallback, useState, type ClipboardEvent, type DragEvent } from "reac
 import {
   createSanitizedVisualArtifactFragment,
   escapeVisualArtifactText,
+  recommendVisualArtifactTrust,
   SanitizedVisualArtifact,
   sanitizeVisualArtifactMarkup,
 } from "../lib/visualArtifactRenderer";
@@ -60,12 +61,15 @@ export default function FixedPageArtifactEditor({
   initialMarkup,
   onMarkupChange,
 }: FixedPageArtifactEditorProps) {
-  const [markup, setMarkup] = useState(() =>
-    sanitizeVisualArtifactMarkup(initialMarkup ?? DEFAULT_MARKUP[mode]),
+  const sourceMarkup = initialMarkup ?? DEFAULT_MARKUP[mode];
+  const [markup, setMarkup] = useState(() => sanitizeVisualArtifactMarkup(sourceMarkup));
+  const [trustRecommendation, setTrustRecommendation] = useState(() =>
+    recommendVisualArtifactTrust(sourceMarkup),
   );
 
   const commitMarkup = useCallback(
     (nextMarkup: string) => {
+      setTrustRecommendation(recommendVisualArtifactTrust(nextMarkup));
       const safeMarkup = sanitizeVisualArtifactMarkup(nextMarkup);
       setMarkup(safeMarkup);
       onMarkupChange?.(safeMarkup);
@@ -120,7 +124,11 @@ export default function FixedPageArtifactEditor({
   };
 
   return (
-    <section aria-label={`${MODE_LABELS[mode]} editor`} data-testid="fixed-page-editor">
+    <section
+      aria-label={`${MODE_LABELS[mode]} editor`}
+      data-testid="fixed-page-editor"
+      data-trust-recommendation={trustRecommendation}
+    >
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 8 }}>
         <div>
           <strong>{MODE_LABELS[mode]} preview</strong>

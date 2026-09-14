@@ -19,7 +19,9 @@ DOM, presented, or exported. The boundary is
   `VISUAL_ARTIFACT_BLOCK_REASONS` vocabulary for trust/pre-scan consumers.
   `recommendVisualArtifactTrust` applies that result and returns `review` for
   blocked content, never `upgrade`; it is advisory and not an authorization
-  grant.
+  grant. The `maistro-design` pre-scan uses the same four visual blocking
+  reason names when creating trust-review records, so the admin recommendation
+  cannot upgrade markup the browser boundary blocks.
 
 The allowlist retains typography, layout, gradients, and inert SVG geometry.
 It rejects scripts, handlers, forms, links/navigation, images and other active

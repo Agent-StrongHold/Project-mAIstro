@@ -218,6 +218,28 @@ test("Deck is a contained Design Studio mode, not a route escape", async () => {
   await expect(page).toHaveURL(/\/cli\/canvas$/);
 });
 
+test("fixed-page artifacts rehydrate through the shared boundary", async () => {
+  await page.evaluate(() => {
+    window.localStorage.setItem(
+      "hive_design_studio_fixed_page_artifacts",
+      JSON.stringify({
+        poster: '<h1>Persisted safely</h1><script>window.__designPwned=1</script><img src="http://attacker.invalid/persisted">',
+      }),
+    );
+  });
+
+  await page.goto("/cli/canvas", { waitUntil: "domcontentloaded" });
+  const editor = page.getByTestId("fixed-page-editor");
+  const preview = editor.locator('[contenteditable="true"]');
+  await expect(preview).toContainText("Persisted safely");
+  await expect(preview.locator("script, img, iframe, foreignObject")).toHaveCount(0);
+  await expect(editor).toHaveAttribute("data-trust-recommendation", "review");
+  expect(await page.evaluate(() => window.localStorage.getItem("hive_design_studio_fixed_page_artifacts"))).not.toContain("<script>");
+
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(preview.locator("script, img, iframe, foreignObject")).toHaveCount(0);
+});
+
 test("Design Studio reports optional design-system catalog degradation without hiding usable resources", async () => {
   await page.unroute("**/v1/design/systems");
   await page.route("**/v1/design/systems", async (route) => {

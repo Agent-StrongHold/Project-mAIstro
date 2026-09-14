@@ -8,6 +8,7 @@ generated HTML/SVG/JS/CSS carries the session's contaminated trust tier (ADR-062
 
 from __future__ import annotations
 
+import html
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -43,6 +44,26 @@ _PROMPT_INJECTION_PATTERNS: tuple[re.Pattern[str], ...] = (
 _URL_RE = re.compile(r"https?://[^\s\"'<>)]+")
 _BASE64_RE = re.compile(r"[A-Za-z0-9+/]{200,}={0,2}")
 
+# Keep these reason names in sync with the frontend visual-artifact boundary.
+# This is deliberately conservative: trust recommendations must not upgrade
+# content that the browser renderer will remove or neutralize.
+VISUAL_ARTIFACT_BLOCK_REASONS: tuple[str, ...] = (
+    "active-element",
+    "event-handler",
+    "dangerous-url",
+    "css-network-or-code",
+)
+_VISUAL_ACTIVE_ELEMENT_RE = re.compile(
+    r"<\s*/?\s*(?:script|iframe|form|img|object|embed|link|base|foreignobject|use|image|meta|style|input|button|video|audio|source|track|textarea|select|option|a|animate|set|mpath)\b",
+    re.IGNORECASE,
+)
+_VISUAL_EVENT_HANDLER_RE = re.compile(r"<[^>]*\bon[a-z][a-z0-9:-]*\s*=", re.IGNORECASE | re.DOTALL)
+_VISUAL_DANGEROUS_URL_RE = re.compile(r"(?:javascript|vbscript|data)\s*:", re.IGNORECASE)
+_VISUAL_CSS_NETWORK_RE = re.compile(
+    r"(?:url\s*\(|image-set\s*\(|cross-fade\s*\(|element\s*\(|paint\s*\(|expression\s*\(|@import|behavior\s*:|-moz-binding|var\s*\(|env\s*\()",
+    re.IGNORECASE,
+)
+
 # Documentation/font-CDN links that are expected to appear in design-system prose.
 DEFAULT_URL_ALLOWLIST: tuple[str, ...] = (
     "https://fonts.googleapis.com",
@@ -65,6 +86,28 @@ class ScanReport:
     passed: bool
     blocking_flags: tuple[str, ...] = ()
     external_urls: tuple[str, ...] = ()
+
+
+def scan_visual_artifact_markup(content: str) -> tuple[str, ...]:
+    """Return shared blocking reasons for HTML/SVG visual-artifact content.
+
+    The frontend performs the authoritative DOM allowlist operation. This
+    pre-scan intentionally only recommends trust when this conservative lexical
+    check sees no construct that boundary blocks. Entity decoding mirrors the
+    browser parser for encoded schemes and handler names.
+    """
+    normalized = html.unescape(content)
+    reasons: list[str] = []
+    checks = (
+        ("active-element", _VISUAL_ACTIVE_ELEMENT_RE),
+        ("event-handler", _VISUAL_EVENT_HANDLER_RE),
+        ("dangerous-url", _VISUAL_DANGEROUS_URL_RE),
+        ("css-network-or-code", _VISUAL_CSS_NETWORK_RE),
+    )
+    for reason, pattern in checks:
+        if pattern.search(normalized):
+            reasons.append(reason)
+    return tuple(reasons)
 
 
 def scan_blocking_patterns(
@@ -123,6 +166,8 @@ def scan_design_output(
     for address, node in output.root.walk():
         if isinstance(node.value, str):
             blocking.extend(scan_blocking_patterns(address, node.value, banish_list))
+            for reason in scan_visual_artifact_markup(node.value):
+                blocking.append(f"{address}: visual artifact {reason}")
             external_urls.update(find_external_urls(node.value, url_allowlist))
 
     return ScanReport(

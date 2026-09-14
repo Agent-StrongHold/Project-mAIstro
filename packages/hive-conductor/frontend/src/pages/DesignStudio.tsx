@@ -1,9 +1,21 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { PageHeader } from "../components/shared";
 import { apiGet } from "../lib/api";
 import FixedPageArtifactEditor, { type FixedPageMode } from "./FixedPageArtifactEditor";
+import { sanitizeVisualArtifactMarkup } from "../lib/visualArtifactRenderer";
 
 type ArtifactModeId = "deck" | FixedPageMode;
+
+const FIXED_PAGE_MODES: FixedPageMode[] = [
+  "poster",
+  "infographic",
+  "flyer",
+  "social",
+  "card",
+  "cover",
+  "diagram",
+  "custom",
+];
 
 type ArtifactMode = {
   id: ArtifactModeId;
@@ -96,9 +108,45 @@ function resourceSummary(skillCount: number, systemCount: number): string {
   return `${skillCount} design skill${skillCount === 1 ? "" : "s"} and ${systemCount} design system${systemCount === 1 ? "" : "s"} available.`;
 }
 
+const FIXED_PAGE_STORAGE_KEY = "hive_design_studio_fixed_page_artifacts";
+
+function loadPersistedArtifacts(): Partial<Record<FixedPageMode, string>> {
+  if (typeof window === "undefined") return {};
+
+  try {
+    const raw = window.localStorage.getItem(FIXED_PAGE_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+
+    const stored = parsed as Record<string, unknown>;
+    const migrated = { ...stored };
+    let changed = false;
+    const restored: Partial<Record<FixedPageMode, string>> = {};
+    for (const mode of FIXED_PAGE_MODES) {
+      const value = stored[mode];
+      if (typeof value !== "string") continue;
+      const safeValue = sanitizeVisualArtifactMarkup(value);
+      // The editor sanitizes before its first DOM render, while retaining the
+      // raw source long enough for the trust recommendation to say "review".
+      restored[mode] = value;
+      if (safeValue !== value) {
+        migrated[mode] = safeValue;
+        changed = true;
+      }
+    }
+    // Migrate old persisted content so later readers never receive raw markup.
+    if (changed) window.localStorage.setItem(FIXED_PAGE_STORAGE_KEY, JSON.stringify(migrated));
+    return restored;
+  } catch {
+    return {};
+  }
+}
+
 export default function DesignStudio() {
   const [selectedMode, setSelectedMode] = useState<ArtifactModeId>("poster");
   const [prompt, setPrompt] = useState("");
+  const [artifactMarkup, setArtifactMarkup] = useState<Partial<Record<FixedPageMode, string>>>(loadPersistedArtifacts);
   const [catalog, setCatalog] = useState<CatalogState>({
     status: "loading",
     skills: [],
@@ -160,6 +208,16 @@ export default function DesignStudio() {
 
   const mode = ARTIFACT_MODES.find((candidate) => candidate.id === selectedMode) ?? ARTIFACT_MODES[0];
   const catalogBorder = catalog.status === "ready" ? "var(--ok, #5a9a4a)" : catalog.status === "loading" ? "var(--rule)" : "var(--danger, #c4452a)";
+  const persistArtifactMarkup = useCallback((fixedMode: FixedPageMode, markup: string) => {
+    const safeMarkup = sanitizeVisualArtifactMarkup(markup);
+    setArtifactMarkup((current) => ({ ...current, [fixedMode]: safeMarkup }));
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(FIXED_PAGE_STORAGE_KEY) ?? "{}");
+      window.localStorage.setItem(FIXED_PAGE_STORAGE_KEY, JSON.stringify({ ...stored, [fixedMode]: safeMarkup }));
+    } catch {
+      // Browser storage can be unavailable; the in-memory editor remains usable.
+    }
+  }, []);
 
   return (
     <div>
@@ -265,6 +323,8 @@ export default function DesignStudio() {
             <FixedPageArtifactEditor
               key={selectedMode}
               mode={selectedMode}
+              initialMarkup={artifactMarkup[selectedMode]}
+              onMarkupChange={(markup) => persistArtifactMarkup(selectedMode, markup)}
             />
           </div>
         )}
@@ -302,15 +362,17 @@ export default function DesignStudio() {
             },
             {
               label: "Edit + preview",
-              state: selectedMode === "deck" ? "temporarily unavailable" : "not yet available",
+              state: selectedMode === "deck" ? "temporarily unavailable" : "available",
               detail: selectedMode === "deck"
                 ? "Deck editing stays closed until its secure rendering path is enabled."
-                : "The fixed-page editor will use the same Design Studio project and artifact state.",
+                : "Loaded and edited fixed-page content is sanitized before preview and retained in this browser.",
             },
             {
               label: "Publish + export",
-              state: "not yet available",
-              detail: "Export will become available with the durable editor and artifact pipeline.",
+              state: selectedMode === "deck" ? "temporarily unavailable" : "partially available",
+              detail: selectedMode === "deck"
+                ? "Deck export stays closed until its secure rendering path is enabled."
+                : "HTML export is available for fixed pages; publishing to a shared project is not connected yet.",
             },
           ].map((step) => (
             <div key={step.label} role="listitem" style={{ border: "1px solid var(--rule)", borderRadius: 6, padding: "9px 10px" }}>

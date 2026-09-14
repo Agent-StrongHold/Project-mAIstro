@@ -43,6 +43,24 @@ class TestScanDesignOutput:
         assert not report.passed
         assert any("script pattern" in f for f in report.blocking_flags)
 
+    @pytest.mark.parametrize(
+        ("markup", "reason"),
+        [
+            ('<div onclick="alert(1)">handler</div>', "event-handler"),
+            ('<img src="data:text/html,<script>pwn()</script>">', "active-element"),
+            (
+                '<div style="background:url(https://attacker.invalid/x)">network</div>',
+                "css-network-or-code",
+            ),
+        ],
+    )
+    def test_visual_markup_primitives_are_blocking(self, markup: str, reason: str):
+        from maistro_design.scan import scan_design_output
+
+        report = scan_design_output(_file_output(markup))
+        assert not report.passed
+        assert any(f"visual artifact {reason}" in f for f in report.blocking_flags)
+
     @pytest.mark.contract("behavioral")
     @pytest.mark.scope("unit")
     @pytest.mark.ac("ADR-062326-702b/AC-4")
@@ -124,6 +142,54 @@ class TestScanDesignOutput:
 
     @pytest.mark.contract("behavioral")
     @pytest.mark.scope("integration")
+    def test_visual_trust_prescan_blocks_the_renderer_hostile_corpus(self):
+        """The admin recommendation cannot upgrade markup the browser boundary blocks."""
+        from maistro_design.trust import InMemoryTrustReviewQueue, scan_and_record
+
+        hostile = (
+            '<div onclick="alert(1)">handler</div>'
+            '<svg><foreignObject><img src="data:text/html,<script>pwn()</script>"></foreignObject></svg>'
+            '<div style="background-image:url(https://attacker.invalid/pixel)">network</div>'
+        )
+        queue = InMemoryTrustReviewQueue()
+        tier = scan_and_record(
+            hostile,
+            source="visual_artifact",
+            source_key="poster",
+            record_id="visual-1",
+            review_queue=queue,
+        )
+
+        record = queue.all_records()[0]
+        assert tier.value == "skull"
+        assert record.assigned_tier.value == "skull"
+        assert record.warden_recommendation == "banish"
+        assert set(record.warden_flags) >= {
+            "active-element",
+            "event-handler",
+            "dangerous-url",
+            "css-network-or-code",
+        }
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    def test_visual_trust_prescan_keeps_safe_presentation_upgradeable(self):
+        from maistro_design.trust import InMemoryTrustReviewQueue, TrustTier, scan_and_record
+
+        queue = InMemoryTrustReviewQueue()
+        tier = scan_and_record(
+            '<article style="background:linear-gradient(90deg,#111,#333);color:#fff">Safe</article>',
+            source="visual_artifact",
+            source_key="poster",
+            record_id="visual-2",
+            review_queue=queue,
+        )
+
+        record = queue.all_records()[0]
+        assert tier is TrustTier.T3
+        assert record.warden_flags == ()
+        assert record.warden_recommendation == "upgrade"
+
     def test_multi_file_container_aggregates_findings_across_leaves(self):
         from maistro_design.scan import scan_design_output
         from maistro_design.types import ArtifactKind, ArtifactNode, DesignOutput, OutputFormat

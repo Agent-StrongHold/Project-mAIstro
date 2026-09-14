@@ -57,15 +57,14 @@ import { createRoot } from "react-dom/client";
 import DeckBuilder from "${SRC_ROOT}/frontend/src/pages/DeckBuilder.tsx";
 import FixedPageArtifactEditor from "${SRC_ROOT}/frontend/src/pages/FixedPageArtifactEditor.tsx";
 import { sanitizeDeckMarkup } from "${SRC_ROOT}/frontend/src/lib/deckSanitizer.ts";
-import { recommendVisualArtifactTrust, sanitizeVisualArtifactMarkup, scanVisualArtifactMarkup } from "${SRC_ROOT}/frontend/src/lib/visualArtifactRenderer.tsx";
+import { sanitizeVisualArtifactMarkup, scanVisualArtifactMarkup } from "${SRC_ROOT}/frontend/src/lib/visualArtifactRenderer.tsx";
 
 declare global {
-  interface Window { __sanitizeDeckMarkup: (markup: string) => string; __sanitizeVisualArtifactMarkup: (markup: string) => string; __scanVisualArtifactMarkup: (markup: string) => { blocked: boolean; reasons: string[]; sanitizedMarkup: string }; __recommendVisualArtifactTrust: (markup: string) => "upgrade" | "review"; __deckPwned?: number; }
+  interface Window { __sanitizeDeckMarkup: (markup: string) => string; __sanitizeVisualArtifactMarkup: (markup: string) => string; __scanVisualArtifactMarkup: (markup: string) => { blocked: boolean; reasons: string[]; sanitizedMarkup: string }; __deckPwned?: number; }
 }
 window.__sanitizeDeckMarkup = sanitizeDeckMarkup;
 window.__sanitizeVisualArtifactMarkup = sanitizeVisualArtifactMarkup;
 window.__scanVisualArtifactMarkup = scanVisualArtifactMarkup;
-window.__recommendVisualArtifactTrust = recommendVisualArtifactTrust;
 const params = new URLSearchParams(window.location.search);
 const mode = params.get("mode");
 const hostile = "<h1>Safe fixed page</h1><script>window.__deckPwned=20</script><img src=\\\"http://${ATTACKER}/fixed\\\" onerror=\\\"window.__deckPwned=21\\\"><svg><foreignObject><iframe src=\\\"http://${ATTACKER}/fixed-frame\\\"></iframe></foreignObject><circle cx=\\\"10\\\" cy=\\\"10\\\" r=\\\"8\\\" fill=\\\"#b15b3e\\\" onload=\\\"window.__deckPwned=22\\\"></circle></svg><div style=\\\"background-image:url(http://${ATTACKER}/fixed-css);color:#17202a\\\">safe text</div>";
@@ -335,16 +334,24 @@ test("mutation, encoded, SVG, and CSS payload families fail closed while present
   expect(scanResults[1].reasons.length).toBeGreaterThan(0);
   expect(scanResults[2].reasons).toContain("css-network-or-code");
 
-  const recommendations = await page.evaluate(() => {
-    const recommend = (
-      window as Window & { __recommendVisualArtifactTrust: (markup: string) => "upgrade" | "review" }
-    ).__recommendVisualArtifactTrust;
-    return [
-      recommend('<div onclick="alert(1)">handler</div>'),
-      recommend('<p>safe presentation</p>'),
-    ];
+  // Read the recommendation from the shipped fixed-page component, not a
+  // test-harness global. This exercises the production trust check against the
+  // same initial/persisted content path as preview and export.
+  await loadFixedFresh("poster");
+  await expect(page.getByTestId("fixed-page-editor")).toHaveAttribute("data-trust-recommendation", "review");
+  const fixedPreview = page.locator('[contenteditable="true"]');
+  await fixedPreview.focus();
+  await putCaretAtEnd(fixedPreview);
+  await fixedPreview.evaluate((element) => {
+    const transfer = new DataTransfer();
+    transfer.setData("text/html", "<p>Safe replacement</p>");
+    element.dispatchEvent(new ClipboardEvent("paste", {
+      bubbles: true,
+      cancelable: true,
+      clipboardData: transfer,
+    }));
   });
-  expect(recommendations).toEqual(["review", "upgrade"]);
+  await expect(page.getByTestId("fixed-page-editor")).toHaveAttribute("data-trust-recommendation", "upgrade");
 
   const safePresentation = await page.evaluate(() => {
     const sanitize = (
