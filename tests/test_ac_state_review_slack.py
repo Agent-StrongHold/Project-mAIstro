@@ -33,6 +33,44 @@ def test_canonical_develop_pr_improvement_is_informational(monkeypatch, capsys):
     assert "live develop merge queue serializes the exact candidate" in out
 
 
+def test_canonical_topic_push_improvement_is_informational(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT)])
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "Agent-StrongHold/Project-mAIstro")
+    monkeypatch.setenv("GITHUB_REF", "refs/heads/fix/topic-branch")
+    monkeypatch.setattr(gate, "_candidate_note_fold_weakening", lambda: [])
+
+    assert gate._review_slack_policy(["design_coverage: 36.5, floor still says 33.9"]) == []
+
+    out = capsys.readouterr().out
+    assert "no bank is required" in out
+
+
+def test_protected_push_keeps_conservative_banking(monkeypatch):
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT)])
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "Agent-StrongHold/Project-mAIstro")
+    monkeypatch.setenv("GITHUB_REF", "refs/heads/develop")
+
+    assert gate._review_slack_policy(["design_coverage: 36.5"]) == [
+        "design_coverage: 36.5"
+    ]
+
+
+def test_fork_topic_push_keeps_conservative_banking(monkeypatch):
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT)])
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "some-fork/Project-mAIstro")
+    monkeypatch.setenv("GITHUB_REF", "refs/heads/fix/topic-branch")
+
+    assert gate._review_slack_policy(["design_coverage: 36.5"]) == [
+        "design_coverage: 36.5"
+    ]
+
+
 def test_imported_or_synthetic_pr_keeps_conservative_banking(monkeypatch):
     seen: list[list[str]] = []
 
