@@ -901,8 +901,15 @@ class TestPersistedSetupMarkerBoundary:
 
         state = _State()
 
+        config = {"completed_at": "now", "admin_username": "admin"}
+
         class _Persisted:
             _state = state
+
+            @staticmethod
+            def get_raw(store_name: str, key: str) -> str:
+                assert (store_name, key) == ("sessions", "__hive_setup__")
+                return json.dumps(config, default=str)
 
         class _Sessions:
             _persisted = _Persisted()
@@ -910,11 +917,35 @@ class TestPersistedSetupMarkerBoundary:
         original_persisted = stores.sessions._persisted
         stores.sessions._persisted = _Sessions()._persisted
         try:
-            setup_routes._flush_setup_marker()
+            setup_routes._flush_setup_marker(config)
         finally:
             stores.sessions._persisted = original_persisted
 
         assert state.timeouts == [10.0]
+
+    def test_marker_flush_rejects_a_lost_write(self) -> None:
+        """A flush that leaves no marker must not acknowledge setup."""
+        import stores
+        from routes import setup as setup_routes
+
+        class _State:
+            def flush(self, *, timeout: float) -> None:
+                return None
+
+        class _Persisted:
+            _state = _State()
+
+            @staticmethod
+            def get_raw(store_name: str, key: str) -> None:
+                return None
+
+        original_persisted = stores.sessions._persisted
+        stores.sessions._persisted = _Persisted()
+        try:
+            with pytest.raises(RuntimeError, match="not acknowledged"):
+                setup_routes._flush_setup_marker({"admin_username": "admin"})
+        finally:
+            stores.sessions._persisted = original_persisted
 
 
 class TestCorruptedStateFailsClosed:

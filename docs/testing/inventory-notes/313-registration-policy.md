@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +42
+  packages/hive-conductor/backend/tests: +43
 ---
 # 313-registration-policy
 
@@ -25,7 +25,8 @@ released claim (5); and one-shot setup against the persisted KV record on
 real SQLite (1). The persisted one-shot case also opens a second SQLite
 reader before the original writer closes, proving the setup marker was
 flushed before success. One additional node pins the explicit persisted-state
-flush boundary used by that setup marker.
+flush boundary used by that setup marker, and one pins refusal when the flushed
+marker cannot be read back.
 
 No suite lost nodes. The M0-era `test_public_registration_is_fail_closed`
 in `test_security_headers.py` was rewritten in place for the M2 contract
