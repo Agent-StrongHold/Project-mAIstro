@@ -75,10 +75,17 @@ def _findings(tmp_path: Path) -> list[check_compliance.Finding]:
     )
 
 
-def test_malformed_table_row_fails_instead_of_disappearing(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "row",
+    [
+        "| X-1 | control |\n",
+        "X-1 | control | implemented |\n",
+    ],
+)
+def test_malformed_table_row_fails_instead_of_disappearing(tmp_path: Path, row: str) -> None:
     _write_repository(tmp_path)
     (tmp_path / "COMPLIANCE.md").write_text(
-        "| ID | Engine control | Status |\n|---|---|---|\n| X-1 | control |\n",
+        f"| ID | Engine control | Status |\n|---|---|---|\n{row}",
         encoding="utf-8",
     )
 
@@ -117,6 +124,8 @@ def test_missing_evidence_reference_fails(tmp_path: Path) -> None:
         ("disabled", "automated", "passed"),
         ("manual-only", "manual", "observed"),
         ("stale", "automated", "passed"),
+        ("never-run", "automated", "not-run"),
+        ("missing", "automated", "not-found"),
         ("failing", "automated", "failed"),
     ],
 )
@@ -134,6 +143,23 @@ def test_valid_current_evidence_record_passes(tmp_path: Path) -> None:
     _write_repository(tmp_path)
 
     assert _findings(tmp_path) == []
+
+
+def test_cited_test_path_requires_a_typed_record_in_the_claim(tmp_path: Path) -> None:
+    _write_repository(tmp_path)
+    cited = tmp_path / "tests" / "test_evidence.py"
+    cited.parent.mkdir()
+    cited.write_text("def test_evidence(): pass\n", encoding="utf-8")
+    (tmp_path / "COMPLIANCE.md").write_text(
+        "| ID | Engine control | Test path | Status |\n"
+        "|---|---|---|---|\n"
+        "| X-1 | control | `tests/test_evidence.py` | implemented |\n",
+        encoding="utf-8",
+    )
+
+    findings = _findings(tmp_path)
+
+    assert any("no typed repository evidence record" in str(finding) for finding in findings)
 
 
 def test_immutable_execution_evidence_is_structured_without_free_form_prose(

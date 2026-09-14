@@ -47,6 +47,10 @@ MARKER_STATUS = {
 STATUS_WORDS = {status: status for status in CLAIM_STATUSES}
 CONTROL_ID_RE = re.compile(r"^[A-Z][A-Z0-9.-]+$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+CITED_ARTIFACT_RE = re.compile(
+    r"(?<![A-Za-z0-9_.-])((?:packages/[^\s;`,)]+/tests/[^\s;`,)]+)|"
+    r"(?:formal|tests)/[^\s;`,)]+)"
+)
 
 
 @dataclass(frozen=True)
@@ -305,47 +309,93 @@ def _control_id(cell: str) -> str | None:
     return generic.group(0) if generic else None
 
 
-def parse_compliance_document(path: Path) -> tuple[list[Finding], dict[str, str]]:  # noqa: C901
-    """Parse every status-bearing Markdown table and reject malformed rows."""
+def _cited_artifact_paths(cells: list[str]) -> set[str]:
+    paths: set[str] = set()
+    for cell in cells[1:-1]:
+        paths.update(match.group(1).rstrip(".") for match in CITED_ARTIFACT_RE.finditer(cell))
+    return paths
+
+
+def _looks_like_table_row(line: str, expected_cells: int) -> bool:
+    stripped = line.strip()
+    return bool(stripped) and (stripped.endswith("|") or stripped.count("|") >= expected_cells - 1)
+
+
+def _parse_status_row(
+    headers: list[str], row: str, label: str
+) -> tuple[list[Finding], str | None, str | None, set[str]]:
+    cells = _split_row(row)
+    if len(cells) != len(headers):
+        return (
+            [
+                Finding(
+                    label,
+                    f"malformed table row: expected {len(headers)} cells, got {len(cells)}",
+                )
+            ],
+            None,
+            None,
+            set(),
+        )
+    findings: list[Finding] = []
+    control_id = _control_id(cells[0])
+    if control_id is None:
+        findings.append(Finding(label, "missing control ID"))
+    status_cell = cells[-1].strip()
+    marker = next((candidate for candidate in STATUS_MARKERS if candidate in status_cell), None)
+    status = MARKER_STATUS.get(marker) if marker else STATUS_WORDS.get(status_cell)
+    if status is None:
+        findings.append(Finding(label, "missing or invalid status cell"))
+    return findings, control_id, status, _cited_artifact_paths(cells)
+
+
+def _parse_compliance_document(  # noqa: C901
+    path: Path,
+) -> tuple[list[Finding], dict[str, str], dict[str, set[str]]]:
+    """Parse status tables, retaining the inspectable paths cited by each claim."""
     lines = path.read_text(encoding="utf-8").splitlines()
     findings: list[Finding] = []
     statuses: dict[str, str] = {}
+    cited_paths: dict[str, set[str]] = {}
     for index, line in enumerate(lines):
         headers = _split_row(line)
         if not headers or index + 1 >= len(lines) or not lines[index + 1].startswith("|---"):
             continue
-        if not headers or headers[-1].lower() != "status":
+        if headers[-1].lower() != "status":
             continue
         row_index = index + 2
-        while row_index < len(lines) and lines[row_index].startswith("|"):
-            cells = _split_row(lines[row_index])
+        while row_index < len(lines):
+            row = lines[row_index]
+            if not row.strip():
+                break
             label = f"COMPLIANCE.md:{row_index + 1}"
-            if len(cells) != len(headers):
-                findings.append(
-                    Finding(
-                        label,
-                        f"malformed table row: expected {len(headers)} cells, got {len(cells)}",
+            if not row.startswith("|"):
+                if _looks_like_table_row(row, len(headers)):
+                    findings.append(
+                        Finding(
+                            label,
+                            f"malformed table row: expected {len(headers)} cells and a leading pipe",
+                        )
                     )
-                )
-                row_index += 1
-                continue
-            control_id = _control_id(cells[0])
-            if control_id is None:
-                findings.append(Finding(label, "missing control ID"))
-            status_cell = cells[-1].strip()
-            marker = next(
-                (candidate for candidate in STATUS_MARKERS if candidate in status_cell), None
-            )
-            status = MARKER_STATUS.get(marker) if marker else STATUS_WORDS.get(status_cell)
-            if status is None:
-                findings.append(Finding(label, "missing or invalid status cell"))
-            elif control_id is not None:
+                    row_index += 1
+                    continue
+                break
+            row_findings, control_id, status, paths = _parse_status_row(headers, row, label)
+            findings.extend(row_findings)
+            if status is not None and control_id is not None:
                 if control_id in statuses:
                     findings.append(Finding(label, f"duplicate control ID: {control_id}"))
                 statuses[control_id] = status
+                cited_paths[control_id] = paths
             row_index += 1
     if not statuses:
         findings.append(Finding(str(path), "no status-bearing compliance tables found"))
+    return findings, statuses, cited_paths
+
+
+def parse_compliance_document(path: Path) -> tuple[list[Finding], dict[str, str]]:
+    """Parse every status-bearing Markdown table and reject malformed rows."""
+    findings, statuses, _ = _parse_compliance_document(path)
     return findings, statuses
 
 
@@ -362,7 +412,7 @@ def validate(
     as_of = as_of or datetime.now(UTC)
     findings: list[Finding] = []
     try:
-        document_findings, document_statuses = parse_compliance_document(document)
+        document_findings, document_statuses, cited_paths = _parse_compliance_document(document)
     except (OSError, UnicodeError) as exc:
         return [Finding(str(document), f"cannot read document: {exc}")]
     findings.extend(document_findings)
@@ -377,11 +427,10 @@ def validate(
     evidence_findings, evidence = _validate_evidence(root, payload.get("evidence"), as_of)
     findings.extend(evidence_findings)
     findings.extend(_validate_claims(payload.get("claims"), evidence, as_of))
-    claim_statuses = {
-        item.get("control_id"): item.get("status")
-        for item in payload.get("claims", [])
-        if isinstance(item, dict)
+    claim_items = {
+        item.get("control_id"): item for item in payload.get("claims", []) if isinstance(item, dict)
     }
+    claim_statuses = {control_id: item.get("status") for control_id, item in claim_items.items()}
     if set(document_statuses) != set(claim_statuses):
         findings.append(
             Finding("claim coverage", "COMPLIANCE.md controls and registry controls differ")
@@ -394,6 +443,28 @@ def validate(
                     f"document status {marker_status!r} disagrees with registry {claim_statuses.get(control_id)!r}",
                 )
             )
+        claim = claim_items.get(control_id)
+        refs = set(claim.get("evidence_refs", [])) if claim else set()
+        for path in cited_paths.get(control_id, set()):
+            matching_refs = {
+                evidence_id
+                for evidence_id, record in evidence.items()
+                if record.get("kind") == "repository_artifact" and record.get("path") == path
+            }
+            if not matching_refs:
+                findings.append(
+                    Finding(
+                        f"{control_id} evidence",
+                        f"cited path has no typed repository evidence record: {path}",
+                    )
+                )
+            elif not matching_refs & refs:
+                findings.append(
+                    Finding(
+                        f"{control_id} evidence",
+                        f"cited path is not referenced by the claim: {path}",
+                    )
+                )
     return findings
 
 

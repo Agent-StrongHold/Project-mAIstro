@@ -23,8 +23,11 @@ Every claim has:
   `expires` date is an explicit hard expiry.
 
 The validator requires unique control IDs, non-empty owners and scopes, valid dates, resolvable
-evidence references, and exact coverage between the document and registry. A malformed Markdown
-table row or empty/invalid status is an error; it cannot silently disappear.
+evidence references, and exact coverage between the document and registry. Every `tests/...` or
+`formal/...` artifact cited in a status row must resolve to a repository-artifact record and that
+record must be referenced by the row's claim; an immutable execution record must instead carry a
+structured execution ID. A malformed Markdown table row or empty/invalid status is an error; it
+cannot silently disappear.
 
 ## Evidence vocabulary
 
