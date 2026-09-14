@@ -17,7 +17,9 @@ DOM, presented, or exported. The boundary is
   insertion, so browser default insertion cannot load an active element first.
 - `scanVisualArtifactMarkup` returns the sanitized value and the shared
   `VISUAL_ARTIFACT_BLOCK_REASONS` vocabulary for trust/pre-scan consumers.
-  A trust recommendation must treat `blocked: true` as ineligible for upgrade.
+  `recommendVisualArtifactTrust` applies that result and returns `review` for
+  blocked content, never `upgrade`; it is advisory and not an authorization
+  grant.
 
 The allowlist retains typography, layout, gradients, and inert SVG geometry.
 It rejects scripts, handlers, forms, links/navigation, images and other active

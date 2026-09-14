@@ -57,14 +57,15 @@ import { createRoot } from "react-dom/client";
 import DeckBuilder from "${SRC_ROOT}/frontend/src/pages/DeckBuilder.tsx";
 import FixedPageArtifactEditor from "${SRC_ROOT}/frontend/src/pages/FixedPageArtifactEditor.tsx";
 import { sanitizeDeckMarkup } from "${SRC_ROOT}/frontend/src/lib/deckSanitizer.ts";
-import { sanitizeVisualArtifactMarkup, scanVisualArtifactMarkup } from "${SRC_ROOT}/frontend/src/lib/visualArtifactRenderer.tsx";
+import { recommendVisualArtifactTrust, sanitizeVisualArtifactMarkup, scanVisualArtifactMarkup } from "${SRC_ROOT}/frontend/src/lib/visualArtifactRenderer.tsx";
 
 declare global {
-  interface Window { __sanitizeDeckMarkup: (markup: string) => string; __sanitizeVisualArtifactMarkup: (markup: string) => string; __scanVisualArtifactMarkup: (markup: string) => { blocked: boolean; reasons: string[]; sanitizedMarkup: string }; __deckPwned?: number; }
+  interface Window { __sanitizeDeckMarkup: (markup: string) => string; __sanitizeVisualArtifactMarkup: (markup: string) => string; __scanVisualArtifactMarkup: (markup: string) => { blocked: boolean; reasons: string[]; sanitizedMarkup: string }; __recommendVisualArtifactTrust: (markup: string) => "upgrade" | "review"; __deckPwned?: number; }
 }
 window.__sanitizeDeckMarkup = sanitizeDeckMarkup;
 window.__sanitizeVisualArtifactMarkup = sanitizeVisualArtifactMarkup;
 window.__scanVisualArtifactMarkup = scanVisualArtifactMarkup;
+window.__recommendVisualArtifactTrust = recommendVisualArtifactTrust;
 const mode = new URLSearchParams(window.location.search).get("mode");
 const hostile = "<h1>Safe fixed page</h1><script>window.__deckPwned=20</script><img src=\\\"http://${ATTACKER}/fixed\\\" onerror=\\\"window.__deckPwned=21\\\"><svg><foreignObject><iframe src=\\\"http://${ATTACKER}/fixed-frame\\\"></iframe></foreignObject><circle cx=\\\"10\\\" cy=\\\"10\\\" r=\\\"8\\\" fill=\\\"#b15b3e\\\" onload=\\\"window.__deckPwned=22\\\"></circle></svg><div style=\\\"background-image:url(http://${ATTACKER}/fixed-css);color:#17202a\\\">safe text</div>";
 createRoot(document.getElementById("root")!).render(
@@ -332,6 +333,17 @@ test("mutation, encoded, SVG, and CSS payload families fail closed while present
   expect(scanResults[0].reasons).toContain("event-handler");
   expect(scanResults[1].reasons.length).toBeGreaterThan(0);
   expect(scanResults[2].reasons).toContain("css-network-or-code");
+
+  const recommendations = await page.evaluate(() => {
+    const recommend = (
+      window as Window & { __recommendVisualArtifactTrust: (markup: string) => "upgrade" | "review" }
+    ).__recommendVisualArtifactTrust;
+    return [
+      recommend('<div onclick="alert(1)">handler</div>'),
+      recommend('<p>safe presentation</p>'),
+    ];
+  });
+  expect(recommendations).toEqual(["review", "upgrade"]);
 
   const safePresentation = await page.evaluate(() => {
     const sanitize = (

@@ -236,6 +236,8 @@ export type VisualArtifactScan = {
   sanitizedMarkup: string;
 };
 
+export type VisualArtifactTrustRecommendation = "upgrade" | "review";
+
 type SanitizationContext = { reasons: Set<VisualArtifactBlockReason> };
 
 function sanitizeStyle(styleText: string, context: SanitizationContext): string {
@@ -353,6 +355,14 @@ export function scanVisualArtifactMarkup(markup: string): VisualArtifactScan {
   const sanitizedMarkup = sanitizeOnce(firstPass, context);
   const reasons = VISUAL_ARTIFACT_BLOCK_REASONS.filter((reason) => context.reasons.has(reason));
   return { blocked: reasons.length > 0, reasons, sanitizedMarkup };
+}
+
+/**
+ * Return the shared pre-scan recommendation. This is advisory, not an
+ * authorization grant: blocked content is never eligible for an upgrade.
+ */
+export function recommendVisualArtifactTrust(markup: string): VisualArtifactTrustRecommendation {
+  return scanVisualArtifactMarkup(markup).blocked ? "review" : "upgrade";
 }
 
 /** The one HTML/SVG trust boundary shared by every Design Studio visual mode. */
