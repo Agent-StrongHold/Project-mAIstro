@@ -38,6 +38,7 @@ from maistro.archive.protocols import ArchiveStore
 from maistro.archive.types import ArchiveKey
 from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
+from maistro.runs.concurrency import ConcurrencyAdmission
 from maistro.runs.evidence_json import decode_evidence, decode_payload, json_of, model_of
 from maistro.runs.lifecycle import (
     check_completion_is_earned,
@@ -51,6 +52,7 @@ from maistro.runs.lifecycle import (
     transition_run,
 )
 from maistro.runs.model import (
+    TERMINAL_ATTEMPT_STATUSES,
     TERMINAL_RUN_STATUSES,
     AcceptedNodeOutcome,
     Attempt,
@@ -124,6 +126,7 @@ class PgRunStore:
         *,
         project_store: ProjectScopeStore,
         archive_store: ArchiveStore | None = None,
+        concurrency_admission: ConcurrencyAdmission | None = None,
     ) -> None:
         self._pool = pool
         self._project_store = project_store
@@ -132,6 +135,7 @@ class PgRunStore:
         # resident and raises `ArchivedPayloadUnavailable` -- never an empty
         # result -- for what moved.
         self._archive_store = archive_store
+        self._concurrency = concurrency_admission
 
     # ── Run ───────────────────────────────────────────────────────
 
@@ -182,6 +186,12 @@ class PgRunStore:
         # Before the insert, not after it: one commit, so there is no window in
         # which a process death leaves a CREATED Run whose receipt was queued.
         run = admit_in_state(run, initial_status)
+        if self._concurrency is not None:
+            await self._concurrency.acquire_run(
+                run.run_id,
+                workspace_id=run.workspace_id,
+                principal_id=run.actor_principal_id,
+            )
         async with self._pool.acquire() as conn:
             try:
                 await conn.execute(
@@ -204,7 +214,11 @@ class PgRunStore:
             except _integrity_errors() as exc:
                 conflict = _occurrence_conflict(exc, run)
                 if conflict is None:
+                    if self._concurrency is not None:
+                        await self._concurrency.release_run(run.run_id)
                     raise
+                if self._concurrency is not None:
+                    await self._concurrency.release_run(run.run_id)
                 raise conflict from exc
         return run
 
@@ -456,6 +470,8 @@ class PgRunStore:
             )
             await conn.execute("DELETE FROM canonical_node_runs WHERE run_id = $1", run_id)
             await conn.execute("DELETE FROM canonical_runs WHERE run_id = $1", run_id)
+        if self._concurrency is not None:
+            await self._concurrency.release_run(run_id)
         return True
 
     async def get_run(self, run_id: str) -> Run | None:
@@ -578,6 +594,8 @@ class PgRunStore:
                         settle_open_node_run(node_run, target, at=at),
                     )
             await self._write(conn, "canonical_runs", "run_id", run_id, updated)
+        if target in TERMINAL_RUN_STATUSES and self._concurrency is not None:
+            await self._concurrency.release_run(run_id)
         return updated
 
     async def _locked_open_node_runs(self, conn: Any, run_id: str) -> list[NodeRun]:
@@ -743,6 +761,15 @@ class PgRunStore:
                 attempt = Attempt.model_validate(
                     {**attempt.model_dump(mode="python"), "execution_lease": lease}
                 )
+            if self._concurrency is not None:
+                run = Run.model_validate(
+                    await self._locked(conn, "canonical_runs", "run_id", node_run.run_id)
+                )
+                await self._concurrency.acquire_attempt(
+                    attempt.attempt_id,
+                    workspace_id=run.workspace_id,
+                    principal_id=run.actor_principal_id,
+                )
             try:
                 await conn.execute(
                     """INSERT INTO canonical_attempts
@@ -755,6 +782,8 @@ class PgRunStore:
                     json_of(attempt),
                 )
             except _integrity_errors() as exc:
+                if self._concurrency is not None:
+                    await self._concurrency.release_attempt(attempt.attempt_id)
                 raise _integrity_failure(exc, node_run_id) from exc
         return attempt
 
@@ -800,6 +829,8 @@ class PgRunStore:
                 attempt, target, at=at, result=result, error=error, metrics=metrics
             )
             await self._write(conn, "canonical_attempts", "attempt_id", attempt_id, updated)
+        if target in TERMINAL_ATTEMPT_STATUSES and self._concurrency is not None:
+            await self._concurrency.release_attempt(attempt_id)
         return updated
 
     async def repair_attempt_result(self, attempt_id: str, *, result: object) -> Attempt:
@@ -988,6 +1019,12 @@ class PgRunStore:
             )
             renewed = renew_attempt_lease(attempt, fencing_token=fencing_token, ttl=ttl, at=at)
             await self._write(conn, "canonical_attempts", "attempt_id", attempt_id, renewed)
+        if self._concurrency is not None:
+            node_run = await self._require_node_run(attempt.node_run_id)
+            await self._concurrency.renew_attempt(attempt_id, ttl=ttl)
+            run = await self.get_run(node_run.run_id)
+            if run is not None:
+                await self._concurrency.renew_run(run.run_id, ttl=ttl)
         return renewed
 
     async def reclaim_expired_attempts(
@@ -1041,6 +1078,9 @@ class PgRunStore:
                     conn, "canonical_attempts", "attempt_id", attempt.attempt_id, settled
                 )
                 reclaimed.append(settled)
+        if self._concurrency is not None:
+            for attempt in reclaimed:
+                await self._concurrency.release_attempt(attempt.attempt_id)
         return reclaimed
 
     async def _require_attempt(self, attempt_id: str, *, conn: Any = None) -> Attempt:

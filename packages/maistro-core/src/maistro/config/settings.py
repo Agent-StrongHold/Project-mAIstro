@@ -251,6 +251,16 @@ class Settings(BaseSettings):
 
     max_tokens_per_task: int = Field(default=100_000, description="Max LLM tokens per task")
 
+    # Canonical Run/Attempt admission ceilings. These are deliberately positive
+    # floors: operators can tighten capacity, but cannot turn the safety gate off.
+    max_concurrent_runs_per_principal: int = Field(default=8, ge=1)
+    max_concurrent_runs_per_workspace: int = Field(default=32, ge=1)
+    max_concurrent_runs_global: int = Field(default=128, ge=1)
+    max_concurrent_attempts_per_principal: int = Field(default=16, ge=1)
+    max_concurrent_attempts_per_workspace: int = Field(default=64, ge=1)
+    max_concurrent_attempts_global: int = Field(default=256, ge=1)
+    run_admission_lease_ttl_seconds: int = Field(default=300, ge=1)
+
     ollama_base_url: str = "http://localhost:11434/v1"
     maistro_dry_run: bool = False
     poc_mode: str = Field(
@@ -303,6 +313,18 @@ class Settings(BaseSettings):
     def _enforce_resource_security_floors(self) -> Self:
         validate_resource_policy(self.effective_resource_policy())
         return self
+
+    def concurrency_admission_policy(self) -> dict[str, int]:
+        """Expose the exact canonical admission ceilings for diagnostics."""
+        return {
+            "max_concurrent_runs_per_principal": self.max_concurrent_runs_per_principal,
+            "max_concurrent_runs_per_workspace": self.max_concurrent_runs_per_workspace,
+            "max_concurrent_runs_global": self.max_concurrent_runs_global,
+            "max_concurrent_attempts_per_principal": self.max_concurrent_attempts_per_principal,
+            "max_concurrent_attempts_per_workspace": self.max_concurrent_attempts_per_workspace,
+            "max_concurrent_attempts_global": self.max_concurrent_attempts_global,
+            "run_admission_lease_ttl_seconds": self.run_admission_lease_ttl_seconds,
+        }
 
     def effective_resource_policy(self) -> EffectiveResourcePolicy:
         """Expose the exact values enforced by runtime resource boundaries."""

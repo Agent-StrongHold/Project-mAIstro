@@ -17,6 +17,12 @@ from maistro.archive.protocols import ArchiveStore
 from maistro.graph.templates import GraphTemplateStore, NodeTemplateStore
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.runs.chat_admission import ChatRunAdmitter
+from maistro.runs.concurrency import (
+    ConcurrencyLimits,
+    InMemoryConcurrencyAdmission,
+    PostgresConcurrencyAdmission,
+    SqliteConcurrencyAdmission,
+)
 from maistro.runs.store import RunStore
 from maistro.scheduling.store import ScheduleStore
 from maistro.tasks.admission import WorkspaceRoutingAdmitter
@@ -37,6 +43,7 @@ SPINE_PG_TABLES: Final = (
     "canonical_runs",
     "canonical_node_runs",
     "canonical_attempts",
+    "canonical_admission_leases",
     "graph_templates",
 )
 
@@ -166,6 +173,7 @@ async def wire_execution_spine(
     archive_store: ArchiveStore | None = None,
     prime: bool = True,
     schedule_conn: Any = None,
+    admission_limits: ConcurrencyLimits | None = None,
 ) -> tuple[
     ProjectScopeStore,
     RunStore,
@@ -220,6 +228,7 @@ async def wire_execution_spine(
     template_store: GraphTemplateStore
     schedule_store: ScheduleStore
     continuation_store: GraphContinuationStore
+    limits = admission_limits or ConcurrencyLimits.from_environment()
     if pg_pool is not None and await _spine_is_migrated(pg_pool):
         # No ensure_schema: these tables come from `alembic/versions/012` and
         # `014`. A store that quietly created its own tables would be a second
@@ -231,7 +240,10 @@ async def wire_execution_spine(
 
         project_scope_store = PgProjectScopeStore(pg_pool)
         run_store = ClaimingPgRunStore(
-            pg_pool, project_store=project_scope_store, archive_store=archive_store
+            pg_pool,
+            project_store=project_scope_store,
+            archive_store=archive_store,
+            concurrency_admission=PostgresConcurrencyAdmission(pg_pool, limits),
         )
         template_store = PgGraphTemplateStore(pg_pool)
         schedule_store = await _pg_schedule_store(pg_pool)
@@ -245,7 +257,11 @@ async def wire_execution_spine(
 
         sqlite_scope_store = SqliteProjectScopeStore(conn)
         await sqlite_scope_store.ensure_schema()
-        sqlite_run_store = ClaimingSqliteRunStore(conn, project_store=sqlite_scope_store)
+        sqlite_run_store = ClaimingSqliteRunStore(
+            conn,
+            project_store=sqlite_scope_store,
+            concurrency_admission=SqliteConcurrencyAdmission(conn, limits),
+        )
         await sqlite_run_store.ensure_schema()
         sqlite_template_store = SqliteGraphTemplateStore(conn)
         await sqlite_template_store.ensure_schema()
@@ -269,7 +285,9 @@ async def wire_execution_spine(
 
         project_scope_store = InMemoryProjectScopeStore()
         run_store = ClaimingInMemoryRunStore(
-            project_store=project_scope_store, archive_store=archive_store
+            project_store=project_scope_store,
+            archive_store=archive_store,
+            concurrency_admission=InMemoryConcurrencyAdmission(limits),
         )
         template_store = InMemoryGraphTemplateStore()
         schedule_store = InMemoryScheduleStore()

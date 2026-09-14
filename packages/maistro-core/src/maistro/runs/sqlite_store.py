@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
+from maistro.runs.concurrency import ConcurrencyAdmission, SqliteConcurrencyAdmission
 from maistro.runs.evidence_json import json_of, model_of_json
 from maistro.runs.lifecycle import (
     check_completion_is_earned,
@@ -22,6 +23,7 @@ from maistro.runs.lifecycle import (
     transition_run,
 )
 from maistro.runs.model import (
+    TERMINAL_ATTEMPT_STATUSES,
     TERMINAL_RUN_STATUSES,
     AcceptedNodeOutcome,
     Attempt,
@@ -198,9 +200,11 @@ class SqliteRunStore:
         conn: aiosqlite.Connection,
         *,
         project_store: ProjectScopeStore,
+        concurrency_admission: ConcurrencyAdmission | None = None,
     ) -> None:
         self._conn = conn
         self._project_store = project_store
+        self._concurrency = concurrency_admission or SqliteConcurrencyAdmission(conn)
         # One connection, and now more than one caller: the task runner drives
         # four workers against this store (#143), and `create_attempt` opens an
         # explicit BEGIN IMMEDIATE. Two of those interleaving on one aiosqlite
@@ -224,6 +228,9 @@ class SqliteRunStore:
     async def ensure_schema(self) -> None:
         await self._conn.executescript(_SCHEMA)
         await self._conn.commit()
+        ensure_admission = getattr(self._concurrency, "ensure_schema", None)
+        if ensure_admission is not None:
+            await ensure_admission()
 
     async def create_run(
         self,
@@ -271,6 +278,11 @@ class SqliteRunStore:
             # in which a process death leaves a CREATED Run whose provenance
             # names a receipt that was already queued.
             run = admit_in_state(run, initial_status)
+            await self._concurrency.acquire_run(
+                run.run_id,
+                workspace_id=run.workspace_id,
+                principal_id=run.actor_principal_id,
+            )
             try:
                 await self._conn.execute(
                     """INSERT INTO canonical_runs
@@ -290,11 +302,13 @@ class SqliteRunStore:
             except sqlite3.IntegrityError as exc:
                 occurrence = occurrence_key(run.provenance)
                 if occurrence is None or "idx_canonical_runs_occurrence" not in str(exc):
+                    await self._concurrency.release_run(run.run_id)
                     raise
                 # Rolled back before raising: the failed INSERT opened a
                 # transaction, and leaving it for the next caller to inherit
                 # would make an unrelated write commit inside this one.
                 await self._conn.rollback()
+                await self._concurrency.release_run(run.run_id)
                 raise DuplicateOccurrence(*occurrence) from exc
             await self._conn.commit()
             return run
@@ -388,6 +402,7 @@ class SqliteRunStore:
         await self._conn.execute("DELETE FROM canonical_node_runs WHERE run_id = ?", (run_id,))
         await self._conn.execute("DELETE FROM canonical_runs WHERE run_id = ?", (run_id,))
         await self._conn.commit()
+        await self._concurrency.release_run(run_id)
         return True
 
     async def has_runs_in_project(self, project_id: str) -> bool:
@@ -514,6 +529,8 @@ class SqliteRunStore:
                     json_of(node_run),
                 )
             await self._flush()
+            if target in TERMINAL_RUN_STATUSES:
+                await self._concurrency.release_run(run_id)
             return updated
 
     async def _open_node_runs(self, run_id: str) -> list[NodeRun]:
@@ -686,6 +703,19 @@ class SqliteRunStore:
                     ),
                 )
                 await self._conn.commit()
+                run = await self._require_run(node_run.run_id)
+                try:
+                    await self._concurrency.acquire_attempt(
+                        attempt.attempt_id,
+                        workspace_id=run.workspace_id,
+                        principal_id=run.actor_principal_id,
+                    )
+                except Exception:
+                    await self._conn.execute(
+                        "DELETE FROM canonical_attempts WHERE attempt_id = ?", (attempt.attempt_id,)
+                    )
+                    await self._conn.commit()
+                    raise
                 return attempt
             except ActiveAttemptExists:
                 await self._conn.rollback()
@@ -718,6 +748,7 @@ class SqliteRunStore:
         """Prove the holder is still alive, and push its expiry out by ``ttl``."""
         async with self._write_lock:
             attempt = await self._require_attempt(attempt_id)
+            node_run = await self._require_node_run(attempt.node_run_id)
             renewed = renew_attempt_lease(attempt, fencing_token=fencing_token, ttl=ttl, at=at)
             await self._update_payload(
                 "canonical_attempts",
@@ -726,6 +757,8 @@ class SqliteRunStore:
                 renewed.status.value,
                 json_of(renewed),
             )
+            await self._concurrency.renew_attempt(attempt_id, ttl=ttl)
+            await self._concurrency.renew_run(node_run.run_id, ttl=ttl)
             return renewed
 
     async def reclaim_expired_attempts(
@@ -764,6 +797,7 @@ class SqliteRunStore:
                     settled.status.value,
                     json_of(settled),
                 )
+                await self._concurrency.release_attempt(attempt.attempt_id)
                 reclaimed.append(settled)
         return reclaimed
 
@@ -813,6 +847,8 @@ class SqliteRunStore:
                 updated.status.value,
                 json_of(updated),
             )
+            if target in TERMINAL_ATTEMPT_STATUSES:
+                await self._concurrency.release_attempt(attempt_id)
             return updated
 
     async def repair_attempt_result(self, attempt_id: str, *, result: object) -> Attempt:

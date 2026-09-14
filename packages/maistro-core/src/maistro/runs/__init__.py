@@ -1,5 +1,14 @@
 """Canonical logical and physical execution lifecycle."""
 
+from maistro.runs.concurrency import (
+    AdmissionLease,
+    AdmissionSnapshot,
+    ConcurrencyLimits,
+    InMemoryConcurrencyAdmission,
+    PostgresConcurrencyAdmission,
+    RunAdmissionRejected,
+    SqliteConcurrencyAdmission,
+)
 from maistro.runs.execution import AttemptExecutionService, AttemptReconciler
 from maistro.runs.lifecycle import (
     ATTEMPT_TRANSITIONS,
@@ -44,6 +53,8 @@ __all__ = [
     "TERMINAL_RUN_STATUSES",
     "AcceptedNodeOutcome",
     "ActiveAttemptExists",
+    "AdmissionLease",
+    "AdmissionSnapshot",
     "Attempt",
     "AttemptExecutionService",
     "AttemptLifecycleReconciler",
@@ -51,18 +62,23 @@ __all__ = [
     "AttemptReconciler",
     "AttemptResult",
     "AttemptStatus",
+    "ConcurrencyLimits",
     "ExecutionLease",
     "GraphSnapshot",
+    "InMemoryConcurrencyAdmission",
     "InMemoryRunStore",
     "InvalidLifecycleTransition",
     "NodeRun",
     "NodeRunNotFound",
+    "PostgresConcurrencyAdmission",
     "Run",
+    "RunAdmissionRejected",
     "RunExecutionService",
     "RunIntegrityError",
     "RunNotFound",
     "RunStatus",
     "RunStore",
+    "SqliteConcurrencyAdmission",
     "SqliteRunStore",
     "StaleExecutionFence",
     "transition_attempt",

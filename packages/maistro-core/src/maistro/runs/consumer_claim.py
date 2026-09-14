@@ -131,6 +131,11 @@ class ClaimingInMemoryRunStore(InMemoryRunStore):
             lease_ttl=lease_ttl,
             deadline_at=deadline_at,
         )
+        await self._concurrency.acquire_attempt(
+            claim.attempt.attempt_id,
+            workspace_id=run.workspace_id,
+            principal_id=run.actor_principal_id,
+        )
         self._runs[run_id] = claim.run
         self._node_runs[claim.node_run.node_run_id] = claim.node_run
         self._attempts[claim.attempt.attempt_id] = claim.attempt
@@ -171,6 +176,11 @@ class ClaimingSqliteRunStore(SqliteRunStore):
                     executor_id=executor_id,
                     lease_ttl=lease_ttl,
                     deadline_at=deadline_at,
+                )
+                await self._concurrency.acquire_attempt(
+                    claim.attempt.attempt_id,
+                    workspace_id=run.workspace_id,
+                    principal_id=run.actor_principal_id,
                 )
                 await self._conn.execute(
                     "UPDATE canonical_runs SET status = ?, payload = ? WHERE run_id = ?",
@@ -242,6 +252,12 @@ class ClaimingPgRunStore(PgRunStore):
                 lease_ttl=lease_ttl,
                 deadline_at=deadline_at,
             )
+            if self._concurrency is not None:
+                await self._concurrency.acquire_attempt(
+                    claim.attempt.attempt_id,
+                    workspace_id=run.workspace_id,
+                    principal_id=run.actor_principal_id,
+                )
             await conn.execute(
                 "UPDATE canonical_runs SET status = $1, payload = $2::text::jsonb WHERE run_id = $3",
                 claim.run.status.value,

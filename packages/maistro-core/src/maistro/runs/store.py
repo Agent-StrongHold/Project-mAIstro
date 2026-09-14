@@ -10,6 +10,7 @@ from maistro.archive.protocols import ArchiveStore
 from maistro.archive.types import ArchiveKey
 from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
+from maistro.runs.concurrency import ConcurrencyAdmission, InMemoryConcurrencyAdmission
 from maistro.runs.evidence_json import json_of
 from maistro.runs.lifecycle import (
     check_completion_is_earned,
@@ -448,6 +449,7 @@ class InMemoryRunStore:
         max_runs: int = MAX_IN_MEMORY_RUNS,
         prune_target: int = RUN_PRUNE_TARGET,
         archive_store: ArchiveStore | None = None,
+        concurrency_admission: ConcurrencyAdmission | None = None,
     ) -> None:
         if prune_target > max_runs:
             raise ValueError("prune_target cannot exceed max_runs")
@@ -457,6 +459,7 @@ class InMemoryRunStore:
         # warning, because warning on a deliberate choice is how operators
         # learn to ignore warnings.
         self._archive_store = archive_store
+        self._concurrency = concurrency_admission or InMemoryConcurrencyAdmission()
         # The tombstone the durable stores keep in a column. `PgRunStore`
         # selects candidates with `archive_key IS NULL`, so a Run it has
         # already archived is not a candidate again; without the same record
@@ -583,6 +586,11 @@ class InMemoryRunStore:
             retention_expires_at=retention_expires_at,
         )
         run = admit_in_state(run, initial_status)
+        await self._concurrency.acquire_run(
+            run.run_id,
+            workspace_id=run.workspace_id,
+            principal_id=run.actor_principal_id,
+        )
         occurrence = occurrence_key(run.provenance)
         if occurrence is not None:
             # Checked and claimed with no await between, which is what makes
@@ -590,6 +598,7 @@ class InMemoryRunStore:
             # halves cannot be interleaved by another coroutine. The durable
             # backends get the same guarantee from a unique index instead.
             if occurrence in self._occurrences:
+                await self._concurrency.release_run(run.run_id)
                 raise DuplicateOccurrence(*occurrence)
             self._occurrences[occurrence] = run.run_id
         self._runs[run.run_id] = run
@@ -819,6 +828,8 @@ class InMemoryRunStore:
         self._runs[run_id] = updated
         for node_run in settled:
             self._node_runs[node_run.node_run_id] = node_run
+        if target in TERMINAL_RUN_STATUSES:
+            await self._concurrency.release_run(run_id)
         return updated.model_copy(deep=True)
 
     def _node_runs_of(self, run_id: str) -> list[NodeRun]:
@@ -863,6 +874,7 @@ class InMemoryRunStore:
                 "delete the descendants first"
             )
         self._forget_run(run_id)
+        await self._concurrency.release_run(run_id)
         return True
 
     async def create_node_run(self, run_id: str, *, node_id: str) -> NodeRun:
@@ -981,6 +993,12 @@ class InMemoryRunStore:
             attempt = Attempt.model_validate(
                 {**attempt.model_dump(mode="python"), "execution_lease": lease}
             )
+        run = self._require_run(node_run.run_id)
+        await self._concurrency.acquire_attempt(
+            attempt.attempt_id,
+            workspace_id=run.workspace_id,
+            principal_id=run.actor_principal_id,
+        )
         self._attempts[attempt.attempt_id] = attempt
         return attempt.model_copy(deep=True)
 
@@ -996,6 +1014,10 @@ class InMemoryRunStore:
         attempt = self._require_attempt(attempt_id)
         renewed = renew_attempt_lease(attempt, fencing_token=fencing_token, ttl=ttl, at=at)
         self._attempts[attempt_id] = renewed
+        await self._concurrency.renew_attempt(attempt_id, ttl=ttl)
+        node_run = self._node_runs.get(attempt.node_run_id)
+        if node_run is not None:
+            await self._concurrency.renew_run(node_run.run_id, ttl=ttl)
         return renewed.model_copy(deep=True)
 
     async def reclaim_expired_attempts(
@@ -1014,6 +1036,7 @@ class InMemoryRunStore:
         for attempt in doomed[:limit]:
             settled = reclaim_attempt(attempt, at=moment)
             self._attempts[attempt.attempt_id] = settled
+            await self._concurrency.release_attempt(attempt.attempt_id)
             reclaimed.append(settled.model_copy(deep=True))
         return reclaimed
 
@@ -1053,6 +1076,8 @@ class InMemoryRunStore:
             metrics=metrics,
         )
         self._attempts[attempt_id] = updated
+        if target in TERMINAL_ATTEMPT_STATUSES:
+            await self._concurrency.release_attempt(attempt_id)
         return updated.model_copy(deep=True)
 
     async def repair_attempt_result(self, attempt_id: str, *, result: object) -> Attempt:

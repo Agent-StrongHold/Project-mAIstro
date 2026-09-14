@@ -40,6 +40,7 @@ class DetailedHealthResponse(BaseModel):
     version: str
     checks: dict[str, ProbeResult]
     effective_resource_policy: dict[str, int | float | bool]
+    concurrency_admission: dict[str, int]
     strike_tracker: dict[str, str | bool]
 
 
@@ -184,6 +185,7 @@ async def readiness(
         version=request.app.version,
         checks=checks,
         effective_resource_policy=settings.effective_resource_policy().as_dict(),
+        concurrency_admission=settings.concurrency_admission_policy(),
         strike_tracker=_strike_tracker_diagnostics(container),
     )
 

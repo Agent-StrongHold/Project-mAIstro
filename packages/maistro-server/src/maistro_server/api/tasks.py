@@ -7,6 +7,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 
+from maistro.runs.concurrency import RunAdmissionRejected
 from maistro.tasks.http_contract import (
     WORKSPACE_ID_HEADER,
     WORKSPACE_SCOPE_SIGNATURE_HEADER,
@@ -79,7 +80,14 @@ async def create_task(
             )
         _authorize_workspace_scope(workspace_id, workspace_signature)
     uid = _owner_id(auth)
-    task = await queue.submit(request, user_id=uid, workspace_id=workspace_id)
+    try:
+        task = await queue.submit(request, user_id=uid, workspace_id=workspace_id)
+    except RunAdmissionRejected as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=str(exc),
+            headers={"Retry-After": str(max(1, int(exc.retry_after)))},
+        ) from exc
     response.headers["Location"] = f"/tasks/{task.task_id}"
     return TaskCreatedResponse(
         task_id=task.task_id,
