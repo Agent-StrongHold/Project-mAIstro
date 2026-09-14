@@ -347,6 +347,21 @@ async def test_post_call_pii_detected_is_redacted_and_flagged():
     assert audit.entries[0].verdict == "flagged"
 
 
+async def test_post_call_pii_match_value_is_masked_on_product_path():
+    from maistro.security.sentinel.pii_filter import scan_for_pii
+
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    result = await _sentinel().post_call("tool", f"key={secret}", _auth())
+    matches = scan_for_pii(f"key={secret}")
+
+    assert secret not in result
+    assert len(matches) == 1
+    assert matches[0].pii_type == "aws_key"
+    assert secret not in matches[0].value
+    assert matches[0].value.startswith("AKIA")
+    assert matches[0].value.endswith("(20 chars)")
+
+
 async def test_post_call_real_warden_times_out_pathological_regex(monkeypatch):
     """The production output gate must inherit Warden's ReDoS timeout."""
     import time
@@ -367,6 +382,38 @@ async def test_post_call_real_warden_times_out_pathological_regex(monkeypatch):
 
     assert result == "[Tool result blocked by Warden -- contained injection attempt]"
     assert time.monotonic() - started < 10
+
+
+async def test_post_call_real_warden_windows_pathological_reject_input(monkeypatch):
+    """The hot path bounds reject-pattern input before the fallback times out."""
+    import regex
+
+    import maistro.security.warden.detector as detector
+    from maistro.security.warden.detector import Warden
+
+    monkeypatch.setattr(
+        detector,
+        "REJECT_PATTERNS",
+        [(regex.compile(r"(a+)+b$"), "pathological test rule")],
+    )
+    lengths: list[int] = []
+    original = detector._scan_reject_patterns
+
+    def record_window(text: str):
+        lengths.append(len(text))
+        return original(text)
+
+    monkeypatch.setattr(detector, "_scan_reject_patterns", record_window)
+    # Keep the first window cheap, then put the pathological suffix in the
+    # next overlapping window so the test proves both windowing and timeout.
+    text = "x" * detector._SCAN_WINDOW_CHARS + "a" * detector._SCAN_WINDOW_CHARS + "b"
+    outcome = await _sentinel(warden=Warden()).process_output("tool", text, _auth())
+
+    assert outcome.blocked is True
+    assert outcome.warden_verdict is not None
+    assert outcome.warden_verdict.flags == ("regex_error:pathological test rule",)
+    assert len(lengths) > 1
+    assert max(lengths) <= detector._SCAN_WINDOW_CHARS
 
 
 async def test_post_call_real_warden_windows_large_fallback_input(monkeypatch):
@@ -401,6 +448,40 @@ async def test_post_call_real_warden_windows_large_fallback_input(monkeypatch):
         return original(text)
 
     monkeypatch.setattr(detector, "heuristic_scan", record_window)
+    text = "the quick brown fox jumps over the lazy dog. " * 3_000
+    result = await _sentinel(warden=Warden()).post_call("tool", text, _auth())
+
+    assert result.endswith("[... truncated, full result available in trace]")
+    assert len(lengths) > 1
+    assert max(lengths) <= detector._SCAN_WINDOW_CHARS
+
+
+async def test_post_call_real_warden_windows_large_fallback_semantic_input(monkeypatch):
+    """Layer 2.5 also stays inside the fallback regex window."""
+    import re
+
+    import maistro.security.warden._regex as regex_module
+    import maistro.security.warden.detector as detector
+    import maistro.security.warden.semantic as semantic
+    from maistro.security.warden.detector import Warden
+
+    monkeypatch.setattr(regex_module, "_RE2_AVAILABLE", False)
+    for name in ("_DANGEROUS_ACTIONS", "_SENSITIVE_OBJECTS", "_PRESCRIPTIVE_PATTERNS"):
+        patterns = getattr(semantic, name)
+        monkeypatch.setattr(
+            semantic,
+            name,
+            [regex_module.compile_pattern(pattern.pattern, re.IGNORECASE) for pattern in patterns],
+        )
+
+    lengths: list[int] = []
+    original = detector.semantic_tool_poisoning_signals
+
+    def record_window(text: str):
+        lengths.append(len(text))
+        return original(text)
+
+    monkeypatch.setattr(detector, "semantic_tool_poisoning_signals", record_window)
     text = "the quick brown fox jumps over the lazy dog. " * 3_000
     result = await _sentinel(warden=Warden()).post_call("tool", text, _auth())
 

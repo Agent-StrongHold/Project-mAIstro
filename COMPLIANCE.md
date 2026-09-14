@@ -50,13 +50,16 @@ flip to `gap-test`/`gap-impl` in the same PR that breaks it.
 
 The scanner/resource-limit claim above is exercised at the Sentinel output
 boundary, rather than inferred from Warden constants: the real Warden is invoked
-by `Sentinel.post_call` against a catastrophic regex and a multi-window benign
-result. The accelerated/fallback pattern contract is covered by
+by the output gate against a catastrophic regex in overlapping windows and a
+multi-window benign result. The accelerated/fallback pattern contract includes
+a complete Warden verdict comparison in
 `packages/maistro-core/tests/security/test_warden_regex_equivalence.py`.
 PII/secret handling is also exercised on `Sentinel.post_call`, `DirectStrategy`,
-and `ReactStrategy`; the strategy tests prove a missing PII-filter dependency
-blocks output instead of returning it unsanitized. These paths are the evidence
-for this mapping; the constants remain implementation details.
+and `ReactStrategy`; `test_sentinel_policy.py` proves the raw credential is not
+present in either output or `PIIMatch` metadata, while the strategy tests prove
+a missing PII-filter dependency blocks output instead of returning it unsanitized.
+These paths are the evidence for this mapping; the constants remain
+implementation details.
 
 ### OWASP gaps to close
 

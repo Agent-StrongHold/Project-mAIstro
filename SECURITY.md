@@ -116,9 +116,10 @@ docstring for what it cannot check):
 
 These limits are exercised through the output security boundary, not only by
 inspecting constants. `packages/maistro-core/tests/security/test_sentinel_policy.py`
-uses `Sentinel.post_call` with the real `Warden`: its pathological-regex case
-proves the `regex` timeout fails closed, and its large-input case records that
-every heuristic pass is at most `_SCAN_WINDOW_CHARS`. The Warden test suite also
+uses the Sentinel output gate with the real `Warden`: its pathological-regex
+cases prove both overlapping reject windows and the `regex` timeout fail closed,
+and its large-input cases record that heuristic and semantic fallback passes are
+at most `_SCAN_WINDOW_CHARS`. The Warden test suite also
 covers the no-tail window invariant and runs the accelerated-versus-stdlib corpus
 comparison in `test_warden_regex_equivalence.py` (the root dev extra installs
 `google-re2`, while the fallback cases force `re`).
@@ -126,9 +127,12 @@ comparison in `test_warden_regex_equivalence.py` (the root dev extra installs
 The PII hot path is likewise exercised at the product boundary: normalized
 secret cases call `Sentinel.post_call`, `DirectStrategy`, and `ReactStrategy` in
 `packages/maistro-core/tests/security/sentinel/test_pii_evasion_normalization.py`.
-Missing PII-filter imports are tested on both strategies and now return a blocking
-marker rather than unsanitized model/tool output (`packages/maistro-core/tests/agents/strategies/test_direct.py`
-and `test_react.py`).
+`test_sentinel_policy.py::test_post_call_pii_match_value_is_masked_on_product_path`
+proves the raw credential is absent from both the Sentinel result and the
+`PIIMatch` metadata; the existing property suite independently asserts the
+masked-value contract. Missing PII-filter imports are tested on both strategies
+and now return a blocking marker rather than unsanitized model/tool output
+(`packages/maistro-core/tests/agents/strategies/test_direct.py` and `test_react.py`).
 
 ### Configurable limits and their enforced floors
 

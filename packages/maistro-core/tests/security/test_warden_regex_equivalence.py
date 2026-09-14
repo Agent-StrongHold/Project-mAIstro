@@ -136,6 +136,40 @@ class TestEngineEquivalence:
             f"reference engines — Warden would classify differently: {mismatches[:5]}"
         )
 
+    async def test_warden_product_path_matches_with_fallback_engine(self, monkeypatch):
+        """The engine swap preserves the complete Warden verdict, not only APIs."""
+        import maistro.security.warden._regex as regex_module
+        from maistro.security.warden.detector import Warden
+
+        texts = _corpus()[:160]
+
+        async def scan_corpus() -> list[tuple[bool, bool, tuple[str, ...]]]:
+            verdicts = [await Warden().scan(text, "tool_result") for text in texts]
+            return [(v.clean, v.blocked, v.flags) for v in verdicts]
+
+        accelerated = await scan_corpus()
+        monkeypatch.setattr(regex_module, "_RE2_AVAILABLE", False)
+        monkeypatch.setattr(
+            heuristics,
+            "_INSTRUCTION_TOKENS",
+            compile_pattern(heuristics._INSTRUCTION_TOKENS.pattern, re.IGNORECASE),
+        )
+        monkeypatch.setattr(
+            heuristics,
+            "_BASE64_PATTERN",
+            compile_pattern(heuristics._BASE64_PATTERN.pattern, 0),
+        )
+        for name in ("_DANGEROUS_ACTIONS", "_SENSITIVE_OBJECTS", "_PRESCRIPTIVE_PATTERNS"):
+            patterns = getattr(semantic, name)
+            monkeypatch.setattr(
+                semantic,
+                name,
+                [compile_pattern(pattern.pattern, re.IGNORECASE) for pattern in patterns],
+            )
+
+        fallback = await scan_corpus()
+        assert fallback == accelerated
+
 
 class TestFallback:
     def test_an_unsupported_construct_falls_back_rather_than_failing(self) -> None:
