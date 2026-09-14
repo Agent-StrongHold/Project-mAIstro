@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import time
 import uuid
@@ -53,7 +54,7 @@ from routes.audit import log_audit
 #: Bumped whenever the policy below changes shape — new refusal reason,
 #: changed timeout, changed tool classification — so every recorded decision
 #: names the rules it was judged by.
-POLICY_VERSION = "chat-gate/1"
+POLICY_VERSION = "chat-gate/2"
 
 #: How long one scan may run before the turn fails closed.
 SCAN_TIMEOUT_SECONDS = 10.0
@@ -283,6 +284,12 @@ def tool_effect(tool_name: str) -> str:
     return TOOL_EFFECTS.get(tool_name, TOOL_EFFECT_DESTROY)
 
 
+def _workflow_request_digest(args: Mapping[str, Any]) -> str:
+    """Digest the exact model-visible workflow arguments for approval scope."""
+    payload = json.dumps(dict(args), sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def _approval_payload(evidence: Mapping[str, Any]) -> bytes:
     """Canonical bytes a human/delegated signer approves."""
     fields = {
@@ -291,6 +298,7 @@ def _approval_payload(evidence: Mapping[str, Any]) -> bytes:
             "action",
             "principal",
             "workflow_id",
+            "request_digest",
             "approval_id",
             "nonce",
             "expires_at",
@@ -302,7 +310,10 @@ def _approval_payload(evidence: Mapping[str, Any]) -> bytes:
 
 
 def _approval_is_authoritative(  # noqa: C901
-    evidence: Mapping[str, Any], user_id: str, workflow_id: str
+    evidence: Mapping[str, Any],
+    user_id: str,
+    workflow_id: str,
+    request_digest: str,
 ) -> bool:
     """Verify a scoped approval instead of trusting caller-shaped metadata.
 
@@ -314,6 +325,7 @@ def _approval_is_authoritative(  # noqa: C901
         "action",
         "principal",
         "workflow_id",
+        "request_digest",
         "approval_id",
         "nonce",
         "expires_at",
@@ -325,6 +337,8 @@ def _approval_is_authoritative(  # noqa: C901
     if evidence.get("action") != "run_workflow" or evidence.get("principal") != user_id:
         return False
     if evidence.get("workflow_id") != workflow_id:
+        return False
+    if evidence.get("request_digest") != request_digest:
         return False
     try:
         expires_at = int(evidence["expires_at"])
@@ -364,6 +378,25 @@ def _approval_is_authoritative(  # noqa: C901
         return False
 
 
+def _approval_audit_details(evidence: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """Keep refusal audit evidence bounded to its scope, not arbitrary payloads."""
+    if not evidence:
+        return None
+    return {
+        field: str(evidence[field])[:512]
+        for field in (
+            "action",
+            "principal",
+            "workflow_id",
+            "request_digest",
+            "approval_id",
+            "issuer",
+            "delegated_for",
+        )
+        if evidence.get(field) is not None
+    }
+
+
 def gate_tool_dispatch(
     tool_name: str,
     user_id: str,
@@ -371,6 +404,7 @@ def gate_tool_dispatch(
     approved: bool = False,
     approval_evidence: Mapping[str, Any] | None = None,
     workflow_id: str | None = None,
+    request_digest: str | None = None,
     gate_id: str | None = None,
 ) -> GateDecision | None:
     """The authorization decision for dispatching one tool, or None to run.
@@ -385,17 +419,15 @@ def gate_tool_dispatch(
         # Workflow approval must be a signed, exact-scope human/delegated
         # decision. A caller-shaped dict is not an authority boundary.
         if tool_name == "run_workflow" and (
-            not approved
-            or not approval_evidence
-            or not _approval_is_authoritative(approval_evidence, user_id, workflow_id or "")
+            not approval_evidence
+            or not request_digest
+            or not _approval_is_authoritative(
+                approval_evidence, user_id, workflow_id or "", request_digest
+            )
         ):
             decision = GateDecision(
                 allowed=False,
-                reason=(
-                    REASON_INVALID_APPROVAL
-                    if approved and approval_evidence
-                    else REASON_APPROVAL_REQUIRED
-                ),
+                reason=(REASON_INVALID_APPROVAL if approval_evidence else REASON_APPROVAL_REQUIRED),
                 boundary=_BOUNDARY_USER_INPUT,
                 surface="chat_tool_dispatch",
                 gate_id=gate_id or new_gate_id(),
@@ -410,13 +442,14 @@ def gate_tool_dispatch(
                     "principal": user_id or "anonymous",
                     "effect": effect,
                     "workflow_id": workflow_id,
+                    "approval_evidence": _approval_audit_details(approval_evidence),
                     "refusal_reason": decision.reason,
                     "policy_version": POLICY_VERSION,
                 },
                 severity="warning",
             )
             return decision
-        if approved:
+        if approved or (tool_name == "run_workflow" and approval_evidence):
             # Approval is supplied by the trusted caller after its human or
             # delegated-authority verifier has run. Model arguments never reach
             # this branch, and the evidence is scoped to this dispatch only.

@@ -19,7 +19,10 @@ import httpx
 from pydantic import BaseModel, ConfigDict
 
 from maistro.capabilities.binding import Binding
-from maistro.capabilities.effect_context import CapabilityEffectContext
+from maistro.capabilities.effect_context import (
+    CapabilityEffectContext,
+    default_effect_context,
+)
 from maistro.graph.nodes.base import BaseNode, NodeContext
 from maistro.http import shared_client
 
@@ -290,7 +293,12 @@ async def _run_tool_node(
                 "success": False,
             }
             return
-        if effect_context is not None and ctx is not None:
+        if ctx is not None:
+            # Canonical NodeContext is the execution boundary. Even standalone
+            # compatibility runs must use the canonical policy context rather
+            # than falling back to a direct provider call when the Container is
+            # not wired.
+            effect_context = effect_context or default_effect_context()
             if not ctx.node_run_id or not ctx.attempt_id:
                 raise RuntimeError(
                     "governed legacy tool call requires NodeRun and Attempt identity"
@@ -331,8 +339,9 @@ async def _run_tool_node(
             )
             response = str(invocation.result or "")
         else:
-            # Compatibility helper callers predate canonical NodeContext. The
-            # production resolver always supplies the governed context above.
+            # Compatibility helper callers without a NodeContext predate the
+            # canonical execution path and have no durable effect identity.
+            # Canonical production execution always supplies NodeContext above.
             response = await _call_tool_node(node, nid, inbound, results, task_desc)
         results[nid] = {"role": role, "response": response, "success": True}
     except Exception as exc:

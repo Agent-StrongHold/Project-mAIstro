@@ -35,6 +35,7 @@ from services.agent_materialization import (
 )
 from services.airtable_cache import get_airtable_base_tables_json, get_airtable_records_json
 from services.chat_gate import (
+    _workflow_request_digest,
     gate_tool_dispatch,
     gate_untrusted,
     new_gate_id,
@@ -1879,7 +1880,8 @@ async def _execute_tool(
     workflow_id = (
         str(args.get("dag_id") or args.get("id") or "") if tool_name == "run_workflow" else None
     )
-    approval_record = dict(approval_evidence or {}) if approved else None
+    request_digest = _workflow_request_digest(args) if tool_name == "run_workflow" else None
+    approval_record = dict(approval_evidence or {}) if approval_evidence else None
     if approval_record is not None:
         approval_record.setdefault("source", "caller_presented")
     refusal = gate_tool_dispatch(
@@ -1888,6 +1890,7 @@ async def _execute_tool(
         approved=approved,
         approval_evidence=approval_evidence,
         workflow_id=workflow_id or None,
+        request_digest=request_digest,
     )
     if refusal is not None:
         return {

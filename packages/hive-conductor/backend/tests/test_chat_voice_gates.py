@@ -599,6 +599,7 @@ def test_run_workflow_is_privileged_and_requires_scoped_approval() -> None:
         e for e in stores.audit_log.values() if e["action"] == "chat_tool_privilege_blocked"
     ][-1]
     assert blocked["detail"]["refusal_reason"] == chat_gate.REASON_INVALID_APPROVAL
+    assert blocked["detail"]["approval_evidence"]["approval_id"] == "approval-1"
 
 
 def _signed_workflow_approval(
@@ -615,6 +616,9 @@ def _signed_workflow_approval(
         "action": "run_workflow",
         "principal": principal,
         "workflow_id": workflow_id,
+        "request_digest": chat_gate._workflow_request_digest(
+            {"dag_id": workflow_id, "goal": "approved goal"}
+        ),
         "approval_id": approval_id,
         "nonce": f"nonce-{approval_id}",
         "expires_at": int(time.time()) + 300,
@@ -667,6 +671,9 @@ def test_signed_human_approval_is_exactly_scoped_and_audited() -> None:
             approved=True,
             approval_evidence=evidence,
             workflow_id="dag-1",
+            request_digest=chat_gate._workflow_request_digest(
+                {"dag_id": "dag-1", "goal": "approved goal"}
+            ),
             gate_id="gate-signed",
         )
         is None
@@ -685,6 +692,9 @@ def test_signed_human_approval_is_exactly_scoped_and_audited() -> None:
             approved=True,
             approval_evidence=delegated,
             workflow_id="dag-2",
+            request_digest=chat_gate._workflow_request_digest(
+                {"dag_id": "dag-2", "goal": "approved goal"}
+            ),
         )
         is None
     )
@@ -705,6 +715,22 @@ def test_signed_human_approval_is_exactly_scoped_and_audited() -> None:
             approved=True,
             approval_evidence=evidence,
             workflow_id="other-dag",
+            request_digest=chat_gate._workflow_request_digest(
+                {"dag_id": "other-dag", "goal": "approved goal"}
+            ),
+        )
+        is not None
+    )
+    assert (
+        chat_gate.gate_tool_dispatch(
+            "run_workflow",
+            "user-1",
+            approved=True,
+            approval_evidence=evidence,
+            workflow_id="dag-1",
+            request_digest=chat_gate._workflow_request_digest(
+                {"dag_id": "dag-1", "goal": "different goal"}
+            ),
         )
         is not None
     )
@@ -714,6 +740,59 @@ def test_signed_human_approval_is_exactly_scoped_and_audited() -> None:
     assert approval["detail"]["principal"] == "user-1"
     assert approval["detail"]["workflow_id"] == "dag-2"
     assert approval["detail"]["approval_evidence"]["approval_id"] == "approval-delegated"
+
+
+@pytest.mark.asyncio
+async def test_signed_workflow_approval_reaches_only_the_intended_handler_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stores
+    from nacl.signing import SigningKey
+
+    signing_key = SigningKey.generate()
+    from maistro.identity import did_key_from_public_key
+
+    stores.users["workflow-user"] = stores.users._model_class(
+        id="workflow-user",
+        username="workflow-user",
+        password_hash="unused",
+        role="user",
+        is_active=True,
+        permissions=[],
+        did=did_key_from_public_key(bytes(signing_key.verify_key)),
+        created_at=datetime.now(UTC),
+    )
+    calls: list[dict[str, Any]] = []
+
+    async def workflow_handler(args: dict, user_id: str, jira_pat: str | None) -> dict:
+        calls.append({"args": args, "user_id": user_id})
+        return {"run_id": "run-approved", "dag_id": args["dag_id"], "status": "completed"}
+
+    monkeypatch.setattr(service, "_TOOL_HANDLERS", {"run_workflow": workflow_handler})
+    evidence = _signed_workflow_approval(
+        principal="workflow-user",
+        workflow_id="dag-1",
+        approval_id="approval-reachable",
+        signing_key=signing_key,
+    )
+    args = {"dag_id": "dag-1", "goal": "approved goal"}
+
+    # The signed evidence is the authority; a boolean flag is not.
+    result = await service._execute_tool(
+        "run_workflow",
+        args,
+        "workflow-user",
+        approval_evidence=evidence,
+    )
+
+    assert result.get("run_id") == "run-approved", result
+    assert calls == [{"args": args, "user_id": "workflow-user"}]
+    execution = [
+        row for row in stores.audit_log.values() if row["action"] == "chat_workflow_execution"
+    ][-1]
+    assert execution["detail"]["run_id"] == "run-approved"
+    assert execution["detail"]["principal"] == "workflow-user"
+    assert execution["detail"]["approval_evidence"]["approval_id"] == "approval-reachable"
 
 
 @pytest.mark.asyncio

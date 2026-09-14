@@ -282,6 +282,45 @@ async def test_legacy_mutation_is_refused_by_independent_effect_policy(
     assert event.payload["effect_key"] == "legacy-tool:jira_write"
 
 
+async def test_standalone_canonical_node_cannot_bypass_effect_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A canonical NodeContext is governed even without a Container wiring."""
+    import services.legacy_dag_node as adapter
+    import services.tool_executor as tools
+
+    calls: list[str] = []
+
+    async def fake_write(task_desc: str) -> dict[str, Any]:
+        calls.append(task_desc)
+        return {"ok": True}
+
+    monkeypatch.setattr(tools, "TOOLS", {"jira_write": fake_write})
+    results: dict[str, dict[str, Any]] = {}
+    ctx = NodeContext(
+        run_id="run-standalone",
+        dag_id="dag-standalone",
+        node_id="n1",
+        node_run_id="nr-standalone",
+        attempt_id="a-standalone",
+        workspace_id="ws-standalone",
+        project_id="proj-standalone",
+    )
+
+    await adapter._run_tool_node(
+        {"id": "n1", "tool": "jira_write"},
+        "n1",
+        {},
+        results,
+        "mutate Jira",
+        ctx=ctx,
+    )
+
+    assert calls == []
+    assert results["n1"]["success"] is False
+    assert "approval" in results["n1"]["response"].lower()
+
+
 async def test_a_generic_tool_result_is_json_encoded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
