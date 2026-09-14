@@ -170,6 +170,19 @@ def test_openai_compatible_probe_classifies_failures(monkeypatch) -> None:
     assert response.status_code == 422
     assert "policy rejection" in response.json()["detail"]
 
+    import httpx
+
+    monkeypatch.setattr(
+        "routes.credentials.sync_client",
+        lambda **_kwargs: (_ for _ in ()).throw(httpx.ConnectError("certificate verify failed")),
+    )
+    response = c.post(
+        "/v1/credentials/openai_compatible/test",
+        json={"config": config, "secret": "draft-key"},
+    )
+    assert response.status_code == 502
+    assert "TLS" in response.json()["detail"]
+
 
 def test_openai_compatible_credential_lifecycle_and_non_persisting_test(
     monkeypatch,
@@ -198,6 +211,16 @@ def test_openai_compatible_credential_lifecycle_and_non_persisting_test(
     )
     assert invalid.status_code == 422
     assert c.get("/v1/credentials/openai_compatible/config").json()["config"] == before_invalid_test
+    for base_url in (
+        "https://gateway.example/v1?",
+        "https://gateway.example/v1#",
+        "https://gateway.example\\v1",
+    ):
+        rejected = c.put(
+            "/v1/credentials/openai_compatible/config",
+            json={"config": {"display_name": "bad", "base_url": base_url}},
+        )
+        assert rejected.status_code == 422
 
     config = {
         "display_name": "Private gateway",
@@ -273,6 +296,23 @@ def test_openai_compatible_credential_lifecycle_and_non_persisting_test(
     assert c.delete("/v1/credentials/openai_compatible").status_code == 204
     deleted = c.get("/v1/credentials/openai_compatible/config").json()
     assert deleted["config"] == {}
+
+
+def test_openai_compatible_delete_removes_config_without_a_secret() -> None:
+    c = _login()
+    saved = c.put(
+        "/v1/credentials/openai_compatible/config",
+        json={
+            "config": {
+                "display_name": "Draft gateway",
+                "base_url": "https://gateway.example/v1",
+            }
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    deleted = c.delete("/v1/credentials/openai_compatible")
+    assert deleted.status_code == 204, deleted.text
+    assert c.get("/v1/credentials/openai_compatible/config").json()["config"] == {}
 
 
 def test_user_cannot_see_other_users_secrets() -> None:

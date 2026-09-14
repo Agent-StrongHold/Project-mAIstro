@@ -85,7 +85,12 @@ def _validate_openai_config(config: dict[str, str]) -> dict[str, str]:
         or parsed.password is not None
         or parsed.query
         or parsed.fragment
-        or any(ord(char) < 32 for char in base_url)
+        # Empty query/fragment delimiters are still not endpoint data. Reject
+        # them, plus whitespace and backslashes, before httpx normalizes them.
+        or "?" in base_url
+        or "#" in base_url
+        or "\\" in base_url
+        or any(char.isspace() or ord(char) < 32 for char in base_url)
         or (port is None and ":" in parsed.netloc.rsplit("]", 1)[-1])
     ):
         raise HTTPException(
@@ -350,7 +355,17 @@ def test_credential(provider_id: str, body: TestCredentialBody, request: Request
 def _looks_like_tls_error(exc: BaseException) -> bool:
     current: BaseException | None = exc
     for _ in range(3):
-        if isinstance(current, ssl.SSLError) or "ssl" in str(current).lower():
+        message = str(current).lower()
+        if isinstance(current, ssl.SSLError) or any(
+            marker in message
+            for marker in (
+                "ssl",
+                "tls",
+                "certificate verify failed",
+                "certificate_unknown",
+                "wrong version number",
+            )
+        ):
             return True
         current = current.__cause__ or current.__context__
         if current is None:
@@ -387,10 +402,14 @@ def delete_credential(provider_id: str, request: Request) -> None:
     uid = _user_id(request)
     try:
         store = cred_svc.require_store()
-        if not store.delete_secret(uid, provider_id):
-            raise HTTPException(status_code=404, detail="Credential not configured")
+        deleted_secret = store.delete_secret(uid, provider_id)
     except CredentialStoreUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    stores.user_provider_config.pop(_config_key(uid, provider_id), None)
+    # Non-secret configuration can be saved before the first key. Deleting a
+    # draft must remove that configuration too, rather than reporting 404 and
+    # leaving an endpoint behind with no vault secret.
+    deleted_config = stores.user_provider_config.pop(_config_key(uid, provider_id), None)
+    if not deleted_secret and deleted_config is None:
+        raise HTTPException(status_code=404, detail="Credential not configured")
     log_audit("credential_delete", uid, target=provider_id)
