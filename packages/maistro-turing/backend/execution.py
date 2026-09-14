@@ -11,10 +11,19 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import OrderedDict
-from typing import Any, ClassVar
+from collections.abc import Callable
+from typing import Any, ClassVar, Protocol
 
 from pydantic import BaseModel
 
+from maistro.capabilities.binding import Binding, ResolvedCapabilityProvider
+from maistro.capabilities.effect_context import (
+    CapabilityEffectContext,
+    new_in_memory_effect_context,
+)
+from maistro.capabilities.invocation import Invocation, InvocationStatus
+from maistro.capabilities.model_chat import MODEL_CHAT_CAPABILITY
+from maistro.capabilities.providers.llm_gateway import ModelChatRequest
 from maistro.graph import Graph, Node
 from maistro.graph.durable_runs import (
     CanonicalDurableRunStore,
@@ -35,6 +44,7 @@ from maistro.runs.model import (
 from maistro.runs.retention import RetentionPolicy, RunRetentionSweeper
 from maistro.runs.sources import ADMISSION_SOURCE, CHAT_SOURCE
 from maistro.workspaces.store import InMemoryWorkspaceStore
+from maistro_turing.bridge import TuringProviderBridge
 from maistro_turing.runtime import TuringChatSession
 
 logger = logging.getLogger(__name__)
@@ -56,6 +66,73 @@ class _ChatOutput(BaseModel):
     reply: str
 
 
+class _TuringChatProvider:
+    """Adapt Turing's configured provider to the canonical model-chat slot."""
+
+    def __init__(self, bridge: TuringProviderBridge) -> None:
+        self.bridge = bridge
+
+    @property
+    def name(self) -> str:
+        return "turing-provider"
+
+    @property
+    def slot(self) -> str:
+        return MODEL_CHAT_CAPABILITY
+
+    @property
+    def trust_tier(self) -> str:
+        return "t1"
+
+
+def _resolver_for(
+    bridge: TuringProviderBridge,
+) -> Callable[[Binding], Any]:
+    async def resolve(_binding: Binding) -> ResolvedCapabilityProvider:
+        return _TuringChatProvider(bridge)
+
+    return resolve
+
+
+async def _execute_turing_provider(
+    provider: ResolvedCapabilityProvider,
+    payload: Any,
+) -> dict[str, Any]:
+    if not isinstance(provider, _TuringChatProvider):
+        raise TypeError("Turing chat resolved a foreign Provider")
+    if not isinstance(payload, ModelChatRequest):
+        raise TypeError("Turing chat Invocation received a foreign request")
+    response = await asyncio.to_thread(
+        provider.bridge.complete,
+        str(payload.messages[-1]["content"]),
+        max_tokens=payload.max_tokens,
+    )
+    return {"choices": [{"message": {"content": response}}]}
+
+
+def _reply_from_invocation(invocation: Invocation) -> str:
+    if invocation.status is not InvocationStatus.COMPLETED:
+        raise RuntimeError(invocation.error or "Turing chat Invocation failed")
+    body = invocation.result
+    if not isinstance(body, dict):
+        raise RuntimeError("Turing chat Invocation produced no response body")
+    choices = body.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise RuntimeError("Turing chat Invocation produced no choices")
+    message = choices[0].get("message")
+    if not isinstance(message, dict):
+        raise RuntimeError("Turing chat Invocation produced no message")
+    return str(message.get("content") or "")
+
+
+class _ChatSession(Protocol):
+    """Turing conversation state used by the canonical chat Node."""
+
+    async def prepare_message(self, message: str) -> str: ...
+
+    async def record_response(self, message: str, reply: str) -> None: ...
+
+
 class _ChatNode(BaseNode[_ChatInput, _ChatOutput]):
     """Execute one Turing domain chat turn under canonical Attempt evidence."""
 
@@ -68,11 +145,26 @@ class _ChatNode(BaseNode[_ChatInput, _ChatOutput]):
     idempotent: ClassVar[bool] = False
     external_io: ClassVar[bool] = True
 
-    def __init__(self, session: TuringChatSession) -> None:
+    def __init__(
+        self,
+        session: _ChatSession,
+        provider: TuringProviderBridge,
+        invoke_chat: Callable[..., Any],
+    ) -> None:
         self._session = session
+        self._provider = provider
+        self._invoke_chat = invoke_chat
 
     async def _execute(self, inputs: _ChatInput, ctx: NodeContext) -> _ChatOutput:
-        return _ChatOutput(reply=await self._session.handle_message(inputs.message))
+        prompt = await self._session.prepare_message(inputs.message)
+        reply = await self._invoke_chat(
+            bridge=self._provider,
+            prompt=prompt,
+            max_tokens=1000,
+            context=ctx,
+        )
+        await self._session.record_response(inputs.message, reply)
+        return _ChatOutput(reply=reply)
 
 
 class TuringExecutionPlane:
@@ -104,7 +196,10 @@ class TuringExecutionPlane:
             self.run_store,
             InMemoryGraphContinuationStore(),
         )
+        self.effects: CapabilityEffectContext = new_in_memory_effect_context()
         self._workspace_by_user: dict[str, str] = {}
+        self._binding_by_workspace: dict[str, str] = {}
+        self._invocation_ids_by_run: dict[str, str] = {}
         self._scope_lock = asyncio.Lock()
         self._retained_runs: OrderedDict[str, None] = OrderedDict()
         self._retention_lock = asyncio.Lock()
@@ -129,7 +224,76 @@ class TuringExecutionPlane:
                 workspace_id = workspace.workspace_id
                 self._workspace_by_user[user_id] = workspace_id
             root = await self.project_store.root_for_workspace(workspace_id)
+            if workspace_id not in self._binding_by_workspace:
+                binding = Binding(
+                    workspace_id=workspace_id,
+                    project_id=root.project_id,
+                    node_id=_CHAT_NODE_ID,
+                    capability=MODEL_CHAT_CAPABILITY,
+                    config={"source": "turing.chat"},
+                )
+                await self.effects.bindings.put(binding)
+                self._binding_by_workspace[workspace_id] = binding.binding_id
             return workspace_id, root.project_id
+
+    async def invocation_for_run(self, run_id: str) -> Invocation | None:
+        """Return the canonical model Invocation projected for a Turing Run."""
+        invocation_id = self._invocation_ids_by_run.get(run_id)
+        if invocation_id is None:
+            return None
+        return await self.effects.invocation_store.get(invocation_id)
+
+    async def _invoke_chat(
+        self,
+        *,
+        bridge: TuringProviderBridge,
+        prompt: str,
+        max_tokens: int | None,
+        context: Any,
+    ) -> str:
+        """Run one Turing model call through Binding -> Provider -> Invocation."""
+        workspace_id = str(context.workspace_id or "")
+        project_id = str(context.project_id or "")
+        binding_id = self._binding_by_workspace.get(workspace_id)
+        if binding_id is None:
+            raise RuntimeError("Turing chat Binding is not admitted for this Workspace")
+        binding = await self.effects.bindings.resolve(
+            binding_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            node_id=context.node_id,
+            capability=MODEL_CHAT_CAPABILITY,
+        )
+        request = ModelChatRequest(
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+        )
+
+        try:
+            invocation = await self.effects.invocations.invoke(
+                binding=binding,
+                run_id=context.run_id,
+                node_run_id=context.node_run_id,
+                attempt_id=context.attempt_id,
+                effect_key="turing.chat.complete",
+                request=request,
+                resolver=_resolver_for(bridge),
+                executor=_execute_turing_provider,
+            )
+        except BaseException:
+            # The governed service terminalizes unknown provider outcomes before
+            # re-raising. Recover that canonical evidence for the Run projection.
+            latest = await self.effects.invocations.latest_effect(
+                binding=binding,
+                run_id=context.run_id,
+                node_run_id=context.node_run_id,
+                effect_key="turing.chat.complete",
+            )
+            if latest is not None:
+                self._invocation_ids_by_run[context.run_id] = latest.invocation_id
+            raise
+        self._invocation_ids_by_run[context.run_id] = invocation.invocation_id
+        return _reply_from_invocation(invocation)
 
     async def _track_admission(self, run_id: str) -> None:
         self._retained_runs[run_id] = None
@@ -284,7 +448,10 @@ class TuringExecutionPlane:
             await self._cancel_incomplete_admission(admitted_run_id)
             raise TuringAdmissionUnavailable("canonical Turing chat admission failed") from exc
 
-        node = _ChatNode(session)
+        provider = getattr(session, "provider_bridge", TuringProviderBridge())
+        if not isinstance(provider, TuringProviderBridge):
+            raise TypeError("Turing chat session has no canonical provider bridge")
+        node = _ChatNode(session, provider, self._invoke_chat)
         dispatch_prepared = False
 
         def resolve(node_id: str, _graph: Graph) -> BaseNode[Any, Any]:
