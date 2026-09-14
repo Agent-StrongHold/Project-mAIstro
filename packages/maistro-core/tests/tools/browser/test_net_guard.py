@@ -120,6 +120,19 @@ async def test_every_notation_of_a_private_or_dangerous_target_is_denied(url: st
 
 
 @pytest.mark.ac("SPEC-090326-b7e2/AC-2")
+async def test_a_redirect_chain_is_bounded_and_fails_closed() -> None:
+    """An endless redirect cannot make the route handler loop indefinitely."""
+    guard, context = await _guarded_context(
+        responses={_PUBLIC: FakeHttpResponse(302, location=_PUBLIC)}
+    )
+
+    route = await context.navigate(_PUBLIC)
+
+    assert route.action == ("abort", ABORT_REASON)
+    assert guard.events[-1].reason == "error"
+    assert len([event for event in guard.events if event.decision == ALLOWED]) == 21
+
+
 async def test_a_redirect_hop_from_public_to_private_is_denied_at_that_hop() -> None:
     """The controlled wire follows a public redirect through the real route handler."""
     guard, context = await _guarded_context(
@@ -307,6 +320,29 @@ async def test_allowed_and_denied_decisions_are_both_audited() -> None:
     await context.navigate("http://10.9.8.7/x")
 
     assert [e.decision for e in guard.events] == [ALLOWED, DENIED]
+
+
+async def test_a_route_without_fetch_or_fulfill_fails_closed() -> None:
+    """A route API drift must not silently restore an ungoverned continue."""
+    from types import SimpleNamespace
+
+    guard = BrowserNetworkGuard()
+    answered: list[str] = []
+    route = SimpleNamespace(
+        request=FakePwRequest(_PUBLIC),
+        fetch=None,
+        fulfill=None,
+    )
+
+    async def _abort(_reason: str) -> None:
+        answered.append("abort")
+
+    route.abort = _abort
+    await guard.handle_route(route)
+
+    assert answered == ["abort"]
+    assert guard.events[-1].decision == DENIED
+    assert guard.events[-1].reason == "error"
 
 
 async def test_an_unexpected_error_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
