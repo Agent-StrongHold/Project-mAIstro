@@ -123,6 +123,23 @@ class TestAnOutcomeNamesItsSession:
         assert recorded.session_id == "sess-1"
 
     @pytest.mark.ac("SPEC-083026-56ee/AC-4")
+    async def test_a_turn_records_the_canonical_project_and_provenance(self) -> None:
+        """Outcome evidence must stay addressable from the scoped prompt read."""
+        outcomes = _OutcomeStore()
+        with bind_execution_context(
+            project_id="project-1",
+            run_id="run-1",
+            node_run_id="node-run-1",
+            attempt_id="attempt-1",
+        ):
+            await _turn(_agent(outcomes), "sess-1")
+
+        recorded = outcomes.recorded[0]
+        assert recorded.project_id == "project-1"
+        assert recorded.run_id == "run-1"
+        assert recorded.node_run_id == "node-run-1"
+        assert recorded.attempt_id == "attempt-1"
+
     async def test_a_turn_outside_a_session_names_none(self) -> None:
         """Not the empty-string session that `session_id or ""` used to make
         indistinguishable from a session whose id happens to be blank."""

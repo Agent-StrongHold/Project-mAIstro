@@ -184,7 +184,13 @@ def _auth_context(auth: AuthenticatedPrincipal | None) -> AuthContext | None:
     """
     if auth is None:
         return None
-    return AuthContext(user_id=auth.user_id, roles=auth.roles)
+    return AuthContext(
+        user_id=auth.user_id,
+        roles=auth.roles,
+        org_id=getattr(auth, "org_id", ""),
+        team_id=getattr(auth, "team_id", ""),
+        project_id=getattr(auth, "project_id", ""),
+    )
 
 
 async def _admit_turn(

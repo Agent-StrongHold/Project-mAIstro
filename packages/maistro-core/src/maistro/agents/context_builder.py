@@ -184,6 +184,7 @@ class ContextBuilder:
         budget_chars = await _apply_memory(
             context_assembly_policy,
             project_id=project_id,
+            org_id=org_id,
             run_id=run_id,
             agent_id=agent_id,
             session_id=session_id,
@@ -202,6 +203,7 @@ async def _apply_memory(
     policy: ContextAssemblyPolicy | None,
     *,
     project_id: str,
+    org_id: str,
     run_id: str,
     agent_id: str,
     session_id: str,
@@ -233,6 +235,7 @@ async def _apply_memory(
         project_id=project_id,
         run_id=run_id,
         agent_id=agent_id,
+        org_id=org_id,
         session_id=session_id,
         budget_tokens=budget_chars // _CHARS_PER_TOKEN,
         query=query,
