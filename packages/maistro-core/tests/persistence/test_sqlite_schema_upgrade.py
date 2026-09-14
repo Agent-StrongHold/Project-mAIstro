@@ -151,6 +151,25 @@ async def test_failed_upgrade_rolls_back_and_can_retry(tmp_path: Path) -> None:
             await conn.execute("CREATE TABLE partial (id INTEGER)")
 
 
+@pytest.mark.asyncio
+async def test_configured_sqlite_schema_failure_propagates(tmp_path: Path) -> None:
+    """Wiring surfaces an incompatible schema instead of choosing memory."""
+    import aiosqlite
+
+    from maistro.container import _wire_episodic_store
+
+    path = tmp_path / "incompatible.sqlite"
+    async with aiosqlite.connect(path) as conn:
+        await conn.execute("CREATE TABLE episodic_memories (memory_id TEXT)")
+        await conn.commit()
+        with pytest.raises(sqlite3.OperationalError, match="no such column"):
+            await _wire_episodic_store(
+                database_url="sqlite:///incompatible.sqlite",
+                pg_pool=None,
+                db_pool=conn,
+            )
+
+
 @pytest.mark.parametrize("kind", sorted(_LEGACY_SCHEMA))
 def test_two_processes_upgrade_each_legacy_sqlite_store(kind: str, tmp_path: Path) -> None:
     """Both first opens must succeed when they race on the same old file."""
