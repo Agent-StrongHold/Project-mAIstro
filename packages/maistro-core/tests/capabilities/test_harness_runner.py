@@ -9,7 +9,10 @@ import pytest
 
 from maistro.agents.spec.agent_spec import AgentRole, AgentSpec
 from maistro.capabilities.bootstrap import default_capability_registry
-from maistro.capabilities.providers.harness_safety import SafeHarnessRunner
+from maistro.capabilities.providers.harness_safety import (
+    HarnessSecurityUnavailable,
+    SafeHarnessRunner,
+)
 from maistro.capabilities.providers.subprocess_harness import SubprocessHarnessRunner
 from maistro.capabilities.slots.harness_runner import (
     SLOT_NAME,
@@ -233,6 +236,19 @@ async def test_warden_blocks_inbound_before_reaching_harness():
 
     assert "injection" in exc.value.flags
     assert inner.sends == []  # harness never saw the payload
+
+
+async def test_warden_failure_fails_closed_before_reaching_harness():
+    class _BrokenWarden:
+        async def scan(self, content: str, boundary: str) -> WardenVerdict:
+            raise RuntimeError("judge offline")
+
+    inner = _FakeInner()
+    safe = SafeHarnessRunner(inner, warden=_BrokenWarden())
+
+    with pytest.raises(HarnessSecurityUnavailable):
+        await safe.send("s", [{"role": "user", "content": "clean"}])
+    assert inner.sends == []
 
 
 async def test_clean_input_reaches_harness():

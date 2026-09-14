@@ -16,12 +16,12 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
-from services.engine import get_engine
+from services.engine import WardenCompositionUnavailable, get_engine
 
 from maistro.agents.spec.agent_spec import AgentRole, AgentSpec
 from maistro.capabilities import HarnessSessionManager, Unavailable
+from maistro.capabilities.providers.harness_safety import HarnessSecurityUnavailable
 from maistro.capabilities.slots.harness_runner import HarnessInputBlocked
-from maistro.security.warden.detector import Warden
 
 router = APIRouter(tags=["harness"])
 
@@ -29,11 +29,19 @@ _manager: HarnessSessionManager | None = None
 
 
 def _get_manager() -> HarnessSessionManager:
-    """Lazily build a process-wide manager over the engine registry + Warden."""
+    """Build the manager over the engine registry and canonical Container Warden."""
     global _manager
     if _manager is None:
-        _manager = HarnessSessionManager(get_engine().capabilities, warden=Warden())
+        engine = get_engine()
+        _manager = HarnessSessionManager(engine.capabilities, warden=engine.warden)
     return _manager
+
+
+def _warden_unavailable() -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail="harness unavailable: the canonical security scan could not run",
+    )
 
 
 class StartBody(BaseModel):
@@ -65,7 +73,11 @@ def _agent_spec(body: StartBody) -> AgentSpec:
 
 @router.post("/sessions")
 async def start_session(body: StartBody) -> dict[str, Any]:
-    result = await _get_manager().start(_agent_spec(body), workdir=body.workdir)
+    try:
+        manager = _get_manager()
+    except WardenCompositionUnavailable as exc:
+        raise _warden_unavailable() from exc
+    result = await manager.start(_agent_spec(body), workdir=body.workdir)
     if isinstance(result, Unavailable):
         raise HTTPException(status_code=503, detail=result.reason)
     return {"session_id": result}
@@ -75,6 +87,10 @@ async def start_session(body: StartBody) -> dict[str, Any]:
 async def send_turn(session_id: str, body: SendBody) -> dict[str, Any]:
     try:
         result = await _get_manager().send(session_id, body.messages)
+    except WardenCompositionUnavailable as exc:
+        raise _warden_unavailable() from exc
+    except HarnessSecurityUnavailable as exc:
+        raise _warden_unavailable() from exc
     except HarnessInputBlocked as exc:
         raise HTTPException(
             status_code=400, detail=f"blocked by warden: {', '.join(exc.flags)}"
@@ -86,7 +102,10 @@ async def send_turn(session_id: str, body: SendBody) -> dict[str, Any]:
 
 @router.get("/sessions/{session_id}/stream")
 async def stream_session(session_id: str, request: Request) -> StreamingResponse:
-    manager = _get_manager()
+    try:
+        manager = _get_manager()
+    except WardenCompositionUnavailable as exc:
+        raise _warden_unavailable() from exc
 
     async def event_gen() -> Any:
         yield ": connected\n\n"
@@ -105,5 +124,9 @@ async def stream_session(session_id: str, request: Request) -> StreamingResponse
 
 @router.delete("/sessions/{session_id}")
 async def stop_session(session_id: str) -> dict[str, Any]:
-    await _get_manager().stop(session_id)
+    try:
+        manager = _get_manager()
+    except WardenCompositionUnavailable as exc:
+        raise _warden_unavailable() from exc
+    await manager.stop(session_id)
     return {"stopped": True}

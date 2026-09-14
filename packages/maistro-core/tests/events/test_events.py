@@ -409,11 +409,17 @@ class TestEmitRobustness:
             return _Resp()
 
         import maistro.events.handlers as handlers_mod
+        from maistro.security._types import WardenVerdict
 
         class _FakeClient:
             post = staticmethod(fake_post)
 
+        class _AllowingWarden:
+            async def scan(self, content: str, boundary: str) -> WardenVerdict:
+                return WardenVerdict(clean=True)
+
         handlers_mod.set_service_client(_FakeClient())  # type: ignore[arg-type]
+        handlers_mod.set_warden(_AllowingWarden())  # type: ignore[arg-type]
         try:
             trigger = Trigger(
                 name="escalate",
@@ -428,6 +434,7 @@ class TestEmitRobustness:
             await conductor_chat_action(trigger, event)
         finally:
             handlers_mod.set_service_client(None)
+            handlers_mod.set_warden(None)
 
         # The action ran and produced a message; the missing key did not abort it.
         assert "message" in captured, "action was silently dropped on missing template key"

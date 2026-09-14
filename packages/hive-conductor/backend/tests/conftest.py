@@ -25,12 +25,18 @@ sys.path.insert(0, str(_BACKEND))
 
 @pytest.fixture(autouse=True, scope="session")
 def _init_engine() -> None:
+    from types import SimpleNamespace
+
     import services.engine as engine_mod
-    from adapters.maistro_core import StubAgentPort
+
+    from maistro.security.warden.detector import Warden
 
     if engine_mod._singleton is None:
         svc = engine_mod.EngineService()
-        svc._agent_port = StubAgentPort()
+        # Route tests still use the explicit stub runtime, but security routes
+        # need a canonical test composition rather than constructing a bare
+        # Warden of their own.
+        svc._agent_port = SimpleNamespace(container=SimpleNamespace(warden=Warden()))
         engine_mod._singleton = svc
 
     import services.foundation as foundation_mod

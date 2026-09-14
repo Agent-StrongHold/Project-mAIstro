@@ -69,6 +69,10 @@ def _message_text(message: dict[str, Any]) -> str:
     return f"{content_text}\n{serialized}" if content_text else serialized
 
 
+class HarnessSecurityUnavailable(RuntimeError):
+    """The inbound Warden could not produce a verdict; refuse the harness turn."""
+
+
 class SafeHarnessRunner:
     """Wrap an inner ``HarnessRunner`` with Warden (inbound) + ActionGate (outbound)."""
 
@@ -127,7 +131,10 @@ class SafeHarnessRunner:
     # --- internals ---
     async def _scan_inbound(self, messages: list[dict[str, Any]]) -> None:
         for message in messages:
-            verdict = await self._warden.scan(_message_text(message), "user_input")
+            try:
+                verdict = await self._warden.scan(_message_text(message), "user_input")
+            except Exception as exc:
+                raise HarnessSecurityUnavailable("the security scan could not run") from exc
             # Match the native agent path (agents/base.py): any UNCLEAN verdict is
             # refused, not just a hard `blocked` one — single-pattern injections
             # come back clean=False/blocked=False and must not reach the harness.

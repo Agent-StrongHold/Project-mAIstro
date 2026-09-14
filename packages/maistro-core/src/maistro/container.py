@@ -1647,6 +1647,11 @@ async def create_container(
         backend = "SQLite"
     else:
         backend = "InMemory"
+    # Bind model re-entry handlers to this exact Container composition. The
+    # handler module never constructs or discovers its own Warden.
+    from maistro.events import handlers as event_handlers
+
+    event_handlers.set_warden(container.warden)
     logger.info("Container wired (%s stores)", backend)
     return container
 

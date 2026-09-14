@@ -67,6 +67,49 @@ def _install_harness(*, warden: Any, healthy: bool = True, enabled: bool = True)
     harness_mod._manager = HarnessSessionManager(reg, warden=warden)
 
 
+def test_harness_manager_uses_the_application_container_warden(admin_client, monkeypatch):
+    from types import SimpleNamespace
+
+    import services.engine as engine_mod
+
+    warden = _StubWarden(block_on="EVIL")
+    monkeypatch.setattr(
+        engine_mod.get_engine(),
+        "_agent_port",
+        SimpleNamespace(container=SimpleNamespace(warden=warden)),
+    )
+    harness_mod._manager = None
+    manager = harness_mod._get_manager()
+    assert manager._warden is warden
+
+
+def test_start_fails_closed_without_container_security_composition(admin_client, monkeypatch):
+    from types import SimpleNamespace
+
+    import services.engine as engine_mod
+
+    monkeypatch.setattr(engine_mod.get_engine(), "_agent_port", SimpleNamespace(container=None))
+    harness_mod._manager = None
+    r = admin_client.post("/v1/harness/sessions", json={"description": "x"})
+    assert r.status_code == 503
+    assert "canonical security scan" in r.json()["detail"]
+
+
+def test_send_fails_closed_when_container_warden_cannot_scan(admin_client):
+    class _BrokenWarden:
+        async def scan(self, content: str, boundary: str) -> WardenVerdict:
+            raise RuntimeError("judge offline")
+
+    _install_harness(warden=_BrokenWarden())
+    started = admin_client.post("/v1/harness/sessions", json={"description": "x"})
+    assert started.status_code == 200
+    r = admin_client.post(
+        f"/v1/harness/sessions/{started.json()['session_id']}/send",
+        json={"messages": [{"role": "user", "content": "ping"}]},
+    )
+    assert r.status_code == 503
+
+
 def test_start_returns_503_when_no_active_harness(admin_client):
     reg = get_engine().capabilities
     reg.set_enabled(SLOT_NAME, False)  # force SAFE_NOOP fallback

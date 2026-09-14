@@ -12,10 +12,24 @@ from typing import Any
 from maistro.auth.client import ServiceKeyClient
 from maistro.events.bus import Event, Trigger
 from maistro.http import shared_client
+from maistro.security.warden.detector import Warden
 
 logger = logging.getLogger("maistro.events.handlers")
 
 _global_client: ServiceKeyClient | None = None
+_global_warden: Warden | None = None
+
+
+class EventSecurityUnavailable(RuntimeError):
+    """The canonical Warden composition is not available for event re-entry."""
+
+
+class EventPayloadBlocked(RuntimeError):
+    """An event payload was refused before it could become model context."""
+
+    def __init__(self, flags: tuple[str, ...]) -> None:
+        self.flags = flags
+        super().__init__(f"event payload blocked by Warden: {', '.join(flags) or 'unspecified'}")
 
 
 class _DefaultingDict(dict):  # type: ignore[type-arg]
@@ -53,6 +67,37 @@ def set_service_client(client: ServiceKeyClient | None) -> None:
 
 def _get_client() -> ServiceKeyClient | None:
     return _global_client
+
+
+def set_warden(warden: Warden | None) -> None:
+    """Bind the Container's Warden used by model re-entry handlers.
+
+    Event handlers are core code and must not discover or construct a second
+    detector. Container composition calls this once; ``None`` is a deliberate
+    fail-closed state for shutdown and unconfigured applications.
+    """
+    global _global_warden
+    _global_warden = warden
+
+
+def _get_warden() -> Warden:
+    if _global_warden is None:
+        raise EventSecurityUnavailable(
+            "canonical Warden composition is unavailable; event re-entry refused"
+        )
+    return _global_warden
+
+
+async def _scan_model_reentry(message: str) -> None:
+    """Scan the exact labelled content that will be sent to the model."""
+    try:
+        verdict = await _get_warden().scan(message, "tool_result")
+    except EventSecurityUnavailable:
+        raise
+    except Exception as exc:
+        raise EventSecurityUnavailable("event re-entry Warden scan failed") from exc
+    if not verdict.clean:
+        raise EventPayloadBlocked(verdict.flags)
 
 
 async def webhook_action(trigger: Trigger, event: Event) -> None:
@@ -94,14 +139,23 @@ async def conductor_chat_action(trigger: Trigger, event: Event) -> None:
     model = trigger.action_config.get("model", "auto")
     message_template = trigger.action_config.get("message", "")
 
-    message = (
+    rendered = (
         _render_template(message_template, event.payload)
         if message_template
-        else (
-            f"[Trigger: {trigger.name}] Event {event.event_type} from {event.source}: "
-            f"{event.payload}"
-        )
+        else (f"Event {event.event_type} from {event.source}: {event.payload}")
     )
+    # Keep handler-owned metadata visibly separate from the event payload. The
+    # whole representation is scanned before it is handed to Conductor, so a
+    # blocked preview cannot become a fresh, unscanned instruction channel.
+    message = (
+        "[maistro event re-entry; provenance=handler_metadata]\n"
+        f"source={event.source!r}; event_type={event.event_type!r}; "
+        f"trigger={trigger.name!r}\n"
+        "[untrusted event payload; boundary=tool_result]\n"
+        f"{rendered}\n"
+        "[/untrusted event payload]"
+    )
+    await _scan_model_reentry(message)
 
     payload: dict[str, Any] = {
         "model": model,
