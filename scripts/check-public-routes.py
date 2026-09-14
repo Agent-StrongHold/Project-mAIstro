@@ -30,6 +30,9 @@ MIDDLEWARE = ROOT / "packages" / "hive-conductor" / "backend" / "middleware" / "
 REGISTRY = ROOT / "quality" / "public-routes.json"
 ROUTE_REGISTRY = ROOT / "quality" / "route-permissions.json"
 _TURING_MIDDLEWARE = ROOT / "packages" / "maistro-turing" / "backend" / "middleware" / "auth.py"
+_ROUTE_POLICY_SOURCE = (
+    ROOT / "packages" / "maistro-core" / "src" / "maistro" / "security" / "http_routes.py"
+)
 _PROVENANCE_SOURCE = ROOT / "scripts" / "ratchet_provenance.py"
 RATCHET = "public-routes"
 METRIC_DEFINITION_VERSION = "2"
@@ -47,6 +50,18 @@ REQUIRED = ("kind", "owner", "risk", "disposition", "reason")
 REQUIRED_TEMPORARY = ("issue", "expires")
 RISKS = frozenset({"low", "medium", "high"})
 DISPOSITIONS = frozenset({"permanent", "temporary"})
+
+
+def _route_policy_matcher() -> Any:
+    spec = importlib.util.spec_from_file_location("_http_route_policy", _ROUTE_POLICY_SOURCE)
+    if spec is None or spec.loader is None:  # pragma: no cover - packaging accident
+        raise RuntimeError(f"cannot load {_ROUTE_POLICY_SOURCE}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.route_policy
+
+
+route_policy = _route_policy_matcher()
 
 
 def _provenance() -> ModuleType:
@@ -241,6 +256,66 @@ def _registry_identities(registry: dict[str, Any]) -> set[tuple[str, str]]:
     }
 
 
+def _route_policy_map(loaded: object) -> dict[tuple[str, str, str, str], tuple[str, str]]:
+    """Flatten route policy decisions for trusted-base policy comparisons."""
+    if not isinstance(loaded, dict) or not isinstance(loaded.get("routes"), dict):
+        return {}
+    result: dict[tuple[str, str, str, str], tuple[str, str]] = {}
+    for application, entries in loaded["routes"].items():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            path = entry.get("path")
+            kind = entry.get("kind")
+            methods = entry.get("methods")
+            access = entry.get("access")
+            if (
+                not isinstance(path, str)
+                or not isinstance(kind, str)
+                or not isinstance(methods, list)
+            ):
+                continue
+            if not isinstance(access, str):
+                continue
+            permission = entry.get("permission", "")
+            permission = permission if isinstance(permission, str) else ""
+            for method in methods:
+                if isinstance(method, str):
+                    result[(str(application), method.upper(), path, kind)] = (access, permission)
+    return result
+
+
+def _route_policy_failures(
+    base: dict[tuple[str, str, str, str], tuple[str, str]],
+    current: dict[tuple[str, str, str, str], tuple[str, str]],
+    authorized: dict[str, str],
+) -> list[str]:
+    """Permit policy additions while ratcheting existing public/exempt state."""
+    failures: list[str] = []
+    for key in sorted(set(base) & set(current)):
+        if base[key] == current[key]:
+            continue
+        application, method, path, _kind = key
+        grant = f"{application}:{method}:{path}"
+        if grant not in authorized:
+            failures.append(
+                f"  {grant}: route policy changed from {base[key]!r} to {current[key]!r} "
+                "without trusted authorization"
+            )
+    for key in sorted(set(current) - set(base)):
+        if current[key][0] not in {"public", "exempt"}:
+            continue
+        application, method, path, _kind = key
+        grant = f"{application}:{method}:{path}"
+        if grant not in authorized:
+            failures.append(
+                f"  {grant}: new {current[key][0]} route policy needs already-landed authorization"
+            )
+    return failures
+
+
 def _public_identities_by_application(loaded: object) -> dict[str, set[tuple[str, str]]]:
     """Return public route identities from the trusted legacy registry.
 
@@ -399,17 +474,18 @@ def _route_entry_failures(  # noqa: C901
         if not matches:
             failures.append(f"  {application} {method} {path}: registered route has no declaration")
             continue
-        # An exact declaration wins over a containing prefix. Two declarations
-        # at the same specificity are ambiguous and cannot silently authorize.
-        matches.sort(
-            key=lambda entry: (len(str(entry.get("path", ""))), entry.get("kind") == "exact"),
-            reverse=True,
-        )
-        selected = matches[0]
-        if len(matches) > 1 and all(
-            len(str(entry.get("path", ""))) == len(str(selected.get("path", "")))
-            for entry in matches[1:]
-        ):
+        # Use the same matcher as both runtime middlewares. Invalid entries
+        # were already reported above and are excluded from selection so a
+        # malformed policy cannot turn the gate itself into an exception.
+        valid_entries = [
+            entry
+            for entry in usable
+            if entry.get("kind") in _ROUTE_KINDS
+            and isinstance(entry.get("path"), str)
+            and isinstance(entry.get("methods", ["*"]), list)
+        ]
+        selected = route_policy(tuple(valid_entries), method, path)
+        if selected is None:
             failures.append(f"  {application} {method} {path}: route declarations are ambiguous")
             continue
         failures.extend(_route_entry_problems(f"{application} {method} {path}", selected, today))
@@ -503,6 +579,8 @@ def main() -> int:
         candidate_failures.append(f"  route discovery failed closed: {exc}")
 
     prov = _provenance()
+    route_policy_failures: list[str] = []
+    route_base_ref = None
     try:
         _materialize_ci_history(prov)
         base_ref = prov.resolve_baseline(REGISTRY, root=ROOT)
@@ -510,6 +588,22 @@ def main() -> int:
         base_registries = _public_identities_by_application(base_loaded)
         prov.require_measurement(declared, ratchet=RATCHET, what="public routes")
         authorized = prov.load_authorizations(RATCHET, base=base_ref.base_sha)
+        # Permission policy is also trusted-base state. Public-surface growth
+        # uses the public-routes ratchet above; this second comparison prevents
+        # a candidate from weakening an existing protected/exempt declaration
+        # by editing the route table and its consumer together.
+        route_base_ref = prov.resolve_baseline(ROUTE_REGISTRY, root=ROOT)
+        if not route_base_ref.absent_at_base:
+            route_authorized = prov.load_authorizations(
+                "route-permissions", base=route_base_ref.base_sha
+            )
+            route_policy_failures.extend(
+                _route_policy_failures(
+                    _route_policy_map(route_base_ref.loads(default={})),
+                    _route_policy_map(json.loads(ROUTE_REGISTRY.read_text(encoding="utf-8"))),
+                    route_authorized,
+                )
+            )
     except (RuntimeError, prov.RatchetProvenanceError) as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         return 1
@@ -559,6 +653,19 @@ def main() -> int:
         and not any(candidate_path == path.partition(":")[2] for candidate_path in candidate)
     ]
 
+    if route_base_ref is not None and not route_base_ref.absent_at_base:
+        print(
+            prov.Provenance(
+                ratchet="route-permissions",
+                baseline=route_base_ref,
+                tool="shared route policy",
+                metric_definition_version=METRIC_DEFINITION_VERSION,
+                old_value="trusted route policy",
+                new_value="candidate route policy",
+                candidate_sha=prov.head_sha(ROOT),
+            ).render()
+        )
+
     print(
         prov.Provenance(
             ratchet=RATCHET,
@@ -574,7 +681,7 @@ def main() -> int:
         ).render()
     )
 
-    failures = list(candidate_failures)
+    failures = [*candidate_failures, *route_policy_failures]
     for path in unauthorized:
         application, _, route_path = path.partition(":")
         base_entry = base_registries.get(application, set())

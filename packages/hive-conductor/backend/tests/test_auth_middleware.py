@@ -8,11 +8,10 @@ Two sibling-prefix-confusion bugs were found and fixed here:
    ``"/v1/auth/login-history"``) would silently bypass authentication
    entirely. Fixed via ``_matches_public_prefix`` (mirrors the analogous
    fix already applied to ``tools/sandbox/workspace.py``).
-2. ``_required_permission`` used ``"/invoke" in path`` (substring anywhere)
-   to exempt the autonomous agent-invoke action from permission gating.
-   Any future route merely containing "/invoke" as a substring — not just
-   the real trailing ``/{id}/invoke`` segment — would also lose its
-   permission gate. Fixed to ``path.endswith("/invoke")``.
+2. ``_required_permission`` used a trailing ``/invoke`` or ``/feedback``
+   suffix to exempt any matching future route from permission gating. The
+   shared route declaration is now the default-deny boundary and no suffix
+   can create an authenticated-only exception.
 
 These tests drive the real ``main:app`` + ``AuthMiddleware`` stack via
 ``TestClient``, matching this file's established convention (see
@@ -185,14 +184,19 @@ class TestUnauthenticatedProtectedPaths:
 class TestInvokeSubstringCarveOutBoundary:
     """Regression lock for the "/invoke" substring -> endswith fix."""
 
-    def test_real_agent_invoke_path_still_exempted_from_permission(self) -> None:
+    def test_real_agent_invoke_path_uses_the_declared_permission(self) -> None:
         c = _login()
-        # No agents.write permission, no elevation — would 403 under
-        # _PROTECTED_OPS POST "/v1/agents" if not exempted; the route itself
-        # may 404 (PM POC mode) or 200, but it must not be a 403 from the
-        # permission gate.
+        # The route is inside the reviewed /v1/agents permission boundary; a
+        # suffix must not turn it into an authenticated-only island.
         r = c.post("/v1/agents/some-agent/invoke", json={})
-        assert r.status_code != 403
+        assert r.status_code == 403
+        assert "agents.write" in r.json()["detail"]
+
+    def test_hypothetical_feedback_suffix_sibling_is_not_exempted(self, temp_route) -> None:
+        temp_route("/v1/agents/feedback-history")
+        c = _login()
+        r = c.post("/v1/agents/feedback-history")
+        assert r.status_code == 403
 
     def test_hypothetical_invoke_substring_sibling_is_not_exempted(self, temp_route) -> None:
         """A path that merely *contains* "/invoke" but doesn't end with it

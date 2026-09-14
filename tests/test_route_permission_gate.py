@@ -8,6 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from maistro.security.http_routes import route_policy
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "check-public-routes.py"
 
@@ -110,6 +112,42 @@ def test_exact_public_route_does_not_match_a_lookalike(gate, application: str) -
     )
 
     assert any("has no declaration" in failure for failure in failures)
+
+
+def test_route_policy_ratchet_rejects_unreviewed_weakening(gate) -> None:
+    key = ("turing", "GET", "/v1/state", "prefix")
+    base = {key: ("permission", "turing.vault_read")}
+    current = {key: ("public", "")}
+
+    failures = gate._route_policy_failures(base, current, {})
+
+    assert any("without trusted authorization" in failure for failure in failures)
+
+
+def test_route_policy_ratchet_allows_an_already_landed_authorization(gate) -> None:
+    key = ("turing", "GET", "/v1/state", "prefix")
+    base = {key: ("permission", "turing.vault_read")}
+    current = {key: ("public", "")}
+
+    assert gate._route_policy_failures(base, current, {"turing:GET:/v1/state": "#1140"}) == []
+
+
+def test_shared_runtime_matcher_rejects_ambiguous_declarations(gate) -> None:
+    entries = (
+        _permission("/v1/items"),
+        {**_permission("/v1/items"), "permission": "items.write"},
+    )
+
+    assert route_policy(entries, "GET", "/v1/items") is None
+
+
+def test_shared_runtime_matcher_uses_exact_over_boundary_prefix(gate) -> None:
+    entries = (
+        {**_permission("/v1/items"), "kind": "prefix"},
+        _public("/v1/items/current"),
+    )
+
+    assert route_policy(entries, "GET", "/v1/items/current")["access"] == "public"
 
 
 def test_suffix_lookalike_is_not_a_public_route(gate, application: str) -> None:

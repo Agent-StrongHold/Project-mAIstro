@@ -24,7 +24,7 @@ class ScopeCategory(StrEnum):
 
 
 class Scope(StrEnum):
-    """Individual permissions. Assigned directly or inherited from category."""
+    """Transport scopes; HTTP policy exposes their canonical ``scope.verb`` form."""
 
     # LLM
     CHAT_COMPLETIONS = "llm:chat_completions"
@@ -168,6 +168,11 @@ CATEGORY_SCOPES: dict[ScopeCategory, frozenset[Scope]] = {
 }
 
 _WILDCARD = "*"
+
+
+def canonical_permission(scope: Scope) -> str:
+    """Return the repository-wide dotted permission consumed by Principals."""
+    return scope.value.replace(":", ".", 1)
 
 
 def expand_scopes(raw: list[str]) -> frozenset[Scope]:

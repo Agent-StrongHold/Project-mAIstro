@@ -17,17 +17,15 @@ this module so each route declares exactly what it needs.
 
 from __future__ import annotations
 
-import json
 import logging
-import re
 from pathlib import Path
-from typing import Any
 
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import JSONResponse, Response
 
-from maistro.auth import Scope, ServiceKeyAuthProvider, ServiceKeyRegistry
+from maistro.auth import Scope, ServiceKeyAuthProvider, ServiceKeyRegistry, canonical_permission
+from maistro.security.http_routes import load_route_policy, matches_prefix, route_policy
 from maistro.security.sentinel.authz_types import Principal
 
 logger = logging.getLogger("turing.auth_middleware")
@@ -65,82 +63,6 @@ _PUBLIC_PREFIXES = (
 _ROUTE_REGISTRY = Path(__file__).resolve().parents[4] / "quality" / "route-permissions.json"
 
 
-def _load_route_policy() -> tuple[dict[str, Any], ...]:
-    try:
-        loaded = json.loads(_ROUTE_REGISTRY.read_text(encoding="utf-8"))
-        entries = loaded["routes"]["turing"]
-    except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"Turing route authorization registry unavailable: {exc}") from exc
-    if not isinstance(entries, list):
-        raise RuntimeError("Turing route authorization registry is not a list")
-    for entry in entries:
-        if not isinstance(entry, dict):
-            raise RuntimeError("Turing route authorization registry contains a non-object")
-        if not isinstance(entry.get("path"), str) or entry.get("kind") not in {
-            "exact",
-            "prefix",
-            "template",
-        }:
-            raise RuntimeError("Turing route authorization registry contains an invalid path")
-        methods = entry.get("methods")
-        if (
-            not isinstance(methods, list)
-            or not methods
-            or any(not isinstance(method, str) for method in methods)
-        ):
-            raise RuntimeError("Turing route authorization registry contains invalid methods")
-        access = entry.get("access")
-        if access not in {"public", "permission", "exempt"}:
-            raise RuntimeError("Turing route authorization registry contains invalid access")
-        if access == "permission":
-            permission = entry.get("permission")
-            if (
-                not isinstance(permission, str)
-                or permission.count(".") != 1
-                or any(
-                    not part or not part.replace("_", "").replace("-", "").isalnum()
-                    for part in permission.split(".")
-                )
-            ):
-                raise RuntimeError(
-                    "Turing route authorization registry contains invalid permission"
-                )
-    return tuple(entries)
-
-
-def _matches_prefix(path: str, prefix: str) -> bool:
-    boundary = prefix.rstrip("/")
-    return path == boundary or path.startswith(boundary + "/")
-
-
-def _matches_template(path: str, template: str) -> bool:
-    pattern = re.sub(r"\{[^/{}]+\}", r"[^/]+", template)
-    return re.fullmatch(pattern.rstrip("/"), path.rstrip("/")) is not None
-
-
-def _route_policy(
-    entries: tuple[dict[str, Any], ...], method: str, path: str
-) -> dict[str, Any] | None:
-    matches = [
-        entry
-        for entry in entries
-        if (method in entry.get("methods", ["*"]) or "*" in entry.get("methods", ["*"]))
-        and (
-            (entry.get("kind") == "exact" and path == entry.get("path"))
-            or (entry.get("kind") == "prefix" and _matches_prefix(path, str(entry.get("path", ""))))
-            or (
-                entry.get("kind") == "template"
-                and _matches_template(path, str(entry.get("path", "")))
-            )
-        )
-    ]
-    if not matches:
-        return None
-    return max(
-        matches, key=lambda entry: (len(str(entry.get("path", ""))), entry.get("kind") == "exact")
-    )
-
-
 class TuringAuthMiddleware(BaseHTTPMiddleware):
     """Resolve a human session cookie OR a Turing service key onto request.state.
 
@@ -151,18 +73,18 @@ class TuringAuthMiddleware(BaseHTTPMiddleware):
     def __init__(self, app: object, registry: ServiceKeyRegistry) -> None:
         super().__init__(app)  # type: ignore[arg-type]
         self._provider = ServiceKeyAuthProvider(registry)
-        self._route_policy = _load_route_policy()
+        self._route_policy = load_route_policy(_ROUTE_REGISTRY, "turing")
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         path = request.url.path
 
         if request.method == "OPTIONS":
             return await call_next(request)
-        if path in _PUBLIC_EXACT or any(_matches_prefix(path, p) for p in _PUBLIC_PREFIXES):
+        if path in _PUBLIC_EXACT or any(matches_prefix(path, p) for p in _PUBLIC_PREFIXES):
             # The route table is authoritative for every registered public
             # family, not only /v1. Keep the historical synthetic /favicon and
             # root declarations usable when FastAPI has no matching route.
-            policy = _route_policy(self._route_policy, request.method, path)
+            policy = route_policy(self._route_policy, request.method, path)
             if policy is None and path not in {"/", "/favicon.ico"}:
                 return JSONResponse(
                     status_code=403,
@@ -179,7 +101,7 @@ class TuringAuthMiddleware(BaseHTTPMiddleware):
 
         if request.state.user is None and request.state.service is None:
             return JSONResponse(status_code=401, content={"detail": "Authentication required"})
-        policy = _route_policy(self._route_policy, request.method, path)
+        policy = route_policy(self._route_policy, request.method, path)
         if policy is None:
             return JSONResponse(
                 status_code=403,
@@ -234,7 +156,7 @@ class TuringAuthMiddleware(BaseHTTPMiddleware):
             return None
         # ServiceKeyRegistry's transport contract is Scope's colon spelling;
         # Principal is the canonical authorization contract used by policy.
-        scopes = tuple(scope.value.replace(":", ".", 1) for scope in service.scopes)
+        scopes = tuple(canonical_permission(scope) for scope in service.scopes)
         return Principal(
             id=f"service:{service.name}",
             kind="agent",
