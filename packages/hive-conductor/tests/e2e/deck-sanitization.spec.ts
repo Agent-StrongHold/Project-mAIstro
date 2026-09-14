@@ -325,7 +325,8 @@ test("mutation, encoded, SVG, and CSS payload families fail closed while present
 test("CSS obfuscation and active SVG families fail closed in preview and presentation", async () => {
   await loadFresh();
   const hostile = `<slide index="1">
-    <div style="background-image:u\\72l(http://${ATTACKER}/css);color:#fff">CSS survives as text</div>
+    <div style="background-image:u\\72l(http://${ATTACKER}/css);color:#fff">CSS escape survives as text</div>
+    <div style="background-image:/*hidden*/url(http://${ATTACKER}/comment);color:#fff">CSS comment survives as text</div>
     <svg><animate attributeName="x" onbegin="window.__deckPwned=14" /><image href="http://${ATTACKER}/image" /><circle cx="5" cy="5" r="4" fill="#fff" /></svg>
     <a href="jav&#x61;script:window.__deckPwned=15">Encoded navigation</a>
     <object data="http://${ATTACKER}/object"></object><embed src="http://${ATTACKER}/embed"><p>Embedded-safe text</p>
@@ -334,13 +335,18 @@ test("CSS obfuscation and active SVG families fail closed in preview and present
   await generate(hostile);
 
   const preview = page.locator('[contenteditable="true"]');
-  await expect(preview).toContainText("CSS survives as text");
+  await expect(preview).toContainText("CSS escape survives as text");
+  await expect(preview).toContainText("CSS comment survives as text");
   await expect(preview).toContainText("Embedded-safe text");
+  await expect(
+    preview.getByText("CSS comment survives as text", { exact: true }),
+  ).not.toHaveAttribute("style");
   await expect(preview.locator("svg circle")).toHaveCount(1);
   await expect(preview.locator("animate, image, object, embed")).toHaveCount(0);
   const previewHtml = await preview.innerHTML();
   expectNoExecutableMarkup(previewHtml);
-  expect(previewHtml).toContain("CSS survives as text");
+  expect(previewHtml).toContain("CSS escape survives as text");
+  expect(previewHtml).toContain("CSS comment survives as text");
   expect(attackerRequests).toEqual([]);
   expect(
     await page.evaluate(() => (window as Window & { __deckPwned?: number }).__deckPwned),
@@ -350,12 +356,17 @@ test("CSS obfuscation and active SVG families fail closed in preview and present
   const exit = page.getByRole("button", { name: "Exit (Esc)" });
   await expect(exit).toBeVisible();
   const presentation = exit.locator("..");
-  await expect(presentation).toContainText("CSS survives as text");
+  await expect(presentation).toContainText("CSS escape survives as text");
+  await expect(presentation).toContainText("CSS comment survives as text");
+  await expect(
+    presentation.getByText("CSS comment survives as text", { exact: true }),
+  ).not.toHaveAttribute("style");
   await expect(presentation.locator("svg circle")).toHaveCount(1);
   await expect(presentation.locator("animate, image, object, embed")).toHaveCount(0);
   const presentationHtml = await presentation.innerHTML();
   expectNoExecutableMarkup(presentationHtml);
-  expect(presentationHtml).toContain("CSS survives as text");
+  expect(presentationHtml).toContain("CSS escape survives as text");
+  expect(presentationHtml).toContain("CSS comment survives as text");
   expect(attackerRequests).toEqual([]);
   expect(
     await page.evaluate(() => (window as Window & { __deckPwned?: number }).__deckPwned),

@@ -36,4 +36,4 @@ The existing `/decks` route/navigation containment remains in place until parent
 - safe representative presentation markup and built-in Deck templates remain renderable;
 - exported HTML remains free of executable markup and raw-title injection.
 
-The repository CI frontend lint/build and frontend test steps pass on the branch after the branch-owned lint correction. Full required CI remains the merge gate for PR #757.
+The browser evidence above is the lane-local security proof; this document does not claim hosted CI status. The repository's normal frontend lint/build and required checks remain merge gates. The existing `/decks` route redirect and omitted shell navigation are intentionally unchanged; parent #311 owns their eventual removal.
