@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.agents.tool_dispatch import ToolCallExecutor, dispatch_tool_call
 from maistro.observability.correlation import current_execution_context
+from maistro.security._types import ANONYMOUS_AUTH
 from maistro.security.normalize import to_scan_string
 from maistro.security.sentinel.pii_filter import scan_and_redact
 from maistro.security.warden.detector import WardenContext, prior_message_context
@@ -201,21 +202,14 @@ def _redact_message_content(content: Any) -> Any:
     return content
 
 
+def _message_text(message: dict[str, Any]) -> str:
+    """Extract text from one message without treating structured content as trusted."""
+    return _extract_message_text(message.get("content", ""))
 def _extract_user_text(messages: list[dict[str, Any]]) -> str:
     """Extract the latest user message text (handling string + content-block forms)."""
     for msg in reversed(messages):
-        if msg.get("role") != "user":
-            continue
-        content = msg.get("content", "")
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            return " ".join(
-                p.get("text", "")
-                for p in content
-                if isinstance(p, dict) and p.get("type") == "text"
-            )
-        return ""
+        if msg.get("role") == "user":
+            return _message_text(msg)
     return ""
 
 
@@ -285,6 +279,11 @@ class Agent:
         delegation_scope: str | None = None,
         _delegation_depth: int = 0,
     ) -> AgentResponse:
+        # A missing identity is an anonymous principal, never a reason to skip
+        # Sentinel. This keeps direct Agent callers on the same fail-closed path
+        # as the Container composition root.
+        auth = auth if auth is not None else ANONYMOUS_AUTH
+
         # `intent` was accepted and never read — line 219 was the only mention of
         # the name in this file. Callers that classify a request naturally pass
         # the Intent rather than restating its task_type, so honour it as the

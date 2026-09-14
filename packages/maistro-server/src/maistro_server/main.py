@@ -445,6 +445,8 @@ async def _build_container(settings: Settings, pg_pool: Any) -> tuple[Any, Model
                 governed_egress=governed_egress,
                 workspace_id=settings.workspace_id,
                 router=container.llm_router,
+                warden=container.warden,
+                sentinel=container.sentinel,
             )
         },
     )

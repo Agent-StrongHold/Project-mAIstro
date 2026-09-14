@@ -26,6 +26,9 @@ import structlog
 
 from maistro.agents.conductor import run_task
 from maistro.capabilities.model_chat import ModelChatEgress
+from maistro.security._types import ANONYMOUS_AUTH, GateResult
+from maistro.security.sentinel.policy import Sentinel
+from maistro.security.warden.detector import Warden
 from maistro.tasks.models import TaskCreate
 from maistro.types.agent import AgentResponse
 
@@ -64,6 +67,8 @@ class ConductorAgent:
         governed_egress: ModelChatEgress | None = None,
         workspace_id: str = "default",
         router: LLMRouter | None = None,
+        warden: Any | None = None,
+        sentinel: Any | None = None,
     ) -> None:
         self._governed_egress = governed_egress
         self._workspace_id = workspace_id
@@ -72,7 +77,13 @@ class ConductorAgent:
         # fallback chain instead of failing the turn. `None` (no router wired)
         # keeps the previous fail-fast behavior.
         self._router = router
-
+        # The roster-floor fallback is a real product path, not a stub: its
+        # final answer crosses the same Sentinel output boundary as every other
+        # agent's (#66). Inbound scanning stays the Conduit gate's job — a
+        # second scan here would also rescan the projected-memory context block
+        # the gate deliberately treats as context, not input (#776).
+        self._warden = warden or Warden()
+        self._sentinel = sentinel or Sentinel(warden=self._warden, permission_table={})
     async def handle(
         self,
         messages: list[dict[str, Any]],
@@ -91,6 +102,7 @@ class ConductorAgent:
         Accepting and ignoring them keeps the call site in `Conduit` uniform;
         declaring them individually would suggest they do something here.
         """
+        auth = auth if auth is not None else ANONYMOUS_AUTH
         description = _last_user_message(messages)
         if not description:
             return AgentResponse(content="No message provided.", agent_name=CONDUCTOR_AGENT_NAME)
@@ -118,8 +130,14 @@ class ConductorAgent:
             )
             raise
 
+        final = result.final_answer or "Task completed successfully."
+        outcome: GateResult = await self._sentinel.process_output("assistant_response", final, auth)
+        if outcome.blocked:
+            return AgentResponse.blocked_response(
+                outcome.block_reason or "Final response blocked by Warden"
+            )
         return AgentResponse(
-            content=result.final_answer or "Task completed successfully.",
+            content=outcome.sanitized_text,
             agent_name=CONDUCTOR_AGENT_NAME,
             intent_task_type=classified_task_type,
         )

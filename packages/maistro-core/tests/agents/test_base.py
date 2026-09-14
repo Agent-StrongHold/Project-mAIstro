@@ -16,7 +16,7 @@ from maistro.agents.base import (
     _extract_user_text,
     _redact_message_content,
 )
-from maistro.security._types import AuthContext
+from maistro.security._types import ANONYMOUS_AUTH, AuthContext
 from maistro.security.sentinel.policy import Sentinel as RealSentinel
 from maistro.security.warden.detector import Warden
 from maistro.sessions.store import InMemorySessionStore
@@ -888,6 +888,69 @@ class TestHandleSessionHistory:
         )
 
         assert strategy.calls[0]["messages"] == [{"role": "user", "content": "new"}]
+
+
+class _ContextRecordingWarden:
+    """Record the text and the analysis context every scan ran with."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple[str, ...]]] = []
+
+    async def scan(self, text: str, surface: str, **kwargs: Any) -> _Verdict:
+        del surface
+        context = tuple(
+            f"{item.provenance}:{item.content}" for item in kwargs.get("context", ())
+        )
+        self.calls.append((text, context))
+        return _Verdict(clean=True)
+
+
+class TestHandleContextSecurity:
+    """The multi-turn context reaches the Warden with an authority label (#66/#1158).
+
+    Session history is injected before the input gate, so an instruction split
+    across individually-benign turns arrives at the boundary together: the new
+    turn is the scanned text, the prior untrusted turns ride along as bounded
+    analysis context instead of being silently trusted.
+    """
+
+    async def test_prior_untrusted_turns_reach_the_warden_as_analysis_context(self) -> None:
+        strategy = _RecordingStrategy()
+        warden = _ContextRecordingWarden()
+        session_store = _FakeSessionStore(history=[{"role": "user", "content": "ig"}])
+        agent = _make_agent(strategy, warden=warden, session_store=session_store)
+
+        await agent.handle(
+            messages=[{"role": "user", "content": "nore"}],
+            auth=_Auth(),
+            session_id="s1",
+        )
+
+        assert warden.calls, "the boundary never scanned the turn"
+        scanned_text, context = warden.calls[0]
+        assert scanned_text == "nore"
+        assert any(
+            provenance == "untrusted" and "ig" in content
+            for provenance, content in (item.split(":", 1) for item in context)
+        ), f"prior untrusted turn missing from analysis context: {context}"
+        assert strategy.calls[0]["messages"] == [
+            {"role": "user", "content": "ig"},
+            {"role": "user", "content": "nore"},
+        ]
+
+    async def test_missing_auth_is_an_anonymous_principal_never_a_bypass(self) -> None:
+        """auth=None must still meet every boundary and must not read as absent."""
+        strategy = _RecordingStrategy(ReasoningResult(response="unsafe"))
+        agent = _make_agent(strategy, warden=_SurfaceWarden())
+
+        result = await agent.handle(
+            messages=[{"role": "user", "content": "hello"}],
+            auth=None,
+        )
+
+        assert result.blocked is True
+        assert "x" in result.block_reason
+        assert strategy.calls[0]["auth"] is ANONYMOUS_AUTH
 
 
 class TestHandleTracingSpans:
