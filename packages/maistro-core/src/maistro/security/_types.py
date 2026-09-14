@@ -1,7 +1,8 @@
 """Security subsystem type definitions.
 
-Ported from Stronghold types/security.py and types/auth.py.
-org_id stripped for single-tenant maistro-engine.
+Ported from Stronghold types/security.py and types/auth.py. ``AuditEntry`` is
+imported from the canonical persisted security types module so Sentinel and
+both durable audit stores exchange the same record shape.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
 from maistro.security.redact import redact
+from maistro.types.security import AuditEntry
 
 
 class IdentityKind(StrEnum):
@@ -117,20 +119,6 @@ class SentinelVerdict:
     repaired: bool = False
     repaired_data: dict[str, Any] | None = None
     violations: tuple[Violation, ...] = ()
-
-
-@dataclass
-class AuditEntry:
-    boundary: str
-    user_id: str
-    team_id: str = ""
-    tool_name: str = ""
-    verdict: str = ""
-    violations: tuple[Violation, ...] = ()
-    detail: str = ""
-    agent_id: str = ""
-    # Empty is the explicit system/unscoped representation.
-    org_id: str = ""
 
 
 @dataclass

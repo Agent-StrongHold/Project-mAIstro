@@ -58,6 +58,21 @@ class TestInMemoryAuditLog:
         assert entries == [e1]
 
     @pytest.mark.asyncio
+    async def test_default_read_is_system_scope_only(self) -> None:
+        log = InMemoryAuditLog()
+        tenant = AuditEntry(boundary="tenant", user_id="u1", org_id="org-a")
+        system = AuditEntry(boundary="system", user_id="u1")
+        await log.log(tenant)
+        await log.log(system)
+
+        assert await log.get_entries() == [system]
+
+    @pytest.mark.asyncio
+    async def test_rejects_ambiguous_scope(self) -> None:
+        with pytest.raises(ValueError, match="pass '' for an unscoped read"):
+            await InMemoryAuditLog().get_entries(org_id=None)  # type: ignore[arg-type]
+
+    @pytest.mark.asyncio
     async def test_respects_limit(self) -> None:
         log = InMemoryAuditLog()
         for i in range(5):

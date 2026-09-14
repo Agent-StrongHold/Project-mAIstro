@@ -134,14 +134,12 @@ async def test_log_team_id_passthrough_when_present(log: PgAuditLog, conn: FakeC
 
 
 @pytest.mark.asyncio
-async def test_get_entries_no_filters_uses_where_true(
-    log: PgAuditLog, conn: FakeConnection
-) -> None:
+async def test_get_entries_defaults_to_system_scope(log: PgAuditLog, conn: FakeConnection) -> None:
     conn.queue_fetch([])
     await log.get_entries()
     call = conn.calls[0]
-    assert "WHERE TRUE" in call.query
-    assert call.args == (100,)
+    assert "WHERE org_id = $1" in call.query
+    assert call.args == ("", 100)
 
 
 @pytest.mark.asyncio
@@ -152,8 +150,8 @@ async def test_get_entries_user_id_filter_builds_param(
     await log.get_entries(user_id="u1", limit=5)
     call = conn.calls[0]
     assert "user_id = $1" in call.query
-    assert "LIMIT $2" in call.query
-    assert call.args == ("u1", 5)
+    assert "LIMIT $3" in call.query
+    assert call.args == ("u1", "", 5)
 
 
 @pytest.mark.asyncio
@@ -163,8 +161,8 @@ async def test_get_entries_both_filters_combined_with_and(
     conn.queue_fetch([])
     await log.get_entries(user_id="u1", agent_id="a1")
     call = conn.calls[0]
-    assert "user_id = $1 AND agent_id = $2" in call.query
-    assert call.args == ("u1", "a1", 100)
+    assert "user_id = $1 AND agent_id = $2 AND org_id = $3" in call.query
+    assert call.args == ("u1", "a1", "", 100)
 
 
 @pytest.mark.asyncio
@@ -205,7 +203,7 @@ async def test_get_entries_returns_reconstructed_audit_entries(
             }
         ]
     )
-    entries = await log.get_entries(user_id="u1")
+    entries = await log.get_entries(user_id="u1", org_id="org-a")
     assert len(entries) == 1
     e = entries[0]
     assert isinstance(e, AuditEntry)
@@ -268,3 +266,33 @@ async def test_get_entries_invalid_filter_column_raises(
 async def test_get_entries_rejects_unknown_keyword(log: PgAuditLog) -> None:
     with pytest.raises(TypeError, match="unexpected keyword argument 'status'"):
         await log.get_entries(status="denied")  # type: ignore[call-arg]
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_two_org_scope_and_schema(
+    pg_pool: Any,
+) -> None:
+    """Exercise the migration, write, and predicate against PostgreSQL itself."""
+    if pg_pool is None:
+        pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+
+    async with pg_pool.acquire() as conn:
+        columns = await conn.fetch(
+            """SELECT column_name FROM information_schema.columns
+               WHERE table_name = 'audit_log' AND column_name = 'org_id'"""
+        )
+        indexes = await conn.fetch(
+            """SELECT indexdef FROM pg_indexes
+               WHERE tablename = 'audit_log' AND indexname = 'ix_audit_log_scope'"""
+        )
+    assert [row["column_name"] for row in columns] == ["org_id"]
+    assert "(org_id, \"timestamp\")" in indexes[0]["indexdef"]
+
+    audit = PgAuditLog(pg_pool)
+    await audit.log(AuditEntry(boundary="org-a", user_id="u", org_id="org-a"))
+    await audit.log(AuditEntry(boundary="org-b", user_id="u", org_id="org-b"))
+
+    entries = await audit.get_entries(user_id="u", org_id="org-a")
+
+    assert [entry.boundary for entry in entries] == ["org-a"]
+    assert all(entry.org_id == "org-a" for entry in entries)

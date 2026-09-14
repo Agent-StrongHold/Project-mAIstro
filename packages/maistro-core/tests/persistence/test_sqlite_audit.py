@@ -35,7 +35,7 @@ async def test_log_and_get_entries_roundtrip(log: SqliteAuditLog) -> None:
         request_id="r1",
     )
     await log.log(entry)
-    entries = await log.get_entries(user_id="u1")
+    entries = await log.get_entries(user_id="u1", org_id="org-a")
     assert len(entries) == 1
     e = entries[0]
     assert e.boundary == "tool_call"
@@ -89,18 +89,22 @@ async def test_log_tool_name_none_stored_as_empty(log: SqliteAuditLog) -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_entries_no_filters_returns_all(log: SqliteAuditLog) -> None:
-    await log.log(AuditEntry(boundary="b1", user_id="u1", agent_id="a1"))
-    await log.log(AuditEntry(boundary="b2", user_id="u2", agent_id="a2"))
+async def test_get_entries_defaults_to_system_scope(log: SqliteAuditLog) -> None:
+    await log.log(AuditEntry(boundary="tenant-a", user_id="u1", org_id="org-a"))
+    await log.log(AuditEntry(boundary="system-1", user_id="u1"))
+    await log.log(AuditEntry(boundary="system-2", user_id="u2"))
+
     entries = await log.get_entries()
-    assert len(entries) == 2
+
+    assert [entry.boundary for entry in entries] == ["system-2", "system-1"]
+    assert all(entry.org_id == "" for entry in entries)
 
 
 @pytest.mark.asyncio
 async def test_get_entries_both_filters_combined_with_and(log: SqliteAuditLog) -> None:
     await log.log(AuditEntry(boundary="b1", user_id="u1", agent_id="a1"))
     await log.log(AuditEntry(boundary="b2", user_id="u1", agent_id="a2"))
-    entries = await log.get_entries(user_id="u1", agent_id="a1")
+    entries = await log.get_entries(user_id="u1", agent_id="a1", org_id="")
     assert len(entries) == 1
     assert entries[0].boundary == "b1"
 

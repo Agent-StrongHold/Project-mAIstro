@@ -93,11 +93,10 @@ class SqliteAuditLog:
     ) -> list[AuditEntry]:
         """Retrieve audit entries with optional filtering.
 
-        ``org_id`` is an exact SQL predicate when non-empty. The empty string
-        is the explicit system/unscoped read value and intentionally preserves
-        the administrative all-scope read; authorization for that read belongs
-        to the caller, not this persistence adapter. Tenant callers must pass
-        a non-empty org id, which excludes system rows and every other tenant.
+        ``org_id`` is always an exact SQL predicate. The empty string is the
+        explicit system/unscoped scope and therefore reads only system rows;
+        this adapter never turns an omitted scope into an all-organization
+        read. A caller that needs a tenant read must pass its non-empty org id.
         """
         if org_id is None:
             raise ValueError("org_id cannot be None; pass '' for an unscoped read")
@@ -110,8 +109,7 @@ class SqliteAuditLog:
             filters.append(("user_id", user_id))
         if agent_id:
             filters.append(("agent_id", agent_id))
-        if org_id:
-            filters.append(("org_id", org_id))
+        filters.append(("org_id", org_id))
 
         for col, value in filters:
             if col not in _ALLOWED_FILTER_COLUMNS:

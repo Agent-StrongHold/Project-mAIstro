@@ -5,7 +5,8 @@ Two Violation classes ride security evidence:
 - ``maistro.security._types.Violation`` — the Sentinel pipeline's violation;
   its ``detail`` interpolates rejected tool-call material (the invalid-enum
   message carries the rejected value verbatim), and ``SentinelVerdict`` /
-  ``AuditEntry`` carry the tuple toward any AuditLog implementation.
+  the canonical ``AuditEntry`` carry the tuple toward any AuditLog
+  implementation.
 - ``maistro.types.security.Violation`` — frozen, rides the persisted
   ``AuditEntry`` in ``persistence/``.
 
@@ -14,7 +15,8 @@ the #1159 stop condition forbids resting the invariant on that omission: the
 redaction must happen before any store can persist, i.e. in ``__post_init__``,
 so a future store that starts persisting violations inherits redacted text
 for free. These tests pin construction-time redaction for both classes — the
-persistence boundary can never see the raw value.
+persistence boundary can never see the raw value. The audit-entry identity
+check also prevents Sentinel from silently reintroducing a second record type.
 """
 
 from __future__ import annotations
@@ -26,6 +28,9 @@ from maistro.types.security import Violation as TypedViolation
 
 
 class TestSentinelViolationDetailRedaction:
+    def test_sentinel_uses_the_persisted_audit_entry_type(self) -> None:
+        assert SentinelAuditEntry is TypedAuditEntry
+
     def test_api_key_shaped_detail_is_redacted_at_construction(self) -> None:
         key = "sk-" + "FAKEVALUE1234567890"
         violation = SentinelViolation(

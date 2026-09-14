@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import aiosqlite
+
 from maistro.capabilities.bootstrap import default_capability_registry
 from maistro.capabilities.types import FallbackPolicy, SlotSpec
+from maistro.persistence.sqlite_audit import SqliteAuditLog
 from maistro.security._types import (
     AuditEntry,
     AuthContext,
@@ -94,6 +97,25 @@ def _sentinel(warden=None, permission_table=None, audit_log=None) -> Sentinel:
         audit_log=audit_log,
         allow_on_miss=True,
     )
+
+
+async def test_sentinel_writes_a_canonical_entry_to_sqlite() -> None:
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        audit = SqliteAuditLog(conn)
+        await audit.ensure_schema()
+        sentinel = _sentinel(audit_log=audit)
+
+        verdict = await sentinel.pre_call("tool", {}, _auth(), schema={})
+
+        assert verdict.allowed is True
+        entries = await audit.get_entries()
+        assert len(entries) == 1
+        assert entries[0].boundary == "pre_call"
+        assert entries[0].user_id == "u1"
+        assert entries[0].timestamp is not None
+    finally:
+        await conn.close()
 
 
 async def test_pre_call_permission_denied_short_circuits_before_schema_check():
