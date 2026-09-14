@@ -2,60 +2,27 @@
 
 from __future__ import annotations
 
-import ast
+import importlib.util
 import json
+import sys
+import tempfile
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 LEDGER = ROOT / "quality" / "credential-authority.json"
+CHECKER = ROOT / "scripts" / "check-credential-authority.py"
 
-# Protocol-shaped interfaces are not stores. The core store is the only
-# production implementation permitted to own encrypted user credentials.
-_ALLOWED_STORE_CLASSES = {
-    ("packages/maistro-core/src/maistro/credentials/store.py", "UserCredentialStore"),
-    ("packages/hive-conductor/backend/services/tool_primitives.py", "CredentialStore"),
-}
+_spec = importlib.util.spec_from_file_location("credential_authority_checker", CHECKER)
+assert _spec is not None and _spec.loader is not None
+_checker = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = _checker
+_spec.loader.exec_module(_checker)
 
 
 def _ledger() -> dict:
     return json.loads(LEDGER.read_text(encoding="utf-8"))
-
-
-def _production_python_files() -> list[Path]:
-    files: list[Path] = []
-    for path in (ROOT / "packages").rglob("*.py"):
-        relative = path.relative_to(ROOT).as_posix()
-        if "tests" in path.parts or path.name.startswith("test_"):
-            continue
-        if relative.startswith("packages/hive-conductor/cage/"):
-            continue
-        files.append(path)
-    return files
-
-
-def _unscoped_store_implementations() -> list[str]:
-    findings: set[str] = set()
-    for path in _production_python_files():
-        relative = path.relative_to(ROOT).as_posix()
-        if "credential_store" in path.stem.lower():
-            findings.add(relative)
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-        except (OSError, SyntaxError):
-            continue
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.ClassDef):
-                continue
-            name = node.name.lower()
-            if (
-                "credential" in name
-                and "store" in name
-                and not name.endswith(("error", "unavailable"))
-            ):
-                identity = (relative, node.name)
-                if identity not in _ALLOWED_STORE_CLASSES:
-                    findings.add(f"{relative}::{node.name}")
-    return sorted(findings)
 
 
 def test_credential_authority_ledger_records_live_and_retired_surfaces() -> None:
@@ -82,6 +49,48 @@ def test_credential_authority_ledger_records_live_and_retired_surfaces() -> None
     assert not (ROOT / retired[0]["path"]).exists()
 
 
-def test_no_second_production_credential_store_can_be_added() -> None:
-    """A store implementation must be scoped and use the canonical authority."""
-    assert _unscoped_store_implementations() == []
+def test_reachable_credential_surfaces_are_classified_and_scoped() -> None:
+    """The authority ledger must be joined to the production import graph."""
+    assert _checker.audit() == []
+
+
+def test_renamed_reachable_style_store_is_detected_by_behavior(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A store cannot evade review by dropping ``credential_store`` from its name."""
+    source = """
+import httpx
+from cryptography.fernet import Fernet
+
+class Repository:
+    def __init__(self):
+        self._fernet = Fernet.generate_key()
+
+    def get(self, record_id):
+        return httpx.get('/records', params={'id': record_id})
+
+    def rotate(self, record_id, secret):
+        return self._fernet.encrypt(secret.encode())
+
+    def delete(self, record_id):
+        return httpx.delete('/records', params={'id': record_id})
+"""
+    with tempfile.TemporaryDirectory() as directory:
+        fixture = Path(directory) / "repository.py"
+        fixture.write_text(source, encoding="utf-8")
+        assert _checker.is_credential_surface(fixture)
+
+        # Feed the renamed implementation through the ledger join as a
+        # reachable module. Detection alone is not enough: the gate must reject
+        # a reachable surface that has no authority classification.
+        package_root = Path(directory) / "packages" / "demo" / "src"
+        package_fixture = package_root / "demo" / "repository.py"
+        package_fixture.parent.mkdir(parents=True)
+        package_fixture.write_text(source, encoding="utf-8")
+        monkeypatch.setattr(_checker, "ROOT", Path(directory))
+        failures = _checker.audit(
+            {"reachable": [], "retired": [{"path": "deleted.py"}]},
+            modules={"demo.repository": package_fixture},
+            reachable={"demo.repository"},
+        )
+        assert any("not classified" in failure for failure in failures)
