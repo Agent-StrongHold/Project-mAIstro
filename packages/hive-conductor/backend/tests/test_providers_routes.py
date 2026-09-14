@@ -111,7 +111,14 @@ class TestKeyAndActivate:
 
         import routes.providers as providers_mod
 
-        monkeypatch.setattr(providers_mod.httpx, "Client", _Client)
+        class _ClientContext:
+            def __enter__(self) -> _Client:
+                return _Client()
+
+            def __exit__(self, *a: Any) -> None:
+                return None
+
+        monkeypatch.setattr(providers_mod, "sync_client", lambda **_: _ClientContext())
 
         r = admin_client.post("/v1/providers/mistral/activate")
         assert r.status_code == 200

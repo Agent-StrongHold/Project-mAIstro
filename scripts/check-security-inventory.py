@@ -199,7 +199,9 @@ _POOL_OWNER = "http.py"
 #: Constructing one of these is opening a connection outside the shared pool,
 #: and therefore outside the transport the outbound policy wraps.
 _PRIVATE_CLIENT_CTORS = frozenset({"AsyncClient", "Client"})
-_HTTPX_OUTBOUND_METHODS = frozenset({"get", "post", "put", "patch", "delete", "request"})
+_HTTPX_OUTBOUND_METHODS = frozenset(
+    {"get", "post", "put", "patch", "delete", "head", "options", "request", "stream"}
+)
 _SIBLING_SRC_ROOTS = tuple(
     ROOT / "packages" / package / "src"
     for package in (
@@ -212,25 +214,48 @@ _SIBLING_SRC_ROOTS = tuple(
 )
 
 
+def _httpx_aliases(tree: ast.Module) -> tuple[set[str], set[str], set[str]]:
+    """Return module, method, and constructor aliases imported from httpx.
+
+    AST checks must follow aliases: ``import httpx as client`` and
+    ``from httpx import get as fetch`` are just as capable of opening a socket
+    as their canonical spellings. Tracking only the literal ``httpx`` name was
+    the gap that let the sibling census report a false zero.
+    """
+    modules: set[str] = set()
+    methods: set[str] = set()
+    constructors: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "httpx":
+                    modules.add(alias.asname or "httpx")
+        elif isinstance(node, ast.ImportFrom) and node.module == "httpx":
+            for alias in node.names:
+                name = alias.asname or alias.name
+                if alias.name in _HTTPX_OUTBOUND_METHODS:
+                    methods.add(name)
+                if alias.name in _PRIVATE_CLIENT_CTORS:
+                    constructors.add(name)
+    return modules, methods, constructors
+
+
 def _constructs_private_client(tree: ast.Module) -> bool:
     """Whether a module builds its own httpx client instead of borrowing one.
 
-    Construction, not import. `import httpx` is what a module writes to catch
-    `httpx.HTTPError`, and counting that as a bypass would flag five modules
-    that never open a socket — the fuzzy-match failure this file's docstring
-    warns about, where the finding names something nobody can act on.
-    `httpx.AsyncClient(...)` is unambiguous: it is a pool this process owns and
-    the outbound policy never sees.
+    Construction, not import. ``import httpx`` is often present only to catch
+    ``httpx.HTTPError``; the constructor forms below are the actual bypass.
+    Both module aliases and imported constructor aliases are included.
     """
+    modules, _methods, constructors = _httpx_aliases(tree)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
         if isinstance(func, ast.Attribute) and func.attr in _PRIVATE_CLIENT_CTORS:
-            value = func.value
-            if isinstance(value, ast.Name) and value.id == "httpx":
+            if isinstance(func.value, ast.Name) and func.value.id in modules:
                 return True
-        elif isinstance(func, ast.Name) and func.id in _PRIVATE_CLIENT_CTORS:
+        elif isinstance(func, ast.Name) and func.id in constructors:
             return True
     return False
 
@@ -260,8 +285,8 @@ def _sibling_unguarded_httpx_calls() -> list[str]:
 
     These packages are intentionally measured separately from SECURITY.md's
     historical core counts. A direct module-level call cannot pass through the
-    core transport seam, whether it is ``httpx.post`` or a private client
-    constructor, so the completion gate must fail on either form.
+    core transport seam, whether it is ``httpx.post`` or an imported alias, so
+    the completion gate must fail on either form.
     """
     findings: list[str] = []
     for root in _SIBLING_SRC_ROOTS:
@@ -272,16 +297,64 @@ def _sibling_unguarded_httpx_calls() -> list[str]:
                 tree = ast.parse(path.read_text(encoding="utf-8"))
             except (OSError, SyntaxError):
                 continue
+            modules, methods, constructors = _httpx_aliases(tree)
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):
                     continue
                 func = node.func
-                if not isinstance(func, ast.Attribute) or not isinstance(func.value, ast.Name):
-                    continue
-                if func.value.id != "httpx":
-                    continue
-                if func.attr in _PRIVATE_CLIENT_CTORS or func.attr in _HTTPX_OUTBOUND_METHODS:
-                    findings.append(f"{path.relative_to(ROOT)}:{node.lineno}: httpx.{func.attr}")
+                if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+                    if func.value.id in modules and (
+                        func.attr in _PRIVATE_CLIENT_CTORS or func.attr in _HTTPX_OUTBOUND_METHODS
+                    ):
+                        location = (
+                            path.relative_to(ROOT).as_posix()
+                            if path.is_relative_to(ROOT)
+                            else str(path)
+                        )
+                        findings.append(f"{location}:{node.lineno}: httpx.{func.attr}")
+                elif isinstance(func, ast.Name) and (func.id in methods or func.id in constructors):
+                    location = (
+                        path.relative_to(ROOT).as_posix()
+                        if path.is_relative_to(ROOT)
+                        else str(path)
+                    )
+                    findings.append(f"{location}:{node.lineno}: imported httpx.{func.id}")
+    return findings
+
+
+# A Docker Engine client speaks over a Unix-domain socket, not an outbound HTTP
+# network destination. It remains explicit here so the repo-wide constructor
+# census does not silently classify trusted admin socket management as SSRF.
+_CONSTRUCTOR_CENSUS_EXEMPTIONS = frozenset({"packages/hive-conductor/backend/routes/containers.py"})
+_REPO_PRODUCTION_ROOTS = (ROOT / "packages", ROOT / "scripts")
+
+
+def _repo_unguarded_httpx_constructors() -> list[str]:
+    """Return private httpx client constructors outside the central seam.
+
+    Unlike the sibling call census, this check covers every production Python
+    root in the repository. Tests are excluded because their MockTransport
+    clients open no sockets; the central pool owns the one permitted production
+    construction.
+    """
+    findings: list[str] = []
+    pool = ROOT / "packages" / "maistro-core" / "src" / "maistro" / _POOL_OWNER
+    for root in _REPO_PRODUCTION_ROOTS:
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*.py")):
+            relative = path.relative_to(ROOT)
+            if "tests" in relative.parts or path == pool:
+                continue
+            relative_text = relative.as_posix()
+            if relative_text in _CONSTRUCTOR_CENSUS_EXEMPTIONS:
+                continue
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except (OSError, SyntaxError):
+                continue
+            if _constructs_private_client(tree):
+                findings.append(f"{relative_text}: private httpx client constructor")
     return findings
 
 
@@ -378,6 +451,7 @@ class Findings:
     drifted_counts: list[str] = field(default_factory=list)
     unchecked_rows: list[str] = field(default_factory=list)
     unguarded_httpx_calls: list[str] = field(default_factory=list)
+    unguarded_httpx_constructors: list[str] = field(default_factory=list)
 
     def total(self) -> int:
         return sum(
@@ -391,6 +465,7 @@ class Findings:
                 self.drifted_counts,
                 self.unchecked_rows,
                 self.unguarded_httpx_calls,
+                self.unguarded_httpx_constructors,
             )
         )
 
@@ -820,6 +895,7 @@ def main() -> int:
     check_absence_claims(text, findings)
     check_counted_claims(text, findings)
     findings.unguarded_httpx_calls.extend(_sibling_unguarded_httpx_calls())
+    findings.unguarded_httpx_constructors.extend(_repo_unguarded_httpx_constructors())
 
     if findings.total() == 0:
         rows = len(_inventory_rows(text))
@@ -860,6 +936,11 @@ def main() -> int:
             "Direct httpx calls in guarded sibling packages",
             findings.unguarded_httpx_calls,
             "route through maistro.http or an equivalent guarded seam",
+        ),
+        (
+            "Private httpx constructors outside the central seam",
+            findings.unguarded_httpx_constructors,
+            "borrow sync_client/shared_client or document a non-network transport exemption",
         ),
     ):
         if not bucket:
