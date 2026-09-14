@@ -185,8 +185,6 @@ class SqliteEventOutbox:
                 "UPDATE canonical_event_outbox SET stream_id = ? WHERE outbox_id = ?",
                 (stream_id, int(outbox_id)),
             )
-        if rows:
-            await self._conn.commit()
 
     async def stage(self, event: EventEnvelope) -> int:
         """Stage ``event`` in the caller's current transaction.
