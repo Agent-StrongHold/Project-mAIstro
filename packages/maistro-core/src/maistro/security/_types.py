@@ -11,8 +11,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
-from maistro.security.redact import redact
-from maistro.types.security import AuditEntry
+from maistro.types.security import AuditEntry as AuditEntry
+from maistro.types.security import Violation as Violation
 
 
 class IdentityKind(StrEnum):
@@ -91,26 +91,6 @@ class WardenVerdict:
     flags: tuple[str, ...] = ()
     confidence: float = 0.0
     reasoning_trace: str | None = None
-
-
-@dataclass
-class Violation:
-    boundary: str
-    rule: str
-    severity: str
-    detail: str = ""
-    repair_action: str | None = None
-
-    def __post_init__(self) -> None:
-        # #1159: `detail` interpolates rejected tool-call material (e.g. the
-        # invalid-enum message carries the rejected value verbatim), so it is
-        # scrubbed AT CONSTRUCTION — before any AuditLog implementation,
-        # durable or in-memory, can persist the violations list. The stop
-        # condition is explicit: keeping raw values out of evidence must not
-        # depend on a particular store omitting the field. The same redactor
-        # runs on every log pipeline, so this matches the system-wide
-        # secret policy (labels + entropy fallback).
-        self.detail = redact(self.detail)
 
 
 @dataclass
