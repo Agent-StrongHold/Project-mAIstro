@@ -25,6 +25,7 @@ def test_identity_health_reports_disabled_profile(monkeypatch) -> None:
 
 
 def test_identity_health_reports_operational_provisioned_identity(monkeypatch) -> None:
+    import services.identity_health as identity_health_service
     import stores
     from services.identity_health import identity_health
 
@@ -40,8 +41,39 @@ def test_identity_health_reports_operational_provisioned_identity(monkeypatch) -
             modules=["crypto_identity"], did=did, persisted=True
         ),
     )
+    monkeypatch.setattr(
+        identity_health_service,
+        "_identity_seed_status",
+        lambda: (True, "provisioned"),
+    )
 
     assert identity_health() == {"status": "operational", "reason": "provisioned"}
+
+
+def test_identity_health_rejects_missing_encrypted_seed(monkeypatch) -> None:
+    import services.identity_health as identity_health_service
+    import stores
+    from services.identity_health import identity_health
+
+    from maistro.identity import ConductorSeed
+
+    seed = ConductorSeed.generate()
+    did = seed.did_key()
+    seed.zero()
+    monkeypatch.setattr(
+        stores.sessions,
+        "get",
+        lambda key, default=None: _setup_config(
+            modules=["crypto_identity"], did=did, persisted=True
+        ),
+    )
+    monkeypatch.setattr(
+        identity_health_service,
+        "_identity_seed_status",
+        lambda: (False, "identity_seed_missing"),
+    )
+
+    assert identity_health() == {"status": "misconfigured", "reason": "identity_seed_missing"}
 
 
 def test_identity_health_distinguishes_missing_runtime(monkeypatch) -> None:

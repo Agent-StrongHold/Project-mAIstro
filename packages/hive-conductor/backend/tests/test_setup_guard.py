@@ -194,6 +194,40 @@ def test_requested_identity_failure_aborts_before_creating_accounts(
     assert "user" not in fresh_users
 
 
+def test_requested_identity_persistence_failure_aborts_before_creating_accounts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A selected identity cannot report setup success without a durable seed."""
+    import stores
+    from fastapi import HTTPException
+    from models.schemas import HiveUser
+    from routes.setup import complete_setup
+    from services.model_store import ModelStore
+
+    fresh_users = ModelStore("users", HiveUser)
+    monkeypatch.setattr(stores, "users", fresh_users)
+    monkeypatch.setattr("routes.setup._get_kv", lambda: None)
+    monkeypatch.setattr("routes.setup._init_vault_best_effort", lambda: True)
+    monkeypatch.setattr("routes.setup._persist_identity_root", lambda words: False)
+
+    with pytest.raises(HTTPException) as exc_info:
+        complete_setup(
+            {
+                "hardware_preset": "auto",
+                "admin_username": "newadmin",
+                "admin_password": "s3cret-admin",
+                "user_username": "newuser",
+                "user_password": "s3cret-user",
+                "optional_modules": ["crypto_identity"],
+            }
+        )
+
+    assert exc_info.value.status_code == 503
+    assert "persisted" in exc_info.value.detail
+    assert "admin" not in fresh_users
+    assert "user" not in fresh_users
+
+
 def test_first_run_provisions_vault_and_persists_seed(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:

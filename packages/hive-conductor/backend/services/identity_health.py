@@ -10,6 +10,24 @@ from __future__ import annotations
 from typing import Any
 
 _SETUP_KEY = "__hive_setup__"
+_SEED_VAULT_KEY = "CONDUCTOR_SEED_MNEMONIC"
+
+
+def _identity_seed_status() -> tuple[bool, str]:
+    """Check the encrypted seed without exposing its value to the probe."""
+    try:
+        from routes.setup import _vault_paths
+
+        from maistro.vault import Vault
+
+        vault_path, identity_path = _vault_paths()
+        if not Vault(vault_path=vault_path, identity_path=identity_path).has(_SEED_VAULT_KEY):
+            return False, "identity_seed_missing"
+    except Exception:
+        # Vault errors intentionally collapse to a stable public reason; age
+        # stderr and filesystem paths are not health API data.
+        return False, "identity_vault_unavailable"
+    return True, "provisioned"
 
 
 def identity_health() -> dict[str, Any]:
@@ -17,7 +35,7 @@ def identity_health() -> dict[str, Any]:
 
     ``unavailable`` means the selected runtime cannot import the engine extra;
     ``misconfigured`` means setup selected identity but did not leave a valid
-    provisioned DID; ``operational`` means the DID and encrypted seed record
+    DID and encrypted seed record; ``operational`` means both the DID and seed
     are present; ``disabled`` is the supported no-crypto Conductor profile.
     A pre-setup instance is reported as misconfigured with a distinct reason,
     but is not treated as a failed optional capability until setup selects it.
@@ -52,7 +70,10 @@ def identity_health() -> dict[str, Any]:
     except (TypeError, ValueError):
         return {"status": "misconfigured", "reason": "invalid_provisioned_did"}
 
-    return {"status": "operational", "reason": "provisioned"}
+    seed_available, reason = _identity_seed_status()
+    if not seed_available:
+        return {"status": "misconfigured", "reason": reason}
+    return {"status": "operational", "reason": reason}
 
 
 def identity_is_required(status: dict[str, Any]) -> bool:
