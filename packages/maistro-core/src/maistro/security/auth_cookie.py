@@ -10,7 +10,7 @@ import logging
 from http.cookies import SimpleCookie
 from typing import TYPE_CHECKING
 
-from maistro.security.auth_composite import AuthError, CredentialNotApplicable
+from maistro.protocols.auth import AuthError, CredentialNotApplicable
 
 if TYPE_CHECKING:
     from maistro.security._types import AuthContext

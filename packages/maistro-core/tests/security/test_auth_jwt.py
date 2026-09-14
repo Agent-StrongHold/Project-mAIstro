@@ -8,8 +8,8 @@ from typing import Any
 
 import pytest
 
+from maistro.protocols.auth import AuthError, CredentialNotApplicable
 from maistro.security._types import IdentityKind
-from maistro.security.auth_composite import AuthError, CredentialNotApplicable
 from maistro.security.auth_jwt import JWTAuthProvider
 
 

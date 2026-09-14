@@ -51,7 +51,7 @@ class JWTAuthProvider:
         authorization: str | None,
         headers: dict[str, str] | None = None,
     ) -> AuthContext:
-        from maistro.security.auth_composite import AuthError, CredentialNotApplicable
+        from maistro.protocols.auth import AuthError, CredentialNotApplicable
 
         if not authorization:
             raise CredentialNotApplicable("Missing Authorization header")
@@ -78,7 +78,7 @@ class JWTAuthProvider:
             kind = IdentityKind.INTERACTIVE_AGENT
 
         if not user_id:
-            from maistro.security.auth_composite import AuthError
+            from maistro.protocols.auth import AuthError
 
             raise AuthError("Token missing 'sub' claim")
 
@@ -125,7 +125,7 @@ class JWTAuthProvider:
                 audience=self._audience,
             )
         except Exception as e:
-            from maistro.security.auth_composite import AuthError
+            from maistro.protocols.auth import AuthError
 
             raise AuthError(f"JWT validation failed: {e}") from e
 

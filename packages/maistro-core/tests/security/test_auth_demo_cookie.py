@@ -7,8 +7,8 @@ import sys
 import jwt as pyjwt
 import pytest
 
+from maistro.protocols.auth import AuthError, CredentialNotApplicable
 from maistro.security._types import IdentityKind
-from maistro.security.auth_composite import AuthError, CredentialNotApplicable
 from maistro.security.auth_demo_cookie import DemoCookieAuthProvider
 
 _KEY = "x" * 32

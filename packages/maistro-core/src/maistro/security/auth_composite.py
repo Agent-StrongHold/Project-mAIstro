@@ -14,6 +14,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from maistro.protocols.auth import AuthError, CredentialNotApplicable
+
 _SAFE_SCHEME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.:-")
 _SAFE_SCHEME_MAX_LENGTH = 64
 
@@ -35,14 +37,6 @@ def _provider_scheme(provider: Any) -> str:
     ):
         return scheme
     return type(provider).__name__
-
-
-class CredentialNotApplicable(Exception):
-    """Raised when a provider cannot recognize this credential scheme."""
-
-
-class AuthError(Exception):
-    """Raised when a provider recognized the scheme but rejected the credential."""
 
 
 class CompositeAuthProvider:

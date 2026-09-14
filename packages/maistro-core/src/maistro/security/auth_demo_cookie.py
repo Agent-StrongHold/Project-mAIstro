@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from http.cookies import SimpleCookie
 
+from maistro.protocols.auth import AuthError, CredentialNotApplicable
 from maistro.security._types import AuthContext, IdentityKind
-from maistro.security.auth_composite import AuthError, CredentialNotApplicable
 
 _PREFIX = "Bearer demo-jwt:"
 

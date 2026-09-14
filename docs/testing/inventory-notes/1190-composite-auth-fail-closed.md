@@ -16,4 +16,6 @@ Bearer credential terminates a composite chain rather than falling through.
 Additional demo-session tests cover empty recognized credentials, empty cookie
 headers, and missing dependency propagation for the classified provider paths.
 Audit coverage also verifies that instance metadata derived from a credential is
-not used as the logged scheme label.
+not used as the logged scheme label. The classification exceptions now live at
+the AuthProvider protocol boundary, so providers do not depend on the composite
+implementation to participate in the fail-closed contract.

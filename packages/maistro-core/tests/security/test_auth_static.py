@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from maistro.protocols.auth import AuthError, CredentialNotApplicable
 from maistro.security._types import SYSTEM_AUTH, IdentityKind
-from maistro.security.auth_composite import AuthError, CredentialNotApplicable
 from maistro.security.auth_static import StaticKeyAuthProvider
 
 
