@@ -18,7 +18,6 @@
     "routes.providers",
     "services.benchmark_eval",
     "services.canonical_corpus",
-    "services.canvas_dag",
     "services.chat_completion",
     "services.eval_bootstrap",
     "services.evolution",
