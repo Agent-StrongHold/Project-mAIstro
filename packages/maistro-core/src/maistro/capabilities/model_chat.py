@@ -19,11 +19,15 @@ registry metadata, then attached to the persisted canonical Invocation.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager, suppress
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict
 
 from maistro.capabilities.binding import Binding, ResolvedCapabilityProvider
+from maistro.capabilities.binding_store import BindingNotFound, BindingScopeDenied
 from maistro.capabilities.invocation import (
     Invocation,
     InvocationUsage,
@@ -48,6 +52,25 @@ from maistro.providers.types import (
 if TYPE_CHECKING:
     from maistro.capabilities.effect_context import CapabilityEffectContext
     from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
+
+
+_DEFAULT_PROJECT_ID = "default"
+_MODEL_EXECUTION_CONTEXT: ContextVar[dict[str, str] | None] = ContextVar(
+    "model_execution_context", default=None
+)
+
+
+@contextmanager
+def model_execution_context(**values: str) -> Iterator[None]:
+    """Expose the active canonical Run scope to compatibility LLM clients."""
+
+    token = _MODEL_EXECUTION_CONTEXT.set(
+        {key: value for key, value in values.items() if isinstance(value, str) and value}
+    )
+    try:
+        yield
+    finally:
+        _MODEL_EXECUTION_CONTEXT.reset(token)
 
 
 def _gateway_usage(provider: LlmGatewayProvider, body: Any) -> InvocationUsage | None:
@@ -81,6 +104,7 @@ def resolve_model_chat_provider(
     alias: str = "",
     task: RoutingTask | None = None,
     budget: RouterBudget | None = None,
+    allow_unregistered_alias: bool = False,
 ) -> ProviderResolver:
     """Build the slot-specific resolver preserving ADR-079 selection policy.
 
@@ -92,10 +116,16 @@ def resolve_model_chat_provider(
         selection = binding.provider_name or alias
         if selection:
             try:
-                metadata: ModelMetadata | None = await registry.get_model(selection)
+                metadata: ModelMetadata = await registry.get_model(selection)
             except ModelNotFoundError:
-                metadata = None
-            if metadata is not None and not registry.is_available(metadata.name):
+                # A model alias is a selection request, never authorization to
+                # create an ad-hoc Provider. The operator's registry is the
+                # single source of selectable models.
+                return Unavailable(
+                    slot=MODEL_CHAT_CAPABILITY,
+                    reason=f"selected model {selection!r} is not registered",
+                )
+            if not registry.is_available(metadata.name):
                 return Unavailable(
                     slot=MODEL_CHAT_CAPABILITY,
                     reason=(
@@ -152,8 +182,36 @@ class ModelChatEgress:
         attempt_id: str,
         effect_key: str,
         request: ModelChatRequest,
+        setup: Callable[[], Awaitable[None]] | None = None,
+        allow_unregistered_alias: bool = False,
+        principal_id: str | None = None,
     ) -> ModelCallResult:
-        resolver = resolve_model_chat_provider(self._registry, self._router, alias=request.model)
+        """Run one governed model call, optionally performing provider setup.
+
+        ``setup`` runs inside the Invocation executor — after Binding scope
+        resolution and policy authorization, immediately before the physical
+        completion (#1088). Provider-internal mechanics that carry credentials
+        (e.g. a gateway's model registration) must be passed here rather than
+        performed by the caller beforehand: a denied policy then causes zero
+        HTTP, not a credential-bearing side request ahead of authorization.
+        """
+        # Kept as a compatibility keyword for downstream adapters, but it can
+        # no longer widen the registered model set.
+        del allow_unregistered_alias
+        # Even direct egress consumers must present an id already loaded by
+        # the composition root; a caller-supplied Binding is not authority.
+        binding = await self._effects.bindings.resolve(
+            binding.binding_id,
+            workspace_id=binding.workspace_id,
+            project_id=binding.project_id,
+            node_id=binding.node_id,
+            capability=MODEL_CHAT_CAPABILITY,
+        )
+        resolver = resolve_model_chat_provider(
+            self._registry,
+            self._router,
+            alias=request.model,
+        )
         selected: list[LlmGatewayProvider] = []
 
         async def tracked_resolve(candidate: Binding) -> ResolvedCapabilityProvider | Unavailable:
@@ -163,6 +221,8 @@ class ModelChatEgress:
             return provider
 
         async def execute(provider: ResolvedCapabilityProvider, payload: Any) -> Any:
+            if setup is not None:
+                await setup()
             return await execute_model_chat(provider, payload, endpoint=self._endpoint)
 
         def usage_from(body: Any) -> InvocationUsage | None:
@@ -170,17 +230,20 @@ class ModelChatEgress:
                 return None
             return _gateway_usage(selected[0], body)
 
-        invocation: Invocation = await self._effects.invocations.invoke(
-            binding=binding,
-            run_id=run_id,
-            node_run_id=node_run_id,
-            attempt_id=attempt_id,
-            effect_key=effect_key,
-            request=request,
-            resolver=tracked_resolve,
-            executor=execute,
-            usage_from=usage_from,
-        )
+        invocation_kwargs: dict[str, Any] = {
+            "binding": binding,
+            "run_id": run_id,
+            "node_run_id": node_run_id,
+            "attempt_id": attempt_id,
+            "effect_key": effect_key,
+            "request": request,
+            "resolver": tracked_resolve,
+            "executor": execute,
+            "usage_from": usage_from,
+        }
+        if principal_id is not None:
+            invocation_kwargs["principal_id"] = principal_id
+        invocation: Invocation = await self._effects.invocations.invoke(**invocation_kwargs)
         body = invocation.result if isinstance(invocation.result, dict) else {}
         return ModelCallResult(
             invocation_id=invocation.invocation_id,
@@ -190,9 +253,220 @@ class ModelChatEgress:
         )
 
 
+class GovernedModelChatClient:
+    """Compatibility LLM client backed exclusively by :class:`ModelChatEgress`.
+
+    Domain adapters can keep their existing LLM interfaces while this client
+    supplies the execution correlation and active Binding required by the
+    canonical boundary. It intentionally exposes no transport or provider
+    objects to callers.
+    """
+
+    def __init__(
+        self,
+        egress: ModelChatEgress,
+        binding: Binding | None,
+        *,
+        protocol: str = "chat_completions",
+    ) -> None:
+        self._egress = egress
+        self._binding = binding
+        self._protocol = protocol
+
+    async def _call(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        response_format: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        stream: bool = False,
+        tool_choice: str | None = None,
+    ) -> ModelCallResult:
+        from maistro.observability.correlation import current_execution_context
+
+        execution = current_execution_context()
+        metadata = {
+            **execution.as_log_fields(),
+            **(_MODEL_EXECUTION_CONTEXT.get() or {}),
+            **(metadata or {}),
+        }
+        if self._binding is None:
+            raise BindingNotFound(
+                "model.chat requires an operator-declared Binding; no Binding is configured"
+            )
+        request = ModelChatRequest(
+            model=model,
+            messages=messages,
+            tools=tools,
+            max_tokens=max_tokens,
+            temperature=temperature if temperature is not None else 0.7,
+            response_format=response_format,
+            protocol=("chat_completions" if tools else self._protocol),
+            stream=stream,
+            tool_choice=tool_choice,
+        )
+        binding = self._binding
+        workspace_id = str(metadata.get("workspace_id") or binding.workspace_id)
+        project_id = str(metadata.get("project_id") or binding.project_id)
+        if workspace_id != binding.workspace_id or project_id != binding.project_id:
+            raise BindingScopeDenied(
+                f"model.chat Binding {binding.binding_id!r} does not cover "
+                f"Workspace/Project {workspace_id!r}/{project_id!r}"
+            )
+        node_id = str(metadata.get("node_id") or binding.node_id)
+        run_id = str(metadata.get("run_id") or "")
+        node_run_id = str(metadata.get("node_run_id") or "")
+        attempt_id = str(metadata.get("attempt_id") or "")
+        effect_key = str(metadata.get("effect_key") or "")
+        missing = [
+            name
+            for name, value in (
+                ("run_id", run_id),
+                ("node_run_id", node_run_id),
+                ("attempt_id", attempt_id),
+                ("effect_key", effect_key),
+                ("node_id", node_id),
+            )
+            if not value.strip()
+        ]
+        if missing:
+            raise ValueError(
+                "model.chat requires canonical execution context: " + ", ".join(missing)
+            )
+        # Resolve the declaration from the Container-owned store. A caller may
+        # reference a Binding, but it cannot register or reshape authorization.
+        binding = await self._egress._effects.bindings.resolve(
+            binding.binding_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            node_id=node_id,
+            capability=MODEL_CHAT_CAPABILITY,
+        )
+        return await self._egress.complete(
+            binding=binding,
+            run_id=run_id,
+            node_run_id=node_run_id,
+            attempt_id=attempt_id,
+            effect_key=effect_key,
+            request=request,
+            principal_id=str(metadata.get("principal_id") or "") or None,
+        )
+
+    async def complete(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
+        stream: bool = False,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        response_format: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        result = await self._call(
+            messages,
+            model,
+            tools=tools,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            response_format=response_format,
+            metadata=metadata,
+            stream=stream,
+            tool_choice=tool_choice,
+        )
+        return result.body
+
+    async def stream_chunks(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        metadata: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        response_format: dict[str, Any] | None = None,
+        tool_choice: str | None = None,
+    ) -> Any:
+        result = await self._call(
+            messages,
+            model,
+            tools=tools,
+            metadata=metadata,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            response_format=response_format,
+            tool_choice=tool_choice,
+            stream=True,
+        )
+        chunks = result.body.get("_stream_chunks")
+        if isinstance(chunks, list):
+            for chunk in chunks:
+                if isinstance(chunk, dict):
+                    yield chunk
+            return
+        content = ""
+        with suppress(KeyError, IndexError, TypeError):
+            content = str(result.body["choices"][0]["message"].get("content") or "")
+        yield {"choices": [{"delta": {"content": content}, "finish_reason": "stop"}]}
+
+    async def stream(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        **kwargs: Any,
+    ) -> Any:
+        async for chunk in self.stream_chunks(messages, model, **kwargs):
+            delta = chunk.get("choices", [{}])[0].get("delta", {})
+            if isinstance(delta, dict) and delta.get("content"):
+                yield str(delta["content"])
+
+
+def build_model_chat_client(
+    *,
+    endpoint: GatewayEndpoint,
+    workspace_id: str = "default",
+    project_id: str = _DEFAULT_PROJECT_ID,
+    effects: CapabilityEffectContext | None = None,
+    registry: LLMProviderRegistry | None = None,
+    router: LLMRouter | None = None,
+    protocol: str = "chat_completions",
+    binding: Binding | None = None,
+) -> GovernedModelChatClient:
+    """Compose the canonical compatibility client for an app boundary."""
+
+    if effects is None:
+        from maistro.capabilities.effect_context import default_effect_context
+
+        effects = default_effect_context()
+    if registry is None:
+        from maistro.providers.registry import InMemoryProviderRegistry
+
+        registry = InMemoryProviderRegistry()
+    if router is None:
+        from maistro.providers.router import CostAwareRouter
+
+        router = CostAwareRouter(registry)
+    # No declaration means no authorization. Keep the compatibility client
+    # constructible for dependency-injection surfaces, but make its first call
+    # fail closed instead of minting a Binding here.
+    active_binding = binding
+    egress = ModelChatEgress(effects, registry=registry, router=router, endpoint=endpoint)
+    return GovernedModelChatClient(egress, active_binding, protocol=protocol)
+
+
 __all__ = [
     "MODEL_CHAT_CAPABILITY",
+    "GovernedModelChatClient",
     "ModelCallResult",
     "ModelChatEgress",
+    "build_model_chat_client",
+    "model_execution_context",
     "resolve_model_chat_provider",
 ]

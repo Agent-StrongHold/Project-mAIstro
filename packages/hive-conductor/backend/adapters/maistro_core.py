@@ -2,17 +2,13 @@
 
 StubAgentPort  — explicit unavailable response when maistro-core is not configured.
 MaistroCoreBridge — embeds maistro-core in-process; chat routes through Container.route_request().
-HttpOpenAILLMClient — thin httpx wrapper implementing maistro.protocols.llm.LLMClient.
+The Agent roster receives the Container's canonical model client.
 """
 
 from __future__ import annotations
 
-import contextlib
-from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
-
-from maistro.http import shared_client
 
 if TYPE_CHECKING:
     from config import Settings
@@ -36,66 +32,6 @@ class StubAgentPort:
     ) -> dict[str, Any]:
         del messages, auth, session_id, intent_hint
         raise RuntimeError("maistro-core Agent runtime is unavailable")
-
-
-class _HttpOpenAILLMClient:
-    """Concrete LLMClient (maistro.protocols.llm.LLMClient) backed by an OpenAI-compatible endpoint."""
-
-    def __init__(self, *, base_url: str, api_key: str, model: str) -> None:
-        self._base = base_url.rstrip("/")
-        self._key = api_key
-        self._model = model
-
-    def _headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self._key}", "Content-Type": "application/json"}
-
-    async def complete(
-        self,
-        messages: list[dict[str, Any]],
-        model: str,
-        *,
-        tools: list[dict[str, Any]] | None = None,
-        tool_choice: str | None = None,
-        stream: bool = False,
-        max_tokens: int | None = None,
-        temperature: float | None = None,
-        metadata: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "model": model or self._model,
-            "messages": messages,
-            "stream": False,
-        }
-        if temperature is not None:
-            payload["temperature"] = temperature
-        if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
-        if tools:
-            payload["tools"] = tools
-        if tool_choice:
-            payload["tool_choice"] = tool_choice
-
-        async with shared_client(timeout=120.0) as client:
-            r = await client.post(
-                f"{self._base}/chat/completions",
-                headers=self._headers(),
-                json=payload,
-            )
-            r.raise_for_status()
-            return r.json()
-
-    async def stream(
-        self,
-        messages: list[dict[str, Any]],
-        model: str,
-        **kwargs: Any,
-    ) -> AsyncIterator[str]:
-        # Minimal streaming: fall back to non-streaming and yield as single chunk
-        result = await self.complete(messages, model, **kwargs)
-        content = ""
-        with contextlib.suppress(KeyError, IndexError):
-            content = result["choices"][0]["message"]["content"]
-        yield content
 
 
 class EmbeddedRuntime(NamedTuple):
@@ -133,6 +69,8 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
     from services.tool_executor import dispatch_tool
 
     from maistro.agents.factory import _load_preamble, create_agents
+    from maistro.capabilities.model_chat import build_model_chat_client
+    from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
     from maistro.config.database import resolve_database_url
     from maistro.container import create_container
     from maistro.types.config import AgentConfig, SecurityConfig
@@ -140,8 +78,6 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
 
     llm_base = (settings.litellm_api_base or "").strip()
     llm_key = maistro_llm_api_key(settings) or ""
-    model = settings.maistro_model
-
     config = AgentConfig(
         router_api_key=settings.maistro_router_api_key or "",
         litellm_url=llm_base or "http://localhost:4000",
@@ -152,6 +88,8 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         # default Workspace and a core that did not would then disagree
         # about where unscoped Runs live, silently.
         workspace_id=settings.hive_default_workspace_id,
+        model_bindings=settings.model_bindings,
+        provider_config_path=settings.provider_config_path,
         # Without this the container took the ephemeral branch and built
         # in-memory stores, however the deployment was configured -- the
         # bridge constructs `AgentConfig` directly, so it never passed
@@ -175,11 +113,15 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
 
     container = await create_container(config)
 
-    llm_client = _HttpOpenAILLMClient(
-        base_url=llm_base or "http://localhost:4000/v1",
-        api_key=llm_key or "sk-noop",
-        model=model,
-    )
+    # Agent calls and Hive chat share the Container-owned governed client;
+    # there is no adapter-local HTTP authority. The fallback only supports
+    # container-shaped test seams and still composes the same core boundary.
+    llm_client = getattr(container, "model_chat_client", None)
+    if llm_client is None:
+        llm_client = build_model_chat_client(
+            endpoint=GatewayEndpoint(base_url=config.litellm_url, api_key=config.litellm_key),
+            workspace_id=config.workspace_id,
+        )
     prompt_manager = container.prompt_manager
 
     agents_dir = settings.maistro_agents_dir

@@ -79,28 +79,33 @@ def new_in_memory_effect_context(
     *,
     policy_evaluator: PolicyEvaluator | None = None,
     credentials: CredentialRouter | None = None,
+    binding_store: BindingStore | None = None,
+    invocation_store: InvocationStore | None = None,
+    event_store: EventStore | None = None,
 ) -> CapabilityEffectContext:
     """Build an isolated canonical effect context for local/runtime composition.
 
     ``credentials`` supplies the scoped credential pool for Provider selection
     (#58); omitted, the router exists but holds no credentials, so routed
     acquisitions fail closed until one is registered in the requesting scope.
+    ``invocation_store`` and ``event_store`` may replace the local defaults
+    when the composition root has a durable backend.
     """
 
-    binding_store = InMemoryBindingStore()
-    invocation_store = InMemoryInvocationStore()
-    event_store = InMemoryEventStore()
-    invocation_service = InvocationExecutionService(store=invocation_store)
+    binding_store = binding_store or InMemoryBindingStore()
+    resolved_invocation_store = invocation_store or InMemoryInvocationStore()
+    resolved_event_store = event_store or InMemoryEventStore()
+    invocation_service = InvocationExecutionService(store=resolved_invocation_store)
     governed = GovernedInvocationExecutionService(
         invocation_service=invocation_service,
-        event_store=event_store,
+        event_store=resolved_event_store,
         policy_evaluator=policy_evaluator or _m1_binding_authorized_policy,
     )
     return CapabilityEffectContext(
         bindings=binding_store,
         invocations=governed,
-        invocation_store=invocation_store,
-        event_store=event_store,
+        invocation_store=resolved_invocation_store,
+        event_store=resolved_event_store,
         credentials=credentials or CredentialRouter(),
     )
 

@@ -5,6 +5,8 @@ Pydantic-validated config loaded from YAML.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -131,6 +133,45 @@ class AuthConfig(BaseModel):
     session_max_age: int = 3600
 
 
+class ModelBindingConfig(BaseModel):
+    """Operator-declared authorization for the canonical ``model.chat`` capability.
+
+    This is authorization/configuration, not a credential container. A blank
+    ``workspace_id`` inherits the deployment's canonical ``AgentConfig.workspace_id``;
+    ``project_id`` and ``binding_id`` remain explicit so a Graph cannot authorize
+    itself merely by choosing a model name.
+    """
+
+    binding_id: str
+    project_id: str
+    workspace_id: str = ""
+    node_id: str = ""
+    provider_name: str = ""
+    credential_refs: tuple[str, ...] = ()
+    policy_refs: tuple[str, ...] = ()
+
+    @field_validator("binding_id", "project_id")
+    @classmethod
+    def _require_scope_identity(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("model Binding identity/scope fields must be non-empty")
+        return value
+
+    @field_validator("credential_refs", "policy_refs")
+    @classmethod
+    def _reject_empty_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not ref.strip() for ref in value):
+            raise ValueError("model Binding refs cannot contain empty values")
+        return value
+
+
+if TYPE_CHECKING:
+    # Pydantic discovers these validators through decorators; keep that
+    # reflection-owned public surface visible to production-only Vulture scans.
+    _scope_validator = ModelBindingConfig._require_scope_identity
+    _refs_validator = ModelBindingConfig._reject_empty_refs
+
+
 class AgentConfig(BaseModel):
     """Root configuration. Validated at startup."""
 
@@ -145,6 +186,10 @@ class AgentConfig(BaseModel):
     rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
     model_groups: dict[str, dict[str, object]] = Field(default_factory=dict)
+    # Provider discovery never grants model.chat authorization by itself.
+    # Explicit canonical authorizations are loaded by create_container (#1079);
+    # the empty default grants no Workspace/Project invocation rights.
+    model_bindings: list[ModelBindingConfig] = Field(default_factory=list)
     database_url: str = ""
     # The Workspace this instance admits work into (#41). Core keeps the soft
     # scope axes only (ADR-019/ADR-068), and a single-instance deployment is one

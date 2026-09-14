@@ -22,6 +22,7 @@ from models.schemas import ChatCompletionRequest
 from protocols.llm import LLMPort
 from routes.audit import log_audit
 
+from maistro.capabilities.model_chat import GovernedModelChatClient
 from maistro.http import shared_client
 from services.agent_materialization import (
     AgentDefinitionRejected,
@@ -81,7 +82,29 @@ def build_llm_port() -> LLMPort:
         base = os.environ.get("LITELLM_PROXY_URL")
     if not base or not key:
         return StubLLMPort()
-    return HttpOpenAIProtocolLLM(base_url=base, api_key=key, variant=s.llm_http_variant)
+
+    # Prefer the real Container's registry, Binding store, and Invocation
+    # ledger. The fallback composes the same core seam for stub/dev processes;
+    # it never restores adapter-owned HTTP dispatch.
+    client = None
+    try:
+        from services.engine import get_engine
+
+        container = getattr(get_engine().agent_port, "container", None)
+        if container is not None:
+            client = GovernedModelChatClient(
+                container.model_chat_egress,
+                container.model_chat_binding,
+                protocol=s.llm_http_variant,
+            )
+    except Exception:
+        client = None
+    return HttpOpenAIProtocolLLM(
+        base_url=base,
+        api_key=key,
+        variant=s.llm_http_variant,
+        client=client,
+    )
 
 
 def conversation_only(req: ChatCompletionRequest) -> ChatCompletionRequest:
@@ -1672,44 +1695,33 @@ async def _tool_analyze_dashboard(
 
     # Send to vision model
     try:
-        from config import get_settings
-
-        s = get_settings()
-        base = s.litellm_api_base or ""
-        key = _resolve_litellm_api_key(s) or ""
-        if not base or not key:
-            return {"error": "LLM not configured"}
-
         vision_model = args.get("model", "gpt-4o-mini")
         prompt = args.get(
             "prompt",
             "Analyze this dashboard screenshot. Identify: 1) Widgets that look broken or show useless data, 2) Poor sizing choices, 3) Bad chart type choices for the data shown, 4) Missing widgets that would add value, 5) Layout improvements for better visual flow. Be specific and actionable.",
         )
 
-        async with shared_client(timeout=60) as client:
-            resp = await client.post(
-                f"{base.rstrip('/')}/v1/chat/completions",
-                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                json={
-                    "model": vision_model,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": prompt},
-                                {
-                                    "type": "image_url",
-                                    "image_url": {"url": f"data:image/png;base64,{b64}"},
-                                },
-                            ],
-                        }
-                    ],
-                    "max_tokens": 2000,
-                },
+        llm = build_llm_port()
+        response = await llm.complete(
+            ChatCompletionRequest(
+                model=vision_model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/png;base64,{b64}"},
+                            },
+                        ],
+                    }
+                ],
+                max_tokens=2000,
             )
-            resp.raise_for_status()
-            analysis = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
-            return {"analysis": analysis, "model": vision_model}
+        )
+        analysis = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+        return {"analysis": analysis, "model": vision_model}
     except Exception as e:
         return {"error": f"Vision analysis failed: {e}"}
 

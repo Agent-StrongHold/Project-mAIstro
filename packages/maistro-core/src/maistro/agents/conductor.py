@@ -25,11 +25,13 @@ from pydantic import ValidationError
 from maistro.agents.circuit_breaker import CircuitOpenError, llm_circuit
 from maistro.agents.prompts import CONDUCTOR_SYSTEM
 from maistro.agents.types import ConductorOutput, LLMProviderError, PlanOutput, SubTask
+from maistro.capabilities.invocation import EffectNotApplied
+from maistro.capabilities.model_chat import GovernedModelChatClient, build_model_chat_client
+from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
 from maistro.config.model_resolver import resolve_model
 from maistro.config.models import DEFAULT_TIERS, Tier, TierConfig
 from maistro.config.settings import get_settings
 from maistro.constants import DESCRIPTION_LOG_PREVIEW_LEN
-from maistro.http import shared_client
 from maistro.observability.metrics import llm_errors_total, llm_requests_total
 from maistro.observability.tracing import trace_agent
 from maistro.tasks.models import TaskCreate
@@ -99,6 +101,7 @@ async def _call_gateway(
     max_tokens: int,
     timeout: float,
     on_response: OnResponseHook | None = None,
+    model_client: GovernedModelChatClient | None = None,
 ) -> str:
     """POST one chat-completion to the OpenAI-compatible gateway; return the message content.
 
@@ -112,24 +115,47 @@ async def _call_gateway(
         raise LLMProviderError(
             "conductor: no gateway base_url configured (set MAISTRO_LLM_BASE_URL)"
         )
-    url = call.base_url.rstrip("/") + "/chat/completions"
-    payload = {
-        "model": call.model,
-        "messages": [
-            {"role": "system", "content": call.system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "response_format": {"type": "json_object"},
-        "max_tokens": max_tokens,
-    }
-    headers = {"Authorization": f"Bearer {call.api_key}"}
-    async with shared_client(timeout=timeout) as client:
-        resp = await client.post(url, json=payload, headers=headers)
-        resp.raise_for_status()
-        data = resp.json()
+    client = model_client or build_model_chat_client(
+        endpoint=GatewayEndpoint(
+            base_url=call.base_url,
+            api_key=call.api_key,
+            timeout_s=timeout,
+            append_v1=False,
+        ),
+        protocol="chat_completions",
+    )
+    try:
+        data = await client.complete(
+            [
+                {"role": "system", "content": call.system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            call.model,
+            max_tokens=max_tokens,
+            response_format={"type": "json_object"},
+        )
+    except Exception as exc:
+        # Preserve the public retry/circuit contract while the canonical
+        # Invocation has already recorded the failed provider attempt.
+        if "status=" in str(exc):
+            try:
+                status = int(str(exc).split("status=", 1)[1].split()[0])
+            except (IndexError, ValueError):
+                status = 500
+            request = httpx.Request("POST", call.base_url)
+            response = httpx.Response(status, request=request)
+            raise httpx.HTTPStatusError(str(exc), request=request, response=response) from exc
+        raise
+    response_headers = data.pop("_provider_response_headers", {})
+    response = httpx.Response(
+        200,
+        headers=response_headers if isinstance(response_headers, dict) else {},
+        json=data,
+        request=httpx.Request("POST", call.base_url),
+    )
     if on_response is not None:
         try:
-            on_response(data, resp)
+            on_response(data, response)
         except Exception:
             await logger.awarning("conductor_on_response_hook_failed", exc_info=True)
     return str(data["choices"][0]["message"]["content"])
@@ -139,7 +165,7 @@ def _is_retryable(exc: Exception) -> bool:
     """Check if an exception represents a transient failure worth retrying."""
     if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
         return True
-    if isinstance(exc, httpx.ConnectError):
+    if isinstance(exc, (httpx.ConnectError, EffectNotApplied)):
         return True
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code in _RETRYABLE_STATUS_CODES
@@ -159,6 +185,7 @@ async def _run_with_retry(
     tier_config: TierConfig,
     max_tokens: int,
     on_response: OnResponseHook | None = None,
+    model_client: GovernedModelChatClient | None = None,
 ) -> ConductorOutput:
     """Call the gateway with timeout and retry logic for transient failures."""
     if not llm_circuit.allow_request():
@@ -170,7 +197,14 @@ async def _run_with_retry(
         try:
             llm_requests_total.inc()
             raw = await asyncio.wait_for(
-                _call_gateway(call, prompt, max_tokens, tier_config.timeout, on_response),
+                _call_gateway(
+                    call,
+                    prompt,
+                    max_tokens,
+                    tier_config.timeout,
+                    on_response,
+                    model_client,
+                ),
                 timeout=tier_config.timeout,
             )
             result = _parse_json_output(raw)
@@ -212,7 +246,11 @@ async def _run_with_retry(
 
 
 @trace_agent("conductor")
-async def run_task(task: TaskCreate, on_response: OnResponseHook | None = None) -> ConductorOutput:
+async def run_task(
+    task: TaskCreate,
+    on_response: OnResponseHook | None = None,
+    model_client: GovernedModelChatClient | None = None,
+) -> ConductorOutput:
     """Execute a full engineering task through the conductor pipeline.
 
     This is the main entry point for task execution. It:
@@ -223,6 +261,8 @@ async def run_task(task: TaskCreate, on_response: OnResponseHook | None = None) 
 
     `on_response`, if given, is forwarded to `_call_gateway` on every retry attempt —
     the same additive quota-recording seam `pm_llm_call.maistro_llm_call` exposes.
+    Production Containers pass ``model_client`` so this executor shares their
+    Provider registry, Binding store, and Invocation ledger.
 
     If maistro_dry_run is set in settings, returns a mock result without calling any LLM.
     """
@@ -270,7 +310,12 @@ async def run_task(task: TaskCreate, on_response: OnResponseHook | None = None) 
     )
 
     result = await _run_with_retry(
-        call, prompt, tier_config, max_tokens=max_tokens, on_response=on_response
+        call,
+        prompt,
+        tier_config,
+        max_tokens=max_tokens,
+        on_response=on_response,
+        model_client=model_client,
     )
     await logger.ainfo("conductor_complete", success=result.success)
     return result

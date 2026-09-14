@@ -18,6 +18,7 @@ import httpx
 import pytest
 
 from maistro.capabilities.binding import Binding
+from maistro.capabilities.binding_store import BindingNotFound
 from maistro.capabilities.effect_context import new_in_memory_effect_context
 from maistro.capabilities.invocation import (
     CapabilityUnavailable,
@@ -26,13 +27,16 @@ from maistro.capabilities.invocation import (
 )
 from maistro.capabilities.model_chat import (
     MODEL_CHAT_CAPABILITY,
+    GovernedModelChatClient,
     ModelChatEgress,
     ModelChatRequest,
     _gateway_usage,
+    build_model_chat_client,
     resolve_model_chat_provider,
 )
 from maistro.capabilities.providers.llm_gateway import GatewayEndpoint, LlmGatewayProvider
 from maistro.capabilities.types import Unavailable
+from maistro.observability.correlation import bind_execution_context
 from maistro.providers.errors import NoEligibleModelError
 from maistro.providers.registry import InMemoryProviderRegistry
 from maistro.providers.router import CostAwareRouter
@@ -72,6 +76,12 @@ def _binding(provider_name: str = "") -> Binding:
         capability=MODEL_CHAT_CAPABILITY,
         provider_name=provider_name,
     )
+
+
+async def _registered_binding(effects: Any, provider_name: str = "") -> Binding:
+    binding = _binding(provider_name)
+    await effects.bindings.put(binding)
+    return binding
 
 
 _OK_BODY: dict[str, Any] = {
@@ -116,11 +126,12 @@ async def test_governed_call_creates_invocation_with_usage_metadata(
     )
 
     result = await egress.complete(
-        binding=_binding(),
+        binding=await _registered_binding(effects),
         run_id="r1",
         node_run_id="nr1",
         attempt_id="a1",
         effect_key="test:model",
+        principal_id="principal-1",
         request=ModelChatRequest(
             model="fast-model", messages=[{"role": "user", "content": "hello"}]
         ),
@@ -142,6 +153,124 @@ async def test_governed_call_creates_invocation_with_usage_metadata(
     assert stored.binding.capability == MODEL_CHAT_CAPABILITY
     assert stored.binding.provider_name == "fast-model"
     assert stored.usage == result.usage
+    assert stored.principal_id == "principal-1"
+
+
+async def test_compatibility_client_without_declared_binding_fails_closed() -> None:
+    effects = new_in_memory_effect_context()
+    registry = _registry()
+    client = build_model_chat_client(
+        endpoint=GatewayEndpoint(base_url="http://gw"),
+        workspace_id="ws-client",
+        project_id="project-client",
+        effects=effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+    )
+
+    with pytest.raises(BindingNotFound, match="operator-declared Binding"):
+        await client.complete(
+            [{"role": "user", "content": "hello"}],
+            "fast-model",
+            metadata={
+                "run_id": "run-client",
+                "node_run_id": "node-client",
+                "attempt_id": "attempt-client",
+                "node_id": "node-client",
+                "effect_key": "client:model",
+            },
+        )
+
+
+async def test_compatibility_client_records_the_call_on_the_canonical_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LLM compatibility callers cannot reach a model without an Invocation."""
+    effects = new_in_memory_effect_context()
+    registry = _registry()
+    _patch_gateway(monkeypatch, _OK_BODY)
+    binding = _binding()
+    await effects.bindings.put(binding)
+    client = build_model_chat_client(
+        endpoint=GatewayEndpoint(base_url="http://gw"),
+        workspace_id="ws-client",
+        project_id="project-client",
+        effects=effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+        binding=binding,
+    )
+
+    assert isinstance(client, GovernedModelChatClient)
+    body = await client.complete(
+        [{"role": "user", "content": "hello"}],
+        "fast-model",
+        metadata={
+            "run_id": "run-client",
+            "node_run_id": "node-client",
+            "attempt_id": "attempt-client",
+            "node_id": "node-client",
+            "effect_key": "client:model",
+        },
+    )
+
+    assert body["choices"][0]["message"]["content"] == "hi"
+    history = await effects.invocation_store.list_effect(
+        run_id="run-client",
+        node_run_id="node-client",
+        binding_id=client._binding.binding_id,
+        effect_key="client:model",
+    )
+    assert len(history) == 1
+    assert history[0].binding.provider_name == "fast-model"
+
+
+async def test_compatibility_client_inherits_canonical_execution_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Agent/Run callers retain ambient Workspace and Attempt correlation."""
+    effects = new_in_memory_effect_context()
+    registry = _registry()
+    _patch_gateway(monkeypatch, _OK_BODY)
+    binding = Binding(
+        workspace_id="ws-client",
+        project_id="project-client",
+        capability=MODEL_CHAT_CAPABILITY,
+    )
+    await effects.bindings.put(binding)
+    client = build_model_chat_client(
+        endpoint=GatewayEndpoint(base_url="http://gw"),
+        workspace_id="ws-client",
+        project_id="project-client",
+        effects=effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+        binding=binding,
+    )
+
+    with bind_execution_context(
+        workspace_id="ws-client",
+        project_id="project-client",
+        run_id="run-context",
+        node_run_id="node-context",
+        attempt_id="attempt-context",
+    ):
+        await client.complete(
+            [{"role": "user", "content": "hello"}],
+            "fast-model",
+            metadata={"effect_key": "context:model", "node_id": "node-context"},
+        )
+
+    binding_id = binding.binding_id
+    history = await effects.invocation_store.list_effect(
+        run_id="run-context",
+        node_run_id="node-context",
+        binding_id=binding_id,
+        effect_key="context:model",
+    )
+    assert len(history) == 1
+    assert history[0].attempt_id == "attempt-context"
+    assert history[0].binding.provider_name == "fast-model"
 
 
 async def test_unpinned_unaliased_request_uses_router_selection(
@@ -159,7 +288,7 @@ async def test_unpinned_unaliased_request_uses_router_selection(
     )
 
     result = await egress.complete(
-        binding=_binding(),
+        binding=await _registered_binding(effects),
         run_id="r1",
         node_run_id="nr1",
         attempt_id="a1",
@@ -211,7 +340,7 @@ async def test_binding_pin_outranks_router_preference(
     )
 
     result = await egress.complete(
-        binding=_binding(provider_name="slow-model"),
+        binding=await _registered_binding(effects, "slow-model"),
         run_id="r1",
         node_run_id="nr1",
         attempt_id="a1",
@@ -233,14 +362,11 @@ async def test_pinned_unavailable_model_refuses_without_fallback() -> None:
     assert "does not fall back" in provider.reason
 
 
-async def test_unregistered_alias_still_reaches_gateway_with_absent_cost(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Gateway aliases absent from the registry keep today's passthrough."""
+async def test_unregistered_alias_refuses_before_gateway_dispatch() -> None:
+    """A model alias cannot bypass the populated Provider registry."""
 
     effects = new_in_memory_effect_context()
     registry = _registry()
-    _patch_gateway(monkeypatch, _OK_BODY)
     egress = ModelChatEgress(
         effects,
         registry=registry,
@@ -248,21 +374,28 @@ async def test_unregistered_alias_still_reaches_gateway_with_absent_cost(
         endpoint=GatewayEndpoint(base_url="http://gw"),
     )
 
-    result = await egress.complete(
-        binding=_binding(),
-        run_id="r1",
-        node_run_id="nr1",
-        attempt_id="a1",
-        effect_key="test:alias",
-        request=ModelChatRequest(
-            model="gemini-3.1-flash-lite", messages=[{"role": "user", "content": "hi"}]
-        ),
-    )
+    binding = await _registered_binding(effects)
+    with pytest.raises(CapabilityUnavailable, match="not registered"):
+        await egress.complete(
+            binding=binding,
+            run_id="r1",
+            node_run_id="nr1",
+            attempt_id="a1",
+            effect_key="test:alias",
+            request=ModelChatRequest(
+                model="gemini-3.1-flash-lite", messages=[{"role": "user", "content": "hi"}]
+            ),
+        )
 
-    assert result.model == "gemini-3.1-flash-lite"
-    assert result.usage is not None
-    assert result.usage.cost_cents is None  # unmeasured is absent, not zero
-    assert result.usage.provider == "llm-gateway"
+    assert (
+        await effects.invocation_store.list_effect(
+            run_id="r1",
+            node_run_id="nr1",
+            binding_id=binding.binding_id,
+            effect_key="test:alias",
+        )
+        == []
+    )
 
 
 async def test_completed_effect_deduplicates_repeat_invocation(
@@ -298,7 +431,7 @@ async def test_completed_effect_deduplicates_repeat_invocation(
         endpoint=GatewayEndpoint(base_url="http://gw"),
     )
     kwargs: dict[str, Any] = {
-        "binding": _binding(),
+        "binding": await _registered_binding(effects),
         "run_id": "r1",
         "node_run_id": "nr1",
         "attempt_id": "a1",
@@ -340,7 +473,7 @@ async def test_unreachable_gateway_records_failed_retryable_invocation(
         endpoint=GatewayEndpoint(base_url="http://gw"),
     )
     kwargs: dict[str, Any] = {
-        "binding": _binding(),
+        "binding": await _registered_binding(effects),
         "run_id": "r1",
         "node_run_id": "nr1",
         "attempt_id": "a1",
@@ -488,7 +621,7 @@ async def test_unavailable_selection_refuses_before_any_gateway_call(
 
     with pytest.raises(CapabilityUnavailable):
         await egress.complete(
-            binding=_binding(provider_name="fast-model"),
+            binding=await _registered_binding(effects, "fast-model"),
             run_id="r1",
             node_run_id="nr1",
             attempt_id="a1",
@@ -527,7 +660,12 @@ async def test_usage_from_without_tracked_provider_returns_none() -> None:
                 usage=None,
             )
 
+    class _StubBindings:
+        async def resolve(self, *_args: Any, **_kwargs: Any) -> Binding:
+            return _binding()
+
     class _StubEffects:
+        bindings = _StubBindings()
         invocations = _StubInvocations()
 
     registry = _registry()
@@ -557,3 +695,104 @@ async def test_usage_from_without_tracked_provider_returns_none() -> None:
     assert usage is not None
     assert usage.input_units == 100
     assert usage.provider == "test-gw"
+
+
+async def test_setup_hook_runs_after_authorization_before_model_http(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Provider-internal setup executes inside the Invocation (#1088).
+
+    Ordering proof: policy authorization -> setup -> gateway HTTP. The setup
+    hook lets a Provider perform its own credential-bearing preparation
+    without turning that preparation into pre-authorization HTTP.
+    """
+
+    order: list[str] = []
+    effects = new_in_memory_effect_context()
+    registry = _registry()
+
+    async def _setup() -> None:
+        order.append("setup")
+
+    class _Resp:
+        status_code = 200
+
+        def json(self) -> Any:
+            return _OK_BODY
+
+    class _Client:
+        def __init__(self, *a: Any, **kw: Any) -> None: ...
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *a: Any) -> None: ...
+
+        async def post(self, *a: Any, **kw: Any) -> _Resp:
+            order.append("http")
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+
+    egress = ModelChatEgress(
+        effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+        endpoint=GatewayEndpoint(base_url="http://gw:4000"),
+    )
+    result = await egress.complete(
+        binding=await _registered_binding(effects),
+        run_id="r1",
+        node_run_id="nr1",
+        attempt_id="a1",
+        effect_key="test:setup",
+        request=ModelChatRequest(messages=[{"role": "user", "content": "hi"}]),
+        setup=_setup,
+    )
+
+    assert result.model == "fast-model"
+    assert order == ["setup", "http"]
+    stored = await effects.invocation_store.get(result.invocation_id)
+    assert stored is not None
+    assert stored.status is InvocationStatus.COMPLETED
+
+
+async def test_denied_policy_refuses_before_setup_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Authorization refusal means zero setup and zero HTTP (#1088)."""
+
+    from maistro.capabilities.governed_invocation import InvocationDenied
+    from maistro.policy.types import Decision, PolicyVerdict
+
+    async def _deny(*args: Any, **kwargs: Any) -> PolicyVerdict:
+        del args, kwargs
+        return PolicyVerdict(Decision.DENY, reason="denied", rule="test")
+
+    setup_ran = False
+    effects = new_in_memory_effect_context(policy_evaluator=_deny)
+    registry = _registry()
+    _patch_gateway(monkeypatch, _OK_BODY)
+    egress = ModelChatEgress(
+        effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+        endpoint=GatewayEndpoint(base_url="http://gw:4000"),
+    )
+
+    async def _setup() -> None:
+        nonlocal setup_ran
+        setup_ran = True
+
+    with pytest.raises(InvocationDenied):
+        await egress.complete(
+            binding=await _registered_binding(effects),
+            run_id="r1",
+            node_run_id="nr1",
+            attempt_id="a1",
+            effect_key="test:setup-denied",
+            request=ModelChatRequest(messages=[{"role": "user", "content": "hi"}]),
+            setup=_setup,
+        )
+
+    assert setup_ran is False

@@ -22,10 +22,7 @@ from maistro.a2a.guest_peers import GuestPeerManager
 from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.intents import IntentRegistry, build_intent_registry
 from maistro.archive.wiring import build_archive_store
-from maistro.capabilities.effect_context import (
-    CapabilityEffectContext,
-    new_in_memory_effect_context,
-)
+from maistro.capabilities.effect_context import CapabilityEffectContext
 from maistro.classifier.engine import ClassifierEngine
 from maistro.graph.durable_runs.canonical_store import CanonicalDurableRunStore
 from maistro.graph.durable_runs.protocol import DurableRunStore
@@ -297,6 +294,10 @@ class Container:
     # LLM provider registry + cost-aware router (SPEC-070226-cb8d).
     provider_registry: LLMProviderRegistry = None  # type: ignore[assignment]
     llm_router: LLMRouter = None  # type: ignore[assignment]
+    # Compatibility adapters all cross this one canonical model boundary.
+    model_chat_binding: Any = None
+    model_chat_egress: Any = None
+    model_chat_client: Any = None
     # Observability record/replay + PII tier routing (ADR-055).
     record_store: RecordStore = None  # type: ignore[assignment]
     pii_detector: PIIDetector = None  # type: ignore[assignment]
@@ -821,6 +822,8 @@ class Container:
                 guest_peers=self.guest_peers,
                 run_store=self.run_store,
                 effect_context=self.capability_effects,
+                provider_registry=self.provider_registry,
+                llm_router=self.llm_router,
             ),
         )
         executed = 0
@@ -897,6 +900,8 @@ class Container:
                 guest_peers=self.guest_peers,
                 run_store=self.run_store,
                 effect_context=self.capability_effects,
+                provider_registry=self.provider_registry,
+                llm_router=self.llm_router,
             ),
         )
         resumed = 0
@@ -1493,6 +1498,10 @@ async def create_container(
 
     event_bus.subscribe(_persist_bus_event)
 
+    # Build the canonical effect context before model clients so every node and
+    # compatibility adapter shares the same Binding and Invocation authorities.
+    capability_effects = await _wire_capability_effects(db_pool=db_pool, pg_pool=pg_pool)
+
     # --- LLM provider registry + cost-aware router (SPEC-070226-cb8d) ----
     from maistro.providers.config import load_provider_registry
     from maistro.providers.registry import InMemoryProviderRegistry
@@ -1504,6 +1513,23 @@ async def create_container(
         else InMemoryProviderRegistry()
     )
     llm_router = CostAwareRouter(provider_registry)
+
+    # Only operator-declared model Bindings authorize model.chat. Bootstrap
+    # them into this Container's live store before any compatibility client is
+    # exposed; an empty declaration set remains fail-closed.
+    from maistro.capabilities.model_binding_bootstrap import bootstrap_model_bindings
+    from maistro.capabilities.model_chat import GovernedModelChatClient, ModelChatEgress
+    from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
+
+    declared_model_bindings = await bootstrap_model_bindings(config, capability_effects)
+    model_chat_binding = declared_model_bindings[0] if len(declared_model_bindings) == 1 else None
+    model_chat_egress = ModelChatEgress(
+        capability_effects,
+        registry=provider_registry,
+        router=llm_router,
+        endpoint=GatewayEndpoint(base_url=config.litellm_url, api_key=config.litellm_key),
+    )
+    model_chat_client = GovernedModelChatClient(model_chat_egress, model_chat_binding)
 
     # --- Observability record/replay + PII tiers (ADR-055) ---------------
     from maistro.observability.replay import InMemoryRecordStore
@@ -1539,7 +1565,6 @@ async def create_container(
 
     # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) -----------
     wired_harness_adapters = _wire_harness_adapters(harness_adapters)
-    capability_effects = new_in_memory_effect_context()
     spawn_harness_node = AgentSpawnHarnessNode(
         adapters=wired_harness_adapters, effect_context=capability_effects
     )
@@ -1608,6 +1633,9 @@ async def create_container(
         handler_caller=handler_caller,
         provider_registry=provider_registry,
         llm_router=llm_router,
+        model_chat_binding=model_chat_binding,
+        model_chat_egress=model_chat_egress,
+        model_chat_client=model_chat_client,
         record_store=record_store,
         pii_detector=pii_detector,
         identity_store=identity_store,
@@ -2180,6 +2208,52 @@ async def _wire_sqlite_backend(
     )
 
 
+async def _wire_capability_effects(
+    *,
+    db_pool: Any,
+    pg_pool: Any,
+) -> CapabilityEffectContext:
+    """Compose capability authorities onto the Container's selected backend.
+
+    Model Binding registration remains configuration/control-plane driven, but
+    its definitions and governed Invocation records use the same durable
+    database as the Container whenever one is configured. Ephemeral containers
+    intentionally retain isolated in-memory authorities and therefore lose
+    them on restart by declaration.
+    """
+    from maistro.capabilities.binding_store import (
+        BindingStore,
+        PgBindingStore,
+        SqliteBindingStore,
+    )
+    from maistro.capabilities.effect_context import new_in_memory_effect_context
+    from maistro.capabilities.invocation_store import PgInvocationStore, SqliteInvocationStore
+    from maistro.events.wiring import wire_canonical_events
+
+    binding_store: BindingStore
+    invocation_store: Any
+    if pg_pool is not None:
+        binding_store = PgBindingStore(pg_pool)
+        invocation_store = PgInvocationStore(pg_pool)
+        await binding_store.ensure_schema()
+        await invocation_store.ensure_schema()
+        canonical_events = await wire_canonical_events(pg_pool=pg_pool)
+    elif db_pool is not None:
+        binding_store = SqliteBindingStore(db_pool)
+        invocation_store = SqliteInvocationStore(db_pool)
+        await binding_store.ensure_schema()
+        await invocation_store.ensure_schema()
+        canonical_events = await wire_canonical_events(db_pool=db_pool)
+    else:
+        return new_in_memory_effect_context()
+
+    return new_in_memory_effect_context(
+        binding_store=binding_store,
+        invocation_store=invocation_store,
+        event_store=canonical_events.store,
+    )
+
+
 async def _wire_sqlite_durable_events(
     conn: Any,
 ) -> tuple[EventLogStore, TriggerStore, InvocationStore]:
@@ -2287,6 +2361,8 @@ def _di_node(
     guest_peers: Any,
     run_store: RunStore | None,
     effect_context: CapabilityEffectContext | None,
+    provider_registry: LLMProviderRegistry | None,
+    llm_router: LLMRouter | None,
 ) -> Any:
     """Construct a dependency-injected node kind, or None for registry kinds.
 
@@ -2298,16 +2374,20 @@ def _di_node(
 
     from maistro.graph.nodes.agent_delegate_remote import AgentDelegateRemoteNode
     from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
+    from maistro.graph.nodes.agent_synth_dag import AgentSynthDagNode
     from maistro.graph.nodes.llm_summarize import LlmSummarizeNode
     from maistro.graph.nodes.rsi_quota_pace_trigger import RsiQuotaPaceTriggerNode
 
     if kind == "agent.spawn_harness":
         return AgentSpawnHarnessNode(adapters=harness_adapters, effect_context=effect_context)
     if kind == "llm.summarize":
-        # The shipped model path crosses the governed model egress (#56):
-        # the node resolves Bindings and files Invocations against the same
-        # authorities the container's own effect nodes use.
-        return LlmSummarizeNode(effect_context=effect_context)
+        # Production callers pass the exact Container collaborators; bare
+        # resolvers may omit them and remain fail-closed on empty defaults.
+        return LlmSummarizeNode(
+            effect_context=effect_context,
+            registry=provider_registry,
+            router=llm_router,
+        )
     if kind == "rsi.quota_pace_trigger":
         return RsiQuotaPaceTriggerNode(usage_log)
     if kind == "agent.delegate_remote":
@@ -2321,6 +2401,28 @@ def _di_node(
         return AgentDelegateRemoteNode(
             a2a_delegator=a2a_delegator, guest_peers=guest_peers, run_store=run_store
         )
+    if kind == "agent.synth_dag":
+        # Same omission shape as delegate_remote above, one level out: the
+        # synth catalog explicitly offers `llm.summarize`, so a bare parent
+        # hands its child graphs a resolver that builds `llm.summarize` with
+        # a fresh empty effect context, registry and router (#1079) -- the
+        # child then refuses Bindings the deployment configured, and unpinned
+        # selection routes over an empty registry. The child resolver carries
+        # this same wiring down (child delegate nodes included). Child-run
+        # filing keeps the bare node's store behavior: this node takes a
+        # DurableRunStore, which `run_store` here is not.
+        return AgentSynthDagNode(
+            node_resolver=build_node_resolver(
+                harness_adapters=harness_adapters,
+                usage_log=usage_log,
+                a2a_delegator=a2a_delegator,
+                guest_peers=guest_peers,
+                run_store=run_store,
+                effect_context=effect_context,
+                provider_registry=provider_registry,
+                llm_router=llm_router,
+            ),
+        )
     return None
 
 
@@ -2332,6 +2434,8 @@ def build_node_resolver(
     guest_peers: Any = None,
     run_store: RunStore | None = None,
     effect_context: CapabilityEffectContext | None = None,
+    provider_registry: LLMProviderRegistry | None = None,
+    llm_router: LLMRouter | None = None,
 ) -> Callable[[str, Any], Any]:
     """Build the production durable-executor node resolver.
 
@@ -2388,6 +2492,8 @@ def build_node_resolver(
             guest_peers=guest_peers,
             run_store=run_store,
             effect_context=resolved_effect_context,
+            provider_registry=provider_registry,
+            llm_router=llm_router,
         )
         return injected if injected is not None else get_node(kind)()
 

@@ -9,18 +9,11 @@ than retryable failure: an exception can arrive after the remote system has
 already committed the side effect. A provider/adapter may raise
 :class:`EffectNotApplied` only when it can prove no external effect occurred.
 
-**Nothing in this repository constructs an Invocation outside tests.** Neither
-:class:`InvocationExecutionService` nor its governed wrapper is instantiated by
-the container, a route, or a node; the one caller of the seam,
-``HarnessSessionManager.send_invocation``, is itself unreached. This layer is the
-boundary #55 is going to route provider calls through, and it is written and
-tested ahead of that. Read it as a specification with a conformance suite, not
-as a description of what runs today: an id here does not appear in a log line,
-and no stored Invocation row exists in any deployment.
-
-Stating that is the point of the paragraph. A reader who finds a persisted
-effect-key ledger reasonably assumes retries are already deduplicated by it,
-and would then be wrong about how the running system recovers.
+The Container composes this service for governed model egress. The in-memory
+store remains the explicit default for ephemeral deployments; configured SQLite
+and PostgreSQL deployments select durable capability stores so effect history
+and its execution correlation survive process restart. Other approved effect
+consumers use the same service and effect-key ledger.
 """
 
 from __future__ import annotations
@@ -101,11 +94,14 @@ class Invocation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     invocation_id: str = Field(default_factory=_id)
+    workspace_id: str
+    project_id: str
     run_id: str
     node_run_id: str
     attempt_id: str
     binding: ResolvedBinding
     effect_key: str
+    principal_id: str | None = None
     status: InvocationStatus = InvocationStatus.CREATED
     request: Any | None = None
     result: Any | None = None
@@ -118,6 +114,12 @@ class Invocation(BaseModel):
     @model_validator(mode="after")
     def _validate_invocation(self) -> Invocation:
         _require(self.invocation_id, "invocation_id")
+        _require(self.workspace_id, "workspace_id")
+        _require(self.project_id, "project_id")
+        if self.workspace_id != self.binding.workspace_id:
+            raise ValueError("Invocation workspace_id must match its resolved Binding")
+        if self.project_id != self.binding.project_id:
+            raise ValueError("Invocation project_id must match its resolved Binding")
         _require(self.run_id, "run_id")
         _require(self.node_run_id, "node_run_id")
         _require(self.attempt_id, "attempt_id")
@@ -222,8 +224,9 @@ UsageExtractor = Callable[[Any], "InvocationUsage | None"]
 class InvocationExecutionService:
     """Resolve one Binding, persist one provider call, and guard effect retries.
 
-    Unreached in production: nothing constructs this outside tests, and the
-    effect-retry guard below therefore protects no live call yet (#55).
+    Production model and capability consumers reach this service through their
+    composed effect context; the retry guard is the single authority for those
+    live calls.
     """
 
     def __init__(self, *, store: InvocationStore) -> None:
@@ -257,6 +260,7 @@ class InvocationExecutionService:
         attempt_id: str,
         effect_key: str,
         request: Any,
+        principal_id: str | None = None,
         resolver: ProviderResolver,
         executor: ProviderExecutor,
         usage_from: UsageExtractor | None = None,
@@ -300,6 +304,9 @@ class InvocationExecutionService:
             resolved = ResolvedBinding.from_provider(binding, provider)
             invocation = await self._store.create(
                 Invocation(
+                    workspace_id=binding.workspace_id,
+                    project_id=binding.project_id,
+                    principal_id=principal_id,
                     run_id=run_id,
                     node_run_id=node_run_id,
                     attempt_id=attempt_id,

@@ -10,6 +10,18 @@ class TestEloTournament:
         t = EloTournament()
         assert t.get_stats()["total_battles"] == 0
 
+    def test_persisted_operation_is_not_applied_after_reopen(self, tmp_path):
+        db_path = tmp_path / "evolution.db"
+        first = EloTournament(db_path=db_path)
+        original = first.record_battle_once("node-1:proxy", "proxy", "g1", "g2", 0.8, 0.2)
+
+        reopened = EloTournament(db_path=db_path)
+        replayed = reopened.record_battle_once("node-1:proxy", "proxy", "g1", "g2", 0.8, 0.2)
+
+        assert replayed.id == original.id
+        assert reopened.get_stats()["total_battles"] == 1
+        assert reopened.get_elo("g1", "proxy") == first.get_elo("g1", "proxy")
+
     def test_record_battle_winner_a(self):
         t = EloTournament()
         battle = t.record_battle("proxy_ifeval", "g1", "g2", 0.8, 0.4)

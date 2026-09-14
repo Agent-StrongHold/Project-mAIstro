@@ -15,12 +15,13 @@ outranks it.
 from __future__ import annotations
 
 import os
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel, Field
 
 from maistro.capabilities.binding_store import BindingNotFound
 from maistro.capabilities.effect_context import CapabilityEffectContext, default_effect_context
+from maistro.capabilities.invocation import EffectNotApplied
 from maistro.capabilities.model_chat import (
     MODEL_CHAT_CAPABILITY,
     ModelChatEgress,
@@ -34,6 +35,9 @@ from maistro.providers.router import CostAwareRouter
 
 from . import register_node
 from .base import BaseNode, NodeContext
+
+if TYPE_CHECKING:
+    from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
 
 
 class LlmSummarizeIn(BaseModel):
@@ -96,16 +100,18 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
         self,
         *,
         effect_context: CapabilityEffectContext | None = None,
-        registry: InMemoryProviderRegistry | None = None,
-        router: CostAwareRouter | None = None,
+        registry: LLMProviderRegistry | None = None,
+        router: LLMRouter | None = None,
     ) -> None:
         # The container passes its own capability_effects so resolver-built
         # nodes resolve the same Binding/Invocation authorities (#55 wiring
         # pattern). Bare registry construction keeps the process default, which
         # registers no Bindings and therefore authorizes nothing.
         self._effects = effect_context or default_effect_context()
-        self._registry = registry if registry is not None else InMemoryProviderRegistry()
-        self._router = router if router is not None else CostAwareRouter(self._registry)
+        self._registry: LLMProviderRegistry = (
+            registry if registry is not None else InMemoryProviderRegistry()
+        )
+        self._router: LLMRouter = router if router is not None else CostAwareRouter(self._registry)
 
     async def _execute(self, inputs: LlmSummarizeIn, ctx: NodeContext) -> LlmSummarizeOut:
         # LLM gateway endpoint + key — pulled from env (maistro config layer
@@ -159,14 +165,24 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
                 base_url=base_url, api_key=api_key, timeout_s=inputs.timeout_s
             ),
         )
-        result = await egress.complete(
-            binding=binding,
-            run_id=ctx.run_id,
-            node_run_id=ctx.node_run_id,
-            attempt_id=ctx.attempt_id,
-            effect_key=f"llm.summarize.complete:{inputs.model}",
-            request=request,
-        )
+        try:
+            result = await egress.complete(
+                binding=binding,
+                run_id=ctx.run_id,
+                node_run_id=ctx.node_run_id,
+                attempt_id=ctx.attempt_id,
+                effect_key=f"llm.summarize.complete:{inputs.model}",
+                principal_id=ctx.user_id,
+                request=request,
+            )
+        except EffectNotApplied as exc:
+            # Keep this node's historical error taxonomy while the canonical
+            # Invocation retains the truthful failed outcome for retry policy.
+            if "status=401" in str(exc):
+                raise PermissionError(str(exc)) from exc
+            if "status=" in str(exc):
+                raise RuntimeError(str(exc)) from exc
+            raise
 
         data: dict[str, Any] = result.body
         text = (data.get("choices", [{}])[0].get("message", {}) or {}).get("content", "") or ""

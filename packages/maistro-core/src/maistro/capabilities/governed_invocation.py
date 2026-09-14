@@ -43,6 +43,7 @@ class InvocationPolicyContext:
     node_run_id: str
     attempt_id: str
     effect_key: str
+    principal_id: str | None = None
     approved: bool = False
 
 
@@ -73,9 +74,10 @@ class GovernedInvocationExecutionService:
     REQUIRE_APPROVAL is keyed to the logical effect so a later Attempt reuses
     the same durable human decision rather than manufacturing another request.
 
-    Unreached in production, like the service it wraps: no policy verdict
-    recorded here has ever gated a live provider call, and no approval this
-    would key has ever been requested of a human (#55).
+    The Container composes this wrapper for governed model egress; policy
+    events use the same canonical EventStore as the capability context. The
+    default M1 policy path is intentionally replaceable by stronger policy and
+    durable approval stores without introducing a second execution authority.
     """
 
     def __init__(
@@ -120,12 +122,14 @@ class GovernedInvocationExecutionService:
         resolver: ProviderResolver,
         executor: ProviderExecutor,
         usage_from: UsageExtractor | None = None,
+        principal_id: str | None = None,
     ) -> Invocation:
         context = InvocationPolicyContext(
             run_id=run_id,
             node_run_id=node_run_id,
             attempt_id=attempt_id,
             effect_key=effect_key,
+            principal_id=principal_id,
         )
         verdict = await self._policy(binding, request, context)
         policy_event = await self._append_policy_event(
@@ -167,6 +171,7 @@ class GovernedInvocationExecutionService:
                 resolver=resolver,
                 executor=executor,
                 usage_from=usage_from,
+                principal_id=principal_id,
             )
         except asyncio.CancelledError:
             await self._append_latest_terminal_event(
@@ -223,6 +228,7 @@ class GovernedInvocationExecutionService:
                 payload={
                     "binding_id": binding.binding_id,
                     "capability": binding.capability,
+                    "principal_id": context.principal_id,
                     "effect_key": context.effect_key,
                     "approved": context.approved,
                     "decision": verdict.decision.value,

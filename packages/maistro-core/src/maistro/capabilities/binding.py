@@ -74,11 +74,13 @@ class Binding(BaseModel):
 
 
 class ResolvedBinding(BaseModel):
-    """Immutable provider/configuration decision persisted with an Invocation."""
+    """Immutable scoped provider decision persisted with an Invocation."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     binding_id: str
+    workspace_id: str
+    project_id: str
     capability: str
     provider_name: str
     provider_trust_tier: str
@@ -90,6 +92,8 @@ class ResolvedBinding(BaseModel):
     @model_validator(mode="after")
     def _validate_resolved(self) -> ResolvedBinding:
         _require(self.binding_id, "binding_id")
+        _require(self.workspace_id, "workspace_id")
+        _require(self.project_id, "project_id")
         _require(self.capability, "capability")
         _require(self.provider_name, "provider_name")
         return self
@@ -114,6 +118,8 @@ class ResolvedBinding(BaseModel):
             )
         return cls(
             binding_id=binding.binding_id,
+            workspace_id=binding.workspace_id,
+            project_id=binding.project_id,
             capability=binding.capability,
             provider_name=provider.name,
             provider_trust_tier=provider.trust_tier,
