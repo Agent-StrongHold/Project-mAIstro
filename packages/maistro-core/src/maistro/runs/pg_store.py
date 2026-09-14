@@ -31,6 +31,7 @@ codec (`maistro.persistence._register_json_codecs`).
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -461,6 +462,30 @@ class PgRunStore:
     async def get_run(self, run_id: str) -> Run | None:
         payload = await self._payload(
             "SELECT run_id, payload, archive_key FROM canonical_runs WHERE run_id = $1", run_id
+        )
+        return Run.model_validate(payload) if payload is not None else None
+
+    async def find_occurrence_run(
+        self,
+        provenance: Mapping[str, Any] | None,
+    ) -> Run | None:
+        occurrence = occurrence_key(dict(provenance or {}))
+        if occurrence is None:
+            return None
+        schedule_id, token = occurrence
+        # The same expression the unique claim index (migrations 015 and 034)
+        # is built on, so a Run the index refuses is a Run this read finds
+        # (#1120). Through `_payload`, so an archived Run resolves through the
+        # archive tier exactly as `get_run` resolves it.
+        payload = await self._payload(
+            """SELECT run_id, payload, archive_key FROM canonical_runs
+                WHERE payload -> 'provenance' ->> 'schedule_id' = $1
+                  AND COALESCE(
+                        'manual:' || (payload -> 'provenance' ->> 'schedule_fire_id'),
+                        payload -> 'provenance' ->> 'scheduled_for'
+                      ) = $2""",
+            schedule_id,
+            token,
         )
         return Run.model_validate(payload) if payload is not None else None
 

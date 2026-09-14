@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -133,10 +134,16 @@ CREATE INDEX IF NOT EXISTS idx_canonical_runs_parent
 CREATE UNIQUE INDEX IF NOT EXISTS idx_canonical_runs_occurrence
     ON canonical_runs(
         json_extract(payload, '$.provenance.schedule_id'),
-        json_extract(payload, '$.provenance.scheduled_for')
+        COALESCE(
+            'manual:' || json_extract(payload, '$.provenance.schedule_fire_id'),
+            json_extract(payload, '$.provenance.scheduled_for')
+        )
     )
     WHERE json_extract(payload, '$.provenance.schedule_id') IS NOT NULL
-      AND json_extract(payload, '$.provenance.scheduled_for') IS NOT NULL;
+      AND COALESCE(
+            json_extract(payload, '$.provenance.schedule_fire_id'),
+            json_extract(payload, '$.provenance.scheduled_for')
+          ) IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS canonical_node_runs (
     node_run_id TEXT PRIMARY KEY,
@@ -303,6 +310,27 @@ class SqliteRunStore:
         row = await self._fetchone(
             "SELECT payload FROM canonical_runs WHERE run_id = ?",
             (run_id,),
+        )
+        return model_of_json(Run, row[0]) if row is not None else None
+
+    async def find_occurrence_run(
+        self,
+        provenance: Mapping[str, Any] | None,
+    ) -> Run | None:
+        occurrence = occurrence_key(dict(provenance or {}))
+        if occurrence is None:
+            return None
+        schedule_id, token = occurrence
+        # The same expression the unique claim index is built on, so a Run the
+        # index refuses is a Run this read finds (#1120).
+        row = await self._fetchone(
+            """SELECT payload FROM canonical_runs
+                WHERE json_extract(payload, '$.provenance.schedule_id') = ?
+                  AND COALESCE(
+                        'manual:' || json_extract(payload, '$.provenance.schedule_fire_id'),
+                        json_extract(payload, '$.provenance.scheduled_for')
+                      ) = ?""",
+            (schedule_id, token),
         )
         return model_of_json(Run, row[0]) if row is not None else None
 
