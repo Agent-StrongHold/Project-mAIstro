@@ -278,7 +278,8 @@ async def test_real_postgres_two_org_scope_and_schema(
 
     async with pg_pool.acquire() as conn:
         columns = await conn.fetch(
-            """SELECT column_name FROM information_schema.columns
+            """SELECT column_name, is_nullable, column_default
+               FROM information_schema.columns
                WHERE table_name = 'audit_log' AND column_name = 'org_id'"""
         )
         indexes = await conn.fetch(
@@ -286,6 +287,8 @@ async def test_real_postgres_two_org_scope_and_schema(
                WHERE tablename = 'audit_log' AND indexname = 'ix_audit_log_scope'"""
         )
     assert [row["column_name"] for row in columns] == ["org_id"]
+    assert columns[0]["is_nullable"] == "YES"
+    assert columns[0]["column_default"] in ("''::text", "''::character varying")
     assert '(org_id, "timestamp")' in indexes[0]["indexdef"]
 
     audit = PgAuditLog(pg_pool)

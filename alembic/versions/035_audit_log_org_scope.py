@@ -2,8 +2,10 @@
 
 The audit stores accepted ``AuditEntry.org_id`` before the database shape did,
 so the value was discarded on write and a scoped read could not constrain SQL.
-Existing rows are deliberately represented as the empty string: they are
-system/unscoped entries, not members of an arbitrary tenant.
+The expand phase stays nullable so old and new writers can coexist; its default
+and backfill represent existing rows with the explicit empty-string
+system/unscoped scope. A later contract migration may make the column
+non-nullable once old writers are retired.
 
 Revision ID: 035
 Revises: 034
@@ -22,10 +24,14 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Expand: old application versions omit this column while rolling deploys
+    # overlap, so the new shape must remain nullable. The default protects
+    # concurrent old writes; the update below makes legacy rows explicit.
     op.add_column(
         "audit_log",
-        sa.Column("org_id", sa.Text, nullable=False, server_default=sa.text("''")),
+        sa.Column("org_id", sa.Text, nullable=True, server_default=sa.text("''")),
     )
+    op.execute(sa.text("UPDATE audit_log SET org_id = '' WHERE org_id IS NULL"))
     op.create_index(
         "ix_audit_log_scope",
         "audit_log",
