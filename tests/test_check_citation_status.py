@@ -85,7 +85,10 @@ def test_active_authority_is_accepted(target_status: Status) -> None:
 
 @pytest.mark.parametrize(
     "target_status",
-    [Status.PROPOSED, Status.DEPRECATED, Status.DEFERRED, Status.DENIED],
+    sorted(
+        (status for status in Status if status not in ACTIVE_AUTHORITY_STATUSES),
+        key=str,
+    ),
 )
 def test_inactive_authority_is_refused(target_status: Status) -> None:
     target = _doc("ADR-002", target_status)
@@ -109,6 +112,8 @@ def test_a_proposed_source_may_rest_on_a_proposed_decision() -> None:
 
 @pytest.mark.parametrize("source_status", sorted(Status, key=str))
 def test_only_active_sources_claim_live_authority(source_status: Status) -> None:
+    assert {Status.AC_DEFINED, Status.IN_PROGRESS} <= ACTIVE_SOURCE_STATUSES
+
     target = _doc("ADR-002", Status.PROPOSED)
     source = _doc("ADR-001", source_status, substrate=[_ref("ADR-002")])
 
@@ -342,6 +347,7 @@ def test_the_gate_fails_when_a_new_citation_appears(
 ) -> None:
     module = _gate_module()
     monkeypatch.setattr(module, "_load_baseline", lambda: CitationBaseline(entries=frozenset()))
+    monkeypatch.setattr(module, "check_citations", lambda _corpus: [_problem()])
 
     assert module.main([]) != 0
     assert "do not resolve to active authority" in capsys.readouterr().out
@@ -371,9 +377,7 @@ def test_updating_the_ledger_rewrites_it(monkeypatch: pytest.MonkeyPatch, tmp_pa
 
 
 def test_the_committed_baseline_records_a_reason_for_every_entry() -> None:
-    """A ledger of bare identities would say what is wrong without saying why,
-    and each of these is a governance judgement someone still has to make."""
+    """The ledger may be empty after cleanup, but its identity/reason maps stay aligned."""
     payload = json.loads(LEDGER.read_text())
 
-    assert payload["known"], "the baseline is expected to be non-empty until #374 is burned down"
     assert set(payload["known"]) == set(payload["reasons"])

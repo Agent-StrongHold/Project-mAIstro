@@ -6,7 +6,7 @@ kind: adr
 status: Accepted
 created: 2026-04-26
 substrate:
-  - maistro-engine#ADR-001
+  - maistro-engine#ADR-095
 implements: []
 related: []  # roadmap doc: the gap→tranche ADR ranges in the body are planning
              # numbers, not semantic edges. The original numbering predates the

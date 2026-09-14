@@ -7,13 +7,13 @@ status: Accepted
 created: 2026-06-20
 substrate:
   - maistro-engine#ADR-016
-  - maistro-engine#ADR-079
 implements:
   - maistro-engine#ADR-080
 related:
   - maistro-engine#SPEC-240
   - maistro-engine#SPEC-241
   - maistro-engine#SPEC-242
+  - maistro-engine#ADR-079
 supersedes: []
 blocks: []
 blocked-by:

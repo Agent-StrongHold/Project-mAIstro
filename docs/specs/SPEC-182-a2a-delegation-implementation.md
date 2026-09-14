@@ -7,13 +7,12 @@ status: Accepted
 created: 2026-05-29
 accepted: null
 implemented: null
-substrate:
-  - maistro-engine#ADR-058
-implements:
-  - maistro-engine#ADR-058
+substrate: []
+implements: []
 related:
   - maistro-engine#SPEC-008
   - maistro-engine#SPEC-181
+  - maistro-engine#ADR-058
 contracts:
   - boundary
   - behavioral

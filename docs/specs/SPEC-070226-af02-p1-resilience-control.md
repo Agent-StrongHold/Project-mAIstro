@@ -8,12 +8,11 @@ created: 2026-07-02
 substrate:
   - maistro-engine#ADR-038
   - maistro-engine#ADR-062
-  - maistro-engine#ADR-066
-implements:
-  - maistro-engine#ADR-066
+implements: []
 related:
   - maistro-engine#ADR-071
   - maistro-engine#SPEC-248
+  - maistro-engine#ADR-066
 supersedes: []
 blocks: []
 blocked-by: []

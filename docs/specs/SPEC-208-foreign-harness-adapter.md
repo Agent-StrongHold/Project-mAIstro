@@ -8,15 +8,14 @@ created: 2026-06-15
 accepted: 2026-06-16
 implemented: 2026-07-04
 substrate:
-  - maistro-engine#ADR-061526-f383
-  - maistro-engine#SPEC-184
-  - maistro-engine#ADR-058
   - maistro-engine#ADR-062
-implements:
-  - maistro-engine#ADR-061526-f383
+implements: []
 related:
   - maistro-engine#ADR-083
   - maistro-engine#ADR-019
+  - maistro-engine#ADR-061526-f383
+  - maistro-engine#SPEC-184
+  - maistro-engine#ADR-058
 supersedes: []
 blocks: []
 blocked-by: []

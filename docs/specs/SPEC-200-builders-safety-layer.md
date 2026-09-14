@@ -9,12 +9,12 @@ accepted: 2026-06-03
 implemented: 2026-06-03
 substrate:
   - maistro-engine#ADR-038
-  - maistro-engine#SPEC-190
 implements: []
 related:
   - maistro-engine#SPEC-201
   - maistro-engine#ADR-095
   - maistro-engine#ADR-049
+  - maistro-engine#SPEC-190
 contracts:
   - boundary
   - behavioral

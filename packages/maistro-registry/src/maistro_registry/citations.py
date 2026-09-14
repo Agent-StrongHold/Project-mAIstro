@@ -46,9 +46,11 @@ GOVERNING_FIELDS: tuple[str, ...] = ("substrate", "implements")
 ACTIVE_SOURCE_STATUSES: frozenset[Status] = frozenset(
     {
         Status.ACCEPTED,
-        Status.IMPLEMENTED,
         Status.FULLY_SPECCED,
+        Status.AC_DEFINED,
+        Status.IN_PROGRESS,
         Status.TESTS_PASSING,
+        Status.IMPLEMENTED,
     }
 )
 
@@ -194,18 +196,10 @@ def _check_one(
 
 # --- the ratchet -------------------------------------------------------------
 #
-# Turning this on found 46 governing citations already in the corpus, in exactly
-# the classes #374 names: Superseded ADRs cited as substrate, Deprecated ones
-# named by `implements`, and Proposed decisions governing shipped specs.
-#
-# They are baselined rather than fixed here, for the reason this repository
-# baselines everywhere else: the fix for each is a governance judgement, not a
-# mechanical edit. "SPEC-182 implements ADR-058, which is Proposed" is answered
-# either by accepting ADR-058 or by demoting the claim, and those say different
-# things about what shipped. A blanket rewrite would launder 46 such judgements
-# into one diff nobody could review.
-#
-# What the baseline does buy immediately is that no *new* one can land.
+# The baseline is intentionally identity-based even when empty: it keeps the
+# CI gate useful while a governance cleanup is in flight, and ensures future
+# exceptions cannot be hidden by changing the wording of a diagnostic. A fixed
+# citation must remove its ledger entry in the same change.
 
 
 @dataclass(frozen=True)

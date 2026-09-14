@@ -6,7 +6,6 @@ kind: spec
 status: Accepted
 created: 2026-06-03
 substrate:
-  - maistro-engine#SPEC-200
   - maistro-engine#ADR-090
 implements:
   - maistro-engine#ADR-090
@@ -14,6 +13,7 @@ related:
   - maistro-engine#SPEC-190
   - maistro-engine#ADR-049
   - maistro-engine#ADR-075
+  - maistro-engine#SPEC-200
 supersedes: []
 blocks: []
 blocked-by: []
