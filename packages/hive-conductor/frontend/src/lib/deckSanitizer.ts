@@ -292,13 +292,13 @@ function sanitizeOnce(markup: string): string {
 /**
  * Sanitize untrusted Deck HTML/SVG into the product's presentation-only subset.
  *
+ * The unknown input type is intentional: stored JSON can outlive the TypeScript
+ * model, so a malformed value must fail closed at this boundary too.
  * Two passes intentionally sanitize the serialized result again. That makes a
  * parser mutation unable to introduce a construct that was not examined in its
  * final browser interpretation.
  */
-export function sanitizeDeckMarkup(markup: string): string {
-  // Stored or model-produced state is untrusted at runtime too; malformed
-  // values must fail closed instead of reaching DOMParser or a render sink.
+export function sanitizeDeckMarkup(markup: unknown): string {
   if (typeof markup !== "string" || !markup) return "";
   return sanitizeOnce(sanitizeOnce(markup));
 }

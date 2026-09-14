@@ -280,6 +280,45 @@ test("rich paste and drop are sanitized before browser insertion, then export st
   expect(attackerRequests).toEqual([]);
 });
 
+test("edited DOM is sanitized again before it can become stored slide state", async () => {
+  await loadFresh();
+  const preview = page.locator('[contenteditable="true"]');
+  await preview.focus();
+  await preview.evaluate((element) => {
+    // Model the browser DOM after an edit/undo operation. The production blur
+    // handler must treat this DOM as untrusted before copying it into state.
+    element.innerHTML =
+      '<h2>Edited through the DOM</h2><script>window.__deckPwned=16</script>' +
+      '<img onerror="window.__deckPwned=17">';
+    element.blur();
+  });
+
+  await expect(preview).toContainText("Edited through the DOM");
+  await expect(preview.locator("script, img")).toHaveCount(0);
+  expectNoExecutableMarkup(await preview.innerHTML());
+  expect(
+    await page.evaluate(() => (window as Window & { __deckPwned?: number }).__deckPwned),
+  ).toBe(0);
+
+  await page.getByRole("button", { name: "Present" }).click();
+  const exit = page.getByRole("button", { name: "Exit (Esc)" });
+  await expect(exit.locator("..")).toContainText("Edited through the DOM");
+  await expect(exit.locator("..").locator("script, img")).toHaveCount(0);
+  expect(attackerRequests).toEqual([]);
+});
+
+test("malformed stored values fail closed at the shared Deck boundary", async () => {
+  await loadFresh();
+  const outputs = await page.evaluate(() => {
+    const sanitize = (
+      window as Window & { __sanitizeDeckMarkup: (markup: unknown) => string }
+    ).__sanitizeDeckMarkup;
+    return [null, 42, {}, ["<script>bad</script>"]].map((value) => sanitize(value));
+  });
+  expect(outputs).toEqual(["", "", "", ""]);
+  expect(attackerRequests).toEqual([]);
+});
+
 test("mutation, encoded, SVG, and CSS payload families fail closed while presentation markup survives", async () => {
   await loadFresh();
   const payloads = [
