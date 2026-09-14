@@ -301,18 +301,30 @@ def test_process_namespace_devices_and_host_socket_are_not_reachable(tmp_path: P
         assert rc == 0 and nnp.split()[-1] == "1"
 
 
-def test_timeout_kills_the_command_and_context_cleanup_removes_container(tmp_path: Path) -> None:
-    """A timed-out candidate does not survive its exec or its sandbox."""
+def test_timeout_kills_the_command_and_detached_descendants(
+    tmp_path: Path,
+) -> None:
+    """A timeout also kills a candidate that creates a detached session."""
     _repo_with_file(tmp_path)
-    cid: str
     with ContainerBuilderSandbox(tmp_path) as sb:
-        cid = sb._require_cid()
         rc, _ = sb.run_argv_status(
-            ["sh", "-c", "echo $$ > /workspace/pid; exec sleep 30"], timeout=1
+            [
+                "sh",
+                "-c",
+                "setsid sh -c 'echo $$ > /workspace/pid; exec sleep 30' & wait",
+            ],
+            timeout=1,
         )
         assert rc != 0
         pid = sb.read_file("pid").strip()
         assert sb.run_argv_status(["kill", "-0", pid])[0] != 0
+
+
+def test_context_cleanup_removes_the_container(tmp_path: Path) -> None:
+    """Exiting the sandbox force-removes its ephemeral container."""
+    _repo_with_file(tmp_path)
+    with ContainerBuilderSandbox(tmp_path) as sb:
+        cid = sb._require_cid()
     assert subprocess.run(["docker", "inspect", cid], capture_output=True).returncode != 0
 
 

@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-bootstrap/tests: +5
+  packages/maistro-bootstrap/tests: +6
 ---
 # M2-B5 Container Builder Conformance
 
@@ -18,4 +18,5 @@ runs, so client-side proxy credentials cannot cross the environment boundary.
 
 The CI test job builds the small `Dockerfile.sandbox` image and runs this lane;
 without Docker or the image, local runs skip the Docker-gated module rather than
-claiming backend evidence.
+claiming backend evidence. The timeout case also creates a detached session, proving
+that cleanup handles descendants which escape the command's process group.

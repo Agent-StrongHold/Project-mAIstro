@@ -120,6 +120,20 @@ _PROXY_ENV_NAMES = (
     "all_proxy",
     "no_proxy",
 )
+# A candidate can use setsid/double-fork to escape timeout's process group.
+# Reap every non-harness process owned by the agent after each exec, including
+# successful commands, so background work cannot outlive the command boundary.
+_REAP_AGENT_PROCESSES = (
+    "self=$$; harness=__MAISTRO_HARNESS_PID__; "
+    "for pass in 1 2 3; do "
+    "for pid in $(ps -eo pid=,uid= | "
+    "awk -v self=$self -v harness=$harness "
+    "'$2 == 65532 && $1 != 1 && $1 != self && $1 != harness {print $1}'); do "
+    "kill -KILL $pid 2>/dev/null || true; "
+    "done; "
+    "sleep 0.01; "
+    "done"
+)
 
 
 def _docker(
@@ -156,6 +170,7 @@ class ContainerBuilderSandbox:
         self._repo_root = Path(repo_root).resolve()
         self._image = image
         self._cid: str | None = None
+        self._harness_pid: str | None = None
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -205,6 +220,7 @@ class ContainerBuilderSandbox:
                 ]
             ).stdout.strip()
             self._cid = cid
+            self._harness_pid = self._find_harness_pid(cid)
             # One explicit, auditable root exec: make the (empty) workspace
             # writable by the agent uid. Runs before any repo content or candidate
             # code exists; everything after this is unprivileged.
@@ -226,6 +242,36 @@ class ContainerBuilderSandbox:
             # also important when the seed tar or image fails halfway through.
             self.__exit__(None, None, None)
             raise
+
+    def _find_harness_pid(self, cid: str) -> str:
+        """Identify the fixed ``sleep infinity`` child created with the sandbox.
+
+        ``--init`` adds a tiny PID 1, so the harness command is a separate
+        process that must survive agent-process reaping. Capture its PID before
+        any candidate code or repo content exists; candidates cannot spoof this
+        startup identity later.
+        """
+        proc = _docker(
+            [
+                *self._exec_prefix(),
+                cid,
+                "ps",
+                "-eo",
+                "pid=,ppid=,args=",
+            ],
+            check=False,
+            timeout=10,
+        )
+        for line in proc.stdout.splitlines():
+            fields = line.strip().split(maxsplit=2)
+            if (
+                len(fields) == 3
+                and fields[1] == "1"
+                and fields[2] == "sleep infinity"
+                and fields[0].isdigit()
+            ):
+                return fields[0]
+        raise RuntimeError("sandbox harness process is missing")
 
     def _seed(self, cid: str) -> None:
         """Seed only indexed worktree files, excluding credential-shaped paths.
@@ -472,6 +518,26 @@ class ContainerBuilderSandbox:
             raise SandboxEscapeError(f"Path {path!r} escapes sandbox root")
         return f"{_WORKDIR}/{p.as_posix()}"
 
+    def _reap_agent_processes(self) -> None:
+        """Remove agent-owned descendants that can escape a process group.
+
+        ``timeout`` cannot kill a child that calls ``setsid`` (or double-forks)
+        into a new session. All candidate processes share the agent uid, while
+        PID 1 is the container harness; reaping the rest is the only reliable
+        cleanup boundary that does not depend on candidate cooperation.
+        """
+        _docker(
+            [
+                *self._exec_prefix(),
+                self._require_cid(),
+                "sh",
+                "-c",
+                _REAP_AGENT_PROCESSES.replace("__MAISTRO_HARNESS_PID__", self._harness_pid or "1"),
+            ],
+            check=False,
+            timeout=10,
+        )
+
     def _exec(
         self,
         argv: list[str],
@@ -480,11 +546,12 @@ class ContainerBuilderSandbox:
         git_tools: bool = False,
     ) -> tuple[int, str]:
         # GNU timeout runs inside the container, so killing the docker CLI on a
-        # host-side timeout cannot leave candidate processes behind.
+        # host-side timeout cannot leave candidate processes behind. The reap
+        # below additionally handles detached sessions and double-forks.
         command = [
-            # Put timeout and the candidate in one process group. Without the
-            # outer setsid, a shell can leave background children behind when
-            # timeout kills only its direct child.
+            # Put timeout and the candidate in one process group. This handles
+            # ordinary shell children; _reap_agent_processes handles children
+            # that deliberately create a separate session.
             "setsid",
             "--wait",
             "timeout",
@@ -501,13 +568,18 @@ class ContainerBuilderSandbox:
                 "-e",
                 f"GIT_WORK_TREE={_WORKDIR}",
             ]
-        proc = subprocess.run(
-            ["docker", *prefix, self._require_cid(), *command],
-            capture_output=True,
-            text=True,
-            timeout=timeout + 5,
-        )
-        return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+        try:
+            proc = subprocess.run(
+                ["docker", *prefix, self._require_cid(), *command],
+                capture_output=True,
+                text=True,
+                timeout=timeout + 5,
+            )
+            return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+        finally:
+            # Also reap when the host-side Docker CLI timeout fires; killing the
+            # CLI does not stop processes already running in the container.
+            self._reap_agent_processes()
 
     def _exec_prefix(self) -> list[str]:
         """Docker flags every agent-facing exec carries (#77).

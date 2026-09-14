@@ -47,6 +47,8 @@ class _Recording:
             stdout = "fake-cid\n"  # text mode
         elif argv[0] == "git" and "ls-files" in argv:
             stdout = b"x.py\0"  # binary NUL-delimited index listing
+        elif argv[0] == "docker" and argv[-3:] == ["ps", "-eo", "pid=,ppid=,args="]:
+            stdout = "7 1 sleep infinity\n"  # the --init child harness
         elif argv[0] == "tar" and "-cf" in argv:
             stdout = b"SEED-ARCHIVE"  # binary pipe (no text=True)
         return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
