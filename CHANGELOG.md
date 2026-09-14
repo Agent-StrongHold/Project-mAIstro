@@ -25,6 +25,57 @@ or placeholder-only section.
 
 ### Security
 
+- **DevSkim scans the shipped surface instead of everything (no linked issue:
+  scanner configuration).** The action ran unconfigured, so the test and
+  vendored trees were scanned alongside the shipped ones and supplied 619 of
+  its 912 `http://`/`localhost` findings — fixtures that assert an insecure
+  URL is refused, loopback addresses in test servers, vendored benchmark
+  corpora. A scanner two-thirds noise is one nobody reads. `ignore-globs` now
+  names those trees, and only trees: every entry ends in a directory segment,
+  because a filename shape reaches across the repository and silently drops
+  shipped code (`**/test_*.py` did exactly that in the CodeQL config, where it
+  also matched `maistro_rsi/test_inventory.py`). `docs/**` is deliberately not
+  excluded, and no rule is suppressed repo-wide. What DevSkim reports about
+  shipped code is unchanged; only the noise around it is gone.
+
+- **CodeQL code-scanning alerts cleared across the runtime, gate scripts, and
+  frontends (no linked issue: CodeQL code-scanning alerts).** Hive-conductor
+  no longer echoes raw exception text to clients from the run-DAG, widget, and
+  RSI-run paths (the exception class plus a fixed message is returned; detail
+  stays in server logs), the missing-secret log line no longer names the
+  secret, and the credential-store warning no longer prints the vault path.
+  Path-taking surfaces (demo dashboard ids, SPA fallback, RSI execution
+  policy, sandbox workspace, Lulu preflight uploads) now resolve symlinks
+  first and decide containment on the resolved path, so a link planted inside
+  an allowed directory cannot point out of it, and a configured root that is
+  itself a symlink still accepts its own contents rather than refusing every
+  legitimate request. Rovo MCP detection matches the URL hostname rather than
+  a substring, and Airtable cache fingerprints use a salted PBKDF2 digest. The
+  canvas book-maker Express server rate-limits `/api`
+  (`API_RATE_LIMIT_PER_MINUTE`, default 600; a non-numeric, zero, or negative
+  value is refused with a warning and the default used, rather than becoming
+  the NaN limit that removes the cap) and validates print-order ids; the
+  bundled hive page keeps its API key in memory instead of `sessionStorage`;
+  chat/deck ids come from `crypto.randomUUID()`; export format and quality are
+  allowlisted; and book-plan patches refuse prototype keys. Gate scripts
+  rename identifiers CodeQL's secret heuristic flagged.
+  `.github/codeql/codeql-config.yml` excludes the test and vendored trees from
+  scanning; every entry names a location rather than a filename shape, so an
+  exclusion cannot reach into `packages/` and quietly drop a shipped module
+  from the analysis.
+
+- **Sentinel's permission table is fail-closed, and the production paths can
+  both feel it and configure it (#1165).** An empty or omitted deployment
+  table now denies every tool instead of authorizing all of them. A chat turn
+  that carries no identity is evaluated as the role-less anonymous principal
+  rather than walking past the table (the strategies only consult Sentinel
+  when an identity is present), so an auth-less request can no longer execute
+  tools the table denies; a configured table or strike tracking still refuses
+  to run without a real identity. Operators state grants in `maistro.yaml`
+  (`security.permission_preset`, `security.permissions`, unknown presets
+  refused at load) and Hive reads `MAISTRO_PERMISSION_PRESET` /
+  `MAISTRO_PERMISSIONS`; both reach the config the Container is built from.
+  Hive's bridge and engine accept the caller's principal on `route`.
 - **Bootstrap credential staging is now private, atomic, and never follows a
   link (#809).** `write_bootstrap_credentials` writes secrets to a fresh 0600
   temp file in the same directory and promotes it with `os.replace`, so secret
@@ -64,6 +115,21 @@ or placeholder-only section.
   `BrowserNetEvent`. Operators can layer browser-specific origins via
   `BROWSER_USE_ALLOWED_ORIGINS`; a browser-use build that cannot be handed a
   guarded context is refused rather than run unguarded.
+
+- **Hive Conductor now propagates one request correlation identity into
+  maistro-server task admission (#1063).** Hive Conductor registers
+  maistro-core's `RequestIDMiddleware` in its own stack (reused, not
+  reimplemented), and `MaistroServerTaskBackend` forwards the bound id as an
+  outbound `X-Request-ID` header so maistro-server's own `RequestIDMiddleware`
+  adopts the same id instead of allocating an unrelated one for the
+  service-to-service hop. `TaskRunAdmitter.admit()` records that id on the
+  admitted Run's provenance alongside the existing `task_id`/`session_id`/
+  `user_id`. A schedule firing — which has no incoming HTTP request — mints
+  its own fresh correlation root inside a detached execution context rather
+  than admitting uncorrelated or risking a stray id from an unrelated
+  Attempt still bound on the same event loop tick. The id is correlation
+  metadata only; unlike the signed Workspace-scope headers, it can never
+  assert scope or authorization.
 
 ### Changed
 
@@ -106,6 +172,48 @@ or placeholder-only section.
 
 ### Fixed
 
+- **A schedule's due cursor is recorded on every evaluation, and SQLite
+  `record_fire` is serialized (#1199).** `ScheduleRunAdmitter` computed
+  `next_due_at` on an evaluation that fired nothing but never persisted it, so
+  a schedule whose first occurrence was days away stayed `next_due_at=None`
+  and was selected by `ScheduleStore.due()` on every tick until then.
+  `record_fire` now takes `fired_at=None` to record the due cursor alone —
+  the enumeration cursor (`last_fired_at`), `last_run_id` and `runs_so_far`
+  are untouched — and the admitter writes it whenever it changes and nothing
+  is owed; a `BUFFER_ONE` occurrence held behind an active Run keeps the
+  schedule due rather than hiding it until the occurrence after it.
+  `SqliteScheduleStore.record_fire` was a get-then-put with nothing between
+  the read and the write, so a tick and a manual fire advancing one schedule
+  could both read `runs_so_far = n` and both write `n + 1`, losing each
+  other's `last_run_id` and `next_due_at` with it; every SQLite writer now
+  goes through one `BEGIN IMMEDIATE` critical section, matching the
+  PostgreSQL store's `FOR UPDATE`. That section is the connection's, so the
+  container now opens the schedule store its own SQLite connection
+  (`Container.schedule_conn`, on the session store's terms) rather than
+  sharing the spine's, where its BEGIN collided with a sibling store's open
+  transaction and its rollback discarded that sibling's work; a cancelled
+  writer waits the queued COMMIT out before deciding whether a rollback is
+  real. `ScheduleStore.put` keeps an existing row's recorded cursors
+  (`last_fired_at`, `last_run_id`, `runs_so_far`, `next_due_at`) instead of
+  writing back the copy the caller read, so the Hive tick's per-tick
+  definition refresh can no longer undo a fire that landed between its read
+  and its write; a changed recurrence clears `next_due_at` for re-evaluation.
+  `record_fire`'s `fires` now follows `fired_at` when omitted (none for a
+  due-cursor-only write), so a bounded schedule cannot be spent by one. The
+  live Hive tick still enumerates its own schedule rows; moving it onto
+  `ScheduleStore.due()` is #1199's remaining scope.
+- **HITL settlement repair is fair, idempotent, and keeps the recorded time
+  (#737).** Startup reconciliation now finds crash residue (a canonical Run
+  still PAUSED under a CANCELLED/TIMED_OUT continuation) from the canonical
+  PAUSED side before the per-status scan, so an accumulating COMPLETED prefix
+  can no longer starve it; a second tick that loses the race to the same
+  repair stops instead of raising; the repaired Run and NodeRun are stamped
+  with the durable `decided_at`, not the reconciliation time. The expiry tick
+  repairs a continuation whose pause was never mirrored to its Run and widens
+  its candidate page past projections it cannot repair. Migration 033
+  validates each legacy `resume_at` (ISO-8601 with an explicit offset) before
+  casting, leaving malformed or timezone-less values unindexed rather than
+  aborting the upgrade or reading them in the session zone.
 - **A scheduled Run whose resumed Attempt died is resumed again by the
   ordinary tick (#1112).** `recover_abandoned_attempts` reclaims a crashed
   resume's Attempt as CANCELLED and parks the Run WAITING, but

@@ -61,6 +61,21 @@
     }
   },
   "vulture": {
+    "packages/maistro-core/src/maistro/graph/nodes/agent_delegate_remote.py::unused class 'AgentDelegateRemoteNode'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1193",
+      "reason": "AgentDelegateRemoteNode is a registered Graph node kind reached only through the node registry: `build_node_resolver` used to import and construct it by name in a hand-maintained `if kind == ...` branch, and #1193 replaces that list with construction from the authorities each node class declares (`BaseNode.required_authorities` / `optional_authorities`, resolved via `compose_node`). The class is therefore no longer referenced by name anywhere in core, exactly like its already-banked sibling AgentSynthDagNode; it remains registered, catalogued, resolved and executed through `get_node(kind)`, and is exercised directly by packages/maistro-core/tests/graph/nodes/test_agent_delegate_remote.py and test_agent_delegate_remote_child_run.py."
+    },
+    "packages/maistro-core/src/maistro/graph/nodes/llm_summarize.py::unused class 'LlmSummarizeNode'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1193",
+      "reason": "LlmSummarizeNode is a registered Graph node kind reached only through the node registry: `build_node_resolver` used to import and construct it by name in a hand-maintained `if kind == ...` branch, and #1193 replaces that list with construction from the authorities each node class declares (`BaseNode.required_authorities` / `optional_authorities`, resolved via `compose_node`). The class is therefore no longer referenced by name anywhere in core, exactly like its already-banked sibling AgentSynthDagNode; it remains registered, catalogued, resolved and executed through `get_node(kind)`, and is exercised directly by packages/maistro-core/tests/graph/nodes/test_sync_kinds.py."
+    },
+    "packages/maistro-core/src/maistro/graph/nodes/rsi_quota_pace_trigger.py::unused class 'RsiQuotaPaceTriggerNode'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1193",
+      "reason": "RsiQuotaPaceTriggerNode is a registered Graph node kind reached only through the node registry: `build_node_resolver` used to import and construct it by name in a hand-maintained `if kind == ...` branch, and #1193 replaces that list with construction from the authorities each node class declares (`BaseNode.required_authorities` / `optional_authorities`, resolved via `compose_node`). The class is therefore no longer referenced by name anywhere in core, exactly like its already-banked sibling AgentSynthDagNode; it remains registered, catalogued, resolved and executed through `get_node(kind)`, and is exercised directly by packages/maistro-core/tests/graph/nodes/test_rsi_quota_pace_trigger.py."
+    },
     "packages/maistro-core/src/maistro/agents/factory.py::unused function 'instantiate_agent'": {
       "owner": "@BlakeMatthews-dev",
       "issue": "#840",

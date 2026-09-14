@@ -78,8 +78,10 @@ is also required live on both branches; because it is produced by
 <!-- /protection:tables -->
 
 ○ means the check cannot report as a real executed check on that PR base and
-therefore must not be required there. The CodeQL matrix and container image scan
-are intentionally main-only.
+therefore must not be required there. `adv` means the workflow reports on that
+base but is deliberately advisory; `DevSkim` remains outside both required sets
+until the owner promotes it into the merge contract. The CodeQL matrix and
+container image scan are intentionally main-only.
 
 ## Review and bypass model
 
