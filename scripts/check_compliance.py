@@ -316,9 +316,11 @@ def _cited_artifact_paths(cells: list[str]) -> set[str]:
     return paths
 
 
-def _looks_like_table_row(line: str, expected_cells: int) -> bool:
+def _looks_like_table_row(line: str) -> bool:
     stripped = line.strip()
-    return bool(stripped) and (stripped.endswith("|") or stripped.count("|") >= expected_cells - 1)
+    # Once a status table has started, a pipe-bearing line is a row attempt even
+    # when it has too few cells or lacks the closing pipe.
+    return bool(stripped) and "|" in stripped
 
 
 def _parse_status_row(
@@ -370,7 +372,7 @@ def _parse_compliance_document(  # noqa: C901
                 break
             label = f"COMPLIANCE.md:{row_index + 1}"
             if not row.startswith("|"):
-                if _looks_like_table_row(row, len(headers)):
+                if _looks_like_table_row(row):
                     findings.append(
                         Finding(
                             label,

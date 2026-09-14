@@ -1,11 +1,11 @@
 ---
 inventory-delta:
-  tests/: +17
+  tests/: +18
 ---
 
 # Issue #751 compliance evidence validator
 
-Adds sixteen collected regression tests for the standalone compliance claim/evidence
+Adds eighteen collected regression tests for the standalone compliance claim/evidence
 validator. The tests cover malformed rows (including a missing leading pipe), missing
 status cells, required
 claim identity fields, missing evidence, disabled/manual-only/never-run/stale/missing/

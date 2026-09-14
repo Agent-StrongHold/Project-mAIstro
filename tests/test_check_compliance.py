@@ -80,12 +80,13 @@ def _findings(tmp_path: Path) -> list[check_compliance.Finding]:
     [
         "| X-1 | control |\n",
         "X-1 | control | implemented |\n",
+        "Y-1 | malformed row with no status and no closing pipe\n",
     ],
 )
 def test_malformed_table_row_fails_instead_of_disappearing(tmp_path: Path, row: str) -> None:
     _write_repository(tmp_path)
     (tmp_path / "COMPLIANCE.md").write_text(
-        f"| ID | Engine control | Status |\n|---|---|---|\n{row}",
+        f"| ID | Engine control | Status |\n|---|---|---|\n| X-1 | control | implemented |\n{row}",
         encoding="utf-8",
     )
 
