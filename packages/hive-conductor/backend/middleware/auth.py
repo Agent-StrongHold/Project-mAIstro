@@ -203,7 +203,10 @@ def _is_public_oauth_get(method: str, path: str) -> bool:
 
 
 def resolve_principal(
-    cookies: Mapping[str, str], authorization: str | None
+    cookies: Mapping[str, str],
+    authorization: str | None,
+    *,
+    refresh_activity: bool = False,
 ) -> dict[str, Any] | None:
     session_id = cookies.get("hive_session")
     if not session_id:
@@ -213,7 +216,7 @@ def resolve_principal(
     if not session_id:
         return None
     try:
-        return auth_routes.get_current_user(session_id)
+        return auth_routes.get_current_user(session_id, refresh_activity=refresh_activity)
     except Exception:
         return None
 
@@ -286,7 +289,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         if path.startswith("/v1/"):
-            user = self._get_user(request)
+            user = self._get_user(request, refresh_activity=self._is_eligible_activity(request))
             if user is None:
                 return JSONResponse(
                     status_code=401,
@@ -336,9 +339,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
             # Fail closed: if setup state can't be read, require auth.
             return True
 
-    def _get_user(self, request: Request) -> dict[str, Any] | None:
+    def _get_user(
+        self, request: Request, *, refresh_activity: bool = False
+    ) -> dict[str, Any] | None:
         authorization = request.headers.get("Authorization")
-        user = resolve_principal(request.cookies, authorization)
+        user = resolve_principal(
+            request.cookies,
+            authorization,
+            refresh_activity=refresh_activity,
+        )
         if user is not None:
             return user
         # Scoped to the voice prefix on purpose. Resolving the device
@@ -349,6 +358,18 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if _matches_public_prefix(request.url.path, _VOICE_PREFIX):
             return voice_identity.principal_for(authorization)
         return None
+
+    def _is_eligible_activity(self, request: Request) -> bool:
+        """Only an authenticated API request, not a health probe, slides idle expiry.
+
+        ``whoami`` is used by SPA startup and restoration and is deliberately
+        observational. CORS preflight is bypassed before this point, while
+        WebSocket handshakes opt in explicitly in ``routes.ws``.
+        """
+        return (
+            request.method not in {"OPTIONS", "HEAD"}
+            and request.url.path not in auth_routes._SESSION_ACTIVITY_EXCLUDED_PATHS
+        )
 
     def _is_chat(self, path: str) -> bool:
         return any(path.startswith(p) for p in _ADMIN_CHAT_BLOCKED)
