@@ -23,8 +23,8 @@ De-duplicates first, keeping the most recently created row per
 deterministic choice -- so the new primary key can never fail to apply to
 whatever an environment already holds.
 
-Revision ID: 034
-Revises: 033
+Revision ID: 033
+Revises: 032
 Create Date: 2026-09-09
 """
 
@@ -33,8 +33,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "034"
-down_revision = "033"
+revision = "033"
+down_revision = "032"
 branch_labels = None
 depends_on = None
 
