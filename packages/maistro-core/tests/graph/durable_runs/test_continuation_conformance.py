@@ -15,6 +15,7 @@ refuse, not merely to accept.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -112,6 +113,30 @@ async def test_a_newer_version_advances_the_continuation(store: GraphContinuatio
     assert read is not None
     assert read.version == 2
     assert read.status is RunStatus.PAUSED
+
+
+async def test_sqlite_concurrent_same_version_writes_have_one_winner(tmp_path: Any) -> None:
+    """A durable continuation fence serializes competing HITL decisions."""
+    async with aiosqlite.connect(tmp_path / "racing.db") as conn:
+        first = SqliteGraphContinuationStore(conn)
+        second = SqliteGraphContinuationStore(conn)
+        await first.ensure_schema()
+        await first.create(_continuation("run-1"))
+
+        incoming = _continuation("run-1", version=2, status=RunStatus.PAUSED)
+        results = await asyncio.gather(
+            first.update(incoming),
+            second.update(incoming),
+            return_exceptions=True,
+        )
+
+        assert sum(not isinstance(result, BaseException) for result in results) == 1
+        with pytest.raises(ValueError, match="version regression"):
+            await first.update(incoming)
+        stored = await first.get("run-1")
+        assert stored is not None
+        assert stored.version == 2
+        assert stored.status is RunStatus.PAUSED
 
 
 async def test_updating_a_run_that_was_never_created_is_a_key_error(

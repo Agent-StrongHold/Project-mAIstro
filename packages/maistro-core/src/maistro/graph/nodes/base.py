@@ -334,7 +334,40 @@ def resumed_pause(ctx: NodeContext) -> dict[str, Any]:
     neither, which is what `wait_first_seen:` was.
     """
     carried = (ctx.metadata or {}).get(RESUMED_PAUSE_KEY)
-    return dict(carried) if isinstance(carried, dict) else {}
+    return dict(carried) if isinstance(carried, Mapping) else {}
+
+
+def hitl_resume_at(
+    ctx: NodeContext,
+    timeout_seconds: int,
+    *,
+    resumed: Mapping[str, Any] | None = None,
+) -> datetime | None:
+    """Return the authoritative HITL deadline for this reach.
+
+    A first reach admits a deadline from the node clock. A resumed reach must
+    reuse the deadline carried from the durable pause; it must never derive a
+    new one from wall-clock time after an answer arrives. The executor's
+    ``resumed_pause`` transport is authoritative when present; the canonical
+    answer record's ``_pause`` evidence is the fallback for resumed answers
+    produced by the durable stores.
+    """
+    metadata = ctx.metadata or {}
+    if RESUMED_PAUSE_KEY in metadata:
+        carried = resumed_pause(ctx)
+        raw = carried.get("resume_at")
+        if not isinstance(raw, str):
+            return None
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return None
+        return parsed.astimezone(UTC)
+    if resumed is not None:
+        return preserved_hitl_deadline(dict(resumed), timeout_seconds=timeout_seconds)
+    return now_utc() + timedelta(seconds=timeout_seconds)
 
 
 def pause_until(
