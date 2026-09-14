@@ -10,6 +10,7 @@ import stores
 from fastapi.testclient import TestClient
 from main import app
 from routes import auth as auth_routes
+from starlette.websockets import WebSocketDisconnect
 
 
 @pytest.fixture
@@ -153,6 +154,27 @@ def test_rejected_authenticated_polling_does_not_refresh_idle_expiry(
     clock.advance(seconds=auth_routes._SESSION_IDLE_TIMEOUT - 1)
     response = client.get("/v1/harness")
     assert response.status_code == 403
+    assert stores.sessions[session_id]["last_activity_at"] == original_activity
+
+    clock.advance(seconds=1)
+    assert client.get("/v1/auth/whoami").json()["authenticated"] is False
+    assert session_id not in stores.sessions
+
+
+def test_rejected_websocket_handshake_does_not_refresh_idle_expiry(
+    logged_in: tuple[TestClient, str], clock
+) -> None:
+    client, session_id = logged_in
+    original_activity = stores.sessions[session_id]["last_activity_at"]
+
+    clock.advance(seconds=auth_routes._SESSION_IDLE_TIMEOUT - 1)
+    with (
+        pytest.raises(WebSocketDisconnect) as exc,
+        client.websocket_connect("/v1/ws/dags/whatever/run") as websocket,
+    ):
+        websocket.receive_json()
+
+    assert exc.value.code == 1008
     assert stores.sessions[session_id]["last_activity_at"] == original_activity
 
     clock.advance(seconds=1)
