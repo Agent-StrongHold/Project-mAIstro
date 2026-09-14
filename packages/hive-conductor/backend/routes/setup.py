@@ -95,6 +95,27 @@ def _get_kv() -> Any:
     return stores.sessions if stores.sessions._persisted else None
 
 
+def _flush_setup_marker() -> None:
+    """Drain a persisted setup marker before reporting bootstrap success.
+
+    ``JsonStore.__setitem__`` enqueues writes, so the in-memory marker can
+    appear complete while a crash still loses it. That would let a restart
+    retry setup and overwrite the first owner's credentials. The policy and
+    settings stores already use this acknowledgement boundary; bootstrap must
+    apply it to its one-shot marker too.
+    """
+    import stores
+
+    persisted = getattr(stores.sessions, "_persisted", None)
+    if persisted is None:
+        return
+    state = getattr(persisted, "_state", None)
+    flush = getattr(state, "flush", None)
+    if not callable(flush):
+        raise RuntimeError("persisted setup marker has no flush boundary")
+    flush(timeout=10.0)
+
+
 def _is_setup_complete() -> bool:
     """True once first-run setup has begun or finished and cannot re-run.
 
@@ -359,6 +380,9 @@ def _provision_first_run(
     kv = _get_kv()
     if kv is not None:
         kv[_SETUP_KEY] = config
+        # The marker is the durable one-shot boundary for persisted setup. Do
+        # not return success while this write is still only queued.
+        _flush_setup_marker()
     else:
         # Unpersisted run: the claim was only ever an in-flight lock —
         # "setup happened" in this mode is signalled by the accounts it
