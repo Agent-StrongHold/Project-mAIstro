@@ -691,8 +691,9 @@ async def test_reachable_chat_workflow_route_passes_verified_principal(
 async def test_chat_workflow_route_waits_on_shared_inbox_then_executes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from maistro.capabilities.bootstrap import default_capability_registry
     from services.engine import get_engine
+
+    from maistro.capabilities.bootstrap import default_capability_registry
 
     engine = get_engine()
     registry = default_capability_registry()
