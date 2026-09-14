@@ -23,6 +23,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 _SIGNING_KEY_ENV = "MAISTRO_AUDIT_SIGNING_KEY"
 _PROOF_TYPE = "Ed25519Signature2020"
 _SIGNATURE_FIELDS = frozenset({"signature", "signing_key_id", "proof_type"})
+_CANONICAL_METADATA_FIELDS = frozenset({"timestamp"})
 
 
 class AuditSignatureError(ValueError):
@@ -63,11 +64,19 @@ def canonical_audit_bytes(entry: Any) -> bytes:
     """Return deterministic, signature-free bytes for one audit entry."""
     if not is_dataclass(entry):
         raise TypeError("audit entries must be dataclasses")
-    payload = {
-        item.name: _json_value(getattr(entry, item.name))
-        for item in fields(entry)
-        if item.name not in _SIGNATURE_FIELDS
-    }
+    payload: dict[str, Any] = {}
+    for item in fields(entry):
+        if item.name in _SIGNATURE_FIELDS or item.name in _CANONICAL_METADATA_FIELDS:
+            continue
+        value = getattr(entry, item.name)
+        if item.name == "verdict" and value == "":
+            value = "allowed"
+        # Storage metadata and default-valued compatibility fields vary between
+        # the Sentinel and persistence dataclasses. Omitting empty values lets
+        # both representations verify the same decision bytes.
+        if value in (None, "", (), [], frozenset()):
+            continue
+        payload[item.name] = _json_value(value)
     return json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True).encode(
         "utf-8"
     )

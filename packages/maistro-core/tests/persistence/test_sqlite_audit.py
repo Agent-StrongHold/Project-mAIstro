@@ -9,6 +9,7 @@ import aiosqlite
 import pytest
 
 from maistro.persistence.sqlite_audit import SqliteAuditLog
+from maistro.security._types import AuditEntry as SentinelAuditEntry
 from maistro.types.security import AuditEntry
 
 
@@ -47,6 +48,15 @@ async def test_log_and_get_entries_roundtrip(log: SqliteAuditLog) -> None:
     assert e.request_id == "r1"
     assert e.proof_type == "Ed25519Signature2020"
     assert log.verify(e)
+
+
+@pytest.mark.asyncio
+async def test_sentinel_entry_is_signed_and_durable(log: SqliteAuditLog) -> None:
+    await log.log(SentinelAuditEntry(boundary="pre_call", user_id="u1", tool_name="bash"))
+
+    [entry] = await log.get_entries(user_id="u1")
+    assert entry.signature
+    assert log.verify(entry)
 
 
 @pytest.mark.asyncio

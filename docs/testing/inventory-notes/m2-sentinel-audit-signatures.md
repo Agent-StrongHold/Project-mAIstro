@@ -1,6 +1,7 @@
 ---
 inventory-delta:
   packages/maistro-core/tests/security/sentinel/test_audit.py: +2
+  packages/maistro-core/tests/persistence/test_sqlite_audit.py: +1
 ---
 # M2 Sentinel audit signatures
 

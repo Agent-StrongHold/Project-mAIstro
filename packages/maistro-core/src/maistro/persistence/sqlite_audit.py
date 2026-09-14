@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from maistro.security.sentinel.signing import AuditSigner
@@ -68,7 +69,7 @@ class SqliteAuditLog:
                 signature, signing_key_id, proof_type)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
-                signed.timestamp.isoformat(),
+                getattr(signed, "timestamp", datetime.now(UTC)).isoformat(),
                 signed.boundary,
                 signed.user_id,
                 getattr(signed, "team_id", ""),
@@ -76,8 +77,8 @@ class SqliteAuditLog:
                 getattr(signed, "tool_name", "") or "",
                 signed.verdict,
                 signed.detail,
-                signed.trace_id,
-                signed.request_id,
+                getattr(signed, "trace_id", ""),
+                getattr(signed, "request_id", ""),
                 signed.signature,
                 signed.signing_key_id,
                 signed.proof_type,
