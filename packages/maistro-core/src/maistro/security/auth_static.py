@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hmac
 
-from maistro.protocols.auth import AuthError, CredentialNotApplicable
+from maistro.protocols.auth import AuthError, CredentialNotApplicable, _extract_bearer_token
 from maistro.security._types import SYSTEM_AUTH, AuthContext, IdentityKind
 
 
@@ -29,10 +29,10 @@ class StaticKeyAuthProvider:
         if not authorization:
             raise CredentialNotApplicable("Missing Authorization header")
 
-        if not authorization.startswith("Bearer "):
+        token = _extract_bearer_token(authorization)
+        if token is None:
             raise CredentialNotApplicable("Not a Bearer token")
 
-        token = authorization.removeprefix("Bearer ").strip()
         if not hmac.compare_digest(token, self._api_key):
             raise AuthError("Invalid API key")
 

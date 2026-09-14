@@ -51,15 +51,19 @@ class JWTAuthProvider:
         authorization: str | None,
         headers: dict[str, str] | None = None,
     ) -> AuthContext:
-        from maistro.protocols.auth import AuthError, CredentialNotApplicable
+        from maistro.protocols.auth import (
+            AuthError,
+            CredentialNotApplicable,
+            _extract_bearer_token,
+        )
 
         if not authorization:
             raise CredentialNotApplicable("Missing Authorization header")
 
-        if not authorization.startswith("Bearer "):
+        token = _extract_bearer_token(authorization)
+        if token is None:
             raise CredentialNotApplicable("Not a Bearer token")
 
-        token = authorization.removeprefix("Bearer ").strip()
         if not token:
             # The Bearer scheme is recognized even when its credential is empty.
             raise AuthError("Empty token")

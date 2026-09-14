@@ -35,6 +35,13 @@ class TestAuthenticate:
             await provider.authenticate("Basic secret")
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("authorization", ["Bearer", "Bearer\t"])
+    async def test_bare_bearer_is_a_rejected_credential(self, authorization: str) -> None:
+        provider = StaticKeyAuthProvider(api_key="secret")
+        with pytest.raises(AuthError, match="Invalid API key"):
+            await provider.authenticate(authorization)
+
+    @pytest.mark.asyncio
     async def test_wrong_key_raises(self) -> None:
         provider = StaticKeyAuthProvider(api_key="secret")
         with pytest.raises(AuthError, match="Invalid API key"):

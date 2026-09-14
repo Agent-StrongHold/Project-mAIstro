@@ -117,6 +117,19 @@ class TestCompositeAuthProvider:
         assert later.calls == []
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("authorization", ["Bearer", "Bearer\t"])
+    async def test_static_rejection_is_terminal_for_bare_bearer_shape(
+        self, authorization: str
+    ) -> None:
+        from maistro.security.auth_static import StaticKeyAuthProvider
+
+        later = _FakeProvider("success", result=SYSTEM_AUTH)
+        composite = CompositeAuthProvider([StaticKeyAuthProvider("static-secret"), later])
+        with pytest.raises(AuthError, match="Invalid API key"):
+            await composite.authenticate(authorization)
+        assert later.calls == []
+
+    @pytest.mark.asyncio
     async def test_jwt_rejection_is_terminal_for_empty_bearer_shape(self) -> None:
         from maistro.security.auth_jwt import JWTAuthProvider
 

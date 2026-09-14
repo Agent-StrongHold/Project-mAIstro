@@ -13,6 +13,22 @@ class AuthError(Exception):
     """The provider recognized its scheme but rejected the credential."""
 
 
+def _extract_bearer_token(authorization: str | None) -> str | None:
+    """Return a Bearer credential, or ``None`` for another auth scheme.
+
+    An empty string means the Bearer scheme was present without a credential;
+    callers must reject that as an invalid recognized credential rather than
+    treating it as an opportunity for another provider.
+    """
+    if not authorization:
+        return None
+
+    parts = authorization.split(None, 1)
+    if not parts or parts[0].lower() != "bearer":
+        return None
+    return parts[1].strip() if len(parts) == 2 else ""
+
+
 @runtime_checkable
 class AuthProvider(Protocol):
     """Authenticates requests and returns auth context.

@@ -56,10 +56,11 @@ class TestAuthenticate:
             await provider.authenticate("Basic abc123")
 
     @pytest.mark.asyncio
-    async def test_empty_token_is_a_rejected_bearer_credential(self) -> None:
+    @pytest.mark.parametrize("authorization", ["Bearer", "Bearer\t", "Bearer    "])
+    async def test_empty_token_is_a_rejected_bearer_credential(self, authorization: str) -> None:
         provider = make_provider()
         with pytest.raises(AuthError, match="Empty token"):
-            await provider.authenticate("Bearer    ")
+            await provider.authenticate(authorization)
 
     @pytest.mark.asyncio
     async def test_success_uses_preferred_username(self) -> None:
