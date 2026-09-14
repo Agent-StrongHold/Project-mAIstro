@@ -23,22 +23,58 @@ branch_labels = None
 depends_on = None
 
 
+_BACKFILL_BATCH_SIZE = 1_000
+
+
+def _backfill_org_scope(connection: sa.Connection, *, batch_size: int) -> None:
+    """Normalize legacy rows without holding one write lock for the table."""
+    statement = sa.text(
+        """
+        UPDATE audit_log
+        SET org_id = ''
+        WHERE id IN (
+            SELECT id
+            FROM audit_log
+            WHERE org_id IS NULL
+            ORDER BY id
+            LIMIT :batch_size
+        )
+        """
+    )
+    while True:
+        result = connection.execute(statement, {"batch_size": batch_size})
+        if result.rowcount == 0:
+            return
+
+
 def upgrade() -> None:
     # Expand: old application versions omit this column while rolling deploys
     # overlap, so the new shape must remain nullable. The default protects
-    # concurrent old writes; the update below makes legacy rows explicit.
+    # concurrent old writes; the batched update makes legacy rows explicit.
     op.add_column(
         "audit_log",
         sa.Column("org_id", sa.Text, nullable=True, server_default=sa.text("''")),
     )
-    op.execute(sa.text("UPDATE audit_log SET org_id = '' WHERE org_id IS NULL"))
-    op.create_index(
-        "ix_audit_log_scope",
-        "audit_log",
-        ["org_id", "timestamp"],
-    )
+    _backfill_org_scope(op.get_bind(), batch_size=_BACKFILL_BATCH_SIZE)
+
+    # CREATE INDEX CONCURRENTLY cannot run inside Alembic's normal transaction.
+    # The autocommit block also prevents this index from blocking audit writes.
+    with op.get_context().autocommit_block():
+        op.create_index(
+            "ix_audit_log_scope",
+            "audit_log",
+            ["org_id", "timestamp"],
+            postgresql_concurrently=True,
+        )
 
 
 def downgrade() -> None:
-    op.drop_index("ix_audit_log_scope", table_name="audit_log")
+    # Match the online upgrade: dropping the index should not take the audit
+    # table's write path offline during a rollback.
+    with op.get_context().autocommit_block():
+        op.drop_index(
+            "ix_audit_log_scope",
+            table_name="audit_log",
+            postgresql_concurrently=True,
+        )
     op.drop_column("audit_log", "org_id")
