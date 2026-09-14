@@ -329,10 +329,21 @@ class SqliteLearningStore:
         self,
         task_type: str | None = None,
         org_id: str = "",
+        *,
+        team_id: str | None = None,
+        user_id: str | None = None,
+        agent_id: str | None = None,
     ) -> list[Learning]:
-        """Get promoted learnings."""
-        query = "SELECT * FROM learnings WHERE status = 'promoted' AND org_id = ?"
-        params: list[Any] = [org_id]
+        """Get promoted learnings within the requested scope."""
+        scope_sql, scope_params = learning_scope_predicate(
+            org_id=org_id,
+            team_id=team_id,
+            user_id=user_id,
+            agent_id=agent_id,
+            placeholders=itertools.repeat("?"),
+        )
+        query = f"SELECT * FROM learnings WHERE status = 'promoted' AND {scope_sql}"
+        params: list[Any] = scope_params
         if task_type:
             query += " AND category = ?"
             params.append(task_type)

@@ -419,14 +419,25 @@ class PgLearningStore:
         self,
         task_type: str | None = None,
         org_id: str = "",
+        *,
+        team_id: str | None = None,
+        user_id: str | None = None,
+        agent_id: str | None = None,
     ) -> list[Learning]:
-        """Get promoted learnings."""
+        """Get promoted learnings within the requested scope."""
+        scope_sql, scope_params = learning_scope_predicate(
+            org_id=org_id,
+            team_id=team_id,
+            user_id=user_id,
+            agent_id=agent_id,
+            placeholders=(f"${n}" for n in itertools.count(1)),
+        )
+        query = f"SELECT * FROM learnings WHERE status = 'promoted' AND {scope_sql}"
+        params: list[Any] = scope_params
+        if task_type:
+            query += f" AND category = ${len(params) + 1}"
+            params.append(task_type)
         async with self._pool.acquire() as conn:
-            query = "SELECT * FROM learnings WHERE status = 'promoted' AND org_id = $1"
-            params: list[Any] = [org_id]
-            if task_type:
-                query += " AND category = $2"
-                params.append(task_type)
             rows = await conn.fetch(query, *params)
             return [_row_to_learning(r) for r in rows]
 

@@ -436,6 +436,15 @@ async def test_nothing_relevant_is_an_empty_list(learning_store: Any) -> None:
     assert await learning_store.find_relevant("entirely unrelated text") == []
 
 
+async def test_relevant_learnings_match_case_insensitively(learning_store: Any) -> None:
+    """Keyword matching has the same case-folding behavior in every backend."""
+    await learning_store.store(_learning(trigger_keys=["DEPLOY"], learning="target"))
+
+    found = await learning_store.find_relevant("please deploy")
+
+    assert [item.learning for item in found] == ["target"]
+
+
 async def test_relevant_learnings_apply_org_team_and_user_scope(learning_store: Any) -> None:
     """Every backend must apply the same three scope axes before ranking."""
     await learning_store.store(
@@ -477,6 +486,52 @@ async def test_relevant_learnings_apply_org_team_and_user_scope(learning_store: 
 
     found = await learning_store.find_relevant(
         "please deploy",
+        org_id="org-a",
+        team_id="team-a",
+        user_id="user-a",
+        agent_id="agent-a",
+    )
+
+    assert [item.learning for item in found] == ["target"]
+
+
+async def test_promoted_learnings_apply_org_team_and_user_scope(learning_store: Any) -> None:
+    """Prompt-ready learnings must use the same scope boundary as matching reads."""
+    await learning_store.store(
+        _learning(
+            learning="target",
+            tool_name="target-tool",
+            status="promoted",
+            org_id="org-a",
+            team_id="team-a",
+            user_id="user-a",
+            agent_id="agent-a",
+        )
+    )
+    await learning_store.store(
+        _learning(
+            learning="other team",
+            tool_name="team-tool",
+            status="promoted",
+            org_id="org-a",
+            team_id="team-b",
+            user_id="user-a",
+            agent_id="agent-a",
+        )
+    )
+    await learning_store.store(
+        _learning(
+            learning="other user",
+            tool_name="user-tool",
+            status="promoted",
+            org_id="org-a",
+            team_id="team-a",
+            user_id="user-b",
+            agent_id="agent-a",
+        )
+    )
+
+    found = await learning_store.get_promoted(
         org_id="org-a",
         team_id="team-a",
         user_id="user-a",

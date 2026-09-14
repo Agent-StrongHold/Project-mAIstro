@@ -113,7 +113,7 @@ class InMemoryLearningStore:
             ):
                 continue
 
-            score = sum(1 for k in learning.trigger_keys if k and k in text_lower)
+            score = sum(1 for k in learning.trigger_keys if k and k.lower() in text_lower)
             if score > 0:
                 scored.append((score, learning))
 
@@ -181,18 +181,25 @@ class InMemoryLearningStore:
         self,
         task_type: str | None = None,
         org_id: str = "",
+        *,
+        team_id: str | None = None,
+        user_id: str | None = None,
+        agent_id: str | None = None,
     ) -> list[Learning]:
-        """Get promoted learnings, scoped by org."""
-        results: list[Learning] = []
-        for lr in self._learnings:
-            if lr.status != "promoted":
-                continue
-            if org_id and lr.org_id != org_id:
-                continue
-            if not org_id and lr.org_id:
-                continue
-            results.append(lr)
-        return results
+        """Get promoted learnings within the requested scope."""
+        return [
+            lr
+            for lr in self._learnings
+            if lr.status == "promoted"
+            and (task_type is None or lr.category == task_type)
+            and matches_learning_scope(
+                lr,
+                org_id=org_id,
+                team_id=team_id,
+                user_id=user_id,
+                agent_id=agent_id,
+            )
+        ]
 
     async def list_ineffective(self, min_uses: int) -> list[Learning]:
         """Return learnings whose failure count strictly exceeds successes.

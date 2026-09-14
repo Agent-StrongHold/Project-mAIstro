@@ -151,9 +151,21 @@ class DurableHybridLearningStore:
         return await self._store.check_auto_promotions(threshold, org_id=org_id)
 
     async def get_promoted(
-        self, task_type: str | None = None, *, org_id: str = ""
+        self,
+        task_type: str | None = None,
+        *,
+        org_id: str = "",
+        team_id: str | None = None,
+        user_id: str | None = None,
+        agent_id: str | None = None,
     ) -> list[Learning]:
-        return await self._store.get_promoted(task_type, org_id=org_id)
+        return await self._store.get_promoted(
+            task_type,
+            org_id=org_id,
+            team_id=team_id,
+            user_id=user_id,
+            agent_id=agent_id,
+        )
 
     async def list_all(self, org_id: str = "", limit: int = 200) -> list[Learning]:
         return await self._store.list_all(org_id, limit)
