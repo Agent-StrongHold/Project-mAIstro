@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -319,11 +319,20 @@ class InMemoryDurableRunStore:
                 break
         return out
 
-    async def list_hitl_due(self, *, now: datetime, limit: int = 100) -> list[DurableRunRecord]:
+    async def list_hitl_due(
+        self,
+        *,
+        now: datetime,
+        limit: int = 100,
+        project_ids: Collection[str] | None = None,
+        workspace_ids: Collection[str] | None = None,
+    ) -> list[DurableRunRecord]:
         rows = [
             record
             for record in self._rows.values()
             if record.run.status is RunStatus.PAUSED
+            and (project_ids is None or record.run.project_id in project_ids)
+            and (workspace_ids is None or record.run.workspace_id in workspace_ids)
             and (deadline := earliest_hitl_deadline(record)) is not None
             and deadline <= now
         ]
@@ -533,8 +542,22 @@ class SqliteDurableRunStore:
             workspace_id,
         )
 
-    async def list_hitl_due(self, *, now: datetime, limit: int = 100) -> list[DurableRunRecord]:
-        return await asyncio.to_thread(_list_hitl_due_sync, self, now, limit)
+    async def list_hitl_due(
+        self,
+        *,
+        now: datetime,
+        limit: int = 100,
+        project_ids: Collection[str] | None = None,
+        workspace_ids: Collection[str] | None = None,
+    ) -> list[DurableRunRecord]:
+        return await asyncio.to_thread(
+            _list_hitl_due_sync,
+            self,
+            now,
+            limit,
+            project_ids,
+            workspace_ids,
+        )
 
     async def list_for_project(self, project_id: str, *, limit: int = 25) -> list[DurableRunRecord]:
         return await asyncio.to_thread(
@@ -732,17 +755,30 @@ def _list_hitl_due_sync(
     store: SqliteDurableRunStore,
     now: datetime,
     limit: int,
+    project_ids: Collection[str] | None,
+    workspace_ids: Collection[str] | None,
 ) -> list[DurableRunRecord]:
-    with store._connect() as conn:
-        rows = conn.execute(
-            """SELECT * FROM durable_graph_runs
+    if project_ids is not None and not project_ids:
+        return []
+    if workspace_ids is not None and not workspace_ids:
+        return []
+    query = """SELECT * FROM durable_graph_runs
                 WHERE status = ?
                   AND hitl_deadline_at IS NOT NULL
-                  AND hitl_deadline_at <= ?
-             ORDER BY hitl_deadline_at ASC, run_id ASC
-                LIMIT ?""",
-            (RunStatus.PAUSED.value, now.isoformat(), limit),
-        ).fetchall()
+                  AND hitl_deadline_at <= ?"""
+    params: list[Any] = [RunStatus.PAUSED.value, now.isoformat()]
+    if project_ids is not None:
+        placeholders = ", ".join("?" for _ in project_ids)
+        query += f" AND project_id IN ({placeholders})"
+        params.extend(project_ids)
+    if workspace_ids is not None:
+        placeholders = ", ".join("?" for _ in workspace_ids)
+        query += f" AND json_extract(record_json, '$.run.workspace_id') IN ({placeholders})"
+        params.extend(workspace_ids)
+    query += " ORDER BY hitl_deadline_at ASC, run_id ASC LIMIT ?"
+    params.append(limit)
+    with store._connect() as conn:
+        rows = conn.execute(query, params).fetchall()
     return [store._from_row(row) for row in rows]
 
 

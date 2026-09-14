@@ -270,12 +270,39 @@ async def list_pending_human_work(
 
 
 @router.post("/expire")
-async def expire_human_work(limit: int = 100) -> dict[str, Any]:
-    """Run one bounded expiry tick against durable HITL deadlines."""
-    expired = await expire_hitl_pauses(_store(), limit=max(1, min(limit, 200)))
+async def expire_human_work(request: Request, limit: int = 100) -> dict[str, Any]:
+    """Run one bounded expiry tick only over the caller's control scopes."""
+    user_id = _request_user_id(request)
+    workspace_ids = {workspace.id for workspace in await list_views_for_user(user_id)}
+    authorized_projects: set[str] = set()
+    for workspace_id in sorted(workspace_ids):
+        authorized_projects.update(
+            await authorized_project_ids(
+                principal_id=user_id,
+                workspace_id=workspace_id,
+                permission=HITL_CANCEL,
+            )
+        )
+
+    if not authorized_projects:
+        log_audit(
+            "hitl_authorization_denied",
+            _session_principal(request),
+            target="expire",
+            detail={"target_class": "expiry", "permission": HITL_CANCEL},
+            severity="warning",
+        )
+        return {"expired": 0, "run_ids": []}
+
+    expired = await expire_hitl_pauses(
+        _store(),
+        limit=max(1, min(limit, 200)),
+        project_ids=authorized_projects,
+        workspace_ids=workspace_ids,
+    )
     run_ids = [record.run_id for record in expired]
     if run_ids:
-        log_audit("hitl_expire", "system", detail={"run_ids": run_ids})
+        log_audit("hitl_expire", _session_principal(request), detail={"run_ids": run_ids})
     return {"expired": len(run_ids), "run_ids": run_ids}
 
 

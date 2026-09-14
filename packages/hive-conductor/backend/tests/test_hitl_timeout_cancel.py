@@ -81,6 +81,40 @@ def _paused_record(
 
 
 @pytest.fixture
+def reviewer_client():
+    import stores
+    from fastapi.testclient import TestClient
+    from main import app
+
+    stores.users["hitl-expiry-reviewer"] = stores.users["user"].model_copy(
+        update={
+            "id": "hitl-expiry-reviewer",
+            "username": "hitl-expiry-reviewer",
+            "permissions": ["dags.write"],
+        }
+    )
+    client = TestClient(app)
+    try:
+        login = client.post(
+            "/v1/auth/login",
+            json={"username": "hitl-expiry-reviewer", "password": "testpass"},
+        )
+        assert login.status_code == 200
+        elevated = client.post(
+            "/v1/auth/elevate",
+            json={
+                "password": "testpass",
+                "permissions": ["dags.write"],
+                "task_id": "hitl-expiry-reviewer-test",
+            },
+        )
+        assert elevated.status_code == 200
+        yield client
+    finally:
+        stores.users.pop("hitl-expiry-reviewer", None)
+
+
+@pytest.fixture
 def seeded(admin_client: Any) -> Iterator[_Seeded]:
     from services.dag_agents import get_run_store
 
@@ -171,6 +205,99 @@ async def test_expiry_endpoint_reports_an_empty_tick(seeded: _Seeded) -> None:
 
     assert response.status_code == 200
     assert response.json() == {"expired": 0, "run_ids": []}
+
+
+async def test_expiry_endpoint_only_settles_authorized_workspace_projects(
+    reviewer_client: Any, admin_client: Any
+) -> None:
+    """A user-triggered expiry tick cannot settle another principal's pause."""
+    from services.dag_agents import get_run_store
+    from services.workspace_authority import canonical_store_for_tests, set_member
+
+    from maistro.projects.scope import ProjectMembership
+
+    store = get_run_store()
+    deadline = datetime.now(UTC) - timedelta(minutes=1)
+    reviewer_workspace = await create_workspace(
+        creator_user_id="admin",
+        name="HITL expiry reviewer workspace",
+        persona_template_id="default",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
+    )
+    foreign_workspace = await create_workspace(
+        creator_user_id="admin",
+        name="HITL expiry foreign workspace",
+        persona_template_id="default",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
+    )
+    await set_member(
+        reviewer_workspace.id,
+        user_id="hitl-expiry-reviewer",
+        role="editor",
+    )
+    projects = canonical_store_for_tests().project_store
+    reviewer_root = await projects.root_for_workspace(reviewer_workspace.id)
+    foreign_root = await projects.root_for_workspace(foreign_workspace.id)
+    await projects.set_membership(
+        ProjectMembership(
+            workspace_id=reviewer_workspace.id,
+            project_id=reviewer_root.project_id,
+            principal_id="hitl-expiry-reviewer",
+            grants={"hitl.cancel"},
+        )
+    )
+    reviewer_run_id = "hitl-expiry-authorized"
+    foreign_run_id = "hitl-expiry-foreign"
+    await store.create(
+        _paused_record(
+            reviewer_run_id,
+            deadline=deadline,
+            workspace_id=reviewer_workspace.id,
+            project_id=reviewer_root.project_id,
+        )
+    )
+    await store.create(
+        _paused_record(
+            foreign_run_id,
+            deadline=deadline,
+            workspace_id=foreign_workspace.id,
+            project_id=foreign_root.project_id,
+        )
+    )
+    try:
+        reviewer_response = reviewer_client.post("/v1/hitl/expire?limit=10")
+        assert reviewer_response.status_code == 200
+        assert reviewer_response.json() == {"expired": 1, "run_ids": [reviewer_run_id]}
+        reviewer = await store.get(reviewer_run_id)
+        foreign = await store.get(foreign_run_id)
+        assert reviewer is not None and reviewer.run.status is RunStatus.TIMED_OUT
+        assert foreign is not None and foreign.run.status is RunStatus.PAUSED
+
+        import stores
+
+        expiry_entries = [
+            entry
+            for entry in stores.audit_log.values()
+            if isinstance(entry, dict) and entry.get("action") == "hitl_expire"
+        ]
+        assert expiry_entries[-1]["actor"] == "hitl-expiry-reviewer"
+        assert foreign_run_id not in str(expiry_entries[-1]["detail"])
+
+        # The second authenticated principal can settle only its own Workspace
+        # scope; this also proves the route did not hide the foreign record from
+        # the canonical expiry worker rather than mutating it.
+        admin_response = admin_client.post("/v1/hitl/expire?limit=10")
+        assert admin_response.status_code == 200
+        assert admin_response.json() == {"expired": 1, "run_ids": [foreign_run_id]}
+        foreign = await store.get(foreign_run_id)
+        assert foreign is not None and foreign.run.status is RunStatus.TIMED_OUT
+    finally:
+        store._rows.pop(reviewer_run_id, None)
+        store._rows.pop(foreign_run_id, None)
 
 
 def test_settlement_endpoints_keep_the_existing_dags_write_scope(authed_client: Any) -> None:

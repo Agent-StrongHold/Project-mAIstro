@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
@@ -35,8 +36,15 @@ class DurableRunStore(Protocol):
         """Return persisted graph continuations whose timed resume is due."""
         ...
 
-    async def list_hitl_due(self, *, now: datetime, limit: int = 100) -> list[DurableRunRecord]:
-        """Return paused Runs whose indexed HITL deadline is due."""
+    async def list_hitl_due(
+        self,
+        *,
+        now: datetime,
+        limit: int = 100,
+        project_ids: Collection[str] | None = None,
+        workspace_ids: Collection[str] | None = None,
+    ) -> list[DurableRunRecord]:
+        """Return due paused Runs within optional canonical scope filters."""
         ...
 
     async def list_for_project(

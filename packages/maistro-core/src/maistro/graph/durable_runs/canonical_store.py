@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from datetime import datetime
 from typing import Any
 
@@ -373,6 +373,8 @@ class CanonicalDurableRunStore:
         *,
         now: datetime,
         limit: int = 100,
+        project_ids: Collection[str] | None = None,
+        workspace_ids: Collection[str] | None = None,
     ) -> list[DurableRunRecord]:
         """Elapsed human pauses the canonical Run agrees are paused.
 
@@ -390,6 +392,10 @@ class CanonicalDurableRunStore:
             run_ids = await self._continuations.list_hitl_due_run_ids(now=now, limit=requested)
             due = []
             for record in await self._assemble_all(run_ids):
+                if project_ids is not None and record.run.project_id not in project_ids:
+                    continue
+                if workspace_ids is not None and record.run.workspace_id not in workspace_ids:
+                    continue
                 candidate = await self._reconcile_hitl_due_candidate(record, now)
                 if candidate is not None:
                     due.append(candidate)

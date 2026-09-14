@@ -153,9 +153,13 @@ async def authorize_project(
 
 
 async def authorized_project_ids(
-    *, principal_id: str, workspace_id: str, project_id: str | None = None
+    *,
+    principal_id: str,
+    workspace_id: str,
+    project_id: str | None = None,
+    permission: str = HITL_INSPECT,
 ) -> list[str]:
-    """Resolve the inspectable Projects before querying paused Run payloads."""
+    """Resolve Projects authorized for one HITL operation before querying state."""
     project_store = await _project_store()
     if project_store is None:
         return []
@@ -166,7 +170,7 @@ async def authorized_project_ids(
                 principal_id=principal_id,
                 workspace_id=workspace_id,
                 project_id=project_id,
-                permission=HITL_INSPECT,
+                permission=permission,
             )
         except HitlAuthorizationDenied:
             return []
@@ -191,7 +195,7 @@ async def authorized_project_ids(
                 principal_id=principal_id,
                 workspace_id=workspace_id,
                 project_id=project.project_id,
-                permission=HITL_INSPECT,
+                permission=permission,
             )
         except HitlAuthorizationDenied:
             continue

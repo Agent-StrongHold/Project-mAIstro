@@ -151,6 +151,8 @@ async def expire_hitl_pauses(
     *,
     now: datetime | None = None,
     limit: int = 100,
+    project_ids: Collection[str] | None = None,
+    workspace_ids: Collection[str] | None = None,
 ) -> list[DurableRunRecord]:
     """Settle at most ``limit`` paused Runs whose persisted deadline elapsed.
 
@@ -164,7 +166,12 @@ async def expire_hitl_pauses(
     # ``list_hitl_due`` is a deadline-indexed candidate query. Its limit is
     # settlement work, not a prefix of all PAUSED Runs, so old non-HITL and
     # future-deadline records cannot starve an elapsed human pause.
-    candidates = await store.list_hitl_due(now=moment, limit=limit)
+    candidates = await store.list_hitl_due(
+        now=moment,
+        limit=limit,
+        project_ids=project_ids,
+        workspace_ids=workspace_ids,
+    )
     settled: list[DurableRunRecord] = []
     for record in candidates:
         expired_node_id: str | None = None
