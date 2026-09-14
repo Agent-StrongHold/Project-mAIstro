@@ -347,6 +347,68 @@ async def test_post_call_pii_detected_is_redacted_and_flagged():
     assert audit.entries[0].verdict == "flagged"
 
 
+async def test_post_call_real_warden_times_out_pathological_regex(monkeypatch):
+    """The production output gate must inherit Warden's ReDoS timeout."""
+    import time
+
+    import regex
+
+    import maistro.security.warden.detector as detector
+    from maistro.security.warden.detector import Warden
+
+    monkeypatch.setattr(
+        detector,
+        "REJECT_PATTERNS",
+        [(regex.compile(r"(a+)+$"), "pathological test rule")],
+    )
+
+    started = time.monotonic()
+    result = await _sentinel(warden=Warden()).post_call("tool", "a" * 40_000 + "b", _auth())
+
+    assert result == "[Tool result blocked by Warden -- contained injection attempt]"
+    assert time.monotonic() - started < 10
+
+
+async def test_post_call_real_warden_windows_large_fallback_input(monkeypatch):
+    """The hot path never hands a fallback heuristic pass more than one window."""
+    import re
+
+    import maistro.security.warden._regex as regex_module
+    import maistro.security.warden.detector as detector
+    import maistro.security.warden.heuristics as heuristics
+    from maistro.security.warden.detector import Warden
+
+    # Rebuild the two live heuristic patterns after disabling RE2. This keeps
+    # the test on the supported stdlib fallback path rather than merely
+    # changing the accelerator availability flag after import.
+    monkeypatch.setattr(regex_module, "_RE2_AVAILABLE", False)
+    monkeypatch.setattr(
+        heuristics,
+        "_INSTRUCTION_TOKENS",
+        regex_module.compile_pattern(heuristics._INSTRUCTION_TOKENS.pattern, re.IGNORECASE),
+    )
+    monkeypatch.setattr(
+        heuristics,
+        "_BASE64_PATTERN",
+        regex_module.compile_pattern(heuristics._BASE64_PATTERN.pattern),
+    )
+
+    lengths: list[int] = []
+    original = detector.heuristic_scan
+
+    def record_window(text: str):
+        lengths.append(len(text))
+        return original(text)
+
+    monkeypatch.setattr(detector, "heuristic_scan", record_window)
+    text = "the quick brown fox jumps over the lazy dog. " * 3_000
+    result = await _sentinel(warden=Warden()).post_call("tool", text, _auth())
+
+    assert result.endswith("[... truncated, full result available in trace]")
+    assert len(lengths) > 1
+    assert max(lengths) <= detector._SCAN_WINDOW_CHARS
+
+
 async def test_post_call_both_warden_dirty_and_pii_produces_single_audit_call():
     audit = _StubAuditLog()
     dirty = WardenVerdict(clean=False, flags=("x",))

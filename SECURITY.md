@@ -112,6 +112,24 @@ docstring for what it cannot check):
 | Circuit breaker defaults | N=5 failures / W=60s window / T=30s cooldown | ADR-038 §2 (implemented in `resilience/`) | Per-upstream-dependency failure isolation |
 | Secret-redaction entropy fallback | 4.0 bits/char, over runs of 32 chars or more | `security/redact.py` (`_ENTROPY_BITS_PER_CHAR_THRESHOLD`, `_MIN_SECRET_LENGTH`), ADR-064, installed by `security/log_redaction.py` | 30+ named patterns plus this fallback for unknown key formats, merged in a single span pass. Scrubs API keys, JWTs, private-key blocks, connection strings, etc. **Operative on both log pipelines** — every stdlib handler (Conductor + uvicorn) and the structlog processor chain (`maistro-server`), covering `%`-args and exception tracebacks. `/health` reports `log_redaction_active`. It does **not** cover anything that bypasses logging — `print()`, an HTTP response body, or a value written straight to disk |
 
+### Product-path evidence for scanner limits
+
+These limits are exercised through the output security boundary, not only by
+inspecting constants. `packages/maistro-core/tests/security/test_sentinel_policy.py`
+uses `Sentinel.post_call` with the real `Warden`: its pathological-regex case
+proves the `regex` timeout fails closed, and its large-input case records that
+every heuristic pass is at most `_SCAN_WINDOW_CHARS`. The Warden test suite also
+covers the no-tail window invariant and runs the accelerated-versus-stdlib corpus
+comparison in `test_warden_regex_equivalence.py` (the root dev extra installs
+`google-re2`, while the fallback cases force `re`).
+
+The PII hot path is likewise exercised at the product boundary: normalized
+secret cases call `Sentinel.post_call`, `DirectStrategy`, and `ReactStrategy` in
+`packages/maistro-core/tests/security/sentinel/test_pii_evasion_normalization.py`.
+Missing PII-filter imports are tested on both strategies and now return a blocking
+marker rather than unsanitized model/tool output (`packages/maistro-core/tests/agents/strategies/test_direct.py`
+and `test_react.py`).
+
 ### Configurable limits and their enforced floors
 
 Six of the caps above are deployment policy rather than code constants
