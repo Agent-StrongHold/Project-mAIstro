@@ -84,6 +84,13 @@ def test_failing_evidence_cannot_support_implemented(checker: ModuleType, regist
     assert any("non-passing evidence" in error for error in errors)
 
 
+def test_implemented_requires_a_release_digest(checker: ModuleType, registry: dict) -> None:
+    control = registry["controls"][0]
+    control["status"] = "implemented"
+    errors = checker.validate_registry(registry, today=dt.date(2026, 8, 25))
+    assert any("has no release digest" in error for error in errors)
+
+
 def test_disabled_workflow_evidence_cannot_be_green(checker: ModuleType, registry: dict) -> None:
     control = registry["controls"][0]
     digest = "b" * 40

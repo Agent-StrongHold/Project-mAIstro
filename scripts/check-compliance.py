@@ -244,6 +244,8 @@ def validate_registry(  # noqa: C901 - this is the single fail-closed schema/evi
                 if registry_digest and evidence_digest != registry_digest:
                     errors.append(f"{ident} evidence is not bound to registry.release_digest")
         if status == "implemented":
+            if not registry_digest:
+                errors.append(f"{ident} is implemented but has no release digest")
             if not control["evidence"]:
                 errors.append(f"{ident} is implemented but has no immutable evidence")
             if not control["test_refs"]:
