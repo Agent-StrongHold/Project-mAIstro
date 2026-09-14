@@ -354,6 +354,32 @@ async def test_setuid_binaries_are_visible_but_cannot_escalate(sandbox) -> None:
     assert text.split()[-1] == "1"
 
 
+# --- host-side file boundary -------------------------------------------------
+
+
+async def test_host_side_file_transfer_keeps_symlinked_results_beneath_workdir(
+    tmp_path: Path,
+) -> None:
+    """The real backend's transfer API must not reopen a host escape seam."""
+    backend = BubblewrapSandboxBackend(root=tmp_path)
+    instance = await backend.spawn(config=SandboxConfig())
+    outside = tmp_path / "host-secret"
+    outside.write_bytes(b"secret")
+    workdir = workdir_of(tmp_path, instance)
+    assert workdir is not None
+    (workdir / "result").symlink_to(outside)
+
+    try:
+        with pytest.raises(OSError):
+            await backend.write_file(instance, "result", b"overwrite")
+        with pytest.raises(OSError):
+            await backend.read_file(instance, "result")
+    finally:
+        await backend.destroy(instance)
+
+    assert outside.read_bytes() == b"secret"
+
+
 # --- timeout, kill and cleanup ------------------------------------------------
 
 
