@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 
@@ -8,6 +10,16 @@ def test_state_requires_canonical_security_composition() -> None:
 
     with pytest.raises(RuntimeError, match="canonical Turing security"):
         TuringState()
+
+
+def test_runtime_security_refuses_without_canonical_run_context():
+    from ..main import app
+    from ..state import get_state
+
+    result = asyncio.run(get_state().actor.handle_tool_result("grep", "safe output"))
+
+    assert result == {"verdict": "blocked", "flags": ["security_audit_unavailable"]}
+    assert not asyncio.run(app.state.turing_security.audit_log.get_entries(user_id="turing"))
 
 
 def test_snapshot_requires_auth(client):

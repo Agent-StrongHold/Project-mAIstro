@@ -16,7 +16,12 @@ without enabling the product.
 The inbound middleware walks parsed mappings without serializing them, scans
 mapping keys and nested string values, and runs before FastAPI route consumption.
 The chat runtime also scans direct callers' user input and scans the provider
-(model/tool-result) response before history or memory. The canonical
+(model/tool-result) response before history or memory. Chat canonical Run
+admission is mandatory: if Run or continuation admission is unavailable, the
+request is refused and no unrecorded fallback dispatch is attempted. Runtime
+security audit callbacks likewise require a canonical Run context and resolve
+principal, Workspace, and Project from that Run; they never attribute an
+unscoped verdict to the Turing runtime. The canonical
 `maistro.security.warden.detector.Warden` and core `AuditEntry` remain the only
 security detector and audit authorities; missing or failing Warden/audit
 composition refuses the protected operation.

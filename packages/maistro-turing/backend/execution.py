@@ -45,7 +45,7 @@ _CANCELLED_ERROR = "execution cancelled"
 
 
 class TuringAdmissionUnavailable(RuntimeError):
-    """Canonical audit admission failed before Turing dispatched the chat turn."""
+    """Canonical admission failed before Turing dispatched the chat turn."""
 
 
 class _ChatInput(BaseModel):
@@ -234,10 +234,10 @@ class TuringExecutionPlane:
     ) -> DurableRunRecord:
         """Execute one chat request as one canonical Graph/Run.
 
-        Failure before node resolution is an audit-admission failure: no provider
-        work has been dispatched, so the HTTP boundary may preserve chat
-        availability by executing the domain turn without a Run. Once the node
-        has been resolved, failures belong to canonical execution and are never
+        Failure before node resolution is a canonical-admission failure: no
+        provider work has been dispatched, so callers must refuse the request
+        rather than execute the domain turn without a Run. Once the node has
+        been resolved, failures belong to canonical execution and are never
         replayed outside the spine.
         """
         admitted_run_id: str | None = None

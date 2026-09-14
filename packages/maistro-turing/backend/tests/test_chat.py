@@ -420,7 +420,7 @@ def test_cancelled_partial_admission_is_compensated_before_dispatch(monkeypatch)
     _await(scenario())
 
 
-def test_create_run_failure_does_not_make_chat_unavailable(authed_client, monkeypatch):
+def test_canonical_admission_failure_refuses_chat_without_dispatch(authed_client, monkeypatch):
     from ..execution import get_execution_plane
     from ..state import get_state
 
@@ -430,7 +430,7 @@ def test_create_run_failure_does_not_make_chat_unavailable(authed_client, monkey
     def reply(*_args: Any, **_kwargs: Any) -> str:
         nonlocal provider_calls
         provider_calls += 1
-        return "available without audit"
+        return "must not run without canonical admission"
 
     async def fail_create(*_args: Any, **_kwargs: Any) -> Any:
         raise RuntimeError("run store unavailable")
@@ -440,40 +440,9 @@ def test_create_run_failure_does_not_make_chat_unavailable(authed_client, monkey
 
     response = authed_client.post("/v1/chat", json={"message": "hey"})
 
-    assert response.status_code == 200
-    assert response.json()["reply"] == "available without audit"
-    assert response.json()["run_id"] is None
-    assert provider_calls == 1
-
-
-def test_unrecorded_reply_propagates_cancellation():
-    from ..routes.chat import _unrecorded_reply
-
-    class CancelledSession:
-        async def handle_message(self, _message: str) -> str:
-            raise asyncio.CancelledError
-
-    with pytest.raises(asyncio.CancelledError):
-        _await(_unrecorded_reply(CancelledSession(), "hello"))  # type: ignore[arg-type]
-
-
-def test_unrecorded_reply_sanitizes_provider_failure():
-    from fastapi import HTTPException
-
-    from ..routes.chat import _unrecorded_reply
-
-    secret = "https://provider.invalid token=do-not-return"
-
-    class FailingSession:
-        async def handle_message(self, _message: str) -> str:
-            raise RuntimeError(secret)
-
-    with pytest.raises(HTTPException) as caught:
-        _await(_unrecorded_reply(FailingSession(), "hello"))  # type: ignore[arg-type]
-
-    assert caught.value.status_code == 503
-    assert caught.value.detail == "Turing chat execution failed"
-    assert secret not in str(caught.value.detail)
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Turing chat execution failed"
+    assert provider_calls == 0
 
 
 def test_chat_sanitizes_a_completed_run_with_missing_reply(authed_client, monkeypatch):
@@ -497,9 +466,7 @@ def test_chat_sanitizes_a_completed_run_with_missing_reply(authed_client, monkey
     assert response.json()["detail"] == "Turing chat execution failed"
 
 
-def test_checkpoint_admission_failure_is_compensated_before_unrecorded_chat(
-    authed_client, monkeypatch
-):
+def test_checkpoint_admission_failure_is_compensated_before_dispatch(authed_client, monkeypatch):
     from maistro.runs.chat_admission import ADMISSION_INCOMPLETE
 
     from ..execution import get_execution_plane
@@ -521,10 +488,9 @@ def test_checkpoint_admission_failure_is_compensated_before_unrecorded_chat(
 
     response = authed_client.post("/v1/chat", json={"message": "hey"})
 
-    assert response.status_code == 200
-    assert response.json()["reply"] == "available after checkpoint failure"
-    assert response.json()["run_id"] is None
-    assert provider_calls == 1
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Turing chat execution failed"
+    assert provider_calls == 0
 
     cancelled = _await(plane.run_store.list_by_status(RunStatus.CANCELLED, limit=10))
     assert len(cancelled) == 1

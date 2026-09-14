@@ -115,29 +115,28 @@ class TuringState:
 
     async def _audit_runtime_verdict(self, verdict: object, content: str, boundary: str) -> None:
         execution = current_execution_context()
-        principal = SELF_ID
-        if execution.run_id:
-            # Model/tool output is produced inside a canonical Run. Resolve its
-            # actor from the Run record rather than attributing the verdict to
-            # the Turing runtime itself.
-            from .execution import get_execution_plane
+        if not execution.run_id:
+            raise RuntimeError("canonical Run context is required for runtime security audit")
 
-            run = await get_execution_plane().run_store.get_run(execution.run_id)
-            if run is None or not run.actor_principal_id:
-                raise RuntimeError("canonical Run actor is unavailable for security audit")
-            principal = str(run.actor_principal_id)
+        # Model/tool output is produced inside a canonical Run. Resolve every
+        # audit identity from that Run rather than attributing it to Turing.
+        from .execution import get_execution_plane
+
+        run = await get_execution_plane().run_store.get_run(execution.run_id)
+        if run is None or not run.actor_principal_id:
+            raise RuntimeError("canonical Run actor is unavailable for security audit")
 
         await self.inbound_security.audit_verdict(
             verdict,  # type: ignore[arg-type]
             content,
             boundary=boundary,
             context=TuringSecurityContext(
-                principal=principal,
+                principal=str(run.actor_principal_id),
                 route="runtime",
                 action=f"turing.{boundary}",
-                workspace_id=execution.workspace_id,
-                project_id=execution.project_id,
-                run_id=execution.run_id,
+                workspace_id=run.workspace_id,
+                project_id=run.project_id,
+                run_id=run.run_id,
                 invocation_id=execution.invocation_id,
             ),
         )
