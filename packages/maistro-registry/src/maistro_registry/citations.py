@@ -34,6 +34,7 @@ invisible precisely because the citation looks identical either way.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from maistro_registry.schema import FrontMatter, Status
@@ -83,6 +84,7 @@ def _walk_replacement(
 ) -> tuple[dict[str, FrontMatter], tuple[str, ...]]:
     """Collect active endpoints and broken links from one supersession branch."""
     key = f"{current.repo.value}#{current.id}"
+    result: tuple[dict[str, FrontMatter], tuple[str, ...]]
     if key in path:
         return {}, (f"supersession chain cycles at {key}",)
     if key in cache:
@@ -155,17 +157,37 @@ def _replacement_chain(
 def check_citations(front_matters: list[FrontMatter]) -> list[CitationProblem]:
     """Every governing citation from an active document, checked for authority."""
     index = _index(front_matters)
-    problems: list[CitationProblem] = []
+    references = (
+        (f"{fm.repo.value}#{fm.id}", field_name, ref)
+        for fm in front_matters
+        if fm.status in ACTIVE_SOURCE_STATUSES
+        for field_name in GOVERNING_FIELDS
+        for ref in list(getattr(fm, field_name))
+    )
+    return _check_references(references, index)
 
-    for fm in front_matters:
-        if fm.status not in ACTIVE_SOURCE_STATUSES:
-            continue
-        source = f"{fm.repo.value}#{fm.id}"
-        for field_name in GOVERNING_FIELDS:
-            for ref in list(getattr(fm, field_name)):
-                problem = _check_one(source, field_name, ref, index)
-                if problem is not None:
-                    problems.append(problem)
+
+def check_governing_references(
+    references: Iterable[tuple[str, str, str]], front_matters: list[FrontMatter]
+) -> list[CitationProblem]:
+    """Check governing references from non-front-matter governance surfaces.
+
+    The convergence matrix is an active planning surface rather than an ADR or
+    spec, so it cannot be represented by ``FrontMatter``. It still needs the
+    same target-status and supersession rules; callers provide its source and
+    relationship labels explicitly and this function shares the exact checker.
+    """
+    return _check_references(references, _index(front_matters))
+
+
+def _check_references(
+    references: Iterable[tuple[str, str, str]], index: dict[str, FrontMatter]
+) -> list[CitationProblem]:
+    problems: list[CitationProblem] = []
+    for source, field_name, ref in references:
+        problem = _check_one(source, field_name, ref, index)
+        if problem is not None:
+            problems.append(problem)
     return problems
 
 
@@ -256,4 +278,5 @@ __all__ = [
     "CitationBaseline",
     "CitationProblem",
     "check_citations",
+    "check_governing_references",
 ]

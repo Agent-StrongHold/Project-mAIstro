@@ -366,6 +366,68 @@ def test_the_gate_passes_on_the_committed_baseline() -> None:
     assert _gate_module().main([]) == 0
 
 
+def test_the_matrix_governing_column_rejects_a_proposed_authority(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _gate_module()
+    matrix = tmp_path / "CONVERGENCE-MATRIX.md"
+    matrix.write_text(
+        "<!-- matrix:disposition -->\n"
+        "| Subsystem | Real entry point | Unreachable | Disposition | Governing ADR/spec | Acceptance evidence | Dependencies |\n"
+        "|---|---|---|---|---|---|---|\n"
+        "| Demo | entry | `none` | KEEP | ADR-002 | evidence | — |\n"
+    )
+    monkeypatch.setattr(module, "MATRIX", matrix)
+
+    problems = module._matrix_problems([_doc("ADR-002", Status.PROPOSED)])
+
+    assert len(problems) == 1
+    assert problems[0].source == "matrix#Demo"
+    assert problems[0].field_name == "governing"
+    assert "Proposed" in problems[0].reason
+
+
+def test_the_matrix_historical_supersession_note_is_not_governing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _gate_module()
+    matrix = tmp_path / "CONVERGENCE-MATRIX.md"
+    matrix.write_text(
+        "<!-- matrix:disposition -->\n"
+        "| Subsystem | Real entry point | Unreachable | Disposition | Governing ADR/spec | Acceptance evidence | Dependencies |\n"
+        "|---|---|---|---|---|---|---|\n"
+        "| Demo | entry | `none` | KEEP | ADR-003 (supersedes ADR-002) | evidence | — |\n"
+    )
+    monkeypatch.setattr(module, "MATRIX", matrix)
+
+    old = _doc("ADR-002", Status.SUPERSEDED)
+    new = _doc("ADR-003", Status.ACCEPTED)
+
+    assert module._matrix_problems([old, new]) == []
+
+
+def test_the_matrix_superseded_authority_names_the_active_replacement(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _gate_module()
+    matrix = tmp_path / "CONVERGENCE-MATRIX.md"
+    matrix.write_text(
+        "<!-- matrix:disposition -->\n"
+        "| Subsystem | Real entry point | Unreachable | Disposition | Governing ADR/spec | Acceptance evidence | Dependencies |\n"
+        "|---|---|---|---|---|---|---|\n"
+        "| Demo | entry | `none` | KEEP | ADR-002 | evidence | — |\n"
+    )
+    monkeypatch.setattr(module, "MATRIX", matrix)
+
+    old = _doc("ADR-002", Status.SUPERSEDED, superseded_by=[_ref("ADR-003")])
+    new = _doc("ADR-003", Status.ACCEPTED)
+
+    problems = module._matrix_problems([old, new])
+
+    assert len(problems) == 1
+    assert "ADR-003" in problems[0].reason
+
+
 def test_the_gate_runs_as_a_script_too() -> None:
     """The in-process tests above measure it; this one proves the entry point
     a workflow actually invokes still works."""
