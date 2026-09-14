@@ -1,5 +1,6 @@
 ---
 inventory-delta:
+  packages/maistro-core/tests: +5
   packages/maistro-core/tests/sandbox: +5
 ---
 # #18 — canonical sandbox authority
