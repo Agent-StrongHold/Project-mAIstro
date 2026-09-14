@@ -1,0 +1,78 @@
+name: Reusable PostgreSQL quality check
+
+on:
+  workflow_call:
+    inputs:
+      check_name:
+        description: Check label shown in the called job.
+        required: true
+        type: string
+      command:
+        description: Shell command that implements the check.
+        required: true
+        type: string
+      ratchet_base_rev:
+        description: Trusted base used by ratchet checks.
+        required: false
+        default: ""
+        type: string
+      mandate_base_sha:
+        description: Candidate base used by the acceptance mandate.
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: ${{ inputs.check_name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: maistro
+          POSTGRES_PASSWORD: maistro
+          POSTGRES_DB: maistro_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U maistro -d maistro_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      MAISTRO_TEST_PG_DSN: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
+      DATABASE_URL: postgresql://maistro:maistro@127.0.0.1:5432/maistro_test
+      RATCHET_BASE_REV: ${{ inputs.ratchet_base_rev }}
+      MANDATE_BASE_SHA: ${{ inputs.mandate_base_sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-uv
+      - name: Setup Python 3.12
+        run: uv python install 3.12
+      - name: uv sync (full dev deps)
+        run: uv sync --locked --all-extras
+      - name: install maistro-evolve
+        run: uv pip install -e packages/maistro-evolve
+      - name: install age + age-keygen
+        run: |
+          set -e
+          timeout 180 sudo apt-get update || true
+          timeout 180 sudo apt-get install -y age || true
+          if ! command -v age-keygen &> /dev/null; then
+            mkdir -p /tmp/age && cd /tmp/age
+            curl -fsSL --max-time 120 --retry 3 --retry-delay 5 --retry-all-errors \
+              https://dl.filippo.io/age/latest/age-linux-amd64.tar.gz | tar xz
+            sudo mv /tmp/age/age /tmp/age/age-keygen /usr/local/bin/
+            age-keygen --help > /dev/null && echo "✓ age-keygen ready"
+          fi
+      - name: install quality tools
+        run: uv pip install radon xenon vulture pyright interrogate pytest-timeout
+      - name: Run quality check
+        run: ${{ inputs.command }}

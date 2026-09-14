@@ -15,7 +15,7 @@ on:
   merge_group:
     types: [checks_requested]
   push:
-    branches: [develop, integration, main]
+    branches: [main, integration, develop, feat/*, bug/*, fix/*, idea/*, doc/*, chore/*]
 
 # Supersede in-flight candidate runs. Protected-branch pushes still run to
 # completion because their pass/fail record is durable evidence about that SHA.

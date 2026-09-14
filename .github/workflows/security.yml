@@ -42,78 +42,72 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
 
 jobs:
-  sast:
-    name: SAST (bandit + semgrep + gitleaks)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - name: Install uv + Python
-        uses: ./.github/actions/setup-uv
-      - name: Setup Python 3.12
-        run: uv python install 3.12
-      - name: uv sync
-        run: uv sync --locked --all-extras
-      - name: install SAST tools
-        run: uv pip install bandit
-      - name: bandit (zero Medium+ on OUR code)
-        run: |
-          uv run bandit -r packages/maistro-core/src packages/hive-conductor/backend \
-                          packages/maistro-server/src \
-                          -ll --confidence-level=medium -f json -o bandit.json || true
-          uv run python -c "
-          import json, sys
-          data = json.load(open('bandit.json'))
-          new = [r for r in data.get('results', []) if r.get('issue_severity') in {'MEDIUM','HIGH'}]
-          if new:
-              print(f'::error::bandit found {len(new)} Medium+ finding(s) — strict 0-baseline:')
-              for r in new:
-                  print(f'  {r[\"filename\"]}:{r[\"line_number\"]} [{r[\"test_id\"]}] {r[\"issue_text\"]}')
-              sys.exit(1)
-          print('bandit Medium+ count: 0 (strict gate)')
-          "
-      - name: semgrep (custom + p/security-audit + p/owasp-top-ten + p/secrets)
-        run: |
-          set -o pipefail
-          uvx semgrep --metrics off \
-            --config tools/semgrep/maistro-rules.yaml \
-            --config p/security-audit \
-            --config p/owasp-top-ten \
-            --config p/secrets \
-            --exclude 'packages/hive-conductor/eval' \
-            --exclude 'packages/hive-conductor/cage' \
-            --error packages/ tests/ 2>&1 | tee semgrep-report.txt
-      - name: install gitleaks CLI
-        run: |
-          set -euo pipefail
-          curl -sSfL -o gitleaks.tgz \
-            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
-          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks.tgz" | sha256sum --check
-          tar -xzf gitleaks.tgz gitleaks
-          sudo mv gitleaks /usr/local/bin/gitleaks
-      - name: gitleaks (full history on protected branches; changed range elsewhere)
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          REF_NAME: ${{ github.ref_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
-          BEFORE_SHA: ${{ github.event.before }}
-        run: |
-          set -euo pipefail
-          if [ "$EVENT_NAME" = "pull_request" ] || [ "$EVENT_NAME" = "merge_group" ]; then
-            gitleaks git --redact --log-opts="$BASE_SHA..$HEAD_SHA" .
-          elif [ "$EVENT_NAME" = "push" ] && [ "$REF_NAME" != "main" ] && [ "$REF_NAME" != "integration" ] && [ "$REF_NAME" != "develop" ]; then
-            if [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
-              gitleaks git --redact --log-opts="$BEFORE_SHA..$HEAD_SHA" .
-            else
-              gitleaks git --redact --log-opts="$HEAD_SHA^..$HEAD_SHA" .
-            fi
+  # SAST was one sequential nine-step job. These three calls preserve the
+  # commands while giving bandit, semgrep and gitleaks independent retries and
+  # check names. The reusable workflow centralizes the checkout/setup shape.
+  sast-bandit:
+    name: SAST / bandit
+    uses: ./.github/workflows/reusable-sast-check.yml
+    with:
+      check_name: SAST / bandit
+      python_environment: true
+      install_command: uv pip install bandit
+      command: |
+        uv run bandit -r packages/maistro-core/src packages/hive-conductor/backend \
+                        packages/maistro-server/src \
+                        -ll --confidence-level=medium -f json -o bandit.json || true
+        uv run python -c "
+        import json, sys
+        data = json.load(open('bandit.json'))
+        new = [r for r in data.get('results', []) if r.get('issue_severity') in {'MEDIUM','HIGH'}]
+        if new:
+            print(f'::error::bandit found {len(new)} Medium+ finding(s) — strict 0-baseline:')
+            for r in new:
+                print(f'  {r[\"filename\"]}:{r[\"line_number\"]} [{r[\"test_id\"]}] {r[\"issue_text\"]}')
+            sys.exit(1)
+        print('bandit Medium+ count: 0 (strict gate)')
+        "
+  sast-semgrep:
+    name: SAST / semgrep
+    uses: ./.github/workflows/reusable-sast-check.yml
+    with:
+      check_name: SAST / semgrep
+      python_environment: true
+      command: |
+        set -o pipefail
+        uvx semgrep --metrics off \
+          --config tools/semgrep/maistro-rules.yaml \
+          --config p/security-audit \
+          --config p/owasp-top-ten \
+          --config p/secrets \
+          --exclude 'packages/hive-conductor/eval' \
+          --exclude 'packages/hive-conductor/cage' \
+          --error packages/ tests/ 2>&1 | tee semgrep-report.txt
+  sast-gitleaks:
+    name: SAST / gitleaks
+    uses: ./.github/workflows/reusable-sast-check.yml
+    with:
+      check_name: SAST / gitleaks
+      install_command: |
+        set -euo pipefail
+        curl -sSfL -o gitleaks.tgz \
+          https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+        echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks.tgz" | sha256sum --check
+        tar -xzf gitleaks.tgz gitleaks
+        sudo mv gitleaks /usr/local/bin/gitleaks
+      command: |
+        set -euo pipefail
+        if [ "${{ github.event_name }}" = "pull_request" ] || [ "${{ github.event_name }}" = "merge_group" ]; then
+          gitleaks git --redact --log-opts="${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}..${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}" .
+        elif [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref_name }}" != "main" ] && [ "${{ github.ref_name }}" != "integration" ] && [ "${{ github.ref_name }}" != "develop" ]; then
+          if [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            gitleaks git --redact --log-opts="${{ github.event.before }}..${{ github.sha }}" .
           else
-            gitleaks git --redact --log-opts="--all" .
+            gitleaks git --redact --log-opts="${{ github.sha }}^..${{ github.sha }}" .
           fi
-
+        else
+          gitleaks git --redact --log-opts="--all" .
+        fi
   supply-chain:
     name: Supply chain (pip-audit)
     runs-on: ubuntu-latest
