@@ -15,6 +15,7 @@ import DagBuilder from "./pages/DagBuilder";
 import DagRuns from "./pages/DagRuns";
 import Dashboard from "./pages/Dashboard";
 import DesignStudio from "./pages/DesignStudio";
+import DeckBuilder from "./pages/DeckBuilder";
 import Docs from "./pages/Docs";
 import Evolution from "./pages/Evolution";
 import RSI from "./pages/RSI";
@@ -144,10 +145,7 @@ function AppRoutes() {
                 <Route path="agents" element={<Agents />} />
                 <Route path="work-items" element={<WorkItems />} />
                 <Route path="knowledge" element={<KnowledgeBase />} />
-                {/* M0 containment for #311: model-authored Deck markup reaches
-                    raw browser HTML/SVG sinks. Keep the executable surface
-                    unreachable until the M2 sanitizer/structured renderer lands. */}
-                <Route path="decks" element={<Navigate to="/dashboard" replace />} />
+                <Route path="decks" element={<DeckBuilder />} />
                 <Route path="skills" element={<Skills />} />
                 <Route path="mcp" element={<MCP />} />
                 <Route path="topology" element={<Topology />} />

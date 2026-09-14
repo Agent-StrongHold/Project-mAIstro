@@ -93,11 +93,11 @@ test("current Design Studio parent surface is operable by keyboard without enabl
   await page.keyboard.type("An accessible infographic about canonical Run lineage");
   await expect(prompt).toHaveValue("An accessible infographic about canonical Run lineage");
 
-  const generate = page.getByRole("button", { name: "Generate visual" });
-  await expect(generate).toBeDisabled();
-  await expect(
-    page.getByText(/Nothing is submitted or simulated while this control is disabled/),
-  ).toBeVisible();
+  const openEditor = page.getByRole("button", { name: "Open editor" });
+  await expect(openEditor).toBeDisabled();
+  await page.getByLabel("Describe the artifact").fill("An accessible infographic about canonical Run lineage");
+  await expect(openEditor).toBeEnabled();
+  await expect(page.getByText(/draft stays local until a durable project save is connected/)).toBeVisible();
   await expect(page.getByText(/Keyboard: use Tab to move between artifact types/)).toBeVisible();
   await expect(page.getByLabel("Describe the artifact")).toHaveAccessibleDescription(
     /Enter a brief for the selected artifact/,
@@ -138,7 +138,7 @@ test("every supported artifact mode is selectable in tab order and announced", a
     await expect(button).toBeFocused();
     await page.keyboard.press("Enter");
     await expect(button).toHaveAttribute("aria-pressed", "true");
-    await expect(page.getByRole("status").first()).toHaveText(names[index]);
+    await expect(page.getByRole("heading", { name: names[index], exact: true })).toBeVisible();
     await expect(page.getByLabel("Describe the artifact")).toHaveAttribute(
       "placeholder",
       `Describe the ${names[index].toLowerCase()} you want to create…`,
@@ -146,9 +146,29 @@ test("every supported artifact mode is selectable in tab order and announced", a
     if (index < names.length - 1) await page.keyboard.press("Tab");
   }
 
-  const results = await new AxeBuilder({ page })
-    .include("main")
-    .disableRules(["color-contrast"])
-    .analyze();
+  const results = await new AxeBuilder({ page }).include("main").analyze();
   expect(results.violations).toEqual([]);
+});
+
+test("fixed-page and Deck editors expose keyboard workflows and deterministic transitions", async () => {
+  await page.goto("/cli/canvas", { waitUntil: "domcontentloaded" });
+  await page.getByLabel("Describe the artifact").fill("A keyboard-first poster about reliable execution");
+  await page.getByRole("button", { name: "Open editor" }).press("Enter");
+  await expect(page.getByRole("heading", { name: "Poster editor" })).toBeFocused();
+  await expect(page.getByRole("region", { name: "Poster canvas" })).toBeVisible();
+  await page.getByRole("button", { name: "Add layer" }).press("Enter");
+  await expect(page.getByRole("option", { name: /Layer 3/ })).toBeVisible();
+  await page.getByRole("button", { name: "Move right" }).press("Enter");
+  await expect(page.getByRole("status")).toContainText("moved");
+  await page.getByRole("button", { name: "Back to Design Studio" }).press("Enter");
+  await expect(page.getByText("What are you making?")).toBeVisible();
+
+  await page.getByRole("button", { name: "Presentation / Deck" }).press("Enter");
+  await page.getByLabel("Describe the artifact").fill("A keyboard-first deck about reliable execution");
+  await page.getByRole("button", { name: "Open Deck editor" }).press("Enter");
+  await expect(page.getByRole("heading", { name: "Deck editor" })).toBeVisible();
+  await page.getByRole("button", { name: "Present" }).press("Enter");
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.getByRole("button", { name: "Exit (Esc)" }).press("Enter");
+  await expect(page.getByRole("heading", { name: "Deck editor" })).toBeVisible();
 });
