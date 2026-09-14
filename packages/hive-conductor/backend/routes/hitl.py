@@ -263,7 +263,7 @@ async def answer_human_work(
     if verdict["status"] != "clean":
         log_audit(
             "hitl_answer_blocked",
-            "system",
+            _session_principal(request),
             target=run_id,
             detail={"node_id": node_id, "findings": verdict["findings"]},
         )
