@@ -30,6 +30,11 @@ profile by construction.
 | `proxmox-vm` | maistro-server + persistence | Self-hosted on Proxmox; separate VMs preferred |
 | `docker-vps` | maistro-server + persistence | Single VPS with Docker/Podman |
 
+All supported container profiles use the finite service-level resource policy
+in [resource-containment.md](../install/resource-containment.md). The policy
+bounds memory, swap, PID trees, and CPU quota without pretending that those
+ceilings replace runtime admission or sandbox limits.
+
 **Planned, not shipped:** a separate sandbox-worker service, which is what a
 Tier-1 or Tier-2 backend would need in order to own a VMM or a gVisor runtime.
 Until one exists, isolation is bounded by what `maistro.sandbox` can do in the

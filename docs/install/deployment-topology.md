@@ -4,6 +4,7 @@ Runbook for the production (multi-instance) profile of maistro-engine. Implement
 [SPEC-070226-fbe3](../specs/SPEC-070226-fbe3-deployment-topology.md) and
 [ADR-081](../adr/ADR-081-deployment-backup-dr.md). For single-host homelab sizing see
 [sizing.md](./sizing.md); for the installer path see [default-installer.md](./default-installer.md).
+Resource ceilings and OOM recovery are in [resource-containment.md](./resource-containment.md).
 Reference artifacts live in [`deploy/`](../../deploy/).
 
 Per ADR-081 this document sets **no hard RPO/RTO or throughput numbers** — capacity is
@@ -46,6 +47,13 @@ Persistent layer (outside instances):
 - **Failover automation:** the compose reference uses a manually promoted replica
   (§4.1). Deployments needing sub-second automated failover add Patroni/etcd (Postgres)
   and Redis Sentinel; the runbook steps below are the manual equivalent.
+- **Resource containment:** every service has finite `mem_limit`, matching
+  `memswap_limit`, `pids_limit`, and `cpus` values in the effective Compose
+  configuration. These are security ceilings, not performance targets; see
+  [resource-containment.md](./resource-containment.md). The API replicas are
+  removed from LB rotation when readiness fails after an OOM or PID breach, and
+  `restart: unless-stopped` recreates them without claiming the interrupted
+  request or graph work succeeded.
 
 Bring it up:
 

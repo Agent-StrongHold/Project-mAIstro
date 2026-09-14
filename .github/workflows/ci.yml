@@ -138,6 +138,12 @@ jobs:
       # profile to the `${VAR:?message}` shape the rest already use.
       - name: No deployment profile hands out a credential
         run: python3 scripts/check-compose-secrets.py
+      # Ordinary Docker/Podman Compose ignores Swarm-only deploy.resources.
+      # Require finite memory, swap, PID, and CPU ceilings in every shipped
+      # profile, supported overlay, and add-on so rendered deployment config cannot
+      # silently remove the containment boundary (#862).
+      - name: Compose profiles enforce resource containment
+        run: uv run python scripts/check-compose-resources.py
       # `SENSITIVE_PATH_PATTERNS` decides which self-modifications need
       # adversarial review, and it was a hand-written list that kept falling
       # one entry behind: `local_loop.py` fast-forwards the baseline,

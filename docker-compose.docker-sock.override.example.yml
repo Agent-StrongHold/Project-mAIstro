@@ -18,6 +18,12 @@
 
 services:
   maistro-engine:
+    # This is an unsafe development override for the Docker socket, not an
+    # exemption from the resource containment ceiling.
+    mem_limit: 2g
+    memswap_limit: 2g
+    pids_limit: 512
+    cpus: 2.0
     environment:
       - SANDBOX_READINESS_REQUIRED=true
     volumes:

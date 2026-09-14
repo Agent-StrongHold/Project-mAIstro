@@ -58,6 +58,11 @@ services:
       litellm:
         condition: service_started
     stop_grace_period: 30s
+    # Service-level limits are enforced by Docker/Podman Compose (not Swarm-only deploy.resources).
+    mem_limit: 2g
+    memswap_limit: 2g
+    pids_limit: 512
+    cpus: 2.0
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live')"]
@@ -81,6 +86,10 @@ services:
         fi
     volumes:
       - pgdata:/var/lib/postgresql:ro
+    mem_limit: 256m
+    memswap_limit: 256m
+    pids_limit: 128
+    cpus: 0.25
     restart: "no"
 
   postgres:
@@ -105,6 +114,10 @@ services:
     depends_on:
       postgres-layout-check:
         condition: service_completed_successfully
+    mem_limit: 2g
+    memswap_limit: 2g
+    pids_limit: 512
+    cpus: 2.0
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U maistro"]
       interval: 5s
@@ -147,6 +160,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    mem_limit: 1g
+    memswap_limit: 1g
+    pids_limit: 256
+    cpus: 1.0
     restart: unless-stopped
 
   langfuse:
@@ -162,6 +179,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    mem_limit: 1g
+    memswap_limit: 1g
+    pids_limit: 256
+    cpus: 1.0
     restart: unless-stopped
 
   # Agent Conductor app: chat UI, DAG views, and deck builder (React SPA + FastAPI).
@@ -213,6 +234,12 @@ services:
         condition: service_started
       maistro-engine:
         condition: service_started
+    # Chromium/worker subprocesses need headroom, but the whole Conductor tree
+    # remains bounded by this container ceiling.
+    mem_limit: 1g
+    memswap_limit: 1g
+    pids_limit: 256
+    cpus: 1.0
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8101/health/ready')"]
