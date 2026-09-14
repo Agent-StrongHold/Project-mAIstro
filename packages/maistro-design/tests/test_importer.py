@@ -339,6 +339,25 @@ class TestCatalog:
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("integration")
+    def test_catalog_root_symlink_is_rejected(self, monkeypatch, tmp_path):
+        from maistro_design.systems import importer
+        from maistro_design.systems.registry import InMemoryDesignSystemRegistry
+        from maistro_design.types import CatalogImportPolicyError
+
+        real_root = tmp_path / "real-catalog"
+        _write_catalog_system(real_root / "outside")
+        root_alias = tmp_path / "catalog"
+        try:
+            root_alias.symlink_to(real_root, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"symlinks unavailable: {exc}")
+        monkeypatch.setattr(importer, "CATALOG_ROOT", root_alias)
+
+        with pytest.raises(CatalogImportPolicyError, match="catalog root"):
+            importer.import_from_catalog("outside", InMemoryDesignSystemRegistry())
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("integration")
     def test_catalog_payload_symlink_escape_is_rejected(self, monkeypatch, tmp_path):
         from maistro_design.systems import importer
         from maistro_design.systems.registry import InMemoryDesignSystemRegistry
