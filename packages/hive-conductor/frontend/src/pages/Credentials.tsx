@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { apiDelete, apiGet, apiPut } from "../lib/api";
+import { apiDelete, apiGet, apiPost, apiPut } from "../lib/api";
 import { LlmProviders } from "../components/LlmProviders";
 import { PageHeader, SecretField } from "../components/shared";
 
@@ -17,6 +17,7 @@ type CredentialRow = {
   help_url: string;
   placeholder: string;
   configured: boolean;
+  enabled: boolean;
   updated_at?: string | null;
   config_fields?: ConfigField[];
   config_values?: Record<string, string>;
@@ -94,6 +95,46 @@ export default function Credentials() {
     }
   }
 
+  async function testGateway(providerId: string) {
+    const config = configDrafts[providerId] ?? {};
+    const secret = drafts[providerId]?.trim();
+    setSaving(providerId);
+    setError(null);
+    setMessage(null);
+    try {
+      const result = await apiPost<{
+        models: string[];
+        model_count: number;
+      }>(`/v1/credentials/${providerId}/test`, {
+        config,
+        ...(secret ? { secret } : {}),
+      });
+      setMessage(`${providerId}: connectivity verified; discovered ${result.model_count} model${result.model_count === 1 ? "" : "s"}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Connectivity test failed");
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  async function setEnabled(providerId: string, enabled: boolean) {
+    setSaving(providerId);
+    setError(null);
+    setMessage(null);
+    try {
+      await apiPut(`/v1/credentials/${providerId}/config`, {
+        config: configDrafts[providerId] ?? {},
+        enabled,
+      });
+      setMessage(`${providerId}: ${enabled ? "enabled" : "disabled"}`);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not change provider state");
+    } finally {
+      setSaving(null);
+    }
+  }
+
   async function remove(providerId: string) {
     setSaving(providerId);
     setError(null);
@@ -161,7 +202,7 @@ export default function Credentials() {
                     fontSize: 8,
                   }}
                 >
-                  {row.configured ? "configured" : "missing"}
+                  {row.configured ? (row.enabled ? "configured" : "disabled") : "missing"}
                 </span>
               </div>
 
@@ -204,6 +245,17 @@ export default function Credentials() {
                 >
                   {saving === row.id ? "saving…" : "save"}
                 </button>
+                {row.id === "openai_compatible" && row.configured && (
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={saving === row.id}
+                    onClick={() => void setEnabled(row.id, !row.enabled)}
+                    style={{ fontSize: 9 }}
+                  >
+                    {row.enabled ? "disable" : "enable"}
+                  </button>
+                )}
                 {row.configured && (
                   <button
                     type="button"
@@ -212,7 +264,7 @@ export default function Credentials() {
                     onClick={() => void remove(row.id)}
                     style={{ fontSize: 9 }}
                   >
-                    remove
+                    delete
                   </button>
                 )}
               </div>
@@ -296,6 +348,17 @@ export default function Credentials() {
                   >
                     {saving === row.id ? "saving…" : "save config"}
                   </button>
+                  {row.id === "openai_compatible" && (
+                    <button
+                      type="button"
+                      className="btn btn-accent"
+                      disabled={saving === row.id}
+                      onClick={() => void testGateway(row.id)}
+                      style={{ fontSize: 9, marginTop: 4, marginLeft: 6 }}
+                    >
+                      test & discover models
+                    </button>
+                  )}
                 </div>
               )}
             </article>

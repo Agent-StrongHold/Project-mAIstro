@@ -142,6 +142,10 @@ _PROTECTED_OPS: dict[str, dict[str, str]] = {
         # Capability discovery + approval resolution (approving a destructive
         # infra action is high-stakes) — gate behind config.write.
         "/v1/capabilities": "config.write",
+        # A credential test can send a draft API key to an operator-supplied
+        # endpoint, so it is the same trust decision as saving the credential;
+        # otherwise an ordinary session would gain an SSRF/probe primitive.
+        "/v1/credentials": "credentials.write",
         # Provider activation uses the LiteLLM master key, mutates the global
         # model registry, and can trigger billed calls (SPEC-072726-3439).
         "/v1/providers": "config.write",
