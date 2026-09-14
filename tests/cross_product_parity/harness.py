@@ -1,16 +1,18 @@
 """Reusable integration contracts for M1 cross-product parity (#459).
 
 This module is test/evidence code only. It deliberately does not emulate a
-product runtime or fill a missing convergence seam. Product scenarios assert
-the exact source-level dependency state before touching a surface that is still
-owned by an active convergence PR. An unavailable scenario is therefore a
-named, evidence-backed state in the suite rather than a test suppression.
+product runtime or fill a missing convergence seam. Producer scenarios execute
+real shipped composition and read canonical state; dependency assessments are
+reserved for independent contracts whose upstream owner is not part of this
+branch. An unavailable contract is therefore a named, evidence-backed state in
+the suite rather than a test suppression.
 """
 
 from __future__ import annotations
 
 import importlib
 import json
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -206,6 +208,22 @@ def dependency_assessment(*dependencies: Dependency) -> DependencyAssessment:
     return assessment
 
 
+def enforce_strict_closeout(assessment: DependencyAssessment) -> None:
+    """Reject blocker-only parity passes when M1 closeout mode is enabled.
+
+    Normal development keeps named blockers visible while independent product
+    convergence lanes land. The closeout invocation sets this environment
+    variable so an unavailable producer/observer scenario is a failed proof,
+    never an accidental pass.
+    """
+    if assessment.ready or os.environ.get("M1_STRICT_CLOSEOUT") != "1":
+        return
+    blockers = " | ".join(assessment.blockers)
+    raise DependencyUnavailable(
+        "M1 strict closeout cannot abstain from a parity scenario: " + blockers
+    )
+
+
 def require_dependencies(*dependencies: Dependency) -> None:
     """Fail loudly if code reaches a dependency-owned public seam too early."""
     assessment = dependency_assessment(*dependencies)
@@ -266,6 +284,30 @@ async def open_durable_profile(db_path: Path, *, workspace_id: str) -> DurableIn
         schedule_store=schedule_store,
         continuation_store=continuation_store,
     )
+
+
+async def canonical_observation(profile: DurableIntegrationProfile, run_id: str) -> dict[str, Any]:
+    """Read one producer result from canonical Run/NodeRun/Attempt state.
+
+    Cross-product closeout must observe the stores the shipped producer used;
+    projection receipts and source text are not execution evidence.
+    """
+    run = await profile.run_store.get_run(run_id)
+    if run is None:
+        raise ParityContractError(f"canonical Run {run_id!r} was not persisted")
+    node_runs = await profile.run_store.list_node_runs(run_id)
+    attempts: list[Any] = []
+    for node_run in node_runs:
+        attempts.extend(await profile.run_store.list_attempts(node_run.node_run_id))
+    return {
+        "workspace_id": run.workspace_id,
+        "project_id": run.project_id,
+        "graph_id": run.graph.graph_id,
+        "run_id": run.run_id,
+        "status": run.status.value,
+        "node_run_ids": [node_run.node_run_id for node_run in node_runs],
+        "attempt_ids": [attempt.attempt_id for attempt in attempts],
+    }
 
 
 _SHARED_ID_FIELDS: Final = (

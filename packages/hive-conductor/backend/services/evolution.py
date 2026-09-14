@@ -16,10 +16,10 @@ from maistro.runs.model import RunStatus
 
 logger = logging.getLogger(__name__)
 
-_service: _EvolutionService | None = None
+_service: EvolutionService | None = None
 
 
-def get_evolution_service() -> _EvolutionService:
+def get_evolution_service() -> EvolutionService:
     if _service is None:
         raise RuntimeError("EvolutionService not started")
     return _service
@@ -27,7 +27,7 @@ def get_evolution_service() -> _EvolutionService:
 
 async def start_evolution() -> None:
     global _service
-    _service = _EvolutionService()
+    _service = EvolutionService()
     # Keep a reference to the background task so it isn't garbage-collected mid-flight.
     _service.task = asyncio.ensure_future(_service.run_loop())
 
@@ -39,7 +39,7 @@ async def stop_evolution() -> None:
         _service = None
 
 
-class _EvolutionService:
+class EvolutionService:
     def __init__(self) -> None:
         self._running = True
         self._population: Any = None
@@ -84,12 +84,40 @@ class _EvolutionService:
             if not self._running:
                 break
             try:
-                await self._run_one_cycle()
+                await self.run_cycle()
             except Exception as exc:
                 self._last_cycle_error = str(exc)
                 logger.warning("Evolution cycle failed: %s", exc)
 
-    async def _run_one_cycle(self, *, actor_principal_id: str | None = None) -> str:
+    async def run_cycle(
+        self,
+        *,
+        actor_principal_id: str | None = None,
+        config: Any | None = None,
+        harness: Any | None = None,
+        llm_call: Any = None,
+    ) -> str:
+        """Run one product cycle through the canonical execution composition.
+
+        The loop uses this same entry point after its cadence elapses. Optional
+        arguments make a deterministic operator/test invocation possible
+        without replacing the production Run/NodeRun/Attempt path.
+        """
+        return await self._run_one_cycle(
+            actor_principal_id=actor_principal_id,
+            config=config,
+            harness=harness,
+            llm_call=llm_call,
+        )
+
+    async def _run_one_cycle(
+        self,
+        *,
+        actor_principal_id: str | None = None,
+        config: Any | None = None,
+        harness: Any | None = None,
+        llm_call: Any = None,
+    ) -> str:
         from maistro_evolve.cycle import EvolutionConfig
         from maistro_evolve.harness import EvalHarness
         from services.evolution_graph import run_canonical_evolution_cycle
@@ -97,17 +125,17 @@ class _EvolutionService:
         if self._population is None or self._tournament is None:
             raise RuntimeError("Evolution population is not initialized")
 
-        config = EvolutionConfig(
+        config = config or EvolutionConfig(
             self_improve=True,
             self_improve_top_n=3,
         )
-        harness = EvalHarness(benchmark_fidelity="proxy")
+        harness = harness or EvalHarness(benchmark_fidelity="proxy")
         record = await run_canonical_evolution_cycle(
             population=self._population,
             tournament=self._tournament,
             config=config,
             harness=harness,
-            llm_call=self._build_llm_call(),
+            llm_call=llm_call if llm_call is not None else self._build_llm_call(),
             actor_principal_id=actor_principal_id,
             cycle_number=self._cycle_count + 1,
         )
@@ -172,3 +200,9 @@ class _EvolutionService:
             "last_run_id": self._last_run_id,
             "tournament": tournament_stats,
         }
+
+
+# Keep the old test/import seam while exposing the product service composition.
+_EvolutionService = EvolutionService
+
+__all__ = ["EvolutionService", "get_evolution_service", "start_evolution", "stop_evolution"]
