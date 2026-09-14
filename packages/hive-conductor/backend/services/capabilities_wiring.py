@@ -14,9 +14,13 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
+from maistro.capabilities.binding import Binding
+from maistro.capabilities.effect_context import CapabilityEffectContext, new_effect_context
 from maistro.capabilities.http_client import HttpxAsyncHttp
 from maistro.capabilities.providers.host_health import HostHealthAction, HostHealthMonitor
 from maistro.capabilities.providers.self_repair import RuleBasedRepair
+from maistro.capabilities.slots.infra import ActionResult, InfraAction
+from maistro.capabilities.types import Unavailable
 
 if TYPE_CHECKING:
     from config import Settings
@@ -42,9 +46,15 @@ def wire_capabilities(
     settings_model: SettingsModel,
     config: Settings,
     vault: _VaultLike | None = None,
+    effect_context: CapabilityEffectContext | None = None,
 ) -> None:
     """Register host-health providers (if configured) then apply activation."""
-    _register_host_health(registry, config, vault)
+    _register_host_health(
+        registry,
+        config,
+        vault,
+        effect_context=effect_context or new_effect_context(),
+    )
     _apply_activation(registry, settings_model)
 
 
@@ -61,7 +71,11 @@ def _resolve_token(config: Settings, vault: _VaultLike | None) -> str | None:
 
 
 def _register_host_health(
-    registry: CapabilityRegistry, config: Settings, vault: _VaultLike | None
+    registry: CapabilityRegistry,
+    config: Settings,
+    vault: _VaultLike | None,
+    *,
+    effect_context: CapabilityEffectContext,
 ) -> None:
     url = (config.host_health_url or "").strip()
     if not url:
@@ -73,23 +87,91 @@ def _register_host_health(
     registry.register(HostHealthMonitor(http))
     registry.register(HostHealthAction(http, autonomy=config.infra_autonomy, approval=inbox))
     logger.info("registered host-health infra providers -> %s", url)
-    _register_self_repair(registry, config)
+    _register_self_repair(registry, config, effect_context)
 
 
-def _register_self_repair(registry: CapabilityRegistry, config: Settings) -> None:
-    """Register the self_repair provider once infra_monitor/infra_action exist (SPEC-188)."""
+def _register_self_repair(
+    registry: CapabilityRegistry,
+    config: Settings,
+    effect_context: CapabilityEffectContext,
+) -> None:
+    """Register self_repair with decision-time infra_action admission (SPEC-188/#846)."""
     monitor = registry.provider("infra_monitor", "host_health")
-    action = registry.provider("infra_action", "host_health")
-    if monitor is None or action is None:
+    if monitor is None:
         return
+
+    async def resolve_action() -> InfraAction | None:
+        provider = await registry.resolve("infra_action")
+        return provider if isinstance(provider, InfraAction) else None
+
+    binding = Binding(
+        binding_id="builtin:self-repair:infra-action",
+        workspace_id="default",
+        project_id="default",
+        node_id="self-repair",
+        capability="infra_action",
+    )
+
+    async def invoke_action(action: str, params: dict[str, Any], effect_key: str) -> ActionResult:
+        await effect_context.bindings.put(binding)
+
+        async def resolver(candidate: Binding) -> InfraAction | Unavailable:
+            try:
+                authorized = await effect_context.bindings.resolve(
+                    candidate.binding_id,
+                    workspace_id="default",
+                    project_id="default",
+                    node_id="self-repair",
+                    capability="infra_action",
+                )
+            except Exception:
+                return Unavailable(slot="infra_action", reason="self_repair binding unavailable")
+            if authorized.binding_id != binding.binding_id:
+                return Unavailable(slot="infra_action", reason="invalid self_repair binding")
+            provider = await resolve_action()
+            return provider or Unavailable(slot="infra_action", reason="infra_action unavailable")
+
+        async def executor(provider: Any, request: Any) -> dict[str, Any]:
+            if not isinstance(provider, InfraAction):
+                raise TypeError("infra_action Invocation resolved a non-action provider")
+            payload = dict(request)
+            result = await provider.act(str(payload["action"]), dict(payload.get("params") or {}))
+            return {
+                "ok": result.ok,
+                "detail": result.detail,
+                "blocked_pending_approval": result.blocked_pending_approval,
+            }
+
+        invocation = await effect_context.invocations.invoke(
+            binding=binding,
+            run_id="self-repair",
+            node_run_id="self-repair",
+            attempt_id=effect_key,
+            effect_key=effect_key,
+            request={"action": action, "params": params},
+            resolver=resolver,
+            executor=executor,
+        )
+        if not isinstance(invocation.result, dict):
+            return ActionResult(ok=False, detail="infra_action Invocation returned no result")
+        return ActionResult(
+            ok=bool(invocation.result.get("ok")),
+            detail=str(invocation.result.get("detail") or ""),
+            blocked_pending_approval=bool(invocation.result.get("blocked_pending_approval")),
+        )
+
     registry.register(
         RuleBasedRepair(
             infra_monitor=monitor,
-            infra_action=action,
+            infra_action_resolver=resolve_action,
+            effect_invoker=invoke_action,
             autonomy=config.infra_autonomy,
         )
     )
-    logger.info("registered self_repair provider (autonomy=%s)", config.infra_autonomy)
+    logger.info(
+        "registered self_repair provider (Invocation-governed, autonomy=%s)",
+        config.infra_autonomy,
+    )
 
 
 async def run_self_repair_once(registry: CapabilityRegistry) -> Any | None:

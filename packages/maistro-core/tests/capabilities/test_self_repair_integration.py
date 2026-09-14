@@ -53,7 +53,9 @@ async def test_remediation_blocks_until_approved_then_hits_host() -> None:
     http = HttpxAsyncHttp("http://h:8150", transport=httpx.MockTransport(handler))
     inbox = InboxApproval()
     action = HostHealthAction(http, autonomy="approve_all", approval=inbox)
-    repair = RuleBasedRepair(infra_monitor=_Monitor(), infra_action=action, autonomy="approve_all")
+    repair = RuleBasedRepair(
+        infra_monitor=_Monitor(), infra_action_resolver=lambda: action, autonomy="approve_all"
+    )
 
     cycle = await repair.run_once()
     (r,) = cycle.results
@@ -82,7 +84,9 @@ async def test_denied_remediation_never_hits_host() -> None:
     )
     inbox = InboxApproval()
     action = HostHealthAction(http, autonomy="approve_all", approval=inbox)
-    repair = RuleBasedRepair(infra_monitor=_Monitor(), infra_action=action, autonomy="approve_all")
+    repair = RuleBasedRepair(
+        infra_monitor=_Monitor(), infra_action_resolver=lambda: action, autonomy="approve_all"
+    )
 
     await repair.run_once()
     await asyncio.sleep(0)

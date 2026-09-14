@@ -5,10 +5,17 @@ from __future__ import annotations
 from config import Settings
 from models.schemas import CapabilitySetting, SettingsModel
 from pydantic import SecretStr
-from services.capabilities_wiring import wire_capabilities
+from services.capabilities_wiring import _register_self_repair, wire_capabilities
 
 from maistro.capabilities.bootstrap import default_capability_registry
-from maistro.capabilities.slots.infra import InfraAction
+from maistro.capabilities.effect_context import new_effect_context
+from maistro.capabilities.slots.infra import (
+    ActionResult,
+    InfraAction,
+    InfraHealth,
+    ResourceHealth,
+)
+from maistro.capabilities.types import ProviderHealth
 
 
 class _FakeVault:
@@ -130,6 +137,69 @@ def test_no_self_repair_without_infra() -> None:
         reg, settings_model=SettingsModel(), config=_cfg(host_health_url=None), vault=None
     )
     assert reg.installed("self_repair") == []
+
+
+class _WiringMonitor:
+    name = "host_health"
+    slot = "infra_monitor"
+    trust_tier = "t0"
+
+    def requires(self) -> tuple[str, ...]:
+        return ()
+
+    async def healthcheck(self) -> ProviderHealth:
+        return ProviderHealth(healthy=True)
+
+    async def snapshot(self) -> InfraHealth:
+        return InfraHealth(
+            ts="t",
+            resources={
+                "docker": ResourceHealth(
+                    "degraded", {"containers": [{"name": "litellm", "state": "unhealthy"}]}
+                )
+            },
+        )
+
+
+class _WiringAction:
+    name = "host_health"
+    slot = "infra_action"
+    trust_tier = "t0"
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+
+    def requires(self) -> tuple[str, ...]:
+        return ()
+
+    async def healthcheck(self) -> ProviderHealth:
+        return ProviderHealth(healthy=True)
+
+    def allowed_actions(self) -> tuple[str, ...]:
+        return ("restart_container",)
+
+    async def act(self, action: str, params: dict) -> ActionResult:
+        self.calls.append((action, params))
+        return ActionResult(ok=True, detail="done")
+
+
+async def test_self_repair_wiring_uses_canonical_invocation() -> None:
+    reg = default_capability_registry(entry_points=[])
+    action = _WiringAction()
+    reg.register(_WiringMonitor())
+    reg.register(action)
+    effects = new_effect_context()
+
+    _register_self_repair(reg, _cfg(), effects)
+    repair = reg.provider("self_repair", "rule_based_repair")
+    assert repair is not None
+    cycle = await repair.run_once()
+
+    assert cycle.acted and action.calls == [("restart_container", {"name": "litellm"})]
+    records = list(effects.invocation_store._items.values())
+    assert len(records) == 1
+    assert records[0].status.value == "completed"
+    assert records[0].binding.binding_id == "builtin:self-repair:infra-action"
 
 
 class _FakeSelfRepair:

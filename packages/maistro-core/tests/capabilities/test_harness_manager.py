@@ -131,6 +131,35 @@ async def test_send_and_stream_unknown_session():
     assert [e async for e in mgr.stream("nope")] == []
 
 
+async def test_disable_after_start_re_resolves_without_provider_call():
+    harness = _FakeHarness()
+    registry = _registry_with(harness)
+    mgr = HarnessSessionManager(registry, warden=_StubWarden())
+    sid = await mgr.start(_spec(), workdir="/w")
+    assert isinstance(sid, str)
+    registry.set_enabled(SLOT_NAME, False)
+
+    result = await mgr.send(sid, [{"role": "user", "content": "later"}])
+
+    assert isinstance(result, Unavailable)
+    assert harness.sent == []
+
+
+class _BrokenGate:
+    async def allow(self, action: dict[str, Any]) -> bool:
+        raise RuntimeError("policy store unavailable")
+
+
+async def test_policy_failure_denies_actions_without_allow_all_fallback():
+    from maistro.capabilities.providers.harness_safety import SafeHarnessRunner
+
+    harness = _FakeHarness(actions=[{"tool": "write"}])
+    safe = SafeHarnessRunner(harness, warden=_StubWarden(), gate=_BrokenGate())
+    response = await safe.send("s", [{"role": "user", "content": "clean"}])
+
+    assert response["actions"] == []
+
+
 async def test_policy_engine_gates_actions_per_session():
     harness = _FakeHarness(actions=[{"tool": "rm"}, {"tool": "ls"}])
     policy = SequencePolicyEngine([AfterCountRule("rm", threshold=0)])
@@ -197,7 +226,11 @@ async def test_send_invocation_preserves_safety_and_canonical_correlation():
 
 async def test_cached_invocation_does_not_reemit_previously_gated_actions():
     harness = _FakeHarness(actions=[{"tool": "write", "path": "result.txt"}])
-    mgr = HarnessSessionManager(_registry_with(harness), warden=_StubWarden())
+    mgr = HarnessSessionManager(
+        _registry_with(harness),
+        warden=_StubWarden(),
+        policy=SequencePolicyEngine([]),
+    )
     sid = await mgr.start(_spec(), workdir="/w")
     assert isinstance(sid, str)
 

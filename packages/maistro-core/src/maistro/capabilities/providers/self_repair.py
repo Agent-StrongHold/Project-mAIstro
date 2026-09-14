@@ -15,12 +15,21 @@ The in-flight guard keeps a pending resource from being re-dispatched next cycle
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
-from typing import TYPE_CHECKING, Any, Literal
+from collections.abc import Awaitable, Callable
+from typing import Any, Literal
 
 from maistro.capabilities.self_repair_governor import SafetyGovernor
 from maistro.capabilities.self_repair_rules import diagnose
-from maistro.capabilities.slots.infra import ActionTier, tier_for
+from maistro.capabilities.slots.infra import (
+    ActionResult,
+    ActionTier,
+    InfraAction,
+    InfraHealth,
+    InfraMonitor,
+    tier_for,
+)
 from maistro.capabilities.slots.self_repair import (
     RepairCycleResult,
     RepairDecision,
@@ -29,28 +38,36 @@ from maistro.capabilities.slots.self_repair import (
 )
 from maistro.capabilities.types import ProviderHealth
 
-if TYPE_CHECKING:
-    from maistro.capabilities.slots.infra import InfraAction, InfraHealth, InfraMonitor
-
 logger = logging.getLogger("maistro.capabilities.self_repair")
 
 Autonomy = Literal["approve_all", "auto_safe", "detect_only"]
 
 
+InfraActionResolver = Callable[[], InfraAction | Awaitable[InfraAction | None] | None]
+InfraEffectInvoker = Callable[[str, dict[str, Any], str], Awaitable[ActionResult]]
+
+
 class RuleBasedRepair:
-    """Baseline self_repair provider — rule-table diagnosis + safety governor."""
+    """Baseline self_repair provider — rule-table diagnosis + safety governor.
+
+    The action is obtained through a resolver at dispatch time. Production
+    wiring supplies an Invocation-backed invoker, so this actor never retains
+    a provider instance whose capability may later be disabled.
+    """
 
     def __init__(
         self,
         *,
         infra_monitor: InfraMonitor | None,
-        infra_action: InfraAction | None,
+        infra_action_resolver: InfraActionResolver | None,
+        effect_invoker: InfraEffectInvoker | None = None,
         governor: SafetyGovernor | None = None,
         autonomy: Autonomy = "auto_safe",
         max_actions_per_cycle: int = 2,
     ) -> None:
         self._monitor = infra_monitor
-        self._action = infra_action
+        self._action_resolver = infra_action_resolver
+        self._effect_invoker = effect_invoker
         self._governor = governor or SafetyGovernor()
         self._autonomy = autonomy
         self._max_actions = max_actions_per_cycle
@@ -124,7 +141,7 @@ class RuleBasedRepair:
             return RepairResult(
                 proposal, RepairDecision.PROPOSE_ONLY, "escalated for human review"
             ), False
-        if self._autonomy == "detect_only" or self._action is None:
+        if self._autonomy == "detect_only" or self._action_resolver is None:
             detail = (
                 "autonomy=detect_only" if self._autonomy == "detect_only" else "no infra_action"
             )
@@ -158,7 +175,7 @@ class RuleBasedRepair:
         decision = RepairDecision.FAILED
         detail = ""
         try:
-            result = await self._action.act(proposal.action or "", proposal.params)  # type: ignore[union-attr]
+            result = await self._invoke_action(proposal)
             recovered = bool(result.ok)
             decision = RepairDecision.ACTED if recovered else RepairDecision.FAILED
             detail = result.detail or ("dispatched" if recovered else "action failed")
@@ -169,13 +186,12 @@ class RuleBasedRepair:
 
     def _dispatch_async(self, proposal: RepairProposal) -> None:
         action = proposal.action or ""
-        params = proposal.params
         resource = proposal.resource
 
         async def _run() -> None:
             recovered = False
             try:
-                result = await self._action.act(action, params)  # type: ignore[union-attr]
+                result = await self._invoke_action(proposal)
                 recovered = bool(result.ok)
             except Exception as exc:
                 logger.warning("self_repair: action %s on %s failed: %s", action, resource, exc)
@@ -185,3 +201,27 @@ class RuleBasedRepair:
         task = asyncio.ensure_future(_run())
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+
+    async def _resolve_action(self) -> InfraAction | None:
+        if self._action_resolver is None:
+            return None
+        resolved = self._action_resolver()
+        if inspect.isawaitable(resolved):
+            resolved = await resolved
+        return resolved
+
+    async def _invoke_action(self, proposal: RepairProposal) -> ActionResult:
+        """Resolve and admit one action at the physical effect boundary."""
+        action = proposal.action or ""
+        if self._effect_invoker is not None:
+            return await self._effect_invoker(
+                action,
+                proposal.params,
+                f"self_repair:{proposal.resource}:{action}:{id(proposal)}",
+            )
+        provider = await self._resolve_action()
+        if provider is None:
+            from maistro.capabilities.slots.infra import ActionResult
+
+            return ActionResult(ok=False, detail="infra_action unavailable")
+        return await provider.act(action, proposal.params)

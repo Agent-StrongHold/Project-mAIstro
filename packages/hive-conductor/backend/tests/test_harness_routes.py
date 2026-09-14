@@ -17,6 +17,7 @@ from maistro.security._types import WardenVerdict
 class _FakeHarness:
     def __init__(self, *, healthy: bool = True) -> None:
         self._healthy = healthy
+        self.sent: list[list[dict[str, Any]]] = []
 
     @property
     def name(self) -> str:
@@ -40,6 +41,7 @@ class _FakeHarness:
         return "sess-http"
 
     async def send(self, session_id: str, messages: list[dict[str, Any]]) -> dict[str, Any]:
+        self.sent.append(messages)
         return {"role": "assistant", "content": "pong", "actions": []}
 
     async def stream(self, session_id: str) -> AsyncIterator[dict[str, Any]]:
@@ -59,12 +61,14 @@ class _StubWarden:
         return WardenVerdict(clean=True)
 
 
-def _install_harness(*, warden: Any, healthy: bool = True, enabled: bool = True) -> None:
+def _install_harness(*, warden: Any, healthy: bool = True, enabled: bool = True) -> Any:
     reg = get_engine().capabilities
-    reg.register(_FakeHarness(healthy=healthy))
+    harness = _FakeHarness(healthy=healthy)
+    reg.register(harness)
     reg.activate(SLOT_NAME, "fake")
     reg.set_enabled(SLOT_NAME, enabled)
     harness_mod._manager = HarnessSessionManager(reg, warden=warden)
+    return reg, harness
 
 
 def test_start_returns_503_when_no_active_harness(admin_client):
@@ -105,6 +109,20 @@ def test_full_session_lifecycle(admin_client):
 
     r = admin_client.delete(f"/v1/harness/sessions/{sid}")
     assert r.status_code == 200 and r.json()["stopped"] is True
+
+
+def test_disable_after_route_session_start_makes_send_unavailable(admin_client):
+    reg, harness = _install_harness(warden=_StubWarden())
+    r = admin_client.post("/v1/harness/sessions", json={"description": "x"})
+    assert r.status_code == 200, r.text
+    sid = r.json()["session_id"]
+    reg.set_enabled(SLOT_NAME, False)
+
+    r = admin_client.post(f"/v1/harness/sessions/{sid}/send", json={"messages": []})
+
+    assert r.status_code == 503
+    assert harness.sent == []
+    reg.set_enabled(SLOT_NAME, True)
 
 
 def test_send_unknown_session_returns_404(admin_client):

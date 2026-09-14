@@ -20,7 +20,10 @@ from services.engine import get_engine
 
 from maistro.agents.spec.agent_spec import AgentRole, AgentSpec
 from maistro.capabilities import HarnessSessionManager, Unavailable
+from maistro.capabilities.binding import Binding
+from maistro.capabilities.effect_context import new_effect_context
 from maistro.capabilities.slots.harness_runner import HarnessInputBlocked
+from maistro.policy import BudgetRule, SequencePolicyEngine
 from maistro.security.warden.detector import Warden
 
 router = APIRouter(tags=["harness"])
@@ -28,11 +31,33 @@ router = APIRouter(tags=["harness"])
 _manager: HarnessSessionManager | None = None
 
 
+def _configured_harness_policy() -> SequencePolicyEngine:
+    """Build the explicit route policy; absent configuration is read-only.
+
+    The route must never construct a manager without a policy. Until a
+    deployment supplies a richer harness policy, this bounded policy denies
+    outbound actions while still allowing session lifecycle and conversation.
+    """
+    return SequencePolicyEngine([BudgetRule(dimension="count", limit=0)])
+
+
 def _get_manager() -> HarnessSessionManager:
     """Lazily build a process-wide manager over the engine registry + Warden."""
     global _manager
     if _manager is None:
-        _manager = HarnessSessionManager(get_engine().capabilities, warden=Warden())
+        effects = new_effect_context()
+        _manager = HarnessSessionManager(
+            get_engine().capabilities,
+            warden=Warden(),
+            policy=_configured_harness_policy(),
+            invocation_service=effects.invocations,
+            invocation_binding=Binding(
+                binding_id="builtin:harness-route",
+                workspace_id="default",
+                project_id="default",
+                capability="harness_runner",
+            ),
+        )
     return _manager
 
 
@@ -80,7 +105,8 @@ async def send_turn(session_id: str, body: SendBody) -> dict[str, Any]:
             status_code=400, detail=f"blocked by warden: {', '.join(exc.flags)}"
         ) from exc
     if isinstance(result, Unavailable):
-        raise HTTPException(status_code=404, detail=result.reason)
+        status = 404 if result.reason.startswith("unknown harness session") else 503
+        raise HTTPException(status_code=status, detail=result.reason)
     return result
 
 
