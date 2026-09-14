@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from maistro.capabilities.approval_store import (
@@ -14,13 +15,16 @@ from maistro.capabilities.approval_store import (
     approval_request_digest,
     redact_approval_value,
 )
-from maistro.capabilities.binding import Binding
+from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import (
     Invocation,
     InvocationExecutionService,
     InvocationStatus,
+    InvocationUsage,
     ProviderExecutor,
+    ProviderReconciliationAdapter,
     ProviderResolver,
+    ReconciliationDisposition,
     UsageExtractor,
 )
 from maistro.capabilities.slots.approval import ApprovalRequest
@@ -73,9 +77,9 @@ class GovernedInvocationExecutionService:
     REQUIRE_APPROVAL is keyed to the logical effect so a later Attempt reuses
     the same durable human decision rather than manufacturing another request.
 
-    Unreached in production, like the service it wraps: no policy verdict
-    recorded here has ever gated a live provider call, and no approval this
-    would key has ever been requested of a human (#55).
+    The container composes this wrapper for canonical effect consumers. Policy
+    events and approvals remain governed side effects; neither path may bypass
+    the Invocation service or its effect identity.
     """
 
     def __init__(
@@ -106,6 +110,79 @@ class GovernedInvocationExecutionService:
             run_id=run_id,
             node_run_id=node_run_id,
             effect_key=effect_key,
+        )
+
+    async def discover_ambiguous(self, *, stale_before: datetime) -> list[Invocation]:
+        """Expose stale-effect discovery through the governed composition root."""
+
+        return await self._invocations.discover_ambiguous(stale_before=stale_before)
+
+    async def reconcile(
+        self,
+        invocation_id: str,
+        *,
+        disposition: ReconciliationDisposition,
+        source: str,
+        actor: str,
+        reason: str,
+        evidence: Any | None,
+        workspace_id: str,
+        project_id: str,
+        result: Any | None = None,
+        stale_before: datetime | None = None,
+        usage: InvocationUsage | None = None,
+    ) -> Invocation:
+        """Resolve evidence without creating a provider-dispatch bypass."""
+
+        settled = await self._invocations.reconcile(
+            invocation_id,
+            disposition=disposition,
+            source=source,
+            actor=actor,
+            reason=reason,
+            evidence=evidence,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            result=result,
+            stale_before=stale_before,
+            usage=usage,
+        )
+        await self._append_reconciliation_event(settled)
+        return settled
+
+    async def reconcile_with_provider(
+        self,
+        invocation_id: str,
+        adapter: ProviderReconciliationAdapter,
+        *,
+        stale_before: datetime | None = None,
+    ) -> Invocation:
+        """Delegate provider evidence while retaining Invocation authority."""
+
+        settled = await self._invocations.reconcile_with_provider(
+            invocation_id, adapter, stale_before=stale_before
+        )
+        await self._append_reconciliation_event(settled)
+        return settled
+
+    async def _append_reconciliation_event(self, invocation: Invocation) -> None:
+        """Announce a reconciled terminal state on the event stream (#1118 review).
+
+        Consumers that saw `capability.invocation.unknown` (or nothing, after a
+        process death) would otherwise never learn the canonical row settled.
+        The event id carries the status, so an already-announced state is a
+        no-op and a reconciliation that left the row UNKNOWN announces nothing
+        new.
+        """
+        if invocation.status not in {InvocationStatus.COMPLETED, InvocationStatus.FAILED}:
+            return
+        await self._append_terminal_event(
+            invocation,
+            binding=invocation.binding,
+            causation_id=(
+                f"capability-reconciliation-{invocation.invocation_id}-"
+                f"{len(invocation.reconciliation_history)}"
+            ),
         )
 
     async def invoke(
@@ -462,7 +539,7 @@ class GovernedInvocationExecutionService:
         self,
         invocation: Invocation,
         *,
-        binding: Binding,
+        binding: Binding | ResolvedBinding,
         causation_id: str,
     ) -> None:
         """Append one idempotent terminal audit fact for a persisted Invocation."""

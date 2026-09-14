@@ -82,6 +82,8 @@ class ResolvedBinding(BaseModel):
     capability: str
     provider_name: str
     provider_trust_tier: str
+    workspace_id: str = ""
+    project_id: str = ""
     config: dict[str, Any] = Field(default_factory=dict)
     credential_refs: tuple[str, ...] = ()
     policy_refs: tuple[str, ...] = ()
@@ -117,6 +119,8 @@ class ResolvedBinding(BaseModel):
             capability=binding.capability,
             provider_name=provider.name,
             provider_trust_tier=provider.trust_tier,
+            workspace_id=binding.workspace_id,
+            project_id=binding.project_id,
             config=binding.config,
             credential_refs=binding.credential_refs,
             policy_refs=binding.policy_refs,

@@ -1,0 +1,881 @@
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+import aiosqlite
+import pytest
+
+from maistro.capabilities.binding import Binding, ResolvedBinding
+from maistro.capabilities.effect_context import new_in_memory_effect_context
+from maistro.capabilities.invocation import (
+    EffectNotApplied,
+    InMemoryInvocationStore,
+    Invocation,
+    InvocationExecutionService,
+    InvocationReconciliationEvidence,
+    InvocationStatus,
+    InvocationStore,
+    InvocationUsage,
+    ReconciliationDisposition,
+    UnsafeEffectRetry,
+)
+from maistro.capabilities.invocation_store import SqliteInvocationStore
+
+
+@dataclass(frozen=True)
+class _Provider:
+    name: str = "provider-a"
+    slot: str = "external_write"
+    trust_tier: str = "trusted"
+
+
+class _ProcessDeath(BaseException):
+    pass
+
+
+class _CrashOnCompletedSave(InMemoryInvocationStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.crash_on_completed = True
+
+    async def save(self, invocation: Invocation) -> Invocation:
+        if self.crash_on_completed and invocation.status is InvocationStatus.COMPLETED:
+            raise _ProcessDeath("process died after the provider committed")
+        return await super().save(invocation)
+
+
+@dataclass(frozen=True)
+class _Report:
+    report: InvocationReconciliationEvidence
+
+    async def reconcile(self, _invocation: Invocation) -> InvocationReconciliationEvidence:
+        return self.report
+
+
+def _binding() -> Binding:
+    return Binding(
+        binding_id="binding-1",
+        workspace_id="workspace-1",
+        project_id="project-1",
+        capability="external_write",
+    )
+
+
+async def _resolver(_binding: Binding) -> _Provider:
+    return _Provider()
+
+
+@pytest.mark.asyncio
+async def test_crash_after_provider_success_is_discoverable_and_settles_applied() -> None:
+    store = _CrashOnCompletedSave()
+    service = InvocationExecutionService(store=store)
+    calls = 0
+
+    async def execute(_provider: Any, request: Any) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        return {"remote_id": request["id"]}
+
+    with pytest.raises(_ProcessDeath):
+        await service.invoke(
+            binding=_binding(),
+            run_id="run-1",
+            node_run_id="node-run-1",
+            attempt_id="attempt-1",
+            effect_key="write:1",
+            request={"id": "remote-1"},
+            resolver=_resolver,
+            executor=execute,
+        )
+
+    history = await store.list_effect(
+        run_id="run-1",
+        node_run_id="node-run-1",
+        binding_id="binding-1",
+        effect_key="write:1",
+    )
+    assert history[0].status is InvocationStatus.RUNNING
+    stale = await service.discover_ambiguous(stale_before=datetime.now(UTC) + timedelta(seconds=1))
+    assert [item.invocation_id for item in stale] == [history[0].invocation_id]
+
+    store.crash_on_completed = False
+    settled = await service.reconcile(
+        history[0].invocation_id,
+        disposition=ReconciliationDisposition.APPLIED,
+        source="operator",
+        actor="operator-1",
+        reason="provider receipt matched remote-1",
+        evidence={"receipt": "receipt-1"},
+        result={"remote_id": "remote-1"},
+        workspace_id="workspace-1",
+        project_id="project-1",
+        stale_before=datetime.now(UTC),
+    )
+    assert settled.status is InvocationStatus.COMPLETED
+    audit = settled.reconciliation_history[-1]
+    assert audit.actor == "operator-1"
+    assert audit.reason == "provider receipt matched remote-1"
+    assert (audit.workspace_id, audit.project_id) == ("workspace-1", "project-1")
+    assert (audit.run_id, audit.node_run_id, audit.attempt_id) == (
+        "run-1",
+        "node-run-1",
+        "attempt-1",
+    )
+
+    replay = await service.invoke(
+        binding=_binding(),
+        run_id="run-1",
+        node_run_id="node-run-1",
+        attempt_id="attempt-2",
+        effect_key="write:1",
+        request={"id": "remote-1"},
+        resolver=_resolver,
+        executor=execute,
+    )
+    assert replay.result == {"remote_id": "remote-1"}
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_cannot_release_a_live_dispatch() -> None:
+    store = InMemoryInvocationStore()
+    service = InvocationExecutionService(store=store)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def still_running(_provider: Any, _request: Any) -> str:
+        nonlocal calls
+        calls += 1
+        started.set()
+        await release.wait()
+        return "committed"
+
+    task = asyncio.create_task(
+        service.invoke(
+            binding=_binding(),
+            run_id="run-live",
+            node_run_id="node-live",
+            attempt_id="attempt-1",
+            effect_key="write:live",
+            request={"id": "remote-live"},
+            resolver=_resolver,
+            executor=still_running,
+        )
+    )
+    await started.wait()
+    running = (
+        await store.list_effect(
+            run_id="run-live",
+            node_run_id="node-live",
+            binding_id="binding-1",
+            effect_key="write:live",
+        )
+    )[0]
+    with pytest.raises(UnsafeEffectRetry, match="still being dispatched"):
+        await InvocationExecutionService(store=store).reconcile(
+            running.invocation_id,
+            disposition=ReconciliationDisposition.NOT_APPLIED,
+            source="operator",
+            actor="operator-1",
+            reason="premature absence check",
+            evidence={"receipt": "absent"},
+            workspace_id="workspace-1",
+            project_id="project-1",
+            stale_before=datetime.now(UTC) + timedelta(seconds=1),
+        )
+    release.set()
+    completed = await task
+    assert completed.status is InvocationStatus.COMPLETED
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_sqlite_reopen_keeps_ambiguous_evidence_reconciliation(tmp_path: Path) -> None:
+    db_path = tmp_path / "invocations.db"
+    async with aiosqlite.connect(db_path) as conn:
+        store = SqliteInvocationStore(conn)
+        await store.ensure_schema()
+        service = InvocationExecutionService(store=store)
+
+        async def provider_committed(_provider: Any, _request: Any) -> dict[str, str]:
+            raise _ProcessDeath("provider committed before process death")
+
+        with pytest.raises(_ProcessDeath):
+            await service.invoke(
+                binding=_binding(),
+                run_id="run-sqlite",
+                node_run_id="node-sqlite",
+                attempt_id="attempt-1",
+                effect_key="write:sqlite",
+                request={"id": "remote-sqlite"},
+                resolver=_resolver,
+                executor=provider_committed,
+            )
+        running = (
+            await store.list_effect(
+                run_id="run-sqlite",
+                node_run_id="node-sqlite",
+                binding_id="binding-1",
+                effect_key="write:sqlite",
+            )
+        )[0]
+
+    async with aiosqlite.connect(db_path) as conn:
+        reopened = SqliteInvocationStore(conn)
+        await reopened.ensure_schema()
+        service = InvocationExecutionService(store=reopened)
+        assert [
+            item.invocation_id
+            for item in await service.discover_ambiguous(
+                stale_before=datetime.now(UTC) + timedelta(seconds=1)
+            )
+        ] == [running.invocation_id]
+        settled = await service.reconcile(
+            running.invocation_id,
+            disposition=ReconciliationDisposition.APPLIED,
+            source="provider-status",
+            actor="provider-a",
+            reason="remote receipt found after reopen",
+            evidence={"remote_id": "remote-sqlite"},
+            result={"remote_id": "remote-sqlite"},
+            workspace_id="workspace-1",
+            project_id="project-1",
+            stale_before=datetime.now(UTC),
+        )
+        assert settled.status is InvocationStatus.COMPLETED
+
+    async with aiosqlite.connect(db_path) as conn:
+        reopened = SqliteInvocationStore(conn)
+        await reopened.ensure_schema()
+        persisted = await reopened.get(running.invocation_id)
+        assert persisted is not None
+        assert persisted.status is InvocationStatus.COMPLETED
+        assert persisted.reconciliation_history[-1].evidence == {"remote_id": "remote-sqlite"}
+
+
+@pytest.mark.asyncio
+async def test_provider_reconciliation_settles_applied_without_dispatch() -> None:
+    store = InMemoryInvocationStore()
+    service = InvocationExecutionService(store=store)
+    calls = 0
+
+    async def ambiguous(_provider: Any, _request: Any) -> None:
+        nonlocal calls
+        calls += 1
+        raise ConnectionError("transport lost")
+
+    with pytest.raises(ConnectionError):
+        await service.invoke(
+            binding=_binding(),
+            run_id="run-2",
+            node_run_id="node-run-2",
+            attempt_id="attempt-1",
+            effect_key="write:2",
+            request={"id": "remote-2"},
+            resolver=_resolver,
+            executor=ambiguous,
+        )
+    unknown = (
+        await store.list_effect(
+            run_id="run-2",
+            node_run_id="node-run-2",
+            binding_id="binding-1",
+            effect_key="write:2",
+        )
+    )[0]
+
+    settled = await service.reconcile_with_provider(
+        unknown.invocation_id,
+        _Report(
+            InvocationReconciliationEvidence(
+                disposition=ReconciliationDisposition.APPLIED,
+                source="provider-status",
+                actor="provider-a",
+                reason="idempotency lookup found remote-2",
+                evidence={"remote_id": "remote-2"},
+                result={"remote_id": "remote-2"},
+            )
+        ),
+    )
+    assert settled.status is InvocationStatus.COMPLETED
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_is_exposed_by_the_governed_context() -> None:
+    effects = new_in_memory_effect_context()
+    binding = _binding()
+
+    async def ambiguous(_provider: Any, _request: Any) -> None:
+        raise ConnectionError("transport lost")
+
+    with pytest.raises(ConnectionError):
+        await effects.invocations.invoke(
+            binding=binding,
+            run_id="run-governed",
+            node_run_id="node-governed",
+            attempt_id="attempt-1",
+            effect_key="write:governed",
+            request={"id": "remote-governed"},
+            resolver=_resolver,
+            executor=ambiguous,
+        )
+    unknown = await effects.invocations.latest_effect(
+        binding=binding,
+        run_id="run-governed",
+        node_run_id="node-governed",
+        effect_key="write:governed",
+    )
+    assert unknown is not None
+    settled = await effects.invocations.reconcile(
+        unknown.invocation_id,
+        disposition=ReconciliationDisposition.APPLIED,
+        source="provider-status",
+        actor="provider-a",
+        reason="idempotency lookup found remote-governed",
+        evidence={"remote_id": "remote-governed"},
+        result={"remote_id": "remote-governed"},
+        workspace_id="workspace-1",
+        project_id="project-1",
+    )
+    assert settled.status is InvocationStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_not_applied_retry_is_gated_across_two_execution_services() -> None:
+    store = InMemoryInvocationStore()
+    first_service = InvocationExecutionService(store=store)
+
+    async def not_applied(_provider: Any, _request: Any) -> None:
+        raise EffectNotApplied("rejected before dispatch")
+
+    with pytest.raises(EffectNotApplied):
+        await first_service.invoke(
+            binding=_binding(),
+            run_id="run-concurrent",
+            node_run_id="node-concurrent",
+            attempt_id="attempt-1",
+            effect_key="write:concurrent",
+            request={"id": "remote-concurrent"},
+            resolver=_resolver,
+            executor=not_applied,
+        )
+    await first_service.reconcile(
+        (
+            await store.list_effect(
+                run_id="run-concurrent",
+                node_run_id="node-concurrent",
+                binding_id="binding-1",
+                effect_key="write:concurrent",
+            )
+        )[0].invocation_id,
+        disposition=ReconciliationDisposition.NOT_APPLIED,
+        source="operator",
+        actor="operator-1",
+        reason="verified no remote effect",
+        evidence={"receipt": "absent"},
+        workspace_id="workspace-1",
+        project_id="project-1",
+    )
+
+    second_service = InvocationExecutionService(store=store)
+    calls = 0
+
+    async def execute(_provider: Any, _request: Any) -> str:
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0)
+        return "committed"
+
+    results = await asyncio.gather(
+        first_service.invoke(
+            binding=_binding(),
+            run_id="run-concurrent",
+            node_run_id="node-concurrent",
+            attempt_id="attempt-2",
+            effect_key="write:concurrent",
+            request={"id": "remote-concurrent"},
+            resolver=_resolver,
+            executor=execute,
+        ),
+        second_service.invoke(
+            binding=_binding(),
+            run_id="run-concurrent",
+            node_run_id="node-concurrent",
+            attempt_id="attempt-3",
+            effect_key="write:concurrent",
+            request={"id": "remote-concurrent"},
+            resolver=_resolver,
+            executor=execute,
+        ),
+        return_exceptions=True,
+    )
+    assert sum(isinstance(result, UnsafeEffectRetry) for result in results) == 1
+    assert (
+        sum(getattr(result, "status", None) is InvocationStatus.COMPLETED for result in results)
+        == 1
+    )
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_provider_not_applied_is_retryable_but_indeterminate_stays_blocked() -> None:
+    store = InMemoryInvocationStore()
+    service = InvocationExecutionService(store=store)
+    calls = 0
+
+    async def executor(_provider: Any, _request: Any) -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ConnectionError("transport lost")
+        return "committed"
+
+    with pytest.raises(ConnectionError):
+        await service.invoke(
+            binding=_binding(),
+            run_id="run-3",
+            node_run_id="node-run-3",
+            attempt_id="attempt-1",
+            effect_key="write:3",
+            request={"id": "remote-3"},
+            resolver=_resolver,
+            executor=executor,
+        )
+    unknown = (
+        await store.list_effect(
+            run_id="run-3",
+            node_run_id="node-run-3",
+            binding_id="binding-1",
+            effect_key="write:3",
+        )
+    )[0]
+    failed = await service.reconcile_with_provider(
+        unknown.invocation_id,
+        _Report(
+            InvocationReconciliationEvidence(
+                disposition=ReconciliationDisposition.NOT_APPLIED,
+                source="provider-status",
+                actor="provider-a",
+                reason="idempotency lookup found no remote effect",
+                evidence={"lookup": "absent"},
+            )
+        ),
+    )
+    assert failed.status is InvocationStatus.FAILED
+    retry = await service.invoke(
+        binding=_binding(),
+        run_id="run-3",
+        node_run_id="node-run-3",
+        attempt_id="attempt-2",
+        effect_key="write:3",
+        request={"id": "remote-3"},
+        resolver=_resolver,
+        executor=executor,
+    )
+    assert retry.status is InvocationStatus.COMPLETED
+    assert calls == 2
+
+    async def always_unknown(_provider: Any, _request: Any) -> None:
+        raise ConnectionError("transport lost")
+
+    class _IndeterminateAdapter:
+        async def reconcile(self, _invocation: Invocation) -> InvocationReconciliationEvidence:
+            return InvocationReconciliationEvidence(
+                disposition=ReconciliationDisposition.INDETERMINATE,
+                source="provider-status",
+                actor="provider-a",
+                reason="status endpoint unavailable",
+            )
+
+    with pytest.raises(ConnectionError):
+        await service.invoke(
+            binding=_binding(),
+            run_id="run-4",
+            node_run_id="node-run-4",
+            attempt_id="attempt-1",
+            effect_key="write:4",
+            request={"id": "remote-4"},
+            resolver=_resolver,
+            executor=always_unknown,
+        )
+    blocked = (
+        await store.list_effect(
+            run_id="run-4",
+            node_run_id="node-run-4",
+            binding_id="binding-1",
+            effect_key="write:4",
+        )
+    )[0]
+    indeterminate = await service.reconcile_with_provider(
+        blocked.invocation_id,
+        _IndeterminateAdapter(),
+    )
+    assert indeterminate.status is InvocationStatus.UNKNOWN
+    assert (
+        indeterminate.reconciliation_history[-1].disposition
+        is ReconciliationDisposition.INDETERMINATE
+    )
+    with pytest.raises(UnsafeEffectRetry):
+        await service.invoke(
+            binding=_binding(),
+            run_id="run-4",
+            node_run_id="node-run-4",
+            attempt_id="attempt-2",
+            effect_key="write:4",
+            request={"id": "remote-4"},
+            resolver=_resolver,
+            executor=always_unknown,
+        )
+
+
+async def _unknown_invocation(
+    service: InvocationExecutionService,
+    store: InvocationStore,
+    *,
+    run_id: str,
+    effect_key: str,
+) -> Invocation:
+    """Drive one effect to UNKNOWN the way a lost transport does."""
+
+    async def ambiguous(_provider: Any, _request: Any) -> None:
+        raise ConnectionError("transport lost")
+
+    with pytest.raises(ConnectionError):
+        await service.invoke(
+            binding=_binding(),
+            run_id=run_id,
+            node_run_id=f"node-{run_id}",
+            attempt_id="attempt-1",
+            effect_key=effect_key,
+            request={"id": run_id},
+            resolver=_resolver,
+            executor=ambiguous,
+        )
+    (unknown,) = await store.list_effect(
+        run_id=run_id, node_run_id=f"node-{run_id}", binding_id="binding-1", effect_key=effect_key
+    )
+    return unknown
+
+
+@pytest.mark.asyncio
+async def test_reconcile_checks_scope_before_disclosing_a_terminal_invocation() -> None:
+    """A completed Invocation from another Workspace/Project is not returned
+    through the idempotent early return (#1118 review)."""
+    store = InMemoryInvocationStore()
+    service = InvocationExecutionService(store=store)
+    unknown = await _unknown_invocation(
+        service, store, run_id="run-scope", effect_key="write:scope"
+    )
+    settled = await service.reconcile(
+        unknown.invocation_id,
+        disposition=ReconciliationDisposition.APPLIED,
+        source="operator",
+        actor="ops",
+        reason="verified remotely",
+        evidence={"remote_id": "run-scope"},
+        workspace_id="workspace-1",
+        project_id="project-1",
+    )
+    assert settled.status is InvocationStatus.COMPLETED
+
+    with pytest.raises(ValueError, match="scope does not match"):
+        await service.reconcile(
+            unknown.invocation_id,
+            disposition=ReconciliationDisposition.APPLIED,
+            source="operator",
+            actor="ops",
+            reason="verified remotely",
+            evidence={"remote_id": "run-scope"},
+            workspace_id="workspace-other",
+            project_id="project-1",
+        )
+    # The right scope still gets the idempotent answer.
+    again = await service.reconcile(
+        unknown.invocation_id,
+        disposition=ReconciliationDisposition.NOT_APPLIED,
+        source="operator",
+        actor="ops",
+        reason="second look",
+        evidence={"remote_id": None},
+        workspace_id="workspace-1",
+        project_id="project-1",
+    )
+    assert again.status is InvocationStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_provider_lookup_does_not_hold_the_effect_lock() -> None:
+    """A slow provider endpoint must not block unrelated Invocations (#1118 review)."""
+    store = InMemoryInvocationStore()
+    service = InvocationExecutionService(store=store)
+    unknown = await _unknown_invocation(service, store, run_id="run-slow", effect_key="write:slow")
+    unrelated_done = asyncio.Event()
+
+    class _SlowAdapter:
+        async def reconcile(self, _invocation: Invocation) -> InvocationReconciliationEvidence:
+            # While the "provider" is being consulted, an unrelated effect
+            # must still be able to cross the boundary on the same service.
+            async def ok(_provider: Any, _request: Any) -> dict[str, str]:
+                return {"remote_id": "unrelated"}
+
+            await asyncio.wait_for(
+                service.invoke(
+                    binding=_binding(),
+                    run_id="run-unrelated",
+                    node_run_id="node-unrelated",
+                    attempt_id="attempt-1",
+                    effect_key="write:unrelated",
+                    request={"id": "unrelated"},
+                    resolver=_resolver,
+                    executor=ok,
+                ),
+                timeout=2.0,
+            )
+            unrelated_done.set()
+            return InvocationReconciliationEvidence(
+                disposition=ReconciliationDisposition.APPLIED,
+                source="provider-status",
+                actor="provider-a",
+                reason="found remote-slow",
+                evidence={"remote_id": "run-slow"},
+                result={"remote_id": "run-slow"},
+            )
+
+    settled = await service.reconcile_with_provider(unknown.invocation_id, _SlowAdapter())
+
+    assert unrelated_done.is_set()
+    assert settled.status is InvocationStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_provider_evidence_is_refused_when_the_row_moved_meanwhile() -> None:
+    """Evidence gathered for one revision is not applied over a newer one."""
+    store = InMemoryInvocationStore()
+    service = InvocationExecutionService(store=store)
+    unknown = await _unknown_invocation(
+        service, store, run_id="run-moved", effect_key="write:moved"
+    )
+
+    class _RacedAdapter:
+        async def reconcile(self, invocation: Invocation) -> InvocationReconciliationEvidence:
+            # Another tick records an indeterminate look while we are away.
+            await service.reconcile(
+                invocation.invocation_id,
+                disposition=ReconciliationDisposition.INDETERMINATE,
+                source="operator",
+                actor="ops",
+                reason="still checking",
+                evidence=None,
+                workspace_id="workspace-1",
+                project_id="project-1",
+            )
+            return InvocationReconciliationEvidence(
+                disposition=ReconciliationDisposition.APPLIED,
+                source="provider-status",
+                actor="provider-a",
+                reason="found remote-moved",
+                evidence={"remote_id": "run-moved"},
+            )
+
+    with pytest.raises(UnsafeEffectRetry, match="changed while the provider was consulted"):
+        await service.reconcile_with_provider(unknown.invocation_id, _RacedAdapter())
+
+    current = await store.get(unknown.invocation_id)
+    assert current is not None
+    assert current.status is InvocationStatus.UNKNOWN
+    assert [item.disposition for item in current.reconciliation_history] == [
+        ReconciliationDisposition.INDETERMINATE
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pre_scope_rows_can_still_be_reconciled(tmp_path: Path) -> None:
+    """An Invocation written before scope was persisted has no Workspace or
+    Project on itself or its Binding; it must still have a recovery path
+    (#1118 review). Manual evidence backfills the scope; provider evidence
+    settles it with an unscoped audit record."""
+    conn = await aiosqlite.connect(tmp_path / "legacy.db")
+    try:
+        store = SqliteInvocationStore(conn)
+        await store.ensure_schema()
+        legacy_payload = {
+            "run_id": "run-legacy",
+            "node_run_id": "node-legacy",
+            "attempt_id": "attempt-legacy",
+            "binding": {
+                "binding_id": "binding-legacy",
+                "capability": "external_write",
+                "provider_name": "provider-a",
+                "provider_trust_tier": "trusted",
+            },
+            "effect_key": "write:legacy",
+            "status": "unknown",
+            "created_at": "2026-09-01T00:00:00+00:00",
+            "finished_at": "2026-09-01T00:00:01+00:00",
+        }
+        manual = await store.create(Invocation.model_validate(legacy_payload))
+        provider = await store.create(
+            Invocation.model_validate(
+                {**legacy_payload, "run_id": "run-legacy-2", "node_run_id": "node-legacy-2"}
+            )
+        )
+        assert manual.workspace_id == "" and manual.binding.workspace_id == ""
+        service = InvocationExecutionService(store=store)
+
+        settled = await service.reconcile(
+            manual.invocation_id,
+            disposition=ReconciliationDisposition.APPLIED,
+            source="operator",
+            actor="ops",
+            reason="verified in the provider console",
+            evidence={"remote_id": "legacy"},
+            workspace_id="workspace-1",
+            project_id="project-1",
+        )
+        assert settled.status is InvocationStatus.COMPLETED
+        assert (settled.workspace_id, settled.project_id) == ("workspace-1", "project-1")
+        assert settled.reconciliation_history[-1].workspace_id == "workspace-1"
+
+        by_provider = await service.reconcile_with_provider(
+            provider.invocation_id,
+            _Report(
+                InvocationReconciliationEvidence(
+                    disposition=ReconciliationDisposition.NOT_APPLIED,
+                    source="provider-status",
+                    actor="provider-a",
+                    reason="no such remote object",
+                    evidence={"remote_id": None},
+                )
+            ),
+        )
+        assert by_provider.status is InvocationStatus.FAILED
+        assert by_provider.reconciliation_history[-1].workspace_id == ""
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_governed_reconciliation_announces_the_terminal_state() -> None:
+    """Consumers that saw `unknown` learn the row settled (#1118 review)."""
+    effects = new_in_memory_effect_context()
+    binding = _binding()
+
+    async def ambiguous(_provider: Any, _request: Any) -> None:
+        raise ConnectionError("transport lost")
+
+    with pytest.raises(ConnectionError):
+        await effects.invocations.invoke(
+            binding=binding,
+            run_id="run-events",
+            node_run_id="node-events",
+            attempt_id="attempt-1",
+            effect_key="write:events",
+            request={"id": "events"},
+            resolver=_resolver,
+            executor=ambiguous,
+        )
+    unknown = await effects.invocations.latest_effect(
+        binding=binding, run_id="run-events", node_run_id="node-events", effect_key="write:events"
+    )
+    assert unknown is not None
+    event_ids = effects.event_store._events_by_id  # type: ignore[attr-defined]
+    assert f"capability-invocation-{unknown.invocation_id}-unknown" in event_ids
+
+    settled = await effects.invocations.reconcile(
+        unknown.invocation_id,
+        disposition=ReconciliationDisposition.APPLIED,
+        source="operator",
+        actor="ops",
+        reason="verified",
+        evidence={"remote_id": "events"},
+        workspace_id="workspace-1",
+        project_id="project-1",
+        usage=InvocationUsage(input_units=3, output_units=4, model="provider-a"),
+    )
+    assert settled.status is InvocationStatus.COMPLETED
+    completed_id = f"capability-invocation-{unknown.invocation_id}-completed"
+    assert completed_id in event_ids
+    assert event_ids[completed_id].type == "capability.invocation.completed"
+    assert event_ids[completed_id].workspace_id == "workspace-1"
+    # Announcing the same terminal state twice is a no-op, not a second event.
+    await effects.invocations.reconcile(
+        unknown.invocation_id,
+        disposition=ReconciliationDisposition.APPLIED,
+        source="operator",
+        actor="ops",
+        reason="verified again",
+        evidence={"remote_id": "events"},
+        workspace_id="workspace-1",
+        project_id="project-1",
+    )
+    assert (
+        sum(
+            1
+            for key in event_ids
+            if key.startswith(f"capability-invocation-{unknown.invocation_id}-")
+        )
+        == 2
+    )
+
+
+@pytest.mark.asyncio
+async def test_recovered_usage_is_persisted_with_an_applied_reconciliation() -> None:
+    store = InMemoryInvocationStore()
+    service = InvocationExecutionService(store=store)
+    unknown = await _unknown_invocation(
+        service, store, run_id="run-usage", effect_key="write:usage"
+    )
+    usage = InvocationUsage(input_units=120, output_units=30, cost_cents=0.4, model="provider-a")
+
+    settled = await service.reconcile_with_provider(
+        unknown.invocation_id,
+        _Report(
+            InvocationReconciliationEvidence(
+                disposition=ReconciliationDisposition.APPLIED,
+                source="provider-status",
+                actor="provider-a",
+                reason="found remote-usage with its bill",
+                evidence={"remote_id": "run-usage"},
+                usage=usage,
+            )
+        ),
+    )
+
+    assert settled.status is InvocationStatus.COMPLETED
+    assert settled.usage == usage
+
+
+@pytest.mark.asyncio
+async def test_naive_timestamps_are_read_as_utc(tmp_path: Path) -> None:
+    """`datetime.now()` as a cutoff, or a row stored without an offset, must
+    not make discovery raise (#1118 review)."""
+    conn = await aiosqlite.connect(tmp_path / "naive.db")
+    try:
+        store = SqliteInvocationStore(conn)
+        await store.ensure_schema()
+        service = InvocationExecutionService(store=store)
+        naive_row = await store.create(
+            Invocation(
+                run_id="run-naive",
+                node_run_id="node-naive",
+                attempt_id="attempt-1",
+                binding=ResolvedBinding.from_provider(_binding(), _Provider()),
+                effect_key="write:naive",
+                status=InvocationStatus.RUNNING,
+                created_at=datetime(2026, 9, 1, 0, 0),
+                started_at=datetime(2026, 9, 1, 0, 0, 1),
+            )
+        )
+        assert naive_row.started_at is not None and naive_row.started_at.tzinfo is UTC
+
+        found = await service.discover_ambiguous(stale_before=datetime.now())
+        assert [item.invocation_id for item in found] == [naive_row.invocation_id]
+        assert await service.discover_ambiguous(stale_before=datetime(2026, 8, 1)) == []
+    finally:
+        await conn.close()
