@@ -20,6 +20,7 @@ corpus; see `THIRD_PARTY_NOTICES.md` for provenance and licensing.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -31,6 +32,7 @@ from maistro_design.scan import (
 )
 from maistro_design.trust import InMemoryTrustBanishList, TrustTier
 from maistro_design.types import (
+    CatalogImportPolicyError,
     ColorToken,
     DesignSystem,
     DesignSystemNotFoundError,
@@ -51,6 +53,11 @@ ESSENTIAL_FILES = ("manifest.json", "DESIGN.md", "tokens.css", "design-tokens.js
 
 # Install-time "Tier-1" set, registered automatically by load_bundled().
 BUNDLED_SLUGS = ("default", "shadcn", "apple", "material", "editorial", "enterprise")
+
+# Catalog entries are flat, lowercase kebab-case identifiers. Rejecting path
+# syntax before joining is deliberate: containment remains the defense for
+# symlinks and the grammar closes platform-specific path spellings.
+_CATALOG_SLUG_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 
 # Where a registered DesignSystem came from, recorded in `metadata["origin"]`.
 #
@@ -195,6 +202,37 @@ def load_catalog() -> list[dict[str, Any]]:
     return json.loads(CATALOG_INDEX.read_text(encoding="utf-8"))  # type: ignore[no-any-return]
 
 
+def _resolve_catalog_system_dir(slug: str) -> Path:
+    """Resolve a catalog slug without permitting filesystem escape.
+
+    Slugs are selection identifiers, not paths. The canonical containment checks
+    additionally protect the boundary if a catalog entry or one of its payload
+    files is replaced with a symlink after vendoring.
+    """
+    if not isinstance(slug, str) or _CATALOG_SLUG_PATTERN.fullmatch(slug) is None:
+        raise CatalogImportPolicyError("catalog slug is not a valid catalog identifier")
+
+    try:
+        root = CATALOG_ROOT.resolve()
+        system_dir = (root / slug).resolve()
+        if not system_dir.is_relative_to(root):
+            raise CatalogImportPolicyError("catalog slug resolves outside the catalog root")
+
+        # Check every path that _read_system_files may open, including the optional
+        # token file, before reading any catalog content.
+        for filename in ESSENTIAL_FILES:
+            file_path = (system_dir / filename).resolve()
+            if not file_path.is_relative_to(root):
+                raise CatalogImportPolicyError("catalog payload resolves outside the catalog root")
+    except (OSError, RuntimeError) as exc:
+        raise CatalogImportPolicyError("catalog path cannot be resolved safely") from exc
+
+    if not system_dir.is_dir():
+        msg = f"Design system '{slug}' not found in the Open Design catalog"
+        raise DesignSystemNotFoundError(msg)
+    return system_dir
+
+
 def import_from_catalog(
     slug: str,
     registry: DesignSystemRegistry,
@@ -208,10 +246,7 @@ def import_from_catalog(
     catalog's `scan_status` reflects the scan at vendoring time, not now) and
     raises `TrustBannedError` if it no longer passes.
     """
-    system_dir = CATALOG_ROOT / slug
-    if not system_dir.is_dir():
-        msg = f"Design system '{slug}' not found in the Open Design catalog"
-        raise DesignSystemNotFoundError(msg)
+    system_dir = _resolve_catalog_system_dir(slug)
 
     manifest, files, design_tokens = _read_system_files(system_dir)
     report = scan_design_system_content(files, banish_list=banish_list)
