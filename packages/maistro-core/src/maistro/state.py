@@ -410,6 +410,62 @@ class PersistedStore:
             raise RuntimeError("conflict-safe state insert failed") from errors[0]
         return inserted == [True]
 
+    def put_raw_with_unique_claims(
+        self,
+        claims: list[tuple[str, str, str]],
+        records: list[tuple[str, str, str]],
+        *,
+        timeout: float = 30.0,
+    ) -> bool:
+        """Insert claims and records in one durable SQLite transaction.
+
+        Claims are primary-key inserts and therefore decide the winner at the
+        storage layer. If any claim already exists, or any record cannot be
+        inserted, the whole transaction rolls back. This is the seam used by
+        account allocation to prevent a username reservation from splitting
+        from its user row on process death.
+        """
+        if not claims or not records:
+            raise ValueError("an atomic claim transaction needs claims and records")
+        completed = threading.Event()
+        inserted: list[bool] = []
+        errors: list[Exception] = []
+        now = datetime.now(UTC).isoformat()
+
+        def _insert_claims_and_records(conn: sqlite3.Connection) -> None:
+            try:
+                for store_name, key, value in claims:
+                    cursor = conn.execute(
+                        "INSERT INTO kv_store (store_name, key, value, updated_at) "
+                        "VALUES (?, ?, ?, ?) ON CONFLICT(store_name, key) DO NOTHING",
+                        (store_name, key, value, now),
+                    )
+                    if cursor.rowcount != 1:
+                        conn.rollback()
+                        inserted.append(False)
+                        return
+                for store_name, key, value in records:
+                    conn.execute(
+                        "INSERT INTO kv_store (store_name, key, value, updated_at) "
+                        "VALUES (?, ?, ?, ?)",
+                        (store_name, key, value, now),
+                    )
+                conn.commit()
+                inserted.append(True)
+            except Exception as exc:
+                with contextlib.suppress(Exception):
+                    conn.rollback()
+                errors.append(exc)
+            finally:
+                completed.set()
+
+        self._state.submit(_insert_claims_and_records)
+        if not completed.wait(timeout=timeout):
+            raise TimeoutError("timed out waiting for atomic username allocation")
+        if errors:
+            raise RuntimeError("atomic username allocation failed") from errors[0]
+        return inserted == [True]
+
     def get_raw(self, store_name: str, key: str) -> str | None:
         reader = self._state.open_reader()
         try:
