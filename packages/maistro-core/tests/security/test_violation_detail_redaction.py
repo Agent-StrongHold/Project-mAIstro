@@ -1,14 +1,11 @@
 """Violation.detail is redacted AT CONSTRUCTION (#1159).
 
-Two Violation classes ride security evidence:
-
-- ``maistro.security._types.Violation`` — the Sentinel pipeline's violation;
-  its ``detail`` interpolates rejected tool-call material (the invalid-enum
-  message carries the rejected value verbatim), and ``SentinelVerdict`` /
-  the canonical ``AuditEntry`` carry the tuple toward any AuditLog
-  implementation.
-- ``maistro.types.security.Violation`` — frozen, rides the persisted
-  ``AuditEntry`` in ``persistence/``.
+One canonical ``maistro.types.security.Violation`` rides security
+evidence; ``maistro.security._types`` re-exports it for the Sentinel pipeline.
+Its ``detail`` interpolates rejected tool-call material (the invalid-enum
+message carries the rejected value verbatim), and ``SentinelVerdict`` /
+the canonical ``AuditEntry`` carry the tuple toward any AuditLog
+implementation.
 
 The shipped audit stores happen not to serialize the violations tuple, but
 the #1159 stop condition forbids resting the invariant on that omission: the
@@ -28,8 +25,9 @@ from maistro.types.security import Violation as TypedViolation
 
 
 class TestSentinelViolationDetailRedaction:
-    def test_sentinel_uses_the_persisted_audit_entry_type(self) -> None:
+    def test_sentinel_uses_canonical_persisted_security_types(self) -> None:
         assert SentinelAuditEntry is TypedAuditEntry
+        assert SentinelViolation is TypedViolation
 
     def test_api_key_shaped_detail_is_redacted_at_construction(self) -> None:
         key = "sk-" + "FAKEVALUE1234567890"
