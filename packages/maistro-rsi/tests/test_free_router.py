@@ -9,6 +9,11 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from maistro.security.outbound import (
+    OutboundBlockedError,
+    current_outbound_policy,
+    reset_outbound_policy,
+)
 from maistro_rsi import free_router as fr
 from maistro_rsi.evolve_bridge import genome_to_competitor, seed_population
 
@@ -143,6 +148,32 @@ def test_register_returns_none_without_gateway(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.delenv("LITELLM_MASTER_KEY", raising=False)
     monkeypatch.delenv("LITELLM_PROXY_KEY", raising=False)
     assert fr.register_gateway_alias("x/y:free", credential="c") is None
+
+
+def test_explicit_gateway_base_cannot_allowlist_a_private_target() -> None:
+    """Caller-provided bases must reach the transport validator, not the policy."""
+    reset_outbound_policy()
+    try:
+        with pytest.raises(OutboundBlockedError):
+            fr._post(
+                "http://127.0.0.1:8765/model/new",
+                json={},
+                headers={},
+                timeout=1.0,
+            )
+        assert not current_outbound_policy().allows("http://127.0.0.1:8765/model/new")
+        assert (
+            fr.register_gateway_alias(
+                "openai/gpt-oss:free",
+                base="http://127.0.0.1:8765",
+                key="k",
+                credential="c",
+            )
+            is None
+        )
+        assert not current_outbound_policy().allows("http://127.0.0.1:8765/model/new")
+    finally:
+        reset_outbound_policy()
 
 
 # --- expand_free_router ----------------------------------------------------------

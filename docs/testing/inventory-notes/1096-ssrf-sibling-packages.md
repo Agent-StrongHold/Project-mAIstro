@@ -2,6 +2,7 @@
 inventory-delta:
   packages/maistro-registry/tests: +2
   packages/maistro-design/tests: +1
+  packages/maistro-rsi/tests: +1
   tests/: +1
 ---
 
@@ -14,7 +15,9 @@ The security-inventory gate gains one regression test that keeps the five
 sibling-package source roots free of direct `httpx` network calls or private
 client constructors.
 
-Existing bootstrap, evolve, and RSI tests continue to exercise their request
-paths through test transports or patched seam helpers. The design suite adds a
-regression test for the default pooled-client lifetime; the injected test seam
-continues to use a private client that is closed by the provider.
+Existing bootstrap and evolve tests continue to exercise their request paths
+through test transports or patched seam helpers. The RSI suite now proves an
+explicit private gateway base cannot self-allowlist before the guarded transport
+runs. The design suite adds a regression test for the default pooled-client
+lifetime; the injected test seam continues to use a private client that is
+closed by the provider.

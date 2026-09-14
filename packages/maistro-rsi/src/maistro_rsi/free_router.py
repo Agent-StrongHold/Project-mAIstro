@@ -58,14 +58,17 @@ def _post(
     headers: dict[str, str],
     timeout: float,
 ) -> httpx.Response:
-    """Use the central guarded sync client for a configured endpoint."""
-    configure_outbound_policy(url)
+    """Post through the central guarded sync client.
+
+    The policy is configured by the caller that owns an operator-provided
+    endpoint. Registering an arbitrary request URL here would turn a
+    caller-influenced gateway base into an allowlist bypass.
+    """
     with sync_client(timeout=timeout) as client:
         return client.post(url, json=json, headers=headers)
 
 
 def _get(url: str, *, headers: dict[str, str], timeout: float) -> httpx.Response:
-    configure_outbound_policy(url)
     with sync_client(timeout=timeout) as client:
         return client.get(url, headers=headers)
 
@@ -148,12 +151,18 @@ def register_gateway_alias(
     # Skipping the prefix there would make LiteLLM strip that segment and route
     # ``sonoma-dusk-alpha:free`` (a different, non-existent model).
     alias = f"openrouter/{concrete}"
-    base = (base or _gateway_base()).rstrip("/")
+    using_configured_gateway = base is None
+    base = (_gateway_base() if using_configured_gateway else base).rstrip("/")
     key = key or _gateway_key()
     if not base or not key:
         return None
     if known is not None and alias in known:
         return alias
+    # Only the environment-backed gateway is operator configuration. An
+    # explicit base is caller input and must already be allowlisted by its
+    # owner; the guarded transport validates it instead of allowing it here.
+    if using_configured_gateway:
+        configure_outbound_policy(base)
     credential = credential or _discover_openrouter_credential(base, key, timeout)
     if not credential:
         return None
