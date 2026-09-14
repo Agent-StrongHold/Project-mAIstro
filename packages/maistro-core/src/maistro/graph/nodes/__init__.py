@@ -25,6 +25,7 @@ from .base import (
     Node,
     NodeContext,
     NodeResult,
+    ReplaySemantics,
     now_utc,
     pause_until,
 )
@@ -100,7 +101,10 @@ def catalog_json() -> list[dict[str, Any]]:
                 "display_name": cls.display_name or cls.kind,
                 "description": cls.description or "",
                 "cost_hint": cls.cost_hint,
-                "idempotent": cls.idempotent,
+                # Compatibility metadata is derived from the executable
+                # replay contract; node classes have no second boolean policy.
+                "replay_semantics": cls.replay_semantics.value,
+                "idempotent": cls.replay_semantics.idempotent,
                 "external_io": cls.external_io,
                 "input_schema": _schema_summary(cls.input_schema),
                 "output_schema": _schema_summary(cls.output_schema),
@@ -182,6 +186,7 @@ __all__ = [
     "Node",
     "NodeContext",
     "NodeResult",
+    "ReplaySemantics",
     "catalog_json",
     "get_node",
     "invoke_capability_effect",

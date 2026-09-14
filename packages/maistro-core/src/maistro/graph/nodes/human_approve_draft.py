@@ -20,6 +20,7 @@ from .base import (
     PAUSE_AWAITING_HUMAN_APPROVAL,
     BaseNode,
     NodeContext,
+    ReplaySemantics,
     pause_until,
     preserved_hitl_deadline,
 )
@@ -52,7 +53,7 @@ class HumanApproveDraftNode(BaseNode[ApproveDraftIn, ApproveDraftOut]):
     input_schema: ClassVar[type[BaseModel]] = ApproveDraftIn
     output_schema: ClassVar[type[BaseModel]] = ApproveDraftOut
     cost_hint: ClassVar[float] = 0.0
-    idempotent: ClassVar[bool] = True
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.EFFECT_KEY
     external_io: ClassVar[bool] = False
     display_name: ClassVar[str] = "Human: approve a draft"
     description: ClassVar[str] = (

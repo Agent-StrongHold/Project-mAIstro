@@ -14,9 +14,12 @@ human.ask_question, ...) live in sibling modules and self-register via
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import json
 import time
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from typing import Any, ClassVar, Generic, Literal, Protocol, TypeVar, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, SerializeAsAny
@@ -36,6 +39,28 @@ KindCategory = Literal[
     "composite",
     "negative_signal",
 ]
+
+
+class ReplaySemantics(StrEnum):
+    """Executable replay contract for one node kind.
+
+    ``EFFECT_KEY`` is retryable only because the node binds its durable or
+    external effect to :func:`replay_effect_key`; it is not a claim that the
+    underlying operation is intrinsically idempotent.
+    """
+
+    PURE = "pure"
+    IDEMPOTENT = "idempotent"
+    EFFECT_KEY = "retryable_with_effect_key"
+    NON_RETRYABLE = "non_retryable"
+
+    @property
+    def retryable(self) -> bool:
+        return self is not ReplaySemantics.NON_RETRYABLE
+
+    @property
+    def idempotent(self) -> bool:
+        return self in {ReplaySemantics.PURE, ReplaySemantics.IDEMPOTENT}
 
 
 class NodeContext(BaseModel):
@@ -126,7 +151,7 @@ class Node(Protocol):
     input_schema: ClassVar[type[BaseModel]]
     output_schema: ClassVar[type[BaseModel]]
     cost_hint: ClassVar[float]  # 0.0 = free; 10.0 = very expensive
-    idempotent: ClassVar[bool]
+    replay_semantics: ClassVar[ReplaySemantics]
     external_io: ClassVar[bool]
     display_name: ClassVar[str]
     description: ClassVar[str]
@@ -155,7 +180,7 @@ class BaseNode(Generic[InputT, OutputT]):
     input_schema: ClassVar[type[BaseModel]]
     output_schema: ClassVar[type[BaseModel]]
     cost_hint: ClassVar[float] = 1.0
-    idempotent: ClassVar[bool] = True
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.PURE
     external_io: ClassVar[bool] = False
     display_name: ClassVar[str] = ""
     description: ClassVar[str] = ""
@@ -355,6 +380,18 @@ def pause_until(
 def now_utc() -> datetime:
     """Single source of truth for "now" so tests can monkeypatch."""
     return datetime.now(UTC)
+
+
+def replay_effect_key(ctx: NodeContext, operation: str, identity: Any = None) -> str:
+    """Derive one logical effect key across physical Attempt retries.
+
+    A retry gets a new Attempt (and may get a new NodeRun visit), so neither is
+    sufficient as the effect identity. Run + graph node is the logical scope;
+    the input digest distinguishes explicit new work at the same node.
+    """
+    payload = json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str)
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+    return f"{operation}:{ctx.run_id}:{ctx.node_id}:{digest}"
 
 
 def preserved_hitl_deadline(resumed: dict[str, Any] | None, *, timeout_seconds: int) -> datetime:

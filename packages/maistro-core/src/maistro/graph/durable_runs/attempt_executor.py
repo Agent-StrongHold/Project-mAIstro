@@ -21,6 +21,7 @@ from maistro.graph.nodes.base import (
     RESUME_ON_ELAPSED,
     NodeContext,
     NodeResult,
+    ReplaySemantics,
 )
 from maistro.observability.correlation import bind_execution_context
 from maistro.runs.execution import AttemptExecutionService
@@ -519,6 +520,9 @@ async def _execute_frontier(
                     node_run,
                     ctx,
                     persisted_result,
+                    ReplaySemantics(
+                        getattr(node, "replay_semantics", ReplaySemantics.NON_RETRYABLE)
+                    ),
                 )
 
         raw_result: NodeResult | None = None
@@ -557,6 +561,7 @@ async def _execute_frontier(
             node_run,
             ctx,
             raw_result,
+            ReplaySemantics(getattr(node, "replay_semantics", ReplaySemantics.NON_RETRYABLE)),
         )
 
     return tuple(

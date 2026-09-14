@@ -25,6 +25,7 @@ from .base import (
     PAUSE_AWAITING_ROLE_DELEGATE,
     BaseNode,
     NodeContext,
+    ReplaySemantics,
     pause_until,
     preserved_hitl_deadline,
 )
@@ -68,7 +69,7 @@ class HumanDelegateToRoleNode(BaseNode[DelegateToRoleIn, DelegateToRoleOut]):
     input_schema: ClassVar[type[BaseModel]] = DelegateToRoleIn
     output_schema: ClassVar[type[BaseModel]] = DelegateToRoleOut
     cost_hint: ClassVar[float] = 0.0
-    idempotent: ClassVar[bool] = True
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.EFFECT_KEY
     external_io: ClassVar[bool] = False
     display_name: ClassVar[str] = "Human: delegate to role"
     description: ClassVar[str] = (

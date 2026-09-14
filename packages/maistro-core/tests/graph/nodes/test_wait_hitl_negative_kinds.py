@@ -272,6 +272,57 @@ async def test_compliance_block_writes_penalty_to_blackboard() -> None:
     assert "halt_requested" not in bb.metadata
 
 
+async def test_dashboard_append_section_replay_upserts_one_section() -> None:
+    """An idempotent node's repeated invocation has one durable blackboard effect."""
+    from maistro.graph.types import GraphBlackboard
+
+    bb = GraphBlackboard(task_objective="x", workspace="")
+    ctx = NodeContext(run_id="r1", dag_id="d1", node_id="section-1", blackboard=bb)
+    Node = get_node("dashboard.append_section")
+    inputs = {
+        "dashboard_id": "daily-status",
+        "section_title": "Jira",
+        "markdown": "ready",
+    }
+
+    first = await Node().run(inputs, ctx)
+    second = await Node().run(inputs, ctx)
+
+    assert first.success and second.success
+    assert first.output.section_id == second.output.section_id
+    assert bb.metadata["dashboard:daily-status"]["sections"] == [
+        {"id": "daily-status/Jira", "title": "Jira", "markdown": "ready", "order": 0}
+    ]
+
+
+async def test_compliance_block_replay_upserts_one_logical_penalty() -> None:
+    """The idempotent conformance case uses the same logical context twice."""
+    from maistro.graph.types import GraphBlackboard
+
+    bb = GraphBlackboard(task_objective="x", workspace="")
+    ctx = NodeContext(
+        run_id="r1",
+        dag_id="d1",
+        node_id="block-1",
+        node_run_id="node-run-retry-2",
+        blackboard=bb,
+    )
+    Node = get_node("compliance.block")
+    inputs = {
+        "rule_id": "pii.email_in_summary",
+        "severity": 3.0,
+        "reason": "contains an email",
+        "evidence": {"matched": "alice@example.com"},
+    }
+
+    first = await Node().run(inputs, ctx)
+    second = await Node().run(inputs, ctx)
+
+    assert first.success and second.success
+    assert first.output.penalty_id == second.output.penalty_id
+    assert len(bb.metadata["penalties"]) == 1
+
+
 async def test_compliance_block_with_halt_sets_halt_flag() -> None:
     from maistro.graph.types import GraphBlackboard
 
