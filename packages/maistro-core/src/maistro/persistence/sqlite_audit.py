@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from maistro.persistence.sqlite_schema import serialized_schema_upgrade
 from maistro.types.security import AuditEntry
 
 if TYPE_CHECKING:
@@ -41,8 +42,8 @@ class SqliteAuditLog:
 
     async def ensure_schema(self) -> None:
         """Create the audit_log table if it doesn't exist."""
-        await self._conn.execute(_SCHEMA)
-        await self._conn.commit()
+        async with serialized_schema_upgrade(self._conn):
+            await self._conn.execute(_SCHEMA)
 
     async def log(self, entry: AuditEntry) -> None:
         """Record an audit entry."""
