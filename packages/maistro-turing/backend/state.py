@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from uuid import uuid4
 
+from maistro.observability.correlation import current_execution_context
+from maistro.security.warden.detector import Warden
 from maistro_turing.bridge import (
     TuringClassifierBridge,
     TuringMemoryBridge,
@@ -26,6 +28,8 @@ from maistro_turing.bridge import (
 )
 from maistro_turing.runtime import TuringActor, TuringChatSession, TuringConfig
 from maistro_turing.self_model import ALL_FACETS, Mood
+
+from .security import TuringInboundSecurity, TuringSecurityContext
 
 SELF_ID = "turing"
 
@@ -71,9 +75,15 @@ class TuringState:
     a TestClient drives requests on a thread pool so the lock matters.
     """
 
-    def __init__(self, config: TuringConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: TuringConfig | None = None,
+        *,
+        inbound_security: TuringInboundSecurity | None = None,
+    ) -> None:
         self._lock = threading.RLock()
         self.config = config or TuringConfig()
+        self.inbound_security = inbound_security or TuringInboundSecurity(warden=Warden())
 
         self._mood = Mood(
             self_id=SELF_ID,
@@ -85,15 +95,13 @@ class TuringState:
         self._facet_scores = _default_facet_scores()
         self._artifacts: list[ProducerArtifact] = []
 
-        # GAP: bridges are constructed without backing maistro-core
-        # implementations (no episodic/learning store, no warden, no LLM
-        # client). The runtime degrades gracefully (memory writes are dropped,
-        # scans pass-through) — see TuringMemoryBridge/TuringSecurityBridge.
-        # No maistro.container Turing wiring exists on the current product path.
-        # A future durable composition must replace these through the same
-        # Turing bridge contracts rather than implying that wiring already exists.
+        # Memory and provider implementations remain optional, but the
+        # canonical Warden is mandatory for every protected runtime path.
         self.memory = TuringMemoryBridge()
-        self.security = TuringSecurityBridge()
+        self.security = TuringSecurityBridge(
+            warden=self.inbound_security.warden,
+            audit_hook=self._audit_runtime_verdict,
+        )
         self.provider = TuringProviderBridge()
         self.classifier = TuringClassifierBridge()
 
@@ -102,6 +110,23 @@ class TuringState:
             security=self.security,
             provider=self.provider,
             self_id=SELF_ID,
+        )
+
+    async def _audit_runtime_verdict(self, verdict: object, content: str, boundary: str) -> None:
+        execution = current_execution_context()
+        await self.inbound_security.audit_verdict(
+            verdict,  # type: ignore[arg-type]
+            content,
+            boundary=boundary,
+            context=TuringSecurityContext(
+                principal=SELF_ID,
+                route="runtime",
+                action=f"turing.{boundary}",
+                workspace_id=execution.workspace_id,
+                project_id=execution.project_id,
+                run_id=execution.run_id,
+                invocation_id=execution.invocation_id,
+            ),
         )
 
     # ----------------------------------------------------------- self-model --
@@ -192,8 +217,12 @@ def get_state() -> TuringState:
     return _state
 
 
-def reset_state(config: TuringConfig | None = None) -> TuringState:
+def reset_state(
+    config: TuringConfig | None = None,
+    *,
+    inbound_security: TuringInboundSecurity | None = None,
+) -> TuringState:
     """Replace the singleton — used by tests for isolation."""
     global _state
-    _state = TuringState(config=config)
+    _state = TuringState(config=config, inbound_security=inbound_security)
     return _state

@@ -14,13 +14,22 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from maistro.security.warden.detector import Warden
+
 from .config import build_registry, cors_origins
 from .middleware.auth import TuringAuthMiddleware
 from .routes import admin, auth, chat, feed, health, state
+from .security import TuringInboundSecurity, TuringInboundSecurityMiddleware
+from .state import reset_state
 
 
 def create_app() -> FastAPI:
+    # Canonical composition owns the Warden. Constructing the application
+    # fails here if that protected dependency cannot be provided.
+    inbound_security = TuringInboundSecurity(warden=Warden())
+    reset_state(inbound_security=inbound_security)
     app = FastAPI(title="Turing Backend", version="0.9.0")
+    app.state.turing_security = inbound_security
 
     app.add_middleware(
         CORSMiddleware,
@@ -29,6 +38,9 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # Add the boundary first so auth is the outer middleware: identity is
+    # established before protected content is scanned.
+    app.add_middleware(TuringInboundSecurityMiddleware, security=inbound_security)
     app.add_middleware(TuringAuthMiddleware, registry=build_registry())
 
     app.include_router(health.router)

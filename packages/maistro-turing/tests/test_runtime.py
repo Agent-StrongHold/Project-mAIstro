@@ -273,6 +273,26 @@ class TestTuringChatSession:
         assert "user: first message" in second_prompt
         assert "User: second message" in second_prompt
 
+    async def test_handle_message_blocks_model_result_before_history_or_memory(self) -> None:
+        memory = FakeMemoryBridge()
+
+        class ModelBlockingSecurity(FakeSecurityBridge):
+            async def scan_self_write(self, content: str, *, kind: str = "") -> dict[str, Any]:
+                return {"verdict": "allowed", "flags": []}
+
+        session = TuringChatSession(
+            memory=memory,  # type: ignore[arg-type]
+            provider=FakeChatProvider(reply="untrusted model instruction"),  # type: ignore[arg-type]
+            classifier=FakeClassifierBridge(),  # type: ignore[arg-type]
+            security=ModelBlockingSecurity(verdict="blocked"),  # type: ignore[arg-type]
+            self_id="self-1",
+        )
+
+        with pytest.raises(RuntimeError, match="model result refused"):
+            await session.handle_message("hi")
+        assert session._history == []
+        assert memory.calls == []
+
     async def test_handle_message_swallows_memory_store_failure(self) -> None:
         session = TuringChatSession(
             memory=FailingMemoryBridge(),  # type: ignore[arg-type]

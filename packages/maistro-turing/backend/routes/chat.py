@@ -23,7 +23,7 @@ import asyncio
 import logging
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 
 from maistro.graph.durable_runs import DurableRunRecord
@@ -32,6 +32,7 @@ from maistro_turing.runtime import TuringChatSession
 
 from ..execution import TuringAdmissionUnavailable, get_execution_plane
 from ..middleware.auth import require_user
+from ..security import TuringSecurityContext
 from ..state import get_state
 
 logger = logging.getLogger(__name__)
@@ -74,7 +75,11 @@ async def _unrecorded_reply(session: TuringChatSession, message: str) -> str:
 
 
 @router.post("")
-async def chat(body: ChatBody, user: dict = Depends(require_user)) -> dict:
+async def chat(
+    body: ChatBody,
+    request: Request,
+    user: dict = Depends(require_user),
+) -> dict:
     message = body.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
@@ -114,5 +119,25 @@ async def chat(body: ChatBody, user: dict = Depends(require_user)) -> dict:
     except RuntimeError as exc:
         logger.warning("canonical Turing chat result projection failed", exc_info=True)
         raise HTTPException(status_code=503, detail=_PUBLIC_CHAT_FAILURE) from exc
+
+    # The ingress scan runs before Run admission so the message cannot enter
+    # graph parameters unscanned. Add a correlated, metadata-only audit record
+    # once canonical Workspace/Project/Run identity exists.
+    inbound_verdict = getattr(request.state, "turing_inbound_verdict", None)
+    if inbound_verdict is not None:
+        root = await get_execution_plane().project_store.root_for_workspace(record.run.workspace_id)
+        await get_state().inbound_security.audit_verdict(
+            inbound_verdict,
+            message,
+            boundary="user_input",
+            context=TuringSecurityContext(
+                principal=str(user["id"]),
+                route="/v1/chat",
+                action="chat",
+                workspace_id=record.run.workspace_id,
+                project_id=root.project_id,
+                run_id=record.run_id,
+            ),
+        )
 
     return {"session_id": session_id, "run_id": record.run_id, "reply": reply}
