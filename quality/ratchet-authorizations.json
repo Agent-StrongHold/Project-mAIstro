@@ -234,6 +234,41 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#737",
       "reason": "settle_hitl_record is the single durable HITL settlement rule #737 serializes answer, timeout, and cancellation through: it validates the paused NodeRun, applies the settlement outcome (timed_out/cancelled) or attaches an answer, resolves resume_at vs the persisted deadline, and mirrors the terminal canonical lifecycle. The shared predicate for three settlement paths lands at cyclomatic complexity 16 (rank C); the per-path wrappers stay trivial. Tracked under ADR-083026-6c72."
+    },
+    "packages/maistro-core/src/maistro/capabilities/invocation.py::InvocationExecutionService.invoke@13": {
+      "owner": "reconciliation lane (maistro-glm-implementer)",
+      "issue": "#1310",
+      "reason": "Post-merge reconciliation: this block reached trunk through #1310's merge before a ledger row or grant existed, so every merge-queue group fails the trusted-base comparison (run 34796592566, job 103830780176). The grant authorizes the already-merged complexity that quality/radon-baseline.json now records at its measured value in the same reconciliation change; tracked under SPEC-264."
+    },
+    "packages/maistro-core/src/maistro/capabilities/invocation.py::InvocationExecutionService._reconcile_values_locked@12": {
+      "owner": "reconciliation lane (maistro-glm-implementer)",
+      "issue": "#1310",
+      "reason": "Post-merge reconciliation: this block reached trunk through #1310's merge before a ledger row or grant existed, so every merge-queue group fails the trusted-base comparison (run 34796592566, job 103830780176). The grant authorizes the already-merged complexity that quality/radon-baseline.json now records at its measured value in the same reconciliation change; tracked under SPEC-264."
+    },
+    "packages/maistro-core/src/maistro/scheduling/admission.py::ScheduleRunAdmitter.admit_due@11": {
+      "owner": "reconciliation lane (maistro-glm-implementer)",
+      "issue": "#1311",
+      "reason": "Post-merge reconciliation: this block reached trunk through #1311's merge before a ledger row or grant existed, so every merge-queue group fails the trusted-base comparison (run 34796592566, job 103830780176). The grant authorizes the already-merged complexity that quality/radon-baseline.json now records at its measured value in the same reconciliation change; tracked under SPEC-264."
+    },
+    "packages/maistro-core/src/maistro/memory/outcomes.py::InMemoryOutcomeStore.get_usage_breakdown@11": {
+      "owner": "reconciliation lane (maistro-glm-implementer)",
+      "issue": "#1310",
+      "reason": "Post-merge reconciliation: this block reached trunk through #1310's merge before a ledger row or grant existed, so every merge-queue group fails the trusted-base comparison (run 34796592566, job 103830780176). The grant authorizes the already-merged complexity that quality/radon-baseline.json now records at its measured value in the same reconciliation change; tracked under SPEC-264."
+    },
+    "packages/maistro-core/src/maistro/persistence/sqlite_outcomes.py::_load_tool_calls@12": {
+      "owner": "reconciliation lane (maistro-glm-implementer)",
+      "issue": "#1391",
+      "reason": "Post-merge reconciliation: this block reached trunk through #1391's merge before a ledger row or grant existed, so every merge-queue group fails the trusted-base comparison (run 34796592566, job 103830780176). The grant authorizes the already-merged complexity that quality/radon-baseline.json now records at its measured value in the same reconciliation change; tracked under SPEC-264."
+    },
+    "packages/maistro-core/src/maistro/graph/durable_runs/executor.py::_build_ctx@11": {
+      "owner": "reconciliation lane (maistro-glm-implementer)",
+      "issue": "#1263",
+      "reason": "Post-merge reconciliation: this block reached trunk through #1263's merge before a ledger row or grant existed, so every merge-queue group fails the trusted-base comparison (run 34796592566, job 103830780176). The grant authorizes the already-merged complexity that quality/radon-baseline.json now records at its measured value in the same reconciliation change; tracked under SPEC-264."
+    },
+    "packages/maistro-core/src/maistro/graph/durable_runs/stores.py::answer_record@11": {
+      "owner": "reconciliation lane (maistro-glm-implementer)",
+      "issue": "#1263",
+      "reason": "Post-merge reconciliation: this block reached trunk through #1263's merge before a ledger row or grant existed, so every merge-queue group fails the trusted-base comparison (run 34796592566, job 103830780176). The grant authorizes the already-merged complexity that quality/radon-baseline.json now records at its measured value in the same reconciliation change; tracked under SPEC-264."
     }
   },
   "contract-markers": {
