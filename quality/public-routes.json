@@ -101,5 +101,67 @@
       "disposition": "permanent",
       "reason": "The static hardware presets the wizard offers. Same pre-account window, same reason to survive the prefix narrowing."
     }
+  },
+  "applications": {
+    "turing": {
+      "routes": {
+        "/": {
+          "kind": "exact",
+          "owner": "@BlakeMatthews-dev",
+          "risk": "low",
+          "disposition": "permanent",
+          "reason": "The standalone Turing frontend needs its document shell before a session exists."
+        },
+        "/health": {
+          "kind": "exact",
+          "owner": "@BlakeMatthews-dev",
+          "risk": "low",
+          "disposition": "permanent",
+          "reason": "Load-balancer liveness has no user credential and returns only a fixed status."
+        },
+        "/v1/auth/login": {
+          "kind": "exact",
+          "owner": "@BlakeMatthews-dev",
+          "risk": "low",
+          "disposition": "permanent",
+          "reason": "A caller must reach login before it can establish a Turing session."
+        },
+        "/v1/auth/whoami": {
+          "kind": "exact",
+          "owner": "@BlakeMatthews-dev",
+          "risk": "low",
+          "disposition": "permanent",
+          "reason": "The frontend checks only the caller's own session state."
+        },
+        "/favicon.ico": {
+          "kind": "exact",
+          "owner": "@BlakeMatthews-dev",
+          "risk": "low",
+          "disposition": "permanent",
+          "reason": "Browser chrome may request the icon without an application session."
+        },
+        "/docs": {
+          "kind": "prefix",
+          "owner": "@BlakeMatthews-dev",
+          "risk": "medium",
+          "disposition": "permanent",
+          "reason": "FastAPI documentation is intentionally public and bounded to the docs route family."
+        },
+        "/openapi.json": {
+          "kind": "exact",
+          "owner": "@BlakeMatthews-dev",
+          "risk": "medium",
+          "disposition": "permanent",
+          "reason": "FastAPI's schema path is public so the docs renderer can load it."
+        },
+        "/redoc": {
+          "kind": "prefix",
+          "owner": "@BlakeMatthews-dev",
+          "risk": "medium",
+          "disposition": "permanent",
+          "reason": "The alternate documentation renderer is public for the same bounded disclosure reason."
+        }
+      }
+    }
   }
 }

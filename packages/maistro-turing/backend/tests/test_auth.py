@@ -35,6 +35,12 @@ def test_service_key_authenticates(turing_service_client):
     assert r.json()["authenticated"] is False
 
 
+def test_authenticated_undeclared_v1_path_is_default_deny(authed_client):
+    response = authed_client.get("/v1/undeclared-future-route")
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Route authorization declaration required"
+
+
 def test_backend_startup_requires_service_key(monkeypatch):
     """An unset key must fail startup instead of enabling a public credential."""
     from ..config import build_registry

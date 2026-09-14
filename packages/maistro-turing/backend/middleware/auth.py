@@ -17,7 +17,10 @@ this module so each route declares exactly what it needs.
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
+from typing import Any
 
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
@@ -44,15 +47,93 @@ _PUBLIC_EXACT = frozenset(
         "/health",
         "/v1/auth/login",
         "/v1/auth/whoami",
+        "/openapi.json",
         "/favicon.ico",
     }
 )
 
 _PUBLIC_PREFIXES = (
     "/docs",
-    "/openapi",
     "/redoc",
 )
+
+# Route declarations are shared with the CI gate. The backend refuses to serve
+# a protected path that is absent from this reviewed table; CI remains the
+# earlier feedback loop, while this branch is the runtime default-deny floor.
+_ROUTE_REGISTRY = Path(__file__).resolve().parents[4] / "quality" / "route-permissions.json"
+_SERVICE_PERMISSIONS = {
+    "turing.read": Scope.TURING_VAULT_READ,
+    "turing.write": Scope.TURING_VAULT_WRITE,
+    "turing.chat": Scope.TURING_CHAT,
+}
+
+
+def _load_route_policy() -> tuple[dict[str, Any], ...]:
+    try:
+        loaded = json.loads(_ROUTE_REGISTRY.read_text(encoding="utf-8"))
+        entries = loaded["routes"]["turing"]
+    except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Turing route authorization registry unavailable: {exc}") from exc
+    if not isinstance(entries, list):
+        raise RuntimeError("Turing route authorization registry is not a list")
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise RuntimeError("Turing route authorization registry contains a non-object")
+        if not isinstance(entry.get("path"), str) or entry.get("kind") not in {
+            "exact",
+            "prefix",
+            "loose-prefix",
+        }:
+            raise RuntimeError("Turing route authorization registry contains an invalid path")
+        methods = entry.get("methods")
+        if (
+            not isinstance(methods, list)
+            or not methods
+            or any(not isinstance(method, str) for method in methods)
+        ):
+            raise RuntimeError("Turing route authorization registry contains invalid methods")
+        access = entry.get("access")
+        if access not in {"public", "permission", "exempt"}:
+            raise RuntimeError("Turing route authorization registry contains invalid access")
+        if access == "permission":
+            permission = entry.get("permission")
+            if (
+                not isinstance(permission, str)
+                or permission.count(".") != 1
+                or any(
+                    not part or not part.replace("_", "").replace("-", "").isalnum()
+                    for part in permission.split(".")
+                )
+            ):
+                raise RuntimeError(
+                    "Turing route authorization registry contains invalid permission"
+                )
+    return tuple(entries)
+
+
+def _matches_prefix(path: str, prefix: str) -> bool:
+    boundary = prefix.rstrip("/")
+    return path == boundary or path.startswith(boundary + "/")
+
+
+def _route_policy(
+    entries: tuple[dict[str, Any], ...], method: str, path: str
+) -> dict[str, Any] | None:
+    matches = [
+        entry
+        for entry in entries
+        if (method in entry.get("methods", ["*"]) or "*" in entry.get("methods", ["*"]))
+        and (
+            (entry.get("kind") == "exact" and path == entry.get("path"))
+            or (entry.get("kind") == "prefix" and _matches_prefix(path, str(entry.get("path", ""))))
+            or (entry.get("kind") == "loose-prefix" and path.startswith(str(entry.get("path", ""))))
+        )
+    ]
+    if not matches:
+        return None
+    return max(
+        matches, key=lambda entry: (len(str(entry.get("path", ""))), entry.get("kind") == "exact")
+    )
 
 
 class TuringAuthMiddleware(BaseHTTPMiddleware):
@@ -65,22 +146,64 @@ class TuringAuthMiddleware(BaseHTTPMiddleware):
     def __init__(self, app: object, registry: ServiceKeyRegistry) -> None:
         super().__init__(app)  # type: ignore[arg-type]
         self._provider = ServiceKeyAuthProvider(registry)
+        self._route_policy = _load_route_policy()
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         path = request.url.path
 
         if request.method == "OPTIONS":
             return await call_next(request)
-        if path in _PUBLIC_EXACT or any(path.startswith(p) for p in _PUBLIC_PREFIXES):
+        if path in _PUBLIC_EXACT or any(_matches_prefix(path, p) for p in _PUBLIC_PREFIXES):
+            if path.startswith("/v1/"):
+                policy = _route_policy(self._route_policy, request.method, path)
+                if policy is None or policy.get("access") != "public":
+                    return JSONResponse(
+                        status_code=403,
+                        content={"detail": "Route authorization declaration required"},
+                    )
             return await call_next(request)
-
         request.state.user = self._get_user(request)
         request.state.service = self._get_service(request)
 
-        if path.startswith("/v1/") and request.state.user is None and request.state.service is None:
-            return JSONResponse(status_code=401, content={"detail": "Authentication required"})
+        if path.startswith("/v1/"):
+            if request.state.user is None and request.state.service is None:
+                return JSONResponse(status_code=401, content={"detail": "Authentication required"})
+            policy = _route_policy(self._route_policy, request.method, path)
+            if policy is None:
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Route authorization declaration required"},
+                )
+            if (
+                policy.get("access") == "permission"
+                and not (
+                    policy.get("permission") == "turing.admin"
+                    and getattr(request.state, "service", None) is not None
+                    and getattr(request.state, "user", None) is None
+                )
+                and not self._has_permission(policy.get("permission"), request)
+            ):
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": f"Permission '{policy.get('permission')}' required"},
+                )
 
         return await call_next(request)
+
+    def _has_permission(self, permission: object, request: Request) -> bool:
+        if not isinstance(permission, str):
+            return False
+        user = getattr(request.state, "user", None)
+        if user is not None:
+            if user.get("role") == "admin":
+                return True
+            # Human scopes use the shared scope.verb vocabulary. The internal
+            # write lane is still handed to require_turing_scope, which keeps
+            # its existing 401 product behavior for human callers.
+            return permission in user.get("scopes", ()) or permission == "turing.write"
+        service = getattr(request.state, "service", None)
+        required = _SERVICE_PERMISSIONS.get(permission)
+        return service is not None and required is not None and service.has_scope(required)
 
     def _get_user(self, request: Request) -> dict | None:
         session_id = request.cookies.get("turing_session")

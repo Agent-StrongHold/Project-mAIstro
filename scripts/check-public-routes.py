@@ -16,9 +16,11 @@ import ast
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import date
+from importlib import import_module
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -26,10 +28,15 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 MIDDLEWARE = ROOT / "packages" / "hive-conductor" / "backend" / "middleware" / "auth.py"
 REGISTRY = ROOT / "quality" / "public-routes.json"
+ROUTE_REGISTRY = ROOT / "quality" / "route-permissions.json"
+_TURING_MIDDLEWARE = ROOT / "packages" / "maistro-turing" / "backend" / "middleware" / "auth.py"
 _PROVENANCE_SOURCE = ROOT / "scripts" / "ratchet_provenance.py"
 RATCHET = "public-routes"
 METRIC_DEFINITION_VERSION = "2"
 _GIT_TIMEOUT_SECONDS = 60
+_APPLICATIONS = ("conductor", "turing")
+_ROUTE_KINDS = frozenset({"exact", "prefix", "loose-prefix", "template"})
+_PERMISSION_RE = re.compile(r"^[a-z][a-z0-9_-]*\.[a-z][a-z0-9_-]*$")
 
 DECLARATIONS: dict[str, str] = {
     "_PUBLIC_PREFIXES": "prefix",
@@ -212,6 +219,20 @@ def _registry(loaded: object) -> dict[str, Any]:
     return dict(routes) if isinstance(routes, dict) else {}
 
 
+def _application_registry(loaded: object, application: str) -> dict[str, Any]:
+    """Read one public-route declaration without changing the legacy shape."""
+    if not isinstance(loaded, dict):
+        return {}
+    applications = loaded.get("applications")
+    if not isinstance(applications, dict):
+        return {}
+    selected = applications.get(application)
+    if not isinstance(selected, dict):
+        return {}
+    routes = selected.get("routes")
+    return dict(routes) if isinstance(routes, dict) else {}
+
+
 def _registry_identities(registry: dict[str, Any]) -> set[tuple[str, str]]:
     return {
         (path, str(entry.get("kind")))
@@ -250,15 +271,205 @@ def audit(today: date | None = None) -> list[str]:
     return audit_registry(declared, registry, today)
 
 
+def audit_turing_public(today: date | None = None) -> list[str]:
+    """Audit Turing's public declarations with the same registry rules."""
+    declared = declared_paths(_TURING_MIDDLEWARE.read_text(encoding="utf-8"))
+    loaded = json.loads(REGISTRY.read_text(encoding="utf-8"))
+    return audit_registry(declared, _application_registry(loaded, "turing"), today)
+
+
+def _route_matches(path: str, declared: str, kind: str) -> bool:
+    if kind == "exact":
+        return path == declared
+    if kind == "prefix":
+        boundary = declared.rstrip("/")
+        return path == boundary or path.startswith(boundary + "/")
+    if kind == "loose-prefix":
+        return path.startswith(declared)
+    if kind == "template":
+        pattern = re.sub(r"\{[^/{}]+\}", r"[^/]+", declared)
+        return re.fullmatch(pattern.rstrip("/"), path.rstrip("/")) is not None
+    return False
+
+
+def registered_routes(app: Any) -> list[tuple[str, str]]:
+    """Return the live HTTP route identities from a FastAPI application."""
+    found: list[tuple[str, str]] = []
+    for route in getattr(app, "routes", ()):
+        path = getattr(route, "path", None)
+        if not isinstance(path, str):
+            continue
+        methods = {str(method).upper() for method in (getattr(route, "methods", ()) or ())}
+        if "GET" in methods:
+            methods.discard("HEAD")
+        if not methods and route.__class__.__name__ == "WebSocketRoute":
+            methods = {"WEBSOCKET"}
+        found.extend((method, path) for method in sorted(methods))
+    return sorted(set(found))
+
+
+def _load_application(application: str) -> Any:
+    """Import a production app for route discovery, failing rather than skipping it."""
+    if application == "conductor":
+        paths = [
+            ROOT / "packages" / "hive-conductor" / "backend",
+            ROOT / "packages" / "maistro-design" / "src",
+            ROOT / "packages" / "maistro-core" / "src",
+        ]
+        module_name = "main"
+    elif application == "turing":
+        # Route discovery must not need a deployer's secret, but it must still
+        # import the real app. A placeholder is scoped to this checker process.
+        os.environ.setdefault("TURING_SERVICE_KEY", "route-discovery-placeholder")
+        paths = [
+            ROOT / "packages" / "maistro-turing",
+            ROOT / "packages" / "maistro-turing" / "src",
+            ROOT / "packages" / "maistro-core" / "src",
+        ]
+        module_name = "backend.main"
+    else:  # pragma: no cover - callers use the fixed application tuple
+        raise ValueError(f"unknown application {application!r}")
+
+    for path in reversed(paths):
+        sys.path.insert(0, str(path))
+    try:
+        module = import_module(module_name)
+        app = getattr(module, "app", None)
+        if app is None:
+            factory = getattr(module, "create_app", None)
+            app = factory() if callable(factory) else None
+        if app is None or not hasattr(app, "routes"):
+            raise RuntimeError(f"{application} module {module_name!r} did not expose a FastAPI app")
+        return app
+    except Exception as exc:
+        raise RuntimeError(
+            f"could not import {application} backend for route discovery: {exc}"
+        ) from exc
+
+
+def _route_entry_failures(  # noqa: C901
+    application: str, discovered: list[tuple[str, str]], entries: list[Any], today: date
+) -> list[str]:
+    failures: list[str] = []
+    usable: list[dict[str, Any]] = []
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            failures.append(f"  {application}[{index}]: route declaration is not an object")
+            continue
+        path = entry.get("path")
+        kind = entry.get("kind")
+        if not isinstance(path, str) or not path.startswith("/"):
+            failures.append(f"  {application}[{index}]: route declaration needs an absolute path")
+        if kind not in _ROUTE_KINDS:
+            failures.append(f"  {application}[{index}]: unknown route matching kind {kind!r}")
+        methods = entry.get("methods", ["*"])
+        if (
+            not isinstance(methods, list)
+            or not methods
+            or any(not isinstance(method, str) for method in methods)
+        ):
+            failures.append(f"  {application}[{index}]: methods must be a non-empty list")
+        usable.append(entry)
+
+    for method, path in discovered:
+        matches = [
+            entry
+            for entry in usable
+            if method in entry.get("methods", ["*"]) or "*" in entry.get("methods", ["*"])
+            if _route_matches(path, str(entry.get("path", "")), str(entry.get("kind", "")))
+        ]
+        if not matches:
+            failures.append(f"  {application} {method} {path}: registered route has no declaration")
+            continue
+        # An exact declaration wins over a containing prefix. Two declarations
+        # at the same specificity are ambiguous and cannot silently authorize.
+        matches.sort(
+            key=lambda entry: (len(str(entry.get("path", ""))), entry.get("kind") == "exact"),
+            reverse=True,
+        )
+        selected = matches[0]
+        if len(matches) > 1 and all(
+            len(str(entry.get("path", ""))) == len(str(selected.get("path", "")))
+            for entry in matches[1:]
+        ):
+            failures.append(f"  {application} {method} {path}: route declarations are ambiguous")
+            continue
+        failures.extend(_route_entry_problems(f"{application} {method} {path}", selected, today))
+
+    # A declaration that matches no live route is stale. Stale approvals are
+    # dangerous because a later route can accidentally inherit their intent.
+    for index, entry in enumerate(usable):
+        if not any(
+            (method in entry.get("methods", ["*"]) or "*" in entry.get("methods", ["*"]))
+            and _route_matches(path, str(entry.get("path", "")), str(entry.get("kind", "")))
+            for method, path in discovered
+        ):
+            failures.append(
+                f"  {application}[{index}]: route declaration matches no registered route"
+            )
+    return failures
+
+
+def _route_entry_problems(path: str, entry: dict[str, Any], today: date) -> list[str]:
+    access = entry.get("access")
+    if access == "permission":
+        permission = entry.get("permission")
+        if not isinstance(permission, str) or _PERMISSION_RE.fullmatch(permission) is None:
+            return [f"  {path}: permission must use canonical scope.verb vocabulary"]
+        return []
+    if access == "public":
+        return _entry_problems(path, entry, str(entry.get("kind")), today)
+    if access == "exempt":
+        missing = [
+            f"  {path}: an exemption must name {field!r}"
+            for field in ("owner", "reason", "expires")
+            if not entry.get(field)
+        ]
+        if missing:
+            return missing
+        try:
+            expires = date.fromisoformat(str(entry["expires"]))
+        except ValueError:
+            return [f"  {path}: exemption expires is not a YYYY-MM-DD date"]
+        if expires < today:
+            return [f"  {path}: exemption expired on {expires.isoformat()}"]
+        return []
+    return [f"  {path}: access must be permission, public, or exempt"]
+
+
+def audit_registered_routes(today: date | None = None) -> list[str]:
+    """Discover both live apps and audit them against the one route registry."""
+    today = today or date.today()
+    loaded = json.loads(ROUTE_REGISTRY.read_text(encoding="utf-8"))
+    routes = loaded.get("routes") if isinstance(loaded, dict) else None
+    if not isinstance(routes, dict):
+        return [f"  {ROUTE_REGISTRY.name}: routes must contain both applications"]
+    failures: list[str] = []
+    for application in _APPLICATIONS:
+        entries = routes.get(application)
+        if not isinstance(entries, list):
+            failures.append(f"  {application}: route registry section is missing")
+            continue
+        app = _load_application(application)
+        failures.extend(_route_entry_failures(application, registered_routes(app), entries, today))
+    return failures
+
+
 def main() -> int:
-    for required in (MIDDLEWARE, REGISTRY):
+    for required in (MIDDLEWARE, REGISTRY, ROUTE_REGISTRY, _TURING_MIDDLEWARE):
         if not required.is_file():
             print(f"FAIL: {required} does not exist", file=sys.stderr)
             return 1
 
     declared = declared_paths(MIDDLEWARE.read_text(encoding="utf-8"))
-    candidate = _registry(json.loads(REGISTRY.read_text(encoding="utf-8")))
+    loaded_public = json.loads(REGISTRY.read_text(encoding="utf-8"))
+    candidate = _registry(loaded_public)
     candidate_failures = audit_registry(declared, candidate)
+    candidate_failures.extend(audit_turing_public())
+    try:
+        candidate_failures.extend(audit_registered_routes())
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
+        candidate_failures.append(f"  route discovery failed closed: {exc}")
 
     prov = _provenance()
     try:
@@ -315,7 +526,7 @@ def main() -> int:
     )
 
     if failures:
-        print(f"FAIL: {len(failures)} problem(s) with the unauthenticated route surface:\n")
+        print(f"FAIL: {len(failures)} problem(s) with the HTTP route authorization surface:\n")
         print("\n".join(failures))
         print(
             "\nA new public route or matching-kind expansion requires its registry entry plus a "
@@ -324,7 +535,10 @@ def main() -> int:
         )
         return 1
 
-    print(f"ok: all {len(declared)} unauthenticated path(s) are declared and base-authorized")
+    print(
+        f"ok: all {len(declared)} unauthenticated path(s) are declared and base-authorized; "
+        "both live route tables are declared and authorized"
+    )
     return 0
 
 
