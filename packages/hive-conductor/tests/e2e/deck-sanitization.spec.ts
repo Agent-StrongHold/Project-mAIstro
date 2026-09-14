@@ -66,10 +66,11 @@ window.__sanitizeDeckMarkup = sanitizeDeckMarkup;
 window.__sanitizeVisualArtifactMarkup = sanitizeVisualArtifactMarkup;
 window.__scanVisualArtifactMarkup = scanVisualArtifactMarkup;
 window.__recommendVisualArtifactTrust = recommendVisualArtifactTrust;
-const mode = new URLSearchParams(window.location.search).get("mode");
+const params = new URLSearchParams(window.location.search);
+const mode = params.get("mode");
 const hostile = "<h1>Safe fixed page</h1><script>window.__deckPwned=20</script><img src=\\\"http://${ATTACKER}/fixed\\\" onerror=\\\"window.__deckPwned=21\\\"><svg><foreignObject><iframe src=\\\"http://${ATTACKER}/fixed-frame\\\"></iframe></foreignObject><circle cx=\\\"10\\\" cy=\\\"10\\\" r=\\\"8\\\" fill=\\\"#b15b3e\\\" onload=\\\"window.__deckPwned=22\\\"></circle></svg><div style=\\\"background-image:url(http://${ATTACKER}/fixed-css);color:#17202a\\\">safe text</div>";
 createRoot(document.getElementById("root")!).render(
-  mode ? <FixedPageArtifactEditor mode={mode as "poster" | "infographic" | "flyer"} initialMarkup={hostile} /> : <DeckBuilder />,
+  mode ? <FixedPageArtifactEditor mode={mode as "poster" | "infographic" | "flyer"} initialMarkup={params.has("hostile") ? hostile : undefined} /> : <DeckBuilder />,
 );
 `,
     "utf8",
@@ -136,9 +137,9 @@ async function loadFresh(): Promise<void> {
   await expect(page.getByPlaceholder(/Describe slides to generate/)).toBeVisible();
 }
 
-async function loadFixedFresh(mode: "poster" | "infographic" | "flyer"): Promise<void> {
+async function loadFixedFresh(mode: "poster" | "infographic" | "flyer", hostile = true): Promise<void> {
   attackerRequests = [];
-  await page.goto(`${harnessUrl}?mode=${mode}`, { waitUntil: "domcontentloaded" });
+  await page.goto(`${harnessUrl}?mode=${mode}${hostile ? "&hostile=1" : ""}`, { waitUntil: "domcontentloaded" });
   await expect(page.getByTestId("fixed-page-editor")).toBeVisible();
 }
 
@@ -405,4 +406,10 @@ test("poster, infographic, and flyer use the shared boundary for preview, edit, 
     expectNoExecutableMarkup(exported, true);
     expect(attackerRequests).toEqual([]);
   }
+
+  await loadFixedFresh("infographic", false);
+  const safeTemplate = page.locator('[contenteditable="true"]');
+  await expect(safeTemplate).toContainText("One clear idea");
+  await expect(safeTemplate.locator("svg circle")).toHaveCount(2);
+  expectNoExecutableMarkup(await safeTemplate.innerHTML());
 });
