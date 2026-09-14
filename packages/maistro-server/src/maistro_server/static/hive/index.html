@@ -204,15 +204,20 @@
     return h;
   }
 
-  if (sessionStorage.getItem(KEY)) apiKeyEl.value = sessionStorage.getItem(KEY);
-
+  // The key is held only in this page's memory for the life of the tab:
+  // persisting it in web storage would leave it readable to anything that
+  // can run script on this origin later, and a reload is a cheap price.
+  let savedKey = "";
   document.getElementById("saveKey").onclick = () => {
-    sessionStorage.setItem(KEY, apiKeyEl.value.trim());
+    savedKey = apiKeyEl.value.trim();
   };
   document.getElementById("clearKey").onclick = () => {
-    sessionStorage.removeItem(KEY);
+    savedKey = "";
     apiKeyEl.value = "";
   };
+  apiKeyEl.addEventListener("focus", () => {
+    if (!apiKeyEl.value && savedKey) apiKeyEl.value = savedKey;
+  });
 
   async function safeJson(r) {
     const t = await r.text();
