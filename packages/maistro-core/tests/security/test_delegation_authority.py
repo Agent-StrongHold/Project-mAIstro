@@ -10,7 +10,7 @@ import pytest
 
 from maistro.agents.base import Agent
 from maistro.security._types import AuthContext
-from maistro.security.sentinel.authz_types import Principal
+from maistro.security.sentinel.authz_types import Principal, Tier
 from maistro.security.sentinel.delegation import (
     DelegationGrant,
     DelegationRequest,
@@ -124,8 +124,6 @@ def test_an_approval_for_another_artifact_cannot_be_reused() -> None:
 
 
 def test_auth_context_enforces_the_effective_subset() -> None:
-    from maistro.security._types import AuthContext
-
     auth = AuthContext(
         user_id="owner-1",
         roles=frozenset({"user"}),
@@ -135,6 +133,31 @@ def test_auth_context_enforces_the_effective_subset() -> None:
 
     assert auth.can_use_tool("read_file", table) is True
     assert auth.can_use_tool("write_file", table) is False
+
+
+@pytest.mark.asyncio
+async def test_execution_mode_requires_a_cleared_host_tier() -> None:
+    principal = Principal(id="owner-1", kind="human", roles=("user",))
+    default_sentinel = Sentinel(warden=Warden(), permission_table={}, allow_on_miss=True)
+    assert (
+        await default_sentinel.resolve_authorized_execution_mode(
+            "graph.node.execute", principal, args={"node_id": "n1"}
+        )
+        == "blocked"
+    )
+
+    role_sentinel = Sentinel(
+        warden=Warden(),
+        permission_table={},
+        tier_policy={("graph.node.execute", "user"): Tier.ROLE_AUTO},
+        allow_on_miss=True,
+    )
+    assert (
+        await role_sentinel.resolve_authorized_execution_mode(
+            "graph.node.execute", principal, args={"node_id": "n1"}
+        )
+        == "async"
+    )
 
 
 @pytest.mark.asyncio

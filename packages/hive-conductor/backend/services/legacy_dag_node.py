@@ -500,10 +500,11 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
                     value for value in (ctx.workspace_id, ctx.project_id, ctx.user_id) if value
                 ),
             )
-            host_mode = self._sentinel.resolve_execution_mode(
+            host_mode = await self._sentinel.resolve_authorized_execution_mode(
                 "graph.node.untrusted" if untrusted else "graph.node.execute",
                 principal,
-                reversibility="irreversible" if untrusted else "reversible",
+                args={"node_id": node_id, "artifact": self._task_desc},
+                reversibility="irreversible",
                 # Graph effects default to the sandbox; only an explicit
                 # host policy entry can select the inline mode.
                 default=Tier.BLOCKED if untrusted else Tier.SELF_ELEVATION,

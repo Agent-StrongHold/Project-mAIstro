@@ -233,6 +233,31 @@ class Sentinel:
             return "async"
         return "sandbox"
 
+    async def resolve_authorized_execution_mode(
+        self,
+        action: str,
+        principal: Principal,
+        *,
+        args: dict[str, Any],
+        reversibility: str = "irreversible",
+        default: Tier | None = None,
+    ) -> str:
+        """Resolve isolation only after Sentinel's gate is actually cleared."""
+        decision = await self.authorize(
+            action,
+            principal,
+            reversibility=reversibility,
+            args=args,
+        )
+        if not decision.authorized or decision.needs != "none":
+            return "blocked"
+        return self.resolve_execution_mode(
+            action,
+            principal,
+            reversibility=reversibility,
+            default=default,
+        )
+
     async def authorize(
         self,
         action: str,
