@@ -39,6 +39,9 @@ future re-enablement.
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
+import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -68,6 +71,8 @@ REASON_FLAGGED = "flagged"
 REASON_SCANNER_TIMEOUT = "scanner_timeout"
 REASON_SCANNER_ERROR = "scanner_error"
 REASON_BUDGET_EXCEEDED = "budget_exceeded"
+REASON_APPROVAL_REQUIRED = "approval_required"
+REASON_INVALID_APPROVAL = "invalid_approval_evidence"
 
 _BOUNDARY_USER_INPUT = "user_input"
 _BOUNDARY_TOOL_RESULT = "tool_result"
@@ -278,6 +283,87 @@ def tool_effect(tool_name: str) -> str:
     return TOOL_EFFECTS.get(tool_name, TOOL_EFFECT_DESTROY)
 
 
+def _approval_payload(evidence: Mapping[str, Any]) -> bytes:
+    """Canonical bytes a human/delegated signer approves."""
+    fields = {
+        key: evidence.get(key)
+        for key in (
+            "action",
+            "principal",
+            "workflow_id",
+            "approval_id",
+            "nonce",
+            "expires_at",
+            "issuer",
+            "delegated_for",
+        )
+    }
+    return json.dumps(fields, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _approval_is_authoritative(  # noqa: C901
+    evidence: Mapping[str, Any], user_id: str, workflow_id: str
+) -> bool:
+    """Verify a scoped approval instead of trusting caller-shaped metadata.
+
+    The issuer must be the requesting human or a registered admin DID. This is
+    deliberately a verifier, not a store: the existing identity and audit
+    authorities remain the owners of identity and evidence respectively.
+    """
+    required = (
+        "action",
+        "principal",
+        "workflow_id",
+        "approval_id",
+        "nonce",
+        "expires_at",
+        "issuer",
+        "signature",
+    )
+    if any(not evidence.get(field) for field in required):
+        return False
+    if evidence.get("action") != "run_workflow" or evidence.get("principal") != user_id:
+        return False
+    if evidence.get("workflow_id") != workflow_id:
+        return False
+    try:
+        expires_at = int(evidence["expires_at"])
+        if expires_at <= int(time.time()):
+            return False
+        signature = base64.urlsafe_b64decode(str(evidence["signature"]) + "===")
+        issuer = str(evidence["issuer"])
+        from maistro.identity import public_key_from_did_key  # noqa: I001
+        from nacl.signing import VerifyKey
+
+        VerifyKey(public_key_from_did_key(issuer)).verify(_approval_payload(evidence), signature)
+    except Exception:
+        return False
+
+    # A valid signature is still not an authority grant. Resolve the issuer
+    # through the product's verified identities; admin is the delegated root.
+    try:
+        import stores
+
+        principal = stores.users.get(user_id)
+        issuer_user = next((u for u in stores.users.values() if u.did == issuer), None)
+        if principal is None or issuer_user is None:
+            return False
+        if issuer != getattr(principal, "did", None):
+            if getattr(issuer_user, "role", "") != "admin":
+                return False
+            if evidence.get("delegated_for") != user_id:
+                return False
+        approval_id = str(evidence["approval_id"])
+        return not any(
+            row.get("action") == "chat_tool_privilege_approved"
+            and row.get("detail", {}).get("approval_evidence", {}).get("approval_id") == approval_id
+            for row in stores.audit_log.values()
+            if isinstance(row, dict)
+        )
+    except Exception:
+        return False
+
+
 def gate_tool_dispatch(
     tool_name: str,
     user_id: str,
@@ -296,10 +382,40 @@ def gate_tool_dispatch(
     """
     effect = tool_effect(tool_name)
     if effect in (TOOL_EFFECT_DESTROY, TOOL_EFFECT_MUTATE):
-        # Workflow approval must carry the upstream human/delegation evidence;
-        # a bare boolean is not an approval boundary for durable execution.
-        if tool_name == "run_workflow" and approved and not approval_evidence:
-            approved = False
+        # Workflow approval must be a signed, exact-scope human/delegated
+        # decision. A caller-shaped dict is not an authority boundary.
+        if tool_name == "run_workflow" and (
+            not approved
+            or not approval_evidence
+            or not _approval_is_authoritative(approval_evidence, user_id, workflow_id or "")
+        ):
+            decision = GateDecision(
+                allowed=False,
+                reason=(
+                    REASON_INVALID_APPROVAL
+                    if approved and approval_evidence
+                    else REASON_APPROVAL_REQUIRED
+                ),
+                boundary=_BOUNDARY_USER_INPUT,
+                surface="chat_tool_dispatch",
+                gate_id=gate_id or new_gate_id(),
+                tool=tool_name,
+            )
+            log_audit(
+                "chat_tool_privilege_blocked",
+                user_id or "anonymous",
+                target=tool_name,
+                detail={
+                    "gate_id": decision.gate_id,
+                    "principal": user_id or "anonymous",
+                    "effect": effect,
+                    "workflow_id": workflow_id,
+                    "refusal_reason": decision.reason,
+                    "policy_version": POLICY_VERSION,
+                },
+                severity="warning",
+            )
+            return decision
         if approved:
             # Approval is supplied by the trusted caller after its human or
             # delegated-authority verifier has run. Model arguments never reach

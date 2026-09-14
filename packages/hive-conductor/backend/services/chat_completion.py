@@ -2039,10 +2039,14 @@ async def run_chat_completion(
     req: ChatCompletionRequest,
     user_id: str = "",
     _llm: LLMPort | None = None,
+    *,
+    approval_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """PM Fleet chat — real tools, real data, real LLM synthesis."""
     try:
-        return await _run_chat_completion_inner(req, user_id, _llm)
+        return await _run_chat_completion_inner(
+            req, user_id, _llm, approval_evidence=approval_evidence
+        )
     except Exception as exc:
         logger.exception("run_chat_completion crashed: %s", exc)
         return {
@@ -2057,6 +2061,8 @@ async def _run_chat_completion_inner(
     req: ChatCompletionRequest,
     user_id: str = "",
     _llm: LLMPort | None = None,
+    *,
+    approval_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Inner implementation."""
     import time as _time
@@ -2124,7 +2130,13 @@ async def _run_chat_completion_inner(
                 args = {}
 
             logger.info("tool_call name=%s args=%s user=%s", name, args, user_id)
-            result, _summary = await _gated_execute_tool(name, args, user_id, gate_id)
+            result, _summary = await _gated_execute_tool(
+                name,
+                args,
+                user_id,
+                gate_id,
+                approval_evidence=approval_evidence,
+            )
             logger.info(
                 "tool_result name=%s keys=%s",
                 name,
@@ -2311,6 +2323,8 @@ def _registered_tool_names(tools: list[dict[str, Any]]) -> tuple[str, ...]:
 async def run_chat_completion_streaming(  # noqa: C901  streaming state machine
     req: ChatCompletionRequest,
     user_id: str = "",
+    *,
+    approval_evidence: dict[str, Any] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Streaming version — yields SSE events with real status updates."""
     s = get_settings()
@@ -2477,7 +2491,13 @@ async def run_chat_completion_streaming(  # noqa: C901  streaming state machine
                 # policy, executes, and scans the result at the tool_result
                 # boundary (#315) — indirect injection in a tool result is
                 # withheld before it reaches the next model turn.
-                result, summary = await _gated_execute_tool(name, args, user_id, gate_id)
+                result, summary = await _gated_execute_tool(
+                    name,
+                    args,
+                    user_id,
+                    gate_id,
+                    approval_evidence=approval_evidence,
+                )
             yield {"type": "tool_result", "tool": name, "summary": summary}
 
             messages.append(

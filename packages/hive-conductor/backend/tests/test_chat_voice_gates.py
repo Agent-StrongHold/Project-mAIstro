@@ -13,7 +13,10 @@ streaming and non-streaming surfaces.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+import time
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -581,7 +584,7 @@ def test_run_workflow_is_privileged_and_requires_scoped_approval() -> None:
     assert blocked["detail"]["workflow_id"] == "dag-1"
     assert blocked["detail"]["refusal_reason"] == "approval_required"
 
-    approved = chat_gate.gate_tool_dispatch(
+    forged = chat_gate.gate_tool_dispatch(
         "run_workflow",
         "user-1",
         approved=True,
@@ -589,19 +592,132 @@ def test_run_workflow_is_privileged_and_requires_scoped_approval() -> None:
         gate_id="gate-workflow",
         approval_evidence={"kind": "human", "approval_id": "approval-1"},
     )
-    assert approved is None
+    assert forged is not None
+    assert forged.reason == chat_gate.REASON_INVALID_APPROVAL
 
+    blocked = [
+        e for e in stores.audit_log.values() if e["action"] == "chat_tool_privilege_blocked"
+    ][-1]
+    assert blocked["detail"]["refusal_reason"] == chat_gate.REASON_INVALID_APPROVAL
+
+
+def _signed_workflow_approval(
+    *,
+    principal: str,
+    workflow_id: str,
+    approval_id: str,
+    signing_key: Any,
+    delegated_for: str | None = None,
+) -> dict[str, Any]:
+    from maistro.identity import did_key_from_public_key
+
+    evidence = {
+        "action": "run_workflow",
+        "principal": principal,
+        "workflow_id": workflow_id,
+        "approval_id": approval_id,
+        "nonce": f"nonce-{approval_id}",
+        "expires_at": int(time.time()) + 300,
+        "issuer": did_key_from_public_key(bytes(signing_key.verify_key)),
+        "delegated_for": delegated_for,
+    }
+    signature = signing_key.sign(chat_gate._approval_payload(evidence)).signature
+    return {**evidence, "signature": base64.urlsafe_b64encode(signature).decode("ascii")}
+
+
+def test_signed_human_approval_is_exactly_scoped_and_audited() -> None:
+    import stores
+    from nacl.signing import SigningKey
+
+    signing_key = SigningKey.generate()
+    delegated_key = SigningKey.generate()
+    from maistro.identity import did_key_from_public_key
+
+    stores.users["user-1"] = stores.users._model_class(
+        id="user-1",
+        username="user-1",
+        password_hash="unused",
+        role="user",
+        is_active=True,
+        permissions=[],
+        did=did_key_from_public_key(bytes(signing_key.verify_key)),
+        created_at=datetime.now(UTC),
+    )
+    stores.users["admin-1"] = stores.users._model_class(
+        id="admin-1",
+        username="admin-1",
+        password_hash="unused",
+        role="admin",
+        is_active=True,
+        permissions=[],
+        did=did_key_from_public_key(bytes(delegated_key.verify_key)),
+        created_at=datetime.now(UTC),
+    )
+    _reset_audit()
+    evidence = _signed_workflow_approval(
+        principal="user-1",
+        workflow_id="dag-1",
+        approval_id="approval-signed",
+        signing_key=signing_key,
+    )
+    assert (
+        chat_gate.gate_tool_dispatch(
+            "run_workflow",
+            "user-1",
+            approved=True,
+            approval_evidence=evidence,
+            workflow_id="dag-1",
+            gate_id="gate-signed",
+        )
+        is None
+    )
+    delegated = _signed_workflow_approval(
+        principal="user-1",
+        workflow_id="dag-2",
+        approval_id="approval-delegated",
+        signing_key=delegated_key,
+        delegated_for="user-1",
+    )
+    assert (
+        chat_gate.gate_tool_dispatch(
+            "run_workflow",
+            "user-1",
+            approved=True,
+            approval_evidence=delegated,
+            workflow_id="dag-2",
+        )
+        is None
+    )
+    assert (
+        chat_gate.gate_tool_dispatch(
+            "run_workflow",
+            "user-1",
+            approved=True,
+            approval_evidence=evidence,
+            workflow_id="dag-1",
+        )
+        is not None
+    )
+    assert (
+        chat_gate.gate_tool_dispatch(
+            "run_workflow",
+            "user-1",
+            approved=True,
+            approval_evidence=evidence,
+            workflow_id="other-dag",
+        )
+        is not None
+    )
     approval = [
         e for e in stores.audit_log.values() if e["action"] == "chat_tool_privilege_approved"
     ][-1]
-    assert approval["actor"] == "user-1"
-    assert approval["detail"]["workflow_id"] == "dag-1"
-    assert approval["detail"]["approval_evidence"]["approval_id"] == "approval-1"
-    assert approval["detail"]["approval_scope"] == "tool_dispatch_only"
+    assert approval["detail"]["principal"] == "user-1"
+    assert approval["detail"]["workflow_id"] == "dag-2"
+    assert approval["detail"]["approval_evidence"]["approval_id"] == "approval-delegated"
 
 
 @pytest.mark.asyncio
-async def test_workflow_approval_does_not_authorize_model_only_dispatch_or_hide_run_identity(
+async def test_workflow_forged_evidence_never_reaches_handler(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _reset_audit()
@@ -616,26 +732,16 @@ async def test_workflow_approval_does_not_authorize_model_only_dispatch_or_hide_
     assert refused["blocked"] is True
     assert called == []
 
-    completed = await service._execute_tool(
+    forged = await service._execute_tool(
         "run_workflow",
         {"dag_id": "dag-1"},
         "user-1",
         approved=True,
         approval_evidence={"kind": "delegated", "approval_id": "approval-2"},
     )
-    assert completed["run_id"] == "run-1"
-    assert called == ["user-1"]
-
-    import stores
-
-    execution = [e for e in stores.audit_log.values() if e["action"] == "chat_workflow_execution"][
-        -1
-    ]
-    assert execution["actor"] == "user-1"
-    assert execution["detail"]["workflow_id"] == "dag-1"
-    assert execution["detail"]["run_id"] == "run-1"
-    assert execution["detail"]["approval_evidence"]["approval_id"] == "approval-2"
-    assert execution["detail"]["approval_scope"] == "tool_dispatch_only"
+    assert forged["blocked"] is True
+    assert "invalid_approval_evidence" in forged["error"]
+    assert called == []
 
 
 @pytest.mark.asyncio
