@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +41
+  packages/hive-conductor/backend/tests: +42
 ---
 # 313-registration-policy
 
@@ -22,7 +22,10 @@ invitation issue whose write was not observed back (3); setup guard edges
 — missing-field 422s parametrized over the three required fields, the
 deterministic claim-race 409, and the un-persisted close-out 503 with its
 released claim (5); and one-shot setup against the persisted KV record on
-real SQLite (1).
+real SQLite (1). The persisted one-shot case also opens a second SQLite
+reader before the original writer closes, proving the setup marker was
+flushed before success. One additional node pins the explicit persisted-state
+flush boundary used by that setup marker.
 
 No suite lost nodes. The M0-era `test_public_registration_is_fail_closed`
 in `test_security_headers.py` was rewritten in place for the M2 contract

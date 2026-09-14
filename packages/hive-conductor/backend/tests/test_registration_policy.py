@@ -863,6 +863,17 @@ class TestPersistedSetupIsOneShot:
             # created: the record is present, so the answer is one-shot.
             assert setup_routes._is_setup_complete() is True
 
+            # A second State reader observes the marker before the original
+            # writer is closed. This catches a setup route that only enqueues
+            # the marker and reports success before it is durable.
+            reader_state = State(db_path=tmp_path / "one-shot.db")
+            reader_persisted = PersistedStore(reader_state)
+            reader_persisted.initialize()
+            reader_sessions = JsonStore("sessions", persisted=reader_persisted)
+            reader_sessions.initialize()
+            assert "__hive_setup__" in reader_sessions
+            reader_state.close()
+
             with pytest.raises(HTTPException) as exc_info:
                 setup_routes.complete_setup({**body, "admin_username": "second-run"})
             assert exc_info.value.status_code == 409
@@ -873,6 +884,37 @@ class TestPersistedSetupIsOneShot:
             stores.sessions = original_sessions
             state.flush()
             state.close()
+
+
+class TestPersistedSetupMarkerBoundary:
+    def test_marker_flush_helper_uses_the_persisted_state_boundary(self) -> None:
+        """A persisted bootstrap marker must have an explicit drain boundary."""
+        import stores
+        from routes import setup as setup_routes
+
+        class _State:
+            def __init__(self) -> None:
+                self.timeouts: list[float] = []
+
+            def flush(self, *, timeout: float) -> None:
+                self.timeouts.append(timeout)
+
+        state = _State()
+
+        class _Persisted:
+            _state = state
+
+        class _Sessions:
+            _persisted = _Persisted()
+
+        original_persisted = stores.sessions._persisted
+        stores.sessions._persisted = _Sessions()._persisted
+        try:
+            setup_routes._flush_setup_marker()
+        finally:
+            stores.sessions._persisted = original_persisted
+
+        assert state.timeouts == [10.0]
 
 
 class TestCorruptedStateFailsClosed:
