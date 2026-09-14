@@ -11,6 +11,7 @@ class AgentPort(Protocol):
         self,
         messages: list[dict[str, Any]],
         *,
+        auth: Any = None,
         session_id: str | None = None,
         intent_hint: str = "",
     ) -> dict[str, Any]: ...

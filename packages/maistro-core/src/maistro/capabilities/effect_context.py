@@ -26,9 +26,11 @@ from maistro.capabilities.invocation import (
     InvocationExecutionService,
     InvocationStore,
 )
+from maistro.config.rate_limits import resolve_rate_profile
 from maistro.credentials.router import CredentialRouter
 from maistro.events.envelope import EventStore, InMemoryEventStore
 from maistro.policy.types import Decision, PolicyVerdict
+from maistro.quota.invocation import InMemoryInvocationQuota, QuotaAdmission
 
 
 async def _m1_binding_authorized_policy(
@@ -60,6 +62,7 @@ class CapabilityEffectContext:
     invocations: GovernedInvocationExecutionService
     invocation_store: InvocationStore
     event_store: EventStore
+    quota: QuotaAdmission | None = None
     credentials: CredentialRouter = field(default_factory=CredentialRouter)
 
     def credential_routing(self) -> CredentialRouting:
@@ -79,6 +82,8 @@ def new_in_memory_effect_context(
     *,
     policy_evaluator: PolicyEvaluator | None = None,
     credentials: CredentialRouter | None = None,
+    quota_admission: QuotaAdmission | None = None,
+    invocation_store: InvocationStore | None = None,
 ) -> CapabilityEffectContext:
     """Build an isolated canonical effect context for local/runtime composition.
 
@@ -88,9 +93,13 @@ def new_in_memory_effect_context(
     """
 
     binding_store = InMemoryBindingStore()
-    invocation_store = InMemoryInvocationStore()
+    invocation_store = invocation_store or InMemoryInvocationStore()
     event_store = InMemoryEventStore()
-    invocation_service = InvocationExecutionService(store=invocation_store)
+    quota = quota_admission or InMemoryInvocationQuota(profile_for=resolve_rate_profile)
+    invocation_service = InvocationExecutionService(
+        store=invocation_store,
+        quota_admission=quota,
+    )
     governed = GovernedInvocationExecutionService(
         invocation_service=invocation_service,
         event_store=event_store,
@@ -101,6 +110,7 @@ def new_in_memory_effect_context(
         invocations=governed,
         invocation_store=invocation_store,
         event_store=event_store,
+        quota=quota,
         credentials=credentials or CredentialRouter(),
     )
 

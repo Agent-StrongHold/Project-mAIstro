@@ -193,6 +193,9 @@ class Agent:
         tool_executor: Any = None,
         tool_registry: Any = None,
         agent_resolver: Any = None,
+        effect_context: Any = None,
+        workspace_id: str = "",
+        project_id: str = "",
     ) -> None:
         self.identity = identity
         self._strategy = strategy
@@ -208,13 +211,18 @@ class Agent:
         self._sentinel = sentinel
         self._outcome_store = outcome_store
         self._session_store = session_store
-        self._quota_tracker = quota_tracker
+        # Legacy DI still supplies this argument, but Invocation is the sole
+        # quota authority for physical provider effects.
+        del quota_tracker
         self._coin_ledger = coin_ledger
         self._tool_executor = tool_executor
         self._tool_registry = tool_registry
         self._tracer = tracer
         # Resolves a sub-agent name -> Agent for delegation. Callable or mapping.
         self._agent_resolver = agent_resolver
+        self._effect_context = effect_context
+        self._workspace_id = workspace_id
+        self._project_id = project_id
 
     async def handle(
         self,
@@ -339,7 +347,13 @@ class Agent:
         )
 
         result = await self._run_strategy(
-            context_messages, model, tool_defs, strategy_kwargs, trace
+            context_messages,
+            model,
+            tool_defs,
+            strategy_kwargs,
+            trace,
+            principal_id=str(getattr(auth, "user_id", "") or ""),
+            run_id=turn_id or "",
         )
         if result is None:
             # `_run_strategy` already caught and logged; mark it failed so this
@@ -546,15 +560,31 @@ class Agent:
         tool_defs: list[dict[str, Any]] | None,
         strategy_kwargs: dict[str, Any],
         trace: Any,
+        *,
+        principal_id: str = "",
+        run_id: str = "",
     ) -> Any:
         """Run the reasoning strategy. Returns the result, or ``None`` on a
         handled error (caller returns a generic error response)."""
         try:
+            llm = self._llm
+            if self._effect_context is not None:
+                from maistro.capabilities.invocation import GovernedLLMClient
+
+                llm = GovernedLLMClient(
+                    self._llm,
+                    invocation_service=self._effect_context.invocations,
+                    workspace_id=self._workspace_id,
+                    project_id=self._project_id,
+                    principal_id=principal_id,
+                    agent_id=self.identity.name,
+                    run_id=run_id,
+                )
             if not trace:
                 return await self._strategy.reason(
                     context_messages,
                     model,
-                    self._llm,
+                    llm,
                     tools=tool_defs,
                     tool_executor=self._tool_executor,
                     **strategy_kwargs,
@@ -564,7 +594,7 @@ class Agent:
                 result = await self._strategy.reason(
                     context_messages,
                     model,
-                    self._llm,
+                    llm,
                     tools=tool_defs,
                     tool_executor=self._tool_executor,
                     **strategy_kwargs,

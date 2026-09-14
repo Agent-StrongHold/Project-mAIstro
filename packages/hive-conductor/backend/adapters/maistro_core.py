@@ -213,6 +213,11 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         # react's un-guarded branch. ADR-082526-3ca6: the runtime that owns
         # the agents owns their delegation dependencies.
         tool_executor=dispatch_tool,
+        effect_context=getattr(container, "capability_effects", None),
+        workspace_id=getattr(
+            getattr(container, "config", None), "workspace_id", config.workspace_id
+        ),
+        project_id="default",
         require_agents=True,
     )
     # The template for runtime materialization. Tolerant on purpose: with

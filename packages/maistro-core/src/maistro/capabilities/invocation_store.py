@@ -1,17 +1,12 @@
 """Durable persistence adapters for canonical capability Invocations.
 
-**Unreached, and durable only in the SQLite sense.** Nothing constructs
-:class:`SqliteInvocationStore` outside tests. The container does wire a class of
-the same name -- :class:`maistro.events.invocations.SqliteInvocationStore`, a
-different store over a different table -- and both are re-exported from
-:mod:`maistro.capabilities`, so the collision is easy to read the wrong way
-round. The wired one is the events store; this one is not wired.
-
-Its table has no migration. ``capability_invocations`` is created by
-``ensure_schema`` and appears in no revision under ``alembic/versions``, so it
-does not exist in any PostgreSQL deployment and there is no PostgreSQL twin of
-this store. That is a consequence of being unreached, not an omission to fix
-separately: the migration lands with the wiring, in #55.
+The capability Invocation store is distinct from
+:class:`maistro.events.invocations.InvocationStore`: the latter records event
+handler dispatches, while this module records provider effects and their
+resolved Binding provenance. SQLite and PostgreSQL deployments use the same
+payload contract and the ``033_canonical_invocation_quota`` migration; the
+``ensure_schema`` methods remain useful for local SQLite databases and test
+fixtures that do not run Alembic.
 """
 
 from __future__ import annotations
@@ -134,4 +129,93 @@ class SqliteInvocationStore:
         )
 
 
-__all__ = ["SqliteInvocationStore"]
+class PgInvocationStore:
+    """PostgreSQL InvocationStore used by every worker in a deployment."""
+
+    def __init__(self, pool: object) -> None:
+        self._pool = pool
+
+    async def ensure_schema(self) -> None:
+        async with self._pool.acquire() as conn:  # type: ignore[attr-defined]
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS capability_invocations (
+                    invocation_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    node_run_id TEXT NOT NULL,
+                    attempt_id TEXT NOT NULL,
+                    binding_id TEXT NOT NULL,
+                    effect_key TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at DOUBLE PRECISION NOT NULL,
+                    payload_json JSONB NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_capability_invocation_effect
+                    ON capability_invocations (run_id, node_run_id, binding_id, effect_key, created_at, invocation_id);
+                """
+            )
+
+    async def create(self, invocation: Invocation) -> Invocation:
+        async with self._pool.acquire() as conn:  # type: ignore[attr-defined]
+            await conn.execute(
+                """INSERT INTO capability_invocations
+                   (invocation_id, run_id, node_run_id, attempt_id, binding_id,
+                    effect_key, status, created_at, payload_json)
+                   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)""",
+                invocation.invocation_id,
+                invocation.run_id,
+                invocation.node_run_id,
+                invocation.attempt_id,
+                invocation.binding.binding_id,
+                invocation.effect_key,
+                invocation.status.value,
+                invocation.created_at.timestamp(),
+                invocation.model_dump_json(),
+            )
+        return invocation.model_copy(deep=True)
+
+    async def get(self, invocation_id: str) -> Invocation | None:
+        async with self._pool.acquire() as conn:  # type: ignore[attr-defined]
+            row = await conn.fetchrow(
+                "SELECT payload_json FROM capability_invocations WHERE invocation_id=$1",
+                invocation_id,
+            )
+        return Invocation.model_validate(row["payload_json"]) if row is not None else None
+
+    async def save(self, invocation: Invocation) -> Invocation:
+        async with self._pool.acquire() as conn:  # type: ignore[attr-defined]
+            result = await conn.execute(
+                """UPDATE capability_invocations SET run_id=$1, node_run_id=$2,
+                   attempt_id=$3, binding_id=$4, effect_key=$5, status=$6,
+                   created_at=$7, payload_json=$8::jsonb WHERE invocation_id=$9""",
+                invocation.run_id,
+                invocation.node_run_id,
+                invocation.attempt_id,
+                invocation.binding.binding_id,
+                invocation.effect_key,
+                invocation.status.value,
+                invocation.created_at.timestamp(),
+                invocation.model_dump_json(),
+                invocation.invocation_id,
+            )
+        if result != "UPDATE 1":
+            raise KeyError(f"Invocation {invocation.invocation_id!r} does not exist")
+        return invocation.model_copy(deep=True)
+
+    async def list_effect(
+        self, *, run_id: str, node_run_id: str, binding_id: str, effect_key: str
+    ) -> list[Invocation]:
+        async with self._pool.acquire() as conn:  # type: ignore[attr-defined]
+            rows = await conn.fetch(
+                """SELECT payload_json FROM capability_invocations
+                   WHERE run_id=$1 AND node_run_id=$2 AND binding_id=$3 AND effect_key=$4
+                   ORDER BY created_at ASC, invocation_id ASC""",
+                run_id,
+                node_run_id,
+                binding_id,
+                effect_key,
+            )
+        return [Invocation.model_validate(row["payload_json"]) for row in rows]
+
+
+__all__ = ["PgInvocationStore", "SqliteInvocationStore"]

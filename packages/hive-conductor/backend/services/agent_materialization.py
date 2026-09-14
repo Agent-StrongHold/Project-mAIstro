@@ -550,6 +550,9 @@ async def _build_runtime_agent(defn: Agent, source: RuntimeSource) -> Any:
         outcome_store=container.outcome_store,
         session_store=container.session_store,
         quota_tracker=container.quota_tracker,
+        effect_context=getattr(container, "capability_effects", None),
+        workspace_id=getattr(getattr(container, "config", None), "workspace_id", ""),
+        project_id="default",
         tracer=None,
     )
 

@@ -118,6 +118,30 @@ def _disabled_dashboard_response() -> dict:
     return {"choices": [{"message": {"role": "assistant", "content": _DASHBOARD_EDIT_DISABLED}}]}
 
 
+async def _canonical_completion(
+    messages: list[dict], request: Request, *, session_id: str | None = None
+) -> dict | None:
+    """Use the embedded Agent/Invocation path when the canonical runtime is up."""
+    from services.engine import get_engine
+
+    from maistro.security._types import AuthContext
+
+    port = get_engine().agent_port
+    if getattr(port, "container", None) is None:
+        return None
+    user = getattr(request.state, "user", None) or {}
+    auth = AuthContext(
+        user_id=str(user.get("id") or user.get("username") or ""),
+        username=str(user.get("username") or ""),
+    )
+    return await port.route(
+        messages,
+        auth=auth,
+        session_id=session_id,
+        intent_hint="",
+    )
+
+
 async def _gate_messages(req: ChatCompletionRequest, request: Request, surface: str):
     """The Warden input boundary every external chat turn crosses (#315).
 
@@ -155,6 +179,9 @@ async def complete(req: ChatCompletionRequest, request: Request) -> dict:
     messages = list(req.messages)
     if not any(message.get("role") == "system" for message in messages):
         messages.insert(0, {"role": "system", "content": _CONVERSATION_SYSTEM_PROMPT})
+    canonical = await _canonical_completion(messages, request)
+    if canonical is not None:
+        return canonical
     llm = build_llm_port()
     return await llm.complete(_conversation_only(req.model_copy(update={"messages": messages})))
 
@@ -193,10 +220,14 @@ async def stream_complete(req: ChatCompletionRequest, request: Request):
             messages = list(req.messages)
             if not any(message.get("role") == "system" for message in messages):
                 messages.insert(0, {"role": "system", "content": _CONVERSATION_SYSTEM_PROMPT})
-            llm = build_llm_port()
-            result = await llm.complete(
-                _conversation_only(req.model_copy(update={"messages": messages}))
-            )
+            canonical = await _canonical_completion(messages, request)
+            if canonical is not None:
+                result = canonical
+            else:
+                llm = build_llm_port()
+                result = await llm.complete(
+                    _conversation_only(req.model_copy(update={"messages": messages}))
+                )
             choice = (result.get("choices") or [{}])[0]
             content = (choice.get("message") or {}).get("content") or ""
             yield f"data: {json.dumps({'type': 'done', 'content': content})}\n\n"
