@@ -9,7 +9,13 @@ from typing import Any
 
 import pytest
 
-from maistro.agents.base import Agent, _build_tool_schema, _extract_user_text
+from maistro.agents.base import (
+    Agent,
+    _build_tool_schema,
+    _extract_message_text,
+    _extract_user_text,
+    _redact_message_content,
+)
 from maistro.sessions.store import InMemorySessionStore
 from maistro.types.agent import AgentIdentity, AgentResponse, ReasoningResult
 
@@ -29,6 +35,12 @@ class _FakeWarden:
     async def scan(self, text: str, _surface: str) -> _Verdict:
         self.scanned.append(text)
         return _Verdict(clean=self._clean, flags=self._flags)
+
+
+class _SurfaceWarden(_FakeWarden):
+    async def scan(self, text: str, surface: str) -> _Verdict:
+        self.scanned.append(text)
+        return _Verdict(clean=surface != "assistant_output", flags=("x",))
 
 
 class _FakeContextBuilder:
@@ -308,6 +320,16 @@ class TestExtractUserText:
         ]
         assert _extract_user_text(messages) == "second"
 
+    def test_message_helpers_handle_blocks_and_unknown_content(self) -> None:
+        content = [
+            {"type": "text", "text": "contact bob@example.com"},
+            {"type": "image", "url": "image://one"},
+        ]
+        assert _extract_message_text(content) == "contact bob@example.com"
+        assert _redact_message_content(content)[0]["text"] == ("contact [REDACTED:email]")
+        assert _extract_message_text(42) == ""
+        assert _redact_message_content(42) == 42
+
 
 class TestBuildToolSchema:
     def test_known_builtin_tool(self) -> None:
@@ -416,6 +438,40 @@ class TestHandleCanonicalTrustPipeline:
         assert sentinel.post_calls == ["lookup"]
         assert strategy.tool_result == "sanitized:Error: Permission denied for tool 'lookup'"
 
+    async def test_sentinel_repaired_args_reach_the_raw_tool(self) -> None:
+        seen: list[dict[str, Any]] = []
+
+        class Sentinel:
+            async def pre_call(
+                self, _name: str, _args: dict[str, Any], _auth: Any, _schema: Any
+            ) -> Any:
+                return type("Verdict", (), {"allowed": True, "repaired_data": {"fixed": True}})()
+
+            async def post_call(self, _name: str, result: str, _auth: Any) -> str:
+                return result
+
+        async def raw_tool(_name: str, args: dict[str, Any]) -> str:
+            seen.append(dict(args))
+            return "ok"
+
+        agent = _make_agent(
+            _ToolReturningStrategy(),
+            identity=_identity(tools=("lookup",)),
+            tool_executor=raw_tool,
+            sentinel=Sentinel(),
+        )
+        await agent.handle(messages=[{"role": "user", "content": "lookup"}], auth=_Auth())
+
+        assert seen == [{"fixed": True}]
+
+    async def test_dirty_tool_result_is_blocked_by_agent_boundary(self) -> None:
+        agent = _make_agent(_RecordingStrategy(), warden=_FakeWarden(clean=False, flags=("x",)))
+
+        result = await agent._sanitize_tool_result("lookup", "unsafe", _Auth())
+
+        assert "BLOCKED" in result
+        assert "x" in result
+
     async def test_final_output_is_redacted_before_session_persistence(self) -> None:
         session_store = _FakeSessionStore()
         agent = _make_agent(
@@ -434,6 +490,51 @@ class TestHandleCanonicalTrustPipeline:
             "role": "assistant",
             "content": "reply to [REDACTED:email]",
         }
+
+    async def test_final_output_warden_block_is_reported_at_boundary(self) -> None:
+        agent = _make_agent(_RecordingStrategy(), warden=_FakeWarden(clean=False, flags=("x",)))
+        trace = _FakeTrace()
+
+        content, blocked = await agent._prepare_final_output("unsafe", trace)
+
+        assert content == ""
+        assert blocked is not None
+        assert blocked.blocked is True
+        assert "x" in blocked.block_reason
+        assert trace.scored[-1][0] == "blocked"
+
+    async def test_final_output_block_stops_handle_before_persistence(self) -> None:
+        agent = _make_agent(
+            _RecordingStrategy(ReasoningResult(response="unsafe")),
+            warden=_SurfaceWarden(),
+        )
+
+        result = await agent.handle(messages=[{"role": "user", "content": "hello"}], auth=_Auth())
+
+        assert result.blocked is True
+        assert "x" in result.block_reason
+
+    async def test_delegated_response_boundary_handles_each_response_kind(self) -> None:
+        agent = _make_agent(_RecordingStrategy(), warden=_FakeWarden())
+        blocked = AgentResponse.blocked_response("already blocked")
+        empty = AgentResponse(content="")
+
+        assert await agent._sanitize_agent_response(blocked, None) is blocked
+        assert await agent._sanitize_agent_response(empty, None) is empty
+        clean = await agent._sanitize_agent_response(AgentResponse(content="clean"), None)
+        assert clean.content == "clean"
+
+        dirty_agent = _make_agent(
+            _RecordingStrategy(), warden=_FakeWarden(clean=False, flags=("x",))
+        )
+        dirty = await dirty_agent._sanitize_agent_response(AgentResponse(content="unsafe"), None)
+        assert dirty.blocked is True
+        trace = _FakeTrace()
+        traced_dirty = await dirty_agent._sanitize_agent_response(
+            AgentResponse(content="unsafe"), trace
+        )
+        assert traced_dirty.blocked is True
+        assert trace.scored[-1][0] == "blocked"
 
 
 class TestStrategyIndependentFinalBoundary:

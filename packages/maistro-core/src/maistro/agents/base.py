@@ -442,8 +442,9 @@ class Agent:
             turn_id=turn_id,
         )
 
-        if trace:
-            self._finalize_trace(trace, result, model, session_history_count, injected_learning_ids)
+        self._finalize_trace_if_present(
+            trace, result, model, session_history_count, injected_learning_ids
+        )
 
         return AgentResponse(
             content=result.response or "",
@@ -490,6 +491,17 @@ class Agent:
         if classified_task_type:
             strategy_kwargs["classified_task_type"] = classified_task_type
         return strategy_kwargs
+
+    def _finalize_trace_if_present(
+        self,
+        trace: Any,
+        result: Any,
+        model: str,
+        session_history_count: int,
+        injected_learning_ids: list[int],
+    ) -> None:
+        if trace:
+            self._finalize_trace(trace, result, model, session_history_count, injected_learning_ids)
 
     async def _persist_run(
         self,
@@ -719,31 +731,39 @@ class Agent:
         """Return the only executor a strategy can use at the effect boundary."""
         auth = strategy_kwargs.get("auth")
 
-        def schema_for(tool_name: str) -> dict[str, Any]:
-            for tool in tool_defs or []:
-                function = tool.get("function", {})
-                if function.get("name") == tool_name:
-                    parameters = function.get("parameters", {})
-                    return parameters if isinstance(parameters, dict) else {}
-            return {}
-
         async def execute(tool_name: str, tool_args: dict[str, Any]) -> str:
-            if self._sentinel is not None and auth is not None:
-                verdict = await self._sentinel.pre_call(
-                    tool_name, tool_args, auth, schema_for(tool_name)
-                )
-                if not verdict.allowed:
-                    raw_result = f"Error: Permission denied for tool '{tool_name}'"
-                else:
-                    if verdict.repaired_data:
-                        tool_args.clear()
-                        tool_args.update(verdict.repaired_data)
-                    raw_result = await self._invoke_raw_tool(tool_name, tool_args)
-            else:
-                raw_result = await self._invoke_raw_tool(tool_name, tool_args)
+            raw_result = await self._authorize_and_invoke(tool_name, tool_args, auth, tool_defs)
             return await self._sanitize_tool_result(tool_name, str(raw_result), auth)
 
         return execute
+
+    async def _authorize_and_invoke(
+        self,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        auth: Any,
+        tool_defs: list[dict[str, Any]] | None,
+    ) -> Any:
+        if self._sentinel is None or auth is None:
+            return await self._invoke_raw_tool(tool_name, tool_args)
+        verdict = await self._sentinel.pre_call(
+            tool_name, tool_args, auth, self._tool_schema(tool_name, tool_defs)
+        )
+        if not verdict.allowed:
+            return f"Error: Permission denied for tool '{tool_name}'"
+        if verdict.repaired_data:
+            tool_args.clear()
+            tool_args.update(verdict.repaired_data)
+        return await self._invoke_raw_tool(tool_name, tool_args)
+
+    @staticmethod
+    def _tool_schema(tool_name: str, tool_defs: list[dict[str, Any]] | None) -> dict[str, Any]:
+        for tool in tool_defs or []:
+            function = tool.get("function", {})
+            if function.get("name") == tool_name:
+                parameters = function.get("parameters", {})
+                return parameters if isinstance(parameters, dict) else {}
+        return {}
 
     async def _invoke_raw_tool(self, tool_name: str, tool_args: dict[str, Any]) -> Any:
         if not (self._tool_executor and callable(self._tool_executor)):

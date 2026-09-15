@@ -252,43 +252,24 @@ class ArtificerStrategy:
         fn = tc.get("function", {})
         tool_name = fn.get("name", "")
         raw_args = fn.get("arguments", "{}")
-        try:
-            tool_args = json.loads(raw_args)
-        except json.JSONDecodeError:
-            logger.warning("Malformed tool arguments for %s: %s", tool_name, raw_args[:200])
-            tool_args = {}
-
-        if len(raw_args.encode("utf-8")) > _MAX_ARG_BYTES:
-            logger.warning(
-                "Tool %s arg size %d exceeds %d limit",
-                tool_name,
-                len(raw_args.encode("utf-8")),
-                _MAX_ARG_BYTES,
-            )
+        tool_args = self._parse_tool_args(tool_name, raw_args)
+        if self._args_exceed_limit(tool_name, raw_args):
             return tool_args, f"Error: tool arguments exceed {_MAX_ARG_BYTES} byte limit"
 
-        tool_blocked = False
-        if not security_pipeline and sentinel is not None and auth is not None:
-            sentinel_verdict = await sentinel.pre_call(tool_name, tool_args, auth, {})
-            if not sentinel_verdict.allowed:
-                tool_result: Any = f"Error: Permission denied for tool '{tool_name}'"
-                tool_blocked = True
-            elif sentinel_verdict.repaired_data:
-                tool_args = sentinel_verdict.repaired_data
-
+        tool_args, tool_result, tool_blocked = await self._authorize_tool_call(
+            tool_name,
+            tool_args,
+            sentinel=sentinel,
+            auth=auth,
+            security_pipeline=security_pipeline,
+        )
         await status(f"Running {tool_name}...")
         logger.info("Tool call: %s(%s)", tool_name, list(tool_args.keys()))
 
         if not tool_blocked:
             tool_result = await self._run_tool(tool_name, tool_args, tool_executor, trace)
 
-        result_str = tool_result if isinstance(tool_result, str) else str(tool_result)
-        if len(result_str) > _MAX_RESULT_BYTES:
-            omitted = len(str(tool_result)) - _MAX_RESULT_BYTES
-            result_str = (
-                result_str[:_MAX_RESULT_BYTES] + f"\n[... truncated, {omitted} bytes omitted]"
-            )
-
+        result_str = self._truncate_result(tool_result)
         result_str = await self._sanitize_result(
             tool_name,
             result_str,
@@ -299,6 +280,49 @@ class ArtificerStrategy:
         )
         await self._emit_result_status(tool_name, result_str, status)
         return tool_args, result_str
+
+    @staticmethod
+    def _parse_tool_args(tool_name: str, raw_args: str) -> dict[str, Any]:
+        try:
+            parsed = json.loads(raw_args)
+        except json.JSONDecodeError:
+            logger.warning("Malformed tool arguments for %s: %s", tool_name, raw_args[:200])
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    @staticmethod
+    def _args_exceed_limit(tool_name: str, raw_args: str) -> bool:
+        size = len(raw_args.encode("utf-8"))
+        if size <= _MAX_ARG_BYTES:
+            return False
+        logger.warning("Tool %s arg size %d exceeds %d limit", tool_name, size, _MAX_ARG_BYTES)
+        return True
+
+    async def _authorize_tool_call(
+        self,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        *,
+        sentinel: Any,
+        auth: Any,
+        security_pipeline: bool,
+    ) -> tuple[dict[str, Any], Any, bool]:
+        if security_pipeline or sentinel is None or auth is None:
+            return tool_args, None, False
+        sentinel_verdict = await sentinel.pre_call(tool_name, tool_args, auth, {})
+        if not sentinel_verdict.allowed:
+            return tool_args, f"Error: Permission denied for tool '{tool_name}'", True
+        if sentinel_verdict.repaired_data:
+            tool_args = sentinel_verdict.repaired_data
+        return tool_args, None, False
+
+    @staticmethod
+    def _truncate_result(tool_result: Any) -> str:
+        result_str = tool_result if isinstance(tool_result, str) else str(tool_result)
+        if len(result_str) <= _MAX_RESULT_BYTES:
+            return result_str
+        omitted = len(result_str) - _MAX_RESULT_BYTES
+        return result_str[:_MAX_RESULT_BYTES] + f"\n[... truncated, {omitted} bytes omitted]"
 
     async def _plan(
         self,
