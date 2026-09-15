@@ -23,6 +23,7 @@ from maistro.runs.model import (
     RunStatus,
 )
 from maistro.runs.reconciliation import AttemptLifecycleReconciler
+from maistro.runs.recovery_events import RecoveryEventDeliveryFailure
 from maistro.runs.service import RunExecutionService
 from maistro.runs.sqlite_store import SqliteRunStore
 from maistro.runs.store import (
@@ -57,6 +58,7 @@ __all__ = [
     "InvalidLifecycleTransition",
     "NodeRun",
     "NodeRunNotFound",
+    "RecoveryEventDeliveryFailure",
     "Run",
     "RunExecutionService",
     "RunIntegrityError",

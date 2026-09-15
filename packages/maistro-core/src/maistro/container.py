@@ -131,6 +131,7 @@ if TYPE_CHECKING:
     from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
     from maistro.resilience.p1 import ResiliencePolicyStore
     from maistro.runs.consumption import ParkedPause
+    from maistro.runs.recovery_events import RecoveryEventSink
     from maistro.runs.store import RunStore
     from maistro.security._types import AuditLog
     from maistro.security.sentinel.elevation import ElevationStore
@@ -299,6 +300,9 @@ class Container:
     resilience_policies: ResiliencePolicyStore = None  # type: ignore[assignment]
     # Durable events (ADR-086): bus bridge + log/trigger/invocation stores.
     event_bus: EventBus = None  # type: ignore[assignment]
+    #: Canonical recovery announcements are published before their compatibility
+    #: projection. The legacy bus remains the fallback for hand-built Containers.
+    recovery_event_sink: RecoveryEventSink | None = None
     durable_event_log: EventLogStore = None  # type: ignore[assignment]
     trigger_store: TriggerStore = None  # type: ignore[assignment]
     invocation_store: InvocationStore = None  # type: ignore[assignment]
@@ -881,26 +885,55 @@ class Container:
             recovered_attempts_total,
         )
         from maistro.runs.reconciliation import AttemptLifecycleReconciler
+        from maistro.runs.recovery_events import RecoveryEventDeliveryFailure
 
         reclaimed = await self.run_store.reclaim_expired_attempts(now=now, limit=limit)
+        event_failures: list[tuple[str, Exception]] = []
         if reclaimed:
-            # The Container's bus, so the sweep's dispositions land on the
-            # canonical Event stream rather than only in Run state (#462). A
-            # Container built without one still sweeps; the events are how the
+            # The Container's recovery sink, so the sweep's dispositions land
+            # on the canonical Event stream rather than only in Run state (#462).
+            # A Container built without one still sweeps; events are how the
             # decision becomes inspectable, not how it is made.
+            # Lifecycle reconciliation is deliberately run without an event
+            # sink. Announcement is a second, per-Attempt phase so a
+            # compatibility handler or persistence adapter cannot strand the
+            # remainder of a store-mutated batch.
             reconciler = AttemptLifecycleReconciler(
                 self.run_store,
-                events=self.event_bus,
                 source="maistro.container.recover_abandoned_attempts",
+            )
+            event_sink = self.recovery_event_sink or self.event_bus
+            announcer = (
+                AttemptLifecycleReconciler(
+                    self.run_store,
+                    events=event_sink,
+                    source="maistro.container.recover_abandoned_attempts",
+                )
+                if event_sink is not None
+                else None
             )
             for attempt in reclaimed:
                 try:
-                    await reconciler.reconcile(attempt)
+                    settled = await reconciler.reconcile(attempt)
                 except RunIntegrityError:
                     # The Attempt is already settled; a NodeRun another path
                     # terminalized concurrently is not this sweep's to rewrite.
                     logger.warning(
                         "reclaimed Attempt %s could not be reconciled",
+                        attempt.attempt_id,
+                        exc_info=True,
+                    )
+                    continue
+                if announcer is None:
+                    continue
+                try:
+                    await announcer.announce(attempt, settled)
+                except Exception as exc:
+                    # The lifecycle write already committed. Record an explicit
+                    # event-delivery failure, then continue with later Attempts.
+                    event_failures.append((attempt.attempt_id, exc))
+                    logger.warning(
+                        "reclaimed Attempt %s was reconciled but its recovery event failed",
                         attempt.attempt_id,
                         exc_info=True,
                     )
@@ -912,6 +945,8 @@ class Container:
         moment = now if now is not None else datetime.now(UTC)
         age = (moment - oldest_created_at).total_seconds() if oldest_created_at else 0.0
         oldest_non_terminal_run_age_seconds.set(max(age, 0.0))
+        if event_failures:
+            raise RecoveryEventDeliveryFailure(event_failures) from event_failures[0][1]
         return len(reclaimed)
 
     async def execute_admitted_runs(self, *, limit: int = 100) -> int:
@@ -1635,6 +1670,18 @@ async def create_container(
 
     event_bus.subscribe(_persist_bus_event)
 
+    # Recovery announces through the canonical Event publisher first; the
+    # EventBus remains only its compatibility projection/action layer (#61).
+    from maistro.events.wiring import wire_canonical_events
+    from maistro.runs.recovery_events import CanonicalRecoveryEventSink
+
+    canonical_event_publisher = await wire_canonical_events(
+        pg_pool=pg_pool,
+        db_pool=db_pool,
+        legacy_bus=event_bus,
+    )
+    recovery_event_sink = CanonicalRecoveryEventSink(run_store, canonical_event_publisher)
+
     # --- LLM provider registry + cost-aware router (SPEC-070226-cb8d) ----
     from maistro.providers.config import load_provider_registry
     from maistro.providers.registry import InMemoryProviderRegistry
@@ -1747,6 +1794,7 @@ async def create_container(
         holds_db_pool=holds_db_pool,
         resilience_policies=resilience_policies,
         event_bus=event_bus,
+        recovery_event_sink=recovery_event_sink,
         durable_event_log=durable_event_log,
         trigger_store=trigger_store,
         invocation_store=invocation_store,

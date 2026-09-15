@@ -10,6 +10,7 @@ from maistro.events.bus import (
     Event,
     EventBus,
     EventCategory,
+    EventSubscriberFailure,
     Trigger,
     TriggerActionFailure,
     TriggerCondition,
@@ -324,6 +325,26 @@ class TestEmitFiringAuthority:
         # one is excluded from the success counters and reported.
         assert [t.name for t, _err in excinfo.value.failures] == ["bad"]
         assert good.fire_count == 1
+        assert received == ["test"]
+        assert bus.get_history()[-1].event_type == "test"
+
+    async def test_subscriber_failure_is_reported_after_all_subscribers_run(self):
+        bus = EventBus()
+        received: list[str] = []
+
+        async def broken(_event):
+            raise OSError("durable bridge unavailable")
+
+        async def healthy(event):
+            received.append(event.event_type)
+
+        bus.subscribe(broken)
+        bus.subscribe(healthy)
+
+        with pytest.raises(EventSubscriberFailure) as excinfo:
+            await bus.emit(Event(event_type="test"))
+
+        assert "durable bridge unavailable" in str(excinfo.value)
         assert received == ["test"]
         assert bus.get_history()[-1].event_type == "test"
 

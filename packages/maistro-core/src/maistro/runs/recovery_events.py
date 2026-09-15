@@ -18,6 +18,20 @@ from maistro.runs.model import Attempt, AttemptStatus, CancellationCause, NodeRu
 RECOVERY_EVENT_TYPE = "run.recovery_disposition"
 
 
+class RecoveryEventDeliveryFailure(Exception):
+    """Canonical recovery state was committed but event observation failed.
+
+    Recovery callers may aggregate these failures after finishing the already
+    reclaimed batch. The lifecycle write is authoritative; the exception is an
+    explicit failure disposition for retry/operations, never a success signal.
+    """
+
+    def __init__(self, failures: list[tuple[str, Exception]]) -> None:
+        self.failures = failures
+        detail = "; ".join(f"Attempt {attempt_id}: {error!r}" for attempt_id, error in failures)
+        super().__init__(f"{len(failures)} recovery event delivery(s) failed: {detail}")
+
+
 @dataclass(frozen=True, slots=True)
 class RecoveryDispositionEvent:
     """Package-local recovery fact, not a second universal event envelope."""
@@ -172,6 +186,7 @@ __all__ = [
     "RECOVERY_EVENT_TYPE",
     "CanonicalRecoveryEventSink",
     "RecoveryDispositionEvent",
+    "RecoveryEventDeliveryFailure",
     "RecoveryEventSink",
     "disposition_of",
     "recovery_event",

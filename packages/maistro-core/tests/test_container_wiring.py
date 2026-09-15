@@ -31,6 +31,7 @@ async def test_container_exposes_all_new_subsystems() -> None:
     for attr in (
         "resilience_policies",
         "event_bus",
+        "recovery_event_sink",
         "durable_event_log",
         "trigger_store",
         "invocation_store",
@@ -844,6 +845,109 @@ async def test_the_sweep_parks_the_reclaimed_attempts_logical_records() -> None:
     collected = metrics_registry.collect_all()
     (open_runs_sample,) = collected["maistro_non_terminal_runs"]
     assert open_runs_sample["value"] >= 1
+
+
+@pytest.mark.parametrize(
+    ("failed_indexes", "expect_failure"),
+    [
+        ({0}, True),
+        ({1}, True),
+        ({0, 2}, True),
+        (set(), False),
+    ],
+    ids=["first-handler-fails", "middle-handler-fails", "multiple-handlers-fail", "all-succeed"],
+)
+async def test_recovery_isolates_compatibility_delivery_per_attempt(
+    failed_indexes: set[int], expect_failure: bool, tmp_path: Path
+) -> None:
+    """Compatibility failures cannot strand the rest of a reclaimed batch."""
+    from datetime import timedelta
+
+    from maistro.events.bus import Trigger
+    from maistro.graph import Graph, Node
+    from maistro.runs.model import AttemptStatus, RunStatus
+    from maistro.runs.recovery_events import RecoveryEventDeliveryFailure
+
+    container = await _container(database_url=f"sqlite:///{tmp_path / 'recovery-batch.db'}")
+    store = container.run_store
+    project_id = (await container.project_scope_store.create_root("recovery-batch")).project_id
+    graph = Graph(
+        workspace_id="recovery-batch",
+        project_id=project_id,
+        name="batch",
+        nodes=[Node(node_id=f"n{index}", node_type="agent") for index in range(3)],
+    )
+    run = await store.create_run(graph)
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+    attempts = []
+    node_runs = []
+    for index in range(3):
+        node_run = await store.create_node_run(run.run_id, node_id=f"n{index}")
+        await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
+        node_run = await store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+        node_runs.append(node_run)
+        attempts.append(
+            await store.create_attempt(
+                node_run.node_run_id,
+                lease_holder=f"worker-{index}",
+                lease_ttl=timedelta(seconds=30),
+            )
+        )
+    first_lease = attempts[0].execution_lease
+    assert first_lease is not None and first_lease.expires_at is not None
+    failure_ids = {attempts[index].attempt_id for index in failed_indexes}
+
+    async def handler(_trigger: Trigger, event) -> None:
+        if event.payload["attempt_id"] in failure_ids:
+            raise RuntimeError("compatibility handler failed")
+
+    container.event_bus.register_handler("recovery-test", handler)
+    container.event_bus.add_trigger(
+        Trigger(
+            name="recovery compatibility projection",
+            event_types=["run.recovery_disposition"],
+            action_type="recovery-test",
+            cooldown_seconds=0,
+        )
+    )
+
+    if expect_failure:
+        with pytest.raises(RecoveryEventDeliveryFailure):
+            await container.recover_abandoned_attempts(
+                now=first_lease.expires_at + timedelta(seconds=1),
+                limit=3,
+            )
+    else:
+        assert (
+            await container.recover_abandoned_attempts(
+                now=first_lease.expires_at + timedelta(seconds=1),
+                limit=3,
+            )
+            == 3
+        )
+
+    # The injected handler failure is a compatibility-only failure. Every
+    # store-reclaimed Attempt still has a parked logical record, including the
+    # items after the failing event.
+    for attempt, node_run in zip(attempts, node_runs, strict=True):
+        settled = await store.get_attempt(attempt.attempt_id)
+        assert settled is not None and settled.status is AttemptStatus.CANCELLED
+        parked = await store.get_node_run(node_run.node_run_id)
+        assert parked is not None and parked.status is RunStatus.WAITING
+
+    # A second tick sees no active Attempt left to strand or reclaim again.
+    assert await container.recover_abandoned_attempts(now=first_lease.expires_at) == 0
+
+    # Reopen the canonical stores as a restart would. The terminal physical
+    # history and parked logical records survive the compatibility failure.
+    await container.aclose()
+    restarted = await _container(database_url=f"sqlite:///{tmp_path / 'recovery-batch.db'}")
+    assert await restarted.recover_abandoned_attempts(now=first_lease.expires_at) == 0
+    for node_run in node_runs:
+        parked = await restarted.run_store.get_node_run(node_run.node_run_id)
+        assert parked is not None and parked.status is RunStatus.WAITING
+    await restarted.aclose()
 
 
 async def test_the_sweep_survives_an_attempt_it_cannot_reconcile(
