@@ -17,7 +17,6 @@ from maistro.security.warden.detector import Warden
 logger = logging.getLogger("maistro.events.handlers")
 
 _global_client: ServiceKeyClient | None = None
-_global_warden: Warden | None = None
 
 
 class EventSecurityUnavailable(RuntimeError):
@@ -69,34 +68,15 @@ def _get_client() -> ServiceKeyClient | None:
     return _global_client
 
 
-def set_warden(warden: Warden | None) -> None:
-    """Set the legacy direct-call seam for model re-entry handlers.
-
-    Container-owned EventBus handlers receive their Warden explicitly through
-    :func:`handlers_for_warden`; this compatibility seam is only for direct
-    callers and tests. ``None`` is a deliberate fail-closed state.
-    """
-    global _global_warden
-    _global_warden = warden
-
-
-def _get_warden() -> Warden:
-    if _global_warden is None:
-        raise EventSecurityUnavailable(
-            "canonical Warden composition is unavailable; event re-entry refused"
-        )
-    return _global_warden
-
-
-async def _scan_model_reentry(message: str, warden: Warden | None = None) -> None:
+async def _scan_model_reentry(message: str, warden: Warden) -> None:
     """Scan the exact labelled content that will be sent to the model.
 
-    Production EventBus handlers pass their Container-owned Warden explicitly.
-    The optional fallback is retained for direct legacy callers and tests only;
-    Container composition never writes that module-level compatibility binding.
+    A Warden is always supplied by the Container-owned EventBus binding. There
+    is deliberately no process-global fallback: model re-entry must not select
+    a Warden from another application composition.
     """
     try:
-        verdict = await (warden or _get_warden()).scan(message, "tool_result")
+        verdict = await warden.scan(message, "tool_result")
     except EventSecurityUnavailable:
         raise
     except Exception as exc:
@@ -138,9 +118,7 @@ async def webhook_action(trigger: Trigger, event: Event) -> None:
     logger.info("Webhook %s %s → %d", method, url, resp.status_code)
 
 
-async def conductor_chat_action(
-    trigger: Trigger, event: Event, *, warden: Warden | None = None
-) -> None:
+async def conductor_chat_action(trigger: Trigger, event: Event, *, warden: Warden) -> None:
     base_url = trigger.action_config.get("conductor_url", "http://localhost:8100")
     api_key = trigger.action_config.get("api_key", "")
     model = trigger.action_config.get("model", "auto")
@@ -303,9 +281,10 @@ def handlers_for_warden(warden: Warden) -> dict[str, Any]:
     }
 
 
+# ``conductor_chat`` is intentionally absent: it can only be registered after
+# binding the application Container's Warden with ``handlers_for_warden``.
 BUILTIN_HANDLERS = {
     "webhook": webhook_action,
-    "conductor_chat": conductor_chat_action,
     "coinswarm": coinswarm_action,
     "ha": ha_action,
     "ntfy": ntfy_action,

@@ -419,7 +419,6 @@ class TestEmitRobustness:
                 return WardenVerdict(clean=True)
 
         handlers_mod.set_service_client(_FakeClient())  # type: ignore[arg-type]
-        handlers_mod.set_warden(_AllowingWarden())  # type: ignore[arg-type]
         try:
             trigger = Trigger(
                 name="escalate",
@@ -431,10 +430,9 @@ class TestEmitRobustness:
             )
             # payload is missing 'agent_id' → naive .format(**payload) raises KeyError.
             event = Event(event_type="warden_block", payload={"severity": "high"})
-            await conductor_chat_action(trigger, event)
+            await conductor_chat_action(trigger, event, warden=_AllowingWarden())  # type: ignore[arg-type]
         finally:
             handlers_mod.set_service_client(None)
-            handlers_mod.set_warden(None)
 
         # The action ran and produced a message; the missing key did not abort it.
         assert "message" in captured, "action was silently dropped on missing template key"
