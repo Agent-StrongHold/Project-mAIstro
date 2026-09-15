@@ -47,3 +47,9 @@ sqlalchemy[asyncio]>=2.0.0,<3
 # ran the security scanner on stdlib `re` with no timeout support at all —
 # the exact degraded mode the conditional fallback was deleted for hiding.
 regex>=2024.5.15,<2027
+# The scheduler's configured Container imports maistro.identity during startup;
+# this backend installs maistro-core through sys.path rather than its identity
+# extra, so keep the identity runtime dependency explicit for Python 3.12 CI.
+# The shipped Python 3.14 image intentionally omits it: coincurve has no cp314
+# wheel and its source build is not currently compatible with that image.
+bip-utils>=2.9,<3; python_version < "3.14"
