@@ -116,8 +116,29 @@ def _is_link(value: str) -> bool:
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
+def _workflow_locator(value: str) -> tuple[str, str] | None:
+    """Return the commit digest and workflow path from an immutable source link."""
+    if not isinstance(value, str):
+        return None
+    parsed = urlparse(value)
+    prefix = f"/{GITHUB_REPOSITORY}/blob/"
+    if parsed.scheme != "https" or parsed.netloc != "github.com" or parsed.query or parsed.fragment:
+        return None
+    if not parsed.path.startswith(prefix):
+        return None
+    suffix = parsed.path[len(prefix) :].strip("/").split("/", 1)
+    if len(suffix) != 2 or not HEX_DIGEST_RE.fullmatch(suffix[0]):
+        return None
+    workflow_ref = suffix[1]
+    if not workflow_ref.startswith(".github/workflows/"):
+        return None
+    return suffix[0], workflow_ref
+
+
 def _is_immutable_evidence_link(value: str) -> bool:
-    """Accept only immutable GitHub Actions run or artifact URLs for evidence."""
+    """Accept immutable artifact URLs or commit-bound workflow evidence locators."""
+    if _workflow_locator(value) is not None:
+        return True
     if not isinstance(value, str):
         return False
     parsed = urlparse(value)
@@ -204,10 +225,14 @@ def _verify_attestation(  # noqa: C901 - provenance and execution binding stay t
         not isinstance(file_name, str)
         or not file_name
         or Path(file_name).name != file_name
-        or not isinstance(manifest_sha, str)
-        or not SHA256_RE.fullmatch(manifest_sha)
+        or (
+            manifest_sha is not None
+            and (not isinstance(manifest_sha, str) or not SHA256_RE.fullmatch(manifest_sha))
+        )
     ):
-        return [f"{evidence_where}.attestation must name a file and SHA-256 manifest digest"]
+        return [
+            f"{evidence_where}.attestation must name a file and optional SHA-256 manifest digest"
+        ]
 
     archive, failure = _github_bytes(
         f"https://api.github.com/repos/{GITHUB_REPOSITORY}/actions/artifacts/{artifact_id}/zip"
@@ -220,7 +245,10 @@ def _verify_attestation(  # noqa: C901 - provenance and execution binding stay t
     except (OSError, KeyError, zipfile.BadZipFile) as exc:
         return [f"{evidence_where} artifact has no readable {file_name}: {exc}"]
     errors: list[str] = []
-    if hashlib.sha256(manifest).hexdigest() != manifest_sha.lower():
+    if (
+        isinstance(manifest_sha, str)
+        and hashlib.sha256(manifest).hexdigest() != manifest_sha.lower()
+    ):
         errors.append(f"{evidence_where}.attestation.sha256 does not match its artifact file")
         return errors
     try:
@@ -251,36 +279,127 @@ def _verify_attestation(  # noqa: C901 - provenance and execution binding stay t
     return errors
 
 
+def _resolve_workflow_artifact(  # noqa: C901 - fail-closed lookup stays together
+    item: dict[str, Any], *, evidence_where: str, workflow_ref: str
+) -> tuple[dict[str, Any] | None, int | None, int | None, list[str]]:
+    """Resolve the artifact produced for a commit-bound workflow locator.
+
+    The locator is committed before the Actions run exists. Resolving by the
+    exact head SHA and deterministic artifact name preserves that provenance
+    without requiring a post-run registry edit that would change the digest.
+    """
+    locator = _workflow_locator(item["url"])
+    if locator is None:
+        return None, None, None, []
+    locator_digest, locator_ref = locator
+    errors: list[str] = []
+    if locator_digest != item["release_digest"]:
+        errors.append(f"{evidence_where}.url is not bound to the evidence release digest")
+    if locator_ref != workflow_ref:
+        errors.append(f"{evidence_where}.url does not identify workflow_ref")
+    workflow_name = Path(workflow_ref).name
+    runs_url = (
+        f"https://api.github.com/repos/{GITHUB_REPOSITORY}/actions/workflows/"
+        f"{quote(workflow_name)}/runs?head_sha={quote(item['release_digest'])}&per_page=100"
+    )
+    runs_payload, failure = _github_json(runs_url)
+    if runs_payload is None:
+        errors.append(f"{evidence_where} could not list workflow runs: {failure}")
+        return None, None, None, errors
+    runs = runs_payload.get("workflow_runs")
+    if not isinstance(runs, list):
+        errors.append(f"{evidence_where} workflow run listing is malformed")
+        return None, None, None, errors
+    matching_runs = [
+        run
+        for run in runs
+        if isinstance(run, dict)
+        and run.get("head_sha") == item["release_digest"]
+        and run.get("path") == workflow_ref
+    ]
+    if not matching_runs:
+        errors.append(f"{evidence_where} has no workflow run for the evidence release digest")
+        return None, None, None, errors
+    successful_runs = [
+        run
+        for run in matching_runs
+        if run.get("status") == "completed" and run.get("conclusion") == "success"
+    ]
+    if not successful_runs:
+        errors.append(f"{evidence_where} workflow run did not complete successfully")
+        return None, None, None, errors
+
+    artifact_name = f"compliance-evidence-{item['release_digest']}"
+    for run in successful_runs:
+        run_id = run.get("id")
+        if not isinstance(run_id, int) or run_id <= 0:
+            continue
+        artifacts_url = (
+            f"https://api.github.com/repos/{GITHUB_REPOSITORY}/actions/runs/{run_id}/artifacts"
+            f"?name={quote(artifact_name)}&per_page=100"
+        )
+        payload, failure = _github_json(artifacts_url)
+        if payload is None:
+            errors.append(
+                f"{evidence_where} could not list artifacts for workflow run {run_id}: {failure}"
+            )
+            continue
+        artifacts = payload.get("artifacts")
+        if not isinstance(artifacts, list):
+            errors.append(f"{evidence_where} artifact listing is malformed")
+            continue
+        for artifact in artifacts:
+            if not isinstance(artifact, dict) or artifact.get("name") != artifact_name:
+                continue
+            artifact_id = artifact.get("id")
+            if isinstance(artifact_id, int) and artifact_id > 0:
+                return artifact, run_id, artifact_id, errors
+    errors.append(f"{evidence_where} has no artifact named {artifact_name}")
+    return None, None, None, errors
+
+
 def _verify_artifact_evidence(  # noqa: C901 - fail-closed provenance checks stay together
     item: dict[str, Any], *, evidence_where: str, workflow_ref: str
 ) -> list[str]:
-    """Prove that a green claim names a real, unexpired artifact from its release run."""
-    artifact_ids = _evidence_artifact_ids(item["url"])
-    if artifact_ids is None:
-        return [
-            f"{evidence_where}.url must identify an immutable GitHub Actions artifact for implemented status"
-        ]
-    run_id, artifact_id = artifact_ids
-    api_url = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/actions/artifacts/{artifact_id}"
-    artifact, failure = _github_json(api_url)
-    if artifact is None:
-        return [f"{evidence_where} could not verify GitHub artifact {artifact_id}: {failure}"]
-
+    """Prove a green claim names a real, unexpired artifact from its release run."""
     errors: list[str] = []
-    workflow_run = artifact.get("workflow_run")
-    if not isinstance(workflow_run, dict) or workflow_run.get("id") != run_id:
-        errors.append(f"{evidence_where} artifact does not belong to the URL's workflow run")
-    run_url = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/actions/runs/{run_id}"
-    run, failure = _github_json(run_url)
-    if run is None:
-        errors.append(f"{evidence_where} could not verify workflow run {run_id}: {failure}")
+    artifact_ids = _evidence_artifact_ids(item["url"])
+    if artifact_ids is not None:
+        run_id, artifact_id = artifact_ids
+        api_url = (
+            f"https://api.github.com/repos/{GITHUB_REPOSITORY}/actions/artifacts/{artifact_id}"
+        )
+        artifact, failure = _github_json(api_url)
+        if artifact is None:
+            return [f"{evidence_where} could not verify GitHub artifact {artifact_id}: {failure}"]
+        workflow_run = artifact.get("workflow_run")
+        if not isinstance(workflow_run, dict) or workflow_run.get("id") != run_id:
+            errors.append(f"{evidence_where} artifact does not belong to the URL's workflow run")
+        run_url = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/actions/runs/{run_id}"
+        run, failure = _github_json(run_url)
+        if run is None:
+            errors.append(f"{evidence_where} could not verify workflow run {run_id}: {failure}")
+        else:
+            if run.get("head_sha") != item["release_digest"]:
+                errors.append(
+                    f"{evidence_where} workflow run is not for the evidence release digest"
+                )
+            if run.get("path") != workflow_ref:
+                errors.append(f"{evidence_where} workflow run does not match workflow_ref")
+            if run.get("status") != "completed" or run.get("conclusion") != "success":
+                errors.append(f"{evidence_where} workflow run did not complete successfully")
+    elif _workflow_locator(item["url"]) is None:
+        return [
+            f"{evidence_where}.url must identify an immutable GitHub Actions artifact "
+            "or commit-bound workflow locator for implemented status"
+        ]
     else:
-        if run.get("head_sha") != item["release_digest"]:
-            errors.append(f"{evidence_where} workflow run is not for the evidence release digest")
-        if run.get("path") != workflow_ref:
-            errors.append(f"{evidence_where} workflow run does not match workflow_ref")
-        if run.get("status") != "completed" or run.get("conclusion") != "success":
-            errors.append(f"{evidence_where} workflow run did not complete successfully")
+        artifact, run_id, artifact_id, resolution_errors = _resolve_workflow_artifact(
+            item, evidence_where=evidence_where, workflow_ref=workflow_ref
+        )
+        errors.extend(resolution_errors)
+        if artifact is None or run_id is None or artifact_id is None:
+            return errors
 
     workflow_name = Path(workflow_ref).name
     workflow_url = (
@@ -302,7 +421,10 @@ def _verify_artifact_evidence(  # noqa: C901 - fail-closed provenance checks sta
     digest = artifact.get("digest")
     if not isinstance(digest, str) or not digest.startswith("sha256:"):
         errors.append(f"{evidence_where} artifact has no GitHub SHA-256 digest")
-    elif digest.removeprefix("sha256:").lower() != item["sha256"].lower():
+    elif (
+        item["sha256"] is not None
+        and digest.removeprefix("sha256:").lower() != item["sha256"].lower()
+    ):
         errors.append(f"{evidence_where}.sha256 does not match the GitHub artifact digest")
     errors.extend(
         _verify_attestation(
@@ -531,8 +653,13 @@ def validate_registry(  # noqa: C901 - this is the single fail-closed schema/evi
                             errors.append(
                                 f"{evidence_where}.manual_only does not match the workflow"
                             )
-                if not isinstance(item["sha256"], str) or not SHA256_RE.fullmatch(item["sha256"]):
-                    errors.append(f"{evidence_where}.sha256 must be a 64 character SHA-256 digest")
+                if not (
+                    isinstance(item["sha256"], str) and SHA256_RE.fullmatch(item["sha256"])
+                ) and not (item["sha256"] is None and _workflow_locator(item["url"]) is not None):
+                    errors.append(
+                        f"{evidence_where}.sha256 must be a 64 character SHA-256 digest, "
+                        "or null for a commit-bound workflow locator"
+                    )
                 evidence_digest = item["release_digest"]
                 if not isinstance(evidence_digest, str) or not HEX_DIGEST_RE.fullmatch(
                     evidence_digest
@@ -579,8 +706,16 @@ def validate_registry(  # noqa: C901 - this is the single fail-closed schema/evi
                         and _is_immutable_evidence_link(item["url"])
                         and isinstance(workflow_ref, str)
                         and isinstance(item.get("release_digest"), str)
-                        and isinstance(item.get("sha256"), str)
-                        and SHA256_RE.fullmatch(item["sha256"])
+                        and (
+                            (
+                                isinstance(item.get("sha256"), str)
+                                and SHA256_RE.fullmatch(item["sha256"])
+                            )
+                            or (
+                                item.get("sha256") is None
+                                and _workflow_locator(item["url"]) is not None
+                            )
+                        )
                     ):
                         errors.extend(
                             _verify_artifact_evidence(
@@ -722,10 +857,15 @@ def _evidence_cell(evidence: Any) -> str:
     for item in evidence:
         if (
             not isinstance(item, dict)
-            or not isinstance(item.get("sha256"), str)
             or not isinstance(item.get("url"), str)
+            or not (
+                isinstance(item.get("sha256"), str)
+                or (item.get("sha256") is None and _workflow_locator(item["url"]) is not None)
+            )
         ):
             cells.append("invalid")
+        elif item["sha256"] is None:
+            cells.append(f"[artifact via workflow]({item['url']})")
         else:
             cells.append(f"[{item['sha256'][:12]}]({item['url']})")
     return "; ".join(cells)
