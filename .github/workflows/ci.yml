@@ -837,8 +837,11 @@ jobs:
             sleep 2
           done
           curl -fsS http://127.0.0.1:8000/health/ready
+          # Revision ids in this chain are lowercase alnum + underscore
+          # (004_task_run_id, 035_outcome_scope_thumb_index); a hex-only
+          # match held only while the head happened to be numeric.
           docker exec "$postgres" psql -U maistro -d maistro -Atc \
-            "SELECT version_num FROM alembic_version" | grep -Eq '^[0-9a-f]+$'
+            "SELECT version_num FROM alembic_version" | grep -Eq '^[0-9a-z_]+$'
 
           # Recreate PostgreSQL against the same 18-style parent volume and
           # prove the migrated cluster, not an anonymous volume, comes back.
@@ -857,7 +860,7 @@ jobs:
             sleep 2
           done
           docker exec "$postgres" psql -U maistro -d maistro -Atc \
-            "SELECT version_num FROM alembic_version" | grep -Eq '^[0-9a-f]+$'
+            "SELECT version_num FROM alembic_version" | grep -Eq '^[0-9a-z_]+$'
       - name: Build hive-conductor (cached)
         run: >-
           scripts/buildx-build-retry.sh --

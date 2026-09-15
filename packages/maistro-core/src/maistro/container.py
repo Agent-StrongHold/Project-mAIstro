@@ -416,19 +416,7 @@ class Container:
         """Require identity for armed controls and deny anonymous tool use."""
         if auth is not None:
             return auth
-        if self.sentinel._permission_table or self.strike_tracker:
-            armed = []
-            if self.sentinel._permission_table:
-                armed.append("sentinel permission table")
-            if self.strike_tracker:
-                armed.append("strike tracking")
-            msg = (
-                f"route_request() called without auth while {' and '.join(armed)} "
-                f"{'are' if len(armed) > 1 else 'is'} armed. These controls key on "
-                "the caller identity, so they would silently enforce nothing. "
-                "Pass an AuthContext, or disable them in config.security."
-            )
-            raise AgentError(msg)
+        self._require_auth_while_armed(auth)
         # The fail-closed table (ADR-072726-0d6b, #1165) is armed even when it
         # is empty -- it denies -- but strategies only consult Sentinel when
         # auth is not None. Evaluate an identity-free request as the role-less
@@ -458,7 +446,9 @@ class Container:
         every turn to catch a mistake that is not reachable from within one
         process.
         """
-        self._require_auth_while_armed(auth)
+        # Refuse while armed, else route as the anonymous principal so the
+        # fail-closed table still sees the turn; the guard alone drops the latter.
+        auth = self._resolve_chat_auth(auth)
 
         if run is None:
             run = await self._admit_chat_turn(

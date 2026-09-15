@@ -724,6 +724,12 @@ class AttemptExecutionService:
             raise RunIntegrityError(f"Attempt {attempt_id!r} disappeared during execution")
         if current.status in TERMINAL_ATTEMPT_STATUSES:
             return current, False
+        if current.status is AttemptStatus.CREATED:
+            # Still CREATED means the RUNNING write itself was refused: nothing
+            # ran, so nothing failed or timed out, and CANCELLED is the one
+            # terminal state the lifecycle allows from here. The refusal stays
+            # in `error`; the caller's cause still decides park-or-end.
+            status = AttemptStatus.CANCELLED
         return (
             await self._terminalize(
                 attempt_id,
