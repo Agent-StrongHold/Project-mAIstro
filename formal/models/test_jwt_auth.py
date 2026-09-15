@@ -54,8 +54,10 @@ def test_empty_token_raises():
     provider = _make_provider()
     try:
         asyncio.run(provider.authenticate("Bearer  "))
-        raise AssertionError("Expected CredentialNotApplicable")
-    except CredentialNotApplicable:
+        raise AssertionError("Expected AuthError")
+    except AuthError:
+        # The Bearer scheme is recognized even when its credential is empty,
+        # so the rejection is terminal AuthError, not CredentialNotApplicable.
         pass
 
 

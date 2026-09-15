@@ -9,7 +9,11 @@ from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
 
 from maistro.security._types import AuthContext
-from maistro.security.auth_composite import AuthError, CompositeAuthProvider
+from maistro.security.auth_composite import (
+    AuthError,
+    CompositeAuthProvider,
+    CredentialNotApplicable,
+)
 
 
 class MockProvider:
@@ -19,7 +23,7 @@ class MockProvider:
 
     async def authenticate(self, authorization, headers=None):
         if self._should_fail:
-            raise ValueError("mock fail")
+            raise CredentialNotApplicable("mock provider does not recognize credential")
         return self._auth_context or AuthContext(user_id="test")
 
 
