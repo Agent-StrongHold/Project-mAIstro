@@ -235,10 +235,8 @@ def test_build_config_takes_the_grant_from_the_policy_not_the_overrides() -> Non
     that exists to prevent widening."""
     selector = SandboxSelector()
 
-    config = selector.build_config(UNTRUSTED_CODE, network=True, egress="anything")
-
-    assert config.egress is UNTRUSTED_CODE.egress
-    assert config.egress.grants_network is False
+    with pytest.raises(ValueError, match="network override is retired"):
+        selector.build_config(UNTRUSTED_CODE, network=True, egress="anything")
 
 
 # --- and then, against the kernel --------------------------------------------

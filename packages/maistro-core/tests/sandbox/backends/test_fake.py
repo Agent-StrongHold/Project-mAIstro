@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import subprocess
+import sys
 
 import pytest
 
@@ -50,23 +50,72 @@ class TestExec:
         assert result.timed_out is False
 
     @pytest.mark.asyncio
-    async def test_timeout_returns_124_and_timed_out_true(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_timeout_returns_124_and_timed_out_true(self) -> None:
         backend = FakeSandboxBackend()
         config = SandboxConfig()
         instance = await backend.spawn(config=config)
 
-        def raise_timeout(*args: object, **kwargs: object) -> None:
-            raise subprocess.TimeoutExpired(cmd="sleep", timeout=1)
-
-        monkeypatch.setattr(subprocess, "run", raise_timeout)
-        result = await backend.exec(instance, ["sleep", "5"], timeout_s=1)
+        result = await backend.exec(
+            instance,
+            [sys.executable, "-c", "import time; time.sleep(5)"],
+            timeout_s=0.05,
+        )
         assert result.exit_code == 124
         assert result.stdout == ""
-        assert result.stderr == "timeout"
         assert result.timed_out is True
-        assert result.duration_ms == 1000
+        assert result.duration_ms >= 0
+
+    async def test_simultaneous_output_overflow_is_bounded_and_terminates(self) -> None:
+        backend = FakeSandboxBackend()
+        config = SandboxConfig(max_stdout_bytes=1024, max_stderr_bytes=1024)
+        instance = await backend.spawn(config=config)
+        script = (
+            "import os, threading\n"
+            "def flood(fd, value):\n"
+            "    while True: os.write(fd, value * 4096)\n"
+            "threading.Thread(target=flood, args=(1, b'o'), daemon=True).start()\n"
+            "threading.Thread(target=flood, args=(2, b'e'), daemon=True).start()\n"
+            "threading.Event().wait()\n"
+        )
+
+        result = await backend.exec(instance, [sys.executable, "-c", script], timeout_s=5)
+
+        assert result.exit_code == 125
+        assert result.output_limit_exceeded is True
+        assert result.output_truncated is True
+        assert result.stdout_bytes_retained <= config.max_stdout_bytes
+        assert result.stderr_bytes_retained <= config.max_stderr_bytes
+        assert result.stdout_truncated or result.stderr_truncated
+        assert len(result.stdout.encode()) == result.stdout_bytes_retained
+        assert len(result.stderr.encode()) == result.stderr_bytes_retained
+
+    @pytest.mark.parametrize(
+        ("fd", "truncated_field"),
+        [(1, "stdout_truncated"), (2, "stderr_truncated")],
+    )
+    async def test_each_stream_overflow_is_reported(self, fd: int, truncated_field: str) -> None:
+        backend = FakeSandboxBackend()
+        config = SandboxConfig(max_stdout_bytes=1024, max_stderr_bytes=1024)
+        instance = await backend.spawn(config=config)
+        script = f"import os\nwhile True: os.write({fd}, b'x' * 4096)"
+
+        result = await backend.exec(instance, [sys.executable, "-c", script], timeout_s=5)
+
+        assert result.output_limit_exceeded is True
+        assert getattr(result, truncated_field) is True
+        assert result.stdout_bytes <= config.max_stdout_bytes
+        assert result.stderr_bytes <= config.max_stderr_bytes
+
+    async def test_workload_cannot_raise_host_capture_ceiling(self) -> None:
+        from maistro.sandbox import MAX_OUTPUT_CAPTURE_BYTES
+
+        config = SandboxConfig(
+            max_stdout_bytes=MAX_OUTPUT_CAPTURE_BYTES * 100,
+            max_stderr_bytes=MAX_OUTPUT_CAPTURE_BYTES * 100,
+        )
+
+        assert config.max_stdout_bytes == MAX_OUTPUT_CAPTURE_BYTES
+        assert config.max_stderr_bytes == MAX_OUTPUT_CAPTURE_BYTES
 
 
 class TestWriteReadFile:
