@@ -76,6 +76,31 @@ or placeholder-only section.
   refused at load) and Hive reads `MAISTRO_PERMISSION_PRESET` /
   `MAISTRO_PERMISSIONS`; both reach the config the Container is built from.
   Hive's bridge and engine accept the caller's principal on `route`.
+- **Frontend transitive advisories closed (no linked issue: Dependabot
+  security alerts, no tracked issue).** `packages/hive-conductor/frontend`
+  regenerates its lockfile so the transitive `brace-expansion`
+  (GHSA-rgw5-rvv9-x895, unbounded intermediate arrays) and `nanoid`
+  (GHSA-2v37-7h3g-55p8, zero-size custom generator loop) resolve to patched
+  releases; no direct dependency changes. `npm audit` reports zero findings.
+  The canvas frontend's own `@vitest/mocker` advisory (GHSA-82fw-gwwq-j7x9,
+  path traversal via the redirect mock) is closed on `develop` by #1212's
+  move to `vitest` 5, which this branch now takes rather than the 4.x pin it
+  originally carried.
+- **Python dependency floors raised past their advisories (no linked issue:
+  Dependabot security alerts, no tracked issue).** Every `pyproject.toml` in
+  the workspace and both backend `requirements.txt` files declared version
+  ranges whose lower bound was a release with open advisories, which is what
+  Dependabot alerts on for a range: `pydantic` (>=2.4.0, GHSA-mr82-8j83-vxmv),
+  `python-multipart` (>=0.0.31, eight advisories through GHSA-v9pg-7xvm-68hf),
+  `pyjwt` (>=2.13.0, seven through GHSA-xgmm-8j9v-c9wx), `pytest` (>=9.0.3,
+  GHSA-6w46-j5rx-g56g), `pillow` (>=12.3.0, seventeen through
+  GHSA-xj96-63gp-2gmr), `fastmcp` (>=3.2.0, eight through
+  GHSA-vv7q-7jx5-f767), `pynacl` (>=1.6.2, GHSA-mrfv-m5wm-5w6w), `starlette`
+  (>=1.3.1, seven through GHSA-82w8-qh3p-5jfq), `nltk` (>=3.10.3; three
+  advisories have no fixed release and remain), and the dev-tools-only
+  `guarddog` (>=2.7.1; two have no fixed release and remain). `uv.lock`
+  already resolved every one of these at or above the new floor, so no
+  installed version changes; the lock's recorded specifiers are refreshed.
 - **Bootstrap credential staging is now private, atomic, and never follows a
   link (#809).** `write_bootstrap_credentials` writes secrets to a fresh 0600
   temp file in the same directory and promotes it with `os.replace`, so secret
@@ -172,6 +197,38 @@ or placeholder-only section.
 
 ### Fixed
 
+- **A chat turn whose canonical record fails *after* the model answered is no
+  longer asked again (#1108).** `Container._execute_chat_turn` fell
+  back to a fresh `dispatch()` on any `RunIntegrityError` without knowing
+  which side of the model call it came from, so a store failure while
+  persisting the completed Attempt or reconciling its NodeRun re-ran the
+  turn — a second model charge, a second set of agent side effects, a second
+  assistant message — while the first answer's evidence sat on disk.
+  `ChatAttemptExecutor` now raises `ChatDispatchUnrecorded`, carrying the
+  answer it already obtained, for any integrity failure past the dispatch
+  boundary; the container hands that answer back and leaves the durable
+  Attempt/NodeRun to the existing lease-reclaim and reconciliation paths. A
+  dispatch that itself failed and then could not be recorded arrives as its
+  own exception rather than the recording error. The pre-dispatch fallback —
+  answering a turn whose spine could not be written before the model was
+  called — is unchanged; #1108's other half (refusing a turn outright when no
+  canonical spine is wired) is not addressed here.
+- **The migration chain has one head again, and the debt ledger matches the
+  shipped tree (no linked issue: base-branch repair).** Merging #1263 carried
+  a renumber made against an older base: it renamed
+  `033_project_membership_unique_per_principal.py` to `034_…` and moved its
+  `revision` with it, colliding with the `034_hitl_deadline_index` already on
+  develop. Git merged it without a conflict — different files — so the chain
+  silently grew two `034`s, lost `033`, and forked `035`, and `alembic
+  upgrade` could not resolve a path. Project membership is restored to `033`
+  (down `032`) and `035_outcome_scope_thumb_index` follows `035` again, so the
+  chain is linear: `032 → 033 → 034 → 035 → 035_outcome_scope_thumb_index`.
+  No migration body changed; nothing already applied is rewritten. The same
+  repair banks the three `capabilities/invocation.py` identities #1310
+  introduced without authorizing (`observed_at`, `_validate_reconciliation`,
+  `_validate_evidence`), un-breaking the `exact-debt-ledger` gate for every
+  candidate.
+
 - **A manual schedule fire claims its run before creating it, and never moves
   the recurrence cursor (#1119).** `ScheduleStore` gains `reserve_fire` /
   `settle_fire`: the quota is counted (and the schedule disabled on
@@ -233,6 +290,15 @@ or placeholder-only section.
   scope was persisted, announces the reconciled terminal state on the event
   stream, carries recovered usage into an APPLIED settlement, and reads naive
   timestamps as UTC instead of raising during discovery.
+- **A scheduled Run whose resumed Attempt died is resumed again by the
+  ordinary tick (#1112).** `recover_abandoned_attempts` reclaims a crashed
+  resume's Attempt as CANCELLED and parks the Run WAITING, but
+  `resumable_pause` read only the newest Attempt, so every later
+  `resume_parked_runs` tick skipped the Run and the schedule stayed parked
+  forever. The pause is now read past Attempts the recovery sweep reclaimed
+  (recognised by the sweep's own error text via `is_reclaimed_attempt`);
+  FAILED, TIMED_OUT, and requested-CANCELLED rows still park the Run for
+  whoever owns retries.
 - **Project membership is one canonical row per `(project, principal)`, and
   is now explicitly revocable (#1148).** `ProjectScopeStore.set_membership`
   used to mint a fresh `membership_id` on every call, so a re-grant, role
