@@ -60,7 +60,7 @@ class DurableRunStore(Protocol):
         at: datetime | None = None,
         workspace_id: str | None = None,
     ) -> DurableRunRecord:
-        """Attach an answer and queue the paused canonical Run for resume."""
+        """Persist an answer and queue only a valid paused Run for resume."""
         ...
 
     async def timeout_hitl(
