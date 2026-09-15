@@ -40,8 +40,8 @@ class _StubAuditLog:
         self.entries.append(entry)
 
 
-def _auth(roles: frozenset[str] = frozenset({"user"})) -> AuthContext:
-    return AuthContext(user_id="u1", team_id="t1", roles=roles)
+def _auth(roles: frozenset[str] = frozenset({"user"}), *, org_id: str = "") -> AuthContext:
+    return AuthContext(user_id="u1", org_id=org_id, team_id="t1", roles=roles)
 
 
 # ─── check_permission ──────────────────────────────────────────────────────────
@@ -106,13 +106,14 @@ async def test_sentinel_writes_a_canonical_entry_to_sqlite() -> None:
         await audit.ensure_schema()
         sentinel = _sentinel(audit_log=audit)
 
-        verdict = await sentinel.pre_call("tool", {}, _auth(), schema={})
+        verdict = await sentinel.pre_call("tool", {}, _auth(org_id="org-a"), schema={})
 
         assert verdict.allowed is True
-        entries = await audit.get_entries()
+        entries = await audit.get_entries(org_id="org-a")
         assert len(entries) == 1
         assert entries[0].boundary == "pre_call"
         assert entries[0].user_id == "u1"
+        assert entries[0].org_id == "org-a"
         assert entries[0].timestamp is not None
     finally:
         await conn.close()

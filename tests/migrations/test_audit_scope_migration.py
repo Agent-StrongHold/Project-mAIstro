@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-MIGRATION = ROOT / "alembic" / "versions" / "035_audit_log_org_scope.py"
+MIGRATION = ROOT / "alembic" / "versions" / "036_audit_log_org_scope.py"
 
 
 @pytest.fixture
@@ -73,6 +73,21 @@ class _Operations:
 
     def drop_column(self, *args: Any, **kwargs: Any) -> None:
         return None
+
+
+def test_audit_scope_migration_is_reachable_from_the_single_head() -> None:
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    config = Config(str(ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(ROOT / "alembic"))
+    directory = ScriptDirectory.from_config(config)
+
+    revision = directory.get_revision("036_audit_log_org_scope")
+    assert revision.down_revision == "035_outcome_scope_thumb_index"
+    assert directory.get_heads() == ["036_audit_log_org_scope"]
+    walked = {item.revision for item in directory.walk_revisions("base", revision.revision)}
+    assert revision.revision in walked
 
 
 def test_backfill_is_bounded_and_stops_after_the_last_batch(migration: ModuleType) -> None:

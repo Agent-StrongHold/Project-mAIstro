@@ -4,7 +4,7 @@ inventory-delta:
 ---
 # 1155 audit organization scope
 
-The audit persistence change adds nineteen regression tests: PostgreSQL
+The audit persistence change adds twenty regression tests: PostgreSQL
 SQL/write and real two-organization migration/isolation coverage, SQLite
 legacy-schema upgrade/index and two-organization isolation coverage, explicit
 system-scope and ambiguous-scope checks, unsupported-filter rejection, a
