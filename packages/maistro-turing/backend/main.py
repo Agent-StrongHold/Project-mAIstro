@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from maistro.security.composition import build_canonical_security_dependencies
 
 from .config import build_registry, cors_origins
+from .execution import reset_execution_plane
 from .middleware.auth import TuringAuthMiddleware
 from .routes import admin, auth, chat, feed, health, state
 from .security import TuringInboundSecurity, TuringInboundSecurityMiddleware
@@ -33,6 +34,9 @@ def create_app(*, inbound_security: TuringInboundSecurity | None = None) -> Fast
             audit_log=dependencies.audit_log,
         )
     reset_state(inbound_security=inbound_security)
+    # The execution plane is part of the same composition root as the HTTP
+    # boundary; direct service callers cannot obtain an unguarded plane.
+    reset_execution_plane(inbound_security=inbound_security)
     app = FastAPI(title="Turing Backend", version="0.9.0")
     app.state.turing_security = inbound_security
 

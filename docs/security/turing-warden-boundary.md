@@ -6,6 +6,7 @@ without enabling the product.
 
 | Path | Input crossing boundary | Warden | Trusted use | Correlation |
 | --- | --- | --- | --- | --- |
+| `TuringExecutionPlane.run_chat` | Direct service caller's consumed message | Yes, before Graph/Run persistence; model result remains protected by the runtime bridge | Canonical chat `Graph -> Run -> NodeRun -> Attempt`, session, classifier, memory, provider | Principal plus Workspace/Project/Run audit records after admission; pre-admission blocks are principal-correlated |
 | `POST /v1/chat` | Human JSON message, session id, nested/unknown JSON keys | Yes, raw parsed structure and consumed message | Classifier, prompt/history, canonical chat `Graph -> Run -> NodeRun -> Attempt`, memory, model result | Principal plus Workspace/Project/Run audit records |
 | `POST /v1/feed` | Turing service JSON kind/title/body and nested/unknown JSON keys | Yes, before feed state mutation | Durable trusted producer artifact feed | Service principal and route/action |
 | `PATCH /v1/admin/mood` | Human JSON object and attacker-controlled keys | Yes, before self-model mutation | Trusted self-model state | Human principal and route/action |
@@ -15,6 +16,9 @@ without enabling the product.
 
 The inbound middleware walks parsed mappings without serializing them, scans
 mapping keys and nested string values, and runs before FastAPI route consumption.
+The direct `TuringExecutionPlane.run_chat` service seam scans the semantically
+consumed message before copying it into a Graph or persisting a Run; a blocked
+pre-admission verdict is recorded with the principal and cannot obtain a Run.
 The chat runtime also scans direct callers' user input and scans the provider
 (model/tool-result) response before history or memory. Chat canonical Run
 admission is mandatory: if Run or continuation admission is unavailable, the

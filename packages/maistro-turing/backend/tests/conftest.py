@@ -48,7 +48,7 @@ def _reset_state():
     # tests must not accidentally exercise a parallel Warden/audit authority.
     app.state.turing_security.audit_log._entries.clear()
     reset_state(inbound_security=app.state.turing_security)
-    reset_execution_plane()
+    reset_execution_plane(inbound_security=app.state.turing_security)
     yield
 
 
