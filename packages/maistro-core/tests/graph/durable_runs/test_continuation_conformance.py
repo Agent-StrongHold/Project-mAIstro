@@ -250,6 +250,11 @@ async def test_due_deadline_query_agrees_across_backends(store: GraphContinuatio
 
     assert await store.list_due_run_ids(now=now, limit=10) == ["run-waiting", "run-paused"]
     assert await store.list_due_run_ids(now=now, limit=1) == ["run-waiting"]
+    assert await store.list_due_run_ids(
+        now=now,
+        limit=10,
+        after=(now - timedelta(seconds=2), "run-waiting"),
+    ) == ["run-paused"]
 
 
 async def test_status_listing_pages_forward_with_an_advancing_cursor(
