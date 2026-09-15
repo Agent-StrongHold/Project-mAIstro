@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -83,6 +84,16 @@ class A2ADelegator:
     def __init__(self) -> None:
         self._tasks: dict[str, A2ATask] = {}
         self._agent_capabilities: dict[str, list[str]] = {}
+        self._completion_handler: Callable[[A2ATask], Any] | None = None
+
+    def set_completion_handler(self, handler: Callable[[A2ATask], Any] | None) -> None:
+        """Install the canonical result sink for terminal delegated tasks.
+
+        The delegator remains a transport receipt and does not own parent graph
+        lifecycle. The injected handler is the production bridge back to the
+        canonical Graph store.
+        """
+        self._completion_handler = handler
 
     def register_agent_capability(self, agent_name: str, can_delegate_to: list[str]) -> None:
         """Register agent's delegation capabilities."""
@@ -203,3 +214,12 @@ class A2ADelegator:
         task.result = result
 
         logger.info("Task status updated: %s %s -> %s", task_id, old_status, status)
+        if status in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}:
+            handler = self._completion_handler
+            if handler is not None:
+                try:
+                    handler(task)
+                except Exception:
+                    # A receipt update must remain durable even when a process
+                    # cannot currently schedule the canonical wakeup.
+                    logger.exception("A2A completion handler failed for task %s", task_id)

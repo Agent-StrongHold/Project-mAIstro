@@ -100,7 +100,7 @@ def test_elapsed_timer_wait_still_redispatches() -> None:
 
 
 @pytest.mark.asyncio
-async def test_answer_deadline_is_persisted_as_pause_evidence_but_not_timer_due() -> None:
+async def test_system_answer_deadline_is_indexed_for_timeout_wakeup() -> None:
     record = _record(status=RunStatus.RUNNING)
     store = InMemoryDurableRunStore()
     await store.create(record)
@@ -124,10 +124,38 @@ async def test_answer_deadline_is_persisted_as_pause_evidence_but_not_timer_due(
     )
 
     assert checkpointed.run.status is RunStatus.WAITING
-    assert checkpointed.resume_at is None
+    assert checkpointed.resume_at == deadline
     assert checkpointed.graph_state.metadata["pauses"]["wait-step"]["resume_at"] == (
         deadline.isoformat()
     )
+
+
+@pytest.mark.asyncio
+async def test_human_answer_deadline_stays_on_the_hitl_expiry_waker() -> None:
+    record = _record(status=RunStatus.RUNNING)
+    store = InMemoryDurableRunStore()
+    await store.create(record)
+    graph = record.run.graph.materialize()
+    deadline = datetime.now(UTC) - timedelta(seconds=1)
+    paused = _pause(PAUSE_AWAITING_HUMAN_ANSWER, resume_at=deadline)
+    item = traversal._FrontierItem(
+        node_id="wait-step",
+        spec=graph.nodes[0],
+        node_run=NodeRun(run_id=record.run_id, node_id="wait-step", ordinal=1),
+        ctx=NodeContext(run_id=record.run_id, dag_id=graph.graph_id, node_id="wait-step"),
+        result=paused,
+    )
+
+    checkpointed = await traversal._checkpoint_paused_frontier(
+        record,
+        (item,),
+        (),
+        (),
+        store=store,
+    )
+
+    assert checkpointed.run.status is RunStatus.PAUSED
+    assert checkpointed.resume_at is None
 
 
 @pytest.mark.asyncio

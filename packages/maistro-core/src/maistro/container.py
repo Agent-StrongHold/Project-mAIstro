@@ -53,6 +53,7 @@ from maistro.runs.model import (
     Run,
     RunStatus,
 )
+from maistro.runs.reconciliation import reconcile_stranded_runs
 from maistro.runs.store import RunIntegrityError, RunStore
 from maistro.runs.wiring import (
     SPINE_PG_TABLES,
@@ -288,6 +289,9 @@ class Container:
     resilience_policies: ResiliencePolicyStore = None  # type: ignore[assignment]
     # Durable events (ADR-086): bus bridge + log/trigger/invocation stores.
     event_bus: EventBus = None  # type: ignore[assignment]
+    #: Canonical recovery facts are persisted through EventEnvelope; event_bus
+    #: remains only the compatibility projection used by older consumers.
+    recovery_event_sink: Any = None
     durable_event_log: EventLogStore = None  # type: ignore[assignment]
     trigger_store: TriggerStore = None  # type: ignore[assignment]
     invocation_store: InvocationStore = None  # type: ignore[assignment]
@@ -743,6 +747,12 @@ class Container:
         )
         from maistro.runs.reconciliation import AttemptLifecycleReconciler
 
+        recovery_events = self.recovery_event_sink or self.event_bus
+        # Tests and embedders may replace the store after composition. Do not
+        # ask a canonical sink bound to the old lookup to envelope new Runs.
+        if getattr(recovery_events, "_runs", self.run_store) is not self.run_store:
+            recovery_events = self.event_bus
+
         reclaimed = await self.run_store.reclaim_expired_attempts(now=now, limit=limit)
         if reclaimed:
             # The Container's bus, so the sweep's dispositions land on the
@@ -751,7 +761,7 @@ class Container:
             # decision becomes inspectable, not how it is made.
             reconciler = AttemptLifecycleReconciler(
                 self.run_store,
-                events=self.event_bus,
+                events=recovery_events,
                 source="maistro.container.recover_abandoned_attempts",
             )
             for attempt in reclaimed:
@@ -768,12 +778,74 @@ class Container:
             recovered_attempts_total.inc(len(reclaimed))
             logger.info("recovered %d abandoned Attempt(s)", len(reclaimed))
 
+        # Replay terminal physical/logical evidence even when no lease was left
+        # to reclaim. This closes the crash window after a NodeRun or graph
+        # continuation write and before the parent Run fold (#1151).
+        await reconcile_stranded_runs(
+            self.run_store,
+            limit=limit,
+            events=recovery_events,
+        )
+
         open_runs, oldest_created_at = await self.run_store.non_terminal_run_stats()
         non_terminal_runs.set(open_runs)
         moment = now if now is not None else datetime.now(UTC)
         age = (moment - oldest_created_at).total_seconds() if oldest_created_at else 0.0
         oldest_non_terminal_run_age_seconds.set(max(age, 0.0))
         return len(reclaimed)
+
+    async def wake_external_graph_result(self, task: Any) -> None:
+        """Write an A2A completion into its canonical parent Graph pause.
+
+        A2A task state is only a transport receipt. The metadata stamped at
+        dispatch identifies the canonical Run and NodeRun that own the pause;
+        this method is the reachable production waker for terminal receipts.
+        """
+        if self.graph_run_store is None:
+            return
+        metadata = getattr(task, "metadata", None)
+        if not isinstance(metadata, dict):
+            return
+        run_id = str(metadata.get("parent_run_id") or "")
+        node_id = str(metadata.get("parent_node_id") or "")
+        status = getattr(getattr(task, "status", None), "value", None)
+        if not run_id or not node_id or status not in {"completed", "failed", "cancelled"}:
+            return
+        try:
+            await self.graph_run_store.submit_external_result(
+                run_id,
+                node_id,
+                {
+                    "status": status,
+                    "task_id": str(getattr(task, "id", "")),
+                    "result": getattr(task, "result", None),
+                    "error": getattr(task, "error", None),
+                },
+            )
+        except (KeyError, ValueError):
+            # The parent may have timed out, been answered, or been purged
+            # before an at-least-once receipt arrived. Its canonical outcome
+            # remains authoritative and must not be rewritten here.
+            logger.info(
+                "A2A completion did not wake parent Run %s node %s",
+                run_id,
+                node_id,
+            )
+
+    def _schedule_external_graph_result(self, task: Any) -> None:
+        """Schedule the async canonical wake from A2A's synchronous receipt API."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.warning("cannot schedule A2A completion without a running event loop")
+            return
+        scheduled = loop.create_task(
+            self.wake_external_graph_result(task),
+            name=f"a2a-graph-wakeup-{getattr(task, 'id', 'unknown')}",
+        )
+        scheduled.add_done_callback(
+            lambda completed: None if completed.cancelled() else completed.exception()
+        )
 
     async def execute_admitted_runs(self, *, limit: int = 100) -> int:
         """Tick the canonical consumer for admitted Runs (#251). Returns how many ran.
@@ -1445,6 +1517,8 @@ async def create_container(
     from maistro.events.invocations import InMemoryInvocationStore
     from maistro.events.processing import HTTPHandlerCaller
     from maistro.events.trigger_store import InMemoryTriggerStore
+    from maistro.events.wiring import wire_canonical_events
+    from maistro.runs.recovery_events import CanonicalRecoveryEventSink
 
     durable_event_log: EventLogStore
     trigger_store: TriggerStore
@@ -1490,6 +1564,12 @@ async def create_container(
         await durable_event_log.append(**append_from_bus_event(event))
 
     event_bus.subscribe(_persist_bus_event)
+    canonical_event_publisher = await wire_canonical_events(
+        pg_pool=pg_pool,
+        db_pool=db_pool,
+        legacy_bus=event_bus,
+    )
+    recovery_event_sink = CanonicalRecoveryEventSink(run_store, canonical_event_publisher)
 
     # --- LLM provider registry + cost-aware router (SPEC-070226-cb8d) ----
     from maistro.providers.config import load_provider_registry
@@ -1589,7 +1669,11 @@ async def create_container(
         chat_admitter=chat_admitter,
         template_store=graph_template_store,
         node_template_store=node_template_store,
-        graph_run_store=CanonicalDurableRunStore(run_store, graph_continuations),
+        graph_run_store=CanonicalDurableRunStore(
+            run_store,
+            graph_continuations,
+            events=recovery_event_sink,
+        ),
         schedule_store=schedule_store,
         schedule_admitter=schedule_admitter,
         context_assembly_policy=context_assembly_policy,
@@ -1603,6 +1687,7 @@ async def create_container(
         holds_db_pool=holds_db_pool,
         resilience_policies=resilience_policies,
         event_bus=event_bus,
+        recovery_event_sink=recovery_event_sink,
         durable_event_log=durable_event_log,
         trigger_store=trigger_store,
         invocation_store=invocation_store,
@@ -1627,6 +1712,10 @@ async def create_container(
         a2a_delegator=a2a_delegator,
         guest_peers=guest_peers,
     )
+
+    # A2A remains a receipt store; terminal receipts wake the canonical parent
+    # through this container-owned bridge rather than a second lifecycle.
+    a2a_delegator.set_completion_handler(container._schedule_external_graph_result)
 
     # One word again, and only because this change is what makes it true.
     #

@@ -315,6 +315,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
                 delegation_mode=DelegationMode.ALLOW_ALL
                 if inputs.to_agent is None
                 else DelegationMode.ALLOW_LIST,
+                metadata={"parent_run_id": ctx.run_id, "parent_node_id": ctx.node_id},
             )
         except ValueError as exc:
             return DelegateRemoteOut(status="rejected", error=str(exc))

@@ -10,6 +10,12 @@ from pathlib import Path
 from typing import Any, Literal
 
 from maistro.graph.execution_state import GraphExecutionState, thaw_json_value
+from maistro.graph.nodes.base import (
+    DEADLINE_WOKEN_PAUSE_REASONS,
+    PAUSE_AWAITING_HARNESS,
+    PAUSE_AWAITING_REMOTE_DELEGATION,
+    TIMER_RESUMABLE_PAUSE_REASONS,
+)
 from maistro.runs.lifecycle import settle_open_node_run, transition_node_run, transition_run
 from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
 
@@ -83,6 +89,36 @@ def _paused_node_run_index(record: DurableRunRecord, node_id: str) -> int:
         if node_run.node_id == node_id and node_run.status is RunStatus.PAUSED:
             return index
     raise ValueError(f"run {record.run_id!r} has no paused NodeRun for node {node_id!r}")
+
+
+def _earliest_wakeup(
+    metadata: Mapping[str, Any],
+    active_node_ids: tuple[str, ...],
+) -> datetime | None:
+    """Project the next timer/deadline waker after one pause is answered."""
+    pauses_raw = metadata.get("pauses", {})
+    pauses = pauses_raw if isinstance(pauses_raw, Mapping) else {}
+    deadlines: list[datetime] = []
+    for active_id in active_node_ids:
+        pause = pauses.get(active_id)
+        if not isinstance(pause, Mapping):
+            continue
+        pause_metadata = pause.get("metadata")
+        if not isinstance(pause_metadata, Mapping):
+            continue
+        reason = str(pause_metadata.get("paused_reason") or "")
+        if reason not in TIMER_RESUMABLE_PAUSE_REASONS | DEADLINE_WOKEN_PAUSE_REASONS:
+            continue
+        raw_deadline = pause.get("resume_at")
+        if not isinstance(raw_deadline, str):
+            continue
+        try:
+            deadline = datetime.fromisoformat(raw_deadline)
+        except ValueError:
+            continue
+        if deadline.tzinfo is not None:
+            deadlines.append(deadline)
+    return min(deadlines) if deadlines else None
 
 
 def _pause_metadata_after_answer(
@@ -179,6 +215,94 @@ def answer_record(
         graph_state=graph_state,
         node_runs=tuple(node_runs),
         resume_at=record.resume_at if remaining_paused else None,
+        version=record.version + 1,
+    )
+
+
+def external_result_record(
+    record: DurableRunRecord,
+    node_id: str,
+    result: dict[str, Any],
+    *,
+    at: datetime | None = None,
+) -> DurableRunRecord:
+    """Wake a system-owned answer-gated pause from a completion event.
+
+    Remote and harness dispatches park ``WAITING`` rather than ``PAUSED``.
+    Reusing the HITL-only answer door left those Runs with no legal writer, so
+    a child completion or a deadline could never reach the canonical Graph.
+    This seam accepts only the pause reason persisted by the node and carries
+    the server-authored pause metadata into the resumed Attempt.
+    """
+    existing = record.hitl_answers.get(node_id)
+    if existing is not None:
+        # Completion delivery is at-least-once. Replay the same payload without
+        # advancing the checkpoint again; a conflicting payload is a protocol
+        # error rather than permission to overwrite an accepted result.
+        if all(existing.get(key) == value for key, value in result.items()):
+            return record
+        raise ValueError(f"run {record.run_id!r} already has a different result for {node_id!r}")
+    if record.run.status not in {RunStatus.WAITING, RunStatus.PAUSED}:
+        raise ValueError(f"run {record.run_id!r} is not parked for an external result")
+    if node_id not in record.graph_state.active_node_ids:
+        raise ValueError(
+            f"run {record.run_id!r} waiting on frontier "
+            f"{record.graph_state.active_node_ids!r}, not {node_id!r}"
+        )
+    pauses_raw = record.graph_state.metadata.get("pauses", {})
+    pauses = pauses_raw if isinstance(pauses_raw, Mapping) else {}
+    pause = pauses.get(node_id)
+    if not isinstance(pause, Mapping):
+        raise ValueError(f"run {record.run_id!r} has no durable pause for node {node_id!r}")
+    pause_metadata = pause.get("metadata")
+    if not isinstance(pause_metadata, Mapping):
+        raise ValueError(f"run {record.run_id!r} node {node_id!r} has malformed pause metadata")
+    reason = str(pause_metadata.get("paused_reason") or "")
+    if reason not in {PAUSE_AWAITING_REMOTE_DELEGATION, PAUSE_AWAITING_HARNESS}:
+        raise ValueError(f"run {record.run_id!r} node {node_id!r} is not externally woken")
+
+    index = (
+        _paused_node_run_index(record, node_id)
+        if record.run.status is RunStatus.PAUSED
+        else next(
+            (
+                index
+                for index in range(len(record.node_runs) - 1, -1, -1)
+                if record.node_runs[index].node_id == node_id
+                and record.node_runs[index].status in {RunStatus.WAITING, RunStatus.PAUSED}
+            ),
+            -1,
+        )
+    )
+    if index < 0:
+        raise ValueError(f"run {record.run_id!r} has no parked NodeRun for node {node_id!r}")
+    moment = settlement_time(at)
+    answered = {**result, "answered_at": moment.isoformat(), "_pause": dict(pause)}
+    metadata = dict(record.graph_state.metadata)
+    answers = dict(record.hitl_answers)
+    answers[node_id] = answered
+    metadata["hitl_answers"] = answers
+    metadata = _pause_metadata_after_answer(record, metadata, node_id)
+    node_runs = list(record.node_runs)
+    node_runs[index] = transition_node_run(node_runs[index], RunStatus.QUEUED, at=moment)
+    remaining_node_ids = tuple(
+        active_id for active_id in record.graph_state.active_node_ids if active_id != node_id
+    )
+    remaining_parked = any(
+        node_run.node_id in remaining_node_ids
+        and node_run.status in {RunStatus.WAITING, RunStatus.PAUSED}
+        for node_run in node_runs
+    )
+    remaining_resume_at = _earliest_wakeup(metadata, remaining_node_ids)
+    run = (
+        record.run if remaining_parked else transition_run(record.run, RunStatus.QUEUED, at=moment)
+    )
+    return _replace_record(
+        record,
+        run=run,
+        graph_state=_replace_state(record.graph_state, metadata=metadata),
+        node_runs=tuple(node_runs),
+        resume_at=remaining_resume_at if remaining_parked else None,
         version=record.version + 1,
     )
 
@@ -354,6 +478,22 @@ class InMemoryDurableRunStore:
             if record is None:
                 raise KeyError(f"no such run: {run_id!r}")
             updated = answer_record(record, node_id, answer, at=at)
+            self._rows[run_id] = updated
+            return _clone(updated)
+
+    async def submit_external_result(
+        self,
+        run_id: str,
+        node_id: str,
+        result: dict[str, Any],
+        *,
+        at: datetime | None = None,
+    ) -> DurableRunRecord:
+        async with self._lock:
+            record = self._rows.get(run_id)
+            if record is None:
+                raise KeyError(f"no such run: {run_id!r}")
+            updated = external_result_record(record, node_id, result, at=at)
             self._rows[run_id] = updated
             return _clone(updated)
 
@@ -558,6 +698,22 @@ class SqliteDurableRunStore:
                 self,
                 run_id,
                 lambda current: answer_record(current, node_id, answer, at=at),
+            )
+
+    async def submit_external_result(
+        self,
+        run_id: str,
+        node_id: str,
+        result: dict[str, Any],
+        *,
+        at: datetime | None = None,
+    ) -> DurableRunRecord:
+        async with self._lock:
+            return await asyncio.to_thread(
+                _mutate_hitl_sync,
+                self,
+                run_id,
+                lambda current: external_result_record(current, node_id, result, at=at),
             )
 
     async def timeout_hitl(

@@ -308,11 +308,41 @@ PAUSE_RESUME_CONDITIONS: dict[str, str] = {
     PAUSE_WAITING_ON_JIRA_SUBTASKS: RESUME_ON_ELAPSED,
 }
 
+#: The production actor that can satisfy each registered resume condition.
+#: Keeping this beside the condition table makes a newly registered pause fail
+#: review until it names a reachable answer, event, timer, or cancellation
+#: seam (#1192).
+PAUSE_REASON_WAKERS: dict[str, tuple[str, ...]] = {
+    PAUSE_AWAITING_HUMAN_ANSWER: ("CanonicalDurableRunStore.submit_hitl_answer",),
+    PAUSE_AWAITING_HUMAN_APPROVAL: ("CanonicalDurableRunStore.submit_hitl_answer",),
+    PAUSE_AWAITING_HUMAN_REVIEW: ("CanonicalDurableRunStore.submit_hitl_answer",),
+    PAUSE_AWAITING_ROLE_DELEGATE: ("CanonicalDurableRunStore.submit_hitl_answer",),
+    PAUSE_AWAITING_REMOTE_DELEGATION: (
+        "Container.wake_external_graph_result",
+        "CanonicalDurableRunStore.submit_external_result",
+        "resume_due_graph_runs",
+    ),
+    PAUSE_AWAITING_HARNESS: (
+        "Container.wake_external_graph_result",
+        "CanonicalDurableRunStore.submit_external_result",
+        "resume_due_graph_runs",
+    ),
+    PAUSE_WAITING_ON_JIRA_SUBTASKS: ("Container.resume_parked_runs",),
+}
+
 #: The reasons a timer alone may re-enter, derived so the two cannot disagree.
 TIMER_RESUMABLE_PAUSE_REASONS = frozenset(
     reason
     for reason, condition in PAUSE_RESUME_CONDITIONS.items()
     if condition == RESUME_ON_ELAPSED
+)
+
+#: System-owned dispatches have a deadline waker too, but must not be
+#: redispatched on elapsed time: the waker first records a timeout result.
+DEADLINE_WOKEN_PAUSE_REASONS = frozenset(
+    reason
+    for reason, condition in PAUSE_RESUME_CONDITIONS.items()
+    if PAUSE_REASON_OWNERS.get(reason) == "system" and condition == RESUME_ON_ANSWER
 )
 
 #: Where a resumed execution finds what its own previous pause recorded.
