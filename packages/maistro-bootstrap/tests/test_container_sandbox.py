@@ -295,10 +295,12 @@ def test_container_environment_is_credential_default_deny(tmp_path: Path) -> Non
     for name in (
         "HTTP_PROXY",
         "HTTPS_PROXY",
+        "FTP_PROXY",
         "ALL_PROXY",
         "NO_PROXY",
         "http_proxy",
         "https_proxy",
+        "ftp_proxy",
         "all_proxy",
         "no_proxy",
     ):

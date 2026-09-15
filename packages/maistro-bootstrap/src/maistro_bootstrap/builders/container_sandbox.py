@@ -112,10 +112,12 @@ _SEED_TIMEOUT = 300  # Git listing + tar create/extract through one pipe.
 _PROXY_ENV_NAMES = (
     "HTTP_PROXY",
     "HTTPS_PROXY",
+    "FTP_PROXY",
     "ALL_PROXY",
     "NO_PROXY",
     "http_proxy",
     "https_proxy",
+    "ftp_proxy",
     "all_proxy",
     "no_proxy",
 )

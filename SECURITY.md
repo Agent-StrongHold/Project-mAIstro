@@ -298,7 +298,7 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    `packages/maistro-bootstrap/tests/test_container_sandbox.py` exercises the production
    `ContainerBuilderSandbox` Docker backend's filesystem, process, namespace, network, device,
    host-socket, credential and privilege surfaces (including tracked-only seed inputs and blanked
-   Docker proxy variables), read-only rootfs, resource budget, timeout kill (including detached
+   Docker proxy variables (HTTP, HTTPS, FTP, and both case spellings), read-only rootfs, resource budget, timeout kill (including detached
    descendants) and cleanup behavior.
    `packages/maistro-core/tests/sandbox/test_escape_conformance.py`
    provides the corresponding live Bubblewrap Tier-3 lane. These are real-kernel/container
