@@ -7,7 +7,7 @@ import pytest
 from maistro.memory.context_assembly import DefaultContextAssemblyPolicy
 from maistro.memory.episodic.store import InMemoryEpisodicStore
 from maistro.memory.outcomes import InMemoryOutcomeStore
-from maistro.memory.types import EpisodicMemory, MemoryScope, MemoryTier
+from maistro.memory.types import EpisodicMemory, MemoryScope, MemoryTier, Outcome
 from maistro.projects.store import InMemoryProjectStore
 
 
@@ -97,6 +97,29 @@ class TestLayer4:
 
 
 class TestAssemble:
+    async def test_missing_org_does_not_inject_global_outcome_context(
+        self, policy: DefaultContextAssemblyPolicy
+    ) -> None:
+        await policy.outcome_store.record(
+            Outcome(
+                task_type="",
+                success=False,
+                error_type="secret-org-a",
+                org_id="org-a",
+                project_id="p1",
+            )
+        )
+
+        text = await policy.assemble(
+            project_id="p1",
+            run_id="r1",
+            agent_id="agent-1",
+            session_id="s1",
+            budget_tokens=10_000,
+        )
+
+        assert "secret-org-a" not in text
+
     async def test_concatenates_layers_in_order(self, policy: DefaultContextAssemblyPolicy) -> None:
         project = await policy.project_store.create(
             owner_user_id="u1", name="Proj", profile_markdown="CONSTRAINTS"

@@ -908,21 +908,16 @@ async def _canonical_hitl_fixture() -> tuple[Any, Any, Any]:
 
 @pytest.mark.ac("ADR-090726-9a4e/AC-2")
 async def test_a_malformed_answer_re_pauses_without_moving_the_deadline() -> None:
-    store, run_store, paused = await _canonical_hitl_fixture()
+    store, _run_store, paused = await _canonical_hitl_fixture()
     original_deadline = hitl_deadline(paused, "ask")
     assert original_deadline is not None
-
-    def _resolver(node_id: str, current_graph: Any) -> Any:
-        return get_node("human.approve_draft")()
 
     malformed_at = original_deadline - timedelta(seconds=50)
     await store.submit_hitl_answer(
         paused.run_id, "ask", {"reviewer_note": "still deciding"}, at=malformed_at
     )
-    resumed = await resume_durable_graph(
-        paused.run_id, store=store, node_resolver=_resolver, run_store=run_store
-    )
-
+    resumed = await store.get(paused.run_id)
+    assert resumed is not None
     assert resumed.status is RunStatus.PAUSED
     assert hitl_deadline(resumed, "ask") == original_deadline, (
         "a malformed answer must re-pause on the *original* admitted "
@@ -939,18 +934,14 @@ async def test_repeated_malformed_answers_at_t_minus_1s_cannot_extend_the_deadli
     original_deadline = hitl_deadline(paused, "ask")
     assert original_deadline is not None
 
-    def _resolver(node_id: str, current_graph: Any) -> Any:
-        return get_node("human.approve_draft")()
-
     current = paused
     for offset in (timedelta(seconds=90), timedelta(seconds=30), timedelta(seconds=1)):
         malformed_at = original_deadline - offset
         await store.submit_hitl_answer(
             current.run_id, "ask", {"reviewer_note": "not yet"}, at=malformed_at
         )
-        current = await resume_durable_graph(
-            current.run_id, store=store, node_resolver=_resolver, run_store=run_store
-        )
+        current = await store.get(current.run_id)
+        assert current is not None
         assert current.status is RunStatus.PAUSED
         assert hitl_deadline(current, "ask") == original_deadline
 
@@ -980,9 +971,8 @@ async def test_a_valid_answer_before_the_preserved_deadline_still_settles() -> N
         {"reviewer_note": "later"},
         at=original_deadline - timedelta(seconds=50),
     )
-    still_paused = await resume_durable_graph(
-        paused.run_id, store=store, node_resolver=_resolver, run_store=run_store
-    )
+    still_paused = await store.get(paused.run_id)
+    assert still_paused is not None
     assert still_paused.status is RunStatus.PAUSED
     assert hitl_deadline(still_paused, "ask") == original_deadline
 
