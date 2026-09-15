@@ -38,6 +38,32 @@ or placeholder-only section.
   excluded, and no rule is suppressed repo-wide. What DevSkim reports about
   shipped code is unchanged; only the noise around it is gone.
 
+- **CodeQL code-scanning alerts cleared across the runtime, gate scripts, and
+  frontends (no linked issue: CodeQL code-scanning alerts).** Hive-conductor
+  no longer echoes raw exception text to clients from the run-DAG, widget, and
+  RSI-run paths (the exception class plus a fixed message is returned; detail
+  stays in server logs), the missing-secret log line no longer names the
+  secret, and the credential-store warning no longer prints the vault path.
+  Path-taking surfaces (demo dashboard ids, SPA fallback, RSI execution
+  policy, sandbox workspace, Lulu preflight uploads) now resolve symlinks
+  first and decide containment on the resolved path, so a link planted inside
+  an allowed directory cannot point out of it, and a configured root that is
+  itself a symlink still accepts its own contents rather than refusing every
+  legitimate request. Rovo MCP detection matches the URL hostname rather than
+  a substring, and Airtable cache fingerprints use a salted PBKDF2 digest. The
+  canvas book-maker Express server rate-limits `/api`
+  (`API_RATE_LIMIT_PER_MINUTE`, default 600; a non-numeric, zero, or negative
+  value is refused with a warning and the default used, rather than becoming
+  the NaN limit that removes the cap) and validates print-order ids; the
+  bundled hive page keeps its API key in memory instead of `sessionStorage`;
+  chat/deck ids come from `crypto.randomUUID()`; export format and quality are
+  allowlisted; and book-plan patches refuse prototype keys. Gate scripts
+  rename identifiers CodeQL's secret heuristic flagged.
+  `.github/codeql/codeql-config.yml` excludes the test and vendored trees from
+  scanning; every entry names a location rather than a filename shape, so an
+  exclusion cannot reach into `packages/` and quietly drop a shipped module
+  from the analysis.
+
 - **Sentinel's permission table is fail-closed, and the production paths can
   both feel it and configure it (#1165).** An empty or omitted deployment
   table now denies every tool instead of authorizing all of them. A chat turn
@@ -146,6 +172,32 @@ or placeholder-only section.
 
 ### Fixed
 
+- **The migration chain has one head again, and the debt ledger matches the
+  shipped tree (no linked issue: base-branch repair).** Merging #1263 carried
+  a renumber made against an older base: it renamed
+  `033_project_membership_unique_per_principal.py` to `034_…` and moved its
+  `revision` with it, colliding with the `034_hitl_deadline_index` already on
+  develop. Git merged it without a conflict — different files — so the chain
+  silently grew two `034`s, lost `033`, and forked `035`, and `alembic
+  upgrade` could not resolve a path. Project membership is restored to `033`
+  (down `032`) and `035_outcome_scope_thumb_index` follows `035` again, so the
+  chain is linear: `032 → 033 → 034 → 035 → 035_outcome_scope_thumb_index`.
+  No migration body changed; nothing already applied is rewritten. The same
+  repair banks the three `capabilities/invocation.py` identities #1310
+  introduced without authorizing (`observed_at`, `_validate_reconciliation`,
+  `_validate_evidence`), un-breaking the `exact-debt-ledger` gate for every
+  candidate.
+
+- **A manual schedule fire claims its run before creating it, and never moves
+  the recurrence cursor (#1119).** `ScheduleStore` gains `reserve_fire` /
+  `settle_fire`: the quota is counted (and the schedule disabled on
+  exhaustion) atomically under the store's lock *before* the Run exists, so
+  two "run now" requests racing on the last run yield one Run and one refusal
+  instead of `runs_so_far` overshooting `max_runs`, and a failure after the
+  Run exists leaves the slot counted rather than a Run the next request
+  duplicates. `last_fired_at` and `next_due_at` are no longer stamped with the
+  manual fire's instant, so an occurrence the cron already owed is still
+  admitted by the next tick; `last_run_id` still points at the manual Run.
 - **A schedule's due cursor is recorded on every evaluation, and SQLite
   `record_fire` is serialized (#1199).** `ScheduleRunAdmitter` computed
   `next_due_at` on an evaluation that fired nothing but never persisted it, so
@@ -188,6 +240,15 @@ or placeholder-only section.
   validates each legacy `resume_at` (ISO-8601 with an explicit offset) before
   casting, leaving malformed or timezone-less values unindexed rather than
   aborting the upgrade or reading them in the session zone.
+
+- **Ambiguous capability Invocations are recoverable, and the recovery is
+  safe to operate (#1118).** Reconciliation checks the caller's Workspace and
+  Project before returning a terminal Invocation, consults a provider adapter
+  outside the service-wide effect lock and refuses its evidence if the row
+  moved meanwhile, accepts and backfills scope on Invocations written before
+  scope was persisted, announces the reconciled terminal state on the event
+  stream, carries recovered usage into an APPLIED settlement, and reads naive
+  timestamps as UTC instead of raising during discovery.
 - **Project membership is one canonical row per `(project, principal)`, and
   is now explicitly revocable (#1148).** `ProjectScopeStore.set_membership`
   used to mint a fresh `membership_id` on every call, so a re-grant, role
