@@ -835,6 +835,18 @@ jobs:
             sleep 2
           done
           curl -fsS http://127.0.0.1:8000/health/live
+          # Readiness races boot-time migration: liveness answers while the
+          # engine is still applying the alembic chain on the empty volume, so
+          # a single immediate /health/ready call fails under runner load
+          # (observed 2026-09-14: the smoke died with the container in
+          # health:starting and the migration chain mid-run). Poll with the
+          # same bounded budget; the final assertion stays fail-closed.
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8000/health/ready >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
           curl -fsS http://127.0.0.1:8000/health/ready
           docker exec "$postgres" psql -U maistro -d maistro -Atc \
             "SELECT version_num FROM alembic_version" | grep -Eq '^[0-9a-f]+$'
