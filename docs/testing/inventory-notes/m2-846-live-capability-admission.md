@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +6
+  packages/maistro-core/tests: +7
   packages/hive-conductor/backend/tests: +6
 ---
 

@@ -228,6 +228,45 @@ async def test_disable_after_start_re_resolves_without_provider_call():
     assert harness.sent == []
 
 
+async def test_live_invocation_policy_change_denies_existing_session():
+    harness = _FakeHarness()
+    registry = _registry_with(harness)
+    policy_state = {"allow": True}
+
+    async def live_policy(_binding: Binding, _request: Any, _context: Any) -> PolicyVerdict:
+        if policy_state["allow"]:
+            return PolicyVerdict(Decision.ALLOW, reason="live policy allows", rule="test.live")
+        return PolicyVerdict(Decision.DENY, reason="live policy revoked", rule="test.live")
+
+    effects = new_effect_context(policy_evaluator=live_policy)
+    binding = Binding(
+        binding_id="binding-harness-live-policy",
+        workspace_id="default",
+        project_id="default",
+        capability=SLOT_NAME,
+        provider_name="fake",
+    )
+    effects.bindings.register(binding)
+    mgr = HarnessSessionManager(
+        registry,
+        warden=_StubWarden(),
+        policy=SequencePolicyEngine([]),
+        invocation_service=effects.invocations,
+        invocation_binding=binding,
+        binding_store=effects.bindings,
+    )
+
+    sid = await mgr.start(_spec(), workdir="/w")
+    assert isinstance(sid, str)
+    policy_state["allow"] = False
+
+    result = await mgr.send(sid, [{"role": "user", "content": "later"}])
+
+    assert isinstance(result, Unavailable)
+    assert "live policy revoked" in result.reason
+    assert harness.sent == []
+
+
 class _BrokenGate:
     async def allow(self, action: dict[str, Any]) -> bool:
         raise RuntimeError("policy store unavailable")
