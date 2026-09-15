@@ -7,7 +7,7 @@ store would prove only that the route calls the method the test told it to.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -25,6 +25,12 @@ def _paused_node_run(run_id: str, node_id: str, ordinal: int) -> NodeRun:
     node_run = transition_node_run(node_run, RunStatus.QUEUED)
     node_run = transition_node_run(node_run, RunStatus.RUNNING)
     return transition_node_run(node_run, RunStatus.PAUSED)
+
+
+# One more than the route's page size, so the HITL pause genuinely lands on
+# a second page and the cursor -- not the first read -- decides whether it is
+# ever seen.
+_MACHINE_PREFIX = 101
 
 
 def _paused_record(
@@ -150,6 +156,63 @@ async def test_pending_reaches_a_hitl_pause_behind_a_long_machine_prefix(seeded)
 
     mine = [item for item in body if item["run_id"] == "hitl-behind-the-prefix"]
     assert len(mine) == 1
+
+
+async def test_pending_pages_by_instant_when_created_at_offsets_differ(seeded) -> None:
+    """The route's cursor must be spelled the way the store compares it.
+
+    `list_by_status` orders by the instant and pages past it with a
+    UTC-normalized key. A cursor built from a bare `.isoformat()` agrees only
+    while every row prints the same offset: `13:0x+01:00` is an earlier instant
+    than `12:30+00:00` yet its string sorts after, so the walk filters one way
+    and orders the other and stops advancing -- hiding the HITL pause it was
+    paging toward.
+
+    The records must share one Workspace: the route loops Workspaces on the
+    outside and pages on the inside, so one record per Workspace never reaches
+    the cursor at all.
+    """
+    client, store, _seed = seeded
+    workspace = await create_workspace(
+        creator_user_id="admin",
+        name="Test Workspace-offset-cursor",
+        persona_template_id="default",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
+    )
+    machine_offset = timezone(timedelta(hours=1))
+    run_ids = [f"hitl-offset-machine-{index}" for index in range(_MACHINE_PREFIX)]
+    run_ids.append("hitl-offset-human")
+    try:
+        # Printed later than the human pause, but the earlier instant, so a
+        # raw-isoformat cursor taken here excludes everything after it.
+        for index in range(_MACHINE_PREFIX):
+            await store.create(
+                _paused_record(
+                    f"hitl-offset-machine-{index}",
+                    workspace_id=workspace.id,
+                    kind="timer",
+                    created_at=datetime(2026, 8, 30, 13, 0, tzinfo=machine_offset)
+                    + timedelta(seconds=index),
+                )
+            )
+        await store.create(
+            _paused_record(
+                "hitl-offset-human",
+                workspace_id=workspace.id,
+                created_at=datetime(2026, 8, 30, 12, 30, tzinfo=UTC),
+            )
+        )
+
+        body = client.get("/v1/hitl/pending", params={"limit": 2}).json()
+
+        assert [item["run_id"] for item in body if item["run_id"] == "hitl-offset-human"] == [
+            "hitl-offset-human"
+        ]
+    finally:
+        for run_id in run_ids:
+            store._rows.pop(run_id, None)
 
 
 async def test_answering_resumes_the_run_and_the_answer_is_readable(seeded) -> None:

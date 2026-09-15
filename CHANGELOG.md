@@ -206,6 +206,16 @@ or placeholder-only section.
 
 ### Fixed
 
+- **`/v1/hitl/pending` pages by instant, not by printed offset (#1109).** The
+  keyset cursor this scan walks was normalized to UTC in every store, so
+  `list_by_status` compares a normalized key -- but the route still built its
+  cursor with a bare `.isoformat()`. The two agree only while every
+  `created_at` prints the same offset, which is the assumption the
+  normalization exists to remove: a row printed at another offset orders one
+  way and filters the other, and the walk stops advancing, hiding the human
+  pause it was paging toward. The route now spells its cursor with the same
+  `cursor_time` helper the stores use.
+
 - **Bounded recovery scans page by instant, bound their own inspection, and no
   longer strand a half-claimed Run (#1098, #1056, #1109, #1127).** Three
   defects found reviewing the fair-scan work, each of which defeated the

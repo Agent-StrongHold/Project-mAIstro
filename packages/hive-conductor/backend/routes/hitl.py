@@ -31,7 +31,7 @@ from middleware.auth import resolve_principal
 from pydantic import BaseModel, ConfigDict, Field
 from services.workspace_authority import is_member, list_views_for_user
 
-from maistro.graph.durable_runs import expire_hitl_pauses
+from maistro.graph.durable_runs import cursor_time, expire_hitl_pauses
 from maistro.runs.model import RunStatus
 from routes.agents import ScanBudgetExceeded, scan_config
 from routes.audit import log_audit
@@ -217,7 +217,11 @@ async def list_pending_human_work(
             inspected += len(records)
             for record in records:
                 items.extend(_pending_items(record))
-            cursor = (records[-1].run.created_at.isoformat(), records[-1].run_id)
+            # Must be the store's own cursor spelling, not a bare isoformat:
+            # `list_by_status` compares the cursor against a UTC-normalized key,
+            # so a `created_at` printed at any other offset would order one way
+            # and filter the other, and this walk would silently stop advancing.
+            cursor = (cursor_time(records[-1].run.created_at), records[-1].run_id)
         if len(items) >= bounded_limit:
             break
     return items[:bounded_limit]

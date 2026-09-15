@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +1
+  packages/hive-conductor/backend/tests: +2
   packages/maistro-core/tests: +65
 ---
 # claude-m1-issues-merge-plan-l7g9xz-95af
@@ -101,3 +101,34 @@ branch's own code and each is now pinned by a case that fails without its fix.
   proves the cap is a pace rather than a horizon: capped below the stale
   prefix, the live Run is unreachable on the first tick and reached on a later
   one.
+
+A fourth round, from re-reading the develop-merge resolution adversarially
+before it landed rather than from a reviewer.
+
+`packages/hive-conductor/backend/tests` (+1):
+`test_hitl_door.py::test_pending_pages_by_instant_when_created_at_offsets_differ`.
+The cursor-normalization fix reached every site in maistro-core and missed the
+one outside it: `list_pending_human_work` still built its keyset cursor with a
+bare `.isoformat()` while `list_by_status` had moved to comparing a
+UTC-normalized key. Agreement then depended on every `created_at` printing the
+same offset -- the precise assumption the fix exists to remove -- and a
+disagreement would silently stop the walk advancing, hiding the HITL pause it
+was paging toward.
+
+The case is deliberately expensive in setup, because two cheaper shapes do not
+reproduce it and the first two attempts at this test passed against the bug:
+
+- Records must share one Workspace. The route loops Workspaces on the outside
+  and pages on the inside, so the `seeded` fixture's Workspace-per-record
+  shape never reaches the cursor at all. (The same is now true of
+  `test_pending_reaches_a_hitl_pause_behind_a_long_machine_prefix`, which
+  predates the Workspace scoping and no longer exercises the inner walk its
+  docstring describes.)
+- The machine prefix must exceed `_PENDING_SCAN_PAGE_SIZE`, so 101 rows. Below
+  that the whole set returns in the first page and the cursor is never the
+  thing that decides.
+
+The machine rows print at `+01:00` and are the earlier instants; the human
+pause prints UTC and is the later one. Normalized, it sorts after them and is
+found; compared raw, `12:30:00+00:00` sorts before `13:05:00+01:00` and it is
+excluded from every later page.
