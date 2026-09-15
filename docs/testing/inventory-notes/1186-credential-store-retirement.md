@@ -1,7 +1,6 @@
 ---
 inventory-delta:
   tests/: +5
-  packages/hive-conductor/backend/tests/: credential-store isolation fixture
 ---
 
 #1186 retires the unscoped `credential_store_v2` implementation and adds
