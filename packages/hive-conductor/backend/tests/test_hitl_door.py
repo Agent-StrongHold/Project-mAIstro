@@ -119,6 +119,9 @@ async def test_a_machine_wait_is_not_offered_to_a_human(seeded) -> None:
     body = client.get("/v1/hitl/pending").json()
 
     assert [item for item in body if item["run_id"] == "hitl-machine-wait"] == []
+    response = client.post("/v1/hitl/hitl-machine-wait/ask/answer", json={"answer": "yes"})
+    assert response.status_code == 409
+    assert "human answer" in response.json()["detail"]
 
 
 async def test_answering_resumes_the_run_and_the_answer_is_readable(seeded) -> None:

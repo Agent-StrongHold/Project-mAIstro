@@ -33,6 +33,18 @@ WorkspaceMembershipCheck = Callable[[str, str], Awaitable[bool]]
 HitlEvidenceValidator = Callable[["HitlDelegationEvidence"], Awaitable[bool]]
 HitlEvidenceConsumer = Callable[["HitlDelegationEvidence"], Awaitable[None]]
 
+# These sentinels keep the evidence-bearing constructors behind their explicit
+# boundary factories. A service must present either an authenticated session
+# from its auth adapter or typed delegation evidence; it cannot instantiate a
+# bare authorization object with an arbitrary allow-all callback.
+_SESSION_FACTORY_TOKEN = object()
+_AUTHORIZATION_FACTORY_TOKEN = object()
+
+
+def _require_factory_token(token: object, expected: object, message: str) -> None:
+    if token is not expected:
+        raise TypeError(message)
+
 
 @dataclass(frozen=True)
 class HitlAuthenticatedSession:
@@ -45,10 +57,29 @@ class HitlAuthenticatedSession:
 
     effective_principal: str
     membership_check: WorkspaceMembershipCheck
+    _factory_token: object = field(default=None, kw_only=True, repr=False, compare=False)
 
     def __post_init__(self) -> None:
+        _require_factory_token(
+            self._factory_token,
+            _SESSION_FACTORY_TOKEN,
+            "HITL sessions must come from the authenticated boundary",
+        )
         if not self.effective_principal.strip():
             raise ValueError("HITL session evidence requires an effective principal")
+
+    @classmethod
+    def from_authenticated_boundary(
+        cls,
+        effective_principal: str,
+        membership_check: WorkspaceMembershipCheck,
+    ) -> HitlAuthenticatedSession:
+        """Create evidence only after an auth adapter verified the session."""
+        return cls(
+            effective_principal,
+            membership_check,
+            _factory_token=_SESSION_FACTORY_TOKEN,
+        )
 
 
 @dataclass(frozen=True)
@@ -107,11 +138,17 @@ class HitlAuthorization:
     evidence_validator: HitlEvidenceValidator | None = None
     evidence_consumer: HitlEvidenceConsumer | None = None
     action: str = "hitl.settle"
+    _factory_token: object = field(default=None, kw_only=True, repr=False, compare=False)
     _evidence_lock: asyncio.Lock = field(
         default_factory=asyncio.Lock, init=False, repr=False, compare=False
     )
 
     def __post_init__(self) -> None:
+        _require_factory_token(
+            self._factory_token,
+            _AUTHORIZATION_FACTORY_TOKEN,
+            "HITL authorization must come from an evidence factory",
+        )
         if not self.effective_principal.strip():
             raise ValueError("HITL authorization requires an effective principal")
         if any(not workspace_id.strip() for workspace_id in self.workspace_ids):
@@ -144,6 +181,7 @@ class HitlAuthorization:
             session.effective_principal,
             frozenset(workspace_ids),
             session.membership_check,
+            _factory_token=_AUTHORIZATION_FACTORY_TOKEN,
         )
 
     @classmethod
@@ -167,6 +205,7 @@ class HitlAuthorization:
             evidence_validator,
             evidence_consumer,
             action,
+            _factory_token=_AUTHORIZATION_FACTORY_TOKEN,
         )
 
     async def permits(self, workspace_id: str, *, consume_evidence: bool = False) -> bool:

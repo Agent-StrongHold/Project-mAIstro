@@ -109,7 +109,7 @@ async def _authorized_record(request: Request, run_id: str) -> Any:
 def _hitl_authorization(request: Request, workspace_ids: set[str]) -> HitlAuthorization:
     """Carry live canonical membership into the durable mutation boundary."""
     return HitlAuthorization.for_verified_session(
-        HitlAuthenticatedSession(_request_user_id(request), is_member),
+        HitlAuthenticatedSession.from_authenticated_boundary(_request_user_id(request), is_member),
         workspace_ids,
     )
 
@@ -307,8 +307,8 @@ async def answer_human_work(
         raise HTTPException(
             status_code=409, detail=f"run is {record.run.status.value}, not paused on human input"
         )
-    if node_id not in record.graph_state.active_node_ids:
-        raise HTTPException(status_code=409, detail="node is not awaiting an answer")
+    if not any(item.node_id == node_id for item in _pending_items(record)):
+        raise HTTPException(status_code=409, detail="node is not awaiting a human answer")
 
     # Untrusted input crossing into a Run's state, which later nodes read
     # (CLAUDE.md decision 6). Scanned with the same detector the harness and

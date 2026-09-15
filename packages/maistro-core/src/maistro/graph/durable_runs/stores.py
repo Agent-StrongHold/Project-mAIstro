@@ -124,6 +124,12 @@ def answer_record(
         )
 
     paused_index = _paused_node_run_index(record, node_id)
+    pauses_raw = record.graph_state.metadata.get("pauses", {})
+    pause = pauses_raw.get(node_id) if isinstance(pauses_raw, Mapping) else None
+    # Legacy records may lack a pause projection, but an explicit non-HITL
+    # pause is never answerable through the human-decision seam.
+    if isinstance(pause, Mapping) and pause.get("kind") != "hitl":
+        raise ValueError(f"run {record.run_id!r} node {node_id!r} is not awaiting human input")
     moment = settlement_time(at)
     deadline = hitl_deadline(record, node_id, require_pause=False)
     if deadline is not None and deadline <= moment:
@@ -700,6 +706,14 @@ class SqliteDurableRunStore:
         record = await self.get(run_id)
         if record is None:
             raise KeyError(f"no such run: {run_id!r}")
+        # The first check resolves the target; the second is the final live
+        # membership/evidence predicate immediately before the serialized
+        # SQLite mutation. Discovery must never be the only authorization.
+        if not await authorization.permits(
+            record.run.workspace_id,
+            consume_evidence=False,
+        ):
+            raise KeyError(f"run {run_id!r} is outside the authorized Workspace")
         if not await authorization.permits(
             record.run.workspace_id,
             consume_evidence=True,

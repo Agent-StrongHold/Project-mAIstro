@@ -58,7 +58,9 @@ async def _allow_test_membership(_principal: str, _workspace_id: str) -> bool:
 
 def _test_authorization() -> HitlAuthorization:
     return HitlAuthorization.for_verified_session(
-        HitlAuthenticatedSession("test-hitl-operator", _allow_test_membership),
+        HitlAuthenticatedSession.from_authenticated_boundary(
+            "test-hitl-operator", _allow_test_membership
+        ),
         {
             "test-workspace",
             "ws-hitl-reconcile",
@@ -557,7 +559,7 @@ async def test_two_workspace_late_race_cannot_settle_foreign_pause() -> None:
     await store.create(_paused_record("owned-race", workspace_id="owned-workspace"))
     await store.create(_paused_record("foreign-race", workspace_id="foreign-workspace"))
     authorization = HitlAuthorization.for_verified_session(
-        HitlAuthenticatedSession("member-user", _allow_test_membership),
+        HitlAuthenticatedSession.from_authenticated_boundary("member-user", _allow_test_membership),
         ["owned-workspace"],
     )
 
@@ -623,6 +625,33 @@ async def test_sqlite_instances_serialize_answer_cancel_race(tmp_path: Path) -> 
     persisted = await SqliteDurableRunStore(db).get("sqlite-one-winner")
     assert persisted is not None
     assert persisted.status in {RunStatus.QUEUED, RunStatus.CANCELLED}
+
+
+async def test_sqlite_rechecks_membership_before_serialized_settlement(tmp_path: Path) -> None:
+    """A revocation after target discovery must prevent the SQLite write."""
+    store = SqliteDurableRunStore(tmp_path / "hitl-membership-race.db")
+    await store.create(_paused_record("sqlite-membership-race"))
+    checks: list[tuple[str, str]] = []
+
+    async def membership(principal: str, workspace_id: str) -> bool:
+        checks.append((principal, workspace_id))
+        return len(checks) == 1
+
+    authorization = HitlAuthorization.for_verified_session(
+        HitlAuthenticatedSession.from_authenticated_boundary("member-user", membership),
+        ["test-workspace"],
+    )
+    with pytest.raises(KeyError, match="outside the authorized Workspace"):
+        await store.cancel_hitl(
+            "sqlite-membership-race",
+            "ask",
+            at=_BEFORE,
+            authorization=authorization,
+        )
+
+    persisted = await store.get("sqlite-membership-race")
+    assert len(checks) == 2
+    assert persisted is not None and persisted.status is RunStatus.PAUSED
 
 
 @pytest.mark.ac("SPEC-083026-73c1/AC-1")
@@ -998,7 +1027,7 @@ async def test_scoped_expiry_requires_effective_principal_and_keeps_foreign_run_
         )
 
     authorization = HitlAuthorization.for_verified_session(
-        HitlAuthenticatedSession("member-user", _allow_test_membership),
+        HitlAuthenticatedSession.from_authenticated_boundary("member-user", _allow_test_membership),
         ["owned-workspace"],
     )
     expired = await expire_hitl_pauses(store, now=_AFTER, authorization=authorization)
@@ -1012,7 +1041,10 @@ async def test_scoped_expiry_requires_effective_principal_and_keeps_foreign_run_
     ("factory", "expected"),
     [
         (
-            lambda: HitlAuthorization("", frozenset(), _allow_test_membership),
+            lambda: HitlAuthorization.for_verified_session(
+                HitlAuthenticatedSession.from_authenticated_boundary("", _allow_test_membership),
+                frozenset(),
+            ),
             "effective principal",
         ),
     ],
@@ -1028,6 +1060,10 @@ def test_authenticated_hitl_requires_typed_session_evidence() -> None:
             "service",
             ["owned-workspace"],
         )
+    with pytest.raises(TypeError, match="authenticated boundary"):
+        HitlAuthenticatedSession("service", _allow_test_membership)
+    with pytest.raises(TypeError, match="evidence factory"):
+        HitlAuthorization("service", frozenset({"owned-workspace"}), _allow_test_membership)
 
 
 def test_delegated_hitl_requires_typed_evidence() -> None:
