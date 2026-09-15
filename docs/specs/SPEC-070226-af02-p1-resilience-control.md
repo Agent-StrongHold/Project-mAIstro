@@ -12,7 +12,6 @@ implements: []
 related:
   - maistro-engine#ADR-071
   - maistro-engine#SPEC-248
-  - maistro-engine#ADR-066
 supersedes: []
 blocks: []
 blocked-by: []
@@ -29,10 +28,12 @@ owners:
 
 ## Context
 
-ADR-066 specifies P1 (Phase 1) resilience: depth limits on task retries, compaction (merging similar
-retry attempts into one cohesive signal), and a control-scope enforcement mechanism to steer
-remediation choices (escalate vs. retry vs. fail-fast). ADR-038's reliability taxonomy provides
-the classification (Shallow, P1, P2, P3); this SPEC realizes the P1 enforcement.
+ADR-066 remains Proposed and is retained as historical design context only; it is not shipped
+authority for this SPEC. This SPEC defines the P1 (Phase 1) resilience behavior: depth limits on
+task retries, compaction (merging similar retry attempts into one cohesive signal), and a
+control-scope enforcement mechanism to steer remediation choices (escalate vs. retry vs. fail-fast).
+ADR-038's reliability taxonomy provides the classification (Shallow, P1, P2, P3); this SPEC realizes
+the P1 enforcement under its Accepted substrate decisions.
 
 Primitives already exist (retry/backoff primitives in maistro.resilience); this SPEC wires them into
 the graph executor, conduit, and observability pipeline.
@@ -242,7 +243,7 @@ Events are tagged with `source: "resilience.p1"` for filtering.
 
 ## References
 
-- [ADR-066: P1 Resilience and Control](../adr/ADR-066-p1-resilience-and-control.md)
+- Historical design context only (Proposed, not normative): [ADR-066: P1 Resilience and Control](../adr/ADR-066-p1-resilience-and-control.md)
 - [ADR-038: Reliability Taxonomy](../adr/ADR-038-reliability-taxonomy.md)
 - [ADR-062: Graph Execution Protocol](../adr/ADR-062-graph-execution-protocol.md)
 - [ADR-037: Observability](../adr/ADR-037-observability-taxonomy.md)

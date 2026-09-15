@@ -34,6 +34,7 @@ from maistro_registry.citations import (  # noqa: E402
     check_citations,
 )
 from maistro_registry.schema import FrontMatter, Status  # noqa: E402
+from maistro_registry.validator import validate_file  # noqa: E402
 
 
 def _doc(
@@ -494,6 +495,21 @@ def test_updating_the_ledger_rewrites_it(monkeypatch: pytest.MonkeyPatch, tmp_pa
 
     written = json.loads(target.read_text())
     assert set(written["known"]) == set(written["reasons"])
+
+
+def test_proposed_related_design_is_marked_historical_not_governing() -> None:
+    """A related link cannot smuggle a Proposed decision into shipped prose."""
+    path = ROOT / "docs" / "specs" / "SPEC-070226-af02-p1-resilience-control.md"
+    result = validate_file(path)
+
+    assert result.front_matter is not None
+    assert _ref("ADR-066") not in result.front_matter.related
+
+    body = path.read_text().split("\n---", 2)[-1]
+    assert "ADR-066 remains Proposed" in body
+    assert "historical design context only" in body
+    assert "not shipped\nauthority" in body
+    assert "ADR-066 specifies" not in body
 
 
 def test_the_committed_baseline_records_a_reason_for_every_entry() -> None:
