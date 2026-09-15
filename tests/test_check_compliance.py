@@ -23,6 +23,24 @@ spec.loader.exec_module(check_compliance)
 AS_OF = datetime(2026, 9, 14, 12, tzinfo=UTC)
 
 
+@pytest.fixture(autouse=True)
+def _github_run_exists(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep fixture receipts local while exercising the API binding checks."""
+
+    def fetch(run_id: int) -> dict[str, object]:
+        return {
+            "id": run_id,
+            "html_url": f"https://github.com/Agent-StrongHold/Project-mAIstro/actions/runs/{run_id}",
+            "repository": {"full_name": "Agent-StrongHold/Project-mAIstro"},
+            "head_sha": "a" * 40,
+            "path": ".github/workflows/ci.yml",
+            "conclusion": "success",
+            "status": "completed",
+        }
+
+    monkeypatch.setattr(check_compliance, "_fetch_github_run", fetch)
+
+
 def _write_repository(
     tmp_path: Path,
     *,
@@ -107,6 +125,7 @@ def _findings(tmp_path: Path) -> list[check_compliance.Finding]:
         "X-1 | control | implemented |\n",
         "Y-1 | malformed row with no status and no closing pipe\n",
         "AT-99 missing separators and status\n",
+        "X-1 control implemented\n",
     ],
 )
 def test_malformed_table_row_fails_instead_of_disappearing(tmp_path: Path, row: str) -> None:
@@ -246,7 +265,9 @@ def test_cited_test_path_requires_a_typed_record_in_the_claim(tmp_path: Path) ->
     assert any("no typed repository evidence record" in str(finding) for finding in findings)
 
 
-def test_immutable_execution_requires_an_inspectable_receipt(tmp_path: Path) -> None:
+def test_nonexistent_immutable_execution_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _write_repository(tmp_path)
     payload = json.loads((tmp_path / "registry.json").read_text())
     record = payload["evidence"][0]
@@ -269,8 +290,9 @@ def test_immutable_execution_requires_an_inspectable_receipt(tmp_path: Path) -> 
     record["path"] = receipt_path.name
     record["sha256"] = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
     (tmp_path / "registry.json").write_text(json.dumps(payload))
+    monkeypatch.setattr(check_compliance, "_fetch_github_run", lambda run_id: None)
 
-    assert _findings(tmp_path) == []
+    assert any("could not be inspected" in str(finding) for finding in _findings(tmp_path))
 
 
 def test_immutable_execution_id_without_a_receipt_fails_closed(tmp_path: Path) -> None:

@@ -28,7 +28,9 @@ evidence references, and exact coverage between the document and registry. Every
 record must be referenced by the row's claim; an immutable execution record must carry the
 canonical GitHub Actions run URL for this repository plus a hashed, repository-owned JSON receipt.
 The receipt must repeat the run ID, repository, workflow path, head commit, result, conclusion, and
-observation time; a matching arbitrary ID or free-form receipt is not an execution record. Claim
+observation time. The validator also inspects the canonical GitHub Actions API object and requires
+its immutable run ID, URL, repository, head commit, workflow path, and conclusion to match; a
+nonexistent run, matching arbitrary ID, or free-form receipt is not an execution record. Claim
 `last_verified` dates are checked against `stale_after_days`. A malformed Markdown table row or
 empty/invalid status is an error; it cannot silently disappear.
 
@@ -38,8 +40,9 @@ Evidence records point to a repository-owned file and include its SHA-256 digest
 free-form path in a prose table from being treated as proof after the artifact changes. An
 `immutable_execution` record uses its path as a local execution receipt and must carry a canonical
 GitHub Actions run URL, repository, positive run ID, 40-character head SHA, workflow path, result,
-conclusion, and observation time. These typed fields and the receipt digest bind the record to an
-inspectable execution shape; an arbitrary or self-authored ID without that provenance is invalid.
+conclusion, and observation time. These typed fields, the receipt digest, and the live API lookup
+bind the record to an inspectable execution. An arbitrary or self-authored ID without that provenance
+is invalid; API lookup failure is reported as unusable evidence rather than treated as a pass.
 
 `state` has these meanings:
 

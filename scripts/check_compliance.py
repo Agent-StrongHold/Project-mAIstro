@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 CLAIM_STATUSES = {
     "implemented",
@@ -108,10 +110,24 @@ def _relative_artifact(root: Path, value: Any, subject: str) -> tuple[Path | Non
     return resolved, []
 
 
+def _fetch_github_run(run_id: int) -> dict[str, Any] | None:
+    """Fetch the canonical run object so a receipt cannot invent an execution."""
+    request = Request(
+        f"https://api.github.com/repos/Agent-StrongHold/Project-mAIstro/actions/runs/{run_id}",
+        headers={"Accept": "application/vnd.github+json"},
+    )
+    try:
+        with urlopen(request, timeout=10) as response:
+            payload = json.loads(response.read())
+    except (HTTPError, URLError, TimeoutError, OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def _validate_execution_receipt(  # noqa: C901
     path: Path, record: dict[str, Any], subject: str
 ) -> list[Finding]:
-    """Require a typed GitHub Actions receipt, not a self-authored ID-shaped claim."""
+    """Require a typed GitHub receipt whose run also exists in the GitHub API."""
     try:
         receipt = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -176,6 +192,35 @@ def _validate_execution_receipt(  # noqa: C901
         findings.append(Finding(subject, "passed execution must have a success conclusion"))
     if result == "failed" and conclusion != "failure":
         findings.append(Finding(subject, "failed execution must have a failure conclusion"))
+    if match is not None and isinstance(run_id, int) and not isinstance(run_id, bool):
+        remote = _fetch_github_run(run_id)
+        if remote is None:
+            findings.append(
+                Finding(
+                    subject,
+                    "canonical GitHub Actions run could not be inspected; it may not exist",
+                )
+            )
+        else:
+            remote_repository = remote.get("repository")
+            if not isinstance(remote_repository, dict) or remote_repository.get("full_name") != (
+                "Agent-StrongHold/Project-mAIstro"
+            ):
+                findings.append(
+                    Finding(subject, "GitHub API run belongs to a different repository")
+                )
+            if remote.get("id") != run_id:
+                findings.append(Finding(subject, "GitHub API run ID does not match execution_id"))
+            if remote.get("html_url") != execution_id:
+                findings.append(Finding(subject, "GitHub API run URL does not match execution_id"))
+            if remote.get("head_sha") != head_sha:
+                findings.append(Finding(subject, "GitHub API head_sha does not match receipt"))
+            if remote.get("path") != workflow:
+                findings.append(Finding(subject, "GitHub API workflow path does not match receipt"))
+            if remote.get("conclusion") != conclusion:
+                findings.append(Finding(subject, "GitHub API conclusion does not match receipt"))
+            if result in {"passed", "failed"} and remote.get("status") != "completed":
+                findings.append(Finding(subject, "GitHub API run is not completed"))
     try:
         receipt_observed = _parse_datetime(
             receipt.get("observed_at"), "observed_at", f"{subject}.receipt"
@@ -443,7 +488,11 @@ def _looks_like_table_row(line: str) -> bool:
     stripped = line.strip()
     # A recognizable control ID is still a row attempt when all separators are
     # missing; otherwise malformed input could terminate the table silently.
-    return bool(stripped) and ("|" in stripped or _control_id(stripped) is not None)
+    first_cell = re.split(r"\s+", stripped, maxsplit=1)[0].strip("*`") if stripped else ""
+    has_control_prefix = CONTROL_ID_RE.fullmatch(first_cell) is not None
+    return bool(stripped) and (
+        "|" in stripped or has_control_prefix or _control_id(stripped) is not None
+    )
 
 
 def _parse_status_row(
