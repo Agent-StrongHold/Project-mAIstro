@@ -206,6 +206,20 @@ or placeholder-only section.
 
 ### Fixed
 
+- **The Chat and Deck Builder pages render again over plain HTTP (regression
+  from #1344).** #1344 moved message, session and slide ids off `Math.random`
+  onto `crypto.randomUUID()`, which browsers expose only in a secure context
+  (`https://`, or `http://localhost`). Agent Conductor's documented homelab
+  deployment is reached over plain HTTP at a LAN hostname, and the browser
+  e2e harness serves it the same way, so the first render of either page
+  threw "crypto.randomUUID is not a function" into the error boundary; the
+  e2e walkthrough caught it only when the throw landed before its first
+  poll, which is why `hive-conductor-e2e-ui` flickered red. Ids now come from
+  `crypto.getRandomValues`, the same CSPRNG and available in every context,
+  through a shared `lib/ids.ts`, and the "navigate all key pages without
+  errors" e2e test now fails on the error boundary's fallback rather than
+  accepting any non-empty body.
+
 - **A chat turn whose canonical record fails *after* the model answered is no
   longer asked again (#1108).** `Container._execute_chat_turn` fell
   back to a fresh `dispatch()` on any `RunIntegrityError` without knowing
