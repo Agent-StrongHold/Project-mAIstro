@@ -144,6 +144,32 @@ async def resume_due_graph_runs(
 
     await _reconcile_if_supported(store, limit=limit)
     moment = now if now is not None else datetime.now(UTC)
+    return await _resume_due_candidates(
+        store=store,
+        run_store=run_store,
+        resolver_for=resolver_for,
+        runtime=runtime,
+        moment=moment,
+        limit=limit,
+        eligible=eligible,
+        admission_source=admission_source,
+        events=events,
+    )
+
+
+async def _resume_due_candidates(
+    *,
+    store: DurableRunStore,
+    run_store: RunStore,
+    resolver_for: Callable[[Run], NodeResolver],
+    runtime: ExecutionRuntime | None,
+    moment: datetime,
+    limit: int,
+    eligible: QueuedRunPredicate | None,
+    admission_source: str | None,
+    events: RecoveryEventSink | None,
+) -> int:
+    """Page through owner-filtered due rows until the owned limit is met."""
     resumed = 0
     after: tuple[datetime, str] | None = None
 

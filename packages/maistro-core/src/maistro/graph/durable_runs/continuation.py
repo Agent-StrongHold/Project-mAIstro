@@ -123,6 +123,21 @@ def _clone(continuation: GraphContinuation) -> GraphContinuation:
     return GraphContinuation.model_validate_json(continuation.model_dump_json())
 
 
+def _is_due_recovery_row(
+    row: GraphContinuation,
+    *,
+    now: datetime,
+    admission_source: str | None,
+) -> bool:
+    """Apply the shared due-row ownership predicate before pagination."""
+    return (
+        row.status in _RECOVERY_VISIBLE_STATUSES
+        and row.resume_at is not None
+        and row.resume_at <= now
+        and (admission_source is None or row.admission_source == admission_source)
+    )
+
+
 class InMemoryGraphContinuationStore:
     """In-process continuation store, for tests and single-process homelab runs."""
 
@@ -186,10 +201,11 @@ class InMemoryGraphContinuationStore:
         rows = [
             row
             for row in self._rows.values()
-            if row.status in _RECOVERY_VISIBLE_STATUSES
-            and row.resume_at is not None
-            and row.resume_at <= now
-            and (admission_source is None or row.admission_source == admission_source)
+            if _is_due_recovery_row(
+                row,
+                now=now,
+                admission_source=admission_source,
+            )
         ]
         rows.sort(key=lambda row: (row.resume_at, row.run_id))
         if after is not None:
@@ -261,8 +277,8 @@ class SqliteGraphContinuationStore:
                     "ALTER TABLE graph_continuations ADD COLUMN admission_source TEXT"
                 )
         await self._conn.executescript(_SCHEMA)
-        columns = await self._conn.execute_fetchall("PRAGMA table_info(graph_continuations)")
-        if not any(row[1] == "hitl_deadline_at" for row in columns):
+        table_columns = await self._conn.execute_fetchall("PRAGMA table_info(graph_continuations)")
+        if not any(row[1] == "hitl_deadline_at" for row in table_columns):
             await self._conn.execute(
                 "ALTER TABLE graph_continuations ADD COLUMN hitl_deadline_at TEXT"
             )
