@@ -18,7 +18,11 @@ from maistro.security._types import WardenVerdict
 from maistro.security.normalize import normalize_for_detection
 from maistro.security.warden.heuristics import heuristic_scan
 from maistro.security.warden.patterns import REJECT_PATTERNS
-from maistro.security.warden.semantic import semantic_tool_poisoning_scan
+from maistro.security.warden.semantic import (
+    semantic_tool_poisoning_capture_ordered,
+    semantic_tool_poisoning_capture_signals,
+    semantic_tool_poisoning_signals,
+)
 
 if TYPE_CHECKING:
     import regex
@@ -32,30 +36,27 @@ logger = logging.getLogger("maistro.warden")
 # which the loop below records as a fail-closed flag.
 _PATTERN_TIMEOUT_S = 0.5
 
-# One window size for both scan phases (#74). They used to differ: the reject
-# phase windowed at 50KB with a 2KB overlap while the heuristic phase received
-# the whole document, so the two halves of one scan disagreed about how much
-# text a single pass may see.
+# One window size for all regex scan phases (#74). They used to differ: the
+# reject phase windowed at 50KB with a 2KB overlap while heuristic and semantic
+# phases received the whole document, so a stdlib fallback could process an
+# unbounded attacker-controlled string.
 #
-# That asymmetry matters because the phases are bounded differently. The reject
-# phase runs `regex` with a per-search timeout, so a catastrophic pattern is cut
-# off (`test_catastrophic_pattern_times_out_and_fails_closed`). The heuristic
-# phase runs `_regex`, whose stdlib fallback has **no timeout at all** — so a
-# pattern there is bounded only by the text it is handed. Handing it the whole
-# document removed the one bound it had.
+# The reject phase additionally runs `regex` with a per-search timeout, so a
+# catastrophic pattern is cut off (`test_catastrophic_pattern_times_out_and_fails_closed`).
+# The `_regex` fallback used by heuristic and semantic patterns has no timeout,
+# so those phases are bounded by the text handed to each call.
 #
 # The overlap exists so a pattern straddling a boundary is still seen whole. 2KB
-# is far more than the widest construct either phase matches — the density
-# window is 40 words and the base64 run needs 40 characters.
+# is far more than the widest construct in the heuristic and semantic detectors.
 _SCAN_WINDOW_CHARS = 50 * 1024
 _SCAN_OVERLAP_CHARS = 2 * 1024
 
 
 def _windows(text: str) -> Iterator[str]:
-    """`text` in overlapping windows — the same slicing for both scan phases.
+    """`text` in overlapping windows shared by every regex scan phase.
 
     A generator rather than a list so a 1MB body is not copied in full before
-    the first window is examined; both callers stop at the first flagged
+    the first window is examined; each scan phase stops at its first flagged
     window, so the tail is usually never materialised.
     """
     if len(text) <= _SCAN_WINDOW_CHARS:
@@ -94,6 +95,56 @@ def _scan_heuristics_windowed(content: str) -> tuple[bool, list[str]]:
         if suspicious:
             return True, flags
     return False, []
+
+
+def _scan_semantic_windowed(content: str) -> tuple[bool, list[str]]:
+    """Aggregate Layer 2.5 signals without handing fallback regex a full body.
+
+    Each semantic signal is local to one pattern match, so OR-ing the signals
+    across overlapping windows preserves the unwindowed detector's verdict
+    while bounding the stdlib fallback's input.
+    """
+    has_actions = False
+    has_objects = False
+    has_prescriptive = False
+    has_capture_action = False
+    has_full_conversation = False
+    has_ordered_capture = False
+    for window in _windows(content):
+        window_actions, window_objects, window_prescriptive = semantic_tool_poisoning_signals(
+            window
+        )
+        window_capture_action, window_full_conversation = semantic_tool_poisoning_capture_signals(
+            window
+        )
+        has_actions = has_actions or window_actions
+        has_objects = has_objects or window_objects
+        has_prescriptive = has_prescriptive or window_prescriptive
+        # Preserve the legacy action-before-object relationship both inside a
+        # window and when the two bounded matches land in adjacent windows.
+        window_ordered_capture = semantic_tool_poisoning_capture_ordered(window)
+        if not has_full_conversation:
+            has_ordered_capture = has_ordered_capture or window_ordered_capture
+        has_ordered_capture = has_ordered_capture or (
+            has_capture_action and not has_full_conversation and window_full_conversation
+        )
+        # Do not carry an action found after the first complete-object phrase
+        # into a later window; that would recreate the old ordering bug.
+        if not has_full_conversation and (not window_full_conversation or window_ordered_capture):
+            has_capture_action = has_capture_action or window_capture_action
+        has_full_conversation = has_full_conversation or window_full_conversation
+        if has_actions and has_objects and has_prescriptive:
+            break
+
+    # No regex call ever sees the attacker-controlled padding between them.
+    has_actions = has_actions or has_ordered_capture
+
+    flags: list[str] = []
+    if has_prescriptive and has_actions:
+        flags.append("prescriptive_instruction+dangerous_action")
+    if has_prescriptive and has_objects:
+        flags.append("prescriptive_instruction+sensitive_object")
+    return bool(flags), flags
 
 
 def _scan_reject_patterns(scan_content: str) -> list[str]:
@@ -136,7 +187,7 @@ class Warden:
         flags: list[str] = []
 
         # Fix #4: scan in overlapping windows — no unscanned tail. See
-        # `_windows`; both phases below share it so they cannot drift apart.
+        # `_windows`; every regex phase shares it so they cannot drift apart.
         #
         # Full fold (NFKD + invisible stripping + homoglyph folding) so a
         # zero-width space inside "ignore", or a Cyrillic i in it, doesn't
@@ -168,7 +219,7 @@ class Warden:
                 confidence=0.6,
             )
 
-        poisoned, semantic_flags = semantic_tool_poisoning_scan(content_norm)
+        poisoned, semantic_flags = _scan_semantic_windowed(content_norm)
         if poisoned:
             flags.extend(semantic_flags)
             return WardenVerdict(

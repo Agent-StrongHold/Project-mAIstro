@@ -280,8 +280,8 @@ async def test_reason_sentinel_post_call_sanitizes_result() -> None:
     assert sentinel.post_calls == [("read_file", "ran with {'path': 'a.py'}")]
 
 
-async def test_reason_pii_filter_import_error_passes_through_unredacted() -> None:
-    """If the pii_filter module is unavailable, the tool result is left unredacted."""
+async def test_reason_pii_filter_import_error_blocks_unredacted_result() -> None:
+    """A missing security dependency must fail closed, not leak tool output."""
     provider = FauxProvider()
     provider.seed_tool_call("read_file", {"path": "a.py"})
     provider.seed(FauxResponse(content="ok"))
@@ -305,7 +305,7 @@ async def test_reason_pii_filter_import_error_passes_through_unredacted() -> Non
     finally:
         del sys.modules[modname]
 
-    assert result.tool_history[0]["result"] == "Contact me at someone@example.com please"
+    assert result.tool_history[0]["result"] == "[BLOCKED: output sanitization unavailable]"
 
 
 async def test_reason_warden_blocks_tool_result_without_sentinel() -> None:

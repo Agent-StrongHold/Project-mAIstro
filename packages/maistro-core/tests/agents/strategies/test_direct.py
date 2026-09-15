@@ -172,10 +172,10 @@ async def test_reason_redacts_pii_in_content(messages: list[dict[str, Any]]) -> 
     assert "someone@example.com" not in result.response
 
 
-async def test_reason_pii_filter_import_error_passes_through_unredacted(
+async def test_reason_pii_filter_import_error_blocks_unredacted_response(
     messages: list[dict[str, Any]],
 ) -> None:
-    """If the pii_filter module is unavailable, content is returned as-is instead of raising."""
+    """A missing security dependency must fail closed, not leak model output."""
     provider = FauxProvider(
         default_response=FauxResponse(content="Contact me at someone@example.com please")
     )
@@ -188,4 +188,4 @@ async def test_reason_pii_filter_import_error_passes_through_unredacted(
     finally:
         del sys.modules[modname]
 
-    assert result.response == "Contact me at someone@example.com please"
+    assert result.response == "[Response blocked: output sanitization unavailable]"

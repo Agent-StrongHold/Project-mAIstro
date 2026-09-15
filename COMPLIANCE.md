@@ -35,7 +35,7 @@ flip to `gap-test`/`gap-impl` in the same PR that breaks it.
 
 | ID | Risk | Engine control | Test path | Status |
 |---|---|---|---|---|
-| **AT-01** | Memory poisoning | Warden boundary scan (`security/warden/detector.py`) + episodic memory decay/weight floors (ADR-013 scopes) + learning promotion gate | `packages/maistro-core/tests/security/warden/`; `packages/maistro-core/tests/memory/episodic/test_decay.py`; `packages/maistro-core/tests/memory/learnings/test_promoter_gate.py` | ✅ |
+| **AT-01** | Memory poisoning | Warden boundary scan (`security/warden/detector.py`) + episodic memory decay/weight floors (ADR-013 scopes) + learning promotion gate | Product-path Warden timeout/window evidence: `packages/maistro-core/tests/security/test_sentinel_policy.py::test_post_call_real_warden_times_out_pathological_regex`, `::test_post_call_real_warden_windows_large_fallback_input`; `packages/maistro-core/tests/security/warden/` | ✅ |
 | **AT-02** | Tool misuse | Sentinel PDP/PEP at the tool-call boundary (ADR-073) — `security/sentinel/policy.py`, `security/sentinel/validator.py` — + dangerous-command/tool detection (`security/dangerous_tools.py`). **Reversibility classification (`tools/reversibility_registry.py`, ADR-050) is NOT operative** — `ReversibilityRegistry` is never constructed; `Sentinel.resolve_tier` branches on a caller-supplied `reversibility` string defaulting to `"reversible"` and never consults the registry (#346) | `packages/maistro-core/tests/security/test_sentinel_policy.py`; `packages/maistro-core/tests/security/test_sentinel_validator.py`; `formal/models/test_dangerous_tools.py`; `formal/models/test_sentinel_policy.py`; `formal/models/test_sentinel_validator.py` | ✅ |
 | **AT-03** | Privilege compromise | ADR-068 tier ladder (open → role/team-auto → self-elevation → delegated-approval → admin-elevation → blocked), `security/sentinel/elevation.py`, admin/user1 privilege separation (`privilege.py`, SPEC-012) | `packages/maistro-core/tests/security/test_authz_tier_ladder.py`; `packages/maistro-core/tests/security/test_elevation_grants.py`; `packages/maistro-core/tests/privilege/test_privilege.py` | ✅ |
 | **AT-04** | Resource overload | Quota tracker (`quota/tracker.py`) + per-key rate limiter (`security/rate_limiter.py`) + circuit breakers / retry / fallback (ADR-038, `resilience/`) | `packages/maistro-core/tests/quota/test_tracker.py`; `packages/maistro-core/tests/security/test_rate_limiter.py`; `packages/maistro-core/tests/test_circuit_breaker.py`; `packages/maistro-core/tests/resilience/test_retry_policy.py` | ✅ |
@@ -45,6 +45,23 @@ flip to `gap-test`/`gap-impl` in the same PR that breaks it.
 | **AT-08** | Repudiation / lack of accountability | Sentinel decision audit (`security/sentinel/audit.py`, signed-VC intent per ADR-073) + durable event log (`events/`, ADR-037) | `packages/maistro-core/tests/security/sentinel/test_audit.py`; `packages/maistro-core/tests/events/test_durable_log.py` | 🟡 (audit log is implemented and tested; the ADR-073 "every decision is a signed VC" clause is `gap-impl` — current `InMemoryAuditLog`/durable log records decisions but does not sign them) |
 | **AT-09** | Overreliance / lack of human oversight | ADR-068 elevation ladder (self-elevation / scoped-2FA / delegated-approval) + plan-approval gate (`tools/approval/gate.py`, ADR-051) | `packages/maistro-core/tests/tools/approval/`; `packages/maistro-core/tests/security/test_elevation_grants.py` | 🟡 **Neither mechanism is reachable end-to-end.** The elevation store is now wired into `create_container()` (#347), but `request_self_elevation`/`confirm_self_elevation`/`request_scoped_2fa`/`confirm_scoped_2fa` have no callers — no grant can be issued, so no elevation can be cleared. `tools/approval/gate.py` ships decision functions and an `ApprovalGate` Protocol with **zero implementations**. Human oversight is specified and tested, not operating (#346). |
 | **AT-10** | Supply-chain (skills / MCP / model / dependency) | ADR-093 sandbox isolation (microVM required for untrusted code, Docker-socket sandbox deprecated) + skill trust tiers, import security scan, and body-size cap (`skills/parser.py`, `skills/import_pipeline.py`) + signed code-registry entries (ADR-069) | `packages/maistro-core/tests/skills/test_import_pipeline.py`; `packages/maistro-core/tests/skills/test_parser.py`; `packages/maistro-core/tests/sandbox/test_selector.py`; `packages/maistro-core/tests/sandbox/backends/test_fake.py`; `packages/maistro-core/tests/code_registry/test_registry.py` | 🟡 (skill scan + sandbox selector are tested; a hardware-VM backend actually passing the ADR-093 escape/conformance tests referenced by SPEC-190 is `gap-test` — the fake backend is what CI exercises today) |
+
+### Product-path evidence for security claims
+
+The scanner/resource-limit claim above is exercised at the Sentinel output
+boundary, rather than inferred from Warden constants: the real Warden is invoked
+by the output gate against a catastrophic regex in overlapping windows, a
+multi-window benign result, a padded semantic instruction whose action and
+object cross a window boundary, and the product-path capture/object ordering
+regression. The accelerated/fallback pattern contract includes a complete Warden
+verdict comparison in
+`packages/maistro-core/tests/security/test_warden_regex_equivalence.py`.
+PII/secret handling is also exercised on `Sentinel.post_call`, `DirectStrategy`,
+and `ReactStrategy`; `test_sentinel_policy.py` proves the raw credential is not
+present in either output or `PIIMatch` metadata, while the strategy tests prove
+a missing PII-filter dependency blocks output instead of returning it unsanitized.
+These paths are the evidence for this mapping; the constants remain
+implementation details.
 
 ### OWASP gaps to close
 
