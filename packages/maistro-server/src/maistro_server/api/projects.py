@@ -263,6 +263,7 @@ async def add_project_membership(
     )
     await _require_project(project_store, workspace_id=workspace_id, project_id=project_id)
 
+    denies = body.denies
     if not requester_membership.can_administer:
         if body.denies:
             raise HTTPException(
@@ -281,6 +282,12 @@ async def add_project_membership(
                 )
             except PermissionError as exc:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+        # set_membership upserts the one canonical row per (project, principal)
+        # -- a non-owner's request must not be read as "clear whatever denies
+        # already exist" just because it says nothing about them, or a
+        # delegated re-grant would silently launder away an owner-issued deny.
+        existing = await project_store.memberships_for(project_id, principal_id=body.principal_id)
+        denies = existing[0].denies if existing else set()
 
     membership = ProjectMembership(
         workspace_id=workspace_id,
@@ -288,7 +295,7 @@ async def add_project_membership(
         principal_id=body.principal_id,
         role=body.role,
         grants=body.grants,
-        denies=body.denies,
+        denies=denies,
         delegable_grants=body.delegable_grants,
     )
     try:

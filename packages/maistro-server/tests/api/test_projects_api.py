@@ -13,6 +13,7 @@ from maistro.workspaces import InMemoryWorkspaceStore, WorkspaceRole
 from maistro_server.api import workspaces as workspace_api
 from maistro_server.api.auth import verify_api_key
 from maistro_server.api.principal import AuthenticatedPrincipal
+from maistro_server.api.route_table import iter_effective_routes
 from maistro_server.main import app as server_app
 
 
@@ -365,6 +366,51 @@ async def test_only_workspace_owner_can_issue_project_denies(api) -> None:
     assert any(item["principal_id"] == "cara" for item in listed.json())
 
 
+async def test_a_non_owner_delegated_regrant_cannot_clear_an_existing_deny(api) -> None:
+    """`set_membership` upserts the one canonical row per (project, principal)
+    -- correct per #1148 -- so a request that omits `denies` must not be read
+    as "clear whatever denies exist," or a non-owner could launder away an
+    owner-issued deny simply by never repeating it back."""
+    app, client, workspaces, projects = api
+    workspace = await workspaces.create(creator_user_id="alice", name="Auth")
+    root = await projects.root_for_workspace(workspace.workspace_id)
+    await workspaces.set_membership(
+        workspace.workspace_id,
+        user_id="bob",
+        role=WorkspaceRole.CONTRIBUTOR,
+    )
+    await projects.set_membership(
+        ProjectMembership(
+            workspace_id=workspace.workspace_id,
+            project_id=root.project_id,
+            principal_id="bob",
+            grants={"publish", "read"},
+            delegable_grants={"read"},
+        )
+    )
+    # Owner denies "cara" publish rights at this Project.
+    await projects.set_membership(
+        ProjectMembership(
+            workspace_id=workspace.workspace_id,
+            project_id=root.project_id,
+            principal_id="cara",
+            denies={"publish"},
+        )
+    )
+
+    _as_user(app, "bob")
+    response = client.post(
+        f"/workspaces/{workspace.workspace_id}/projects/{root.project_id}/memberships",
+        json={"principal_id": "cara", "grants": ["read"]},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["denies"] == ["publish"]
+    memberships = await projects.memberships_for(root.project_id, principal_id="cara")
+    assert memberships[0].denies == {"publish"}
+    assert memberships[0].grants == {"read"}
+
+
 @pytest.mark.parametrize("field", ["name", "parent_project_id"])
 async def test_blank_project_create_identity_fields_are_rejected_before_route_logic(
     api, field: str
@@ -424,7 +470,7 @@ async def test_blank_permission_action_is_rejected_before_route_logic(api) -> No
 
 
 def test_production_app_mounts_project_routes_at_v1_and_legacy_paths() -> None:
-    paths = {route.path for route in server_app.routes}
+    paths = {route.path for route in iter_effective_routes(server_app.routes)}
     assert "/v1/workspaces/{workspace_id}/projects/root" in paths
     assert "/workspaces/{workspace_id}/projects/root" in paths
 
