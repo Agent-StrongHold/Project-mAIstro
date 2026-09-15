@@ -15,3 +15,5 @@ pre-durable strategy fixtures; durable traversal tests remain
 under `tests/graph/durable_runs/` and cover Graph-domain routing and lifecycle through
 canonical Run/NodeRun/Attempt evidence. The chat-to-Graph integration fixture now
 stops at classification/spec/spawn and explicitly does not execute physical Graph work.
+The execution-lifecycle ledger no longer retains the deleted `GraphPhase`/`NodePhase`
+identities, and the Vulture ledger prunes the remaining deleted node/lifecycle findings.

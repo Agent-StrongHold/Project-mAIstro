@@ -18,14 +18,6 @@
       "classification": "DOMAIN",
       "rationale": "Not the same thing as the Invocation above despite the identical class name: this is an event handler's at-most-once record per (trigger_id, event_id) under ADR-086, so replay retries the same row. The name collision is confusing and worth renaming, but the lifecycle is legitimately its own."
     },
-    "maistro.graph.phases::NodePhase": {
-      "classification": "DOMAIN",
-      "rationale": "Graph traversal phase, which ADR-062 and #44 keep in GraphExecutionState precisely so traversal state stays separate from execution lifecycle. It must not become the authority for whether work succeeded -- that is NodeRun's."
-    },
-    "maistro.graph.phases::GraphPhase": {
-      "classification": "DOMAIN",
-      "rationale": "The whole-graph counterpart of NodePhase, same reasoning."
-    },
     "maistro.tasks.models::TaskStatus": {
       "classification": "CONVERGE",
       "rationale": "The task queue's own work states. #41 makes submission yield a canonical run_id and demotes the queue to an admission receipt; the Run then owns terminal truth.",
