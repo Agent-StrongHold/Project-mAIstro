@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Collection, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -29,6 +30,47 @@ class HitlDeadlinePending(HitlSettlementError):
 
 
 WorkspaceMembershipCheck = Callable[[str, str], Awaitable[bool]]
+HitlEvidenceValidator = Callable[["HitlDelegationEvidence"], Awaitable[bool]]
+HitlEvidenceConsumer = Callable[["HitlDelegationEvidence"], Awaitable[None]]
+
+
+@dataclass(frozen=True)
+class HitlDelegationEvidence:
+    """Validated shape of a service delegation capability.
+
+    The durable store must not treat an opaque string as authority. The issuer,
+    subject, action, Workspace scope, and expiry are all bound in the evidence;
+    the supplied validator and consumer connect this shape to the caller's
+    live delegation registry and one-use/ledger semantics.
+    """
+
+    issuer: str
+    subject: str
+    workspace_ids: frozenset[str]
+    actions: frozenset[str]
+    expires_at: datetime
+    token_id: str
+
+    def __post_init__(self) -> None:
+        if not self.issuer.strip() or not self.subject.strip():
+            raise ValueError("HITL delegation evidence requires issuer and subject")
+        if not self.workspace_ids or any(not value.strip() for value in self.workspace_ids):
+            raise ValueError("HITL delegation evidence requires Workspace scope")
+        if not self.actions or any(not value.strip() for value in self.actions):
+            raise ValueError("HITL delegation evidence requires an action scope")
+        if not self.token_id.strip():
+            raise ValueError("HITL delegation evidence requires a token id")
+        if self.expires_at.tzinfo is None:
+            raise ValueError("HITL delegation evidence expiry must include a timezone")
+
+    def is_current(self, *, effective_principal: str, workspace_id: str, action: str) -> bool:
+        """Check claims that can be evaluated without consulting the issuer."""
+        return (
+            self.subject == effective_principal
+            and workspace_id in self.workspace_ids
+            and action in self.actions
+            and datetime.now(UTC) < self.expires_at.astimezone(UTC)
+        )
 
 
 @dataclass(frozen=True)
@@ -44,23 +86,43 @@ class HitlAuthorization:
     effective_principal: str
     workspace_ids: frozenset[str]
     membership_check: WorkspaceMembershipCheck
-    delegation_evidence: str | None = None
+    delegation_evidence: HitlDelegationEvidence | None = None
+    evidence_validator: HitlEvidenceValidator | None = None
+    evidence_consumer: HitlEvidenceConsumer | None = None
+    action: str = "hitl.settle"
+    _evidence_lock: asyncio.Lock = field(
+        default_factory=asyncio.Lock, init=False, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         if not self.effective_principal.strip():
             raise ValueError("HITL authorization requires an effective principal")
         if any(not workspace_id.strip() for workspace_id in self.workspace_ids):
             raise ValueError("HITL authorization cannot contain a blank Workspace id")
+        if not self.action.strip():
+            raise ValueError("HITL authorization requires an action")
+        if self.delegation_evidence is None:
+            if self.evidence_validator is not None or self.evidence_consumer is not None:
+                raise ValueError("HITL evidence callbacks require delegation evidence")
+            return
+        if not isinstance(self.delegation_evidence, HitlDelegationEvidence):
+            raise TypeError("delegated HITL authorization requires typed evidence")
+        if self.delegation_evidence.subject != self.effective_principal:
+            raise ValueError("delegation evidence subject must match the effective principal")
+        if not self.workspace_ids.issubset(self.delegation_evidence.workspace_ids):
+            raise ValueError("delegation evidence does not cover the requested Workspaces")
+        if self.evidence_validator is None or self.evidence_consumer is None:
+            raise ValueError("delegated HITL authorization requires validation and consumption")
 
     @classmethod
-    def for_principal(
+    def for_authenticated_principal(
         cls,
         effective_principal: str,
         workspace_ids: Collection[str],
         *,
         membership_check: WorkspaceMembershipCheck,
     ) -> HitlAuthorization:
-        """Bind a live canonical membership predicate to one principal."""
+        """Bind a live canonical membership predicate to a verified session."""
         return cls(effective_principal, frozenset(workspace_ids), membership_check)
 
     @classmethod
@@ -69,24 +131,53 @@ class HitlAuthorization:
         effective_principal: str,
         workspace_ids: Collection[str],
         *,
-        delegation_evidence: str,
+        delegation_evidence: HitlDelegationEvidence,
+        evidence_validator: HitlEvidenceValidator,
+        evidence_consumer: HitlEvidenceConsumer,
         membership_check: WorkspaceMembershipCheck,
+        action: str = "hitl.settle",
     ) -> HitlAuthorization:
-        """Bind a service tick to explicit delegation and live scope evidence."""
-        if not delegation_evidence.strip():
-            raise ValueError("delegated HITL authorization requires evidence")
+        """Bind a service to typed, validated, and consumable delegation evidence."""
         return cls(
             effective_principal,
             frozenset(workspace_ids),
             membership_check,
             delegation_evidence,
+            evidence_validator,
+            evidence_consumer,
+            action,
         )
 
     async def permits(self, workspace_id: str) -> bool:
-        """Revalidate membership for the canonical Workspace being mutated."""
-        return workspace_id in self.workspace_ids and await self.membership_check(
-            self.effective_principal, workspace_id
-        )
+        """Revalidate membership and any delegated authority for one Workspace."""
+        if workspace_id not in self.workspace_ids:
+            return False
+        if not await self.membership_check(self.effective_principal, workspace_id):
+            return False
+        evidence = self.delegation_evidence
+        if evidence is None:
+            return True
+        if not evidence.is_current(
+            effective_principal=self.effective_principal,
+            workspace_id=workspace_id,
+            action=self.action,
+        ):
+            return False
+        validator = self.evidence_validator
+        consumer = self.evidence_consumer
+        assert validator is not None and consumer is not None
+        try:
+            # Serialize validation and consumption so a one-use token cannot
+            # authorize two concurrent settlements through this object.
+            async with self._evidence_lock:
+                if not await validator(evidence):
+                    return False
+                await consumer(evidence)
+        except Exception:
+            # An unavailable or already-consumed delegation is a denial, never
+            # a reason to let the canonical store proceed without evidence.
+            return False
+        return True
 
 
 def require_hitl_authorization(
@@ -321,6 +412,7 @@ __all__ = [
     "HitlAuthorizationRequired",
     "HitlDeadlineElapsed",
     "HitlDeadlinePending",
+    "HitlDelegationEvidence",
     "HitlSettlementError",
     "earliest_hitl_deadline",
     "expire_hitl_pauses",

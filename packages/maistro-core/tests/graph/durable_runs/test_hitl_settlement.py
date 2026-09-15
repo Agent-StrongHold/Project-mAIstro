@@ -16,6 +16,7 @@ from maistro.graph.durable_runs import (
     CanonicalDurableRunStore,
     HitlAuthorization,
     HitlAuthorizationRequired,
+    HitlDelegationEvidence,
     InMemoryGraphContinuationStore,
     resume_durable_graph,
     run_durable_graph,
@@ -55,7 +56,7 @@ async def _allow_test_membership(_principal: str, _workspace_id: str) -> bool:
 
 
 def _test_authorization() -> HitlAuthorization:
-    return HitlAuthorization.for_principal(
+    return HitlAuthorization.for_authenticated_principal(
         "test-hitl-operator",
         {
             "test-workspace",
@@ -550,6 +551,54 @@ async def test_elapsed_deadline_wins_answer_timeout_cancel_race() -> None:
 
 
 @pytest.mark.ac("SPEC-083026-73c1/AC-4")
+async def test_two_workspace_late_race_cannot_settle_foreign_pause() -> None:
+    """A scoped caller wins only its own deadline race, never a foreign Run."""
+    store = InMemoryDurableRunStore()
+    await store.create(_paused_record("owned-race", workspace_id="owned-workspace"))
+    await store.create(_paused_record("foreign-race", workspace_id="foreign-workspace"))
+    authorization = HitlAuthorization.for_authenticated_principal(
+        "member-user",
+        ["owned-workspace"],
+        membership_check=_allow_test_membership,
+    )
+
+    results = await asyncio.gather(
+        store.submit_hitl_answer(
+            "owned-race",
+            "ask",
+            {"answer": "late"},
+            at=_AFTER,
+            authorization=authorization,
+        ),
+        store.timeout_hitl(
+            "owned-race",
+            "ask",
+            at=_AFTER,
+            authorization=authorization,
+        ),
+        store.submit_hitl_answer(
+            "foreign-race",
+            "ask",
+            {"answer": "late"},
+            at=_AFTER,
+            authorization=authorization,
+        ),
+        store.cancel_hitl(
+            "foreign-race",
+            "ask",
+            at=_AFTER,
+            authorization=authorization,
+        ),
+        return_exceptions=True,
+    )
+
+    assert sum(not isinstance(result, BaseException) for result in results) == 1
+    owned = await store.get("owned-race")
+    foreign = await store.get("foreign-race")
+    assert owned is not None and owned.status is RunStatus.TIMED_OUT
+    assert foreign is not None and foreign.status is RunStatus.PAUSED
+
+
 async def test_sqlite_instances_serialize_answer_cancel_race(tmp_path: Path) -> None:
     db = tmp_path / "hitl-race.db"
     answer_store = SqliteDurableRunStore(db)
@@ -949,7 +998,7 @@ async def test_scoped_expiry_requires_effective_principal_and_keeps_foreign_run_
             authorization=_test_authorization(),
         )
 
-    authorization = HitlAuthorization.for_principal(
+    authorization = HitlAuthorization.for_authenticated_principal(
         "member-user",
         ["owned-workspace"],
         membership_check=_allow_test_membership,
@@ -968,20 +1017,70 @@ async def test_scoped_expiry_requires_effective_principal_and_keeps_foreign_run_
             lambda: HitlAuthorization("", frozenset(), _allow_test_membership),
             "effective principal",
         ),
-        (
-            lambda: HitlAuthorization.for_delegated_service(
-                "service",
-                [],
-                delegation_evidence="",
-                membership_check=_allow_test_membership,
-            ),
-            "delegated HITL authorization",
-        ),
     ],
 )
-def test_scoped_hitl_expiry_rejects_missing_principal_or_delegation_evidence(factory, expected):
+def test_scoped_hitl_expiry_rejects_missing_principal(factory, expected):
     with pytest.raises(ValueError, match=expected):
         factory()
+
+
+def test_delegated_hitl_requires_typed_evidence() -> None:
+    with pytest.raises(TypeError, match="typed evidence"):
+        HitlAuthorization.for_delegated_service(
+            "service",
+            ["owned-workspace"],
+            delegation_evidence="opaque text",  # type: ignore[arg-type]
+            evidence_validator=lambda _evidence: _allow_test_membership(
+                "service", "owned-workspace"
+            ),
+            evidence_consumer=_consume_nothing,
+            membership_check=_allow_test_membership,
+        )
+
+
+async def _consume_nothing(_evidence: HitlDelegationEvidence) -> None:
+    return None
+
+
+async def test_delegated_hitl_validates_and_consumes_bound_evidence() -> None:
+    store = InMemoryDurableRunStore()
+    await store.create(_paused_record("delegated-evidence", workspace_id="owned-workspace"))
+    evidence = HitlDelegationEvidence(
+        issuer="did:key:issuer",
+        subject="service",
+        workspace_ids=frozenset({"owned-workspace"}),
+        actions=frozenset({"hitl.settle"}),
+        expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        token_id="hitl-token-1",
+    )
+    validations: list[str] = []
+    consumed: list[str] = []
+
+    async def validate(token: HitlDelegationEvidence) -> bool:
+        validations.append(token.token_id)
+        return token.token_id == "hitl-token-1"
+
+    async def consume(token: HitlDelegationEvidence) -> None:
+        consumed.append(token.token_id)
+
+    authorization = HitlAuthorization.for_delegated_service(
+        "service",
+        ["owned-workspace"],
+        delegation_evidence=evidence,
+        evidence_validator=validate,
+        evidence_consumer=consume,
+        membership_check=_allow_test_membership,
+    )
+    settled = await store.cancel_hitl(
+        "delegated-evidence",
+        "ask",
+        at=_BEFORE,
+        authorization=authorization,
+    )
+
+    assert settled.status is RunStatus.CANCELLED
+    assert validations == ["hitl-token-1"]
+    assert consumed == ["hitl-token-1"]
 
 
 @pytest.mark.parametrize("backend", ["memory", "sqlite"])

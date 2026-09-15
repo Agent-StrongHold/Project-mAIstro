@@ -37,9 +37,15 @@ async def _allow_test_hitl_membership(_principal: str, _workspace_id: str) -> bo
 
 def hitl_authorization() -> HitlAuthorization:
     """Explicit test principal covering the canonical fixture Workspaces."""
-    return HitlAuthorization.for_principal(
+    return HitlAuthorization.for_authenticated_principal(
         "test-hitl-operator",
-        {"test-workspace", "ws-canonical-store", "ws-canonical"},
+        {
+            "test-workspace",
+            "ws-canonical-store",
+            "ws-canonical",
+            "ws-hitl-deadline",
+            "ws-hitl-canonical-deadline",
+        },
         membership_check=_allow_test_hitl_membership,
     )
 

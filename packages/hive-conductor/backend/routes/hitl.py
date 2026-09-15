@@ -104,7 +104,7 @@ async def _authorized_record(request: Request, run_id: str) -> Any:
 
 def _hitl_authorization(request: Request, workspace_ids: set[str]) -> HitlAuthorization:
     """Carry live canonical membership into the durable mutation boundary."""
-    return HitlAuthorization.for_principal(
+    return HitlAuthorization.for_authenticated_principal(
         _request_user_id(request),
         workspace_ids,
         membership_check=is_member,

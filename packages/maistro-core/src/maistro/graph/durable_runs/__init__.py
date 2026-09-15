@@ -32,6 +32,7 @@ from .hitl import (
     HitlAuthorizationRequired,
     HitlDeadlineElapsed,
     HitlDeadlinePending,
+    HitlDelegationEvidence,
     HitlSettlementError,
     expire_hitl_pauses,
 )
@@ -58,6 +59,7 @@ __all__ = [
     "HitlAuthorizationRequired",
     "HitlDeadlineElapsed",
     "HitlDeadlinePending",
+    "HitlDelegationEvidence",
     "HitlSettlementError",
     "InMemoryDurableRunStore",
     "InMemoryGraphContinuationStore",
