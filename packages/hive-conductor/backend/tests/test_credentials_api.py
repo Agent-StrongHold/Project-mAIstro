@@ -2,8 +2,43 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from fastapi.testclient import TestClient
 from main import app
+
+
+def _credential_writer(user_id: str) -> TestClient:
+    """Return a distinct principal cleared for credential CRUD."""
+    import stores
+
+    from maistro.security.passwords import hash_password
+
+    stores.users[user_id] = stores.users._model_class(
+        id=user_id,
+        username=user_id,
+        password_hash=hash_password("credential-pass"),
+        role="user",
+        is_active=True,
+        permissions=["credentials.write"],
+        created_at=datetime.now(UTC),
+    )
+    client = TestClient(app)
+    login = client.post(
+        "/v1/auth/login",
+        json={"username": user_id, "password": "credential-pass"},
+    )
+    assert login.status_code == 200, login.text
+    elevated = client.post(
+        "/v1/auth/elevate",
+        json={
+            "password": "credential-pass",
+            "permissions": ["credentials.write"],
+            "task_id": f"credential-scope-{user_id}",
+        },
+    )
+    assert elevated.status_code == 200, elevated.text
+    return client
 
 
 def _login(username: str = "testadmin", password: str = "adminpass") -> TestClient:
@@ -101,27 +136,22 @@ def test_credentials_config_unknown_provider_404() -> None:
 
 
 def test_user_cannot_see_other_users_secrets() -> None:
-    alice = TestClient(app)
-    reg = alice.post(
-        "/v1/auth/register",
-        json={
-            "username": "credalice",
-            "password": "securepass1",
-            "confirm_password": "securepass1",
-        },
-    )
-    assert reg.status_code == 200, reg.text
-    alice.put("/v1/credentials/jira", json={"secret": "alice-only-token"})
+    alice = _credential_writer("cred-scope-alice")
+    alice_save = alice.put("/v1/credentials/jira", json={"secret": "alice-only-token"})
+    assert alice_save.status_code == 200
 
-    bob = TestClient(app)
-    bob.post(
-        "/v1/auth/register",
-        json={
-            "username": "credbob",
-            "password": "securepass1",
-            "confirm_password": "securepass1",
-        },
-    )
+    bob = _credential_writer("cred-scope-bob")
     bob_list = bob.get("/v1/credentials")
+    assert bob_list.status_code == 200
     jira_row = next(r for r in bob_list.json()["credentials"] if r["id"] == "jira")
     assert jira_row["configured"] is False
+
+    # Guessing the shared provider id must not let Bob rotate or delete
+    # Alice's record; both operations apply only to Bob's principal scope.
+    assert bob.put("/v1/credentials/jira", json={"secret": "bob-token"}).status_code == 200
+    assert bob.delete("/v1/credentials/jira").status_code == 204
+
+    alice_after = alice.get("/v1/credentials")
+    assert alice_after.status_code == 200
+    alice_jira = next(r for r in alice_after.json()["credentials"] if r["id"] == "jira")
+    assert alice_jira["configured"] is True
