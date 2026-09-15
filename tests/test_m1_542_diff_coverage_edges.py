@@ -77,6 +77,12 @@ def _prov(
 
 
 def _load(relative: str, name: str) -> ModuleType:
+    # Scripts that import their siblings by bare name (e.g. check-model-egress
+    # importing check_direct_effects) need the scripts directory importable;
+    # spec-based loading alone does not provide it.
+    scripts_dir = str((ROOT / relative).resolve().parent)
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
     spec = importlib.util.spec_from_file_location(name, ROOT / relative)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
