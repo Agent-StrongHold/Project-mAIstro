@@ -43,7 +43,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: PR base follows branch policy (ADR-095)
@@ -56,7 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
@@ -238,7 +238,7 @@ jobs:
       MAISTRO_DRY_RUN: "1"
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
@@ -293,7 +293,7 @@ jobs:
       MAISTRO_DRY_RUN: "1"
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
@@ -354,7 +354,7 @@ jobs:
           # unresolvable, which is a documented non-passing state for a
           # ratchet, not a pass.
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
@@ -500,7 +500,7 @@ jobs:
       MAISTRO_REQUIRE_PG_LEGS: "1"
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
@@ -559,7 +559,7 @@ jobs:
       MAISTRO_REQUIRE_PG_LEGS: "1"
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
@@ -675,7 +675,7 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
@@ -697,7 +697,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
@@ -738,7 +738,7 @@ jobs:
       # red, but the whole point of this job's caching quietly stops working
       # (Codex, #684). This is Docker's own documented fix for exactly this
       # gap: https://docs.docker.com/build/cache/backends/gha/#authentication
-      - uses: crazy-max/ghaction-github-runtime@v3
+      - uses: crazy-max/ghaction-github-runtime@v4
 
       # Fetch the base images first, retrying (#204). This job used to fail on a
       # registry reset before touching a line of repository content — a red
@@ -824,6 +824,18 @@ jobs:
             sleep 2
           done
           curl -fsS http://127.0.0.1:8000/health/live
+          # Readiness races boot-time migration: liveness answers while the
+          # engine is still applying the alembic chain on the empty volume, so
+          # a single immediate /health/ready call fails under runner load
+          # (observed 2026-09-14: the smoke died with the container in
+          # health:starting and the migration chain mid-run). Poll with the
+          # same bounded budget; the final assertion stays fail-closed.
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8000/health/ready >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
           curl -fsS http://127.0.0.1:8000/health/ready
           docker exec "$postgres" psql -U maistro -d maistro -Atc \
             "SELECT version_num FROM alembic_version" | grep -Eq '^[0-9a-f]+$'
@@ -1062,7 +1074,7 @@ jobs:
       # one-line change once that warning is fixed.
       - name: shellcheck the standalone scripts under tools/
         run: /tmp/shellcheck-bin --severity=warning tools/*.sh
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Install PyYAML
