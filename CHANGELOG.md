@@ -25,6 +25,28 @@ or placeholder-only section.
 
 ### Security
 
+- **Canonical Event payloads are scrubbed of credential material before any
+  backend can persist them (#1164).** `EventEnvelope` now redacts `payload`
+  and `provenance` in its constructor — the one seam the memory, SQLite,
+  PostgreSQL and outbox paths all already go through for their size bound — so
+  a token pasted into an event can no longer reach durable storage, a replay,
+  or an operator's inspection of the event log. Both halves of #1159's policy
+  apply: a field whose *name* classifies as credential material
+  (`api_key`, `private_key`, `ssh_key`, a bare `key`, …) loses its value, and
+  every surviving string is scanned for secret *shapes* (Slack and AWS
+  credentials, bearer assignments, PEM blocks, high-entropy runs). Identifiers
+  are preserved — `key_arn`, `token_id`, digests, uuid4 ids and ordinary prose
+  survive untouched — and the scrub is idempotent, so re-validating a staged
+  envelope does not rewrite already-recorded evidence. Rows written before this
+  change are read back exactly as they were recorded rather than re-scrubbed on
+  read. Mapping *keys* are scanned too, so a token-indexed object cannot carry
+  the credential past the scrub in its key, with two keys that redact to the
+  same label kept distinct rather than collapsed. A `key` that names what it
+  identifies (`effect_key`, `idempotency_key`, `partition_key`, `parent_key`,
+  …) now classifies as an identifier in `maistro.security.secret_policy`, so
+  the canonical capability events keep the `effect_key` that audit and replay
+  consumers join on. The byte ceiling is re-checked after the scrub, because
+  redaction can grow a field that passed the ceiling as submitted.
 - **An identity-free chat turn is routed as the anonymous principal again
   (#1165 regression, introduced by #1288).** `Container.route_request` had
   stopped substituting `ANONYMOUS_AUTH` for `auth=None`, so a turn that
