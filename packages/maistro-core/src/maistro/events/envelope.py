@@ -21,6 +21,108 @@ from maistro.observability.correlation import current_execution_context
 if TYPE_CHECKING:
     import aiosqlite
 
+#: Canonical structural bound for `payload`/`provenance` (#1164). Enforced once,
+#: here, in the constructor every backend (memory, SQLite, PostgreSQL, outbox)
+#: must go through -- so every backend inherits the same ceiling by construction
+#: rather than needing its own copy of this check. Deliberately not a
+#: database-column maximum chosen after the fact: a resource-abuse floor chosen
+#: before any backend needs to care, sized well above today's small emitters
+#: while still bounding a future caller that has not yet been imagined.
+MAX_EVENT_FIELD_BYTES = 262_144
+MAX_EVENT_FIELD_DEPTH = 32
+
+
+class EventPayloadTooLarge(ValueError):
+    """A canonical Event field failed its structural resource bound (#1164)."""
+
+    def __init__(self, message: str, *, field: str) -> None:
+        super().__init__(message)
+        self.field = field
+
+
+def _structural_depth(value: object, *, stop_after: int) -> int:
+    """Return container nesting depth, stopping as soon as ``stop_after`` is exceeded.
+
+    Iterative rather than recursive so a maliciously deep payload cannot exhaust
+    the Python call stack before this check has a chance to reject it. Tuples
+    count too: ``json`` serializes them as arrays, so a tuple-nested payload can
+    reach the same encoded depth as a list-nested one.
+    """
+    max_seen = 0
+    stack: list[tuple[object, int]] = [(value, 1)]
+    while stack:
+        current, depth = stack.pop()
+        if not isinstance(current, (dict, list, tuple)):
+            continue
+        max_seen = max(max_seen, depth)
+        if depth > stop_after:
+            return depth
+        children = current.values() if isinstance(current, dict) else current
+        stack.extend(
+            (child, depth + 1) for child in children if isinstance(child, (dict, list, tuple))
+        )
+    return max_seen
+
+
+def _check_field_bounds(field_name: str, value: dict[str, Any]) -> None:
+    """Reject an oversized or unencodable Event field before any backend sees it.
+
+    Encoding is incremental (``iterencode``) rather than a single ``json.dumps``
+    so an oversized field is rejected as soon as the running byte total crosses
+    the ceiling, instead of first materializing the whole encoded string (and
+    risking a ``MemoryError`` for a large enough payload before the bound ever
+    gets to fire).
+    """
+    depth = _structural_depth(value, stop_after=MAX_EVENT_FIELD_DEPTH)
+    if depth > MAX_EVENT_FIELD_DEPTH:
+        raise EventPayloadTooLarge(
+            f"{field_name} nests {depth} levels deep, exceeding the canonical "
+            f"Event limit of {MAX_EVENT_FIELD_DEPTH}",
+            field=field_name,
+        )
+    encoder = json.JSONEncoder(ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    size = 0
+    try:
+        for chunk in encoder.iterencode(value):
+            # UnicodeEncodeError (e.g. from an escaped lone surrogate) is a
+            # ValueError subclass, so encoding inside this try lets the
+            # except below turn it into the documented EventPayloadTooLarge
+            # instead of an undocumented crash.
+            size += len(chunk.encode("utf-8"))
+            if size > MAX_EVENT_FIELD_BYTES:
+                break
+        else:
+            return
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise EventPayloadTooLarge(
+            f"{field_name} is not JSON-encodable: {exc}",
+            field=field_name,
+        ) from exc
+    raise EventPayloadTooLarge(
+        f"{field_name} serialized to more than {MAX_EVENT_FIELD_BYTES} bytes, exceeding "
+        f"the canonical Event limit of {MAX_EVENT_FIELD_BYTES} bytes",
+        field=field_name,
+    )
+
+
+def _validate_envelope_structure(envelope: EventEnvelope) -> None:
+    """Check the invariants that indicate a genuinely corrupt envelope.
+
+    Kept separate from :func:`_check_field_bounds` so :func:`reconstruct_persisted_event`
+    can re-run these without re-imposing the (retroactively tunable) size/depth
+    ceiling on a row that was valid when it was written.
+    """
+    if not envelope.type.strip():
+        raise ValueError("type must be a non-empty string")
+    if not envelope.event_id.strip():
+        raise ValueError("event_id must be a non-empty string")
+    if not envelope.workspace_id.strip() and not envelope.stream_scope.strip():
+        raise ValueError("non-Workspace events require an explicit stream_scope")
+    if envelope.workspace_id.strip() and envelope.stream_scope.strip():
+        raise ValueError("Workspace events must not define a competing stream_scope")
+    if envelope.sequence is not None and envelope.sequence < 1:
+        raise ValueError("sequence must be positive when present")
+
 
 @dataclass(frozen=True)
 class EventEnvelope:
@@ -52,16 +154,9 @@ class EventEnvelope:
     provenance: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if not self.type.strip():
-            raise ValueError("type must be a non-empty string")
-        if not self.event_id.strip():
-            raise ValueError("event_id must be a non-empty string")
-        if not self.workspace_id.strip() and not self.stream_scope.strip():
-            raise ValueError("non-Workspace events require an explicit stream_scope")
-        if self.workspace_id.strip() and self.stream_scope.strip():
-            raise ValueError("Workspace events must not define a competing stream_scope")
-        if self.sequence is not None and self.sequence < 1:
-            raise ValueError("sequence must be positive when present")
+        _validate_envelope_structure(self)
+        _check_field_bounds("payload", self.payload)
+        _check_field_bounds("provenance", self.provenance)
         object.__setattr__(self, "payload", copy.deepcopy(self.payload))
         object.__setattr__(self, "provenance", copy.deepcopy(self.provenance))
 
@@ -75,6 +170,25 @@ class EventEnvelope:
     def to_dict(self) -> dict[str, Any]:
         """Return a serialization-ready copy of the envelope."""
         return asdict(self)
+
+
+def reconstruct_persisted_event(**fields: Any) -> EventEnvelope:
+    """Rebuild an :class:`EventEnvelope` from durable storage, skipping the size/depth bound.
+
+    A row written before #1164 tightened ``MAX_EVENT_FIELD_BYTES``/``_DEPTH`` can
+    carry a ``payload``/``provenance`` that no longer satisfies today's limits.
+    Routing it back through the validating constructor would make reading that
+    historical row raise -- turning a retroactive, tunable resource ceiling into
+    a durability hazard. The structural invariants that predate #1164 (non-empty
+    ``type``/``event_id``, workspace vs. ``stream_scope``, sequence positivity)
+    still indicate real corruption, so they are re-checked here; only the
+    field-size/depth bound is skipped.
+    """
+    envelope = object.__new__(EventEnvelope)
+    for name, value in fields.items():
+        object.__setattr__(envelope, name, value)
+    _validate_envelope_structure(envelope)
+    return envelope
 
 
 @dataclass(frozen=True)
@@ -377,7 +491,9 @@ class SqliteEventStore:
 
     @staticmethod
     def _row_to_event(row: tuple[Any, ...]) -> EventEnvelope:
-        return EventEnvelope(
+        # Bypasses the payload/provenance size bound: a row written before
+        # #1164 tightened it must stay readable (see reconstruct_persisted_event).
+        return reconstruct_persisted_event(
             event_id=row[0],
             sequence=row[2],
             type=row[3],

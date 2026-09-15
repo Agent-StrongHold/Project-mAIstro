@@ -28,6 +28,7 @@ class DurableRunStore(Protocol):
         *,
         limit: int = 100,
         project_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> list[DurableRunRecord]: ...
 
     async def list_due(self, *, now: datetime, limit: int = 100) -> list[DurableRunRecord]:
@@ -50,7 +51,7 @@ class DurableRunStore(Protocol):
         *,
         at: datetime | None = None,
     ) -> DurableRunRecord:
-        """Attach an answer and queue the paused canonical Run for resume."""
+        """Persist an answer and queue only a valid paused Run for resume."""
         ...
 
     async def timeout_hitl(

@@ -114,11 +114,12 @@ class TestPoolSelectsThePostgresStores:
         ]
 
     async def test_wiring_creates_the_schema_it_needs(self, pg_pool, wire):
-        """A container wired against a database that has never run migration 004
-        must still come up: `_wire_pg_durable_events` calls `ensure_event_schema`
-        once for all three stores."""
+        """A container wired against a database that has never run migrations
+        004 and 036 must still come up: `_wire_pg_durable_events` calls
+        `ensure_event_schema` once for all four stores."""
         await pg_pool.execute(
-            "DROP TABLE IF EXISTS handler_invocations, trigger_definitions, event_log"
+            "DROP TABLE IF EXISTS "
+            "handler_invocations, trigger_definitions, event_log, consumer_cursors"
         )
         container = await wire(_config(), pg_pool=pg_pool)
 

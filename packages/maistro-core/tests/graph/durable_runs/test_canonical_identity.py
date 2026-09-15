@@ -17,7 +17,9 @@ from pydantic import BaseModel
 
 from maistro.graph import Graph, Node
 from maistro.graph.durable_runs import (
+    CanonicalDurableRunStore,
     InMemoryDurableRunStore,
+    InMemoryGraphContinuationStore,
     resume_durable_graph,
     run_durable_graph,
 )
@@ -26,6 +28,8 @@ from maistro.graph.nodes import BaseNode, NodeContext, pause_until
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
 from maistro.runs.model import RunStatus
+
+from .._canonical_helpers import durable_record
 
 
 class _StepIn(BaseModel):
@@ -118,6 +122,34 @@ async def test_the_identity_is_the_stores_not_the_records() -> None:
     listed = await run_store.list_by_status(RunStatus.RUNNING, limit=100)
     listed += await run_store.list_by_status(RunStatus.COMPLETED, limit=100)
     assert record.run.run_id in {run.run_id for run in listed}
+
+
+@pytest.mark.ac("ADR-082826-d9f5/AC-1")
+async def test_a_workspace_scoped_listing_walks_the_spine_first() -> None:
+    """`workspace_id` is Run scope, so the spine answers before paging.
+
+    Continuations carry project scope only; answering a Workspace-scoped
+    listing from them would apply the page limit before the caller's boundary
+    (#1240). The spine is asked first, and an out-of-scope Workspace sees
+    nothing — not an empty-looking page hiding somebody else's backlog.
+    """
+    run_store, workspace_id, project_id = await _spine()
+    store = CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore())
+
+    graph = _graph(workspace_id, project_id)
+    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    await store.create(
+        durable_record(
+            {"id": "d1", "nodes": [{"id": "n1"}], "edges": []},
+            run_id=admitted.run_id,
+            project_id=project_id,
+            workspace_id=workspace_id,
+        )
+    )
+
+    mine = await store.list_by_status(RunStatus.RUNNING, workspace_id=workspace_id)
+    assert [item.run_id for item in mine] == [admitted.run_id]
+    assert await store.list_by_status(RunStatus.RUNNING, workspace_id="ws-nobody") == []
 
 
 @pytest.mark.ac("ADR-082826-d9f5/AC-1")
@@ -453,6 +485,9 @@ async def test_the_traversal_executor_takes_the_same_path() -> None:
     assert run is not None and run.status is RunStatus.COMPLETED
     node_runs = await run_store.list_node_runs(record.run_id)
     assert [item.status for item in node_runs] == [RunStatus.COMPLETED]
-    # Traversal accepts no physical evidence, so its NodeRuns carry no accepted
-    # outcome — the write-back has to cope with that rather than assume one.
-    assert node_runs[0].accepted_outcome is None
+    # The historical import is a compatibility facade over canonical execution,
+    # not a second walker allowed to complete with no physical evidence.
+    assert node_runs[0].accepted_outcome is not None
+    attempts = await run_store.list_attempts(node_runs[0].node_run_id)
+    assert len(attempts) == 1
+    assert node_runs[0].accepted_outcome.attempt_result.attempt_id == attempts[0].attempt_id
