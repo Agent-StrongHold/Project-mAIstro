@@ -294,12 +294,17 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    weakest available rung; a host with nothing refuses everything. That refusal is the current
    state of the guarantee: it is fail-closed, not satisfied. See
    [`docs/security/SANDBOX-SUPPORT-MATRIX.md`](docs/security/SANDBOX-SUPPORT-MATRIX.md). The
-   SPEC-190 conformance and escape suite now ships and runs in CI (#80):
-   `packages/maistro-core/tests/sandbox/test_escape_conformance.py` exercises the filesystem,
-   process, namespace, device, host-socket, credential and privilege surfaces against the real
-   kernel, along with memory, CPU and file-size exhaustion and post-timeout cleanup. It
-   establishes that the Tier-3 guardrail is real; it does not turn Tier 3 into a boundary
-   against hostile code, which is what Tiers 1 and 2 are still for.
+   SPEC-190 conformance and escape suites run against real backends in CI (#80):
+   `packages/maistro-bootstrap/tests/test_container_sandbox.py` exercises the production
+   `ContainerBuilderSandbox` Docker backend's filesystem, process, namespace, network, device,
+   host-socket, credential and privilege surfaces (including tracked-only seed inputs and blanked
+   Docker proxy variables (HTTP, HTTPS, FTP, and both case spellings), read-only rootfs, resource budget, timeout kill (including detached
+   descendants) and cleanup behavior.
+   `packages/maistro-core/tests/sandbox/test_escape_conformance.py`
+   provides the corresponding live Bubblewrap Tier-3 lane. These are real-kernel/container
+   assertions, not selector or fake-backend tests. The Docker backend remains a shared-kernel
+   guardrail rather than a Tier-1/Tier-2 hostile-code boundary; ADR-093 requires those stronger
+   backends for untrusted autonomous execution.
 9. **The configurable floors cover six limits, not every cap in the inventory.** Request/webhook
    body size, rate limit and burst, and the LLM circuit breaker's threshold and recovery timeout
    are deployment policy with an enforced floor (see *Configurable limits and their enforced
