@@ -61,131 +61,6 @@ _PUBLIC_EXACT = frozenset(
 
 _ADMIN_CHAT_BLOCKED = ("/v1/chat/",)
 
-_PROTECTED_OPS: dict[str, dict[str, str]] = {
-    "GET": {
-        # Reading deployment settings is still a configuration authorization
-        # decision; authentication alone must not expose the operator overlay.
-        "/v1/settings": "config.write",
-        # Task listings carry user work and are covered by the same declared
-        # route permission as task mutations; authentication alone is not an
-        # authorization decision for this surface.
-        "/v1/tasks": "tasks.write",
-        # Reading another principal's harness/RSI session stream exposes
-        # in-flight code, agent reasoning, and secrets in transit — the same
-        # sensitivity as starting the run, so it takes the same scope. Plain
-        # authentication is not enough for these read routes.
-        "/v1/harness": "harness.execute",
-        "/v1/rsi": "rsi.execute",
-        "/v1/evolution": "rsi.execute",
-        # The pending-work queue names which Runs are blocked and carries the
-        # payload each node is asking a human — in-flight graph execution
-        # content, the same sensitivity as the harness stream above. Scoped to
-        # match the answer route: seeing a question you have no scope to answer
-        # serves nobody and leaks what the Run is doing (#244).
-        "/v1/hitl": "dags.write",
-    },
-    "DELETE": {
-        "/v1/settings": "config.delete",
-        "/v1/agents": "agents.delete",
-        "/v1/skills": "skills.delete",
-        "/v1/mcp": "mcp.delete",
-        # Killing another principal's harness session is a denial of service on
-        # in-flight work, so it needs the same scope that starting one does.
-        "/v1/harness": "harness.execute",
-        "/v1/containers": "containers.control",
-        "/v1/credentials": "credentials.write",
-        "/v1/dags": "dags.write",
-        "/v1/schedules": "schedules.write",
-        # Removing a workspace member is the same write-scope decision as
-        # creating the workspace in the first place (Persona/Workspace Phase G).
-        "/v1/workspaces": "workspaces.write",
-    },
-    "POST": {
-        "/v1/settings": "config.write",
-        # The whole /v1/mcp mutating surface, not just /servers: discover and
-        # test connect to operator-supplied endpoints, which is the same
-        # trust decision as registering one.
-        "/v1/mcp": "mcp.write",
-        "/v1/agents": "agents.write",
-        "/v1/skills": "skills.write",
-        # Talks to the Docker socket directly — host infrastructure control.
-        "/v1/containers": "containers.control",
-        # DAGs execute graphs whose nodes include harness/synth-DAG kinds:
-        # creating or running one is agent execution, and an unscoped DAG run
-        # would be a bypass of harness.execute via composition.
-        "/v1/dags": "dags.write",
-        # Accepting an optimizer proposal rewrites a DAG — same surface.
-        "/v1/optimizer": "dags.write",
-        # Answering a human pause resumes the Run that was waiting on it, and
-        # the nodes that run next are the same graph nodes `/v1/dags` gates —
-        # so an unscoped answer would be DAG execution reached by replying to
-        # a prompt instead of by starting a run (#244). The answer is also
-        # untrusted input written into graph state that later nodes read,
-        # which is why the route Warden-scans it as well.
-        "/v1/hitl": "dags.write",
-        # A schedule is recurring autonomous execution.
-        "/v1/schedules": "schedules.write",
-        # Workspace sub-resource mutations (membership, persona authoring, etc.)
-        # remain privileged. Creating one's own workspace tab is handled as an
-        # ordinary authenticated operation in _required_permission() below.
-        "/v1/workspaces": "workspaces.write",
-        # The evolution tournament is the self-improvement loop's other door.
-        "/v1/evolution": "rsi.execute",
-        # Executes GitHub/GitLab tools with stored credentials against real
-        # external trackers.
-        # Audit entries name an arbitrary `actor`: an unscoped writer is a
-        # log-forgery primitive, and the app writes its own entries in-process,
-        # not over HTTP — no product flow needs this route unelevated.
-        "/v1/audit": "audit.write",
-        # The inbound harness starts a coding agent against an operator-supplied
-        # `workdir`: POST /v1/harness/sessions is code execution on this host,
-        # and .../send steers it. Authentication alone was already required
-        # (dispatch 401s any unauthenticated /v1/ path), but *every*
-        # authenticated principal could reach it — including a role="user"
-        # account with permissions=[]. Deliberately its own scope rather than
-        # agents.write: being cleared to edit an agent's configuration is not
-        # the same as being cleared to execute code as it.
-        "/v1/harness": "harness.execute",
-        # RSI runs are the self-modification loop — they push branches and can
-        # open PRs. Separate scope again, because granting code execution on a
-        # scratch workdir is a smaller decision than granting the loop that
-        # rewrites this repository.
-        "/v1/rsi": "rsi.execute",
-        # Capability discovery + approval resolution (approving a destructive
-        # infra action is high-stakes) — gate behind config.write.
-        "/v1/capabilities": "config.write",
-        # Provider activation uses the LiteLLM master key, mutates the global
-        # model registry, and can trigger billed calls (SPEC-072726-3439).
-        "/v1/providers": "config.write",
-    },
-    "PUT": {
-        "/v1/settings": "config.write",
-        # Storing a deployment-wide LLM key in the vault — same decision
-        # weight as activating it.
-        "/v1/providers": "config.write",
-        "/v1/mcp/servers": "mcp.write",
-        "/v1/agents": "agents.write",
-        "/v1/skills": "skills.write",
-        "/v1/credentials": "credentials.write",
-        "/v1/dags": "dags.write",
-        "/v1/schedules": "schedules.write",
-        # Setting a workspace's sticky per-agent tool bindings changes what
-        # tools that agent may call — same write-scope posture as every
-        # other workspace-settings mutation (Persona/Workspace system).
-        "/v1/workspaces": "workspaces.write",
-    },
-    "PATCH": {
-        "/v1/settings": "config.write",
-        "/v1/mcp/servers": "mcp.write",
-        "/v1/capabilities": "config.write",
-        # Toggling a skill changes what every future agent run may do.
-        "/v1/skills": "skills.write",
-        # Archiving a workspace is the same write-scope decision as creating
-        # or deleting one (Persona/Workspace system).
-        "/v1/workspaces": "workspaces.write",
-    },
-}
-
 
 def _matches_public_prefix(path: str, prefix: str) -> bool:
     """True if path is exactly prefix, or prefix followed by '/'.
@@ -284,23 +159,36 @@ class AuthMiddleware(BaseHTTPMiddleware):
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
         path = request.url.path
+        if request.method == "OPTIONS":
+            return await call_next(request)
 
-        if (
+        policy = route_policy(self._route_policy, request.method, path)
+        public_path = (
             path in _PUBLIC_EXACT
             or _is_public_oauth_get(request.method, path)
             or any(_matches_public_prefix(path, p) for p in _PUBLIC_PREFIXES)
-        ):
-            if request.method != "OPTIONS":
-                policy = route_policy(self._route_policy, request.method, path)
-                if (policy is None or policy.get("access") != "public") and path not in {
-                    "/",
-                    "/favicon.ico",
-                }:
-                    return JSONResponse(
-                        status_code=403,
-                        content={"detail": "Route authorization declaration required"},
-                    )
+        )
+        if public_path:
+            if (policy is None or policy.get("access") != "public") and path not in {
+                "/",
+                "/favicon.ico",
+            }:
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Route authorization declaration required"},
+                )
             return await call_next(request)
+
+        # The declaration gate covers the HTTP API. Non-API paths include the
+        # product's static SPA fallback, which has its own public serving
+        # boundary and is not a principal-bearing backend route.
+        if policy is None:
+            if not path.startswith("/v1/"):
+                return await call_next(request)
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Route authorization declaration required"},
+            )
 
         # The install wizard API is only useful before first-run provisioning,
         # when no account exists yet to authenticate with. Public pre-setup;
@@ -309,61 +197,40 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if _matches_public_prefix(path, "/v1/install/") and not self._setup_complete():
             return await call_next(request)
 
-        if request.method == "OPTIONS":
-            return await call_next(request)
+        user = self._get_user(request)
+        if user is None:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Authentication required"},
+            )
+        request.state.user = user
 
-        if path.startswith("/v1/"):
-            user = self._get_user(request)
-            if user is None:
-                return JSONResponse(
-                    status_code=401,
-                    content={"detail": "Authentication required"},
-                )
+        if user["role"] == "admin" and self._is_chat(path):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Admin account cannot use chat. Use your daily user account."},
+            )
 
-            request.state.user = user
+        # Persona-level feedback aggregates raw entries across all workspaces
+        # using that persona. A normal workspace member may not inspect other
+        # workspaces' user ids, comments, or identifiers.
+        if (
+            request.method == "GET"
+            and path.startswith("/v1/workspaces/persona-templates/")
+            and path.endswith("/feedback")
+            and user.get("role") != "admin"
+        ):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Admin permission required for persona-wide feedback"},
+            )
 
-            # The shared declaration gate is deliberately separate from the
-            # Conductor's existing resource/elevation policy below. A route
-            # missing from the reviewed table is never an authenticated-only
-            # default, while this middleware does not create a second product
-            # authorization authority.
-            if route_policy(self._route_policy, request.method, path) is None:
-                return JSONResponse(
-                    status_code=403,
-                    content={"detail": "Route authorization declaration required"},
-                )
-
-            if user["role"] == "admin" and self._is_chat(path):
-                return JSONResponse(
-                    status_code=403,
-                    content={
-                        "detail": "Admin account cannot use chat. Use your daily user account."
-                    },
-                )
-
-            # Persona-level feedback aggregates raw entries across all
-            # workspaces using that persona. A normal workspace member may not
-            # inspect other workspaces' user ids, comments, or identifiers.
-            # Keep the aggregate endpoint available to operators only.
-            if (
-                request.method == "GET"
-                and path.startswith("/v1/workspaces/persona-templates/")
-                and path.endswith("/feedback")
-                and user.get("role") != "admin"
-            ):
-                return JSONResponse(
-                    status_code=403,
-                    content={"detail": "Admin permission required for persona-wide feedback"},
-                )
-
-            required_perm = self._required_permission(request)
-            if required_perm and not self._check_permission(user, required_perm):
-                return JSONResponse(
-                    status_code=403,
-                    content={
-                        "detail": f"Permission '{required_perm}' required. Elevate to proceed."
-                    },
-                )
+        required_perm = self._required_permission(request)
+        if required_perm and not self._check_permission(user, required_perm):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": f"Permission '{required_perm}' required. Elevate to proceed."},
+            )
 
         return await call_next(request)
 
@@ -392,42 +259,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
         return any(path.startswith(p) for p in _ADMIN_CHAT_BLOCKED)
 
     def _required_permission(self, request: Request) -> str | None:
-        method_perms = _PROTECTED_OPS.get(request.method, {})
-        path = request.url.path
-        # Creating a workspace tab is a normal authenticated-user action. The
-        # route makes the caller its owner, so requiring task-scoped elevation
-        # here made the first-run daily account's workspace UI unusable.
-        if request.method == "POST" and path.rstrip("/") == "/v1/workspaces":
+        """Return the permission declared for this exact registered route."""
+        policy = route_policy(self._route_policy, request.method, request.url.path)
+        if policy is None or policy.get("access") != "permission":
             return None
-        # DAG-Run inspection — GET /v1/dag-runs (list), GET /v1/dag-runs/{id}
-        # (detail), GET /v1/dag-runs/{id}/events (SSE) — and the eval-judge
-        # read side over the same runs (GET /v1/eval-judge verdict list,
-        # GET /v1/eval-judge/{run_id}) — is deliberately NOT elevation-gated,
-        # because elevation adds no boundary here: the responses are scoped to
-        # the caller's canonical Workspace universe inside the routes
-        # themselves, through services/dag_run_inspection (#1174) — the same
-        # authority the workspace/agents routes answer through. Authentication
-        # alone is not authorization: a member of no Workspace sees an empty
-        # list, and an out-of-scope run id gets the same 404 a missing run
-        # gets, so the response never confirms a run exists beyond the
-        # caller's boundary. (Spell the GET match out rather than listing the
-        # routes in _PROTECTED_OPS: these routes stay None on purpose, and the
-        # comment above is the reason.) The /feedback POST sub-routes above
-        # keep their own pre-existing posture; /v1/dag-runs/retention is
-        # covered by this match too and carries deployment constants, not run
-        # data. The eval-judge trigger (POST /v1/eval-judge/{run_id}) is
-        # likewise authenticated-only and scoped in-route by the same
-        # inspection door before anything is scored.
-        if request.method == "GET" and (path == "/v1/dag-runs" or path.startswith("/v1/dag-runs/")):
-            return None
-        if request.method == "GET" and (
-            path == "/v1/eval-judge" or path.startswith("/v1/eval-judge/")
-        ):
-            return None
-        for prefix, perm in method_perms.items():
-            if path.startswith(prefix):
-                return perm
-        return None
+        permission = policy.get("permission")
+        return permission if isinstance(permission, str) else None
 
     def _check_permission(self, user: dict[str, Any], perm: str) -> bool:
         return principal_has_permission(user, perm)

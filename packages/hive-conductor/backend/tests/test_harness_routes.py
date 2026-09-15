@@ -162,7 +162,13 @@ def test_harness_scope_is_not_satisfied_by_agents_write(authed_client):
     every operator who could edit a roster entry would silently also hold
     code execution.
     """
-    from middleware.auth import _PROTECTED_OPS
+    from middleware.auth import AuthMiddleware
 
-    assert _PROTECTED_OPS["POST"]["/v1/harness"] == "harness.execute"
-    assert _PROTECTED_OPS["POST"]["/v1/harness"] != _PROTECTED_OPS["POST"]["/v1/agents"]
+    from maistro.security.http_routes import route_policy
+
+    middleware = AuthMiddleware(app=None)
+    harness = route_policy(middleware._route_policy, "POST", "/v1/harness/sessions")
+    agents = route_policy(middleware._route_policy, "POST", "/v1/agents")
+    assert harness is not None and harness["permission"] == "harness.execute"
+    assert agents is not None and agents["permission"] == "agents.write"
+    assert harness["permission"] != agents["permission"]

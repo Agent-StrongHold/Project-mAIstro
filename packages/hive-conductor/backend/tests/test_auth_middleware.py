@@ -171,10 +171,8 @@ class TestUnauthenticatedProtectedPaths:
         r = c.get("/v1/tasks")
         assert r.status_code == 401
 
-    def test_non_v1_unregistered_path_is_not_auth_gated(self, temp_route) -> None:
-        """Paths outside /v1/ are never auth-gated by this middleware at
-        all (by design — only /v1/* is gated), regression-locking that
-        scope so a future change to the gating condition is caught."""
+    def test_non_v1_unregistered_path_is_not_backend_auth_gated(self, temp_route) -> None:
+        """The declaration gate covers protected API paths, not the SPA shell."""
         temp_route("/not-versioned-at-all")
         c = TestClient(app)
         r = c.get("/not-versioned-at-all")
@@ -260,10 +258,10 @@ class TestProtectedOpsPermissionMatrix:
         assert r.status_code == 403
 
     def test_delete_agents_with_permission_and_elevation_passes_gate(self) -> None:
-        c = self._writer("del-agents-3", perms=["agents.delete"])
+        c = self._writer("del-agents-3", perms=["agents.write"])
         e = c.post(
             "/v1/auth/elevate",
-            json={"password": "pw", "permissions": ["agents.delete"], "task_id": "t-del"},
+            json={"password": "pw", "permissions": ["agents.write"], "task_id": "t-del"},
         )
         assert e.status_code == 200, e.text
         r = c.delete("/v1/agents/foo")
@@ -298,10 +296,11 @@ class TestAdminBlockedFromChat:
         r2 = c.post("/v1/chat/message", json={"message": "hi"})
         assert r2.status_code == 403
 
-    def test_regular_user_not_blocked_from_chat_path(self) -> None:
+    def test_regular_user_without_declared_chat_permission_is_denied(self) -> None:
         c = _login()
         r = c.post("/v1/chat/message", json={"message": "hi"})
-        assert r.status_code != 403
+        assert r.status_code == 403
+        assert "chat.read" in r.json()["detail"]
 
 
 class TestMalformedAuthHeaders:
@@ -323,9 +322,9 @@ class TestMalformedAuthHeaders:
     def test_cookie_session_overrides_absent_header(self) -> None:
         c = _login()
         r = c.get("/v1/tasks", headers={"Authorization": "Bearer not-a-real-session"})
-        # Cookie wins (checked first in _get_user), but authentication alone
-        # does not satisfy the route's declared tasks.write permission.
-        assert r.status_code == 403
+        # Cookie wins (checked first in _get_user). The task route is an
+        # explicit exemption because its handler applies resource ownership.
+        assert r.status_code == 200
 
     def test_unknown_session_id_in_cookie_is_401(self) -> None:
         c = TestClient(app)
@@ -389,4 +388,5 @@ class TestInstallPreSetupWindow:
         temp_route("/v1/installers-catalog")
         c = TestClient(app)
         r = c.get("/v1/installers-catalog")
-        assert r.status_code == 401
+        assert r.status_code == 403
+        assert r.json()["detail"] == "Route authorization declaration required"
