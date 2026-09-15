@@ -220,6 +220,58 @@ def test_discovers_literal_mutating_frontend_api_call(tmp_path: Path) -> None:
     )
 
 
+def test_discovers_variable_frontend_fetch_target(tmp_path: Path) -> None:
+    """A hoisted endpoint constant is still a shipped mutating call (#1144)."""
+    _write(
+        tmp_path / "frontend/client.js",
+        """
+const CHAT_PATH = "/api/llm/chat";
+await fetch(CHAT_PATH, { method: "POST", body: JSON.stringify(payload) });
+""",
+    )
+    [surface] = discover_frontend_surfaces(tmp_path, ["frontend"])
+    assert (surface.signal, surface.method, surface.route) == (
+        "mutating-api-call",
+        "POST",
+        "/api/llm/chat",
+    )
+
+
+def test_unresolved_frontend_fetch_target_is_matrix_required(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "frontend/client.js",
+        "await fetch(endpoint, { method: requestMethod, body: JSON.stringify(payload) });\n",
+    )
+    [surface] = discover_frontend_surfaces(tmp_path, ["frontend"])
+    assert surface.method == DYNAMIC_METHODS
+    assert surface.route.startswith("<dynamic-route:1:")
+
+
+def test_discovers_express_mutating_routes_and_dynamic_targets(tmp_path: Path) -> None:
+    """Express registrations in shipped JavaScript need the same fail-closed
+    treatment as Python routes, including a non-literal route expression."""
+    _write(
+        tmp_path / "frontend/server.js",
+        """
+const PREFIX = "/api";
+app.post(`${PREFIX}/runs`, handler);
+app.delete(ROUTE_PATH, handler);
+""",
+    )
+    surfaces = discover_frontend_surfaces(tmp_path, ["frontend"])
+    assert len(surfaces) == 2
+    routes = {surface.method: surface for surface in surfaces}
+    assert routes["POST"].route == "${PREFIX}/runs"
+    assert routes["DELETE"].route.startswith("<dynamic-route:4:")
+
+
+def test_missing_new_express_route_disposition_fails_closed(tmp_path: Path) -> None:
+    _write(tmp_path / "frontend/server.js", "app.post(ROUTE_PATH, handler);\n")
+    (tmp_path / "backend").mkdir()
+    errors = validate_matrix(tmp_path, _matrix())
+    assert any("unclassified frontend execution surface" in error for error in errors)
+
+
 def test_missing_new_route_disposition_fails_closed(tmp_path: Path) -> None:
     _write(
         tmp_path / "backend/routes.py",

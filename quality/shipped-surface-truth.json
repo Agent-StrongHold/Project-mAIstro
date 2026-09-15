@@ -2403,6 +2403,236 @@
       "production_enabled": true,
       "reason": "redeems a handoff code for a session token",
       "effect_owner": "server.js /api/handoff/redeem (handoff code -> session token)"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "${AZURE_ENDPOINT}/openai/deployments/${AZURE_DEPLOYMENT}/images/generations?api-version=2025-03-01-preview",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "performs a real upstream image-generation request",
+      "effect_owner": "Azure OpenAI image-generation upstream call"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "DELETE",
+      "route": "/api/books",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/books"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "DELETE",
+      "route": "/api/books/:key",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/books/:key"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "DELETE",
+      "route": "/api/characters/:key",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/characters/:key"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "DELETE",
+      "route": "/api/templates/:key",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/templates/:key"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "PATCH",
+      "route": "/api/generation-attempts/:id/verdict",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/generation-attempts/:id/verdict"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/books/:key",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/books/:key"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/characters/:key",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/characters/:key"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/export",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/export"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/generation-attempts",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/generation-attempts"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/handoff/redeem",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/handoff/redeem"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/layout-versions",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/layout-versions"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/llm/chat",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/llm/chat"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/llm/image",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/llm/image"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/llm/image-edit",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/llm/image-edit"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/llm/pipeline-image",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/llm/pipeline-image"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/print/order",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/print/order"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/print/orders/:id/cancel",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/print/orders/:id/cancel"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/templates/:key",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/templates/:key"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/src/lib/llmClient.js",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/api/llm/chat",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "routes the browser request through the real Canvas server proxy",
+      "effect_owner": "server.js /api/llm/chat (provider proxy)"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/src/lib/llmClient.js",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/api/llm/image",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "routes the browser request through the real Canvas server proxy",
+      "effect_owner": "server.js /api/llm/image (provider proxy)"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/src/lib/llmClient.js",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/api/llm/image-edit",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "routes the browser request through the real Canvas server proxy",
+      "effect_owner": "server.js /api/llm/image-edit (provider proxy)"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/src/lib/llmClient.js",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/api/llm/pipeline-image",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "routes the browser request through the real Canvas server proxy",
+      "effect_owner": "server.js /api/llm/pipeline-image (provider proxy)"
     }
   ]
 }

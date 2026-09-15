@@ -73,6 +73,25 @@ _FETCH_RE = re.compile(
     r"fetch\s*\(\s*(?P<quote>['\"`])(?P<route>[^'\"`]+)(?P=quote)\s*,\s*\{(?P<opts>.*?)\}\s*\)",
     re.DOTALL,
 )
+# A shipped client commonly hoists endpoint paths into constants. Keep this
+# deliberately small and literal: resolving a named string is safe, while an
+# arbitrary expression must remain an explicit dynamic surface.
+_JS_STRING_ASSIGNMENT_RE = re.compile(
+    r"\b(?:const|let|var)\s+(?P<name>[A-Za-z_$][\w$]*)\s*=\s*"
+    r"(?P<quote>['\"`])(?P<value>[^'\"`]+)(?P=quote)"
+)
+_JS_VARIABLE_FETCH_RE = re.compile(
+    r"fetch\s*\(\s*(?P<target>[A-Za-z_$][\w$]*)\s*,\s*\{(?P<opts>.*?)\}\s*\)",
+    re.DOTALL,
+)
+# Express and router registrations are shipped backend handlers even when the
+# file lives beside a frontend bundle. They need a matrix disposition just like
+# Python routes; a non-literal first argument gets a line/digest stand-in.
+_JS_MUTATING_ROUTE_RE = re.compile(
+    r"\b(?:app|router|api|server|[A-Za-z_$][\w$]*(?:Router|App|Server))\."
+    r"(?P<method>post|put|patch|delete)\s*\(\s*(?P<target>[^,\n\r]+)",
+    re.IGNORECASE,
+)
 _METHOD_RE = re.compile(r"\bmethod\s*:\s*['\"](?P<method>POST|PUT|PATCH|DELETE)['\"]", re.I)
 
 
@@ -551,12 +570,65 @@ def _timer_success_signal(text: str) -> bool:
     return False
 
 
+def _js_string_bindings(text: str) -> dict[str, str]:
+    return {
+        match.group("name"): match.group("value")
+        for match in _JS_STRING_ASSIGNMENT_RE.finditer(text)
+    }
+
+
+def _js_route_path(target: str, *, bindings: dict[str, str], line: int) -> str:
+    target = target.strip()
+    if len(target) >= 2 and target[0] in "'\"`" and target[-1] == target[0]:
+        return target[1:-1]
+    if re.fullmatch(r"[A-Za-z_$][\w$]*", target) and target in bindings:
+        return bindings[target]
+    digest = hashlib.sha256(target.encode("utf-8")).hexdigest()[:8]
+    return f"<dynamic-route:{line}:{digest}>"
+
+
+def _js_fetch_method(options: str) -> str | None:
+    literal = _METHOD_RE.search(options)
+    if literal:
+        return literal.group("method").upper()
+    # An unreadable method may contain POST; retain the call rather than
+    # silently treating it as a read-only/default-GET request.
+    if re.search(r"\bmethod\s*:", options):
+        return DYNAMIC_METHODS
+    return None
+
+
 def _mutating_fetches(text: str) -> set[tuple[str, str]]:
+    bindings = _js_string_bindings(text)
     found: set[tuple[str, str]] = set()
     for match in _FETCH_RE.finditer(text):
-        method_match = _METHOD_RE.search(match.group("opts"))
-        if method_match:
-            found.add((method_match.group("method").upper(), match.group("route")))
+        method = _js_fetch_method(match.group("opts"))
+        if method:
+            found.add((method, match.group("route")))
+    for match in _JS_VARIABLE_FETCH_RE.finditer(text):
+        method = _js_fetch_method(match.group("opts"))
+        route = bindings.get(match.group("target"))
+        if route is None:
+            route = _js_route_path(
+                match.group("target"),
+                bindings=bindings,
+                line=text.count("\n", 0, match.start()) + 1,
+            )
+        if method:
+            found.add((method, route))
+    return found
+
+
+def _mutating_js_routes(text: str) -> set[tuple[str, str]]:
+    bindings = _js_string_bindings(text)
+    found: set[tuple[str, str]] = set()
+    for match in _JS_MUTATING_ROUTE_RE.finditer(text):
+        route = _js_route_path(
+            match.group("target"),
+            bindings=bindings,
+            line=text.count("\n", 0, match.start()) + 1,
+        )
+        found.add((match.group("method").upper(), route))
     return found
 
 
@@ -572,6 +644,15 @@ def discover_frontend_surfaces(repo_root: Path, roots: list[str]) -> list[Fronte
                 FrontendSurface(
                     source=source,
                     signal="mutating-api-call",
+                    method=method,
+                    route=route,
+                )
+            )
+        for method, route in _mutating_js_routes(text):
+            surfaces.append(
+                FrontendSurface(
+                    source=source,
+                    signal="mutating-api-route",
                     method=method,
                     route=route,
                 )
@@ -736,7 +817,12 @@ def validate_matrix(repo_root: Path, matrix: dict[str, Any], *, strict: bool = F
     auto_frontend_entries = {
         key: entry
         for key, entry in frontend_entries.items()
-        if entry.get("signal") in {"timer-status-simulation", "mutating-api-call"}
+        if entry.get("signal")
+        in {
+            "timer-status-simulation",
+            "mutating-api-call",
+            "mutating-api-route",
+        }
     }
 
     errors = [*duplicate_backend, *duplicate_frontend]
