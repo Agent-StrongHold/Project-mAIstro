@@ -29,7 +29,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from middleware.auth import resolve_principal
 from pydantic import BaseModel, ConfigDict, Field
-from services.scan_continuations import scan_continuation
+from services.workspace_authority import is_member, list_views_for_user
 
 from maistro.graph.durable_runs import expire_hitl_pauses
 from maistro.runs.model import RunStatus
@@ -75,6 +75,22 @@ def _store() -> Any:
     from services.dag_agents import get_run_store
 
     return get_run_store()
+
+
+def _request_user_id(request: Request) -> str:
+    user = getattr(request.state, "user", None) or {}
+    user_id = str(user.get("id") or user.get("username") or "")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return user_id
+
+
+async def _require_workspace_access(request: Request, workspace_id: str) -> None:
+    if not await is_member(_request_user_id(request), workspace_id):
+        # Do not confirm that an out-of-scope Run exists. This matches the
+        # scoped DAG inspection door: missing and unauthorized ids are one
+        # answer, while membership remains the canonical authorization check.
+        raise HTTPException(status_code=404, detail="run not found")
 
 
 def _session_principal(request: Request) -> str:
@@ -142,7 +158,7 @@ _PENDING_SCAN_PAGE_SIZE = 100
 
 @router.get("/pending")
 async def list_pending_human_work(
-    limit: int = 50, project_id: str | None = None
+    request: Request, limit: int = 50, project_id: str | None = None
 ) -> list[PendingHumanWork]:
     """Everything waiting on a person, without knowing a run_id in advance.
 
@@ -160,27 +176,50 @@ async def list_pending_human_work(
     inspected `_MAX_PENDING_SCAN_RECORDS` records — the same bounded-scan
     contract `expire_hitl_pauses` uses (#1056).
     """
+    user_id = _request_user_id(request)
+
+    # Workspace membership is the canonical visibility boundary for Run data,
+    # not the coarse `dags.write` route permission. Resolve every Workspace the
+    # principal may see; selecting one default Workspace would hide legitimate
+    # work, while omitting this filter leaks every tenant's paused payload.
+    allowed_workspace_ids = {workspace.id for workspace in await list_views_for_user(user_id)}
+    if not allowed_workspace_ids:
+        return []
+
     bounded_limit = max(1, min(limit, 200))
     store = _store()
     items: list[PendingHumanWork] = []
-    cursor: tuple[str, str] | None = None
-    inspected = 0
-    while len(items) < bounded_limit and inspected < _MAX_PENDING_SCAN_RECORDS:
-        # At least `_PENDING_SCAN_PAGE_SIZE` rows per page even when
-        # `bounded_limit` is small: a small item target must not force one
-        # row per round trip while paging past a long machine-only prefix.
-        page_size = min(
-            max(bounded_limit, _PENDING_SCAN_PAGE_SIZE), _MAX_PENDING_SCAN_RECORDS - inspected
-        )
-        records = await store.list_by_status(
-            RunStatus.PAUSED, limit=page_size, project_id=project_id, after=cursor
-        )
-        if not records:
+    # Workspace scope is applied by the store, before its page limit, so another
+    # tenant's backlog cannot hide this caller's pending work (#1240); the
+    # keyset walk inside each Workspace is what stops a long machine-only
+    # prefix from hiding real human work within it (#1109). Both bounds are
+    # load-bearing: the outer one is a security boundary, the inner one a
+    # fairness one, and neither subsumes the other.
+    for workspace_id in sorted(allowed_workspace_ids):
+        cursor: tuple[str, str] | None = None
+        inspected = 0
+        while len(items) < bounded_limit and inspected < _MAX_PENDING_SCAN_RECORDS:
+            # At least `_PENDING_SCAN_PAGE_SIZE` rows per page even when
+            # `bounded_limit` is small: a small item target must not force one
+            # row per round trip while paging past a long machine-only prefix.
+            page_size = min(
+                max(bounded_limit, _PENDING_SCAN_PAGE_SIZE), _MAX_PENDING_SCAN_RECORDS - inspected
+            )
+            records = await store.list_by_status(
+                RunStatus.PAUSED,
+                limit=page_size,
+                project_id=project_id,
+                workspace_id=workspace_id,
+                after=cursor,
+            )
+            if not records:
+                break
+            inspected += len(records)
+            for record in records:
+                items.extend(_pending_items(record))
+            cursor = (records[-1].run.created_at.isoformat(), records[-1].run_id)
+        if len(items) >= bounded_limit:
             break
-        inspected += len(records)
-        for record in records:
-            items.extend(_pending_items(record))
-        cursor = (records[-1].run.created_at.isoformat(), records[-1].run_id)
     return items[:bounded_limit]
 
 
@@ -191,9 +230,6 @@ async def expire_human_work(limit: int = 100) -> dict[str, Any]:
     expired = await expire_hitl_pauses(
         store,
         limit=max(1, min(limit, 200)),
-        # Held across ticks, so a run of non-HITL pauses longer than one
-        # tick's inspection bound is crossed rather than re-read forever.
-        scan=scan_continuation("expire_hitl_pauses", store),
     )
     run_ids = [record.run_id for record in expired]
     if run_ids:
@@ -205,6 +241,10 @@ async def expire_human_work(limit: int = 100) -> dict[str, Any]:
 async def cancel_human_work(run_id: str, node_id: str, request: Request) -> dict[str, Any]:
     """Request canonical cancellation of one durable human pause."""
     store = _store()
+    record = await store.get(run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    await _require_workspace_access(request, record.run.workspace_id)
     try:
         updated = await store.cancel_hitl(run_id, node_id)
     except KeyError as exc:
@@ -247,6 +287,7 @@ async def answer_human_work(
     record = await store.get(run_id)
     if record is None:
         raise HTTPException(status_code=404, detail="run not found")
+    await _require_workspace_access(request, record.run.workspace_id)
     if record.run.status is not RunStatus.PAUSED:
         raise HTTPException(
             status_code=409, detail=f"run is {record.run.status.value}, not paused on human input"

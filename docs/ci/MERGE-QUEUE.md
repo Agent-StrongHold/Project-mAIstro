@@ -23,13 +23,22 @@ The checked-in rollout record currently says:
 | Branch | `develop` |
 | Merge method | `SQUASH` |
 | Max entries building | 3 |
-| PRs merged per group | 1 |
+| PRs merged per group | 3 |
 | Minimum merge group | 1 |
-| Minimum wait | 0 minutes |
+| Minimum wait | 2 minutes |
 | Grouping | `ALLGREEN` |
 | Check response timeout | 60 minutes |
 
-One PR per merge group was deliberate for rollout. Widening grouping was intended to require a separate reviewed change after real queue behavior was measured.
+One PR per merge group was deliberate for rollout, and widening grouping was
+intended to require a separate reviewed change once real queue behavior was
+measured. That reviewed change is this batching posture: a single verification
+cycle now covers up to three compatible candidates, and a group forms once
+either three candidates wait or the two-minute wait elapses with at least one
+present. A failed group bounces as a whole and each PR re-enters the queue
+independently, so one bad candidate costs its group one retry rather than
+blocking the others behind it. `scripts/check-required-checks.py` enforces the
+batching bounds (1–3 per group; waits limited to 0, 2, 3, or 5 minutes) and
+fails closed on anything else.
 
 ## Live ruleset read-back
 
@@ -94,7 +103,7 @@ Together those facts prove that `develop` merge freshness is queue-owned today. 
 
 Queue activation and configuration parity are separate questions. The following are still worth reconciling in their own reviewed changes:
 
-- decide whether the live `10`/`10` build/group limits are intentional, then update `.github/merge-queue.json` or restore the reviewed `3`/`1` live settings;
+- decide whether the live `10`/`10` build/group limits are intentional, then update `.github/merge-queue.json` or restore the reviewed `3`/`3` live settings;
 - reconcile the live required-status set with the checked-in required-check contract, including the intended status of `autonomous-merge-admissibility`; and
 - keep strict freshness unless a separate reviewed protection change demonstrates that relaxing it preserves the same merge-boundary guarantees.
 

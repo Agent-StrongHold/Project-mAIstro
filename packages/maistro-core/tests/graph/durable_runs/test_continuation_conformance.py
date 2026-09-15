@@ -15,6 +15,7 @@ refuse, not merely to accept.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -112,6 +113,30 @@ async def test_a_newer_version_advances_the_continuation(store: GraphContinuatio
     assert read is not None
     assert read.version == 2
     assert read.status is RunStatus.PAUSED
+
+
+async def test_sqlite_concurrent_same_version_writes_have_one_winner(tmp_path: Any) -> None:
+    """A durable continuation fence serializes competing HITL decisions."""
+    async with aiosqlite.connect(tmp_path / "racing.db") as conn:
+        first = SqliteGraphContinuationStore(conn)
+        second = SqliteGraphContinuationStore(conn)
+        await first.ensure_schema()
+        await first.create(_continuation("run-1"))
+
+        incoming = _continuation("run-1", version=2, status=RunStatus.PAUSED)
+        results = await asyncio.gather(
+            first.update(incoming),
+            second.update(incoming),
+            return_exceptions=True,
+        )
+
+        assert sum(not isinstance(result, BaseException) for result in results) == 1
+        with pytest.raises(ValueError, match="version regression"):
+            await first.update(incoming)
+        stored = await first.get("run-1")
+        assert stored is not None
+        assert stored.version == 2
+        assert stored.status is RunStatus.PAUSED
 
 
 async def test_updating_a_run_that_was_never_created_is_a_key_error(
@@ -262,6 +287,89 @@ async def test_due_listing_pages_forward_with_an_advancing_cursor(
     assert last_record is not None and last_record.resume_at is not None
     cursor = (last_record.resume_at.isoformat(), "due-4")
     assert await store.list_due_run_ids(now=now, limit=2, after=cursor) == []
+
+
+async def test_sqlite_pre_index_hitl_pause_is_backfilled(tmp_path: Any) -> None:
+    now = datetime(2026, 8, 29, 12, tzinfo=UTC)
+    deadline = now - timedelta(seconds=1)
+    continuation = _continuation("pre-index-hitl", status=RunStatus.PAUSED).model_copy(
+        update={
+            "graph_state": GraphExecutionState(
+                run_id="pre-index-hitl",
+                active_node_ids=("step",),
+                metadata={
+                    "pauses": {
+                        "step": {
+                            "kind": "hitl",
+                            "resume_at": deadline.isoformat(),
+                        }
+                    }
+                },
+            )
+        }
+    )
+    async with aiosqlite.connect(tmp_path / "pre-index.db") as conn:
+        await conn.execute(
+            """CREATE TABLE graph_continuations (
+                run_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                created_at TEXT,
+                resume_at TEXT,
+                version INTEGER NOT NULL DEFAULT 0,
+                continuation_json TEXT NOT NULL
+            )"""
+        )
+        await conn.execute(
+            """INSERT INTO graph_continuations
+               (run_id, status, project_id, created_at, resume_at, version, continuation_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                continuation.run_id,
+                continuation.status.value,
+                continuation.project_id,
+                continuation.created_at.isoformat(),
+                None,
+                continuation.version,
+                continuation.model_dump_json(),
+            ),
+        )
+        await conn.commit()
+
+        store = SqliteGraphContinuationStore(conn)
+        await store.ensure_schema()
+
+        assert await store.list_hitl_due_run_ids(now=now, limit=1) == ["pre-index-hitl"]
+
+
+async def test_hitl_due_query_is_deadline_ordered_and_status_selective(
+    store: GraphContinuationStore,
+) -> None:
+    now = datetime(2026, 8, 29, 12, tzinfo=UTC)
+    await store.create(
+        _continuation(
+            "hitl-due",
+            status=RunStatus.PAUSED,
+            resume_at=None,
+        ).model_copy(update={"hitl_deadline_at": now - timedelta(seconds=1)})
+    )
+    await store.create(
+        _continuation(
+            "hitl-future",
+            status=RunStatus.PAUSED,
+            resume_at=None,
+        ).model_copy(update={"hitl_deadline_at": now + timedelta(seconds=1)})
+    )
+    await store.create(
+        _continuation(
+            "wait-due",
+            status=RunStatus.WAITING,
+            resume_at=now - timedelta(seconds=2),
+        ).model_copy(update={"hitl_deadline_at": now - timedelta(seconds=2)})
+    )
+
+    assert await store.list_hitl_due_run_ids(now=now, limit=1) == ["hitl-due"]
+    assert await store.list_hitl_due_run_ids(now=now, limit=10) == ["hitl-due"]
 
 
 async def test_a_delete_removes_the_continuation_and_reports_what_it_removed(

@@ -13,22 +13,121 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Any
 
-from maistro.runs.model import Attempt, NodeRun, RunStatus
+from maistro.runs.lifecycle import (
+    InvalidLifecycleTransition,
+    settle_open_node_run,
+    transition_node_run,
+    transition_run,
+)
+from maistro.runs.model import TERMINAL_RUN_STATUSES, Attempt, NodeRun, Run, RunStatus
 from maistro.runs.store import RunIntegrityError, RunStore
 
 from .continuation import GraphContinuation, GraphContinuationStore
 from .fair_scan import DEFAULT_MAX_INSPECTED, ScanPage
+from .hitl import earliest_hitl_deadline, settlement_time
 from .spine import mirror_lifecycle
 from .stores import answer_record, settle_hitl_record
 from .types import DurableRunRecord
 
 _RECOVERY_VISIBLE_STATUSES = frozenset({RunStatus.WAITING, RunStatus.PAUSED, RunStatus.RUNNING})
+#: How many times `list_hitl_due` widens its candidate page when the indexed
+#: prefix is occupied by projections the canonical Run disqualifies. Six
+#: doublings read at most 64x the requested work before giving up on a tick.
+_CANDIDATE_PAGES = 6
 
 logger = logging.getLogger(__name__)
+
+
+def _matching_hitl_settlement(
+    continuation: GraphContinuation,
+    target: RunStatus,
+) -> tuple[str, Mapping[str, Any]] | None:
+    settlements_raw = continuation.graph_state.metadata.get("hitl_settlements", {})
+    settlements = settlements_raw if isinstance(settlements_raw, Mapping) else {}
+    matching = [
+        (str(node_id), settlement)
+        for node_id, settlement in settlements.items()
+        if isinstance(settlement, Mapping) and settlement.get("outcome") == target.value
+    ]
+    return matching[0] if len(matching) == 1 else None
+
+
+def _settlement_moment(
+    continuation: GraphContinuation,
+    decided_at: object,
+) -> datetime | None:
+    if not isinstance(decided_at, str):
+        return None
+    try:
+        return settlement_time(datetime.fromisoformat(decided_at))
+    except (TypeError, ValueError):
+        logger.warning(
+            "cannot reconcile terminal HITL continuation %s: invalid decided_at",
+            continuation.run_id,
+        )
+        return None
+
+
+def _settlement_reason(
+    node_id: str,
+    target: RunStatus,
+    pause: object,
+) -> str:
+    if target is not RunStatus.TIMED_OUT:
+        return f"human input for node {node_id!r} was cancelled"
+    if not isinstance(pause, Mapping):
+        return f"human input for node {node_id!r} timed out"
+    deadline = pause.get("resume_at")
+    detail = f" at {deadline}" if isinstance(deadline, str) else ""
+    return f"human input for node {node_id!r} timed out{detail}"
+
+
+def _terminal_hitl_evidence(
+    continuation: GraphContinuation,
+    target: RunStatus,
+) -> tuple[str, str, datetime, str] | None:
+    matching = _matching_hitl_settlement(continuation, target)
+    if matching is None:
+        return None
+    node_id, settlement = matching
+    node_run_id = settlement.get("node_run_id")
+    if not isinstance(node_run_id, str):
+        return None
+    moment = _settlement_moment(continuation, settlement.get("decided_at"))
+    if moment is None:
+        return None
+    reason = _settlement_reason(node_id, target, settlement.get("pause"))
+    return node_id, node_run_id, moment, reason
+
+
+def _terminal_hitl_node_runs(
+    node_runs: tuple[NodeRun, ...],
+    *,
+    node_run_id: str,
+    target: RunStatus,
+    moment: datetime,
+    reason: str,
+) -> tuple[NodeRun, ...] | None:
+    repaired = list(node_runs)
+    for index, node_run in enumerate(repaired):
+        if node_run.status in TERMINAL_RUN_STATUSES:
+            if node_run.node_run_id == node_run_id and node_run.status is not target:
+                return None
+            continue
+        if node_run.node_run_id == node_run_id:
+            repaired[index] = transition_node_run(
+                node_run,
+                target,
+                at=moment,
+                error=reason,
+            )
+        else:
+            repaired[index] = settle_open_node_run(node_run, target, at=moment)
+    return tuple(repaired)
 
 
 class CanonicalDurableRunStore:
@@ -89,6 +188,19 @@ class CanonicalDurableRunStore:
 
         changed = 0
         seen: set[str] = set()
+        # Terminal settlement residue first, and from the side that shrinks. A
+        # crash between the continuation write and the spine mirror leaves the
+        # canonical Run PAUSED while its continuation is already CANCELLED or
+        # TIMED_OUT. The per-status scan below reads a bounded prefix, and the
+        # COMPLETED bucket in front of those statuses only ever grows, so such
+        # residue behind a full prefix would never be reached. PAUSED canonical
+        # Runs are few and transient: a scan over them always reaches its end.
+        for run in await self._run_store.list_by_status(RunStatus.PAUSED, limit=limit):
+            if run.run_id in seen:
+                continue
+            seen.add(run.run_id)
+            if await self._reconcile_run(run.run_id):
+                changed += 1
         for status in RunStatus:
             remaining = limit - len(seen)
             if remaining <= 0:
@@ -124,6 +236,8 @@ class CanonicalDurableRunStore:
                 continuation.version,
             )
             return await self._continuations.delete(run_id)
+        if await self._reconcile_terminal_hitl(continuation, canonical):
+            return True
         if canonical.status is RunStatus.RUNNING and continuation.status in {
             RunStatus.WAITING,
             RunStatus.PAUSED,
@@ -132,21 +246,115 @@ class CanonicalDurableRunStore:
             return True
         return False
 
+    async def _reconcile_terminal_hitl(
+        self,
+        continuation: GraphContinuation,
+        canonical: Run,
+    ) -> bool:
+        """Finish a HITL lifecycle mirror interrupted after graph persistence.
+
+        The continuation is written before the canonical spine so a crash
+        leaves durable settlement evidence rather than an answerable pause.
+        Rebuild the intended NodeRun projection from that evidence and let the
+        normal lifecycle mirror walk the remaining canonical transitions.
+        """
+        target = continuation.status
+        if target not in {RunStatus.CANCELLED, RunStatus.TIMED_OUT}:
+            return False
+        if canonical.status in TERMINAL_RUN_STATUSES:
+            return False
+        evidence = _terminal_hitl_evidence(continuation, target)
+        if evidence is None:
+            return False
+        node_id, node_run_id, moment, reason = evidence
+
+        record = await self.get(continuation.run_id)
+        if record is None:
+            return False
+        if not self._has_terminal_hitl_node(record, node_id, node_run_id):
+            logger.warning(
+                "cannot reconcile terminal HITL continuation %s: node run %s is missing",
+                continuation.run_id,
+                node_run_id,
+            )
+            return False
+        node_runs = _terminal_hitl_node_runs(
+            record.node_runs,
+            node_run_id=node_run_id,
+            target=target,
+            moment=moment,
+            reason=reason,
+        )
+        if node_runs is None:
+            logger.warning(
+                "cannot reconcile terminal HITL continuation %s: node run %s disagrees",
+                continuation.run_id,
+                node_run_id,
+            )
+            return False
+
+        desired_run = transition_run(record.run, target, at=moment, error=reason)
+        desired = record.model_copy(update={"run": desired_run, "node_runs": node_runs})
+        return await self._mirror_terminal_hitl(desired, continuation.run_id, target)
+
+    @staticmethod
+    def _has_terminal_hitl_node(
+        record: DurableRunRecord,
+        node_id: str,
+        node_run_id: str,
+    ) -> bool:
+        return any(
+            node.node_run_id == node_run_id and node.node_id == node_id for node in record.node_runs
+        )
+
+    async def _mirror_terminal_hitl(
+        self,
+        desired: DurableRunRecord,
+        run_id: str,
+        target: RunStatus,
+    ) -> bool:
+        try:
+            await mirror_lifecycle(desired, run_store=self._run_store)
+        except InvalidLifecycleTransition:
+            # Two ticks can both pass the non-terminal check above; the one
+            # that mirrors second finds the Run already at `target` and its
+            # terminal hop refused. That is the same repair, already done.
+            current = await self._run_store.get_run(run_id)
+            if current is not None and current.status is target:
+                return False
+            raise
+        return True
+
     async def list_by_status(
         self,
         status: RunStatus,
         *,
         limit: int = 100,
         project_id: str | None = None,
+        workspace_id: str | None = None,
         after: tuple[str, str] | None = None,
     ) -> list[DurableRunRecord]:
-        run_ids = await self._continuations.list_run_ids_by_status(
-            status,
-            limit=limit,
-            project_id=project_id,
-            after=after,
-        )
-        return await self._assemble_all(run_ids)
+        if workspace_id is None:
+            run_ids = await self._continuations.list_run_ids_by_status(
+                status,
+                limit=limit,
+                project_id=project_id,
+                after=after,
+            )
+        else:
+            # Continuations carry project scope, while Workspace scope belongs
+            # to the canonical Run. Query the spine first so the page limit is
+            # applied after the caller's Workspace boundary, not before it.
+            runs = await self._run_store.list_by_status(
+                status,
+                limit=limit,
+                project_id=project_id,
+                workspace_id=workspace_id,
+                after=after,
+            )
+            run_ids = [run.run_id for run in runs]
+        records = await self._assemble_all(run_ids)
+        return [record for record in records if record.run.status is status]
 
     async def list_due(
         self,
@@ -233,6 +441,54 @@ class CanonicalDurableRunStore:
             return position, record
         return position, None
 
+    async def list_hitl_due(
+        self,
+        *,
+        now: datetime,
+        limit: int = 100,
+    ) -> list[DurableRunRecord]:
+        """Elapsed human pauses the canonical Run agrees are paused.
+
+        The deadline index is a continuation projection; the canonical Run is
+        the authority. A continuation parked PAUSED before its Run was mirrored
+        (a crash between the two writes) sits at the head of the index with a
+        due deadline and is disqualified here on every tick -- so it is
+        repaired in place through the same reconciliation the startup sweep
+        runs, and the page is widened past any candidate that still does not
+        qualify, rather than re-reading one permanent prefix forever.
+        """
+        requested = limit
+        due: list[DurableRunRecord] = []
+        for _ in range(_CANDIDATE_PAGES):
+            run_ids = await self._continuations.list_hitl_due_run_ids(now=now, limit=requested)
+            due = []
+            for record in await self._assemble_all(run_ids):
+                candidate = await self._reconcile_hitl_due_candidate(record, now)
+                if candidate is not None:
+                    due.append(candidate)
+            if len(due) >= limit or len(run_ids) < requested:
+                break
+            requested *= 2
+        return due[:limit]
+
+    async def _reconcile_hitl_due_candidate(
+        self,
+        record: DurableRunRecord,
+        now: datetime,
+    ) -> DurableRunRecord | None:
+        if record.run.status is not RunStatus.PAUSED:
+            repaired = await self._reconcile_run(record.run_id)
+            if repaired:
+                refreshed = await self.get(record.run_id)
+                if refreshed is not None:
+                    record = refreshed
+        if record.run.status is not RunStatus.PAUSED:
+            return None
+        deadline = earliest_hitl_deadline(record)
+        if deadline is None or deadline > now:
+            return None
+        return record
+
     async def list_for_project(
         self,
         project_id: str,
@@ -253,7 +509,7 @@ class CanonicalDurableRunStore:
         *,
         at: datetime | None = None,
     ) -> DurableRunRecord:
-        """Attach an answer and queue the paused canonical Run for resume.
+        """Persist an answer and queue only valid verdicts for resume.
 
         The rule stays where it already was: `answer_record` decides which
         paused NodeRun the answer belongs to, what the remaining pause

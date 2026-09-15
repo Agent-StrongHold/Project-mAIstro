@@ -117,6 +117,29 @@ Resuming from a Checkpoint preserves Run/NodeRun logical identity and creates a 
 
 Recovery examines Run/NodeRun/Attempt/Checkpoint state and event history. It performs stale-active detection, compatibility validation, crash-loop policy and explicit new-Attempt creation. It does not create a competing recovery task lifecycle.
 
+### Amendment, 2026-09-11
+
+`payload`/`provenance` on the canonical Event envelope are now structurally
+bounded (#1164): each is capped at `MAX_EVENT_FIELD_BYTES` (256 KiB, JSON-compact
+encoding) and `MAX_EVENT_FIELD_DEPTH` (32 levels of dict/list/tuple nesting), and
+must be JSON-encodable. `EventEnvelope.__post_init__` enforces this once, so
+every backend -- `InMemoryEventStore`, `SqliteEventStore`, `PgEventStore`, and
+`SqliteEventOutbox` -- inherits the same ceiling by construction rather than
+needing its own copy of the check; a field that fails it raises
+`EventPayloadTooLarge` before any backend ever sees the event.
+
+Reading a row written before this bound existed must not become a durability
+hazard: `reconstruct_persisted_event` rebuilds an `EventEnvelope` from storage
+without re-imposing the size/depth ceiling, while still re-checking the
+structural invariants that predate #1164 (non-empty `type`/`event_id`,
+workspace vs. `stream_scope`, sequence positivity). `SqliteEventStore` and
+`PgEventStore`'s row-reconstruction paths, and the outbox's own two
+JSON-reconstruction sites, all use it.
+
+Deliberately out of scope for this amendment: routing large payloads to
+artifact-store references instead of inline storage, and secret-scrubbing of
+payload/provenance content. Both remain open follow-up work (#1159).
+
 ## Consequences
 
 - UI and post-run inspection can use the same durable history.
