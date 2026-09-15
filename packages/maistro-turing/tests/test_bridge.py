@@ -189,10 +189,9 @@ class TestTuringMemoryBridge:
 
 
 class TestTuringSecurityBridge:
-    async def test_scan_self_write_with_no_warden_allows(self) -> None:
-        bridge = TuringSecurityBridge()
-        result = await bridge.scan_self_write("content", kind="blog")
-        assert result == {"verdict": "allowed", "flags": []}
+    def test_missing_warden_is_rejected(self) -> None:
+        with pytest.raises(RuntimeError, match="canonical Warden is required"):
+            TuringSecurityBridge(None)
 
     async def test_scan_self_write_delegates_to_warden(self) -> None:
         warden = FakeWarden(verdict="blocked", flags=["pii"])
@@ -201,15 +200,17 @@ class TestTuringSecurityBridge:
         assert result == {"verdict": "blocked", "flags": ["pii"]}
         assert warden.scan_calls == [("content", "user_input")]
 
-    async def test_scan_self_write_swallows_warden_exception(self) -> None:
+    async def test_scan_self_write_fails_closed_when_warden_raises(self) -> None:
         bridge = TuringSecurityBridge(warden=RaisingWarden())
         result = await bridge.scan_self_write("content", kind="blog")
-        assert result == {"verdict": "allowed", "flags": []}
+        assert result == {"verdict": "blocked", "flags": ["warden_unavailable"]}
 
-    async def test_scan_tool_result_with_no_warden_allows(self) -> None:
-        bridge = TuringSecurityBridge()
-        result = await bridge.scan_tool_result("content", tool_name="grep")
+    async def test_scan_user_input_delegates_to_warden(self) -> None:
+        warden = FakeWarden(verdict="allowed")
+        bridge = TuringSecurityBridge(warden=warden)
+        result = await bridge.scan_user_input("content")
         assert result == {"verdict": "allowed", "flags": []}
+        assert warden.scan_calls == [("content", "user_input")]
 
     async def test_scan_tool_result_delegates_to_warden(self) -> None:
         warden = FakeWarden(verdict="allowed", flags=[])
@@ -227,10 +228,10 @@ class TestTuringSecurityBridge:
         result = await bridge.scan_tool_result("content", tool_name="grep")
         assert result == {"verdict": "blocked", "flags": ["injection"]}
 
-    async def test_scan_tool_result_swallows_warden_exception(self) -> None:
+    async def test_scan_tool_result_fails_closed_when_warden_raises(self) -> None:
         bridge = TuringSecurityBridge(warden=RaisingWarden())
         result = await bridge.scan_tool_result("content", tool_name="grep")
-        assert result == {"verdict": "allowed", "flags": []}
+        assert result == {"verdict": "blocked", "flags": ["warden_unavailable"]}
 
 
 # ------------------------------------------------------- TuringProviderBridge

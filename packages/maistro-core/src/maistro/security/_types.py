@@ -133,6 +133,17 @@ class AuditEntry:
     violations: tuple[Violation, ...] = ()
     detail: str = ""
     agent_id: str = ""
+    # Correlation and route metadata are identifiers only; boundary consumers
+    # must never put scanned content in an audit entry.
+    route: str = ""
+    action: str = ""
+    policy_version: str = ""
+    workspace_id: str = ""
+    project_id: str = ""
+    run_id: str = ""
+    invocation_id: str = ""
+    content_sha256: str = ""
+    content_length: int = 0
 
 
 @dataclass

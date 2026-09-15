@@ -89,6 +89,10 @@ def load_turing_config(
 # ---------------------------------------------------------------- actor ------
 
 
+class TuringContentBlocked(RuntimeError):
+    """Untrusted content was refused at a Turing trust boundary."""
+
+
 class TuringActor:
     """Bridges internal durable-memory events to outward-facing actions.
 
@@ -149,7 +153,17 @@ class TuringChatSession:
         self._history: list[dict[str, str]] = []
 
     async def handle_message(self, message: str) -> str:
-        """Process a user message and return a response."""
+        """Scan input and the provider result before trusted use."""
+        scan_user_input = getattr(self._security, "scan_user_input", None)
+        if scan_user_input is None:
+            # Compatibility for small test doubles and older bridge adapters;
+            # the canonical bridge exposes scan_user_input directly.
+            scan = await self._security.scan_self_write(message, kind="chat-input")
+        else:
+            scan = await scan_user_input(message)
+        if scan.get("verdict") != "allowed":
+            raise TuringContentBlocked("user input refused by Warden")
+
         self._history.append({"role": "user", "content": message})
 
         await self._classifier.classify_message(message)
@@ -167,6 +181,12 @@ class TuringChatSession:
             "\n".join(prompt_parts),
             max_tokens=1000,
         )
+        result_scan = await self._security.scan_tool_result(reply, tool_name="turing-model")
+        if result_scan.get("verdict") != "allowed":
+            # Do not append or persist a model result until Warden has cleared
+            # it; provider choice must not change the trust boundary.
+            self._history.pop()
+            raise TuringContentBlocked("model result refused by Warden")
 
         self._history.append({"role": "assistant", "content": reply})
 

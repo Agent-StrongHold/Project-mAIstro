@@ -35,7 +35,9 @@ from maistro.runs.model import (
 from maistro.runs.retention import RetentionPolicy, RunRetentionSweeper
 from maistro.runs.sources import ADMISSION_SOURCE, CHAT_SOURCE
 from maistro.workspaces.store import InMemoryWorkspaceStore
-from maistro_turing.runtime import TuringChatSession
+from maistro_turing.runtime import TuringChatSession, TuringContentBlocked
+
+from .security import TuringInboundSecurity, TuringSecurityContext
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +47,7 @@ _CANCELLED_ERROR = "execution cancelled"
 
 
 class TuringAdmissionUnavailable(RuntimeError):
-    """Canonical audit admission failed before Turing dispatched the chat turn."""
+    """Canonical admission failed before Turing dispatched the chat turn."""
 
 
 class _ChatInput(BaseModel):
@@ -92,11 +94,15 @@ class TuringExecutionPlane:
     def __init__(
         self,
         *,
+        inbound_security: TuringInboundSecurity,
         max_retained: int = MAX_RETAINED_CHAT_RUNS,
         retention: RetentionPolicy | None = None,
     ) -> None:
+        if inbound_security is None:
+            raise RuntimeError("canonical Turing security is required for execution")
         if max_retained < 1:
             raise ValueError("max_retained must be >= 1")
+        self.inbound_security = inbound_security
         self.project_store = InMemoryProjectScopeStore()
         self.workspace_store = InMemoryWorkspaceStore(project_store=self.project_store)
         self.run_store = InMemoryRunStore(project_store=self.project_store)
@@ -234,12 +240,42 @@ class TuringExecutionPlane:
     ) -> DurableRunRecord:
         """Execute one chat request as one canonical Graph/Run.
 
-        Failure before node resolution is an audit-admission failure: no provider
-        work has been dispatched, so the HTTP boundary may preserve chat
-        availability by executing the domain turn without a Run. Once the node
-        has been resolved, failures belong to canonical execution and are never
+        Failure before node resolution is a canonical-admission failure: no
+        provider work has been dispatched, so callers must refuse the request
+        rather than execute the domain turn without a Run. Once the node has
+        been resolved, failures belong to canonical execution and are never
         replayed outside the spine.
         """
+        # This direct service seam is also an inbound trust boundary. Scan the
+        # consumed message before it can be copied into a persisted Graph.
+        admission_verdict = await self.inbound_security.scan_text(
+            message,
+            boundary="user_input",
+            context=TuringSecurityContext(
+                principal=user_id,
+                route="turing.execution",
+                action="chat",
+            ),
+            audit=False,
+        )
+        if not admission_verdict.clean:
+            # There is no Run to correlate when admission is refused. Preserve
+            # a non-secret blocked verdict rather than silently dropping it.
+            try:
+                await self.inbound_security.audit_verdict(
+                    admission_verdict,
+                    "<request blocked>",
+                    boundary="user_input",
+                    context=TuringSecurityContext(
+                        principal=user_id,
+                        route="turing.execution",
+                        action="chat",
+                    ),
+                )
+            except Exception:
+                logger.warning("direct Turing admission security audit failed", exc_info=True)
+            raise TuringContentBlocked("user input refused by Warden")
+
         admitted_run_id: str | None = None
         try:
             workspace_id, project_id = await self._scope_for(user_id)
@@ -277,6 +313,19 @@ class TuringExecutionPlane:
             )
             admitted_run_id = admitted.run_id
             await self._track_admission(admitted.run_id)
+            await self.inbound_security.audit_verdict(
+                admission_verdict,
+                message,
+                boundary="user_input",
+                context=TuringSecurityContext(
+                    principal=user_id,
+                    route="turing.execution",
+                    action="chat",
+                    workspace_id=workspace_id,
+                    project_id=project_id,
+                    run_id=admitted.run_id,
+                ),
+            )
         except asyncio.CancelledError:
             await asyncio.shield(self._cancel_incomplete_admission(admitted_run_id))
             raise
@@ -319,18 +368,20 @@ class TuringExecutionPlane:
             raise
 
 
-_execution_plane = TuringExecutionPlane()
+_execution_plane: TuringExecutionPlane | None = None
 
 
 def get_execution_plane() -> TuringExecutionPlane:
     """Return the process-local canonical execution composition."""
+    if _execution_plane is None:
+        raise RuntimeError("canonical Turing execution has not been composed")
     return _execution_plane
 
 
-def reset_execution_plane() -> TuringExecutionPlane:
-    """Replace process-local execution composition; used for test isolation."""
+def reset_execution_plane(*, inbound_security: TuringInboundSecurity) -> TuringExecutionPlane:
+    """Replace process-local execution composition with canonical security."""
     global _execution_plane
-    _execution_plane = TuringExecutionPlane()
+    _execution_plane = TuringExecutionPlane(inbound_security=inbound_security)
     return _execution_plane
 
 
