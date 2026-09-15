@@ -35,9 +35,10 @@ from maistro.tools.browser.guard import (
     DENIED,
     ROUTE_PATTERN,
     BrowserNetworkGuard,
+    SyncBrowserNetworkGuard,
 )
 
-from .fakes import FakePwContext
+from .fakes import FakeHttpResponse, FakePwContext, FakePwRequest, FakePwRoute
 
 # A public host these tests can resolve without a socket. The existing
 # outbound-policy suite leans on the same fact.
@@ -50,8 +51,9 @@ def _clean_policy() -> None:
 
 
 async def _guarded_context(**kwargs) -> tuple[BrowserNetworkGuard, FakePwContext]:
+    responses = kwargs.pop("responses", None)
     guard = BrowserNetworkGuard(**kwargs)
-    context = FakePwContext()
+    context = FakePwContext(responses=responses)
     await guard.attach(context)
     return guard, context
 
@@ -106,6 +108,7 @@ async def test_a_navigation_the_model_invented_is_governed_too() -> None:
         "file:///etc/passwd",  # not http(s) at all
         "gopher://127.0.0.1:70/x",  # a scheme nobody reasoned about
         "http://",  # no host
+        "http://[::1",  # malformed IPv6 must fail closed before policy lookup
     ],
 )
 async def test_every_notation_of_a_private_or_dangerous_target_is_denied(url: str) -> None:
@@ -119,14 +122,19 @@ async def test_every_notation_of_a_private_or_dangerous_target_is_denied(url: st
 
 @pytest.mark.ac("SPEC-090326-b7e2/AC-2")
 async def test_a_redirect_hop_from_public_to_private_is_denied_at_that_hop() -> None:
-    """Start public, land private: the hop that matters is the one refused."""
-    guard, context = await _guarded_context()
+    """The controlled wire follows a public redirect through the real route handler."""
+    guard, context = await _guarded_context(
+        # A continued request receives this response from the controlled wire;
+        # the redirect is not a second hand-dispatched test request.
+        responses={
+            _PUBLIC: FakeHttpResponse(302, location="http://169.254.169.254/latest/meta-data/iam")
+        }
+    )
 
-    first = await context.navigate(_PUBLIC)
-    hop = await context.navigate("http://169.254.169.254/latest/meta-data/iam")
+    final_route = await context.navigate(_PUBLIC)
 
-    assert first.action == ("continue",)
-    assert hop.action == ("abort", ABORT_REASON)
+    assert final_route.action == ("abort", ABORT_REASON)
+    assert context.network_urls == [_PUBLIC]
     decisions = [e.decision for e in guard.events]
     assert decisions == [ALLOWED, DENIED]
 
@@ -205,6 +213,14 @@ async def test_a_configured_origin_is_allowed_and_the_allowance_stays_scoped() -
 
 
 @pytest.mark.ac("SPEC-090326-b7e2/AC-6")
+async def test_a_non_http_allowance_cannot_bypass_the_scheme_policy() -> None:
+    _guard, context = await _guarded_context(extra_origins=["file:///etc/passwd"])
+
+    route = await context.navigate("file:///etc/passwd")
+
+    assert route.action == ("abort", ABORT_REASON)
+
+
 async def test_browser_specific_origins_layer_without_widening_the_shared_policy() -> None:
     """`BROWSER_USE_ALLOWED_ORIGINS` is a host-owned browser allowance.
 
@@ -342,23 +358,81 @@ async def test_attach_without_web_socket_support_says_so() -> None:
 
 async def test_the_handler_accepts_the_single_argument_form() -> None:
     """Playwright accepts handlers of one or two parameters; both must work."""
-    from types import SimpleNamespace
-
     guard = BrowserNetworkGuard()
-    answered: list[str] = []
-    route = SimpleNamespace(
-        request=SimpleNamespace(url=_PUBLIC, resource_type="document"),
-    )
-
-    async def _abort(code: str) -> None:
-        answered.append(f"abort:{code}")
-
-    async def _continue() -> None:
-        answered.append("continue")
-
-    route.abort = _abort  # type: ignore[method-assign]
-    route.continue_ = _continue  # type: ignore[method-assign]
+    context = FakePwContext()
+    route = FakePwRoute(FakePwRequest(_PUBLIC), context)
 
     await guard.handle_route(route)  # no request argument
 
-    assert answered == ["continue"]
+    assert route.action == ("continue",)
+
+
+class _SyncResponse:
+    def __init__(self, status: int, location: str = "") -> None:
+        self.status = status
+        self.headers = {"location": location} if location else {}
+
+
+class _SyncRoute:
+    def __init__(self, url: str, responses: dict[str, _SyncResponse]) -> None:
+        self.request = type("Request", (), {"url": url, "resource_type": "document"})()
+        self.responses = responses
+        self.network_urls: list[str] = []
+        self.action: tuple[str, ...] | None = None
+
+    def fetch(self, *, url: str | None = None, max_redirects: int = 0) -> _SyncResponse:
+        del max_redirects
+        target = url or self.request.url
+        self.network_urls.append(target)
+        return self.responses.get(target, _SyncResponse(200))
+
+    def fulfill(self, *, response: _SyncResponse) -> None:
+        del response
+        self.action = ("continue",)
+
+    def abort(self, reason: str) -> None:
+        self.action = ("abort", reason)
+
+
+class _SyncContext:
+    def __init__(self, responses: dict[str, _SyncResponse] | None = None) -> None:
+        self.responses = responses or {}
+        self.handlers: list[tuple[str, object]] = []
+        self.ws_handlers: list[tuple[str, object]] = []
+
+    def route(self, pattern: str, handler: object) -> None:
+        self.handlers.append((pattern, handler))
+
+    def route_web_socket(self, pattern: str, handler: object) -> None:
+        self.ws_handlers.append((pattern, handler))
+
+    def navigate(self, url: str) -> _SyncRoute:
+        route = _SyncRoute(url, self.responses)
+        for _pattern, handler in self.handlers:
+            handler(route, route.request)  # type: ignore[operator]
+        return route
+
+
+def test_sync_guard_denies_model_directed_private_navigation() -> None:
+    guard = SyncBrowserNetworkGuard()
+    context = _SyncContext()
+    guard.attach(context)
+
+    route = context.navigate("http://127.0.0.1:8080/model-directed")
+
+    assert route.action == ("abort", ABORT_REASON)
+    assert route.network_urls == []
+    assert guard.denied_events()[-1].origin == "http://127.0.0.1:8080"
+
+
+def test_sync_guard_denies_private_redirect_before_the_second_fetch() -> None:
+    redirect = _SyncResponse(302, "http://169.254.169.254/latest/meta-data/")
+    context = _SyncContext({_PUBLIC: redirect})
+    guard = SyncBrowserNetworkGuard()
+    guard.attach(context)
+
+    route = context.navigate(_PUBLIC)
+
+    assert route.action == ("abort", ABORT_REASON)
+    assert route.network_urls == [_PUBLIC]
+    assert [event.decision for event in guard.events] == [ALLOWED, DENIED]

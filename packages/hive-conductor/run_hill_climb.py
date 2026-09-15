@@ -9,8 +9,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-import httpx
 from playwright.sync_api import sync_playwright
+
+from maistro.http import sync_client
+from maistro.security.outbound import configure_outbound_policy
+from maistro.tools.browser.guard import SyncBrowserNetworkGuard, browser_allowed_origins
 
 PORT = os.environ.get("PORT", "8101")
 URL = f"http://localhost:{PORT}"
@@ -19,11 +22,13 @@ FRONTEND = ROOT / "frontend"
 CSS_PATH = FRONTEND / "src/index.css"
 COMPONENT = sys.argv[1] if len(sys.argv) > 1 else "Chat.tsx"
 PASSES = int(sys.argv[2]) if len(sys.argv) > 2 else 5
-COMPONENT_PATH = FRONTEND / "src/pages" / COMPONENT
 BASE = os.environ["LITELLM_API_BASE"].rstrip("/")
 if not BASE.endswith("/v1"):
     BASE += "/v1"
 KEY = os.environ["LITELLM_API_KEY"]
+# These are the two operator-configured endpoints this driver is expected to
+# reach; everything else remains subject to the canonical policy.
+configure_outbound_policy(BASE, URL)
 CORPUS = Path("/tmp/ui-corpus")
 
 TOP_SITES = [
@@ -48,7 +53,12 @@ TOP_SITES = [
 def screenshot_app():
     with sync_playwright() as p:
         b = p.chromium.launch(headless=True)
-        page = b.new_page(viewport={"width": 1280, "height": 800})
+        context = b.new_context(
+            viewport={"width": 1280, "height": 800},
+            service_workers="block",
+        )
+        SyncBrowserNetworkGuard(extra_origins=browser_allowed_origins()).attach(context)
+        page = context.new_page()
         page.goto(URL, wait_until="networkidle", timeout=10000)
         page.wait_for_timeout(500)
         s = page.query_selector("text=Skip onboarding")
@@ -70,6 +80,7 @@ def screenshot_app():
             s.click()
             page.wait_for_timeout(300)
         buf = page.screenshot(type="png")
+        context.close()
         b.close()
         return buf
 
@@ -78,10 +89,16 @@ def screenshot_site(url):
     try:
         with sync_playwright() as p:
             b = p.chromium.launch(headless=True)
-            page = b.new_page(viewport={"width": 1280, "height": 800})
+            context = b.new_context(
+                viewport={"width": 1280, "height": 800},
+                service_workers="block",
+            )
+            SyncBrowserNetworkGuard(extra_origins=browser_allowed_origins()).attach(context)
+            page = context.new_page()
             page.goto(url, wait_until="domcontentloaded", timeout=8000)
             page.wait_for_timeout(1500)
             buf = page.screenshot(type="png")
+            context.close()
             b.close()
             return buf
     except Exception:
@@ -100,16 +117,16 @@ def get_fix(our_b64, ref_b64s):
     ]
     for r in ref_b64s[:2]:
         content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{r}"}})
-    resp = httpx.post(
-        f"{BASE}/chat/completions",
-        headers={"Authorization": f"Bearer {KEY}", "Content-Type": "application/json"},
-        json={
-            "model": "gemini-3.5-flash",
-            "messages": [{"role": "user", "content": content}],
-            "response_format": {"type": "json_object"},
-        },
-        timeout=60.0,
-    )
+    with sync_client(timeout=60.0) as client:
+        resp = client.post(
+            f"{BASE}/chat/completions",
+            headers={"Authorization": f"Bearer {KEY}", "Content-Type": "application/json"},
+            json={
+                "model": "gemini-3.5-flash",
+                "messages": [{"role": "user", "content": content}],
+                "response_format": {"type": "json_object"},
+            },
+        )
     resp.raise_for_status()
     raw = resp.json()["choices"][0]["message"]["content"]
     try:

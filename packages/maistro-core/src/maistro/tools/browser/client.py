@@ -40,9 +40,15 @@ import os
 import time
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
-from maistro.security.ssrf import SSRFBlockedError, avalidate_outbound_url
-from maistro.tools.browser.guard import BrowserNetEvent, BrowserNetworkGuard
+from maistro.security.outbound import current_outbound_policy
+from maistro.security.ssrf import ALLOWED_SCHEMES, SSRFBlockedError, avalidate_outbound_url
+from maistro.tools.browser.guard import (
+    BrowserNetEvent,
+    BrowserNetworkGuard,
+    browser_allowed_origins,
+)
 from maistro.tools.browser.types import BrowseResult, Citation, SearchResult
 
 
@@ -73,15 +79,24 @@ def _resolve_browser_model() -> str:
 
 
 def _resolve_browser_allowed_origins() -> tuple[str, ...]:
-    """Host-owned extra origins the *browser* may reach (`#855`).
+    """Compatibility wrapper for the shared browser allowlist resolver."""
+    return browser_allowed_origins()
 
-    Comma-separated, read from the environment an operator controls. These
-    layer onto the shared outbound policy for browser traffic only — they
-    do not widen what ordinary HTTP effects may do, and nothing a page or
-    a model returns can add to them.
+
+def _browser_policy_allows(url: str) -> bool:
+    """Apply the same origin exception the route guard will apply.
+
+    ``browse`` uses this only for an early refusal before Chromium starts. The
+    route guard remains the enforcement boundary; keeping the early check
+    aligned prevents a host-owned internal exception from being rejected
+    before it reaches that boundary.
     """
-    raw = os.environ.get("BROWSER_USE_ALLOWED_ORIGINS", "")
-    return tuple(part.strip() for part in raw.split(",") if part.strip())
+    try:
+        if urlsplit(url).scheme.lower() not in ALLOWED_SCHEMES:
+            return False
+    except ValueError:
+        return False
+    return current_outbound_policy().with_origins(_resolve_browser_allowed_origins()).allows(url)
 
 
 def _is_truthy(val: str | None) -> bool:
@@ -141,6 +156,9 @@ class _GuardedPlaywrightBrowser:
         self._guard = guard
 
     async def new_context(self, *args: Any, **kwargs: Any) -> Any:
+        # A service worker can issue fetches outside Playwright's route layer;
+        # force it off even when browser-use creates the context for us.
+        kwargs["service_workers"] = "block"
         context = await self._inner.new_context(*args, **kwargs)
         await self._guard.attach(context)
         return context
@@ -413,7 +431,8 @@ class BrowserClient:
         # this check cannot (redirects, model-chosen navigations,
         # subresources).
         try:
-            await avalidate_outbound_url(url)
+            if not _browser_policy_allows(url):
+                await avalidate_outbound_url(url)
         except SSRFBlockedError as exc:
             raise BrowserToolError(f"browse blocked by SSRF guard: {exc}") from exc
         try:

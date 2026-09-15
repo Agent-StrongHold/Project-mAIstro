@@ -15,7 +15,7 @@
     "packages/hive-conductor/backend/adapters/maistro_core.py::_HttpOpenAILLMClient.complete::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/adapters/maistro_core.py",
       "qualname": "_HttpOpenAILLMClient.complete",
-      "line": 77,
+      "line": 79,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
@@ -92,7 +92,7 @@
     "packages/hive-conductor/backend/services/chat_completion.py::_tool_analyze_dashboard::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/chat_completion.py",
       "qualname": "_tool_analyze_dashboard",
-      "line": 1575,
+      "line": 1690,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
@@ -103,7 +103,7 @@
     "packages/hive-conductor/backend/services/chat_completion.py::_tool_browse_url::TOOL_EFFECT:hive.browse_url#1": {
       "path": "packages/hive-conductor/backend/services/chat_completion.py",
       "qualname": "_tool_browse_url",
-      "line": 1201,
+      "line": 1293,
       "category": "TOOL_EFFECT",
       "entry_point": "hive.browse_url",
       "callee": "_browse_url",
@@ -114,7 +114,7 @@
     "packages/hive-conductor/backend/services/chat_completion.py::_tool_web_search::TOOL_EFFECT:hive.web_search#1": {
       "path": "packages/hive-conductor/backend/services/chat_completion.py",
       "qualname": "_tool_web_search",
-      "line": 1185,
+      "line": 1277,
       "category": "TOOL_EFFECT",
       "entry_point": "hive.web_search",
       "callee": "_web_search",
@@ -257,7 +257,7 @@
     "packages/hive-conductor/backend/services/ui_auto_climb.py::generate_edit::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/ui_auto_climb.py",
       "qualname": "generate_edit",
-      "line": 141,
+      "line": 155,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
@@ -268,7 +268,7 @@
     "packages/hive-conductor/backend/services/ui_auto_climb.py::score_visual::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/ui_auto_climb.py",
       "qualname": "score_visual",
-      "line": 90,
+      "line": 104,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
@@ -308,6 +308,17 @@
       "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
       "owner": "#56",
       "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
+    },
+    "packages/hive-conductor/run_hill_climb.py::get_fix::MODEL_EFFECT:openai-compatible-http#1": {
+      "path": "packages/hive-conductor/run_hill_climb.py",
+      "qualname": "get_fix",
+      "line": 121,
+      "category": "MODEL_EFFECT",
+      "entry_point": "openai-compatible-http",
+      "callee": "client.post",
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
+      "owner": "#155",
+      "rationale": "Standalone developer visual driver is not a product invocation; its model request now uses the governed sync client and its Chromium screenshots use the governed sync browser transport."
     },
     "packages/maistro-bootstrap/src/maistro_bootstrap/builders/model_selector.py::_probe_model::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-bootstrap/src/maistro_bootstrap/builders/model_selector.py",
@@ -433,7 +444,7 @@
     "packages/maistro-core/src/maistro/capabilities/governed_invocation.py::GovernedInvocationExecutionService.invoke::CANONICAL_INVOCATION:InvocationExecutionService.invoke#1": {
       "path": "packages/maistro-core/src/maistro/capabilities/governed_invocation.py",
       "qualname": "GovernedInvocationExecutionService.invoke",
-      "line": 160,
+      "line": 237,
       "category": "CANONICAL_INVOCATION",
       "entry_point": "InvocationExecutionService.invoke",
       "callee": "self._invocations.invoke",

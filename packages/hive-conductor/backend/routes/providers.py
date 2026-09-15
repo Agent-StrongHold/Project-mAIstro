@@ -22,6 +22,9 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, HTTPException
 
+from maistro.http import sync_client
+from maistro.security.outbound import configure_outbound_policy
+
 router = APIRouter(tags=["providers"])
 logger = logging.getLogger("hive.providers")
 
@@ -212,9 +215,12 @@ def activate_provider(name: str) -> dict[str, Any]:
     admin_base = _litellm_admin_base()
     master_key = _litellm_master_key()
     headers = {"Authorization": f"Bearer {master_key}"}
+    # The gateway is operator configuration. Register its exact origin, then
+    # let the shared sync seam enforce the policy for every request and redirect.
+    configure_outbound_policy(admin_base)
 
     def _register_and_test(api_key: str) -> dict[str, Any]:
-        with httpx.Client(timeout=30.0) as client:
+        with sync_client(timeout=30.0) as client:
             for model in p["models"]:
                 r = client.post(
                     f"{admin_base}/model/new",

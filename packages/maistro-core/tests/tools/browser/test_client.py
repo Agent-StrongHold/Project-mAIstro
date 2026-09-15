@@ -349,6 +349,26 @@ class TestSearchWeb:
 
 
 class TestBrowseSSRFGuard:
+    @pytest.mark.parametrize("url", ["file:///etc/passwd", "http://[::1"])
+    def test_browser_policy_early_check_fails_closed_for_non_network_urls(self, url: str) -> None:
+        from maistro.tools.browser.client import _browser_policy_allows
+
+        assert _browser_policy_allows(url) is False
+
+    @pytest.mark.asyncio
+    async def test_browse_honors_a_host_owned_internal_browser_allowance(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The early check must match the route policy's exception."""
+        monkeypatch.setenv("BROWSER_USE_ALLOWED_ORIGINS", "http://wiki.internal:8080")
+        agent_cls, _created = make_agent_cls(run_result=SimpleNamespace(final_result="text"))
+        _install_stack(monkeypatch, agent_cls)
+
+        client = BrowserClient()
+        result = await client.browse("http://wiki.internal:8080/start", "summarize")
+
+        assert result.text == "text"
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "url",
@@ -620,7 +640,10 @@ class TestGuardedSessionBrowserUseStrategies:
                 _SessionAgent.created.append(self)
 
             async def run(self) -> Any:
-                context = await self.browser_session.playwright_browser.new_context()
+                context = await self.browser_session.playwright_browser.new_context(
+                    service_workers="allow"
+                )
+                assert context.init_kwargs["service_workers"] == "block"
                 route = await context.navigate("http://127.0.0.1:9999/admin")
                 assert route.action == ("abort", ABORT_REASON)
                 return SimpleNamespace(final_result="text")

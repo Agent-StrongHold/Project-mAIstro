@@ -23,11 +23,11 @@ import json
 import logging
 import os
 import subprocess
-import sys
 from pathlib import Path
 from typing import Any
 
 from maistro.http import shared_client
+from maistro.tools.browser.guard import BrowserNetworkGuard, browser_allowed_origins
 
 logger = logging.getLogger("hive.ui_auto")
 
@@ -36,32 +36,46 @@ PAGES_DIR = FRONTEND_DIR / "src" / "pages"
 
 
 async def screenshot(url: str, path: str = "/chat") -> str:
-    """Screenshot the running app via Playwright. Returns base64 PNG."""
-    script = f"""
-import asyncio
-from playwright.async_api import async_playwright
-async def main():
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page(viewport={{"width": 1280, "height": 800}})
-        await page.goto("{url}{path}", wait_until="networkidle", timeout=15000)
+    """Screenshot the running app through the governed Chromium transport."""
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        logger.error("Screenshot failed: playwright is not installed")
+        return ""
+
+    playwright = await async_playwright().start()
+    browser = None
+    context = None
+    try:
+        browser = await playwright.chromium.launch(headless=True)
+        context = await browser.new_context(
+            viewport={"width": 1280, "height": 800},
+            service_workers="block",
+        )
+        guard = BrowserNetworkGuard(extra_origins=browser_allowed_origins())
+        await guard.attach(context)
+        page = await context.new_page()
+        await page.goto(f"{url}{path}", wait_until="networkidle", timeout=15000)
         await page.wait_for_timeout(1000)
         buf = await page.screenshot(type="png", full_page=False)
-        await browser.close()
         import base64
-        print(base64.b64encode(buf).decode())
-asyncio.run(main())
-"""
-    result = subprocess.run(
-        [sys.executable, "-c", script],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    if result.returncode != 0:
-        logger.error(f"Screenshot failed: {result.stderr[:200]}")
+
+        return base64.b64encode(buf).decode()
+    except Exception as exc:
+        logger.error("Screenshot failed: %s", str(exc)[:200])
         return ""
-    return result.stdout.strip()
+    finally:
+        if context is not None:
+            try:
+                await context.close()
+            except Exception:
+                logger.debug("Screenshot context cleanup failed", exc_info=True)
+        if browser is not None:
+            try:
+                await browser.close()
+            except Exception:
+                logger.debug("Screenshot browser cleanup failed", exc_info=True)
+        await playwright.stop()
 
 
 async def score_visual(screenshot_b64: str) -> dict[str, Any]:
