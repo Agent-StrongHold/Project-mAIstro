@@ -157,6 +157,7 @@ async def test_destructive_action_blocks_until_approved_then_completes() -> None
         out = cap_routes.resolve_approval(
             pending[0]["request_id"],
             cap_routes.ResolveApprovalBody(approved=True, actor="tester"),
+            None,
         )
         assert out["resolved"] is True
 
@@ -197,7 +198,7 @@ async def test_destructive_action_denied_does_not_execute() -> None:
                 break
             await asyncio.sleep(0.005)
         rid = cap_routes.list_approvals()["pending"][0]["request_id"]
-        cap_routes.resolve_approval(rid, cap_routes.ResolveApprovalBody(approved=False))
+        cap_routes.resolve_approval(rid, cap_routes.ResolveApprovalBody(approved=False), None)
         result = await asyncio.wait_for(task, timeout=1.0)
         assert result.ok is False
         assert result.blocked_pending_approval is True
