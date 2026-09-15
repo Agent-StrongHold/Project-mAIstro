@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from maistro.graph.definitions import Graph
+from maistro.persistence.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.runs.evidence_json import json_of, model_of_json
 from maistro.runs.lifecycle import (
@@ -222,8 +223,8 @@ class SqliteRunStore:
         self._pending: list[tuple[tuple[str, str], str, str, str]] = []
 
     async def ensure_schema(self) -> None:
-        await self._conn.executescript(_SCHEMA)
-        await self._conn.commit()
+        async with serialized_schema_upgrade(self._conn):
+            await execute_schema_script(self._conn, _SCHEMA)
 
     async def create_run(
         self,

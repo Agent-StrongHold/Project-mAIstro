@@ -19,6 +19,7 @@ from maistro.persistence.pg_prompts import (
     _PRODUCTION_LABEL,
     _parse_config,
 )
+from maistro.persistence.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -65,8 +66,8 @@ class SqlitePromptManager:
         fixed for.
         """
         await self._conn.execute("PRAGMA foreign_keys = ON")
-        await self._conn.executescript(_SCHEMA)
-        await self._conn.commit()
+        async with serialized_schema_upgrade(self._conn):
+            await execute_schema_script(self._conn, _SCHEMA)
 
     async def get(self, name: str, *, label: str = _PRODUCTION_LABEL) -> str:
         """Fetch prompt content by name and label."""

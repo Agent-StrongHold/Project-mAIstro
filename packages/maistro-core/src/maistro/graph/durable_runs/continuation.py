@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.graph.traversal_commit import TraversalCheckpoint, TraversalCommit
+from maistro.persistence.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 from maistro.runs.model import RunStatus
 
 from .hitl import earliest_hitl_deadline, earliest_hitl_deadline_from_state
@@ -217,18 +218,18 @@ class SqliteGraphContinuationStore:
         self._lock = asyncio.Lock()
 
     async def ensure_schema(self) -> None:
-        await self._conn.executescript(_SCHEMA)
-        columns = await self._conn.execute_fetchall("PRAGMA table_info(graph_continuations)")
-        if not any(row[1] == "hitl_deadline_at" for row in columns):
+        async with serialized_schema_upgrade(self._conn):
+            await execute_schema_script(self._conn, _SCHEMA)
+            columns = await self._conn.execute_fetchall("PRAGMA table_info(graph_continuations)")
+            if not any(row[1] == "hitl_deadline_at" for row in columns):
+                await self._conn.execute(
+                    "ALTER TABLE graph_continuations ADD COLUMN hitl_deadline_at TEXT"
+                )
             await self._conn.execute(
-                "ALTER TABLE graph_continuations ADD COLUMN hitl_deadline_at TEXT"
+                "CREATE INDEX IF NOT EXISTS idx_graph_continuations_hitl_deadline "
+                "ON graph_continuations (status, hitl_deadline_at)"
             )
-        await self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_graph_continuations_hitl_deadline "
-            "ON graph_continuations (status, hitl_deadline_at)"
-        )
-        await self._backfill_hitl_deadlines()
-        await self._conn.commit()
+            await self._backfill_hitl_deadlines()
 
     async def _backfill_hitl_deadlines(self) -> None:
         """Restore the lookup projection for continuations written pre-033."""
