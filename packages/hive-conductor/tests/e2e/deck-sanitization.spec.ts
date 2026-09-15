@@ -284,15 +284,19 @@ test("edited DOM is sanitized again before it can become stored slide state", as
   await loadFresh();
   const preview = page.locator('[contenteditable="true"]');
   await preview.focus();
-  await preview.evaluate((element) => {
+  const htmlAfterBlur = await preview.evaluate((element) => {
     // Model the browser DOM after an edit/undo operation. The production blur
     // handler must treat this DOM as untrusted before copying it into state.
     element.innerHTML =
       '<h2>Edited through the DOM</h2><script>window.__deckPwned=16</script>' +
       '<img onerror="window.__deckPwned=17">';
     element.blur();
+    // Return the DOM immediately, before a later assertion could hide a
+    // boundary failure behind React's state update.
+    return element.innerHTML;
   });
 
+  expectNoExecutableMarkup(htmlAfterBlur);
   await expect(preview).toContainText("Edited through the DOM");
   await expect(preview.locator("script, img")).toHaveCount(0);
   expectNoExecutableMarkup(await preview.innerHTML());
