@@ -339,9 +339,16 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        # Graceful shutdown: drain tasks → cleanup containers → flush observability
+        # Graceful shutdown: drain tasks → flush quota snapshots → cleanup.
         if _runner:
             await _runner.stop(drain_timeout=SHUTDOWN_DRAIN_TIMEOUT)
+        container = getattr(app.state, "container", None)
+        if container is not None:
+            try:
+                await container.flush_usage_log()
+            except Exception:
+                await logger.aerror("usage_log_flush_failed", exc_info=True)
+            await container.aclose()
 
         # Drop the queue singleton after draining, so a later lifespan in the same
         # interpreter can install a fresh one. Startup refuses to replace a queue

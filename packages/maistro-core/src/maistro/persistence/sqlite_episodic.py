@@ -119,6 +119,9 @@ class SqliteEpisodicStore:
         uses, and for the same reason: `ALTER TABLE ... ADD COLUMN` with a
         constant default is metadata-only, so this is cheap.
         """
+        from maistro.persistence.sqlite_schema import begin_schema_upgrade
+
+        await begin_schema_upgrade(self._conn)
         await self._conn.execute(_SCHEMA)
         cursor = await self._conn.execute("PRAGMA table_info(episodic_memories)")
         present = {row[1] for row in await cursor.fetchall()}
