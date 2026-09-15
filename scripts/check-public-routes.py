@@ -629,7 +629,10 @@ def main() -> int:
         # a candidate from weakening an existing protected/exempt declaration
         # by editing the route table and its consumer together.
         route_base_ref = prov.resolve_baseline(ROUTE_REGISTRY, root=ROOT)
-        if not route_base_ref.absent_at_base:
+        # Keep the checker compatible with lightweight provenance adapters used
+        # by the ratchet regression tests; a resolved baseline is present unless
+        # an adapter explicitly marks it absent.
+        if not getattr(route_base_ref, "absent_at_base", False):
             route_authorized = prov.load_authorizations(
                 "route-permissions", base=route_base_ref.base_sha
             )
@@ -689,7 +692,7 @@ def main() -> int:
         and not any(candidate_path == path.partition(":")[2] for candidate_path in candidate)
     ]
 
-    if route_base_ref is not None and not route_base_ref.absent_at_base:
+    if route_base_ref is not None and not getattr(route_base_ref, "absent_at_base", False):
         print(
             prov.Provenance(
                 ratchet="route-permissions",

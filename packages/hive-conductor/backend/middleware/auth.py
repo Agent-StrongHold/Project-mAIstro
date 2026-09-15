@@ -63,6 +63,9 @@ _ADMIN_CHAT_BLOCKED = ("/v1/chat/",)
 
 _PROTECTED_OPS: dict[str, dict[str, str]] = {
     "GET": {
+        # Reading deployment settings is still a configuration authorization
+        # decision; authentication alone must not expose the operator overlay.
+        "/v1/settings": "config.write",
         # Task listings carry user work and are covered by the same declared
         # route permission as task mutations; authentication alone is not an
         # authorization decision for this surface.

@@ -123,14 +123,10 @@ class TuringAuthMiddleware(BaseHTTPMiddleware):
         principal = self._principal(request)
         if principal is None:
             return False
-        # Dependencies remain the authority for service-key route semantics
-        # (including the human-only admin lane). The declaration gate still
-        # requires every path to name its canonical permission, but it must not
-        # replace those product-specific checks.
-        if principal.kind == "agent":
-            return True
-        # Publishing is still owned by the existing dependency for human
-        # callers rather than changing that product authorization lane here.
+        # The existing dependency remains the authority for the human-only
+        # publishing lane, which preserves its established 401 response for a
+        # human session. Service principals do not get that exception: their
+        # declared scope must authorize the exact route permission.
         if principal.kind == "human" and permission == "turing.vault_write":
             return True
         # The route table and Principal.scopes use the same scope.verb action

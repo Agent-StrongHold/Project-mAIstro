@@ -243,6 +243,12 @@ class TestProtectedOpsPermissionMatrix:
         assert r.status_code == 200, r.text
         return c
 
+    def test_get_settings_without_permission_is_403(self) -> None:
+        c = self._writer("get-settings-1", perms=[])
+        r = c.get("/v1/settings")
+        assert r.status_code == 403
+        assert "config.write" in r.json()["detail"]
+
     def test_delete_agents_without_permission_is_403(self) -> None:
         c = self._writer("del-agents-1", perms=[])
         r = c.delete("/v1/agents/foo")

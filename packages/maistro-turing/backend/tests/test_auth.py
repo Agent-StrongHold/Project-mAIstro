@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 
 def test_health_is_public(client):
@@ -50,6 +52,62 @@ def test_authenticated_undeclared_non_versioned_path_is_default_deny(authed_clie
 def test_service_scope_uses_canonical_route_permission(turing_service_client):
     response = turing_service_client.get("/v1/feed")
     assert response.status_code == 200
+
+
+def test_service_without_route_scope_is_denied_by_live_middleware():
+    """A valid service identity still needs the declaration's exact scope."""
+    from maistro.auth import ServiceKeyRegistry
+
+    from ..middleware.auth import TuringAuthMiddleware
+
+    registry = ServiceKeyRegistry()
+    registry.load_dict(
+        {
+            "chat-only": {
+                "key": "chat-only-key",
+                "scopes": ["turing:chat"],
+            }
+        }
+    )
+    app = FastAPI()
+    app.add_middleware(TuringAuthMiddleware, registry=registry)
+
+    @app.get("/v1/feed")
+    def feed_fixture() -> dict[str, bool]:
+        return {"reached": True}
+
+    response = TestClient(app, headers={"X-Service-Key": "chat-only-key"}).get("/v1/feed")
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Permission 'turing.vault_read' required"
+
+
+def test_service_suffix_lookalike_is_not_authorized_by_feed_declaration():
+    """A matching-looking sibling must not inherit /v1/feed's permission."""
+    from maistro.auth import ServiceKeyRegistry
+
+    from ..middleware.auth import TuringAuthMiddleware
+
+    registry = ServiceKeyRegistry()
+    registry.load_dict(
+        {
+            "chat-only": {
+                "key": "chat-only-key",
+                "scopes": ["turing:chat"],
+            }
+        }
+    )
+    app = FastAPI()
+    app.add_middleware(TuringAuthMiddleware, registry=registry)
+
+    @app.get("/v1/feed-history")
+    def feed_history_fixture() -> dict[str, bool]:
+        return {"reached": True}
+
+    response = TestClient(app, headers={"X-Service-Key": "chat-only-key"}).get("/v1/feed-history")
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Route authorization declaration required"
 
 
 def test_backend_startup_requires_service_key(monkeypatch):
