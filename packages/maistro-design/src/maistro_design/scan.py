@@ -20,6 +20,7 @@ from maistro.security.warden.patterns import (
     ACTIVE_MARKUP_PATTERNS,
     REJECT_PATTERNS,
     SCRIPT_PATTERNS,
+    VISUAL_ARTIFACT_PATTERNS,
 )
 
 if TYPE_CHECKING:
@@ -155,6 +156,7 @@ def scan_blocking_patterns(
     banish_list: InMemoryTrustBanishList | None,
     *,
     url_allowlist: tuple[str, ...] = DEFAULT_URL_ALLOWLIST,
+    visual_artifact: bool = False,
 ) -> list[str]:
     """Scan one named piece of text content for the shared blocking vocabulary."""
     blocking: list[str] = []
@@ -181,6 +183,12 @@ def scan_blocking_patterns(
         f"{label}: matched {description}"
         for description in _scan_active_markup_patterns(content, url_allowlist)
     )
+    if visual_artifact:
+        blocking.extend(
+            f"{label}: visual artifact {reason}"
+            for pattern, reason in VISUAL_ARTIFACT_PATTERNS
+            if _pattern_matches(pattern, normalized)
+        )
 
     for match in _BASE64_RE.finditer(normalized):
         blocking.append(f"{label}: base64 blob ({len(match.group(0))} chars)")
@@ -227,6 +235,7 @@ def scan_design_output(
                     node.value,
                     banish_list,
                     url_allowlist=url_allowlist,
+                    visual_artifact=True,
                 )
             )
             external_urls.update(find_external_urls(node.value, url_allowlist))

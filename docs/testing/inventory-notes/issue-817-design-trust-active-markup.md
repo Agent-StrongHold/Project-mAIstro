@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/maistro-core/tests: +9
-  packages/maistro-design/tests: +27
+  packages/maistro-design/tests: +28
 ---
 # Issue 817: Design trust active-markup corpus
 
@@ -17,4 +17,6 @@ which verifies that CSS network checks compare parsed URL authorities rather tha
 string prefixes. The repair adds link stylesheet and video poster fetch surfaces to
 the shared Warden vocabulary and verifies both pre-scan recommendations and final
 render rejection for each. The repair regression also covers Warden's system-prompt
-query rule at both the pre-scan and returned-artifact boundaries.
+query rule at both the pre-scan and returned-artifact boundaries. The shared visual
+classification remains fail-closed even for a URL that the prose/import allowlist
+would otherwise permit, matching the browser renderer's CSS boundary.

@@ -255,6 +255,26 @@ class TestTrustPreScan:
         assert record.warden_recommendation == "banish"
         assert record.warden_confidence >= 0.85
 
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_renderer_blocked_css_is_not_recommended_for_upgrade(self):
+        from maistro_design.trust import InMemoryTrustReviewQueue, TrustTier, scan_and_record
+
+        queue = InMemoryTrustReviewQueue()
+        tier = scan_and_record(
+            '<style>.brand { background: url("https://fonts.googleapis.com/logo.png") }</style>',
+            source="discovery_field",
+            source_key="prompt",
+            record_id="review-css-boundary",
+            review_queue=queue,
+        )
+
+        [record] = queue.all_records()
+        assert tier is TrustTier.SKULL
+        assert record.assigned_tier is TrustTier.SKULL
+        assert "content: visual artifact css-network-or-code" in record.warden_flags
+        assert record.warden_recommendation == "banish"
+
     @pytest.mark.contract("behavioral")
     @pytest.mark.scope("unit")
     def test_heuristic_content_is_kept_for_review(self):

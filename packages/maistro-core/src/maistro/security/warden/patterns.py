@@ -61,6 +61,45 @@ ACTIVE_MARKUP_PATTERNS: tuple[tuple[regex.Pattern[str], str], ...] = (
     ),
 )
 
+# Design Studio's browser boundary reports these stable reason names. The
+# synchronous Design scanner uses the same names so an admin recommendation
+# cannot contradict the renderer's classification.
+VISUAL_ARTIFACT_BLOCK_REASONS: tuple[str, ...] = (
+    "active-element",
+    "event-handler",
+    "dangerous-url",
+    "css-network-or-code",
+)
+
+VISUAL_ARTIFACT_PATTERNS: tuple[tuple[regex.Pattern[str], str], ...] = (
+    (
+        regex.compile(
+            r"<\s*/?\s*(?:script|style|iframe|form|img|object|embed|link|base|"
+            r"foreignobject|use|image|meta|input|button|video|audio|source|track|"
+            r"textarea|select|option|a|animate|set|mpath)\b",
+            regex.IGNORECASE,
+        ),
+        "active-element",
+    ),
+    (
+        regex.compile(r"<[^>]*\bon[a-z][a-z0-9:-]*\s*=", regex.IGNORECASE),
+        "event-handler",
+    ),
+    (
+        regex.compile(r"(?:javascript|vbscript|data)\s*:", regex.IGNORECASE),
+        "dangerous-url",
+    ),
+    (
+        regex.compile(
+            r"(?:url\s*\(|image-set\s*\(|cross-fade\s*\(|element\s*\(|"
+            r"paint\s*\(|expression\s*\(|@import\b|"
+            r"(?:-moz-binding|behavior)\s*:)",
+            regex.IGNORECASE,
+        ),
+        "css-network-or-code",
+    ),
+)
+
 # Design output and trust pre-scans use this vocabulary directly. Keep the
 # descriptions stable: they are audit-facing classifications, not implementation
 # details of either consumer.

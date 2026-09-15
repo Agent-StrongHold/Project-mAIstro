@@ -166,7 +166,7 @@ def scan_and_record(
         # lookup in the shared scanner.
         flags.append("banish_list_match")
 
-    blocking_flags = scan_blocking_patterns("content", content, None)
+    blocking_flags = scan_blocking_patterns("content", content, None, visual_artifact=True)
     flags.extend(blocking_flags)
     suspicious, heuristic_flags = heuristic_scan(normalize_for_detection(content))
     if suspicious:
