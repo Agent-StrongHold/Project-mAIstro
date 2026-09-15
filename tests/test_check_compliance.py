@@ -45,7 +45,7 @@ def _write_repository(
                 "status": "implemented",
                 "owner": "test owner",
                 "scope": "test scope",
-                "evidence_refs": ["run-1"],
+                "evidence_refs": ["run-1", "execution-1"],
                 "last_verified": "2026-09-14",
                 "stale_after_days": 30,
             }
@@ -63,6 +63,31 @@ def _write_repository(
             }
         ],
     }
+    receipt = {
+        "execution_id": "https://github.com/Agent-StrongHold/Project-mAIstro/actions/runs/123456",
+        "repository": "Agent-StrongHold/Project-mAIstro",
+        "run_id": 123456,
+        "head_sha": "a" * 40,
+        "workflow": ".github/workflows/ci.yml",
+        "result": "passed",
+        "conclusion": "success",
+        "observed_at": "2026-09-14T11:00:00Z",
+    }
+    receipt_path = tmp_path / "execution-receipt.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    payload["evidence"].append(
+        {
+            "id": "execution-1",
+            "kind": "immutable_execution",
+            "path": receipt_path.name,
+            "sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest(),
+            "execution_id": receipt["execution_id"],
+            "state": "current",
+            "mode": "automated",
+            "result": "passed",
+            "observed_at": receipt["observed_at"],
+        }
+    )
     (tmp_path / "registry.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
@@ -157,6 +182,53 @@ def test_valid_current_evidence_record_passes(tmp_path: Path) -> None:
     assert _findings(tmp_path) == []
 
 
+def test_implemented_claim_requires_immutable_execution_evidence(tmp_path: Path) -> None:
+    _write_repository(tmp_path)
+    payload = json.loads((tmp_path / "registry.json").read_text())
+    payload["claims"][0]["evidence_refs"] = ["run-1"]
+    payload["evidence"] = [payload["evidence"][0]]
+    (tmp_path / "registry.json").write_text(json.dumps(payload))
+
+    assert any(
+        "at least one immutable execution record" in str(finding) for finding in _findings(tmp_path)
+    )
+
+
+def test_forged_execution_id_is_rejected_even_with_matching_receipt(tmp_path: Path) -> None:
+    _write_repository(tmp_path)
+    payload = json.loads((tmp_path / "registry.json").read_text())
+    record = payload["evidence"][1]
+    receipt_path = tmp_path / record["path"]
+    receipt = json.loads(receipt_path.read_text())
+    receipt["execution_id"] = "forged:run/123456"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    record["execution_id"] = receipt["execution_id"]
+    record["sha256"] = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+    (tmp_path / "registry.json").write_text(json.dumps(payload))
+
+    assert any(
+        "canonical GitHub Actions run URL" in str(finding) for finding in _findings(tmp_path)
+    )
+
+
+def test_current_failing_execution_cannot_support_implemented(tmp_path: Path) -> None:
+    _write_repository(tmp_path)
+    payload = json.loads((tmp_path / "registry.json").read_text())
+    record = payload["evidence"][1]
+    record["result"] = "failed"
+    receipt_path = tmp_path / record["path"]
+    receipt = json.loads(receipt_path.read_text())
+    receipt["result"] = "failed"
+    receipt["conclusion"] = "failure"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    record["sha256"] = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+    (tmp_path / "registry.json").write_text(json.dumps(payload))
+
+    assert any(
+        "requires automated passed evidence" in str(finding) for finding in _findings(tmp_path)
+    )
+
+
 def test_cited_test_path_requires_a_typed_record_in_the_claim(tmp_path: Path) -> None:
     _write_repository(tmp_path)
     cited = tmp_path / "tests" / "test_evidence.py"
@@ -179,13 +251,20 @@ def test_immutable_execution_requires_an_inspectable_receipt(tmp_path: Path) -> 
     payload = json.loads((tmp_path / "registry.json").read_text())
     record = payload["evidence"][0]
     record["kind"] = "immutable_execution"
-    record["execution_id"] = "github:run/123456"
+    record["execution_id"] = (
+        "https://github.com/Agent-StrongHold/Project-mAIstro/actions/runs/123457"
+    )
     receipt = {
         "execution_id": record["execution_id"],
+        "repository": "Agent-StrongHold/Project-mAIstro",
+        "run_id": 123457,
+        "head_sha": "a" * 40,
+        "workflow": ".github/workflows/ci.yml",
         "result": record["result"],
+        "conclusion": "success",
         "observed_at": record["observed_at"],
     }
-    receipt_path = tmp_path / "execution-receipt.json"
+    receipt_path = tmp_path / "execution-receipt-2.json"
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
     record["path"] = receipt_path.name
     record["sha256"] = hashlib.sha256(receipt_path.read_bytes()).hexdigest()

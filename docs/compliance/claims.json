@@ -3,7 +3,7 @@
   "claims": [
     {
       "control_id": "AT-01",
-      "status": "implemented",
+      "status": "partially_implemented",
       "owner": "maistro-engine compliance",
       "scope": "engine technical control",
       "evidence_refs": [
@@ -32,7 +32,7 @@
     },
     {
       "control_id": "AT-03",
-      "status": "implemented",
+      "status": "partially_implemented",
       "owner": "maistro-engine compliance",
       "scope": "engine technical control",
       "evidence_refs": [
@@ -45,7 +45,7 @@
     },
     {
       "control_id": "AT-04",
-      "status": "implemented",
+      "status": "partially_implemented",
       "owner": "maistro-engine compliance",
       "scope": "engine technical control",
       "evidence_refs": [
@@ -189,7 +189,7 @@
     },
     {
       "control_id": "GOVERN-5",
-      "status": "implemented",
+      "status": "partially_implemented",
       "owner": "maistro-engine compliance",
       "scope": "engine technical control",
       "evidence_refs": [
@@ -222,7 +222,7 @@
     },
     {
       "control_id": "MAP-3",
-      "status": "implemented",
+      "status": "partially_implemented",
       "owner": "maistro-engine compliance",
       "scope": "engine technical control",
       "evidence_refs": [
@@ -268,7 +268,7 @@
     },
     {
       "control_id": "MEASURE-2",
-      "status": "implemented",
+      "status": "partially_implemented",
       "owner": "maistro-engine compliance",
       "scope": "engine technical control",
       "evidence_refs": [
@@ -280,7 +280,7 @@
     },
     {
       "control_id": "MEASURE-3",
-      "status": "implemented",
+      "status": "partially_implemented",
       "owner": "maistro-engine compliance",
       "scope": "engine technical control",
       "evidence_refs": [
@@ -291,7 +291,7 @@
     },
     {
       "control_id": "MEASURE-4",
-      "status": "implemented",
+      "status": "partially_implemented",
       "owner": "maistro-engine compliance",
       "scope": "engine technical control",
       "evidence_refs": [
@@ -302,7 +302,7 @@
     },
     {
       "control_id": "MANAGE-1",
-      "status": "implemented",
+      "status": "partially_implemented",
       "owner": "maistro-engine compliance",
       "scope": "engine technical control",
       "evidence_refs": [
@@ -313,7 +313,7 @@
     },
     {
       "control_id": "MANAGE-2",
-      "status": "implemented",
+      "status": "partially_implemented",
       "owner": "maistro-engine compliance",
       "scope": "engine technical control",
       "evidence_refs": [
@@ -325,7 +325,7 @@
     },
     {
       "control_id": "MANAGE-3",
-      "status": "implemented",
+      "status": "partially_implemented",
       "owner": "maistro-engine compliance",
       "scope": "engine technical control",
       "evidence_refs": [
@@ -397,7 +397,7 @@
     },
     {
       "control_id": "EU-ART-13",
-      "status": "implemented",
+      "status": "partially_implemented",
       "owner": "maistro-engine compliance",
       "scope": "engine technical control",
       "evidence_refs": [
@@ -419,7 +419,7 @@
     },
     {
       "control_id": "EU-ART-15",
-      "status": "implemented",
+      "status": "partially_implemented",
       "owner": "maistro-engine compliance",
       "scope": "engine technical control",
       "evidence_refs": [
@@ -432,7 +432,7 @@
     },
     {
       "control_id": "EU-ART-17",
-      "status": "implemented",
+      "status": "partially_implemented",
       "owner": "maistro-engine compliance",
       "scope": "engine technical control",
       "evidence_refs": [
@@ -465,7 +465,7 @@
     },
     {
       "control_id": "SOC2-AVAILABILITY",
-      "status": "implemented",
+      "status": "partially_implemented",
       "owner": "maistro-engine compliance",
       "scope": "engine technical control",
       "evidence_refs": [
@@ -501,7 +501,7 @@
     },
     {
       "control_id": "SOC2-PRIVACY",
-      "status": "implemented",
+      "status": "partially_implemented",
       "owner": "maistro-engine compliance",
       "scope": "engine technical control",
       "evidence_refs": [
@@ -569,7 +569,7 @@
       "id": "ev-at-06",
       "kind": "repository_artifact",
       "path": "packages/maistro-core/tests/security/test_auth_jwt.py",
-      "sha256": "66b8810de3220e66a1d42a15d96fbfdee56faab72695238a3da78c7c8da1f8fb",
+      "sha256": "13478c9a45e6c4c8b97488311888548c751bb65a1de957a44efb63f2b54a46b5",
       "state": "current",
       "mode": "automated",
       "result": "passed",
@@ -679,7 +679,7 @@
       "id": "ev-map-2",
       "kind": "repository_artifact",
       "path": "COMPLIANCE.md",
-      "sha256": "7bcf30ffb005cb0a6c9cbfb1af8f30d5ab269faf556a61d9b5470c5d9f487087",
+      "sha256": "b5e15b3cac8bc182983a444f6ddbdd63a14c680bdb8f96e4d987028990869ffa",
       "state": "current",
       "mode": "manual",
       "result": "observed",
@@ -779,7 +779,7 @@
       "id": "ev-manage-3",
       "kind": "repository_artifact",
       "path": ".github/workflows/ci.yml",
-      "sha256": "3c6769744a0dc81c43e4adf23e322f00c3794f352be6b006946f1e0ed639b381",
+      "sha256": "1acbac5b75a831f0901cb769fa959a15b3b2dbba366f118bb568dc8b4aa311be",
       "state": "current",
       "mode": "automated",
       "result": "passed",
@@ -1059,7 +1059,7 @@
       "id": "ev-artifact-d37bfd4c981f2134",
       "kind": "repository_artifact",
       "path": "formal/models/test_composite_auth.py",
-      "sha256": "5fe3742fb85a278e7e4f3a13511047724fac37b218d857248d2d5a36e5211e0d",
+      "sha256": "d72d9a1e23334b15a338d99449a9d3d85c484ead5007f850847bc583653e9da2",
       "state": "current",
       "mode": "automated",
       "result": "passed",
@@ -1069,7 +1069,7 @@
       "id": "ev-artifact-8584fb5fda145cb8",
       "kind": "repository_artifact",
       "path": "formal/models/test_jwt_auth.py",
-      "sha256": "fbc7f0864f248d49d66bccd1ef748b1f1c90eabe9183b7daa5a2e2c9afd313f9",
+      "sha256": "c2d31ec17ce71f778b6cb9be9e307d174ea1b0d17f5fe084b09ca58baad926b3",
       "state": "current",
       "mode": "automated",
       "result": "passed",
@@ -1099,7 +1099,7 @@
       "id": "ev-artifact-1e4dbbb5c2417500",
       "kind": "repository_artifact",
       "path": "packages/maistro-core/tests/security/test_auth_composite.py",
-      "sha256": "dbd3d96eeabad67f03702346dbc5b554b2b3b89b8acc68644be2f0c290d60c95",
+      "sha256": "20b1a78a1b1b1b74d25b966d59f74ea5c8b0ef18bfc866dfc48d836ebd386fb4",
       "state": "current",
       "mode": "automated",
       "result": "passed",

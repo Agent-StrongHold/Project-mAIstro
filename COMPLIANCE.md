@@ -36,10 +36,10 @@ flip to `gap-test`/`gap-impl` in the same PR that breaks it.
 
 | ID | Risk | Engine control | Test path | Status |
 |---|---|---|---|---|
-| **AT-01** | Memory poisoning | Warden boundary scan (`security/warden/detector.py`) + episodic memory decay/weight floors (ADR-013 scopes) + learning promotion gate | `packages/maistro-core/tests/security/warden/test_detector.py`; `packages/maistro-core/tests/memory/episodic/test_decay.py`; `packages/maistro-core/tests/memory/learnings/test_promoter_gate.py` | implemented |
+| **AT-01** | Memory poisoning | Warden boundary scan (`security/warden/detector.py`) + episodic memory decay/weight floors (ADR-013 scopes) + learning promotion gate | `packages/maistro-core/tests/security/warden/test_detector.py`; `packages/maistro-core/tests/memory/episodic/test_decay.py`; `packages/maistro-core/tests/memory/learnings/test_promoter_gate.py` | partially_implemented |
 | **AT-02** | Tool misuse | Sentinel PDP/PEP at the tool-call boundary (ADR-073) — `security/sentinel/policy.py`, `security/sentinel/validator.py` — + dangerous-command/tool detection (`security/dangerous_tools.py`). **Reversibility classification (`tools/reversibility_registry.py`, ADR-050) is NOT operative** — `ReversibilityRegistry` is never constructed; `Sentinel.resolve_tier` branches on a caller-supplied `reversibility` string defaulting to `"reversible"` and never consults the registry (#346) | `packages/maistro-core/tests/security/test_sentinel_policy.py`; `packages/maistro-core/tests/security/test_sentinel_validator.py`; `formal/models/test_dangerous_tools.py`; `formal/models/test_sentinel_policy.py`; `formal/models/test_sentinel_validator.py` | partially_implemented |
-| **AT-03** | Privilege compromise | ADR-068 tier ladder (open → role/team-auto → self-elevation → delegated-approval → admin-elevation → blocked), `security/sentinel/elevation.py`, admin/user1 privilege separation (`privilege.py`, SPEC-012) | `packages/maistro-core/tests/security/test_authz_tier_ladder.py`; `packages/maistro-core/tests/security/test_elevation_grants.py`; `packages/maistro-core/tests/privilege/test_privilege.py` | implemented |
-| **AT-04** | Resource overload | Quota tracker (`quota/tracker.py`) + per-key rate limiter (`security/rate_limiter.py`) + circuit breakers / retry / fallback (ADR-038, `resilience/`) | `packages/maistro-core/tests/quota/test_tracker.py`; `packages/maistro-core/tests/security/test_rate_limiter.py`; `packages/maistro-core/tests/test_circuit_breaker.py`; `packages/maistro-core/tests/resilience/test_retry_policy.py` | implemented |
+| **AT-03** | Privilege compromise | ADR-068 tier ladder (open → role/team-auto → self-elevation → delegated-approval → admin-elevation → blocked), `security/sentinel/elevation.py`, admin/user1 privilege separation (`privilege.py`, SPEC-012) | `packages/maistro-core/tests/security/test_authz_tier_ladder.py`; `packages/maistro-core/tests/security/test_elevation_grants.py`; `packages/maistro-core/tests/privilege/test_privilege.py` | partially_implemented |
+| **AT-04** | Resource overload | Quota tracker (`quota/tracker.py`) + per-key rate limiter (`security/rate_limiter.py`) + circuit breakers / retry / fallback (ADR-038, `resilience/`) | `packages/maistro-core/tests/quota/test_tracker.py`; `packages/maistro-core/tests/security/test_rate_limiter.py`; `packages/maistro-core/tests/test_circuit_breaker.py`; `packages/maistro-core/tests/resilience/test_retry_policy.py` | partially_implemented |
 | **AT-05** | Cascading failures | ADR-038 reliability primitives — circuit-breaker state machine + `Fallback[T]` + retry budgets — `resilience/`, `agents/circuit_breaker.py`. **ADR-038's SLO / error-budget burn-rate throttling is NOT implemented**; cascading-failure defence rests on the breaker, fallback and retry layers | `packages/maistro-core/tests/resilience/test_fallback.py`; `packages/maistro-core/tests/resilience/test_rate_coordination.py`; `packages/maistro-core/tests/test_circuit_breaker.py` | planned |
 | **AT-06** | Identity spoofing | **Signed code-registry entries (`code_registry/verify.py`, ADR-069/SPEC-257) are NOT operative** — `CodeRegistry.register()`, which enforces Ed25519 verification, has no production callers; no code is signature-checked at load (#346). Operative: JWT/composite auth (`security/auth_jwt.py`, `security/auth_composite.py`) + agent identity lifecycle (`identity/lifecycle.py`) | `packages/maistro-core/tests/security/test_auth_jwt.py`; `packages/maistro-core/tests/security/test_auth_composite.py`; `packages/maistro-core/tests/code_registry/test_registry.py`; `packages/maistro-core/tests/identity/test_lifecycle.py`; `formal/models/test_jwt_auth.py`; `formal/models/test_composite_auth.py` | partially_implemented |
 | **AT-07** | Misaligned objectives | Builders pipeline verification (spec → tests → code → review) + structural-awareness review gate that hard-fails on a deterministic CRITICAL finding even when the LLM reviewer says "APPROVED" (ADR-032 contracts-as-acceptance-criteria) | `packages/maistro-core/tests/builders/test_structural_gate.py`; `packages/maistro-core/tests/builders/test_pipeline_spec_flow.py` | partially_implemented |
@@ -65,7 +65,7 @@ Reference: NIST AI 100-1, NIST AI 100-2 (Generative AI Profile).
 | GOVERN-2 (Accountability) | Sentinel decision audit (`security/sentinel/audit.py`) + ADR-037 event log | partially_implemented |
 | GOVERN-3 (Workforce / culture) | `CLAUDE.md`, ADR ladder (`docs/adr/`) | documented |
 | GOVERN-4 (Engagement / oversight) | ADR-068 elevation ladder + approval gate (`tools/approval/gate.py`) | partially_implemented |
-| GOVERN-5 (Lifecycle) | Front-matter status lifecycle (ADR-031, enforced by `maistro-registry` CI, `registry.yml`) | implemented |
+| GOVERN-5 (Lifecycle) | Front-matter status lifecycle (ADR-031, enforced by `maistro-registry` CI, `registry.yml`) | partially_implemented |
 
 ### Map
 
@@ -73,7 +73,7 @@ Reference: NIST AI 100-1, NIST AI 100-2 (Generative AI Profile).
 |---|---|---|
 | MAP-1 (Context) | ADR-072 threat model (assets, adversaries, trust boundaries) | documented |
 | MAP-2 (Categorization) | OWASP Agentic Top 10 mapping (this document) | documented |
-| MAP-3 (Capabilities) | `maistro.capabilities` slot/provider registry (SPEC-184) | implemented |
+| MAP-3 (Capabilities) | `maistro.capabilities` slot/provider registry (SPEC-184) | partially_implemented |
 | MAP-4 (Risk impact) | ADR-072 asset/adversary tables; this document | documented |
 | MAP-5 (Risk priority) | ADR-072 "Adversaries (ranked)" list | documented |
 
@@ -82,17 +82,17 @@ Reference: NIST AI 100-1, NIST AI 100-2 (Generative AI Profile).
 | Function | Engine control | Status |
 |---|---|---|
 | MEASURE-1 (Identification) | Builders pipeline (spec → tests → code → review, `builders/`) + structural-awareness gate ; evidence: `packages/maistro-core/tests/builders/test_structural_gate.py` | partially_implemented |
-| MEASURE-2 (Tracking) | ADR-037 observability (traces/metrics/logs/events) + ADR-055 replay ; evidence: `packages/maistro-core/tests/observability/test_tracing.py`; `packages/maistro-core/tests/observability/test_replay.py` | implemented |
-| MEASURE-3 (Effectiveness) | Mutation testing gate (`mutation.yml` CI workflow) | implemented |
-| MEASURE-4 (Feedback) | Learning promotion pipeline (`memory/learnings/promoter.py`) ; evidence: `packages/maistro-core/tests/memory/learnings/test_promoter.py` | implemented |
+| MEASURE-2 (Tracking) | ADR-037 observability (traces/metrics/logs/events) + ADR-055 replay ; evidence: `packages/maistro-core/tests/observability/test_tracing.py`; `packages/maistro-core/tests/observability/test_replay.py` | partially_implemented |
+| MEASURE-3 (Effectiveness) | Mutation testing gate (`mutation.yml` CI workflow) | partially_implemented |
+| MEASURE-4 (Feedback) | Learning promotion pipeline (`memory/learnings/promoter.py`) ; evidence: `packages/maistro-core/tests/memory/learnings/test_promoter.py` | partially_implemented |
 
 ### Manage
 
 | Function | Engine control | Status |
 |---|---|---|
-| MANAGE-1 (Risk treatment) | Warden/Sentinel boundary scanning (ADR-073) + ADR-038 circuit breakers | implemented |
-| MANAGE-2 (Allocation) | Quota tracker (`quota/tracker.py`) + router scarcity-based cost ; evidence: `packages/maistro-core/tests/quota/test_tracker.py` | implemented |
-| MANAGE-3 (Pre-deployment) | CI gate stack (`ci.yml`, `quality.yml`, `security.yml`, `formal-conformance.yml`, `mutation.yml`, `cage-guard.yml`) | implemented |
+| MANAGE-1 (Risk treatment) | Warden/Sentinel boundary scanning (ADR-073) + ADR-038 circuit breakers | partially_implemented |
+| MANAGE-2 (Allocation) | Quota tracker (`quota/tracker.py`) + router scarcity-based cost ; evidence: `packages/maistro-core/tests/quota/test_tracker.py` | partially_implemented |
+| MANAGE-3 (Pre-deployment) | CI gate stack (`ci.yml`, `quality.yml`, `security.yml`, `formal-conformance.yml`, `mutation.yml`, `cage-guard.yml`) | partially_implemented |
 | MANAGE-4 (Documentation / response) | This document + `SECURITY.md` + Sentinel audit log | planned |
 
 ## EU AI Act (High-risk systems)
@@ -105,10 +105,10 @@ Reference: Regulation (EU) 2024/1689, Articles 9–15, 17, 26.
 | **Art. 10** | Data governance | Memory scope axes (global→org→team→user→agent→session, ADR-019 Decision 7) + Sentinel PII filter (`security/sentinel/pii_filter.py`) + secret redaction on both log pipelines (`security/redact.py` installed by `security/log_redaction.py`, ADR-064) | `formal/models/test_memory_scopes.py`; `formal/models/test_pii_filter.py`; `packages/maistro-core/tests/security/test_redact.py`; `packages/maistro-core/tests/security/test_log_redaction.py` | partially_implemented |
 | **Art. 11** | Technical documentation | ADR ladder (`docs/adr/`, 100+ ADRs) + `CLAUDE.md` | CLAUDE.md | documented |
 | **Art. 12** | Record-keeping | Sentinel decision audit + durable event log (`events/`) | packages/maistro-core/tests/events/test_durable_log.py | partially_implemented |
-| **Art. 13** | Transparency to users | Warden flag-and-warn responses (`security/warden/flag_response.py`) surface why content was blocked/flagged | `formal/models/test_flag_response.py` | implemented |
+| **Art. 13** | Transparency to users | Warden flag-and-warn responses (`security/warden/flag_response.py`) surface why content was blocked/flagged | `formal/models/test_flag_response.py` | partially_implemented |
 | **Art. 14** | Human oversight | ADR-068 elevation ladder (self-elevation / scoped-2FA / delegated / admin) is the mechanism; multi-tenant deployer-facing oversight UI is Stronghold's | docs/adr/ADR-068-unified-authorization-and-elevation.md | not_applicable |
-| **Art. 15** | Accuracy / robustness / cybersecurity | Hypothesis property tests (`formal/`) + mutation-testing gate + `bandit`/`ruff -S`/`semgrep` (per `security-scan` skill) | `formal/models/test_pii_filter.py`; `.github/workflows/mutation.yml` | implemented |
-| **Art. 17** | Quality management system | CI gate stack (lint + type + core tests + quality + security + mutation + registry + formal-conformance) | .github/workflows/quality.yml | implemented |
+| **Art. 15** | Accuracy / robustness / cybersecurity | Hypothesis property tests (`formal/`) + mutation-testing gate + `bandit`/`ruff -S`/`semgrep` (per `security-scan` skill) | `formal/models/test_pii_filter.py`; `.github/workflows/mutation.yml` | partially_implemented |
+| **Art. 17** | Quality management system | CI gate stack (lint + type + core tests + quality + security + mutation + registry + formal-conformance) | .github/workflows/quality.yml | partially_implemented |
 | **Art. 26** | Deployer obligations | Per-scope audit access (soft scopes in core); hard per-tenant deployer obligations are Stronghold's | docs/adr/ADR-019-canonical-source-split.md | not_applicable |
 
 ## SOC 2 Type II (Trust Services Criteria)
@@ -119,10 +119,10 @@ concern (this repo has no auditor engagement).
 | TSC | Engine control | Evidence path | Status |
 |---|---|---|---|
 | Security (CC1–CC9) | Warden/Sentinel boundary scan (ADR-073) + ADR-068 authz ladder + secret redaction on log output (ADR-064, `security/log_redaction.py`) | packages/maistro-core/tests/security/test_log_redaction.py | partially_implemented |
-| Availability (A1) | ADR-038 circuit breakers + healthchecks (`/health`, `/health/live`, `/health/ready`, `maistro_server/api/health.py`) ; evidence: `packages/maistro-server/tests/api/test_health.py`; `packages/maistro-core/tests/test_circuit_breaker.py` | packages/maistro-server/tests/api/test_health.py | implemented |
+| Availability (A1) | ADR-038 circuit breakers + healthchecks (`/health`, `/health/live`, `/health/ready`, `maistro_server/api/health.py`) ; evidence: `packages/maistro-server/tests/api/test_health.py`; `packages/maistro-core/tests/test_circuit_breaker.py` | packages/maistro-server/tests/api/test_health.py | partially_implemented |
 | Processing Integrity (PI1) | Boundary/behavioral contracts (ADR-032), enforced by the `@pytest.mark.contract` suites in CI ; evidence: `packages/maistro-core/tests/builders/test_structural_gate.py` | packages/maistro-core/tests/builders/test_structural_gate.py | partially_implemented |
 | Confidentiality (C1) | Soft memory scopes (core) + secret redaction on log output (ADR-064) + PII tiers (ADR-055); hard tenant confidentiality is Stronghold's | packages/maistro-core/tests/observability/test_tiers.py | partially_implemented |
-| Privacy (P1–P8) | Sentinel PII filter (`security/sentinel/pii_filter.py`) + ADR-055 sensitivity tiers (`normal`/`sensitive`/`secret`) ; evidence: `formal/models/test_pii_filter.py`; `packages/maistro-core/tests/observability/test_tiers.py` | formal/models/test_pii_filter.py | implemented |
+| Privacy (P1–P8) | Sentinel PII filter (`security/sentinel/pii_filter.py`) + ADR-055 sensitivity tiers (`normal`/`sensitive`/`secret`) ; evidence: `formal/models/test_pii_filter.py`; `packages/maistro-core/tests/observability/test_tiers.py` | formal/models/test_pii_filter.py | partially_implemented |
 
 ## How this document is maintained
 
@@ -135,8 +135,11 @@ concern (this repo has no auditor engagement).
   refuses stale, disabled, manual-only, never-run, missing, or failing evidence for an
   `implemented` claim. It is intentionally not a required CI check in this child issue.
 - Every `tests/...` or `formal/...` path cited above is represented by a typed evidence record.
-  A PR that removes or renames a cited artifact must update the registry and the corresponding
-  row in the same PR.
+  Repository-artifact evidence proves that the implementation/test source exists, not that a test
+  executed. An `implemented` row additionally requires a current automated immutable execution
+  receipt; the rows currently marked `partially_implemented` do not have that execution evidence
+  in this repository snapshot. A PR that removes or renames a cited artifact must update the
+  registry and the corresponding row in the same PR.
 - Gap markers (`gap-test`, `gap-impl`, `gap-spec`) are expected, not embarrassing. They are the
   point of the document: a reader should be able to tell exactly what is proven, what is built but
   unproven, and what is only planned.

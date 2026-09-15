@@ -25,19 +25,21 @@ Every claim has:
 The validator requires unique control IDs, non-empty owners and scopes, valid dates, resolvable
 evidence references, and exact coverage between the document and registry. Every `tests/...` or
 `formal/...` artifact cited in a status row must resolve to a repository-artifact record and that
-record must be referenced by the row's claim; an immutable execution record must carry a
-structured execution ID plus a hashed, repository-owned JSON receipt containing the matching ID,
-result, and observation time. Claim `last_verified` dates are checked against
-`stale_after_days`. A malformed Markdown table row or empty/invalid status is an error; it cannot
-silently disappear.
+record must be referenced by the row's claim; an immutable execution record must carry the
+canonical GitHub Actions run URL for this repository plus a hashed, repository-owned JSON receipt.
+The receipt must repeat the run ID, repository, workflow path, head commit, result, conclusion, and
+observation time; a matching arbitrary ID or free-form receipt is not an execution record. Claim
+`last_verified` dates are checked against `stale_after_days`. A malformed Markdown table row or
+empty/invalid status is an error; it cannot silently disappear.
 
 ## Evidence vocabulary
 
 Evidence records point to a repository-owned file and include its SHA-256 digest. This prevents a
 free-form path in a prose table from being treated as proof after the artifact changes. An
-`immutable_execution` record uses its path as a local execution receipt and must carry a structured
-immutable execution identifier whose ID, result, and observation time match the receipt. An ID
-without an inspectable receipt is invalid, even when its syntax looks plausible.
+`immutable_execution` record uses its path as a local execution receipt and must carry a canonical
+GitHub Actions run URL, repository, positive run ID, 40-character head SHA, workflow path, result,
+conclusion, and observation time. These typed fields and the receipt digest bind the record to an
+inspectable execution shape; an arbitrary or self-authored ID without that provenance is invalid.
 
 `state` has these meanings:
 
@@ -50,9 +52,10 @@ without an inspectable receipt is invalid, even when its syntax looks plausible.
 - `failing`: the latest inspected execution did not pass.
 
 An `implemented` claim is green only when every referenced record is `current`, automated, and
-has `result: passed`. Disabled, manual-only, never-run, stale, missing, and failing evidence can
-never support that status. The validator reports these states rather than collapsing them to a
-boolean.
+has `result: passed`, and at least one referenced record is an inspectable immutable execution.
+Repository artifacts establish implementation scope but do not establish that a test executed.
+Disabled, manual-only, never-run, stale, missing, and failing evidence can never support that status.
+The validator reports these states rather than collapsing them to a boolean.
 
 This validator is intentionally local and deterministic. It is not wired into required CI by this
 child issue; release-check and required-check topology remain parent-owned.

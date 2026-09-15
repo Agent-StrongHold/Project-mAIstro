@@ -47,6 +47,10 @@ MARKER_STATUS = {
 STATUS_WORDS = {status: status for status in CLAIM_STATUSES}
 CONTROL_ID_RE = re.compile(r"^[A-Z][A-Z0-9.-]+$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+EXECUTION_ID_RE = re.compile(
+    r"^https://github\.com/Agent-StrongHold/Project-mAIstro/actions/runs/([1-9][0-9]{0,19})$"
+)
+HEAD_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 CITED_ARTIFACT_RE = re.compile(
     r"(?<![A-Za-z0-9_.-])((?:packages/[^\s;`,)]+/tests/[^\s;`,)]+)|"
     r"(?:formal|tests)/[^\s;`,)]+)"
@@ -104,8 +108,10 @@ def _relative_artifact(root: Path, value: Any, subject: str) -> tuple[Path | Non
     return resolved, []
 
 
-def _validate_execution_receipt(path: Path, record: dict[str, Any], subject: str) -> list[Finding]:
-    """Require an immutable execution ID to be backed by a typed local receipt."""
+def _validate_execution_receipt(  # noqa: C901
+    path: Path, record: dict[str, Any], subject: str
+) -> list[Finding]:
+    """Require a typed GitHub Actions receipt, not a self-authored ID-shaped claim."""
     try:
         receipt = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -113,17 +119,63 @@ def _validate_execution_receipt(path: Path, record: dict[str, Any], subject: str
     if not isinstance(receipt, dict):
         return [Finding(subject, "execution receipt must be a JSON object")]
     findings: list[Finding] = []
-    required = {"execution_id", "result", "observed_at"}
+    required = {
+        "execution_id",
+        "repository",
+        "run_id",
+        "head_sha",
+        "workflow",
+        "result",
+        "conclusion",
+        "observed_at",
+    }
     findings.extend(
         Finding(f"{subject}.receipt", reason)
         for reason in _require_keys(receipt, required, f"{subject}.receipt")
     )
-    if receipt.get("execution_id") != record.get("execution_id"):
+    execution_id = receipt.get("execution_id")
+    match = EXECUTION_ID_RE.fullmatch(execution_id) if isinstance(execution_id, str) else None
+    if match is None:
+        findings.append(
+            Finding(
+                subject,
+                "immutable execution ID must be a canonical GitHub Actions run URL",
+            )
+        )
+    elif record.get("execution_id") != execution_id:
         findings.append(Finding(subject, "execution receipt ID does not match execution_id"))
-    if not isinstance(receipt.get("result"), str) or not receipt["result"].strip():
+    if receipt.get("repository") != "Agent-StrongHold/Project-mAIstro":
+        findings.append(Finding(subject, "execution receipt repository is not this repository"))
+    run_id = receipt.get("run_id")
+    if not isinstance(run_id, int) or isinstance(run_id, bool) or run_id < 1:
+        findings.append(Finding(subject, "execution receipt run_id must be a positive integer"))
+    elif match is not None and int(match.group(1)) != run_id:
+        findings.append(Finding(subject, "execution receipt run_id does not match execution_id"))
+    head_sha = receipt.get("head_sha")
+    if not isinstance(head_sha, str) or not HEAD_SHA_RE.fullmatch(head_sha):
+        findings.append(Finding(subject, "execution receipt head_sha must be a 40-character SHA"))
+    workflow = receipt.get("workflow")
+    if (
+        not isinstance(workflow, str)
+        or not workflow.startswith(".github/workflows/")
+        or not workflow.endswith((".yml", ".yaml"))
+        or ".." in Path(workflow).parts
+    ):
+        findings.append(
+            Finding(subject, "execution receipt workflow must be a repository workflow path")
+        )
+    conclusion = receipt.get("conclusion")
+    if conclusion not in {"success", "failure", "cancelled", "timed_out"}:
+        findings.append(Finding(subject, "execution receipt conclusion is invalid"))
+    result = receipt.get("result")
+    if not isinstance(result, str) or not result.strip():
         findings.append(Finding(subject, "execution receipt result must be a non-empty string"))
-    elif "result" in record and receipt["result"] != record["result"]:
+    elif "result" in record and result != record["result"]:
         findings.append(Finding(subject, "execution receipt result does not match result"))
+    if result == "passed" and conclusion != "success":
+        findings.append(Finding(subject, "passed execution must have a success conclusion"))
+    if result == "failed" and conclusion != "failure":
+        findings.append(Finding(subject, "failed execution must have a failure conclusion"))
     try:
         receipt_observed = _parse_datetime(
             receipt.get("observed_at"), "observed_at", f"{subject}.receipt"
@@ -324,6 +376,13 @@ def _validate_claims(  # noqa: C901
                     Finding(subject, f"evidence is stale for this claim: {record.get('id')}")
                 )
         if status in GREEN_STATUSES:
+            if not any(record.get("kind") == "immutable_execution" for record in resolved):
+                findings.append(
+                    Finding(
+                        subject,
+                        "implemented claim requires at least one immutable execution record",
+                    )
+                )
             for record in resolved:
                 state = record.get("state")
                 if state in GREEN_BLOCKERS:
