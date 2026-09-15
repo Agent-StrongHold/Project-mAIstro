@@ -39,7 +39,14 @@ or placeholder-only section.
   survive untouched — and the scrub is idempotent, so re-validating a staged
   envelope does not rewrite already-recorded evidence. Rows written before this
   change are read back exactly as they were recorded rather than re-scrubbed on
-  read.
+  read. Mapping *keys* are scanned too, so a token-indexed object cannot carry
+  the credential past the scrub in its key, with two keys that redact to the
+  same label kept distinct rather than collapsed. A `key` that names what it
+  identifies (`effect_key`, `idempotency_key`, `partition_key`, `parent_key`,
+  …) now classifies as an identifier in `maistro.security.secret_policy`, so
+  the canonical capability events keep the `effect_key` that audit and replay
+  consumers join on. The byte ceiling is re-checked after the scrub, because
+  redaction can grow a field that passed the ceiling as submitted.
 - **An identity-free chat turn is routed as the anonymous principal again
   (#1165 regression, introduced by #1288).** `Container.route_request` had
   stopped substituting `ANONYMOUS_AUTH` for `auth=None`, so a turn that

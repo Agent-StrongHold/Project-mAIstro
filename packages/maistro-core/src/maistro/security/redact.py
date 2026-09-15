@@ -313,6 +313,11 @@ def redact(text: str) -> str:
 #: enough and the value was never inspected.
 REDACTED_FIELD = "[REDACTED]"
 
+#: Every replacement this module writes -- `REDACTED_FIELD` and the
+#: `[REDACTED_*]` span labels -- starts with this, which is how a re-scrub
+#: recognises a mapping key it produced on an earlier pass.
+_REDACTION_LABEL_PREFIX = "[REDACTED"
+
 
 def redact_structure(value: Any) -> Any:
     """Redact credential material from a nested JSON-shaped structure.
@@ -326,22 +331,25 @@ def redact_structure(value: Any) -> Any:
     classify names through :mod:`maistro.security.secret_policy`, so neither can
     drift into its own key-name list (#1159).
 
+    Mapping *keys* are scanned for secret shapes as well: a token-indexed object
+    (``{"xoxb-...": {...}}``) carries the credential in the key, where no field
+    name classifies it and no value scan reaches it. Two keys that redact to the
+    same label are kept distinct with a ``#n`` suffix rather than collapsing one
+    entry onto the other. A key whose *name* classifies as credential material
+    is kept as spelled: the name is what the caller reads back, and it is the
+    value under it that was the secret.
+
     Idempotent, so a caller that re-scrubs an already-scrubbed structure does not
     double-redact -- the canonical Event outbox re-validates envelopes exactly
-    that way.
+    that way. The ``#n`` suffixes survive a second pass for the same reason: a
+    redaction label does not match any secret shape.
 
     Recursion depth follows the input, so callers handling untrusted structures
     must bound nesting first; the canonical Event envelope checks its depth
     ceiling before scrubbing for this reason.
     """
     if isinstance(value, dict):
-        # The key object is preserved rather than coerced: `str(key)` is only
-        # how the name is *classified*, and rewriting a non-string key here
-        # would quietly change the payload a caller reads back.
-        return {
-            key: REDACTED_FIELD if is_secret_key_name(str(key)) else redact_structure(item)
-            for key, item in value.items()
-        }
+        return _redact_mapping(value)
     if isinstance(value, list):
         return [redact_structure(item) for item in value]
     if isinstance(value, tuple):
@@ -349,3 +357,40 @@ def redact_structure(value: Any) -> Any:
     if isinstance(value, str):
         return redact(value)
     return value
+
+
+def _redact_mapping(value: dict[Any, Any]) -> dict[Any, Any]:
+    """The mapping half of :func:`redact_structure`: names, keys, then values."""
+    scrubbed: dict[Any, Any] = {}
+    for key, item in value.items():
+        if isinstance(key, str) and key.startswith(_REDACTION_LABEL_PREFIX):
+            # A key an earlier pass already replaced with a label. Its
+            # segments (`redacted`, `api`, `key`) would classify as a
+            # credential *name* and swallow the value on every re-scrub;
+            # the label is evidence of a redaction, not a field name.
+            scrubbed[key] = redact_structure(item)
+        elif is_secret_key_name(str(key)):
+            scrubbed[key] = REDACTED_FIELD
+        else:
+            # A non-string key is preserved rather than coerced: `str(key)`
+            # is only how the name is *classified*, and rewriting it would
+            # quietly change the payload a caller reads back. A string key
+            # is scanned like any other string, because a credential used
+            # as a mapping key is still a credential.
+            new_key = redact(key) if isinstance(key, str) else key
+            scrubbed[_unique_key(scrubbed, new_key)] = redact_structure(item)
+    return scrubbed
+
+
+def _unique_key(scrubbed: dict[Any, Any], key: Any) -> Any:
+    """Suffix a key that already exists rather than overwriting the entry.
+
+    Two distinct secrets that redact to one label must not collapse onto a
+    single entry -- that would silently drop one of the caller's values.
+    """
+    if key not in scrubbed:
+        return key
+    suffix = 2
+    while f"{key}#{suffix}" in scrubbed:
+        suffix += 1
+    return f"{key}#{suffix}"

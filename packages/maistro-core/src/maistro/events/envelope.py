@@ -156,10 +156,11 @@ class EventEnvelope:
 
     def __post_init__(self) -> None:
         _validate_envelope_structure(self)
-        # Bounds first, scrub second, and the order is load-bearing twice over:
-        # rejecting resource abuse must not require first running the redactor
-        # over an unbounded payload, and `redact_structure` recurses, so it may
-        # only see a structure whose depth ceiling has already been enforced.
+        # Bounds first, scrub second, bounds again. The first order is
+        # load-bearing twice over: rejecting resource abuse must not require
+        # first running the redactor over an unbounded payload, and
+        # `redact_structure` recurses, so it may only see a structure whose
+        # depth ceiling has already been enforced.
         _check_field_bounds("payload", self.payload)
         _check_field_bounds("provenance", self.provenance)
         # `redact_structure` rebuilds every container it walks, so it is also
@@ -168,6 +169,14 @@ class EventEnvelope:
         # immutable leaves (str/int/float/bool/None) to share.
         object.__setattr__(self, "payload", redact_structure(self.payload))
         object.__setattr__(self, "provenance", redact_structure(self.provenance))
+        # And bounds again after the scrub: redaction can *grow* a field (an
+        # empty value under a secret name becomes `[REDACTED]`; a short token
+        # becomes a longer label), so a payload that passed the first check
+        # near the ceiling can come out of the scrub above it. The pre-scrub
+        # check bounds how much work the redactor is handed; this one is what
+        # makes the advertised ceiling hold for what a backend actually sees.
+        _check_field_bounds("payload", self.payload)
+        _check_field_bounds("provenance", self.provenance)
 
     @property
     def stream_id(self) -> str:

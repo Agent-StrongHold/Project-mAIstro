@@ -218,6 +218,38 @@ class TestPayloadSecretScrubbing:
         event = EventEnvelope(type="x", workspace_id="w1", payload=payload)
         assert event.payload == payload
 
+    def test_a_credential_used_as_a_mapping_key_is_scrubbed(self) -> None:
+        """A token-indexed payload carries the credential in the key, not the
+        value; the walker scans keys too (#1164 review)."""
+        event = EventEnvelope(
+            type="x", workspace_id="w1", payload={"indexed": {_SLACK_BOT_TOKEN: {"owner": "u"}}}
+        )
+        assert _SLACK_BOT_TOKEN not in event.payload["indexed"]
+        assert list(event.payload["indexed"].values()) == [{"owner": "u"}]
+
+    def test_a_capability_effect_key_survives_the_scrub(self) -> None:
+        """`effect_key` is the idempotency identifier every canonical capability
+        event carries so audit and replay consumers can join them; it is an
+        identifier, not a credential, and must reach the store intact."""
+        event = EventEnvelope(
+            type="capability.invocation.policy_decision",
+            workspace_id="w1",
+            payload={"effect_key": "ticket:create:123", "decision": "allow"},
+        )
+        assert event.payload["effect_key"] == "ticket:create:123"
+
+    def test_a_payload_the_scrub_grows_past_the_ceiling_is_rejected(self) -> None:
+        """Redaction can enlarge a field: an empty value under a secret name
+        becomes `[REDACTED]`. A payload that passes the pre-scrub bound near
+        the ceiling must still be held to the advertised ceiling after it."""
+        payload = {f"key_{n}": "" for n in range(15_000)}
+        # Under the ceiling as submitted -- this is the case the pre-scrub
+        # check alone would have admitted.
+        assert len(json.dumps(payload, separators=(",", ":"))) < MAX_EVENT_FIELD_BYTES
+        with pytest.raises(EventPayloadTooLarge) as excinfo:
+            EventEnvelope(type="x", workspace_id="w1", payload=payload)
+        assert excinfo.value.field == "payload"
+
     async def test_no_backend_can_persist_a_credential(self, store: EventStore) -> None:
         """The durable read-back is the real assertion: whatever the store wrote,
         reading it out again must not yield the credential."""

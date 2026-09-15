@@ -1024,6 +1024,42 @@ class TestRedactStructure:
         assert scrubbed["nested"]["n"] == 1
         assert scrubbed["items"][0]["n"] == 2
 
+    def test_a_secret_shaped_mapping_key_is_scrubbed(self):
+        """A token-indexed object carries the credential in the *key*, where no
+        field name classifies it and no value scan would reach it (#1164 review)."""
+        scrubbed = redact_structure({_SLACK_BOT_TOKEN: {"owner": "u"}})
+        assert _SLACK_BOT_TOKEN not in scrubbed
+        [label] = scrubbed
+        assert label.startswith("[REDACTED")
+        assert scrubbed[label] == {"owner": "u"}
+
+    def test_two_secret_keys_that_share_a_label_stay_distinct(self):
+        """Collapsing two credentials onto one label would silently drop one of
+        the caller's values; the second gets a suffix instead."""
+        other = _SLACK_BOT_TOKEN.replace("xoxb", "xoxp")
+        scrubbed = redact_structure({_SLACK_BOT_TOKEN: 1, other: 2})
+        assert sorted(scrubbed.values()) == [1, 2]
+        assert len(scrubbed) == 2
+        assert all(key.startswith("[REDACTED") for key in scrubbed)
+
+    def test_scrubbed_mapping_keys_are_stable_on_a_second_pass(self):
+        """The label a key was replaced with must not itself classify as a secret
+        *name* on re-scrub (its segments spell `redacted`/`api`/`key`), or the
+        outbox's re-validation would swallow the value under it."""
+        other = _SLACK_BOT_TOKEN.replace("xoxb", "xoxp")
+        once = redact_structure({_SLACK_BOT_TOKEN: {"n": 1}, other: 2})
+        assert redact_structure(once) == once
+
+    def test_identifier_style_key_names_survive(self):
+        """`effect_key` is the join key of every canonical capability event; an
+        idempotency, cache or partition key is likewise an identifier."""
+        payload = {
+            "effect_key": "ticket:create:123",
+            "idempotency_key": "9b2c",
+            "partition_key": "tenant-7",
+        }
+        assert redact_structure(payload) == payload
+
     def test_scalars_pass_through_untouched(self):
         assert redact_structure({"n": 5, "f": 1.5, "b": True, "none": None}) == {
             "n": 5,
