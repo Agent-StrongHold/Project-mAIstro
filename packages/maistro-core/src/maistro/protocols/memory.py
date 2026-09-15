@@ -183,8 +183,10 @@ class OutcomeStore(Protocol):
         self,
         task_type: str = "",
         days: int = 7,
+        org_id: str = "",
+        project_id: str = "",
     ) -> dict[str, Any]:
-        """Get completion rate stats: {total, succeeded, failed, rate, by_model}."""
+        """Get completion rate stats within the optional org/project scope."""
         ...
 
     async def get_experience_context(
@@ -203,8 +205,9 @@ class OutcomeStore(Protocol):
         group_by: str = "user_id",
         days: int = 7,
         org_id: str = "",
+        project_id: str = "",
     ) -> list[dict[str, Any]]:
-        """Aggregate token usage grouped by a dimension (user_id, team_id, model_used)."""
+        """Aggregate token usage within the optional org/project scope."""
         ...
 
     async def get_daily_timeseries(
@@ -212,8 +215,9 @@ class OutcomeStore(Protocol):
         group_by: str = "",
         days: int = 7,
         org_id: str = "",
+        project_id: str = "",
     ) -> list[dict[str, Any]]:
-        """Daily token usage timeseries, optionally grouped by a dimension."""
+        """Daily token usage timeseries within the optional org/project scope."""
         ...
 
     async def list_outcomes(
@@ -221,8 +225,10 @@ class OutcomeStore(Protocol):
         task_type: str = "",
         days: int = 7,
         limit: int = 50,
+        org_id: str = "",
+        project_id: str = "",
     ) -> list[Outcome]:
-        """List recent outcomes for admin inspection."""
+        """List recent outcomes within the optional org/project scope."""
         ...
 
     async def list_thumbs(
@@ -232,6 +238,7 @@ class OutcomeStore(Protocol):
         days: int = THUMB_WINDOW_DAYS,
         limit: int = THUMB_LIMIT,
         org_id: str = "",
+        project_id: str = "",
     ) -> list[Outcome]:
         """Outcomes carrying a thumb, most recent first.
 
@@ -352,8 +359,14 @@ class ContextAssemblyPolicy(Protocol):
         """Compressed conversation history (SPEC-189 rolling window)."""
         ...
 
-    async def layer3(self, project_id: str, n: int = 20, budget_tokens: int | None = None) -> str:
-        """Project changelog: recent Outcome records + WISDOM-tier episodic memories."""
+    async def layer3(
+        self,
+        project_id: str,
+        n: int = 20,
+        budget_tokens: int | None = None,
+        org_id: str = "",
+    ) -> str:
+        """Project changelog, scoped to the caller's org and project."""
         ...
 
     async def layer4(self, project_id: str) -> str:
@@ -368,6 +381,7 @@ class ContextAssemblyPolicy(Protocol):
         session_id: str,
         budget_tokens: int,
         query: str = "",
+        org_id: str = "",
     ) -> str:
         """Concatenate layers 0-4 in order, respecting budget_tokens total."""
         ...
