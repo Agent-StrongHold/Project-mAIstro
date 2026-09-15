@@ -134,10 +134,14 @@ async def send_turn(session_id: str, body: SendBody) -> dict[str, Any]:
 @router.get("/sessions/{session_id}/stream")
 async def stream_session(session_id: str, request: Request) -> StreamingResponse:
     manager = await _get_manager()
+    events = await manager.stream_events(session_id)
+    if isinstance(events, Unavailable):
+        status = 404 if events.reason.startswith("unknown harness session") else 503
+        raise HTTPException(status_code=status, detail=events.reason)
 
     async def event_gen() -> Any:
         yield ": connected\n\n"
-        async for event in manager.stream(session_id):
+        for event in events:
             if await request.is_disconnected():
                 break
             kind = event.get("type", "message") if isinstance(event, dict) else "message"

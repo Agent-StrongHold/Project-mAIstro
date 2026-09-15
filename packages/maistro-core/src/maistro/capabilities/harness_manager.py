@@ -81,6 +81,26 @@ class HarnessSessionManager:
         # SafeHarnessRunner supplies a DenyAllGate for this degraded case.
         return None
 
+    def _admission_unavailable(self) -> Unavailable | None:
+        """Refuse any manager without the canonical effect composition.
+
+        The old fallback called providers directly when Invocation wiring was
+        omitted. That made a partially configured graph or route an effect
+        bypass. Missing policy is also a configuration failure, not permission
+        to run with the wrapper's degraded gate.
+        """
+        if self._invocation_service is None or self._invocation_binding is None:
+            return Unavailable(
+                slot=SLOT_NAME,
+                reason="harness Invocation is not configured; effect path unavailable",
+            )
+        if self._policy is None and self._gate_factory is None:
+            return Unavailable(
+                slot=SLOT_NAME,
+                reason="harness action policy is unavailable; effect path is read-only",
+            )
+        return None
+
     async def _safe_for_session(self, session_id: str) -> SafeHarnessRunner | Unavailable:
         session = self._sessions.get(session_id)
         if session is None:
@@ -115,19 +135,16 @@ class HarnessSessionManager:
 
     async def start(self, agent_spec: AgentSpec, *, workdir: str) -> str | Unavailable:
         """Resolve + start a safety-wrapped harness session, or ``Unavailable``."""
-        if self._invocation_service is not None and self._invocation_binding is not None:
-            # Binding resolution belongs inside Invocation admission. Keeping
-            # this check out of the caller ensures a revoked Binding still
-            # produces the canonical policy/audit decision before refusal.
-            return await self._start_invocation(
-                agent_spec, workdir=workdir, binding=self._invocation_binding
-            )
-        provider = await self._registry.resolve(SLOT_NAME)
-        if not isinstance(provider, HarnessRunner):
-            return Unavailable(slot=SLOT_NAME, reason="no active harness_runner provider")
-        session_id = await provider.start_session(agent_spec, workdir=workdir)
-        self._sessions[session_id] = _Session(provider_name=provider.name)
-        return session_id
+        unavailable = self._admission_unavailable()
+        if unavailable is not None:
+            return unavailable
+        # Binding resolution belongs inside Invocation admission. Keeping this
+        # check out of the caller ensures a revoked Binding still produces the
+        # canonical policy/audit decision before refusal.
+        assert self._invocation_binding is not None
+        return await self._start_invocation(
+            agent_spec, workdir=workdir, binding=self._invocation_binding
+        )
 
     async def _start_invocation(
         self, agent_spec: AgentSpec, *, workdir: str, binding: Binding
@@ -177,21 +194,20 @@ class HarnessSessionManager:
     async def send(
         self, session_id: str, messages: list[dict[str, Any]]
     ) -> dict[str, Any] | Unavailable:
-        if self._invocation_service is not None and self._invocation_binding is not None:
-            return await self.send_invocation(
-                session_id,
-                messages,
-                binding=self._invocation_binding,
-                run_id=f"harness:{session_id}",
-                node_run_id=session_id,
-                attempt_id=uuid4().hex,
-                effect_key=f"harness:{session_id}:{uuid4().hex}",
-                invocation_service=self._invocation_service,
-            )
-        safe = await self._safe_for_session(session_id)
-        if isinstance(safe, Unavailable):
-            return safe
-        return await safe.send(session_id, messages)
+        unavailable = self._admission_unavailable()
+        if unavailable is not None:
+            return unavailable
+        assert self._invocation_service is not None and self._invocation_binding is not None
+        return await self.send_invocation(
+            session_id,
+            messages,
+            binding=self._invocation_binding,
+            run_id=f"harness:{session_id}",
+            node_run_id=session_id,
+            attempt_id=uuid4().hex,
+            effect_key=f"harness:{session_id}:{uuid4().hex}",
+            invocation_service=self._invocation_service,
+        )
 
     def _bound_session(
         self,
@@ -235,6 +251,11 @@ class HarnessSessionManager:
         health, and Binding constraints before the foreign harness is called.
         """
 
+        if self._policy is None and self._gate_factory is None:
+            return Unavailable(
+                slot=SLOT_NAME,
+                reason="harness action policy is unavailable; effect path is read-only",
+            )
         bound = self._bound_session(session_id, binding)
         if isinstance(bound, Unavailable):
             return bound
@@ -258,6 +279,12 @@ class HarnessSessionManager:
             )
         except (CapabilityUnavailable, InvocationDenied) as exc:
             return Unavailable(slot=SLOT_NAME, reason=str(exc))
+        except EffectNotApplied as exc:
+            # Preserve the harness-facing security error while retaining the
+            # Invocation service's explicit no-effect disposition.
+            if isinstance(exc.__cause__, HarnessInputBlocked):
+                raise exc.__cause__ from exc
+            raise
         executed = invocation.attempt_id == attempt_id
         result = invocation.result
         if not isinstance(result, dict):
@@ -308,19 +335,18 @@ class HarnessSessionManager:
             raise EffectNotApplied("Warden blocked harness input before dispatch") from exc
 
     async def stream(self, session_id: str) -> AsyncIterator[dict[str, Any]]:
-        if self._invocation_service is not None and self._invocation_binding is not None:
-            events = await self._stream_invocation(session_id)
-            if isinstance(events, Unavailable):
-                return
-            for event in events:
-                yield event
+        events = await self.stream_events(session_id)
+        if isinstance(events, Unavailable):
             return
-
-        safe = await self._safe_for_session(session_id)
-        if isinstance(safe, Unavailable):
-            return
-        async for event in safe.stream(session_id):
+        for event in events:
             yield event
+
+    async def stream_events(self, session_id: str) -> list[dict[str, Any]] | Unavailable:
+        """Admit and buffer a stream so HTTP callers can fail before 200."""
+        unavailable = self._admission_unavailable()
+        if unavailable is not None:
+            return unavailable
+        return await self._stream_invocation(session_id)
 
     async def _stream_invocation(self, session_id: str) -> list[dict[str, Any]] | Unavailable:
         """Admit and fully consume one provider stream through Invocation.
@@ -368,13 +394,10 @@ class HarnessSessionManager:
         return invocation.result
 
     async def stop(self, session_id: str) -> Unavailable | None:
-        if self._invocation_service is not None and self._invocation_binding is not None:
-            return await self._stop_invocation(session_id)
-        safe = await self._safe_for_session(session_id)
-        self._sessions.pop(session_id, None)
-        if not isinstance(safe, Unavailable):
-            await safe.stop(session_id)
-        return None
+        unavailable = self._admission_unavailable()
+        if unavailable is not None:
+            return unavailable
+        return await self._stop_invocation(session_id)
 
     async def _stop_invocation(self, session_id: str) -> Unavailable | None:
         binding = self._invocation_binding

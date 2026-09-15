@@ -11,6 +11,7 @@ from maistro.agents.spec.agent_spec import AgentRole, AgentSpec
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.binding_store import InMemoryBindingStore
 from maistro.capabilities.bootstrap import default_capability_registry
+from maistro.capabilities.effect_context import binding_scope_policy, new_effect_context
 from maistro.capabilities.governed_invocation import GovernedInvocationExecutionService
 from maistro.capabilities.harness_manager import HarnessSessionManager
 from maistro.capabilities.invocation import InMemoryInvocationStore, InvocationExecutionService
@@ -93,6 +94,30 @@ def _registry_with(harness: _FakeHarness):
     return reg
 
 
+def _governed_manager(
+    harness: _FakeHarness,
+    *,
+    warden: Any,
+    policy: SequencePolicyEngine | None = None,
+) -> HarnessSessionManager:
+    effects = new_effect_context(policy_evaluator=binding_scope_policy)
+    binding = Binding(
+        binding_id=f"test-harness-{id(harness)}",
+        workspace_id="default",
+        project_id="default",
+        capability=SLOT_NAME,
+        provider_name="fake",
+    )
+    effects.bindings.register(binding)
+    return HarnessSessionManager(
+        _registry_with(harness),
+        warden=warden,
+        policy=policy or SequencePolicyEngine([]),
+        invocation_service=effects.invocations,
+        invocation_binding=binding,
+    )
+
+
 async def test_start_returns_unavailable_when_no_provider():
     reg = default_capability_registry(entry_points=[])
     mgr = HarnessSessionManager(reg, warden=_StubWarden())
@@ -101,14 +126,52 @@ async def test_start_returns_unavailable_when_no_provider():
 
 
 async def test_start_returns_unavailable_when_unhealthy():
-    reg = _registry_with(_FakeHarness(healthy=False))
-    mgr = HarnessSessionManager(reg, warden=_StubWarden())
+    harness = _FakeHarness(healthy=False)
+    mgr = _governed_manager(harness, warden=_StubWarden())
     assert isinstance(await mgr.start(_spec(), workdir="/w"), Unavailable)
+
+
+async def test_missing_invocation_dependencies_fail_closed_without_provider_call():
+    harness = _FakeHarness()
+    mgr = HarnessSessionManager(_registry_with(harness), warden=_StubWarden())
+
+    result = await mgr.start(_spec(), workdir="/w")
+
+    assert isinstance(result, Unavailable)
+    assert harness.started == []
+
+
+async def test_policy_dependency_failure_denies_harness_start_without_provider_call():
+    harness = _FakeHarness()
+
+    async def broken_policy(_binding: Binding, _request: Any, _context: Any) -> PolicyVerdict:
+        raise RuntimeError("policy store unavailable")
+
+    effects = new_effect_context(policy_evaluator=broken_policy)
+    binding = Binding(
+        binding_id="binding-harness-policy-failure",
+        workspace_id="default",
+        project_id="default",
+        capability=SLOT_NAME,
+        provider_name="fake",
+    )
+    mgr = HarnessSessionManager(
+        _registry_with(harness),
+        warden=_StubWarden(),
+        policy=SequencePolicyEngine([]),
+        invocation_service=effects.invocations,
+        invocation_binding=binding,
+    )
+
+    result = await mgr.start(_spec(), workdir="/w")
+
+    assert isinstance(result, Unavailable)
+    assert harness.started == []
 
 
 async def test_full_session_lifecycle_with_safety():
     harness = _FakeHarness()
-    mgr = HarnessSessionManager(_registry_with(harness), warden=_StubWarden(block_on="EVIL"))
+    mgr = _governed_manager(harness, warden=_StubWarden(block_on="EVIL"))
 
     sid = await mgr.start(_spec(), workdir="/w")
     assert isinstance(sid, str)
@@ -129,7 +192,8 @@ async def test_full_session_lifecycle_with_safety():
 
 
 async def test_send_and_stream_unknown_session():
-    mgr = HarnessSessionManager(_registry_with(_FakeHarness()), warden=_StubWarden())
+    harness = _FakeHarness()
+    mgr = _governed_manager(harness, warden=_StubWarden())
     assert isinstance(await mgr.send("nope", []), Unavailable)
     assert [e async for e in mgr.stream("nope")] == []
 
@@ -137,7 +201,23 @@ async def test_send_and_stream_unknown_session():
 async def test_disable_after_start_re_resolves_without_provider_call():
     harness = _FakeHarness()
     registry = _registry_with(harness)
-    mgr = HarnessSessionManager(registry, warden=_StubWarden())
+    effects = new_effect_context(policy_evaluator=binding_scope_policy)
+    binding = Binding(
+        binding_id="binding-harness-disable",
+        workspace_id="default",
+        project_id="default",
+        capability=SLOT_NAME,
+        provider_name="fake",
+    )
+    effects.bindings.register(binding)
+    mgr = HarnessSessionManager(
+        registry,
+        warden=_StubWarden(),
+        policy=SequencePolicyEngine([]),
+        invocation_service=effects.invocations,
+        invocation_binding=binding,
+        binding_store=effects.bindings,
+    )
     sid = await mgr.start(_spec(), workdir="/w")
     assert isinstance(sid, str)
     registry.set_enabled(SLOT_NAME, False)
@@ -166,7 +246,7 @@ async def test_policy_failure_denies_actions_without_allow_all_fallback():
 async def test_policy_engine_gates_actions_per_session():
     harness = _FakeHarness(actions=[{"tool": "rm"}, {"tool": "ls"}])
     policy = SequencePolicyEngine([AfterCountRule("rm", threshold=0)])
-    mgr = HarnessSessionManager(_registry_with(harness), warden=_StubWarden(), policy=policy)
+    mgr = _governed_manager(harness, warden=_StubWarden(), policy=policy)
 
     sid = await mgr.start(_spec(), workdir="/w")
     assert isinstance(sid, str)
@@ -218,7 +298,7 @@ async def test_revoked_binding_after_start_denies_stream_without_provider_call()
 
 async def test_send_invocation_preserves_safety_and_canonical_correlation():
     harness = _FakeHarness()
-    mgr = HarnessSessionManager(_registry_with(harness), warden=_StubWarden(block_on="EVIL"))
+    mgr = _governed_manager(harness, warden=_StubWarden(block_on="EVIL"))
     sid = await mgr.start(_spec(), workdir="/w")
     assert isinstance(sid, str)
 
@@ -269,8 +349,8 @@ async def test_send_invocation_preserves_safety_and_canonical_correlation():
 
 async def test_cached_invocation_does_not_reemit_previously_gated_actions():
     harness = _FakeHarness(actions=[{"tool": "write", "path": "result.txt"}])
-    mgr = HarnessSessionManager(
-        _registry_with(harness),
+    mgr = _governed_manager(
+        harness,
         warden=_StubWarden(),
         policy=SequencePolicyEngine([]),
     )

@@ -9,8 +9,11 @@ import routes.harness as harness_mod
 from services.engine import get_engine
 
 from maistro.capabilities import HarnessSessionManager
+from maistro.capabilities.binding import Binding
+from maistro.capabilities.effect_context import binding_scope_policy, new_effect_context
 from maistro.capabilities.slots.harness_runner import SLOT_NAME
 from maistro.capabilities.types import ProviderHealth
+from maistro.policy import SequencePolicyEngine
 from maistro.security._types import WardenVerdict
 
 
@@ -71,7 +74,23 @@ def _install_harness(*, warden: Any, healthy: bool = True, enabled: bool = True)
     reg.register(harness)
     reg.activate(SLOT_NAME, "fake")
     reg.set_enabled(SLOT_NAME, enabled)
-    harness_mod._manager = HarnessSessionManager(reg, warden=warden)
+    effects = new_effect_context(policy_evaluator=binding_scope_policy)
+    binding = Binding(
+        binding_id=f"test-harness-route-{id(harness)}",
+        workspace_id="default",
+        project_id="default",
+        capability=SLOT_NAME,
+        provider_name="fake",
+    )
+    effects.bindings.register(binding)
+    harness_mod._manager = HarnessSessionManager(
+        reg,
+        warden=warden,
+        policy=SequencePolicyEngine([]),
+        invocation_service=effects.invocations,
+        invocation_binding=binding,
+        binding_store=effects.bindings,
+    )
     return reg, harness
 
 
@@ -184,8 +203,8 @@ def test_shipped_route_factory_rechecks_disabled_capability_for_stream(admin_cli
 
         r = admin_client.get(f"/v1/harness/sessions/{sid}/stream")
 
-        assert r.status_code == 200
-        assert "hi" not in r.text
+        assert r.status_code == 503
+        assert "harness" in r.json()["detail"].lower()
         assert harness.streamed == 0
     finally:
         harness_mod._manager = None
@@ -217,7 +236,8 @@ def test_shipped_route_factory_rechecks_revoked_binding(admin_client):
         assert r.status_code == 503
         assert harness.sent == []
         r = admin_client.get(f"/v1/harness/sessions/{sid}/stream")
-        assert r.status_code == 200 and "hi" not in r.text
+        assert r.status_code == 503
+        assert "revoked" in r.json()["detail"]
         assert harness.streamed == 0
         r = admin_client.delete(f"/v1/harness/sessions/{sid}")
         assert r.status_code == 503
