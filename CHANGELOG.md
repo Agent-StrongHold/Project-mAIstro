@@ -25,6 +25,15 @@ or placeholder-only section.
 
 ### Security
 
+- **An identity-free chat turn is routed as the anonymous principal again
+  (#1165 regression, introduced by #1288).** `Container.route_request` had
+  stopped substituting `ANONYMOUS_AUTH` for `auth=None`, so a turn that
+  carried no identity reached the strategies with `auth=None` — and they
+  consult Sentinel only when `auth is not None`, which let an unauthenticated
+  turn walk past the fail-closed permission table. The armed-controls refusal
+  survived; only the substitution was lost. Both halves are restored through
+  one `_resolve_chat_auth`, and the existing regression test for #1165 passes
+  again.
 - **DevSkim scans the shipped surface instead of everything (no linked issue:
   scanner configuration).** The action ran unconfigured, so the test and
   vendored trees were scanned alongside the shipped ones and supplied 619 of
@@ -213,6 +222,23 @@ or placeholder-only section.
   answering a turn whose spine could not be written before the model was
   called — is unchanged; #1108's other half (refusing a turn outright when no
   canonical spine is wired) is not addressed here.
+- **A launch the store refuses no longer masks itself as a lifecycle error
+  (#1108 follow-up to #1288).** When the Attempt's own RUNNING write failed,
+  the executor's failure path asked the lifecycle for `FAILED` from `CREATED`
+  — a transition it has never allowed — so the caller saw
+  `InvalidLifecycleTransition` instead of the refusal, and the chat
+  pre-dispatch fallback never received the `RunIntegrityError` it answers on.
+  An Attempt still `CREATED` now settles as `CANCELLED` carrying the refusal
+  as its error (nothing ran, so nothing failed), the refusal propagates, and
+  the NodeRun parks for a retry decision exactly as a `FAILED` Attempt would.
+- **A task's worker executes under the request id that admitted it
+  (#1063).** `TaskRunAdmitter` recorded `X-Request-ID` on the Run's
+  provenance, but the worker that later picks the task up runs from the
+  dispatcher's own context, after the admitting request has ended, and
+  restored nothing — so the execution's ambient context and log lines carried
+  no request id at all. `TaskAttemptExecutor` now binds the Run's persisted
+  request id, Workspace and Project around the Attempt it runs, so one id
+  follows a task from the HTTP boundary through the Run into its execution.
 - **The migration chain has one head again, and the debt ledger matches the
   shipped tree (no linked issue: base-branch repair).** Merging #1263 carried
   a renumber made against an older base: it renamed
