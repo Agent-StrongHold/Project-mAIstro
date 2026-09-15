@@ -1,15 +1,15 @@
 """Make canonical delegation admission identities unique (#1090).
 
-Revision ID: 033
-Revises: 032
+Revision ID: 037
+Revises: 036_consumer_cursors
 """
 
 from __future__ import annotations
 
 from alembic import op
 
-revision = "033"
-down_revision = "032"
+revision = "037"
+down_revision = "036_consumer_cursors"
 branch_labels = None
 depends_on = None
 
