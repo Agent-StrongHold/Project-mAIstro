@@ -173,12 +173,14 @@ def _run_matches_status_scope(
     *,
     status: RunStatus,
     project_id: str | None,
+    workspace_id: str | None,
     admission_source: str | None = None,
 ) -> bool:
     """Whether one Run belongs in a status/scope/consumer listing."""
     return (
         run.status is status
         and (project_id is None or run.project_id == project_id)
+        and (workspace_id is None or run.workspace_id == workspace_id)
         and (admission_source is None or run.provenance.get(ADMISSION_SOURCE) == admission_source)
     )
 
@@ -335,6 +337,7 @@ class RunStore(Protocol):
         limit: int = 100,
         offset: int = 0,
         project_id: str | None = None,
+        workspace_id: str | None = None,
         admission_source: str | None = None,
         after: RunCursor | None = None,
     ) -> list[Run]: ...
@@ -746,6 +749,7 @@ class InMemoryRunStore:
         limit: int = 100,
         offset: int = 0,
         project_id: str | None = None,
+        workspace_id: str | None = None,
         admission_source: str | None = None,
         after: RunCursor | None = None,
     ) -> list[Run]:
@@ -773,6 +777,7 @@ class InMemoryRunStore:
                     run,
                     status=status,
                     project_id=project_id,
+                    workspace_id=workspace_id,
                     admission_source=admission_source,
                 )
             ),

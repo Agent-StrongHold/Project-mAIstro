@@ -11,7 +11,12 @@ import json
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from maistro.events.envelope import EventAppendResult, EventEnvelope, correlated
+from maistro.events.envelope import (
+    EventAppendResult,
+    EventEnvelope,
+    correlated,
+    reconstruct_persisted_event,
+)
 
 if TYPE_CHECKING:
     import asyncpg
@@ -164,7 +169,9 @@ def _json_object(value: Any) -> dict[str, Any]:
 
 
 def _row_to_event(row: Any) -> EventEnvelope:
-    return EventEnvelope(
+    # Bypasses the payload/provenance size bound: a row written before #1164
+    # tightened it must stay readable (see reconstruct_persisted_event).
+    return reconstruct_persisted_event(
         event_id=row["event_id"],
         sequence=int(row["sequence"]),
         type=row["type"],
