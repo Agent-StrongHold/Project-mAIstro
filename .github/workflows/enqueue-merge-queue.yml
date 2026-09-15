@@ -18,6 +18,9 @@ on:
     - cron: "*/30 * * * *"
 
 permissions:
+  # actions: read lists recent merge-group runs so a head that already failed
+  # inside the queue is quarantined instead of re-queued every scan.
+  actions: read
   checks: read
   contents: read
   pull-requests: read
