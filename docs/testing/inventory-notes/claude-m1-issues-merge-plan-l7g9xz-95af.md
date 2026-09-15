@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/hive-conductor/backend/tests: +1
-  packages/maistro-core/tests: +54
+  packages/maistro-core/tests: +65
 ---
 # claude-m1-issues-merge-plan-l7g9xz-95af
 
@@ -63,3 +63,41 @@ during a due resume and during a queued resume each abort the tick rather than
 being swallowed by per-candidate isolation, and a due candidate with no
 `resume_at` raises rather than paging from an invented cursor. `recovery.py`
 is now at 100% line coverage.
+
+A third review round (Codex on the develop merge) found three defects in this
+branch's own code and each is now pinned by a case that fails without its fix.
+
+`packages/maistro-core/tests` also covers, in this round:
+
+- **A failure after the candidate was claimed is raised, not isolated**
+  (`test_recovery_wakeup.py`, +2). `recover_queued_graph_runs`' generic
+  `except Exception` arm reported every failure as candidate-local, unlike the
+  `(KeyError, ValueError)` arm beside it, which re-reads the record first.
+  `resume_durable_graph` checkpoints the QUEUED continuation and moves the Run
+  to RUNNING before anything that can fail that way, so a swallowed failure
+  stranded the Run for good: the QUEUED scan no longer returns it and the due
+  index never held it. The pair covers both halves of the rule -- a claimed
+  candidate raises, an untouched one is still isolated so the tick carries on.
+
+- **Keyset cursors page by instant, not by printed offset**
+  (`test_continuation_conformance.py`, +3, one per backend). Rows were ordered
+  as `datetime` and then paged past by comparing `isoformat()` strings. Those
+  agree only while every row prints the same offset: `01:00+01:00` is the
+  earlier instant than `00:30+00:00` but its string sorts after, so a cursor at
+  the first row excluded the second from every later page, permanently --
+  the starvation this branch exists to remove, reintroduced by a formatting
+  detail. `resume_at` is whatever the pausing node computed and nothing
+  required it to be UTC. `cursor_time` now normalizes every cursor key and
+  every index column written beside one. PostgreSQL never had the bug (it
+  parses the cursor back to a `timestamptz`), so this is the case where the
+  three backends silently disagreed and only a conformance test could say so.
+
+- **A filtering page cannot inspect past the budget it was given**
+  (`test_canonical_due_scan.py`, +6, two cases per backend). The walker passes
+  its *remaining* inspection budget as the page size, but `scan_due_page` kept
+  its own independent 2,000-row ceiling, so one nominally 2,000-row tick could
+  inspect nearly twice that. The budget is now passed through as
+  `max_inspected`. The second case drives the real `_due_page_fetcher` seam and
+  proves the cap is a pace rather than a horizon: capped below the stale
+  prefix, the live Run is unreachable on the first tick and reached on a later
+  one.

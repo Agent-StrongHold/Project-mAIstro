@@ -233,3 +233,72 @@ async def test_the_inspection_ceiling_bounds_one_scan_of_a_settled_prefix(
         now=NOW, limit=1, after=first.resume_after, max_inspected=STALE_AHEAD
     )
     assert [record.run_id for record in second.items] == [live]
+
+
+async def test_a_filtering_page_cannot_inspect_past_the_budget_it_was_given(
+    continuations: GraphContinuationStore,
+) -> None:
+    """The scanner's own ceiling must not be independent of the walker's.
+
+    `scan_due_page` walks past stale rows under a `max_inspected` of its own.
+    Left at its default while the walker is near the end of *its* budget, one
+    supposedly bounded tick inspects the walker's remaining rows plus a whole
+    fresh ceiling of the scanner's. The budget the walker passes as the page
+    size is the remaining budget, so it has to bound the scanner too.
+    """
+    store, _live = await _stale_prefix_then_live(continuations)
+
+    budget = 3
+    page = await store.scan_due_page(now=NOW, limit=1, max_inspected=budget)
+
+    assert page.inspected is not None
+    assert page.inspected <= budget
+    # Still short of the live Run behind the stale prefix, and honest about it:
+    # a bounded page that found nothing reports where it got to so the next
+    # tick resumes there rather than re-reading this prefix.
+    assert page.items == []
+    assert page.exhausted is False
+    assert page.resume_after is not None
+
+
+async def test_the_walker_passes_its_remaining_budget_to_a_filtering_page(
+    continuations: GraphContinuationStore,
+) -> None:
+    """End to end: the seam `_due_page_fetcher` builds, not a hand-rolled one.
+
+    `_stale_prefix_then_live` puts `STALE_AHEAD` stale rows ahead of the live
+    one. Capping the walk below that proves the cap reaches the scanner: with
+    the scanner on its own default ceiling it would page the whole prefix and
+    return the live Run in one tick regardless of what the walker allowed.
+    """
+    from maistro.graph.durable_runs.recovery import _due_page_fetcher
+
+    store, live = await _stale_prefix_then_live(continuations)
+    fetch = _due_page_fetcher(store, NOW)
+    scan: ScanContinuation[tuple[str, str]] = ScanContinuation()
+
+    capped = await fair_page_scan(
+        fetch_page=fetch,
+        cursor_of=lambda record: (record.resume_at.isoformat(), record.run_id),
+        eligible=lambda record: True,
+        limit=1,
+        max_inspected=STALE_AHEAD // 2,
+        continuation=scan,
+    )
+    assert capped == []
+    assert scan.resume_after is not None
+
+    # The cap is a pace, not a horizon: later ticks reach it.
+    for _ in range(4):
+        found = await fair_page_scan(
+            fetch_page=fetch,
+            cursor_of=lambda record: (record.resume_at.isoformat(), record.run_id),
+            eligible=lambda record: True,
+            limit=1,
+            max_inspected=STALE_AHEAD // 2,
+            continuation=scan,
+        )
+        if [record.run_id for record in found] == [live]:
+            break
+    else:
+        pytest.fail("the live Run was never reached across repeated capped ticks")

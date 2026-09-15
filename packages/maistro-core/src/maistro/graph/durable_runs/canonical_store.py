@@ -27,7 +27,7 @@ from maistro.runs.model import TERMINAL_RUN_STATUSES, Attempt, NodeRun, Run, Run
 from maistro.runs.store import RunIntegrityError, RunStore
 
 from .continuation import GraphContinuation, GraphContinuationStore
-from .fair_scan import DEFAULT_MAX_INSPECTED, ScanPage
+from .fair_scan import DEFAULT_MAX_INSPECTED, ScanPage, cursor_time
 from .hitl import earliest_hitl_deadline, settlement_time
 from .spine import mirror_lifecycle
 from .stores import answer_record, settle_hitl_record
@@ -436,7 +436,7 @@ class CanonicalDurableRunStore:
         record = await self.get(run_id)
         if record is None or record.resume_at is None:
             return None
-        position = (record.resume_at.isoformat(), record.run_id)
+        position = (cursor_time(record.resume_at), record.run_id)
         if record.run.status in _RECOVERY_VISIBLE_STATUSES and record.resume_at <= now:
             return position, record
         return position, None

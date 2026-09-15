@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 import aiosqlite
@@ -389,3 +389,35 @@ async def test_a_delete_removes_the_continuation_and_reports_what_it_removed(
     assert await store.get("run-1") is None
     assert await store.delete("run-1") is False
     assert await store.delete("never-created") is False
+
+
+async def test_due_cursor_pages_by_instant_not_by_printed_offset(
+    store: GraphContinuationStore,
+) -> None:
+    """A cursor must order by the instant, whatever offset the row printed.
+
+    `resume_at` is whatever the pausing node computed, and nothing requires it
+    to be UTC. `01:00+01:00` is the *earlier* instant than `00:30+00:00` and
+    sorts before it as a datetime, but its ISO string sorts after -- so a
+    backend that orders by datetime and then pages by comparing strings
+    excludes the later row from every subsequent page, permanently. That is
+    the starvation the keyset cursor exists to remove, reintroduced by a
+    formatting detail.
+
+    PostgreSQL never had this: it parses the cursor back to a timestamptz and
+    compares instants. Memory and SQLite compare the strings, so this is the
+    case where the three backends silently disagreed.
+    """
+    earlier = datetime(2026, 8, 29, 1, 0, tzinfo=timezone(timedelta(hours=1)))
+    later = datetime(2026, 8, 29, 0, 30, tzinfo=UTC)
+    assert earlier < later
+    assert earlier.isoformat() > later.isoformat()  # the trap, stated outright
+
+    await store.create(_continuation("offset-earlier", status=RunStatus.WAITING, resume_at=earlier))
+    await store.create(_continuation("offset-later", status=RunStatus.WAITING, resume_at=later))
+
+    now = datetime(2026, 8, 29, 12, tzinfo=UTC)
+    assert await store.list_due_run_ids(now=now, limit=10) == ["offset-earlier", "offset-later"]
+
+    cursor = (earlier.astimezone(UTC).isoformat(), "offset-earlier")
+    assert await store.list_due_run_ids(now=now, limit=10, after=cursor) == ["offset-later"]

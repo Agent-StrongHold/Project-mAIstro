@@ -13,6 +13,7 @@ from maistro.graph.execution_state import GraphExecutionState, thaw_json_value
 from maistro.runs.lifecycle import settle_open_node_run, transition_node_run, transition_run
 from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
 
+from .fair_scan import cursor_time
 from .hitl import (
     HitlDeadlineElapsed,
     HitlDeadlinePending,
@@ -314,12 +315,12 @@ class InMemoryDurableRunStore:
             and (project_id is None or record.run.project_id == project_id)
             and (workspace_id is None or record.run.workspace_id == workspace_id)
         ]
-        matching.sort(key=lambda record: (record.run.created_at.isoformat(), record.run_id))
+        matching.sort(key=lambda record: (cursor_time(record.run.created_at), record.run_id))
         if after is not None:
             matching = [
                 record
                 for record in matching
-                if (record.run.created_at.isoformat(), record.run_id) > after
+                if (cursor_time(record.run.created_at), record.run_id) > after
             ]
         return [_clone(record) for record in matching[:limit]]
 

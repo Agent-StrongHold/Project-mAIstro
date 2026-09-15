@@ -27,6 +27,7 @@ from maistro.graph.execution_state import GraphExecutionState
 from maistro.graph.traversal_commit import TraversalCheckpoint, TraversalCommit
 from maistro.runs.model import RunStatus
 
+from .fair_scan import cursor_time
 from .hitl import earliest_hitl_deadline, earliest_hitl_deadline_from_state
 from .types import DurableRunRecord
 
@@ -127,14 +128,14 @@ def _clone(continuation: GraphContinuation) -> GraphContinuation:
 
 def _created_cursor(row: GraphContinuation) -> tuple[str, str]:
     """The ``(created_at_iso, run_id)`` keyset position of one row (#1056, #1109)."""
-    created = row.created_at.isoformat() if row.created_at is not None else ""
+    created = cursor_time(row.created_at) if row.created_at is not None else ""
     return (created, row.run_id)
 
 
 def _due_cursor(row: GraphContinuation) -> tuple[str, str]:
     """The ``(resume_at_iso, run_id)`` keyset position of one due row (#1098)."""
     assert row.resume_at is not None  # narrowed by the due-status/deadline filter above
-    return (row.resume_at.isoformat(), row.run_id)
+    return (cursor_time(row.resume_at), row.run_id)
 
 
 class InMemoryGraphContinuationStore:
@@ -360,7 +361,7 @@ class SqliteGraphContinuationStore:
             RunStatus.WAITING.value,
             RunStatus.PAUSED.value,
             RunStatus.RUNNING.value,
-            now.isoformat(),
+            cursor_time(now),
         ]
         if after is not None:
             sql += " AND (resume_at, run_id) > (?, ?)"
@@ -378,7 +379,7 @@ class SqliteGraphContinuationStore:
                   AND hitl_deadline_at <= ?
              ORDER BY hitl_deadline_at ASC, run_id ASC
                 LIMIT ?""",
-            (RunStatus.PAUSED.value, now.isoformat(), limit),
+            (RunStatus.PAUSED.value, cursor_time(now), limit),
         )
         return [str(row[0]) for row in await cursor.fetchall()]
 
@@ -404,9 +405,9 @@ class SqliteGraphContinuationStore:
         values = (
             continuation.status.value,
             continuation.project_id,
-            continuation.created_at.isoformat() if continuation.created_at else None,
-            continuation.resume_at.isoformat() if continuation.resume_at else None,
-            continuation.hitl_deadline_at.isoformat() if continuation.hitl_deadline_at else None,
+            cursor_time(continuation.created_at) if continuation.created_at else None,
+            cursor_time(continuation.resume_at) if continuation.resume_at else None,
+            cursor_time(continuation.hitl_deadline_at) if continuation.hitl_deadline_at else None,
             continuation.version,
             continuation.model_dump_json(),
         )

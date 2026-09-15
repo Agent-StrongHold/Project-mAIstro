@@ -197,6 +197,26 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Bounded recovery scans page by instant, bound their own inspection, and no
+  longer strand a half-claimed Run (#1098, #1056, #1109, #1127).** Three
+  defects found reviewing the fair-scan work, each of which defeated the
+  starvation fix it was part of. Keyset cursors ordered rows as timestamps but
+  paged past them by comparing the printed ISO strings, which agree only while
+  every row prints the same offset -- `01:00+01:00` is the earlier instant than
+  `00:30+00:00` yet its string sorts after, so a cursor taken at the first row
+  excluded the second from every later page, permanently; cursor keys and the
+  index columns written beside them are now normalized to UTC (PostgreSQL was
+  already correct, so the three store backends had silently disagreed).
+  `CanonicalDurableRunStore.scan_due_page` kept an inspection ceiling
+  independent of the walker's, letting one nominally 2,000-row tick inspect
+  nearly twice that; the walker's remaining budget is now passed through.
+  And `recover_queued_graph_runs` reported *every* unexpected failure as
+  candidate-local, including one raised after the candidate was already
+  checkpointed and moved to RUNNING -- which stranded that Run permanently,
+  since the QUEUED scan no longer returns it and the due index never held it;
+  a partial claim now raises instead of being swallowed, while a candidate
+  left untouched is still isolated so the tick carries on.
+
 - **A chat turn whose canonical record fails *after* the model answered is no
   longer asked again (#1108).** `Container._execute_chat_turn` fell
   back to a fresh `dispatch()` on any `RunIntegrityError` without knowing

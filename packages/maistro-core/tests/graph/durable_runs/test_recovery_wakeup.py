@@ -1070,3 +1070,72 @@ def test_a_due_candidate_without_a_resume_at_cannot_be_paged_by() -> None:
 
     with pytest.raises(ValueError, match="no resume_at to page by"):
         recovery._due_cursor_key(record)
+
+
+@pytest.mark.asyncio
+async def test_a_failure_after_the_candidate_was_claimed_is_raised_not_swallowed(
+    monkeypatch,
+) -> None:
+    """A partially claimed Run must not be reported as a handled candidate.
+
+    `resume_durable_graph` checkpoints the QUEUED continuation and moves the
+    canonical Run to RUNNING before it does anything that can fail this way.
+    Treating a later failure as candidate-local strands the Run for good: the
+    QUEUED scan no longer returns it and the due index never held it, so
+    nothing would ever look at it again. The generic arm used to do exactly
+    that, unlike the `(KeyError, ValueError)` arm beside it, which re-reads
+    the record first.
+    """
+    run = _queued_run()
+    initial = recovery._initial_queued_record(run)
+    store = _BootstrapStore(initial)
+
+    async def _resume(run_id: str, **kwargs) -> None:
+        del kwargs
+        # Stand in for the real seam: claim the candidate, then fail after it.
+        claimed = store.records[run_id]
+        store.records[run_id] = claimed.model_copy(
+            update={"run": claimed.run.model_copy(update={"status": RunStatus.RUNNING})}
+        )
+        raise RuntimeError("store hiccup after the claim")
+
+    monkeypatch.setattr(recovery, "resume_durable_graph", _resume)
+
+    with pytest.raises(RuntimeError, match="store hiccup after the claim"):
+        await recovery.recover_queued_graph_runs(
+            store=store,
+            run_store=_RunStore(run),
+            eligible=lambda _candidate: True,
+            node_resolver_factory=lambda _run: lambda _node_id, _graph: None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_failure_before_anything_was_claimed_stays_candidate_local(
+    monkeypatch,
+) -> None:
+    """The other half of the rule: an untouched candidate is still isolated.
+
+    The fix above must not turn every unexpected error into an aborted tick —
+    a Run left exactly as the scan found it is genuinely candidate-local, and
+    the remaining candidates still deserve their turn.
+    """
+    run = _queued_run()
+    initial = recovery._initial_queued_record(run)
+    store = _BootstrapStore(initial)
+
+    async def _resume(run_id: str, **kwargs) -> None:
+        del run_id, kwargs
+        raise RuntimeError("resolver blew up before touching anything")
+
+    monkeypatch.setattr(recovery, "resume_durable_graph", _resume)
+
+    recovered = await recovery.recover_queued_graph_runs(
+        store=store,
+        run_store=_RunStore(run),
+        eligible=lambda _candidate: True,
+        node_resolver_factory=lambda _run: lambda _node_id, _graph: None,
+    )
+
+    assert recovered == 0
+    assert store.records[run.run_id].run.status is RunStatus.QUEUED

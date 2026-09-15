@@ -77,7 +77,15 @@ def _due_page_fetcher(
         async def scan(
             cursor: tuple[str, str] | None, page_size: int
         ) -> ScanPage[DurableRunRecord, tuple[str, str]]:
-            return await scanner.scan_due_page(now=moment, limit=page_size, after=cursor)
+            # `page_size` is already the walker's *remaining* inspection
+            # budget (it passes `min(page_size, max_inspected - inspected)`),
+            # so handing it through as `max_inspected` is what keeps a
+            # filtering page from overshooting the advertised ceiling: without
+            # it the scanner would walk its own independent 2,000 rows on top
+            # of whatever the walker had already spent.
+            return await scanner.scan_due_page(
+                now=moment, limit=page_size, after=cursor, max_inspected=page_size
+            )
 
         return scan
 
@@ -324,8 +332,22 @@ async def _resume_queued_candidate(
         _record_candidate_failure(run.run_id, seam="recover_queued_graph_runs", error=exc)
         return False
     except Exception as exc:
-        _record_candidate_failure(run.run_id, seam="recover_queued_graph_runs", error=exc)
-        return False
+        latest = await store.get(run.run_id)
+        if latest is not None and latest.run.status is RunStatus.QUEUED:
+            # Still exactly as the scan found it, so nothing was claimed and
+            # the failure is candidate-local: isolate it and let the tick
+            # carry on to the next Run.
+            _record_candidate_failure(run.run_id, seam="recover_queued_graph_runs", error=exc)
+            return False
+        # The candidate is no longer QUEUED (or is gone). `resume_durable_graph`
+        # checkpoints the QUEUED continuation and moves the canonical Run to
+        # RUNNING before it does anything that can fail this way, so this is a
+        # partial claim *by this call*, not another actor's committed decision.
+        # Reporting it as a handled candidate failure would strand the Run: the
+        # QUEUED scan no longer returns it and the due index never held it, so
+        # nothing would ever look at it again. Raising is what surfaces the
+        # partially claimed state instead of silently losing the Run.
+        raise
     return True
 
 

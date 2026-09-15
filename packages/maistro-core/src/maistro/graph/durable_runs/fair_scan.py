@@ -39,6 +39,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Generic, TypeVar
 
 T = TypeVar("T")
@@ -53,6 +54,26 @@ DEFAULT_MAX_INSPECTED = 2000
 
 #: Default page size requested from the underlying store on each fetch.
 DEFAULT_PAGE_SIZE = 100
+
+
+def cursor_time(moment: datetime) -> str:
+    """The keyset-comparable ISO form of one timestamp: always UTC.
+
+    Keyset paging orders rows by ``datetime`` and then pages past them by
+    comparing the *string* the cursor carries. Those two agree only while
+    every timestamp prints the same offset. They disagree the moment one does
+    not: ``01:00+01:00`` is the earlier instant than ``00:30+00:00`` and sorts
+    before it as a datetime, but its string sorts after -- so a cursor taken
+    at the first row excludes the second from every later page, permanently,
+    which is the starvation this module exists to remove.
+
+    `Run.created_at` defaults to `datetime.now(UTC)` and is rarely anything
+    else, but `resume_at` is whatever the pausing node computed, and nothing
+    requires that to be UTC. Normalizing here makes the printed order the
+    chronological order for every input, so ordering and filtering cannot
+    drift apart.
+    """
+    return moment.astimezone(UTC).isoformat()
 
 
 @dataclass
@@ -285,5 +306,6 @@ __all__ = [
     "DEFAULT_PAGE_SIZE",
     "ScanContinuation",
     "ScanPage",
+    "cursor_time",
     "fair_page_scan",
 ]
