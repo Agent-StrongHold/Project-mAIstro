@@ -12,6 +12,8 @@ proves nothing about whether a turn reaches the spine.
 
 from __future__ import annotations
 
+import logging
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -20,10 +22,19 @@ from maistro.container import Container, create_container
 from maistro.runs.chat_execution import (
     ATTEMPT_AGENT_KEY,
     CHAT_EXECUTOR_ID,
+    DEFAULT_CHAT_LEASE_TTL,
     ChatAttemptExecutor,
+    ChatDispatchUnrecorded,
     attempt_result,
 )
-from maistro.runs.model import TERMINAL_RUN_STATUSES, AttemptStatus, RunStatus
+from maistro.runs.model import (
+    TERMINAL_ATTEMPT_STATUSES,
+    TERMINAL_RUN_STATUSES,
+    AttemptStatus,
+    RunStatus,
+)
+from maistro.runs.reconciliation import AttemptLifecycleReconciler
+from maistro.runs.store import RunIntegrityError
 from maistro.types.config import AgentConfig
 
 MESSAGES = [{"role": "user", "content": "hi"}]
@@ -276,6 +287,203 @@ class TestATurnIsNeverRefusedForWantOfARecord:
 
         assert result["choices"][0]["message"]["content"] == "42"
         assert conduit.calls == 1
+
+
+class _RecordingVeto:
+    """A store whose one chosen *post-dispatch* write fails once, then behaves.
+
+    The transient store failure #1108 is about, injected on the Attempt write
+    (`transition_attempt`) or the NodeRun write (`transition_node_run`) that
+    follow the model call — so by the time the spine refuses, the turn has
+    already been answered and the only question is what the caller does with
+    an answer it cannot record.
+    """
+
+    def __init__(self, inner: Any, *, method: str, target: Any) -> None:
+        self._inner = inner
+        self._method = method
+        self._target: Any = target
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def transition_attempt(self, attempt_id: str, target: Any, **kwargs: Any) -> Any:
+        self._refuse("transition_attempt", target)
+        return await self._inner.transition_attempt(attempt_id, target, **kwargs)
+
+    async def transition_node_run(self, node_run_id: str, target: Any, **kwargs: Any) -> Any:
+        self._refuse("transition_node_run", target)
+        return await self._inner.transition_node_run(node_run_id, target, **kwargs)
+
+    def _refuse(self, method: str, target: Any) -> None:
+        if method == self._method and target is self._target:
+            self._target = None
+            raise RunIntegrityError("store hiccup after dispatch")
+
+
+class TestAPostDispatchRecordingFailureIsNeverRedispatched:
+    """#1108's second defect: the fallback could not tell before from after.
+
+    `_execute_chat_turn` answered every `RunIntegrityError` with a fresh
+    `dispatch()`. Half the spine's writes happen after the model has answered
+    — the Attempt's COMPLETED transition and the NodeRun/Run reconciliation
+    behind it — so a store hiccup there re-ran the model call: a second charge,
+    a second set of agent side effects, a second assistant message, while the
+    first answer's evidence sat on disk. Restoring the blanket
+    `except RunIntegrityError: return await dispatch()` makes every test here
+    count two dispatches.
+    """
+
+    async def test_a_failed_attempt_completion_write_returns_the_answer_once(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The answer exists; it goes back to the caller as it is. What is
+        left behind is a RUNNING Attempt whose lease nothing renews, under a
+        Run deliberately left open — exactly what the canonical sweep reclaims
+        and parks, with no second model call."""
+        container = await _container()
+        container.conduit = conduit = _Conduit(content="42")
+        container.run_store = _RecordingVeto(  # type: ignore[assignment]
+            container.run_store, method="transition_attempt", target=AttemptStatus.COMPLETED
+        )
+
+        with caplog.at_level(logging.WARNING, logger="maistro.container"):
+            result = await container.route_request(MESSAGES)
+
+        assert result["choices"][0]["message"]["content"] == "42"
+        assert conduit.calls == 1
+        assert "was answered but could not be recorded" in caplog.text
+        _, attempts = await _spine(container, result["run_id"])
+        assert attempts[0].status is AttemptStatus.RUNNING
+        run = await container.run_store.get_run(result["run_id"])
+        assert run is not None and run.status is RunStatus.RUNNING, (
+            "a Run whose record is short must not claim an outcome"
+        )
+
+        settled = await container.recover_abandoned_attempts(
+            now=datetime.now(UTC) + 2 * DEFAULT_CHAT_LEASE_TTL
+        )
+
+        assert settled == 1
+        node_run, attempts = await _spine(container, result["run_id"])
+        assert attempts[0].status in TERMINAL_ATTEMPT_STATUSES
+        assert node_run.status is RunStatus.WAITING
+        assert conduit.calls == 1
+
+    async def test_a_failed_reconciliation_after_a_completed_attempt_is_repaired_not_redispatched(
+        self,
+    ) -> None:
+        """The Attempt's evidence is durable and complete; only the logical
+        record behind it is short. The reconciler — the same authority the
+        recovery sweep drives — finishes it from that evidence alone."""
+        container = await _container()
+        container.conduit = conduit = _Conduit(content="42")
+        container.run_store = _RecordingVeto(  # type: ignore[assignment]
+            container.run_store, method="transition_node_run", target=RunStatus.COMPLETED
+        )
+
+        result = await container.route_request(MESSAGES)
+
+        assert result["choices"][0]["message"]["content"] == "42"
+        assert conduit.calls == 1
+        node_run, attempts = await _spine(container, result["run_id"])
+        assert attempts[0].status is AttemptStatus.COMPLETED
+        assert attempts[0].result is not None and attempts[0].result["answer"] == "42"
+        assert node_run.status is RunStatus.RUNNING
+        run = await container.run_store.get_run(result["run_id"])
+        assert run is not None and run.status is RunStatus.RUNNING
+
+        reconciler = AttemptLifecycleReconciler(
+            container.run_store, source="maistro.tests.chat_execution"
+        )
+        await reconciler.reconcile(attempts[0])
+
+        node_run, _ = await _spine(container, result["run_id"])
+        assert node_run.status is RunStatus.COMPLETED
+        run = await container.run_store.get_run(result["run_id"])
+        assert run is not None and run.status is RunStatus.COMPLETED
+        assert conduit.calls == 1
+
+    async def test_a_dispatch_failure_whose_record_also_fails_arrives_as_the_dispatch_failure(
+        self,
+    ) -> None:
+        """Two failures, one answer: the caller gets the turn's own exception —
+        the one the endpoint maps to a status code — not the store's, and the
+        model is not asked again in between."""
+        container = await _container()
+        container.conduit = conduit = _Conduit(raises=RuntimeError("upstream exploded"))
+        container.run_store = _RecordingVeto(  # type: ignore[assignment]
+            container.run_store, method="transition_attempt", target=AttemptStatus.FAILED
+        )
+
+        with pytest.raises(RuntimeError, match="upstream exploded") as failed:
+            await container.route_request(MESSAGES)
+
+        assert isinstance(failed.value.__cause__, RunIntegrityError)
+        assert conduit.calls == 1
+
+    async def test_the_executor_says_which_side_of_the_dispatch_the_spine_failed_on(
+        self,
+    ) -> None:
+        """The signal the container reads: a post-dispatch failure carries the
+        answer and the store error behind it."""
+        container = await _container()
+        run = await container.chat_admitter.admit(MESSAGES)
+        await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
+        await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+        store = _RecordingVeto(
+            container.run_store, method="transition_attempt", target=AttemptStatus.COMPLETED
+        )
+        conduit = _Conduit(content="42")
+
+        with pytest.raises(ChatDispatchUnrecorded) as unrecorded:
+            await ChatAttemptExecutor(store).execute(  # type: ignore[arg-type]
+                run.run_id, MESSAGES, lambda: conduit.route_request(MESSAGES)
+            )
+
+        assert unrecorded.value.run_id == run.run_id
+        assert unrecorded.value.response["choices"][0]["message"]["content"] == "42"
+        assert isinstance(unrecorded.value.__cause__, RunIntegrityError)
+        assert conduit.calls == 1
+
+    async def test_a_spine_refusal_before_the_dispatch_still_falls_back_to_answering(
+        self,
+    ) -> None:
+        """The pre-dispatch rule, exercised where the spine itself refuses
+        mid-flight rather than before the executor starts: the Attempt's
+        RUNNING write fails, the model has not been called, so the plain
+        `RunIntegrityError` reaches the container and the turn is answered
+        once through the fallback."""
+        container = await _container()
+        container.conduit = conduit = _Conduit(content="42")
+        container.run_store = _RecordingVeto(  # type: ignore[assignment]
+            container.run_store, method="transition_attempt", target=AttemptStatus.RUNNING
+        )
+
+        result = await container.route_request(MESSAGES)
+
+        assert result["choices"][0]["message"]["content"] == "42"
+        assert conduit.calls == 1
+
+    async def test_a_failure_before_the_dispatch_is_not_dressed_as_one_after_it(self) -> None:
+        """The other half of the same signal. Nothing physical happened, so
+        the plain `RunIntegrityError` still reaches the caller and its
+        pre-dispatch rule — answer anyway — still applies."""
+        container = await _container()
+        conduit = _Conduit(content="42")
+
+        async def _vanished(_run_id: str) -> None:
+            return None
+
+        container.run_store.get_run = _vanished  # type: ignore[method-assign]
+
+        with pytest.raises(RunIntegrityError) as refused:
+            await ChatAttemptExecutor(container.run_store).execute(
+                "nope", MESSAGES, lambda: conduit.route_request(MESSAGES)
+            )
+
+        assert not isinstance(refused.value, ChatDispatchUnrecorded)
+        assert conduit.calls == 0
 
 
 class TestARetryIsASecondAttemptNotASecondNodeRun:
