@@ -22,10 +22,8 @@ from maistro.a2a.guest_peers import GuestPeerManager
 from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.intents import IntentRegistry, build_intent_registry
 from maistro.archive.wiring import build_archive_store
-from maistro.capabilities.effect_context import (
-    CapabilityEffectContext,
-    new_in_memory_effect_context,
-)
+from maistro.capabilities.effect_context import CapabilityEffectContext, new_effect_context
+from maistro.capabilities.invocation import InvocationStore as CapabilityInvocationStore
 from maistro.classifier.engine import ClassifierEngine
 from maistro.graph.durable_runs.canonical_store import CanonicalDurableRunStore
 from maistro.graph.durable_runs.protocol import DurableRunStore
@@ -47,7 +45,11 @@ from maistro.runs.chat_admission import (
     chat_turn_outcome,
     failure_category,
 )
-from maistro.runs.chat_execution import ChatAttemptExecutor, ChatDispatch
+from maistro.runs.chat_execution import (
+    ChatAttemptExecutor,
+    ChatDispatch,
+    ChatDispatchUnrecorded,
+)
 from maistro.runs.lifecycle import RUN_TRANSITIONS
 from maistro.runs.model import (
     TERMINAL_RUN_STATUSES,
@@ -414,19 +416,7 @@ class Container:
         """Require identity for armed controls and deny anonymous tool use."""
         if auth is not None:
             return auth
-        if self.sentinel._permission_table or self.strike_tracker:
-            armed = []
-            if self.sentinel._permission_table:
-                armed.append("sentinel permission table")
-            if self.strike_tracker:
-                armed.append("strike tracking")
-            msg = (
-                f"route_request() called without auth while {' and '.join(armed)} "
-                f"{'are' if len(armed) > 1 else 'is'} armed. These controls key on "
-                "the caller identity, so they would silently enforce nothing. "
-                "Pass an AuthContext, or disable them in config.security."
-            )
-            raise AgentError(msg)
+        self._require_auth_while_armed(auth)
         # The fail-closed table (ADR-072726-0d6b, #1165) is armed even when it
         # is empty -- it denies -- but strategies only consult Sentinel when
         # auth is not None. Evaluate an identity-free request as the role-less
@@ -456,6 +446,8 @@ class Container:
         every turn to catch a mistake that is not reachable from within one
         process.
         """
+        # Refuse while armed, else route as the anonymous principal so the
+        # fail-closed table still sees the turn; the guard alone drops the latter.
         auth = self._resolve_chat_auth(auth)
 
         if run is None:
@@ -484,6 +476,26 @@ class Container:
 
         try:
             result: dict[str, Any] = await self._execute_chat_turn(run, messages, _dispatch)
+        except ChatDispatchUnrecorded as exc:
+            # The turn was answered and the spine could not say so (#1108). The
+            # answer goes back as it is -- never through a second dispatch --
+            # and the Run stays open on purpose: closing it COMPLETED would
+            # cascade the NodeRun the failed write left RUNNING into a terminal
+            # state the reconciler then refuses to repair, turning recoverable
+            # evidence into a Run that claims an outcome its own record cannot
+            # back. Left RUNNING, it is exactly the state the canonical recovery
+            # authorities read: an unrenewed lease is reclaimed by
+            # `recover_abandoned_attempts`, and a COMPLETED Attempt under a
+            # RUNNING NodeRun is what `AttemptLifecycleReconciler` re-derives
+            # the logical record from -- the same handoff `_close_chat_run`
+            # already makes when its own write fails.
+            logger.warning(
+                "chat turn %s was answered but could not be recorded as an Attempt; "
+                "its Run is left open for recovery",
+                exc.run_id,
+                exc_info=True,
+            )
+            result = exc.response
         except BaseException as exc:
             # Attempt reconciliation already owns cancellation, so a client
             # disconnect observes CANCELLED rather than being reinterpreted as
@@ -493,7 +505,8 @@ class Container:
             error = {True: None, False: failure_category(exc)}[cancelled]
             await self._close_chat_run(run, error=error, cancelled=cancelled)
             raise
-        await self._close_chat_run(run, result=chat_turn_outcome(result))
+        else:
+            await self._close_chat_run(run, result=chat_turn_outcome(result))
         if run is not None:
             # Additive. The OpenAI-compatible shape a caller parses is
             # untouched; `run_id` is the handle for anyone who wants to follow
@@ -501,6 +514,40 @@ class Container:
             # container with no chat admitter wired.
             result["run_id"] = run.run_id
         return result
+
+    def _require_auth_while_armed(self, auth: Any) -> None:
+        """Refuse an unauthenticated turn while a caller-keyed control is armed.
+
+        An armed security control that cannot run is worse than an unarmed
+        one: the operator believes it is enforcing. Both controls this
+        container can arm are keyed on the caller's identity --
+        Gate.process_input derives user_id from auth and skips every strike
+        path when it is empty (security/gate.py:62,64,102), and the ReAct and
+        Artificer strategies guard Sentinel.pre_call with `auth is not None`
+        (agents/strategies/react.py:252). So with auth=None an armed
+        permission table authorizes everything and an armed strike tracker
+        records nothing, silently.
+
+        Refusing here costs nothing at the shipped defaults (empty table, no
+        tracker -> this never fires) and converts a silent no-op into an
+        unmissable error for anyone who opts in. That is the same defect
+        class this container's permission table was fixed for; it should not
+        reappear one level up.
+        """
+        if auth is not None or not (self.sentinel._permission_table or self.strike_tracker):
+            return
+        armed = []
+        if self.sentinel._permission_table:
+            armed.append("sentinel permission table")
+        if self.strike_tracker:
+            armed.append("strike tracking")
+        msg = (
+            f"route_request() called without auth while {' and '.join(armed)} "
+            f"{'are' if len(armed) > 1 else 'is'} armed. These controls key on "
+            "the caller identity, so they would silently enforce nothing. "
+            "Pass an AuthContext, or disable them in config.security."
+        )
+        raise AgentError(msg)
 
     async def _execute_chat_turn(
         self,
@@ -516,16 +563,24 @@ class Container:
         the thing that may be missing here — the answer is not.
 
         A failure to *record* the execution is likewise not a failure to
-        perform it. `RunIntegrityError` means this process could not write the
-        spine — a Run deleted underneath the turn, or a Graph that is not the
-        one node a turn admits — and turning that into a refusal would trade an
-        unrecorded answer for no answer at all.
+        perform it. `RunIntegrityError` raised *before* the dispatch means this
+        process could not write the spine — a Run deleted underneath the turn,
+        or a Graph that is not the one node a turn admits — and turning that
+        into a refusal would trade an unrecorded answer for no answer at all.
+
+        It is also not a licence to perform it twice (#1108). The executor
+        raises `ChatDispatchUnrecorded` when the spine failed *after* the model
+        answered, carrying that answer; it travels through here untouched,
+        because what to do with a Run whose record is short is the caller's
+        decision, and a second `dispatch()` is never it.
         """
         if run is None or self.run_store is None:
             return await dispatch()
         executor = ChatAttemptExecutor(self.run_store)
         try:
             return await executor.execute(run.run_id, messages, dispatch)
+        except ChatDispatchUnrecorded:
+            raise
         except RunIntegrityError:
             logger.warning("chat turn could not be recorded as an Attempt", exc_info=True)
             return await dispatch()
@@ -1539,7 +1594,10 @@ async def create_container(
 
     # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) -----------
     wired_harness_adapters = _wire_harness_adapters(harness_adapters)
-    capability_effects = new_in_memory_effect_context()
+    capability_invocation_store = await _wire_capability_invocations(
+        pg_pool=pg_pool, db_pool=db_pool
+    )
+    capability_effects = new_effect_context(invocation_store=capability_invocation_store)
     spawn_harness_node = AgentSpawnHarnessNode(
         adapters=wired_harness_adapters, effect_context=capability_effects
     )
@@ -2178,6 +2236,30 @@ async def _wire_sqlite_backend(
         outcome_store,
         session_store,
     )
+
+
+async def _wire_capability_invocations(
+    *,
+    pg_pool: Any,
+    db_pool: Any,
+) -> CapabilityInvocationStore:
+    """Select the canonical effect ledger from the container's durable backend."""
+    store: CapabilityInvocationStore
+    if pg_pool is not None:
+        from maistro.capabilities.pg_invocation_store import PgInvocationStore
+
+        store = PgInvocationStore(pg_pool)
+        await store.ensure_schema()
+        return store
+    if db_pool is not None:
+        from maistro.capabilities.invocation_store import SqliteInvocationStore
+
+        store = SqliteInvocationStore(db_pool)
+        await store.ensure_schema()
+        return store
+    from maistro.capabilities.invocation import InMemoryInvocationStore
+
+    return InMemoryInvocationStore()
 
 
 async def _wire_sqlite_durable_events(

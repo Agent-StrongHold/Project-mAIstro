@@ -17,6 +17,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from maistro.observability.correlation import bind_execution_context
+from maistro.runs.lifecycle import InvalidLifecycleTransition, StaleLeaseRenewal
 from maistro.runs.model import (
     PAUSE_AWAITS_HUMAN,
     TERMINAL_ATTEMPT_STATUSES,
@@ -32,7 +33,7 @@ from maistro.runs.reconciliation import (
     AttemptLifecycleStore,
     CancellationCause,
 )
-from maistro.runs.store import RunIntegrityError
+from maistro.runs.store import AttemptNotFound, RunIntegrityError
 from maistro.runtime import (
     ExecutionCallable,
     ExecutionPaused,
@@ -263,12 +264,26 @@ class AttemptExecutionService:
                 await asyncio.sleep(interval)
                 try:
                     await self._store.renew_lease(attempt_id, fencing_token=token, ttl=ttl)
-                except Exception:
-                    # The Attempt may have terminalized under us, or the store
-                    # may be briefly unavailable. Neither is this task's problem
-                    # to solve: stop renewing and let the lease lapse, which is
-                    # the same outcome as the process dying and is safe.
+                except (AttemptNotFound, InvalidLifecycleTransition, StaleLeaseRenewal):
+                    # Permanent: this Attempt can never be renewed again with
+                    # this token -- it is gone, terminalized, its lease already
+                    # lapsed, or recovery superseded the holder. The executor's
+                    # own terminalization runs into the same refusal through
+                    # its fencing token, so there is nothing left to prove.
                     return
+                except Exception:
+                    # Transient: the store may be briefly unreachable, but the
+                    # executor is alive *in this process* and keeps running.
+                    # Quitting here would fake death -- the lease would lapse
+                    # and a live Attempt would become reclaimable while its
+                    # work continues, which is the double-execution window.
+                    # One failed tick does not lapse the lease (the cadence is
+                    # a third of the TTL), so keep proving liveness on the next
+                    # tick. A store that stays unreachable past the TTL lapses
+                    # the lease on its own -- that is the genuine-death outcome
+                    # reclamation exists for (ADR-082526-b36a), and it falls
+                    # out of renewal failing, not from this loop quitting.
+                    continue
 
         return asyncio.create_task(_beat())
 
@@ -709,6 +724,12 @@ class AttemptExecutionService:
             raise RunIntegrityError(f"Attempt {attempt_id!r} disappeared during execution")
         if current.status in TERMINAL_ATTEMPT_STATUSES:
             return current, False
+        if current.status is AttemptStatus.CREATED:
+            # Still CREATED means the RUNNING write itself was refused: nothing
+            # ran, so nothing failed or timed out, and CANCELLED is the one
+            # terminal state the lifecycle allows from here. The refusal stays
+            # in `error`; the caller's cause still decides park-or-end.
+            status = AttemptStatus.CANCELLED
         return (
             await self._terminalize(
                 attempt_id,
