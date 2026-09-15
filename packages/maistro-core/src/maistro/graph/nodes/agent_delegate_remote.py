@@ -567,13 +567,17 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         project_id = inputs.to_project_id or parent.project_id
         name = f"delegation:{inputs.from_agent or 'unknown'}->{target or 'unknown'}"
 
+        # Resolve through the registered projection class rather than keeping
+        # the class write-only; the same symbol defines the catalog kind and the
+        # child snapshot's opaque node type.
+        opaque_kind = AgentRemoteWorkNode.kind
         return Graph(
             workspace_id=workspace_id,
             project_id=project_id,
             name=name,
             nodes=[
                 Node(
-                    node_type=_OPAQUE_DELEGATED_WORK,
+                    node_type=opaque_kind,
                     name=target,
                     inputs={
                         "task": inputs.task,

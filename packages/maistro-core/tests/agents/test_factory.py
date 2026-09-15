@@ -483,6 +483,7 @@ class TestCreateAgentsFilesystem:
     async def test_roster_allow_lists_reach_the_container_delegator(self, tmp_path: Path) -> None:
         """The production roster must make the wired in-process path admissible."""
         from maistro.a2a.delegate import A2ADelegator, DelegationMode
+        from maistro.runs.task_kinds import DIRECT_SUBMISSION_AGENT
 
         _write_agent_dir(
             tmp_path,
@@ -501,6 +502,16 @@ class TestCreateAgentsFilesystem:
             delegation_mode=DelegationMode.ALLOW_LIST,
         )
         assert delegator.get_task_status(task_id) is not None
+
+        # Direct task/chat admissions use a reserved system principal rather
+        # than an empty ``from_agent``; the same roster bounds its targets.
+        direct_task_id = delegator.delegate_task(
+            DIRECT_SUBMISSION_AGENT,
+            "research X",
+            "researcher",
+            delegation_mode=DelegationMode.ALLOW_LIST,
+        )
+        assert delegator.get_task_status(direct_task_id) is not None
 
     async def test_persist_registry_invoked_when_engine_present(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

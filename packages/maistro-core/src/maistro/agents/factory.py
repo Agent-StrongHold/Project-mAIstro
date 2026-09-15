@@ -30,6 +30,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from maistro.agents.base import Agent
 from maistro.agents.strategies.direct import DirectStrategy
+from maistro.runs.task_kinds import DIRECT_SUBMISSION_AGENT
 from maistro.types.agent import AgentIdentity
 from maistro.types.errors import ConfigError
 
@@ -318,6 +319,11 @@ def _register_delegation_capabilities(agents: dict[str, Agent], a2a_delegator: A
         raise ConfigError("configured A2A delegator cannot register agent capabilities")
     for name, agent in agents.items():
         register(name, list(agent.identity.sub_agents))
+    # Direct task/chat admissions are system-requested delegations, not an
+    # unnamed agent. Restrict that reserved principal to the roster actually
+    # loaded into this runtime so an absent target remains a real refusal.
+    if agents:
+        register(DIRECT_SUBMISSION_AGENT, list(agents))
 
 
 def instantiate_agent(identity: AgentIdentity, *, agent_resolver: Any = None, **deps: Any) -> Agent:
