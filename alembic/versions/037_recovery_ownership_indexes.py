@@ -1,8 +1,13 @@
 """Index durable recovery candidates by their admission owner (#1098).
 
-Revision ID: 033
-Revises: 032
+Revision ID: 037
+Revises: 036_consumer_cursors
 Create Date: 2026-09-07
+
+Renumbered from 033 after develop took that id: #1479's lane landed
+`033_project_membership_unique_per_principal` while this branch was open, and
+both declared `down_revision = "032"`, so the chain had two heads. Only the
+identifiers change; the DDL this applies is untouched.
 
 Recovery ownership is durable Run provenance. These denormalized columns let
 both recovery projections apply the owner predicate before LIMIT; nullable
@@ -15,8 +20,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "033"
-down_revision = "032"
+revision = "037"
+down_revision = "036_consumer_cursors"
 branch_labels = None
 depends_on = None
 

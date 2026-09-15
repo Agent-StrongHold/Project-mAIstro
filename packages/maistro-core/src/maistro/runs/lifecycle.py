@@ -192,6 +192,16 @@ def transition_node_run(
     if migrated is not None:
         return migrated
 
+    # A newly successful logical node must name the physical completed Attempt
+    # whose evidence was accepted. `result=None` is a valid no-output success,
+    # but absence of AcceptedNodeOutcome is not evidence that such a success
+    # happened. Keep legacy hydration permissive above so old rows can still be
+    # read and repaired, while making every new success transition structural.
+    if target is RunStatus.COMPLETED and accepted_outcome is None:
+        raise InvalidLifecycleTransition(
+            "completed NodeRun requires an AcceptedNodeOutcome from a completed Attempt"
+        )
+
     values = _logical_values(node_run, target, at=at, result=result, error=error)
     if (
         node_run.accepted_outcome is not None
@@ -286,6 +296,12 @@ def check_completion_is_earned(target: RunStatus, node_runs: list[NodeRun]) -> N
 RECLAIMED_ATTEMPT_STATUS = AttemptStatus.CANCELLED
 
 
+#: The fixed head of every reclaimed Attempt's ``error``. Shared with
+#: `is_reclaimed_attempt` so a reader recognises a recovery artefact by the
+#: same text the sweep wrote, rather than by a second spelling of it.
+RECLAIMED_ATTEMPT_ERROR_PREFIX = "lease expired; holder "
+
+
 def reclaimed_attempt_error(holder: str) -> str:
     """Why an Attempt was reclaimed, naming the holder that stopped renewing.
 
@@ -293,7 +309,21 @@ def reclaimed_attempt_error(holder: str) -> str:
     indistinguishable from one a user cancelled, which is the distinction
     ADR-082426-f170 exists to keep.
     """
-    return f"lease expired; holder {holder!r} stopped renewing before the Attempt finished"
+    return (
+        f"{RECLAIMED_ATTEMPT_ERROR_PREFIX}{holder!r} stopped renewing before the Attempt finished"
+    )
+
+
+def is_reclaimed_attempt(attempt: Attempt) -> bool:
+    """Whether crash recovery, not an outcome or a person, settled this Attempt.
+
+    The status alone cannot say: CANCELLED is also what a requested
+    cancellation records. The sweep's own error text is the evidence, which is
+    why `reclaimed_attempt_error` and this predicate share one prefix.
+    """
+    return attempt.status is RECLAIMED_ATTEMPT_STATUS and (attempt.error or "").startswith(
+        RECLAIMED_ATTEMPT_ERROR_PREFIX
+    )
 
 
 def lease_is_expired(attempt: Attempt, now: datetime) -> bool:
@@ -457,6 +487,7 @@ def transition_attempt(
 __all__ = [
     "ATTEMPT_TRANSITIONS",
     "CASCADED_NODE_RUN_STATUS",
+    "RECLAIMED_ATTEMPT_ERROR_PREFIX",
     "RECLAIMED_ATTEMPT_STATUS",
     "RUN_TRANSITIONS",
     "InvalidLifecycleTransition",
@@ -464,6 +495,7 @@ __all__ = [
     "UnearnedRunCompletion",
     "cascaded_node_run_error",
     "check_completion_is_earned",
+    "is_reclaimed_attempt",
     "latest_node_runs",
     "lease_is_expired",
     "reclaim_attempt",

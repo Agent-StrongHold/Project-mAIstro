@@ -326,6 +326,7 @@ class SqliteRunStore:
         limit: int = 100,
         offset: int = 0,
         project_id: str | None = None,
+        workspace_id: str | None = None,
         after: tuple[str, str] | None = None,
         admission_source: str | None = None,
     ) -> list[Run]:
@@ -352,6 +353,9 @@ class SqliteRunStore:
         if admission_source is not None:
             sql += " AND admission_source = ?"
             params.append(admission_source)
+        if workspace_id is not None:
+            sql += " AND workspace_id = ?"
+            params.append(workspace_id)
         if after is not None:
             sql += " AND (json_extract(payload, '$.created_at'), run_id) > (?, ?)"
             params.extend(after)

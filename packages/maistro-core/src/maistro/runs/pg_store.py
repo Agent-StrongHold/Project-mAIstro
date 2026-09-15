@@ -472,6 +472,7 @@ class PgRunStore:
         limit: int = 100,
         offset: int = 0,
         project_id: str | None = None,
+        workspace_id: str | None = None,
         after: tuple[str, str] | None = None,
         admission_source: str | None = None,
     ) -> list[Run]:
@@ -499,6 +500,9 @@ class PgRunStore:
         if admission_source is not None:
             sql += f" AND admission_source = ${len(params) + 1}"
             params.append(admission_source)
+        if workspace_id is not None:
+            sql += f" AND workspace_id = ${len(params) + 1}"
+            params.append(workspace_id)
         if after is not None:
             cursor_param = len(params) + 1
             sql += f" AND (payload->>'created_at', run_id) > (${cursor_param}, ${cursor_param + 1})"
