@@ -10,6 +10,8 @@ from types import ModuleType
 
 ROOT = Path(__file__).resolve().parents[1]
 CHECKER = ROOT / "scripts" / "check-citation-status.py"
+# Keep the dynamically loaded checker visible to the tooling reachability graph.
+CHECKER_TOOL = "check-citation-status"
 PROVENANCE = ROOT / "scripts" / "ratchet_provenance.py"
 RATCHET = "citation-status"
 METRIC_DEFINITION_VERSION = "1"
@@ -44,7 +46,7 @@ def _known(payload: object) -> set[str]:
 
 
 def main() -> int:
-    checker = _load(CHECKER, "_citation_status_under_provenance")
+    checker = _load(CHECKER, CHECKER_TOOL)
     prov = _load(PROVENANCE, "_ratchet_provenance")
 
     corpus = checker._corpus()
