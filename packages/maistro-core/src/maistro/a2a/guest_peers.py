@@ -122,6 +122,24 @@ class GuestPeerManager:
         except Exception as exc:
             return DelegationResult("", peer_name, "uncertain", error=str(exc))
 
+    def _admission_rejection(self, peer: PeerTrust | None, agent_id: str) -> tuple[str, str] | None:
+        """The (audit detail, result error) this peer/agent pair is refused for.
+
+        One guard for the three structural refusals -- unknown peer, inactive
+        peer, agent outside the allow list -- so `delegate` reads as cache
+        check, admission, transport, in that order.
+        """
+        if peer is None:
+            return "peer not found", "peer not found"
+        if not peer.active:
+            return "peer inactive", "peer inactive"
+        if peer.allowed_agents and agent_id not in peer.allowed_agents:
+            return (
+                f"agent '{agent_id}' not in allowed list",
+                f"agent '{agent_id}' not allowed on this peer",
+            )
+        return None
+
     async def delegate(
         self,
         peer_name: str,
@@ -137,44 +155,17 @@ class GuestPeerManager:
                 return cached
 
         peer = self.get_peer(peer_name)
-        if not peer:
-            await self._audit.log_delegation(
-                peer_name,
-                agent_id,
-                "peer not found",
-            )
+        rejection = self._admission_rejection(peer, agent_id)
+        if rejection is not None:
+            audit_detail, error = rejection
+            await self._audit.log_delegation(peer_name, agent_id, audit_detail)
             return DelegationResult(
                 task_id="",
                 peer_name=peer_name,
                 status="rejected",
-                error="peer not found",
+                error=error,
             )
-
-        if not peer.active:
-            await self._audit.log_delegation(
-                peer_name,
-                agent_id,
-                "peer inactive",
-            )
-            return DelegationResult(
-                task_id="",
-                peer_name=peer_name,
-                status="rejected",
-                error="peer inactive",
-            )
-
-        if peer.allowed_agents and agent_id not in peer.allowed_agents:
-            await self._audit.log_delegation(
-                peer_name,
-                agent_id,
-                f"agent '{agent_id}' not in allowed list",
-            )
-            return DelegationResult(
-                task_id="",
-                peer_name=peer_name,
-                status="rejected",
-                error=f"agent '{agent_id}' not allowed on this peer",
-            )
+        assert peer is not None  # an admitted peer exists by construction
 
         headers: dict[str, str] = {"Content-Type": "application/json"}
         if idempotency_key:

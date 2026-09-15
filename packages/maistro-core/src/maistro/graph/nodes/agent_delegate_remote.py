@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 from pydantic import BaseModel, Field
 
 from maistro.a2a.delegate import A2ADelegator, DelegationMode
-from maistro.a2a.guest_peers import GuestPeerManager
+from maistro.a2a.guest_peers import DelegationResult, GuestPeerManager
 
 from . import register_node
 from .base import (
@@ -339,6 +339,26 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             error=reconciled.error or "transport acceptance is uncertain; reconcile required",
         )
 
+    @staticmethod
+    def _mode_for(inputs: DelegateRemoteIn) -> DelegationMode:
+        """The delegation mode an explicit `to_agent` implies."""
+        return DelegationMode.ALLOW_ALL if inputs.to_agent is None else DelegationMode.ALLOW_LIST
+
+    async def _pause_on_existing_receipt(
+        self, inputs: DelegateRemoteIn, child: Run, child_id: str, *, mode: str
+    ) -> bool:
+        """Resume a delegation whose transport receipt is already durable.
+
+        True when the node paused on the recorded receipt (the caller must
+        return immediately); False when the child exists but the boundary was
+        never crossed and dispatch must still claim it.
+        """
+        receipt = str(child.provenance.get("a2a_task_id") or "")
+        if receipt:
+            self._pause(inputs, task_id=receipt, mode=mode, run_id=child_id)
+            return True
+        return False
+
     async def _dispatch_cross_instance(
         self, inputs: DelegateRemoteIn, ctx: NodeContext
     ) -> DelegateRemoteOut:
@@ -360,9 +380,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             )
         else:
             child_id = child.run_id
-            receipt = str(child.provenance.get("a2a_task_id") or "")
-            if receipt:
-                self._pause(inputs, task_id=receipt, mode="guest_peer", run_id=child_id)
+            if await self._pause_on_existing_receipt(inputs, child, child_id, mode="guest_peer"):
                 return DelegateRemoteOut()
 
         claimed = await self._claim_transport_attempt(child_id)
@@ -371,30 +389,16 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             # reserving the same child. Reconcile; never POST a second time.
             return await self._recover_cross_instance(inputs, key, child_id)
 
-        messages = [{"role": "user", "content": inputs.task}]
-        if self._run_store is None:
-            result = await self._guest_peers.delegate(
-                inputs.peer_name or "", inputs.from_agent, messages
-            )
-        else:
-            result = await self._guest_peers.delegate(
-                inputs.peer_name or "", inputs.from_agent, messages, idempotency_key=key
-            )
+        result = await self._submit_to_peer(inputs, key)
         if result.status == "rejected":
             await self._release_unaccepted_child(child_id)
             # No child Run: nothing was admitted, so there is no execution to
             # give an identity to. The peer declining is a legitimate outcome
             # the Graph may branch on, unlike the misconfiguration above.
             return DelegateRemoteOut(status="rejected", task_id=result.task_id, error=result.error)
-        if result.status == "failed":
-            # Once a request crossed the transport boundary, an exception does
-            # not prove that the peer did not accept it. Keep the reservation
-            # and require reconciliation; a retry must not blindly POST again.
-            if self._run_store is not None:
-                return DelegateRemoteOut(
-                    status="uncertain", error=result.error or "transport acceptance is uncertain"
-                )
-            return DelegateRemoteOut(status="failed", task_id=result.task_id, error=result.error)
+        failure = self._failed_transport_outcome(result)
+        if failure is not None:
+            return failure
         if not result.task_id:
             return DelegateRemoteOut(
                 status="uncertain", error="peer accepted work without a transport receipt"
@@ -403,6 +407,65 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         await self._attach_receipt(child_id, result.task_id)
         self._pause(inputs, task_id=result.task_id, mode="guest_peer", run_id=child_id)
         return DelegateRemoteOut()  # unreachable
+
+    async def _submit_to_peer(self, inputs: DelegateRemoteIn, key: str) -> DelegationResult:
+        """POST the task to the peer, keyed only when receipts can be stored.
+
+        The idempotency key rides on the request only when a Run store is
+        wired: without one the receipt cannot be made durable across a
+        restart, so an unkeyed attempt is the honest shape.
+        """
+        assert self._guest_peers is not None
+        messages = [{"role": "user", "content": inputs.task}]
+        if self._run_store is None:
+            # Preserve the transport-only construction used by callers that do
+            # not have canonical admission available; it cannot claim durable
+            # recovery semantics, so it must not pretend to send a key.
+            return await self._guest_peers.delegate(
+                inputs.peer_name or "", inputs.from_agent, messages
+            )
+        return await self._guest_peers.delegate(
+            inputs.peer_name or "",
+            inputs.from_agent,
+            messages,
+            idempotency_key=key,
+        )
+
+    def _failed_transport_outcome(self, result: DelegationResult) -> DelegateRemoteOut | None:
+        """The outcome for a transport failure, or None when none applies.
+
+        Once a request crossed the transport boundary, an exception does not
+        prove that the peer did not accept it. Keep the reservation and require
+        reconciliation; a retry must not blindly POST again.
+        """
+        if result.status != "failed":
+            return None
+        if self._run_store is not None:
+            return DelegateRemoteOut(
+                status="uncertain", error=result.error or "transport acceptance is uncertain"
+            )
+        return DelegateRemoteOut(status="failed", task_id=result.task_id, error=result.error)
+
+    async def _recover_in_process(
+        self, inputs: DelegateRemoteIn, key: str, child_id: str
+    ) -> DelegateRemoteOut:
+        """Reconcile a claimed boundary against the local task map.
+
+        A durable claim without a receipt means another worker may have
+        accepted work and died before attaching it. The local task map is
+        the only receipt authority available; absent that, stay
+        explicitly uncertain instead of admitting a second task.
+        """
+        assert self._a2a_delegator is not None
+        task = self._a2a_delegator.get_task_by_delegation_key(key)
+        if task is None:
+            return DelegateRemoteOut(
+                status="uncertain",
+                error="transport acceptance is uncertain; reconcile required",
+            )
+        await self._attach_receipt(child_id, task.id, target=task.to_agent)
+        self._pause(inputs, task_id=task.id, mode="in_process", run_id=child_id)
+        return DelegateRemoteOut()
 
     async def _dispatch_in_process(
         self, inputs: DelegateRemoteIn, ctx: NodeContext
@@ -424,45 +487,29 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
                 inputs.from_agent,
                 inputs.task,
                 inputs.to_agent,
-                DelegationMode.ALLOW_ALL if inputs.to_agent is None else DelegationMode.ALLOW_LIST,
+                self._mode_for(inputs),
             )
         except ValueError as exc:
             return DelegateRemoteOut(status="rejected", error=str(exc))
-        if child is not None:
-            child_id = child.run_id
-            receipt = str(child.provenance.get("a2a_task_id") or "")
-            if receipt:
-                self._pause(inputs, task_id=receipt, mode="in_process", run_id=child_id)
-                return DelegateRemoteOut()
-        else:
+        if child is None:
             child_id = await self._reserve_child(
                 inputs, ctx, parent=parent, mode="in_process", target=target
             )
+        else:
+            child_id = child.run_id
+            if await self._pause_on_existing_receipt(inputs, child, child_id, mode="in_process"):
+                return DelegateRemoteOut()
 
         claimed = await self._claim_transport_attempt(child_id)
         if not claimed:
-            # A durable claim without a receipt means another worker may have
-            # accepted work and died before attaching it. The local task map is
-            # the only receipt authority available; absent that, stay
-            # explicitly uncertain instead of admitting a second task.
-            task = self._a2a_delegator.get_task_by_delegation_key(key)
-            if task is None:
-                return DelegateRemoteOut(
-                    status="uncertain",
-                    error="transport acceptance is uncertain; reconcile required",
-                )
-            await self._attach_receipt(child_id, task.id, target=task.to_agent)
-            self._pause(inputs, task_id=task.id, mode="in_process", run_id=child_id)
-            return DelegateRemoteOut()
+            return await self._recover_in_process(inputs, key, child_id)
 
         try:
             task_id = self._a2a_delegator.delegate_task(
                 inputs.from_agent,
                 inputs.task,
                 inputs.to_agent,
-                delegation_mode=DelegationMode.ALLOW_ALL
-                if inputs.to_agent is None
-                else DelegationMode.ALLOW_LIST,
+                delegation_mode=self._mode_for(inputs),
                 metadata={"delegation_key": key},
             )
         except ValueError as exc:
