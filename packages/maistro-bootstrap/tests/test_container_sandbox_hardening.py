@@ -64,6 +64,39 @@ def recorder(monkeypatch: pytest.MonkeyPatch) -> _Recording:
     return rec
 
 
+def test_seed_allowlist_reads_split_git_index(tmp_path: Path) -> None:
+    """A linked shared index must not break the host-side seed allowlist."""
+    (tmp_path / "tracked.py").write_text("tracked = True\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "add",
+            "tracked.py",
+        ],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(["git", "update-index", "--split-index"], cwd=tmp_path, check=True)
+    (tmp_path / "added.py").write_text("added = True\n", encoding="utf-8")
+    subprocess.run(["git", "add", "added.py"], cwd=tmp_path, check=True)
+
+    shared_indexes = list((tmp_path / ".git").glob("sharedindex.*"))
+    assert shared_indexes, "fixture did not create a linked Git shared index"
+    listed = ContainerBuilderSandbox(tmp_path)._tracked_seed_files()
+
+    assert listed.split(b"\0") == [b"added.py", b"tracked.py", b""]
+
+
 def _docker_calls(rec: _Recording) -> list[list[str]]:
     return [argv for argv in rec.calls if argv[0] == "docker"]
 

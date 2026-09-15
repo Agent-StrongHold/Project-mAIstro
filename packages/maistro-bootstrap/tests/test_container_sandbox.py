@@ -156,9 +156,27 @@ def test_seed_leaves_ambient_credentials_on_the_host(tmp_path: Path) -> None:
     unrelated untracked host files — while indexed worktree files arrive. Builder
     git tools use a sanitized in-container baseline."""
     (tmp_path / "hello.py").write_text('print("original")\n', encoding="utf-8")
+    # Keep dotenv files indexed: the seed must exclude credential-shaped files
+    # even when a caller accidentally committed them.
+    (tmp_path / ".env").write_text("GITHUB_TOKEN=ambient-secret\n", encoding="utf-8")
+    (tmp_path / ".env.production").write_text(
+        "DATABASE_PASSWORD=ambient-secret\n", encoding="utf-8"
+    )
+    (tmp_path / ".envrc").write_text("export TOKEN=ambient-secret\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     subprocess.run(
-        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "add", "hello.py"],
+        [
+            "git",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "add",
+            "hello.py",
+            ".env",
+            ".env.production",
+            ".envrc",
+        ],
         cwd=tmp_path,
         check=True,
     )
@@ -167,11 +185,9 @@ def test_seed_leaves_ambient_credentials_on_the_host(tmp_path: Path) -> None:
         cwd=tmp_path,
         check=True,
     )
-    (tmp_path / ".env").write_text("GITHUB_TOKEN=ambient-secret\n", encoding="utf-8")
-    (tmp_path / ".env.production").write_text(
-        "DATABASE_PASSWORD=ambient-secret\n", encoding="utf-8"
-    )
-    (tmp_path / ".envrc").write_text("export TOKEN=ambient-secret\n", encoding="utf-8")
+    # Real worktrees may use a linked shared index; exercise the same
+    # production seed path that previously failed on sharedindex.* files.
+    subprocess.run(["git", "update-index", "--split-index"], cwd=tmp_path, check=True)
     (tmp_path / "unrelated-host-secret.txt").write_text(
         "HOST_SECRET=ambient-secret\n", encoding="utf-8"
     )

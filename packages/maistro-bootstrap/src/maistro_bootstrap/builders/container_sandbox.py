@@ -35,7 +35,6 @@ exists) is explicit and auditable below.
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import tempfile
 from pathlib import Path, PurePosixPath
@@ -354,12 +353,22 @@ class ContainerBuilderSandbox:
         return index_path
 
     def _list_indexed_paths(self, index_path: Path) -> bytes:
-        """List an index copy without allowing the host repo config to run."""
+        """List the worktree index without allowing the host repo config to run.
+
+        Use the index in its original Git directory rather than copying it into
+        a temporary repository. Split indexes keep their shared index beside the
+        primary index, so copying only the primary file makes ``ls-files`` fail
+        before the seed archive is created.
+        """
         isolated_env = {
             **os.environ,
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_CONFIG_SYSTEM": os.devnull,
+            "GIT_INDEX_FILE": str(index_path.resolve()),
+            # Listing must not create an index lock or otherwise mutate the
+            # caller's worktree while the sandbox is being bootstrapped.
+            "GIT_OPTIONAL_LOCKS": "0",
         }
         with tempfile.TemporaryDirectory(prefix="maistro-seed-index-") as isolated_git:
             initialized = subprocess.run(
@@ -373,7 +382,6 @@ class ContainerBuilderSandbox:
                     f"temporary Git index setup failed: "
                     f"{initialized.stderr.decode(errors='replace')[:300]}"
                 )
-            shutil.copyfile(index_path, Path(isolated_git) / "index")
             listed = subprocess.run(
                 [
                     "git",
