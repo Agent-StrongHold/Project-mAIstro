@@ -1,10 +1,9 @@
-"""Background schedule runner — turns due schedules into canonical Runs.
+"""Background schedule runner ΓÇö turns due schedules into canonical Runs.
 
 Recurrence and fire semantics live in ``maistro.scheduling``.  A configured
 Hive process delegates the complete evaluate -> occurrence claim -> Run admit
-<<<<<<< HEAD
--> cursor advance transaction to ``ScheduleRunAdmitter`` — for recurring
-ticks and manual ``POST /v1/schedules/{id}/run`` fires alike — then ticks
+-> cursor advance transaction to ``ScheduleRunAdmitter`` ΓÇö for recurring
+ticks and manual ``POST /v1/schedules/{id}/run`` fires alike ΓÇö then ticks
 the canonical consumer for the admitted Runs.  The historical in-process
 path remains only as a compatibility fallback for standalone/demo contexts
 that have no core Container; it is not the production authority.
@@ -70,10 +69,10 @@ class ScheduleAdmissionUnavailable(RuntimeError):
 async def fire_now(sid: str) -> str:
     """Fire a schedule now through the one canonical admission authority.
 
-    Configured production enters ``ScheduleRunAdmitter.admit_due(manual=True)`` —
+    Configured production enters ``ScheduleRunAdmitter.admit_due(manual=True)`` ΓÇö
     the same Container, canonical Workspace/Project scope, durable
     ``GraphTemplate`` resolution, occurrence claim, and cursor transaction the
-    recurring loop uses — so a manual fire and a scheduled fire of one schedule are
+    recurring loop uses ΓÇö so a manual fire and a scheduled fire of one schedule are
     indistinguishable in Run history apart from their provenance.  The
     compatibility path below remains only for processes with no core Container
     at all; a Container that is missing one of its admission collaborators
@@ -267,7 +266,7 @@ class _ScheduleRunner:
 
         The current product surface has no per-schedule Project selector, so a
         schedule defaults to Hive's configured Workspace and that Workspace's
-        canonical Root Project — the same rule ordinary task admission uses.
+        canonical Root Project ΓÇö the same rule ordinary task admission uses.
         Future rows may carry explicit ``workspace_id``/``project_id`` fields;
         when present they are honored rather than overwritten.
         """
@@ -483,7 +482,7 @@ class _ScheduleRunner:
 
         ``_evaluate_canonical`` derives its occurrences from the cron;
         ``admit_due(manual=True)`` takes the one the caller asked for. Everything else is
-        deliberately identical — canonical Workspace/Project scope via
+        deliberately identical ΓÇö canonical Workspace/Project scope via
         ``_canonical_scope`` (never the synthetic ``hive:schedule:{id}``
         identities the compatibility path used), the durable ``GraphTemplate``
         (primed from the registry exactly as a tick would prime it), the
@@ -579,8 +578,8 @@ class _ScheduleRunner:
         # when the core bridge is configured; it exists so a scheduler unit can
         # still be exercised without constructing the entire Container.
         # Manual fire does *not* share this branch: `fire_now` fails closed on
-        # a configured-but-unwired Container, because unlike the tick — which
-        # can simply wait for the next one — a manual fire is a caller holding
+        # a configured-but-unwired Container, because unlike the tick ΓÇö which
+        # can simply wait for the next one ΓÇö a manual fire is a caller holding
         # a request that must either become a canonical Run or say why not.
         store = self._canonical_store()
         definition = await self._definition_for(sid, schedule, store=store)
