@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import re
+import threading
 import time as _time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 from uuid import uuid4
 
@@ -121,7 +122,14 @@ def _enforce(throttle: AuthThrottle, request: Request, account: str, action: str
 
 
 _SESSION_COOKIE = "hive_session"
+# Governed session policy: production sessions expire after 30 minutes without
+# eligible authenticated activity and never live longer than seven days.
+# These are server-side limits; browser restoration/preferences cannot change them.
 _COOKIE_MAX_AGE = 60 * 60 * 24 * 7
+_SESSION_IDLE_TIMEOUT = 60 * 30
+_SESSION_ABSOLUTE_TTL = _COOKIE_MAX_AGE
+_SESSION_ACTIVITY_EXCLUDED_PATHS = frozenset({"/v1/auth/whoami"})
+_SESSION_LOCK = threading.RLock()
 _USERNAME_RE = re.compile(r"^[a-zA-Z0-9_-]{3,32}$")
 _OAUTH_CODE_MAX_LENGTH = 4096
 _OAUTH_FAILURE_DETAIL = "OAuth authentication failed"
@@ -187,29 +195,73 @@ class ElevateBody(BaseModel):
     task_id: str
 
 
-def _resolve_session(session_id: str) -> dict[str, Any] | None:
-    if not session_id or session_id not in stores.sessions:
+def _session_now() -> datetime:
+    """Return the server clock used for every session decision."""
+    return datetime.now(UTC)
+
+
+def _session_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str):
         return None
-    sess = stores.sessions[session_id]
-    if not isinstance(sess, dict):
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
         return None
-    created_at = sess.get("created_at")
-    if isinstance(created_at, str):
-        try:
-            created = datetime.fromisoformat(created_at)
-        except ValueError:
-            created = None
-        if created is not None:
-            if created.tzinfo is None:
-                created = created.replace(tzinfo=UTC)
-            age = (datetime.now(UTC) - created).total_seconds()
-            if age > _COOKIE_MAX_AGE:
-                stores.sessions.pop(session_id, None)
-                return None
-    user_id = sess.get("user_id")
-    if not user_id or user_id not in stores.users:
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
+
+
+def _session_expiries(sess: dict[str, Any], now: datetime) -> tuple[datetime, datetime] | None:
+    created = _session_timestamp(sess.get("created_at"))
+    last_activity = _session_timestamp(sess.get("last_activity_at"))
+    if created is None:
         return None
-    return sess
+    # Records written before idle expiry shipped are treated as having been
+    # active at creation, rather than being granted an unbounded lifetime.
+    if last_activity is None:
+        last_activity = created
+    return (
+        created + timedelta(seconds=_SESSION_ABSOLUTE_TTL),
+        last_activity + timedelta(seconds=_SESSION_IDLE_TIMEOUT),
+    )
+
+
+def _resolve_session(
+    session_id: str,
+    *,
+    refresh_activity: bool = False,
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
+    """Resolve and optionally touch one session as one locked operation.
+
+    The lock makes expiry, revocation, and the sliding timestamp a single
+    server-side decision for this process; a late request cannot resurrect an
+    expired or revoked record. ``whoami`` deliberately calls this without a
+    refresh because it is a health probe, not user activity.
+    """
+    if not session_id:
+        return None
+    current = now or _session_now()
+    with _SESSION_LOCK:
+        sess = stores.sessions.get(session_id)
+        if not isinstance(sess, dict):
+            return None
+        expiries = _session_expiries(sess, current)
+        if expiries is None or current >= min(expiries):
+            stores.sessions.pop(session_id, None)
+            return None
+        # Deactivation is revocation: remove the opaque session while the
+        # account is inactive so reactivation cannot resurrect it.
+        user = stores.users.get(sess.get("user_id"))
+        if user is None or not user.is_active:
+            stores.sessions.pop(session_id, None)
+            return None
+        if refresh_activity:
+            previous = _session_timestamp(sess.get("last_activity_at"))
+            # A wall-clock correction must not move activity backwards. The
+            # absolute expiry remains anchored to the original creation time.
+            if previous is None or current > previous:
+                stores.sessions[session_id] = {**sess, "last_activity_at": current.isoformat()}
+        return stores.sessions.get(session_id)
 
 
 def _active_grants(sess: dict[str, Any]) -> dict[str, list[str]]:
@@ -217,10 +269,20 @@ def _active_grants(sess: dict[str, Any]) -> dict[str, list[str]]:
     return {tid: perms for tid, perms in grants.items() if isinstance(perms, list)}
 
 
-def get_current_user(session_id: str | None) -> dict[str, Any] | None:
+def refresh_session_activity(session_id: str | None) -> bool:
+    """Refresh one eligible session, failing closed on concurrent revocation."""
+    return _resolve_session(session_id or "", refresh_activity=True) is not None
+
+
+def get_current_user(
+    session_id: str | None,
+    *,
+    refresh_activity: bool = False,
+) -> dict[str, Any] | None:
     if not session_id:
         return None
-    sess = _resolve_session(session_id)
+    current = _session_now()
+    sess = _resolve_session(session_id, refresh_activity=refresh_activity, now=current)
     if sess is None:
         return None
     user = stores.users.get(sess["user_id"])
@@ -232,6 +294,10 @@ def get_current_user(session_id: str | None) -> dict[str, Any] | None:
         for p in perms:
             if p not in all_elevated:
                 all_elevated.append(p)
+    expiries = _session_expiries(sess, current)
+    if expiries is None:
+        return None
+    absolute_expires_at, idle_expires_at = expiries
     return {
         "id": user.id,
         "username": user.username,
@@ -240,6 +306,15 @@ def get_current_user(session_id: str | None) -> dict[str, Any] | None:
         "did": user.did,
         "elevated_permissions": all_elevated,
         "elevated_tasks": list(grants.keys()),
+        # This is policy/health metadata only. The opaque session id is never
+        # included in the response.
+        "session_policy": {
+            "idle_timeout_seconds": _SESSION_IDLE_TIMEOUT,
+            "absolute_ttl_seconds": _SESSION_ABSOLUTE_TTL,
+            "idle_expires_at": idle_expires_at.isoformat(),
+            "absolute_expires_at": absolute_expires_at.isoformat(),
+            "effective_expires_at": min(absolute_expires_at, idle_expires_at).isoformat(),
+        },
     }
 
 
@@ -250,7 +325,7 @@ def user_has_permission(session_id: str | None, perm: str) -> bool:
     if sess is None:
         return False
     user = stores.users.get(sess["user_id"])
-    if user is None:
+    if user is None or not user.is_active:
         return False
     return bool(user.has_permission(perm))
 
@@ -288,14 +363,17 @@ def _issue_session(user: Any, response: Response) -> dict[str, Any]:
     # SECURITY-REVIEW: This is the canonical Hive authentication/session
     # issuance boundary used by both password and verified OAuth login.
     session_id = str(uuid4())
-    stores.sessions[session_id] = {
-        "user_id": user.id,
-        "username": user.username,
-        "role": user.role,
-        "permissions": user.permissions,
-        "elevated_grants": {},
-        "created_at": datetime.now(UTC).isoformat(),
-    }
+    issued_at = _session_now()
+    with _SESSION_LOCK:
+        stores.sessions[session_id] = {
+            "user_id": user.id,
+            "username": user.username,
+            "role": user.role,
+            "permissions": user.permissions,
+            "elevated_grants": {},
+            "created_at": issued_at.isoformat(),
+            "last_activity_at": issued_at.isoformat(),
+        }
     response.set_cookie(
         key=_SESSION_COOKIE,
         value=session_id,
@@ -318,13 +396,14 @@ def _issue_session(user: Any, response: Response) -> dict[str, Any]:
 
 
 def revoke_task_elevation(session_id: str, task_id: str) -> None:
-    if session_id not in stores.sessions:
-        return
-    sess = stores.sessions[session_id]
-    grants = sess.get("elevated_grants", {})
-    if task_id in grants:
-        del grants[task_id]
-        stores.sessions[session_id] = {**sess, "elevated_grants": grants}
+    with _SESSION_LOCK:
+        if session_id not in stores.sessions:
+            return
+        sess = stores.sessions[session_id]
+        grants = sess.get("elevated_grants", {})
+        if task_id in grants:
+            del grants[task_id]
+            stores.sessions[session_id] = {**sess, "elevated_grants": grants}
 
 
 def _normalized_oauth_provider(provider: str) -> str:
@@ -789,9 +868,10 @@ def login(body: LoginBody, request: Request, response: Response) -> dict[str, An
 @router.post("/logout")
 def logout(response: Response, hive_session: str | None = Cookie(None)) -> dict[str, Any]:
     if hive_session:
-        user_info = _resolve_session(hive_session)
-        actor = user_info.get("username", "unknown") if user_info else "unknown"
-        stores.sessions.pop(hive_session, None)
+        with _SESSION_LOCK:
+            user_info = _resolve_session(hive_session)
+            actor = user_info.get("username", "unknown") if user_info else "unknown"
+            stores.sessions.pop(hive_session, None)
         log_audit("logout", actor)
     # A cookie is only cleared when the delete matches the attributes it was set
     # with. Dropping path/secure/samesite here left the original cookie in place
@@ -811,7 +891,9 @@ def logout(response: Response, hive_session: str | None = Cookie(None)) -> dict[
 
 @router.get("/whoami")
 def whoami(hive_session: str | None = Cookie(None)) -> dict[str, Any]:
-    user = get_current_user(hive_session)
+    # Intentionally observational: the SPA may call this during restoration,
+    # but a health check must not keep an unattended session alive.
+    user = get_current_user(hive_session, refresh_activity=False)
     if user is None:
         return {"authenticated": False}
     return {"authenticated": True, "user": user}
@@ -821,9 +903,11 @@ def whoami(hive_session: str | None = Cookie(None)) -> dict[str, Any]:
 def elevate(
     body: ElevateBody, request: Request, hive_session: str | None = Cookie(None)
 ) -> dict[str, Any]:
-    if not hive_session or hive_session not in stores.sessions:
+    if not hive_session:
         raise HTTPException(status_code=401, detail="No session")
-    sess = stores.sessions[hive_session]
+    sess = _resolve_session(hive_session)
+    if sess is None:
+        raise HTTPException(status_code=401, detail="No session")
     user = stores.users.get(sess["user_id"])
 
     # Bounded separately and far more tightly than login (#366). This is only
@@ -855,7 +939,13 @@ def elevate(
 
     grants: dict[str, list[str]] = sess.get("elevated_grants", {})
     grants[body.task_id] = granted
-    stores.sessions[hive_session] = {**sess, "elevated_grants": grants}
+    with _SESSION_LOCK:
+        # Re-read under the same lock as expiry/revocation so an elevation
+        # cannot overwrite a concurrent logout or session purge.
+        current = _resolve_session(hive_session)
+        if current is None:
+            raise HTTPException(status_code=401, detail="No session")
+        stores.sessions[hive_session] = {**current, "elevated_grants": grants}
     log_audit(
         "elevate",
         user.username,

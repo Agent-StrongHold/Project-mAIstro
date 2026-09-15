@@ -77,10 +77,28 @@ The session cookie is set with:
 - `HttpOnly` — not readable by page JavaScript.
 - `Secure` — HTTPS only.
 - `SameSite` — `Lax` for the top-level session cookie (`Strict` where the route allows).
-- **Idle expiry** (sliding inactivity timeout) **and absolute expiry** (hard cap regardless of
-  activity).
+- **Idle expiry** (a 30-minute sliding inactivity timeout) **and absolute expiry** (a seven-day
+  hard cap regardless of activity). These values are governed policy, not browser or Workspace
+  preferences.
 - **Rotation on privilege change** — the session identifier is regenerated on login and on any
   elevation/de-elevation, so a fixated or leaked pre-elevation value cannot ride an elevated session.
+
+### Session activity and expiry
+
+Supported production sessions use both limits. The server is authoritative: it stores the last
+eligible authenticated activity with the opaque session record, evaluates expiry before admitting
+the request, and refreshes that timestamp only as part of the same serialized session decision.
+The `GET /v1/auth/whoami` endpoint is intentionally observational because the SPA calls it for
+startup/restoration health checks; it never refreshes idle expiry. CORS preflight and other
+unauthenticated requests likewise do not count as activity. An authenticated HTTP request that
+passes the normal API boundary, or an authenticated WebSocket handshake, is eligible activity.
+Revocation, account deactivation, and either expiry win over a concurrent activity update, and
+expired records are removed. The browser receives only policy/health timestamps, never a session
+id or secret.
+
+Workspace restoration and UI preferences identify product state (for example, the active
+Workspace) only. They cannot change, extend, or restore an authentication session; a restored SPA
+must obtain a still-valid server session again.
 
 ### CSRF
 
@@ -129,8 +147,8 @@ async def ws_handler(ws):
 - [ ] Privileges are re-resolved live via the ADR-068 resolver on **every** request — a revocation or
       elevation change is reflected on the next request with no re-login (property test: revoke
       mid-session → next request denied).
-- [ ] The cookie sets `HttpOnly`, `Secure`, `SameSite`, both idle and absolute expiry, and the
-      session identifier rotates on login and on any privilege change.
+- [ ] The cookie sets `HttpOnly`, `Secure`, `SameSite`, both idle (30 minutes) and absolute (seven
+      days) expiry, and the session identifier rotates on login and on any privilege change.
 - [ ] State-changing routes reject requests lacking a valid CSRF token; safe methods do not require
       one.
 - [ ] Login and sensitive endpoints enforce per-IP and per-user rate limits with brute-force backoff.
