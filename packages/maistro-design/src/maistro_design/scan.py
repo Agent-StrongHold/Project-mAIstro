@@ -213,6 +213,33 @@ def find_external_urls(content: str, url_allowlist: tuple[str, ...]) -> set[str]
     return found
 
 
+def scan_design_text(
+    content: str,
+    *,
+    label: str = "content",
+    banish_list: InMemoryTrustBanishList | None = None,
+    url_allowlist: tuple[str, ...] = DEFAULT_URL_ALLOWLIST,
+) -> ScanReport:
+    """Scan one text value at a final Design Studio output boundary.
+
+    This is the same fail-closed path used for artifact trees. Renderers call it
+    before handing content to a document/browser backend, so a caller cannot
+    bypass the returned-artifact scan merely by choosing a different output sink.
+    """
+    blocking = scan_blocking_patterns(
+        label,
+        content,
+        banish_list,
+        url_allowlist=url_allowlist,
+        visual_artifact=True,
+    )
+    return ScanReport(
+        passed=not blocking,
+        blocking_flags=tuple(blocking),
+        external_urls=tuple(sorted(find_external_urls(content, url_allowlist))),
+    )
+
+
 def scan_design_output(
     output: DesignOutput,
     *,
@@ -229,16 +256,14 @@ def scan_design_output(
 
     for address, node in output.root.walk():
         if isinstance(node.value, str):
-            blocking.extend(
-                scan_blocking_patterns(
-                    address,
-                    node.value,
-                    banish_list,
-                    url_allowlist=url_allowlist,
-                    visual_artifact=True,
-                )
+            report = scan_design_text(
+                node.value,
+                label=address,
+                banish_list=banish_list,
+                url_allowlist=url_allowlist,
             )
-            external_urls.update(find_external_urls(node.value, url_allowlist))
+            blocking.extend(report.blocking_flags)
+            external_urls.update(report.external_urls)
 
     return ScanReport(
         passed=not blocking,

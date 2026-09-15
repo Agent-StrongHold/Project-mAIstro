@@ -2,6 +2,7 @@
 inventory-delta:
   packages/maistro-core/tests: +9
   packages/maistro-design/tests: +28
+  packages/hive-conductor/backend/tests: +1
 ---
 # Issue 817: Design trust active-markup corpus
 
@@ -19,4 +20,7 @@ the shared Warden vocabulary and verifies both pre-scan recommendations and fina
 render rejection for each. The repair regression also covers Warden's system-prompt
 query rule at both the pre-scan and returned-artifact boundaries. The shared visual
 classification remains fail-closed even for a URL that the prose/import allowlist
-would otherwise permit, matching the browser renderer's CSS boundary.
+would otherwise permit, matching the browser renderer's CSS boundary. Server-side
+PDF/PPTX/DOCX/PNG renderer entry points now call the same `scan_design_text` boundary
+before backend dispatch, so selecting a renderer cannot bypass returned-artifact
+enforcement.

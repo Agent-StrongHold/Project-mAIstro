@@ -37,6 +37,9 @@ HTML, `foreignObject`, external SVG references, dangerous URLs including
   Infographic, Flyer, Social, Card, Cover, Diagram, and Custom Canvas modes.
   It sanitizes its initial persisted value, edit/paste/drop updates, preview,
   and export.
+- Server-side Design renderers call `maistro_design.scan_design_text` before
+  dispatching content to PDF/PPTX/DOCX/PNG backends, reusing the returned-output
+  boundary rather than maintaining a renderer-specific scanner.
 
 The browser proof in
 `packages/hive-conductor/tests/e2e/deck-sanitization.spec.ts` mounts the real
