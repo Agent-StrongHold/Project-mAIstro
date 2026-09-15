@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -95,6 +96,30 @@ class SqliteProjectScopeStore:
         # `BEGIN IMMEDIATE` raise "cannot start a transaction within a
         # transaction" the moment their awaits interleaved.
         self._write_lock = asyncio.Lock()
+        self._transaction_connection: ContextVar[Any | None] = ContextVar(
+            "sqlite_project_transaction_connection", default=None
+        )
+
+    @property
+    def write_lock(self) -> asyncio.Lock:
+        """The connection-wide write lock shared with Workspace provisioning."""
+        return self._write_lock
+
+    @asynccontextmanager
+    async def workspace_transaction(self) -> AsyncIterator[aiosqlite.Connection]:
+        """Expose one transaction for Workspace rows and its Root Project."""
+        async with self._write_lock:
+            await self._conn.execute("BEGIN IMMEDIATE")
+            token = self._transaction_connection.set(self._conn)
+            try:
+                yield self._conn
+            except BaseException:
+                await self._conn.rollback()
+                raise
+            else:
+                await self._conn.commit()
+            finally:
+                self._transaction_connection.reset(token)
 
     def set_run_owner(self, owns_runs: Callable[[str], Awaitable[bool]]) -> None:
         """Register the predicate `delete()` consults for Run ownership."""
@@ -215,25 +240,33 @@ class SqliteProjectScopeStore:
     async def create_root(self, workspace_id: str) -> Project:
         """Create or return the Workspace's durable Root Project."""
 
+        active_connection = self._transaction_connection.get()
+        if active_connection is not None:
+            return await self.create_root_in_transaction(workspace_id, active_connection)
+        async with self.workspace_transaction() as connection:
+            return await self.create_root_in_transaction(workspace_id, connection)
+
+    async def create_root_in_transaction(
+        self, workspace_id: str, connection: aiosqlite.Connection
+    ) -> Project:
+        """Provision a Root Project without committing the caller's transaction."""
         if not workspace_id.strip():
             raise ValueError("workspace_id must be a non-empty string")
         existing = await self._root_or_none(workspace_id)
         if existing is not None:
             return existing
-
         root = Project(
             workspace_id=workspace_id,
             name="Root",
             parent_project_id=None,
             is_root=True,
         )
-        async with self._serialized_write():
-            await self._conn.execute(
-                """INSERT OR IGNORE INTO canonical_projects
-                   (project_id, workspace_id, parent_project_id, is_root, payload)
-                   VALUES (?, ?, NULL, 1, ?)""",
-                (root.project_id, root.workspace_id, root.model_dump_json()),
-            )
+        await connection.execute(
+            """INSERT OR IGNORE INTO canonical_projects
+               (project_id, workspace_id, parent_project_id, is_root, payload)
+               VALUES (?, ?, NULL, 1, ?)""",
+            (root.project_id, root.workspace_id, root.model_dump_json()),
+        )
         return await self.root_for_workspace(workspace_id)
 
     async def root_for_workspace(self, workspace_id: str) -> Project:

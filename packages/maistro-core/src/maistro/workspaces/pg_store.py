@@ -98,7 +98,7 @@ class PgWorkspaceStore:
             role=WorkspaceRole.OWNER,
             added_at=workspace.created_at,
         )
-        async with self._pool.acquire() as conn, conn.transaction():
+        async with self.project_store.workspace_transaction() as conn:
             await conn.execute(
                 """INSERT INTO canonical_workspaces
                        (workspace_id, name, created_at, updated_at, payload)
@@ -110,12 +110,7 @@ class PgWorkspaceStore:
                 json_of(workspace),
             )
             await self._insert_membership(conn, owner)
-
-        try:
             await self.project_store.create_root(workspace.workspace_id)
-        except BaseException:
-            await self._purge(workspace.workspace_id)
-            raise
         return workspace
 
     async def get(self, workspace_id: str) -> Workspace | None:
