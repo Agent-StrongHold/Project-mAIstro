@@ -54,6 +54,35 @@ def test_reachable_credential_surfaces_are_classified_and_scoped() -> None:
     assert _checker.audit() == []
 
 
+def test_canonical_store_isolation_has_uniform_missing_record_behavior() -> None:
+    """The replacement store scopes every record operation by principal.
+
+    Retirement removes the unsafe id-only API rather than preserving it under a
+    new name. Keep the canonical replacement's two-user contract explicit: an
+    owner-id guess cannot read or delete another user's record, and the missing
+    result is indistinguishable from an actually absent provider.
+    """
+    from cryptography.fernet import Fernet
+
+    from maistro.credentials.store import CredentialNotFound, UserCredentialStore
+
+    with tempfile.TemporaryDirectory() as directory:
+        store = UserCredentialStore(Path(directory), master_key=Fernet.generate_key())
+        store.set_secret("alice", "jira", "alice-secret")
+
+        assert store.list_providers_for_user("bob") == {}
+        assert not store.has_secret("bob", "jira")
+        assert store.delete_secret("bob", "jira") is False
+        assert store.has_secret("alice", "jira")
+
+        with pytest.raises(CredentialNotFound) as guessed:
+            store.use_secret("bob", "jira", lambda secret: secret)
+        with pytest.raises(CredentialNotFound) as absent:
+            store.use_secret("carol", "jira", lambda secret: secret)
+        assert str(guessed.value) == str(absent.value)
+        assert store.use_secret("alice", "jira", lambda secret: secret) == "alice-secret"
+
+
 def test_retired_module_cannot_be_imported_again(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
