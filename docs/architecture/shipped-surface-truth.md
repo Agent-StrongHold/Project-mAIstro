@@ -6,7 +6,7 @@ The checker discovers every POST, PUT, PATCH, and DELETE route in the shipped Co
 
 The checker also detects an intentionally narrow class of client-only simulation: production TypeScript/TSX files that combine timer-driven state with execution-looking status/progress language. It records mutating `fetch` calls even when the endpoint is held in a literal string constant, and records Express-style mutating routes in shipped JavaScript. Those files require an explicit frontend disposition. Known client-only facades that do not match that automatic signal can be recorded manually in the same matrix.
 
-A simple mutating route that returns a success-shaped status literal without performing any work is treated as an obvious fake-success surface. It cannot be labeled canonical, domain-state, or local-only. The planted regression in `tests/test_shipped_surface_truth.py` proves that behavior.
+A simple mutating route that returns a success-shaped status literal or a literal `success: true`/`ok: true` response without performing any work is treated as an obvious fake-success surface. It cannot be labeled canonical, domain-state, or local-only. The planted regressions in `tests/test_shipped_surface_truth.py` prove that behavior.
 
 Normal repository validation permits an explicitly owned `unresolved` disposition so parallel convergence work can land independently while remaining visible. `python scripts/check-shipped-surface-truth.py --require-clean` is the M1 Gate D closeout form: it additionally fails while any production-enabled unresolved surface remains. This distinction prevents the inventory from hiding known blockers without forcing unrelated lanes to steal their implementation ownership.
 

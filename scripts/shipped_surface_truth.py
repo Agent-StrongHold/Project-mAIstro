@@ -44,6 +44,8 @@ SUCCESS_STATUS = {
     "running",
     "started",
 }
+_SUCCESS_BOOLEAN_KEYS = {"success", "ok"}
+_SUCCESS_BOOLEAN_MARKERS = {f"{key}:true" for key in _SUCCESS_BOOLEAN_KEYS}
 EXCLUDED_PARTS = {
     ".git",
     ".venv",
@@ -336,13 +338,20 @@ class _OwnReturns(ast.NodeVisitor):
 
 
 def _literal_success_status(value: ast.expr | None) -> str | None:
+    """Return a literal status or boolean success marker from a response."""
     if not isinstance(value, ast.Dict):
         return None
     for key, item in zip(value.keys, value.values, strict=True):
-        if not isinstance(key, ast.Constant) or key.value != "status":
+        if not isinstance(key, ast.Constant):
             continue
-        if isinstance(item, ast.Constant) and isinstance(item.value, str):
+        if key.value == "status" and isinstance(item, ast.Constant) and isinstance(item.value, str):
             return item.value.lower()
+        if (
+            key.value in _SUCCESS_BOOLEAN_KEYS
+            and isinstance(item, ast.Constant)
+            and item.value is True
+        ):
+            return f"{key.value}:true"
     return None
 
 
@@ -456,7 +465,7 @@ def _does_real_work(node: ast.AsyncFunctionDef | ast.FunctionDef) -> bool:
 
 
 def _returned_status(node: ast.AsyncFunctionDef | ast.FunctionDef) -> str | None:
-    """The literal `status` every reachable return in this handler agrees on,
+    """The literal success marker every reachable return in this handler agrees on,
     for a handler whose own body does no real work beyond that return.
 
     Deliberately conservative, but over the *whole* body rather than one
@@ -485,7 +494,11 @@ def _returned_status(node: ast.AsyncFunctionDef | ast.FunctionDef) -> str | None
 
 def _obvious_fake(node: ast.AsyncFunctionDef | ast.FunctionDef) -> bool:
     status = _returned_status(node)
-    return status in SUCCESS_STATUS if status is not None else False
+    return (
+        status in SUCCESS_STATUS or status in _SUCCESS_BOOLEAN_MARKERS
+        if status is not None
+        else False
+    )
 
 
 def _function_nodes(tree: ast.Module) -> list[ast.AsyncFunctionDef | ast.FunctionDef]:

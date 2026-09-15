@@ -466,6 +466,40 @@ def build():
     )
 
 
+def test_boolean_success_fixture_is_rejected_as_fake_success(tmp_path: Path) -> None:
+    """A ``success: true`` response is just as success-shaped as a status field."""
+    _write(
+        tmp_path / "backend/routes.py",
+        """
+from fastapi import APIRouter
+router = APIRouter()
+@router.post("/build")
+def build():
+    build_id = "fixture-123"
+    return {"success": True, "id": build_id}
+""",
+    )
+    (tmp_path / "frontend").mkdir()
+    [surface] = discover_backend_surfaces(tmp_path, ["backend"])
+    assert surface.obvious_fake_success is True
+    matrix = _matrix()
+    matrix["backend_surfaces"] = [
+        {
+            "source": "backend/routes.py",
+            "method": "POST",
+            "route": "/build",
+            "handler": "build",
+            "disposition": "canonical",
+            "production_enabled": True,
+            "effect_owner": "fake.fixture",
+            "reason": "deliberately planted boolean-success fixture",
+        }
+    ]
+    assert any(
+        "production success-shaped no-op" in error for error in validate_matrix(tmp_path, matrix)
+    )
+
+
 def test_arbitrary_call_assigned_to_a_local_still_counts_as_work(tmp_path: Path) -> None:
     """The inert exception must not make real call results look like no-ops."""
     _write(
