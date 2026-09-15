@@ -526,6 +526,23 @@ def test_policy_requires_a_merge_base(
         enqueue.policy_assessment(Path("."), candidate(enqueue))
 
 
+def test_policy_classifies_merge_tree_conflicts_as_unqueueable(
+    enqueue: ModuleType,
+    tmp_path: Path,
+) -> None:
+    repo, _ = init_repo(tmp_path)
+    git(repo, "checkout", "-b", "candidate")
+    head_sha = commit_file(repo, "README.md", "candidate\n")
+    git(repo, "checkout", "develop")
+    base_sha = commit_file(repo, "README.md", "develop\n")
+
+    with pytest.raises(enqueue.UnmergeableCandidate, match="does not merge cleanly"):
+        enqueue.policy_assessment(
+            repo,
+            candidate(enqueue, base_sha=base_sha, head_sha=head_sha),
+        )
+
+
 def test_http_error_detail_survives_unreadable_body(enqueue: ModuleType) -> None:
     class UnreadableError:
         reason = "response body unavailable"
@@ -574,6 +591,28 @@ def test_run_waits_when_head_moves_during_object_fetch(enqueue: ModuleType) -> N
             raise AssertionError("stale head must never be enqueued")
 
     assert enqueue.run(HeadMovedApi()) == 0
+
+
+def test_run_skips_conflicted_candidates_without_failing_controller(
+    enqueue: ModuleType,
+) -> None:
+    class ConflictedApi:
+        def open_develop_prs(self):
+            return [raw_pr()]
+
+        def pull_request(self, number: int):
+            return raw_pr()
+
+        def statuses(self, sha: str):
+            return green_statuses()
+
+        def policy_assessment(self, current):
+            raise enqueue.UnmergeableCandidate("candidate conflicts with develop")
+
+        def enqueue(self, current):
+            raise AssertionError("conflicted candidate must not be enqueued")
+
+    assert enqueue.run(ConflictedApi()) == 0
 
 
 def test_queue_request_failure_is_loud_and_nonzero(enqueue: ModuleType) -> None:
