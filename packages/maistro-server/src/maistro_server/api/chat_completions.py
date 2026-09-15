@@ -58,7 +58,7 @@ from pydantic import BaseModel, Field
 
 from maistro.agents.types import LLMProviderError
 from maistro.constants import STREAM_CHUNK_SIZE
-from maistro.runs.model import Run, RunStatus
+from maistro.runs.model import Run
 from maistro.security._types import AuthContext
 from maistro_server.api.auth import RequireAuth
 from maistro_server.api.principal import AuthenticatedPrincipal
@@ -207,21 +207,16 @@ async def _admit_turn(
 
     Never refuses the turn. The chat path has no receipt to fall back on, so
     failing here would turn "this process cannot record the turn" into "this
-    process cannot answer" — the same rule the seam itself follows.
+    process cannot answer" — the same rule the seam itself follows. Container
+    owns the compensating transitions and admission receipt heartbeat; this
+    boundary only supplies the Run to the response headers.
     """
     if _container is None or _container.chat_admitter is None:
         return None
-    try:
-        run = await _container.chat_admitter.admit(
-            [m.model_dump() for m in request.messages],
-            actor_principal_id=auth.user_id if auth else None,
-        )
-        await _container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
-        running: Run = await _container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
-        return running
-    except Exception:
-        logger.exception("chat_completions_run_admission_failed")
-        return None
+    return await _container.admit_chat_turn(
+        [m.model_dump() for m in request.messages],
+        auth=_auth_context(auth),
+    )
 
 
 async def _route(
@@ -247,6 +242,9 @@ async def _route(
         [m.model_dump() for m in request.messages],
         auth=_auth_context(auth),
         run=run,
+        # Admission was attempted above so the stream can expose its Run id.
+        # Do not admit a second Run when that attempt was compensated.
+        admit_run=False,
     )
     return _answer_of(result)
 

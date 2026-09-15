@@ -451,6 +451,7 @@ class Container:
         session_id: str | None = None,
         intent_hint: str = "",
         run: Run | None = None,
+        admit_run: bool = True,
     ) -> dict[str, Any]:
         """Route one chat turn, admitting and terminalizing its Run.
 
@@ -465,10 +466,14 @@ class Container:
         error; nothing here checks, because the check would be a store read on
         every turn to catch a mistake that is not reachable from within one
         process.
+
+        ``admit_run=False`` is for a boundary that had to attempt admission
+        before dispatch (for example, to put the Run id in response headers).
+        It prevents a failed pre-admission from being attempted a second time.
         """
         self._require_auth_while_armed(auth)
 
-        if run is None:
+        if run is None and admit_run:
             run = await self._admit_chat_turn(
                 messages,
                 auth=auth,
@@ -670,6 +675,27 @@ class Container:
                 await asyncio.gather(renewal_task, return_exceptions=True)
             if run is not None:
                 self._active_chat_admissions.discard(run.run_id)
+
+    async def admit_chat_turn(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        auth: Any = None,
+        session_id: str | None = None,
+        intent_hint: str = "",
+    ) -> Run | None:
+        """Admit a turn for a boundary that must name its Run before dispatch.
+
+        This is the same compensating admission seam used by
+        :meth:`route_request`; exposing it keeps HTTP adapters from reimplementing
+        the lifecycle transitions and bypassing admission recovery.
+        """
+        return await self._admit_chat_turn(
+            messages,
+            auth=auth,
+            session_id=session_id,
+            intent_hint=intent_hint,
+        )
 
     async def _renew_chat_admission(self, run: Run, stop: asyncio.Event) -> None:
         """Keep the durable admission receipt live until dispatch is claimed."""
