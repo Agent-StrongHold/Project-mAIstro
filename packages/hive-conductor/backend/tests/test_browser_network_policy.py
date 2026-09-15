@@ -177,3 +177,21 @@ async def test_hill_climber_screenshot_blocks_model_or_cli_loopback_navigation(
     assert route is not None
     assert route.action == ("abort", "blockedbyclient")
     assert route.fetch_count == 0
+
+
+def test_hyperlight_hill_climb_guards_each_sync_browser_context() -> None:
+    """Keep the reachable VM workload on the same browser transport seam."""
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parents[2] / "hill-climb-ui.sh"
+    source = script.read_text()
+
+    assert "configure_outbound_policy(BASE, URL)" in source
+    assert "with sync_client(timeout=60.0) as client:" in source
+    assert "httpx.post(" not in source
+    assert 'service_workers="block"' in source
+    assert (
+        "SyncBrowserNetworkGuard(extra_origins=browser_allowed_origins()).attach(context)" in source
+    )
+    assert source.count("ctx = guarded_context(browser)") == 2
+    assert "browser.new_page(" not in source
