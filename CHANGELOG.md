@@ -25,6 +25,15 @@ or placeholder-only section.
 
 ### Security
 
+- **An identity-free chat turn is routed as the anonymous principal again
+  (#1165 regression, introduced by #1288).** `Container.route_request` had
+  stopped substituting `ANONYMOUS_AUTH` for `auth=None`, so a turn that
+  carried no identity reached the strategies with `auth=None` — and they
+  consult Sentinel only when `auth is not None`, which let an unauthenticated
+  turn walk past the fail-closed permission table. The armed-controls refusal
+  survived; only the substitution was lost. Both halves are restored through
+  one `_resolve_chat_auth`, and the existing regression test for #1165 passes
+  again.
 - **DevSkim scans the shipped surface instead of everything (no linked issue:
   scanner configuration).** The action ran unconfigured, so the test and
   vendored trees were scanned alongside the shipped ones and supplied 619 of
@@ -197,6 +206,20 @@ or placeholder-only section.
 
 ### Fixed
 
+- **The Chat and Deck Builder pages render again over plain HTTP (#1476;
+  regression from #1344).** #1344 moved message, session and slide ids off `Math.random`
+  onto `crypto.randomUUID()`, which browsers expose only in a secure context
+  (`https://`, or `http://localhost`). Agent Conductor's documented homelab
+  deployment is reached over plain HTTP at a LAN hostname, and the browser
+  e2e harness serves it the same way, so the first render of either page
+  threw "crypto.randomUUID is not a function" into the error boundary; the
+  e2e walkthrough caught it only when the throw landed before its first
+  poll, which is why `hive-conductor-e2e-ui` flickered red. Ids now come from
+  `crypto.getRandomValues`, the same CSPRNG and available in every context,
+  through a shared `lib/ids.ts`, and the "navigate all key pages without
+  errors" e2e test now fails on the error boundary's fallback rather than
+  accepting any non-empty body.
+
 - **A chat turn whose canonical record fails *after* the model answered is no
   longer asked again (#1108).** `Container._execute_chat_turn` fell
   back to a fresh `dispatch()` on any `RunIntegrityError` without knowing
@@ -213,6 +236,23 @@ or placeholder-only section.
   answering a turn whose spine could not be written before the model was
   called — is unchanged; #1108's other half (refusing a turn outright when no
   canonical spine is wired) is not addressed here.
+- **A launch the store refuses no longer masks itself as a lifecycle error
+  (#1108 follow-up to #1288).** When the Attempt's own RUNNING write failed,
+  the executor's failure path asked the lifecycle for `FAILED` from `CREATED`
+  — a transition it has never allowed — so the caller saw
+  `InvalidLifecycleTransition` instead of the refusal, and the chat
+  pre-dispatch fallback never received the `RunIntegrityError` it answers on.
+  An Attempt still `CREATED` now settles as `CANCELLED` carrying the refusal
+  as its error (nothing ran, so nothing failed), the refusal propagates, and
+  the NodeRun parks for a retry decision exactly as a `FAILED` Attempt would.
+- **A task's worker executes under the request id that admitted it
+  (#1063).** `TaskRunAdmitter` recorded `X-Request-ID` on the Run's
+  provenance, but the worker that later picks the task up runs from the
+  dispatcher's own context, after the admitting request has ended, and
+  restored nothing — so the execution's ambient context and log lines carried
+  no request id at all. `TaskAttemptExecutor` now binds the Run's persisted
+  request id, Workspace and Project around the Attempt it runs, so one id
+  follows a task from the HTTP boundary through the Run into its execution.
 - **The migration chain has one head again, and the debt ledger matches the
   shipped tree (no linked issue: base-branch repair).** Merging #1263 carried
   a renumber made against an older base: it renamed
@@ -373,6 +413,33 @@ or placeholder-only section.
   already carries on every resumed answer, and fall back to a freshly
   computed deadline only on a node's very first pause, where no earlier
   deadline exists to preserve.
+
+- **The legacy-event replay bridge has a durable, crash-safe resume position
+  instead of restarting from cursor zero every time (#1163).**
+  `Container.durable_event_cursor` was a plain process-local `int`, so a
+  restart always replayed the entire retained `durable_event_log` regardless
+  of how much of it had already settled; correctness survived only on
+  `InvocationStore`'s per-`(trigger_id, event_id)` idempotency. A new
+  `ConsumerCursorStore` (in-memory, SQLite, and PostgreSQL implementations)
+  gives `process_durable_events` a durable position keyed to a fixed
+  consumer identity plus a claim lease with a fencing token, so of several
+  replicas that might tick the bridge at once, only the lease holder
+  re-scans/redispatches a given round, and a stale or reordered write cannot
+  regress the recorded position. The durable position advances only after
+  the tick's events are confirmed settled, so a crash between "processed"
+  and "cursor written" costs at most a replay of already-idempotent work and
+  never skips an event still in flight. Nor is it persisted past an id the
+  log handed out but has not committed: PostgreSQL allocates `BIGSERIAL`
+  ids before commit, so `process_events_batch` reports every id it skipped
+  over and the container holds its durable position below the first such
+  hole until the id appears or a grace window
+  (`Container.durable_event_hole_grace_s`, 60 s) lapses, after which the
+  hole is treated as an aborted append. Handler work is never delayed by a
+  hole, only the persisted resume point. The `consumer_cursors` table ships
+  as Alembic revision `036_consumer_cursors` for deployments whose
+  application role cannot create tables, and ADR-086 carries a dated
+  amendment recording the cursor's ownership, lease, fencing and gap
+  semantics.
 
 ## [1.0.0] - TBD
 
