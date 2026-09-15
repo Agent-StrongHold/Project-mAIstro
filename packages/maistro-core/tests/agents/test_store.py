@@ -211,6 +211,7 @@ async def test_get_returns_full_detail_dict() -> None:
         "reasoning_strategy": "direct",
         "model": "gpt-4",
         "tools": ["tool_a", "tool_b"],
+        "write_scopes": [],
         "trust_tier": "t2",
         "priority_tier": "P1",
         "max_tool_rounds": 5,
@@ -387,6 +388,7 @@ async def test_export_gitagent_produces_expected_zip_layout() -> None:
         "reasoning": {"strategy": "direct", "max_rounds": 7},
         "model": "gpt-5",
         "tools": ["a", "b"],
+        "write_scopes": [],
         "trust_tier": "t1",
         "priority_tier": "P0",
         "memory": {"x": 1},
@@ -497,6 +499,7 @@ async def test_import_gitagent_creates_agent_with_manifest_fields() -> None:
         "description": "from zip",
         "model": "claude-x",
         "tools": ["t1", "t2"],
+        "write_scopes": ["src/**"],
         "reasoning": {"strategy": "direct", "max_rounds": 11},
         "memory": {"enabled": True},
     }
@@ -513,6 +516,7 @@ async def test_import_gitagent_creates_agent_with_manifest_fields() -> None:
     assert identity.description == "from zip"
     assert identity.model == "claude-x"
     assert identity.tools == ("t1", "t2")
+    assert identity.write_scopes == ("src/**",)
     assert identity.max_tool_rounds == 11
     assert identity.reasoning_strategy == "direct"
     assert identity.memory_config == {"enabled": True}

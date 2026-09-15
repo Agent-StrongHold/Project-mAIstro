@@ -7,7 +7,10 @@ import sys
 from dataclasses import dataclass
 from typing import Any
 
+import pytest
+
 from maistro.agents.strategies.react import ReactStrategy, _find_tool_schema
+from maistro.agents.tool_authority import ToolSchemaError
 from maistro.testing.faux_provider import FauxProvider, FauxResponse, ToolCallDef
 
 
@@ -75,13 +78,15 @@ async def _echo_executor(_name: str, args: dict[str, Any]) -> str:
     return f"ran with {args}"
 
 
-def test_find_tool_schema_returns_empty_dict_when_tools_none() -> None:
-    assert _find_tool_schema(None, "read_file") == {}
+def test_find_tool_schema_denies_when_tools_none() -> None:
+    with pytest.raises(ToolSchemaError):
+        _find_tool_schema(None, "read_file")
 
 
-def test_find_tool_schema_returns_empty_dict_when_no_match() -> None:
+def test_find_tool_schema_denies_when_no_match() -> None:
     tools = _tools_for("write_file")
-    assert _find_tool_schema(tools, "read_file") == {}
+    with pytest.raises(ToolSchemaError):
+        _find_tool_schema(tools, "read_file")
 
 
 def test_find_tool_schema_returns_params_when_matched() -> None:
@@ -202,12 +207,12 @@ async def test_reason_tool_args_too_large_returns_error_without_blocking() -> No
     assert provider is not None  # keep provider referenced; unused beyond sanity
 
 
-async def test_reason_malformed_tool_args_parsed_as_empty_dict_no_error() -> None:
+async def test_reason_malformed_tool_args_are_denied_before_execution() -> None:
     strategy = ReactStrategy()
     args, error = strategy._parse_tool_args("read_file", "{not json")
 
     assert args == {}
-    assert error is None
+    assert error == "Error: malformed arguments for tool 'read_file'"
 
 
 async def test_reason_sentinel_denies_tool_call() -> None:

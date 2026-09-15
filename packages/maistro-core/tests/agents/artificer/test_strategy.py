@@ -402,6 +402,7 @@ class TestHandleToolCall:
 
         tool_args, result_str = await strategy._handle_tool_call(
             tc,
+            tools=_tools_for("write_file"),
             tool_executor=_echo_executor,
             trace=None,
             status=_status,
@@ -415,12 +416,37 @@ class TestHandleToolCall:
         assert any("Running write_file" in s for s in seen)
 
     @pytest.mark.asyncio
-    async def test_malformed_json_args_defaults_empty(self) -> None:
+    async def test_missing_tool_schema_is_denied_before_execution(self) -> None:
+        strategy = ArtificerStrategy()
+        calls: list[str] = []
+
+        async def _record(name: str, _args: dict[str, Any]) -> str:
+            calls.append(name)
+            return "executed"
+
+        tc = {"id": "call_1", "function": {"name": "unlisted", "arguments": "{}"}}
+        _tool_args, result_str = await strategy._handle_tool_call(
+            tc,
+            tools=None,
+            tool_executor=_record,
+            trace=None,
+            status=_noop_status,
+            sentinel=None,
+            auth=None,
+            warden=None,
+        )
+
+        assert calls == []
+        assert "no tool schema" in result_str
+
+    @pytest.mark.asyncio
+    async def test_malformed_json_args_are_denied_before_execution(self) -> None:
         strategy = ArtificerStrategy()
         tc = {"id": "call_1", "function": {"name": "write_file", "arguments": "not-json"}}
 
         tool_args, result_str = await strategy._handle_tool_call(
             tc,
+            tools=_tools_for("write_file"),
             tool_executor=_echo_executor,
             trace=None,
             status=_noop_status,
@@ -430,7 +456,7 @@ class TestHandleToolCall:
         )
 
         assert tool_args == {}
-        assert "ran with" in result_str
+        assert result_str == "Error: malformed arguments for tool 'write_file'"
 
     @pytest.mark.asyncio
     async def test_oversized_args_returns_error(self) -> None:
@@ -446,6 +472,7 @@ class TestHandleToolCall:
 
         _tool_args, result_str = await strategy._handle_tool_call(
             tc,
+            tools=_tools_for("write_file"),
             tool_executor=_echo_executor,
             trace=None,
             status=_noop_status,
@@ -464,6 +491,7 @@ class TestHandleToolCall:
 
         _tool_args, result_str = await strategy._handle_tool_call(
             tc,
+            tools=_tools_for("write_file"),
             tool_executor=_echo_executor,
             trace=None,
             status=_noop_status,
@@ -485,6 +513,7 @@ class TestHandleToolCall:
 
         tool_args, result_str = await strategy._handle_tool_call(
             tc,
+            tools=_tools_for("write_file"),
             tool_executor=_echo_executor,
             trace=None,
             status=_noop_status,
@@ -507,6 +536,7 @@ class TestHandleToolCall:
 
         _tool_args, result_str = await strategy._handle_tool_call(
             tc,
+            tools=_tools_for("write_file"),
             tool_executor=_big_executor,
             trace=None,
             status=_noop_status,

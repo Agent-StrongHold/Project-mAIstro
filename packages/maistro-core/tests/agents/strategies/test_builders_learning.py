@@ -69,11 +69,8 @@ async def test_frank_worker_with_tool_executor_runs_recon(messages: list[dict[st
     )
 
     assert result.response == "frank diagnosed"
-    # Recon ran both shell finds plus the github failure-pattern lookup.
-    assert (
-        "github",
-        {"action": "search_issues", "query": "is:pr is:closed label:rejected"},
-    ) in calls
+    # Recon is owned by governed Builders nodes, not this strategy callback.
+    assert calls == []
 
 
 async def test_check_repository_state_no_executor_returns_empty(
@@ -105,7 +102,7 @@ async def test_check_repository_state_splits_lines_from_tool_output() -> None:
 
     result = await strategy._check_repository_state(tool_executor=fake)
 
-    assert result == {"code": ["a.py", "b.py"], "tests": ["test_a.py"], "failed_prs": []}
+    assert result == {"code": [], "tests": [], "failed_prs": []}
 
 
 async def test_analyze_failure_patterns_no_executor_returns_empty() -> None:
@@ -137,8 +134,7 @@ async def test_analyze_failure_patterns_truncates_to_ten_lines() -> None:
 
     result = await strategy._analyze_failure_patterns(tool_executor=fake)
 
-    assert len(result["failures"]) == 10
-    assert result["failures"][0] == "issue 0"
+    assert result == {"similar_issues": [], "failures": [], "reasons": [], "lessons": []}
 
 
 async def test_mason_worker_no_critical_issues_stores_learning(
@@ -169,9 +165,9 @@ async def test_mason_worker_with_critical_issues_marks_not_done(
 
     result = await strategy.reason(messages, "m", provider, worker="mason", tool_executor=fake)
 
-    assert result.done is False
-    assert result.response is not None
-    assert "Self-diagnosis: Found 1 issues - must fix before PR" in result.response
+    # Command diagnostics are governed graph work, not strategy callback work.
+    assert result.done is True
+    assert result.response == "mason built it"
 
 
 async def test_mason_worker_execution_mode_fix_when_frank_diagnostic_has_code(
@@ -196,7 +192,12 @@ async def test_run_pr_diagnostics_no_executor_returns_all_passed() -> None:
 
     result = await strategy._run_pr_diagnostics()
 
-    assert result == {"all_passed": True, "issues": [], "has_critical_issues": False}
+    assert result == {
+        "all_passed": False,
+        "issues": [],
+        "has_critical_issues": False,
+        "not_run": True,
+    }
 
 
 async def test_run_pr_diagnostics_each_tool_exception_recorded_as_issue() -> None:
@@ -207,11 +208,12 @@ async def test_run_pr_diagnostics_each_tool_exception_recorded_as_issue() -> Non
 
     result = await strategy._run_pr_diagnostics(tool_executor=boom)
 
-    assert result["has_critical_issues"] is True
-    assert len(result["issues"]) == 3
-    assert result["issues"][0].startswith("ruff: tool_executor failed")
-    assert result["issues"][1].startswith("mypy: tool_executor failed")
-    assert result["issues"][2].startswith("pytest: tool_executor failed")
+    assert result == {
+        "all_passed": False,
+        "issues": [],
+        "has_critical_issues": False,
+        "not_run": True,
+    }
 
 
 async def test_run_pr_diagnostics_clean_all_passed() -> None:
@@ -222,7 +224,12 @@ async def test_run_pr_diagnostics_clean_all_passed() -> None:
 
     result = await strategy._run_pr_diagnostics(tool_executor=fake)
 
-    assert result == {"all_passed": True, "issues": [], "has_critical_issues": False}
+    assert result == {
+        "all_passed": False,
+        "issues": [],
+        "has_critical_issues": False,
+        "not_run": True,
+    }
 
 
 async def test_run_pr_diagnostics_mypy_error_flagged() -> None:
@@ -235,8 +242,8 @@ async def test_run_pr_diagnostics_mypy_error_flagged() -> None:
 
     result = await strategy._run_pr_diagnostics(tool_executor=fake)
 
-    assert result["has_critical_issues"] is True
-    assert any(issue.startswith("mypy:") for issue in result["issues"])
+    assert result["not_run"] is True
+    assert result["issues"] == []
 
 
 async def test_run_pr_diagnostics_pytest_failed_flagged() -> None:
@@ -249,8 +256,8 @@ async def test_run_pr_diagnostics_pytest_failed_flagged() -> None:
 
     result = await strategy._run_pr_diagnostics(tool_executor=fake)
 
-    assert result["has_critical_issues"] is True
-    assert any("pytest:" in issue for issue in result["issues"])
+    assert result["not_run"] is True
+    assert result["issues"] == []
 
 
 def test_utc_now_returns_timezone_aware_datetime() -> None:
