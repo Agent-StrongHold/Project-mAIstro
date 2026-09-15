@@ -146,6 +146,19 @@ def earliest_hitl_deadline(record: DurableRunRecord) -> datetime | None:
     )
 
 
+def _expired_hitl_node_id(record: DurableRunRecord, moment: datetime) -> str | None:
+    """The first active node whose durable HITL deadline has elapsed, if any."""
+    for node_id in record.graph_state.active_node_ids:
+        try:
+            hitl_pause(record, node_id)
+        except HitlSettlementError:
+            continue
+        deadline = hitl_deadline(record, node_id)
+        if deadline is not None and deadline <= moment:
+            return node_id
+    return None
+
+
 async def expire_hitl_pauses(
     store: DurableRunStore,
     *,
@@ -157,6 +170,13 @@ async def expire_hitl_pauses(
     This is an operator-scheduled tick, not a background task. It derives no
     deadline from process-local time or node configuration: only the absolute
     timestamp already present in the durable pause is authoritative.
+
+    ``limit`` bounds *expired-HITL* PAUSED Runs settled by this call, not a
+    fixed prefix of every PAUSED Run in the store (#1056). Candidates come from
+    the deadline index, which contains only due rows, so an arbitrarily large
+    run of non-HITL or not-yet-due PAUSED Runs ahead of an expired one cannot
+    hide it behind a fixed-size query. The index is a projection, so each
+    candidate is still revalidated below against the durable pause itself.
     """
     if limit <= 0:
         return []
@@ -164,19 +184,16 @@ async def expire_hitl_pauses(
     # ``list_hitl_due`` is a deadline-indexed candidate query. Its limit is
     # settlement work, not a prefix of all PAUSED Runs, so old non-HITL and
     # future-deadline records cannot starve an elapsed human pause.
+    #
+    # #1275 originally drained this frontier with `fair_page_scan` over every
+    # PAUSED Run. The index (#1056) subsumes that: it never reads a row that is
+    # not due, so the keyset walk is not needed here. `fair_page_scan` still
+    # carries the timed-resume path in `canonical_store.scan_due_page`, which
+    # has no equivalent index.
     candidates = await store.list_hitl_due(now=moment, limit=limit)
     settled: list[DurableRunRecord] = []
     for record in candidates:
-        expired_node_id: str | None = None
-        for node_id in record.graph_state.active_node_ids:
-            try:
-                hitl_pause(record, node_id)
-            except HitlSettlementError:
-                continue
-            deadline = hitl_deadline(record, node_id)
-            if deadline is not None and deadline <= moment:
-                expired_node_id = node_id
-                break
+        expired_node_id = _expired_hitl_node_id(record, moment)
         if expired_node_id is None:
             continue
         try:

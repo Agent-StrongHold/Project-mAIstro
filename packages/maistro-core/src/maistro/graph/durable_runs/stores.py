@@ -13,6 +13,7 @@ from maistro.graph.execution_state import GraphExecutionState, thaw_json_value
 from maistro.runs.lifecycle import settle_open_node_run, transition_node_run, transition_run
 from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
 
+from .fair_scan import cursor_time
 from .hitl import (
     HitlDeadlineElapsed,
     HitlDeadlinePending,
@@ -30,6 +31,26 @@ _VERDICT_NODE_TYPES = frozenset(
         "human.review_and_edit",
     }
 )
+
+
+def _in_scope(
+    record: DurableRunRecord,
+    *,
+    status: RunStatus,
+    project_id: str | None,
+    workspace_id: str | None,
+) -> bool:
+    """Whether one record satisfies the soft scope axes a listing was given."""
+    if record.run.status is not status:
+        return False
+    if project_id is not None and record.run.project_id != project_id:
+        return False
+    return workspace_id is None or record.run.workspace_id == workspace_id
+
+
+def _created_cursor(record: DurableRunRecord) -> tuple[str, str]:
+    """The ``(created_at, run_id)`` keyset position of one record."""
+    return (cursor_time(record.run.created_at), record.run_id)
 
 
 def _clone(record: DurableRunRecord) -> DurableRunRecord:
@@ -305,19 +326,21 @@ class InMemoryDurableRunStore:
         limit: int = 100,
         project_id: str | None = None,
         workspace_id: str | None = None,
+        after: tuple[str, str] | None = None,
     ) -> list[DurableRunRecord]:
-        out: list[DurableRunRecord] = []
-        for record in self._rows.values():
-            if record.run.status is not status:
-                continue
-            if project_id is not None and record.run.project_id != project_id:
-                continue
-            if workspace_id is not None and record.run.workspace_id != workspace_id:
-                continue
-            out.append(_clone(record))
-            if len(out) >= limit:
-                break
-        return out
+        matching = sorted(
+            (
+                record
+                for record in self._rows.values()
+                if _in_scope(
+                    record, status=status, project_id=project_id, workspace_id=workspace_id
+                )
+            ),
+            key=_created_cursor,
+        )
+        if after is not None:
+            matching = [record for record in matching if _created_cursor(record) > after]
+        return [_clone(record) for record in matching[:limit]]
 
     async def list_hitl_due(self, *, now: datetime, limit: int = 100) -> list[DurableRunRecord]:
         rows = [
@@ -523,6 +546,7 @@ class SqliteDurableRunStore:
         limit: int = 100,
         project_id: str | None = None,
         workspace_id: str | None = None,
+        after: tuple[str, str] | None = None,
     ) -> list[DurableRunRecord]:
         return await asyncio.to_thread(
             _list_by_status_sync,
@@ -531,6 +555,7 @@ class SqliteDurableRunStore:
             limit,
             project_id,
             workspace_id,
+            after,
         )
 
     async def list_hitl_due(self, *, now: datetime, limit: int = 100) -> list[DurableRunRecord]:
@@ -707,7 +732,11 @@ def _list_by_status_sync(
     limit: int,
     project_id: str | None,
     workspace_id: str | None,
+    after: tuple[str, str] | None = None,
 ) -> list[DurableRunRecord]:
+    # Oldest-first (#1056, #1109): a bounded fair scan pages this with an
+    # advancing `(created_at, run_id)` cursor, which requires one stable
+    # ordering direction to mean forward progress.
     query = "SELECT * FROM durable_graph_runs WHERE status = ?"
     params: list[Any] = [status.value]
     if project_id is not None:
@@ -721,7 +750,14 @@ def _list_by_status_sync(
         # the boundary and the restart-safe schema.
         query += " AND json_extract(record_json, '$.run.workspace_id') = ?"
         params.append(workspace_id)
-    query += " ORDER BY created_at DESC LIMIT ?"
+    if after is not None:
+        query += " AND (created_at, run_id) > (?, ?)"
+        params.extend(after)
+    # Oldest-created-first, which the keyset cursor above depends on: `after`
+    # pages forward through a total order, so the scan cannot re-read the same
+    # fixed prefix every tick (#1056, #1109). The pre-#1275 order here was
+    # `created_at DESC`, which starved the oldest work it was meant to drain.
+    query += " ORDER BY created_at ASC, run_id ASC LIMIT ?"
     params.append(limit)
     with store._connect() as conn:
         rows = conn.execute(query, params).fetchall()
