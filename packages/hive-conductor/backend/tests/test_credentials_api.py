@@ -155,3 +155,12 @@ def test_user_cannot_see_other_users_secrets() -> None:
     assert alice_after.status_code == 200
     alice_jira = next(r for r in alice_after.json()["credentials"] if r["id"] == "jira")
     assert alice_jira["configured"] is True
+
+    # Inspect the canonical store only inside the test to prove Bob's guessed
+    # provider id did not rotate Alice's ciphertext.
+    from services.user_credentials import require_store
+
+    assert (
+        require_store().use_secret("cred-scope-alice", "jira", lambda secret: secret)
+        == "alice-only-token"
+    )
