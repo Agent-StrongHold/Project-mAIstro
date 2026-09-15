@@ -35,6 +35,7 @@ from maistro.tools.browser.guard import (
     DENIED,
     ROUTE_PATTERN,
     BrowserNetworkGuard,
+    SyncBrowserNetworkGuard,
 )
 
 from .fakes import FakeHttpResponse, FakePwContext, FakePwRequest, FakePwRoute
@@ -364,3 +365,74 @@ async def test_the_handler_accepts_the_single_argument_form() -> None:
     await guard.handle_route(route)  # no request argument
 
     assert route.action == ("continue",)
+
+
+class _SyncResponse:
+    def __init__(self, status: int, location: str = "") -> None:
+        self.status = status
+        self.headers = {"location": location} if location else {}
+
+
+class _SyncRoute:
+    def __init__(self, url: str, responses: dict[str, _SyncResponse]) -> None:
+        self.request = type("Request", (), {"url": url, "resource_type": "document"})()
+        self.responses = responses
+        self.network_urls: list[str] = []
+        self.action: tuple[str, ...] | None = None
+
+    def fetch(self, *, url: str | None = None, max_redirects: int = 0) -> _SyncResponse:
+        del max_redirects
+        target = url or self.request.url
+        self.network_urls.append(target)
+        return self.responses.get(target, _SyncResponse(200))
+
+    def fulfill(self, *, response: _SyncResponse) -> None:
+        del response
+        self.action = ("continue",)
+
+    def abort(self, reason: str) -> None:
+        self.action = ("abort", reason)
+
+
+class _SyncContext:
+    def __init__(self, responses: dict[str, _SyncResponse] | None = None) -> None:
+        self.responses = responses or {}
+        self.handlers: list[tuple[str, object]] = []
+        self.ws_handlers: list[tuple[str, object]] = []
+
+    def route(self, pattern: str, handler: object) -> None:
+        self.handlers.append((pattern, handler))
+
+    def route_web_socket(self, pattern: str, handler: object) -> None:
+        self.ws_handlers.append((pattern, handler))
+
+    def navigate(self, url: str) -> _SyncRoute:
+        route = _SyncRoute(url, self.responses)
+        for _pattern, handler in self.handlers:
+            handler(route, route.request)  # type: ignore[operator]
+        return route
+
+
+def test_sync_guard_denies_model_directed_private_navigation() -> None:
+    guard = SyncBrowserNetworkGuard()
+    context = _SyncContext()
+    guard.attach(context)
+
+    route = context.navigate("http://127.0.0.1:8080/model-directed")
+
+    assert route.action == ("abort", ABORT_REASON)
+    assert route.network_urls == []
+    assert guard.denied_events()[-1].origin == "http://127.0.0.1:8080"
+
+
+def test_sync_guard_denies_private_redirect_before_the_second_fetch() -> None:
+    redirect = _SyncResponse(302, "http://169.254.169.254/latest/meta-data/")
+    context = _SyncContext({_PUBLIC: redirect})
+    guard = SyncBrowserNetworkGuard()
+    guard.attach(context)
+
+    route = context.navigate(_PUBLIC)
+
+    assert route.action == ("abort", ABORT_REASON)
+    assert route.network_urls == [_PUBLIC]
+    assert [event.decision for event in guard.events] == [ALLOWED, DENIED]

@@ -135,17 +135,8 @@ class Scope:
     objects: dict[str, str]
 
 
-_EXCLUDED_PRODUCTION_FILES = frozenset(
-    {
-        # Standalone developer hill-climb driver, invoked manually rather than shipped
-        # as an application/runtime path.
-        "packages/hive-conductor/run_hill_climb.py",
-    }
-)
-
-
 def _production_python_files(root: Path = ROOT) -> list[Path]:
-    """Return shipped package Python, excluding tests and explicit dev utilities."""
+    """Return package Python, excluding tests."""
     packages = root / "packages"
     if not packages.exists():
         return []
@@ -153,8 +144,6 @@ def _production_python_files(root: Path = ROOT) -> list[Path]:
     for candidate in packages.rglob("*.py"):
         rel = candidate.relative_to(root)
         if "tests" in rel.parts or candidate.name.startswith("test_"):
-            continue
-        if rel.as_posix() in _EXCLUDED_PRODUCTION_FILES:
             continue
         files.append(candidate)
     return sorted(files)
