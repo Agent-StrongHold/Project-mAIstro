@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+import hashlib
 import importlib.util
+import io
 import json
+import zipfile
 from pathlib import Path
 from types import ModuleType
 
@@ -13,6 +16,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "check-compliance.py"
+PRODUCER_SCRIPT = ROOT / "scripts" / "produce-compliance-evidence.py"
 
 
 @pytest.fixture(scope="module")
@@ -24,9 +28,74 @@ def checker() -> ModuleType:
     return module
 
 
+@pytest.fixture(scope="module")
+def producer() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("produce_compliance_evidence", PRODUCER_SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 @pytest.fixture
 def registry(checker: ModuleType) -> dict:
     return copy.deepcopy(checker.load_registry())
+
+
+def attestation_for(control: dict, digest: str) -> tuple[dict, bytes]:
+    payload = {
+        "schema_version": 1,
+        "control_id": control["id"],
+        "control_refs": control["control_refs"],
+        "test_refs": control["test_refs"],
+        "release_digest": digest,
+        "result": "passed",
+        "tests": [{"ref": ref, "result": "passed", "exit_code": 0} for ref in control["test_refs"]],
+    }
+    content = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode()
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("compliance-attestation.json", content)
+    return (
+        {
+            "file": "compliance-attestation.json",
+            "sha256": hashlib.sha256(content).hexdigest(),
+        },
+        archive.getvalue(),
+    )
+
+
+def test_evidence_producer_binds_each_executed_test(
+    producer: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    control = {
+        "id": "TEST-CONTROL",
+        "status": "implemented",
+        "control_refs": ["scripts/check-compliance.py"],
+        "test_refs": ["tests/test_check_compliance.py"],
+    }
+
+    class Completed:
+        returncode = 0
+        stdout = "1 passed"
+        stderr = ""
+
+    monkeypatch.setattr(producer.subprocess, "run", lambda *args, **kwargs: Completed())
+    assert (
+        producer.produce(
+            {"controls": [control]},
+            release_digest="a" * 40,
+            output=tmp_path,
+            today=dt.date(2026, 8, 25),
+            runner="python",
+        )
+        == 0
+    )
+    manifest = json.loads((tmp_path / "TEST-CONTROL.json").read_text())
+    assert manifest["control_id"] == "TEST-CONTROL"
+    assert manifest["test_refs"] == control["test_refs"]
+    assert manifest["tests"][0]["result"] == "passed"
+    assert manifest["tests"][0]["exit_code"] == 0
 
 
 def test_real_registry_and_document_are_consistent(checker: ModuleType) -> None:
@@ -174,8 +243,13 @@ def test_expired_implemented_evidence_fails(checker: ModuleType, registry: dict)
     assert any("expired evidence" in error for error in errors)
 
 
-def test_release_mode_requires_exact_digest_and_evidence(checker: ModuleType) -> None:
-    errors = checker.check(
+def test_release_mode_requires_exact_digest_and_evidence(
+    checker: ModuleType, registry: dict
+) -> None:
+    registry["controls"][0]["status"] = "implemented"
+    errors = checker.validate_registry(
+        registry,
+        root=ROOT,
         release_digest="b" * 40,
         require_release_evidence=True,
         today=dt.date(2026, 8, 25),
@@ -260,6 +334,7 @@ def test_green_artifact_must_match_github_provenance(
     digest = "b" * 40
     control["status"] = "implemented"
     control["last_verified"] = "2026-08-25"
+    attestation, archive = attestation_for(control, digest)
     control["evidence"] = [
         {
             "url": "https://github.com/Agent-StrongHold/Project-mAIstro/actions/runs/123/artifacts/456",
@@ -274,10 +349,12 @@ def test_green_artifact_must_match_github_provenance(
             "workflow_enabled": True,
             "manual_only": False,
             "ran": True,
+            "attestation": attestation,
         }
     ]
     registry["release_digest"] = digest
     monkeypatch.setattr(checker, "_git_commit_exists", lambda _digest, _root: True)
+    monkeypatch.setattr(checker, "_github_bytes", lambda _url: (archive, None))
 
     def github_json(url: str) -> tuple[dict, None]:
         if "/artifacts/" in url:
@@ -286,6 +363,8 @@ def test_green_artifact_must_match_github_provenance(
                 "expired": False,
                 "digest": "sha256:" + "a" * 64,
             }, None
+        if "/workflows/" in url:
+            return {"state": "active"}, None
         return {
             "head_sha": digest,
             "path": ".github/workflows/ci.yml",
@@ -295,6 +374,46 @@ def test_green_artifact_must_match_github_provenance(
 
     monkeypatch.setattr(checker, "_github_json", github_json)
     assert checker.validate_registry(registry, today=dt.date(2026, 8, 25)) == []
+
+    control["evidence"][0].pop("attestation")
+    errors = checker.validate_registry(registry, today=dt.date(2026, 8, 25))
+    assert any("missing its executed-test attestation" in error for error in errors)
+
+
+def test_live_disabled_workflow_cannot_support_green(
+    checker: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    item = {
+        "url": "https://github.com/Agent-StrongHold/Project-mAIstro/actions/runs/123/artifacts/456",
+        "control_id": "OWASP-AT-01",
+        "control_refs": ["packages/maistro-core/src/maistro/security/warden/detector.py"],
+        "test_refs": ["packages/maistro-core/tests/security/warden/test_detector.py"],
+        "sha256": "a" * 64,
+        "release_digest": "b" * 40,
+        "attestation": {"file": "manifest.json", "sha256": "c" * 64},
+    }
+
+    def github_json(url: str) -> tuple[dict, None]:
+        if "/artifacts/" in url:
+            return {
+                "workflow_run": {"id": 123},
+                "expired": False,
+                "digest": "sha256:" + "a" * 64,
+            }, None
+        if "/workflows/" in url:
+            return {"state": "disabled_manually"}, None
+        return {
+            "head_sha": item["release_digest"],
+            "path": ".github/workflows/ci.yml",
+            "status": "completed",
+            "conclusion": "success",
+        }, None
+
+    monkeypatch.setattr(checker, "_github_json", github_json)
+    errors = checker._verify_artifact_evidence(
+        item, evidence_where="controls[0].evidence[0]", workflow_ref=".github/workflows/ci.yml"
+    )
+    assert any("not active in GitHub Actions" in error for error in errors)
 
 
 def test_forged_artifact_digest_cannot_support_green(

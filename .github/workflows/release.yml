@@ -95,8 +95,10 @@ jobs:
         run: python scripts/check-release-consistency.py --releasing "$GITHUB_REF_NAME"
 
       # Compliance is intentionally fail-closed. A test path or a green CI job
-      # is not immutable release evidence; each release-required claim must be
-      # bound to this exact tag commit by the registry before anything builds.
+      # is not immutable release evidence; every implemented release-required
+      # claim must be bound to this exact tag commit by the registry before
+      # anything builds. Partial and unverified claims remain visible without
+      # pretending that the release proved them.
       - name: Compliance evidence must cover this release digest
         env:
           GITHUB_TOKEN: ${{ github.token }}

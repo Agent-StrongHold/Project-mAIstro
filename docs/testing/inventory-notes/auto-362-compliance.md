@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +21
+  tests/: +23
 ---
 
 # Issue #362 compliance registry gate

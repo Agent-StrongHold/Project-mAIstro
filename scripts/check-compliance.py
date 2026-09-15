@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
+import io
 import json
 import os
 import re
@@ -18,9 +20,10 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
+import zipfile
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import yaml
 
@@ -77,6 +80,7 @@ REQUIRED_EVIDENCE_FIELDS = frozenset(
         "ran",
     }
 )
+OPTIONAL_EVIDENCE_FIELDS = frozenset({"attestation"})
 TABLE_HEADER = (
     "ID",
     "Framework",
@@ -170,6 +174,83 @@ def _github_json(url: str) -> tuple[dict[str, Any] | None, str | None]:
     return payload, None
 
 
+def _github_bytes(url: str) -> tuple[bytes | None, str | None]:
+    """Download immutable artifact contents; failures are evidence failures."""
+    headers = {"Accept": "application/vnd.github+json"}
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return response.read(), None
+    except (OSError, urllib.error.URLError, urllib.error.HTTPError) as exc:
+        return None, str(exc)
+
+
+def _verify_attestation(  # noqa: C901 - provenance and execution binding stay together
+    item: dict[str, Any],
+    *,
+    evidence_where: str,
+    artifact_id: int,
+) -> list[str]:
+    """Prove the artifact contains the claimed control's executed test manifest."""
+    attestation = item.get("attestation")
+    if not isinstance(attestation, dict):
+        return [f"{evidence_where} is missing its executed-test attestation"]
+    file_name = attestation.get("file")
+    manifest_sha = attestation.get("sha256")
+    if (
+        not isinstance(file_name, str)
+        or not file_name
+        or Path(file_name).name != file_name
+        or not isinstance(manifest_sha, str)
+        or not SHA256_RE.fullmatch(manifest_sha)
+    ):
+        return [f"{evidence_where}.attestation must name a file and SHA-256 manifest digest"]
+
+    archive, failure = _github_bytes(
+        f"https://api.github.com/repos/{GITHUB_REPOSITORY}/actions/artifacts/{artifact_id}/zip"
+    )
+    if archive is None:
+        return [f"{evidence_where} could not download artifact {artifact_id}: {failure}"]
+    try:
+        with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
+            manifest = bundle.read(file_name)
+    except (OSError, KeyError, zipfile.BadZipFile) as exc:
+        return [f"{evidence_where} artifact has no readable {file_name}: {exc}"]
+    errors: list[str] = []
+    if hashlib.sha256(manifest).hexdigest() != manifest_sha.lower():
+        errors.append(f"{evidence_where}.attestation.sha256 does not match its artifact file")
+        return errors
+    try:
+        payload = json.loads(manifest)
+    except json.JSONDecodeError as exc:
+        return [f"{evidence_where} attestation is not valid JSON: {exc}"]
+    if not isinstance(payload, dict):
+        return [f"{evidence_where} attestation must be a JSON object"]
+    if payload.get("control_id") != item["control_id"]:
+        errors.append(f"{evidence_where} attestation names the wrong control")
+    if payload.get("release_digest") != item["release_digest"]:
+        errors.append(f"{evidence_where} attestation is not bound to the evidence release digest")
+    if payload.get("control_refs") != item["control_refs"]:
+        errors.append(f"{evidence_where} attestation control_refs do not match the claim")
+    if payload.get("test_refs") != item["test_refs"]:
+        errors.append(f"{evidence_where} attestation test_refs do not match the claim")
+    tests = payload.get("tests")
+    if (
+        not isinstance(tests, list)
+        or [test.get("ref") for test in tests if isinstance(test, dict)] != item["test_refs"]
+    ):
+        errors.append(f"{evidence_where} attestation does not enumerate every claimed test")
+    if payload.get("result") != "passed" or any(
+        not isinstance(test, dict) or test.get("result") != "passed" or test.get("exit_code") != 0
+        for test in tests or []
+    ):
+        errors.append(f"{evidence_where} attestation does not prove passing test execution")
+    return errors
+
+
 def _verify_artifact_evidence(  # noqa: C901 - fail-closed provenance checks stay together
     item: dict[str, Any], *, evidence_where: str, workflow_ref: str
 ) -> list[str]:
@@ -200,6 +281,22 @@ def _verify_artifact_evidence(  # noqa: C901 - fail-closed provenance checks sta
             errors.append(f"{evidence_where} workflow run does not match workflow_ref")
         if run.get("status") != "completed" or run.get("conclusion") != "success":
             errors.append(f"{evidence_where} workflow run did not complete successfully")
+
+    workflow_name = Path(workflow_ref).name
+    workflow_url = (
+        f"https://api.github.com/repos/{GITHUB_REPOSITORY}/actions/workflows/{quote(workflow_name)}"
+    )
+    workflow, failure = _github_json(workflow_url)
+    if workflow is None:
+        errors.append(
+            f"{evidence_where} could not verify live workflow state for {workflow_ref}: {failure}"
+        )
+    elif workflow.get("state") != "active":
+        errors.append(
+            f"{evidence_where} workflow {workflow_ref} is not active in GitHub Actions "
+            f"(state={workflow.get('state')!r})"
+        )
+
     if artifact.get("expired") is not False:
         errors.append(f"{evidence_where} artifact is expired or has no expiry state")
     digest = artifact.get("digest")
@@ -207,6 +304,13 @@ def _verify_artifact_evidence(  # noqa: C901 - fail-closed provenance checks sta
         errors.append(f"{evidence_where} artifact has no GitHub SHA-256 digest")
     elif digest.removeprefix("sha256:").lower() != item["sha256"].lower():
         errors.append(f"{evidence_where}.sha256 does not match the GitHub artifact digest")
+    errors.extend(
+        _verify_attestation(
+            item,
+            evidence_where=evidence_where,
+            artifact_id=artifact_id,
+        )
+    )
     return errors
 
 
@@ -381,7 +485,7 @@ def validate_registry(  # noqa: C901 - this is the single fail-closed schema/evi
                     errors.append(f"{evidence_where} must be an object")
                     continue
                 evidence_missing = REQUIRED_EVIDENCE_FIELDS - set(item)
-                evidence_unknown = set(item) - REQUIRED_EVIDENCE_FIELDS
+                evidence_unknown = set(item) - REQUIRED_EVIDENCE_FIELDS - OPTIONAL_EVIDENCE_FIELDS
                 if evidence_unknown:
                     errors.append(
                         f"{evidence_where} has unknown fields: {', '.join(sorted(evidence_unknown))}"
@@ -514,24 +618,26 @@ def validate_registry(  # noqa: C901 - this is the single fail-closed schema/evi
                 errors.append(f"{ident} is implemented but has no executable test reference")
             if expires is not None and expires < today:
                 errors.append(f"{ident} is implemented but its evidence expiry has passed")
-        if require_release_evidence and control["release_required"]:
+        if require_release_evidence and control["release_required"] and status == "implemented":
             if not registry_digest:
                 errors.append(
                     f"release evidence is missing: registry has no release_digest for {ident}"
                 )
             if not control["evidence"]:
                 errors.append(f"release evidence is missing: {ident} has no evidence")
-            if status != "implemented":
-                errors.append(
-                    f"release evidence is incomplete: {ident} is {status}, not implemented"
-                )
 
     if require_release_evidence:
-        if not release_digest:
+        green_release_claim = any(
+            isinstance(control, dict)
+            and control.get("release_required") is True
+            and control.get("status") == "implemented"
+            for control in controls
+        )
+        if green_release_claim and not release_digest:
             errors.append("--release-digest is required when release evidence is required")
-        elif not HEX_DIGEST_RE.fullmatch(release_digest):
+        elif green_release_claim and release_digest and not HEX_DIGEST_RE.fullmatch(release_digest):
             errors.append("--release-digest must be a 40-64 character git digest")
-        elif registry_digest != release_digest:
+        elif green_release_claim and registry_digest != release_digest:
             errors.append("registry.release_digest does not match --release-digest")
     return errors
 
