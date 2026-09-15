@@ -42,6 +42,31 @@ MATRIX_MARKER = "<!-- matrix:disposition -->"
 _DECISION_ID = re.compile(r"\b(?:ADR|SPEC)-[0-9][0-9A-Za-z-]*")
 
 
+def _without_parenthetical_text(text: str) -> str:
+    """Remove balanced historical notes without hiding later authorities."""
+    visible: list[str] = []
+    segment_start = 0
+    hidden_start: int | None = None
+    depth = 0
+    for index, character in enumerate(text):
+        if character == "(":
+            if depth == 0:
+                visible.append(text[segment_start:index])
+                hidden_start = index
+            depth += 1
+        elif character == ")" and depth:
+            depth -= 1
+            if depth == 0:
+                segment_start = index + 1
+    if depth:
+        # A malformed note is not allowed to hide a governing ID from the gate.
+        assert hidden_start is not None
+        visible.append(text[hidden_start:])
+    else:
+        visible.append(text[segment_start:])
+    return "".join(visible)
+
+
 def _corpus() -> list[FrontMatter]:
     front_matters: list[FrontMatter] = []
     for root in DOC_ROOTS:
@@ -91,7 +116,7 @@ def _matrix_references(text: str) -> list[tuple[str, str, str]]:
         if len(row) <= max(subsystem_column, governing_column):
             continue
         source = f"matrix#{row[subsystem_column]}"
-        direct_cell = row[governing_column].split("(", 1)[0]
+        direct_cell = _without_parenthetical_text(row[governing_column])
         references.extend(
             (source, "governing", f"maistro-engine#{identifier}")
             for identifier in _DECISION_ID.findall(direct_cell)

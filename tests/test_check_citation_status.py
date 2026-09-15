@@ -406,6 +406,29 @@ def test_the_matrix_historical_supersession_note_is_not_governing(
     assert module._matrix_problems([old, new]) == []
 
 
+def test_the_matrix_authority_after_historical_parenthetical_is_checked(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _gate_module()
+    matrix = tmp_path / "CONVERGENCE-MATRIX.md"
+    matrix.write_text(
+        "<!-- matrix:disposition -->\n"
+        "| Subsystem | Real entry point | Unreachable | Disposition | Governing ADR/spec | Acceptance evidence | Dependencies |\n"
+        "|---|---|---|---|---|---|---|\n"
+        "| Demo | entry | `none` | KEEP | ADR-002 (historical ADR-001), ADR-003 | evidence | — |\n"
+    )
+    monkeypatch.setattr(module, "MATRIX", matrix)
+
+    historical = _doc("ADR-002", Status.ACCEPTED)
+    proposed = _doc("ADR-003", Status.PROPOSED)
+
+    problems = module._matrix_problems([historical, proposed])
+
+    assert len(problems) == 1
+    assert problems[0].target == _ref("ADR-003")
+    assert "Proposed" in problems[0].reason
+
+
 def test_the_matrix_superseded_authority_names_the_active_replacement(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

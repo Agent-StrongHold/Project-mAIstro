@@ -48,7 +48,10 @@ def main() -> int:
     prov = _load(PROVENANCE, "_ratchet_provenance")
 
     corpus = checker._corpus()
-    problems = checker.check_citations(corpus)
+    problems = [
+        *checker.check_citations(corpus),
+        *checker._matrix_problems(corpus),
+    ]
     current = {_identity(problem) for problem in problems}
     candidate = set(checker._load_baseline().entries)
 
