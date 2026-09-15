@@ -21,6 +21,7 @@ from maistro.security.sentinel.approver_graph import ApproverGraph
 from maistro.security.sentinel.argument_limits import ToolArgumentLimits, check_argument_limits
 from maistro.security.sentinel.authz_types import AuthzDecision, Principal, Tier
 from maistro.security.sentinel.elevation import ElevationStore, hash_args
+from maistro.security.sentinel.permission_source import PermissionSource, resolve_live_table
 from maistro.security.sentinel.pii_filter import scan_and_redact
 from maistro.security.sentinel.rlphd import RlphdModel, RlphdThresholdStore, RlphdVerdict
 from maistro.security.sentinel.token_optimizer import optimize_result
@@ -38,7 +39,20 @@ def check_permission(
     auth_context: AuthContext,
     tool_name: str,
     permission_table: PermissionTable,
+    *,
+    allow_on_miss: bool = False,
 ) -> bool:
+    """Resolve one tool authorization against ``permission_table``.
+
+    Default is fail-closed (ADR-072726-0d6b, implemented for #1165): a tool
+    absent from the table is denied, so an omitted or empty deployment table
+    can never authorize every tool. ``allow_on_miss=True`` is the explicit
+    compatibility mode for non-production/test/demo wiring that predates the
+    fail-closed default; production composition roots must not pass it, and
+    no configuration field routes to it.
+    """
+    if allow_on_miss and tool_name not in permission_table:
+        return True
     return auth_context.can_use_tool(tool_name, permission_table)
 
 
@@ -60,6 +74,7 @@ class Sentinel:
         *,
         warden: Warden,
         permission_table: PermissionTable,
+        permission_source: PermissionSource | None = None,
         audit_log: AuditLog | None = None,
         tier_policy: dict[tuple[str, str], Tier] | None = None,
         approver_graph: ApproverGraph | None = None,
@@ -67,9 +82,19 @@ class Sentinel:
         rlphd_model: RlphdModel | None = None,
         rlphd_threshold_store: RlphdThresholdStore | None = None,
         argument_limits: ToolArgumentLimits | None = None,
+        allow_on_miss: bool = False,
     ) -> None:
         self._warden = warden
         self._permission_table = permission_table
+        # Live permission authority (#1165, ADR-072726-0d6b): wired by
+        # production composition roots so a decision consults canonical
+        # capability state at the moment it is made, and a runtime capability
+        # disable/revoke lands on the very next decision without a restart.
+        # When set, it supersedes the static table; when it cannot decide,
+        # the decision denies (fail-closed) -- the static table is never used
+        # to rescue an unavailable source, because a stale snapshot must not
+        # outvote a revoke.
+        self._permission_source = permission_source
         self._audit_log = audit_log
         self._tier_policy = tier_policy or {}
         self._approver_graph = approver_graph
@@ -77,6 +102,53 @@ class Sentinel:
         self._rlphd_model = rlphd_model
         self._rlphd_threshold_store = rlphd_threshold_store
         self._argument_limits = argument_limits or ToolArgumentLimits.from_environment()
+        # Fail-closed default (ADR-072726-0d6b, #1165): a tool absent from the
+        # permission table is DENIED. allow_on_miss=True is the explicit
+        # compatibility mode for non-production/test/demo wiring; it is never
+        # set by a production composition root and no configuration field can
+        # arm it, so the warning below is the loud trace of a permissive
+        # construction.
+        self._allow_on_miss = allow_on_miss
+        if allow_on_miss:
+            logger.warning(
+                "Sentinel armed in allow-on-miss COMPATIBILITY mode: tools absent "
+                "from the permission table are ALLOWED. Non-production/test/demo "
+                "use only (ADR-072726-0d6b); production wiring must configure an "
+                "explicit permission source instead."
+            )
+
+    async def _effective_table(self) -> PermissionTable | None:
+        """The permission table for THIS decision, or None when undecidable.
+
+        A wired source is consulted live on every call -- that is the #1165
+        runtime-revoke path: canonical capability/binding state changes reach
+        the next decision without a process restart. With no source wired,
+        the static construction table applies (unchanged legacy shape).
+        """
+        if self._permission_source is None:
+            return self._permission_table
+        return await resolve_live_table(self._permission_source)
+
+    async def _permission_denial_reason(self, action: str, principal: Principal) -> str | None:
+        """Why this (action, principal) is denied right now, or None when permitted.
+
+        The one fail-closed permission gate every authorize flows through: the
+        live permission source (#1165) is resolved here so the decision reads
+        canonical state at the moment it is made, an unavailable source denies,
+        and a capability miss denies.
+        """
+        table = await self._effective_table()
+        if table is None:
+            return f"permission source unavailable for '{action}'; denied fail-closed"
+        authorized = check_permission(
+            _principal_auth_context(principal),
+            action,
+            table,
+            allow_on_miss=self._allow_on_miss,
+        )
+        if not authorized:
+            return f"principal '{principal.id}' lacks capability for '{action}'"
+        return None
 
     def resolve_tier(
         self,
@@ -108,10 +180,8 @@ class Sentinel:
         """ADR-068 §F steps 1-4, short-circuiting on first deny."""
         tier = self.resolve_tier(action, principal, reversibility=reversibility)
 
-        authorized = check_permission(
-            _principal_auth_context(principal), action, self._permission_table
-        )
-        if not authorized:
+        denial_reason = await self._permission_denial_reason(action, principal)
+        if denial_reason is not None:
             return AuthzDecision(
                 tier=tier,
                 authorized=False,
@@ -119,7 +189,7 @@ class Sentinel:
                 approver_scope=None,
                 within_budget=within_budget,
                 rlphd=None,
-                reason=f"principal '{principal.id}' lacks capability for '{action}'",
+                reason=denial_reason,
             )
 
         if not within_budget:
@@ -247,13 +317,20 @@ class Sentinel:
     ) -> SentinelVerdict:
         violations: list[Violation] = []
 
-        if not check_permission(auth, tool_name, self._permission_table):
+        table = await self._effective_table()
+        if table is None or not check_permission(
+            auth, tool_name, table, allow_on_miss=self._allow_on_miss
+        ):
             violations.append(
                 Violation(
                     boundary="pre_call",
                     rule="permission_denied",
                     severity="error",
-                    detail=f"User '{auth.user_id}' lacks permission for tool '{tool_name}'",
+                    detail=(
+                        "Permission source unavailable; denied fail-closed"
+                        if table is None
+                        else f"User '{auth.user_id}' lacks permission for tool '{tool_name}'"
+                    ),
                 )
             )
             verdict = SentinelVerdict(
