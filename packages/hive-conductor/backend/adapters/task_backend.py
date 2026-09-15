@@ -21,8 +21,10 @@ from maistro.http import shared_client
 from maistro.observability.correlation import current_execution_context
 from maistro.observability.middleware import REQUEST_ID_HEADER
 from maistro.tasks.http_contract import (
+    DELEGATION_HEADER,
     WORKSPACE_ID_HEADER,
     WORKSPACE_SCOPE_SIGNATURE_HEADER,
+    sign_delegation_context,
     sign_workspace_scope,
 )
 from maistro.tasks.models import TaskCreate, TaskResponse, TaskStatus
@@ -53,6 +55,10 @@ class TaskRecord:
     def run_id(self) -> str | None:
         """Canonical execution identity (#41), or None where none was admitted."""
         return getattr(self._task, "run_id", None)
+
+    @property
+    def user_id(self) -> str:
+        return getattr(self._task, "user_id", "")
 
     @property
     def name(self) -> str:
@@ -116,6 +122,13 @@ class WorkspaceNotRoutable(RuntimeError):
     """A backend cannot safely file work in the Workspace the submission named."""
 
 
+SYSTEM_PRINCIPAL = "system"
+
+
+class DelegationNotConfigured(RuntimeError):
+    """The production bridge cannot attest a human without its host key."""
+
+
 class TaskBackend(Protocol):
     async def submit(
         self, create: TaskCreate, *, user_id: str, workspace_id: str | None = None
@@ -125,9 +138,11 @@ class TaskBackend(Protocol):
 
     def list_tasks(self, *, user_id: str | None = None) -> list[TaskRecord]: ...
 
-    async def cancel(self, task_id: str) -> bool: ...
+    async def cancel(self, task_id: str, *, user_id: str | None = None) -> bool: ...
 
-    async def iter_events(self, task_id: str) -> AsyncIterator[dict[str, Any]]: ...
+    async def iter_events(
+        self, task_id: str, *, user_id: str | None = None
+    ) -> AsyncIterator[dict[str, Any]]: ...
 
     async def stop(self) -> None: ...
 
@@ -167,7 +182,9 @@ class LocalTaskBackend:
         items, _ = self._queue.list_tasks(limit=200, user_id=user_id)
         return [TaskRecord(t) for t in reversed(items)]
 
-    async def cancel(self, task_id: str) -> bool:
+    async def cancel(self, task_id: str, *, user_id: str | None = None) -> bool:
+        if user_id is not None and self._queue.get(task_id, user_id=user_id) is None:
+            return False
         return await self._queue.cancel(task_id)
 
     def remove(self, task_id: str) -> bool:
@@ -176,9 +193,11 @@ class LocalTaskBackend:
     def remove_where(self, *, status: TaskStatus | None = None) -> int:
         return self._queue.remove_where(status=status)
 
-    async def iter_events(self, task_id: str) -> AsyncIterator[dict[str, Any]]:
+    async def iter_events(
+        self, task_id: str, *, user_id: str | None = None
+    ) -> AsyncIterator[dict[str, Any]]:
         while True:
-            task = self._queue.get(task_id)
+            task = self._queue.get(task_id, user_id=user_id)
             if task is None:
                 return
             rec = TaskRecord(task)
@@ -209,6 +228,8 @@ class MaistroServerTaskBackend:
         base_url: str,
         api_key: str | None,
         workspace_scope_key: str | None = None,
+        delegation_key: str | None = None,
+        service_principal: str | None = None,
     ) -> None:
         self._base = base_url.rstrip("/")
         self._key = api_key or ""
@@ -220,11 +241,34 @@ class MaistroServerTaskBackend:
             if workspace_scope_key is not None
             else os.getenv("WORKSPACE_SCOPE_KEY", "")
         )
+        self._delegation_key = (
+            delegation_key
+            if delegation_key is not None
+            else os.getenv("MAISTRO_DELEGATION_KEY", "")
+        )
+        self._service_principal = (
+            service_principal
+            if service_principal is not None
+            else os.getenv("MAISTRO_SERVICE_PRINCIPAL", "conductor")
+        ).strip()
+        if not self._service_principal:
+            raise ValueError("MAISTRO_SERVICE_PRINCIPAL must be non-empty")
 
-    def _headers(self) -> dict[str, str]:
+    def _headers(self, *, user_id: str | None = None) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
         if self._key:
             headers["Authorization"] = f"Bearer {self._key}"
+        if user_id is not None:
+            if not self._delegation_key:
+                raise DelegationNotConfigured(
+                    "MAISTRO_DELEGATION_KEY is required for originating-principal propagation"
+                )
+            headers[DELEGATION_HEADER] = sign_delegation_context(
+                service_principal=self._service_principal,
+                originating_principal=user_id,
+                principal_kind="system" if user_id == SYSTEM_PRINCIPAL else "user",
+                key=self._delegation_key,
+            )
         # Correlation metadata, not authorization (#1063): forwards the
         # request id RequestIDMiddleware already validated/generated for
         # this request, so maistro-server's own RequestIDMiddleware adopts
@@ -239,7 +283,7 @@ class MaistroServerTaskBackend:
     async def submit(
         self, create: TaskCreate, *, user_id: str, workspace_id: str | None = None
     ) -> TaskRecord:
-        headers = self._headers()
+        effective_user_id = user_id or SYSTEM_PRINCIPAL
         if workspace_id is not None:
             if not workspace_id.strip():
                 raise ValueError("workspace_id must be a non-empty string")
@@ -248,6 +292,8 @@ class MaistroServerTaskBackend:
                 # into a tenant selector. Keep the old fail-closed behavior
                 # unless this deployment can prove the scope came from Hive.
                 raise WorkspaceNotRoutable(WORKSPACE_NOT_ROUTABLE_DETAIL)
+        headers = self._headers(user_id=effective_user_id)
+        if workspace_id is not None:
             headers[WORKSPACE_ID_HEADER] = workspace_id
             headers[WORKSPACE_SCOPE_SIGNATURE_HEADER] = sign_workspace_scope(
                 workspace_id, self._workspace_scope_key
@@ -265,7 +311,7 @@ class MaistroServerTaskBackend:
 
     def get(self, task_id: str, *, user_id: str | None = None) -> TaskRecord | None:
         with httpx.Client(timeout=30.0) as client:
-            r = client.get(f"{self._base}/tasks/{task_id}", headers=self._headers())
+            r = client.get(f"{self._base}/tasks/{task_id}", headers=self._headers(user_id=user_id))
             if r.status_code == 404:
                 return None
             r.raise_for_status()
@@ -273,15 +319,21 @@ class MaistroServerTaskBackend:
 
     def list_tasks(self, *, user_id: str | None = None) -> list[TaskRecord]:
         with httpx.Client(timeout=30.0) as client:
-            r = client.get(f"{self._base}/tasks", headers=self._headers(), params={"limit": 200})
+            r = client.get(
+                f"{self._base}/tasks",
+                headers=self._headers(user_id=user_id),
+                params={"limit": 200},
+            )
             r.raise_for_status()
             body = r.json()
             items = [TaskResponse.model_validate(t) for t in body["items"]]
             return [TaskRecord(t) for t in items]
 
-    async def cancel(self, task_id: str) -> bool:
+    async def cancel(self, task_id: str, *, user_id: str | None = None) -> bool:
         async with shared_client(timeout=30.0) as client:
-            r = await client.delete(f"{self._base}/tasks/{task_id}", headers=self._headers())
+            r = await client.delete(
+                f"{self._base}/tasks/{task_id}", headers=self._headers(user_id=user_id)
+            )
             if r.status_code == 404:
                 return False
             if r.status_code == 400:
@@ -289,10 +341,14 @@ class MaistroServerTaskBackend:
             r.raise_for_status()
             return bool(r.json().get("cancelled", False))
 
-    async def iter_events(self, task_id: str) -> AsyncIterator[dict[str, Any]]:
+    async def iter_events(
+        self, task_id: str, *, user_id: str | None = None
+    ) -> AsyncIterator[dict[str, Any]]:
         async with shared_client(timeout=30.0) as client:
             while True:
-                r = await client.get(f"{self._base}/tasks/{task_id}", headers=self._headers())
+                r = await client.get(
+                    f"{self._base}/tasks/{task_id}", headers=self._headers(user_id=user_id)
+                )
                 if r.status_code == 404:
                     return
                 r.raise_for_status()

@@ -30,6 +30,7 @@ from maistro.observability.metrics import (
     http_requests_total,
     maistro_request_duration_seconds,
 )
+from maistro.tasks.http_contract import DELEGATION_HEADER, sign_delegation_context
 from maistro_server.api.rate_limit import RateLimitMiddleware
 
 
@@ -211,6 +212,28 @@ class TestPrincipalIdentityKeying:
             client.get("/thing", headers={"Authorization": "Bearer garbage-three"}).status_code
             == 429
         )
+
+    def test_delegated_users_have_independent_budgets_behind_one_service_key(
+        self, tight_limits: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        configure_api_keys(monkeypatch, "conductor:rl-key")
+        monkeypatch.setenv("TASK_DELEGATION_KEY", "delegation-key")
+        client = TestClient(_make_app())
+
+        def headers(user_id: str) -> dict[str, str]:
+            return {
+                "Authorization": "Bearer rl-key",
+                DELEGATION_HEADER: sign_delegation_context(
+                    service_principal="conductor",
+                    originating_principal=user_id,
+                    key="delegation-key",
+                ),
+            }
+
+        assert client.get("/thing", headers=headers("alice")).status_code == 200
+        assert client.get("/thing", headers=headers("alice")).status_code == 200
+        assert client.get("/thing", headers=headers("alice")).status_code == 429
+        assert client.get("/thing", headers=headers("bob")).status_code == 200
 
     def test_anonymous_traffic_cannot_evade_the_network_floor_by_changing_headers(
         self, tight_limits: None, monkeypatch: pytest.MonkeyPatch

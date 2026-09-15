@@ -196,6 +196,11 @@ class Settings(BaseSettings):
     allow_stub_llm: bool = False
 
     maistro_router_api_key: str | None = None
+    # Separate host key used to attest the authenticated Hive user across the
+    # service hop. The bearer key identifies Conductor; this key identifies the
+    # delegation context and must be shared only with maistro-server.
+    maistro_delegation_key: SecretStr | None = None
+    maistro_service_principal: str = "conductor"
     # The Workspace a submission that names none lands in (#158). Passed
     # explicitly into `AgentConfig.workspace_id` rather than left to core's own
     # default, so "which Workspace did this Run go to" has one answer this

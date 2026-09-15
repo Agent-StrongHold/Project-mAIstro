@@ -301,6 +301,10 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
             ),
         )
     queue = configure_task_queue(admitter=container.task_admitter)
+    # Restore the receipt projection before the runner can accept work. Only
+    # queued rows with an existing canonical Run are re-enqueued; active Runs
+    # belong to the canonical recovery loop, never a second task scheduler.
+    await queue.restore_persisted()
     # The handles these APIs return must resolve against the exact stores the
     # Container selected, not lookalike stores reconstructed by the server.
     runs.configure_run_store(run_store)

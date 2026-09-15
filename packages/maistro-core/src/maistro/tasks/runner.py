@@ -316,6 +316,7 @@ class TaskRunner:
                 capability=task.capability,
                 program_context=task.program_context,
                 user_id=task.user_id or None,
+                session_id=task.session_id,
                 lane=task.lane,
                 priority_tier=task.priority_tier,
             )
