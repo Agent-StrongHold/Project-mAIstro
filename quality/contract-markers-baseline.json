@@ -107,6 +107,7 @@
         "docs/specs/SPEC-082926-2844-attempt-typed-output-serialization.md [behavioral]",
         "docs/specs/SPEC-082926-3b80-conductor-dashboard-layout-durability.md [behavioral]",
         "docs/specs/SPEC-082926-730d-container-pool-ownership.md [behavioral]",
+        "docs/specs/SPEC-082926-a44e-resume-a-parked-schedule-run-without-repeating-its-effects.md [behavioral]",
         "docs/specs/SPEC-082926-a6ab-contained-candidate-validation.md [behavioral]",
         "docs/specs/SPEC-176-hive-conductor-package.md [boundary]",
         "docs/specs/SPEC-177-hyperagent-graph-execution.md [behavioral]",
