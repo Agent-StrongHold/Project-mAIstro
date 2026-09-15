@@ -11,6 +11,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from maistro.observability.correlation import current_execution_context
+from maistro.security.sentinel.pii_filter import scan_and_redact
 from maistro.types.agent import AgentResponse
 
 _TOOL_SCHEMAS: dict[str, dict[str, object]] = {
@@ -147,6 +148,46 @@ if TYPE_CHECKING:
     from maistro.protocols.quota import QuotaTracker
     from maistro.protocols.tracing import TracingBackend
     from maistro.types.agent import AgentIdentity
+
+
+class _NullSpan:
+    def __enter__(self) -> _NullSpan:
+        return self
+
+    def __exit__(self, *_args: Any) -> None:
+        return None
+
+    def set_input(self, _data: Any) -> _NullSpan:
+        return self
+
+    def set_output(self, _data: Any) -> _NullSpan:
+        return self
+
+
+def _extract_message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            part.get("text", "")
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+    return ""
+
+
+def _redact_message_content(content: Any) -> Any:
+    if isinstance(content, str):
+        return scan_and_redact(content)[0]
+    if isinstance(content, list):
+        redacted = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                part = dict(part)
+                part["text"] = scan_and_redact(str(part.get("text", "")))[0]
+            redacted.append(part)
+        return redacted
+    return content
 
 
 def _extract_user_text(messages: list[dict[str, Any]]) -> str:
@@ -307,15 +348,10 @@ class Agent:
         _delegation_depth: int,
     ) -> AgentResponse:
         """The body of `handle()`. Never ends `trace` — the caller owns that."""
+        messages, blocked_response = await self._prepare_user_input(messages, trace)
+        if blocked_response is not None:
+            return blocked_response
         user_text = _extract_user_text(messages)
-
-        warden_verdict = await self._run_warden(user_text, trace)
-        if not warden_verdict.clean:
-            if trace:
-                trace.score("blocked", 1.0, comment=f"flags: {warden_verdict.flags}")
-            return AgentResponse.blocked_response(
-                f"Blocked by Warden: {', '.join(warden_verdict.flags)}",
-            )
 
         messages, session_history_count = await self._inject_session_history(messages, session_id)
 
@@ -368,7 +404,14 @@ class Agent:
                 turn_id=turn_id,
             )
             if delegated is not None:
-                return delegated
+                return await self._sanitize_agent_response(delegated, trace)
+
+        final_response, blocked_response = await self._prepare_final_output(
+            result.response or "", trace
+        )
+        if blocked_response is not None:
+            return blocked_response
+        result.response = final_response
 
         tool_had_failures = bool(
             result.tool_history
@@ -399,8 +442,9 @@ class Agent:
             turn_id=turn_id,
         )
 
-        if trace:
-            self._finalize_trace(trace, result, model, session_history_count, injected_learning_ids)
+        self._finalize_trace_if_present(
+            trace, result, model, session_history_count, injected_learning_ids
+        )
 
         return AgentResponse(
             content=result.response or "",
@@ -434,8 +478,11 @@ class Agent:
         strategy_kwargs: dict[str, Any] = {}
         if trace:
             strategy_kwargs["trace"] = trace
+        # Strategies retain these values for compatibility; the executor below
+        # remains the canonical effect and content-security boundary.
         strategy_kwargs["warden"] = self._warden
         strategy_kwargs["auth"] = auth
+        strategy_kwargs["security_pipeline"] = True
         if self._sentinel is not None:
             strategy_kwargs["sentinel"] = self._sentinel
         if status_callback:
@@ -444,6 +491,17 @@ class Agent:
         if classified_task_type:
             strategy_kwargs["classified_task_type"] = classified_task_type
         return strategy_kwargs
+
+    def _finalize_trace_if_present(
+        self,
+        trace: Any,
+        result: Any,
+        model: str,
+        session_history_count: int,
+        injected_learning_ids: list[int],
+    ) -> None:
+        if trace:
+            self._finalize_trace(trace, result, model, session_history_count, injected_learning_ids)
 
     async def _persist_run(
         self,
@@ -487,15 +545,80 @@ class Agent:
                 org_id=org_id,
             )
 
-    async def _run_warden(self, user_text: str, trace: Any) -> Any:
-        """Scan user input through the Warden, recording a trace span when on."""
-        if not trace:
-            return await self._warden.scan(user_text, "user_input")
-        with trace.span("warden.user_input") as ws:
-            ws.set_input({"text_length": len(user_text)})
-            warden_verdict = await self._warden.scan(user_text, "user_input")
-            ws.set_output({"clean": warden_verdict.clean, "flags": warden_verdict.flags})
-        return warden_verdict
+    async def _prepare_user_input(
+        self,
+        messages: list[dict[str, Any]],
+        trace: Any,
+    ) -> tuple[list[dict[str, Any]], AgentResponse | None]:
+        """Scan and redact every user message before context assembly."""
+        prepared = [dict(message) for message in messages]
+        context_manager = trace.span("warden.user_input") if trace else _NullSpan()
+        with context_manager as ws:
+            ws.set_input({"message_count": len(messages)})
+            for message in prepared:
+                if message.get("role") != "user":
+                    continue
+                content = message.get("content", "")
+                text = _extract_message_text(content)
+                if text and self._warden is not None:
+                    verdict = await self._warden.scan(text, "user_input")
+                    if not verdict.clean:
+                        ws.set_output({"clean": False, "flags": verdict.flags})
+                        if trace:
+                            trace.score("blocked", 1.0, comment=f"flags: {verdict.flags}")
+                        return prepared, AgentResponse.blocked_response(
+                            f"Blocked by Warden: {', '.join(verdict.flags)}"
+                        )
+                message["content"] = _redact_message_content(content)
+            ws.set_output({"clean": True})
+        return prepared, None
+
+    async def _sanitize_final_output(
+        self,
+        content: str,
+        trace: Any,
+    ) -> tuple[str, tuple[str, ...]]:
+        """Scan/redact the exact assistant representation before any sink."""
+        if not content:
+            return content, ()
+        context_manager = trace.span("warden.assistant_output") if trace else _NullSpan()
+        with context_manager as ws:
+            ws.set_input({"text_length": len(content)})
+            if self._warden is not None:
+                verdict = await self._warden.scan(content, "assistant_output")
+                if not verdict.clean:
+                    ws.set_output({"clean": False, "flags": verdict.flags})
+                    return "", tuple(verdict.flags)
+            redacted, _ = scan_and_redact(content)
+            ws.set_output({"clean": True, "redacted": redacted != content})
+            return redacted, ()
+
+    async def _prepare_final_output(
+        self,
+        content: str,
+        trace: Any,
+    ) -> tuple[str, AgentResponse | None]:
+        sanitized, flags = await self._sanitize_final_output(content, trace)
+        if not flags:
+            return sanitized, None
+        if trace:
+            trace.score("blocked", 1.0, comment=f"flags: {flags}")
+        return "", AgentResponse.blocked_response(f"Blocked by Warden: {', '.join(flags)}")
+
+    async def _sanitize_agent_response(
+        self,
+        response: AgentResponse,
+        trace: Any,
+    ) -> AgentResponse:
+        """Re-apply the output boundary when a delegated agent returns."""
+        if response.blocked or not response.content:
+            return response
+        content, flags = await self._sanitize_final_output(response.content, trace)
+        if flags:
+            if trace:
+                trace.score("blocked", 1.0, comment=f"flags: {flags}")
+            return AgentResponse.blocked_response(f"Blocked by Warden: {', '.join(flags)}")
+        return replace(response, content=content)
 
     async def _build_context(
         self,
@@ -547,6 +670,7 @@ class Agent:
     ) -> Any:
         """Run the reasoning strategy. Returns the result, or ``None`` on a
         handled error (caller returns a generic error response)."""
+        governed_executor = self._governed_tool_executor(tool_defs, strategy_kwargs)
         try:
             if not trace:
                 return await self._strategy.reason(
@@ -554,7 +678,7 @@ class Agent:
                     model,
                     self._llm,
                     tools=tool_defs,
-                    tool_executor=self._tool_executor,
+                    tool_executor=governed_executor,
                     **strategy_kwargs,
                 )
             with trace.span("strategy.reason") as ss:
@@ -564,7 +688,7 @@ class Agent:
                     model,
                     self._llm,
                     tools=tool_defs,
-                    tool_executor=self._tool_executor,
+                    tool_executor=governed_executor,
                     **strategy_kwargs,
                 )
                 ss.set_output(
@@ -598,6 +722,67 @@ class Agent:
             if trace:
                 trace.score("strategy_error", 0.0, "Strategy raised an exception")
             return None
+
+    def _governed_tool_executor(
+        self,
+        tool_defs: list[dict[str, Any]] | None,
+        strategy_kwargs: dict[str, Any],
+    ) -> Any:
+        """Return the only executor a strategy can use at the effect boundary."""
+        auth = strategy_kwargs.get("auth")
+
+        async def execute(tool_name: str, tool_args: dict[str, Any]) -> str:
+            raw_result = await self._authorize_and_invoke(tool_name, tool_args, auth, tool_defs)
+            return await self._sanitize_tool_result(tool_name, str(raw_result), auth)
+
+        return execute
+
+    async def _authorize_and_invoke(
+        self,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        auth: Any,
+        tool_defs: list[dict[str, Any]] | None,
+    ) -> Any:
+        if self._sentinel is None or auth is None:
+            return await self._invoke_raw_tool(tool_name, tool_args)
+        verdict = await self._sentinel.pre_call(
+            tool_name, tool_args, auth, self._tool_schema(tool_name, tool_defs)
+        )
+        if not verdict.allowed:
+            return f"Error: Permission denied for tool '{tool_name}'"
+        if verdict.repaired_data:
+            tool_args.clear()
+            tool_args.update(verdict.repaired_data)
+        return await self._invoke_raw_tool(tool_name, tool_args)
+
+    @staticmethod
+    def _tool_schema(tool_name: str, tool_defs: list[dict[str, Any]] | None) -> dict[str, Any]:
+        for tool in tool_defs or []:
+            function = tool.get("function", {})
+            if function.get("name") == tool_name:
+                parameters = function.get("parameters", {})
+                return parameters if isinstance(parameters, dict) else {}
+        return {}
+
+    async def _invoke_raw_tool(self, tool_name: str, tool_args: dict[str, Any]) -> Any:
+        if not (self._tool_executor and callable(self._tool_executor)):
+            return f"Tool '{tool_name}' not available"
+        return await self._tool_executor(tool_name, tool_args)
+
+    async def _sanitize_tool_result(self, tool_name: str, result: str, auth: Any) -> str:
+        """Sanitize tool output before it can re-enter any strategy context."""
+        if self._sentinel is not None and auth is not None:
+            return str(await self._sentinel.post_call(tool_name, result, auth))
+        if self._warden is not None:
+            verdict = await self._warden.scan(result, "tool_result")
+            if not verdict.clean:
+                return (
+                    "[BLOCKED: tool result contained suspicious content: "
+                    f"{', '.join(verdict.flags)}]"
+                )
+        sanitized, _ = scan_and_redact(result)
+        return sanitized
 
     async def _extract_rca(
         self,
