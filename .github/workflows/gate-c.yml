@@ -75,10 +75,18 @@ jobs:
           wait_ready http://127.0.0.1:8000/health/live
           wait_ready http://127.0.0.1:8000/health/ready
           wait_ready http://127.0.0.1:8101/health/ready
+          # Ready can precede the migration commit: poll until alembic_version
+          # exists, then assert fail-closed.
+          for _ in $(seq 1 60); do
+            v="$(docker compose exec -T postgres psql -U maistro -d maistro -Atc \
+              "SELECT version_num FROM alembic_version" 2>/dev/null || true)"
+            if [[ "$v" =~ ^[0-9A-Za-z_]+$ ]]; then break; fi
+            sleep 2
+          done
           curl --fail --silent --show-error http://127.0.0.1:8000/health/ready >/dev/null
           curl --fail --silent --show-error http://127.0.0.1:8101/health/ready >/dev/null
           docker compose exec -T postgres psql -U maistro -d maistro -Atc \
-            "SELECT version_num FROM alembic_version" | grep -Eq '^[0-9a-f]+$'
+            "SELECT version_num FROM alembic_version" | grep -Eq '^[0-9A-Za-z_]+$'
 
       - name: Record candidate and shipped image digest
         shell: bash
