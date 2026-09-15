@@ -11,6 +11,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from maistro.observability.correlation import current_execution_context
+from maistro.security.warden.detector import prior_message_context
 from maistro.types.agent import AgentResponse
 
 _TOOL_SCHEMAS: dict[str, dict[str, object]] = {
@@ -307,17 +308,20 @@ class Agent:
         _delegation_depth: int,
     ) -> AgentResponse:
         """The body of `handle()`. Never ends `trace` — the caller owns that."""
+        messages, session_history_count = await self._inject_session_history(messages, session_id)
         user_text = _extract_user_text(messages)
 
-        warden_verdict = await self._run_warden(user_text, trace)
+        warden_verdict = await self._run_warden(
+            user_text,
+            trace,
+            context=prior_message_context(messages),
+        )
         if not warden_verdict.clean:
             if trace:
                 trace.score("blocked", 1.0, comment=f"flags: {warden_verdict.flags}")
             return AgentResponse.blocked_response(
                 f"Blocked by Warden: {', '.join(warden_verdict.flags)}",
             )
-
-        messages, session_history_count = await self._inject_session_history(messages, session_id)
 
         org_id = getattr(auth, "org_id", "")
         team_id = getattr(auth, "team_id", "")
@@ -487,13 +491,24 @@ class Agent:
                 org_id=org_id,
             )
 
-    async def _run_warden(self, user_text: str, trace: Any) -> Any:
-        """Scan user input through the Warden, recording a trace span when on."""
+    async def _run_warden(
+        self,
+        user_text: str,
+        trace: Any,
+        *,
+        context: list[Any] | None = None,
+    ) -> Any:
+        """Scan the current turn plus bounded prior context through Warden."""
+        scan_kwargs = {"context": context} if context else {}
         if not trace:
-            return await self._warden.scan(user_text, "user_input")
+            return await self._warden.scan(user_text, "user_input", **scan_kwargs)
         with trace.span("warden.user_input") as ws:
-            ws.set_input({"text_length": len(user_text)})
-            warden_verdict = await self._warden.scan(user_text, "user_input")
+            ws.set_input({"text_length": len(user_text), "context_count": len(context or [])})
+            warden_verdict = await self._warden.scan(
+                user_text,
+                "user_input",
+                **scan_kwargs,
+            )
             ws.set_output({"clean": warden_verdict.clean, "flags": warden_verdict.flags})
         return warden_verdict
 
