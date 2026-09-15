@@ -181,19 +181,19 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             return await self._dispatch_cross_instance(inputs, ctx)
         return await self._dispatch_in_process(inputs, ctx)
 
-    def _delegation_key(self, inputs: DelegateRemoteIn, ctx: NodeContext) -> str:
-        """Stable identity shared by admission and both transport receipts."""
+    def _delegation_key(self, _inputs: DelegateRemoteIn, ctx: NodeContext) -> str:
+        """Stable identity for one parent NodeRun's logical delegation.
+
+        The request is not part of the key. A retry may deserialize equivalent
+        inputs differently, or receive a changed payload after a crash, but it
+        must still adopt the child reservation already made for this parent
+        NodeRun. The request details remain durable on the child graph and
+        provenance; they are not a second admission identity.
+        """
         payload = {
             "run_id": ctx.run_id,
-            "node_run_id": ctx.node_run_id,
+            "node_run_id": ctx.node_run_id or None,
             "node_id": ctx.node_id,
-            "peer_name": inputs.peer_name,
-            "from_agent": inputs.from_agent,
-            "to_agent": inputs.to_agent,
-            "task": inputs.task,
-            "subgraph": inputs.subgraph,
-            "workspace_id": inputs.to_workspace_id,
-            "project_id": inputs.to_project_id,
         }
         return hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
@@ -482,16 +482,16 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         parent = await self._preflight_child_scope(inputs, ctx)
         key = self._delegation_key(inputs, ctx)
         child = await self._existing_child(key)
-        try:
-            target = self._a2a_delegator.resolve_target(
-                inputs.from_agent,
-                inputs.task,
-                inputs.to_agent,
-                self._mode_for(inputs),
-            )
-        except ValueError as exc:
-            return DelegateRemoteOut(status="rejected", error=str(exc))
         if child is None:
+            try:
+                target = self._a2a_delegator.resolve_target(
+                    inputs.from_agent,
+                    inputs.task,
+                    inputs.to_agent,
+                    self._mode_for(inputs),
+                )
+            except ValueError as exc:
+                return DelegateRemoteOut(status="rejected", error=str(exc))
             child_id = await self._reserve_child(
                 inputs, ctx, parent=parent, mode="in_process", target=target
             )

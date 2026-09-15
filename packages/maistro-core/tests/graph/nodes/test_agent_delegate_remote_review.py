@@ -321,7 +321,9 @@ class TestAdmissionAndTransportConverge:
         assert child is not None
         assert child.provenance.get("a2a_task_id") in (None, "")
 
-        second = await node.run(inputs, ctx)
+        second = await node.run(
+            {**inputs, "task": "changed after retry", "to_agent": "different-target"}, ctx
+        )
         assert second.status == "paused"
         assert len(delegator._tasks) == 1
         assert (await store.get_run(second.metadata["run_id"])).provenance["a2a_task_id"]
