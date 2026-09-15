@@ -8,6 +8,7 @@ Accepts tokens from two sources:
 
 from __future__ import annotations
 
+import re
 from http.cookies import SimpleCookie
 
 from maistro.protocols.auth import AuthError, CredentialNotApplicable
@@ -93,9 +94,15 @@ class DemoCookieAuthProvider:
             sc.load(cookie_header)
         except Exception as error:
             _logger.warning("Failed to parse cookie header: %s", type(error).__name__)
+            # A malformed value for this provider's cookie is still a
+            # recognized credential; do not let a later provider reinterpret it.
+            if re.search(rf"(?:^|;)\s*{re.escape(self._cookie_name)}\s*=", cookie_header):
+                return True, ""
             return False, ""
 
         morsel = sc.get(self._cookie_name)
-        if morsel is None:
-            return False, ""
-        return True, str(morsel.value)
+        if morsel is not None:
+            return True, str(morsel.value)
+        if re.search(rf"(?:^|;)\s*{re.escape(self._cookie_name)}\s*=", cookie_header):
+            return True, ""
+        return False, ""

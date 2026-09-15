@@ -107,6 +107,12 @@ async def test_authenticate_swallows_cookie_parse_error_and_treats_as_no_token()
         await provider.authenticate(None, headers={"cookie": "====="})
 
 
+async def test_authenticate_rejects_malformed_recognized_cookie() -> None:
+    provider = DemoCookieAuthProvider(api_key=_KEY)
+    with pytest.raises(AuthError, match="Empty demo session credential"):
+        await provider.authenticate(None, headers={"cookie": 'maistro_session="'})
+
+
 async def test_authenticate_raises_for_invalid_signature() -> None:
     provider = DemoCookieAuthProvider(api_key=_KEY)
     token = make_token(key="wrong-key-that-is-32-bytes-long!")

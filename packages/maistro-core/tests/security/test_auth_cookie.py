@@ -85,6 +85,19 @@ async def test_authenticate_swallows_cookie_parse_error_and_treats_as_not_found(
         await provider.authenticate(None, headers={"cookie": "====="})
 
 
+async def test_authenticate_rejects_malformed_recognized_cookie() -> None:
+    provider = CookieAuthProvider(jwt_provider=_StubJWTProvider())
+    with pytest.raises(AuthError, match="Empty session cookie"):
+        await provider.authenticate(None, headers={"cookie": 'maistro_session="'})
+
+
+async def test_authenticate_rejects_nested_not_applicable_result() -> None:
+    jwt_provider = _StubJWTProvider(error=CredentialNotApplicable("not a bearer token"))
+    provider = CookieAuthProvider(jwt_provider=jwt_provider)
+    with pytest.raises(AuthError, match="Invalid session cookie"):
+        await provider.authenticate(None, headers={"cookie": "maistro_session=abc"})
+
+
 async def test_authenticate_rejects_empty_recognized_cookie() -> None:
     provider = CookieAuthProvider(jwt_provider=_StubJWTProvider())
     with pytest.raises(AuthError, match="Empty session cookie"):

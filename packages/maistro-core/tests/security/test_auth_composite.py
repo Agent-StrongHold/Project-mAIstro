@@ -168,6 +168,27 @@ class TestCompositeAuthProvider:
         assert result == "later-context"
 
     @pytest.mark.asyncio
+    async def test_malformed_recognized_cookie_is_terminal(self) -> None:
+        from maistro.security.auth_cookie import CookieAuthProvider
+
+        class _UnusedJWT:
+            async def authenticate(
+                self, authorization: str | None, headers: dict[str, str] | None = None
+            ) -> AuthContext:
+                raise AssertionError("malformed cookies must not reach JWT validation")
+
+        later = _FakeProvider("success", result=SYSTEM_AUTH)
+        composite = CompositeAuthProvider(
+            [
+                CookieAuthProvider(jwt_provider=_UnusedJWT()),  # type: ignore[arg-type]
+                later,
+            ]
+        )
+        with pytest.raises(AuthError, match="Empty session cookie"):
+            await composite.authenticate(None, headers={"cookie": 'maistro_session="'})
+        assert later.calls == []
+
+    @pytest.mark.asyncio
     async def test_valid_cookie_credential_reaches_later_provider(self) -> None:
         from maistro.security.auth_cookie import CookieAuthProvider
         from maistro.security.auth_static import StaticKeyAuthProvider
