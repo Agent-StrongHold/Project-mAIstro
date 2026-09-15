@@ -553,9 +553,18 @@ async def test_list_proposals_limit_clamped() -> None:
 # --- HTTP route tests ----------------------------------------------------
 
 
+def _optimizer_workspace(client: Any) -> str:
+    response = client.post(
+        "/v1/workspaces", json={"persona_template_id": "pm_fleet", "name": "Optimizer"}
+    )
+    assert response.status_code == 201
+    return response.json()["id"]
+
+
 def test_run_endpoint_returns_ranked_proposals(admin_client: Any) -> None:
     _seed_metrics("d-http", "n1", count=10, failed=8, p95=100)
-    r = admin_client.post("/v1/optimizer/d-http/run")
+    workspace_id = _optimizer_workspace(admin_client)
+    r = admin_client.post(f"/v1/optimizer/d-http/run?workspace_id={workspace_id}")
     assert r.status_code == 200
     body = r.json()
     assert body["dag_id"] == "d-http"
@@ -565,7 +574,8 @@ def test_run_endpoint_returns_ranked_proposals(admin_client: Any) -> None:
 
 def test_run_endpoint_with_apply_auto_true(admin_client: Any) -> None:
     _seed_metrics("d-apply", "n1", count=10, failed=8, p95=100)
-    r = admin_client.post("/v1/optimizer/d-apply/run?apply_auto=true")
+    workspace_id = _optimizer_workspace(admin_client)
+    r = admin_client.post(f"/v1/optimizer/d-apply/run?apply_auto=true&workspace_id={workspace_id}")
     assert r.status_code == 200
     assert r.json()["auto_applied"] >= 1
 
@@ -584,7 +594,8 @@ def test_run_endpoint_empty_dag_id_returns_400(admin_client: Any) -> None:
 
     routes_opt.run_optimizer = _raise
     try:
-        r = admin_client.post("/v1/optimizer/anything/run")
+        workspace_id = _optimizer_workspace(admin_client)
+        r = admin_client.post(f"/v1/optimizer/anything/run?workspace_id={workspace_id}")
         assert r.status_code == 400
     finally:
         routes_opt.run_optimizer = original

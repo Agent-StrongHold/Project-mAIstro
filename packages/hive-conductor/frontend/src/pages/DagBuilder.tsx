@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../lib/api";
+import { useWorkspaces } from "../context/WorkspaceContext";
 import {
   ConfirmDialog,
   EmptyState,
@@ -125,6 +126,7 @@ function fmtRelative(iso: string): string {
 
 export default function DagBuilder() {
   const toast = useToast();
+  const { activeWorkspaceId, ready: workspacesReady } = useWorkspaces();
   const [dags, setDags] = useState<DAGFile[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [dag, setDag] = useState<DAGFile | null>(null);
@@ -313,8 +315,12 @@ export default function DagBuilder() {
 
   const handleRun = useCallback(() => {
     if (!dag) return;
+    if (!workspacesReady || !activeWorkspaceId) {
+      toast("Select a Workspace before running a DAG", "error");
+      return;
+    }
     const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${wsProto}//${location.host}/v1/ws/dags/${dag.id}/run`;
+    const wsUrl = `${wsProto}//${location.host}/v1/ws/dags/${dag.id}/run?workspace_id=${encodeURIComponent(activeWorkspaceId)}`;
     const ws = new WebSocket(wsUrl);
     setExecState({ running: true, nodeId: null, log: ["Connecting..."] });
     ws.onmessage = (ev) => {
@@ -348,7 +354,7 @@ export default function DagBuilder() {
     ws.onclose = () => {
       setExecState((prev) => prev.running ? { ...prev, running: false, log: [...prev.log, "Connection closed"] } : prev);
     };
-  }, [dag, toast]);
+  }, [activeWorkspaceId, dag, toast, workspacesReady]);
 
   const handleActivate = useCallback(async () => {
     if (!dag) return;
