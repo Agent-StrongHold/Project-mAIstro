@@ -302,3 +302,127 @@ async def test_losing_the_settle_race_reports_the_winner_rather_than_raising() -
 
     assert [item.attempt_id for item in reclaimed] == [attempt.attempt_id]
     assert reclaimed[0].status is AttemptStatus.CANCELLED
+
+
+# --- run and node-run transitions through the canonical store --------------
+
+
+async def test_a_run_transition_goes_to_the_canonical_store_and_mirrors_back() -> None:
+    _store, run_store, execution_store, _record, _node_run_id = await _bound_store()
+    run_id = _record.run.run_id
+
+    updated = await execution_store.transition_run(run_id, RunStatus.COMPLETED, result="done")
+
+    assert updated.status is RunStatus.COMPLETED
+    assert updated.result == "done"
+    canonical = await run_store.get_run(run_id)
+    assert canonical is not None
+    assert canonical.status is RunStatus.COMPLETED
+    mirrored = await execution_store.get_run(run_id)
+    assert mirrored is not None
+    assert mirrored.status is RunStatus.COMPLETED
+
+
+async def test_a_run_transition_to_the_status_the_store_already_holds_is_idempotent() -> None:
+    _store, run_store, execution_store, record, _node_run_id = await _bound_store()
+    run_id = record.run.run_id
+
+    first = await execution_store.transition_run(run_id, RunStatus.CANCELLED)
+    second = await execution_store.transition_run(run_id, RunStatus.CANCELLED)
+
+    assert first.status is RunStatus.CANCELLED
+    assert second.status is RunStatus.CANCELLED
+    canonical = await run_store.get_run(run_id)
+    assert canonical is not None
+    assert canonical.status is RunStatus.CANCELLED
+
+
+async def test_a_run_the_canonical_store_never_saw_is_an_integrity_error() -> None:
+    store, _run_store, _execution_store, record, _node_run_id = await _bound_store()
+    orphan_projects = InMemoryProjectScopeStore()
+    orphan_run_store = InMemoryRunStore(project_store=orphan_projects)
+    execution_store = DurableRunExecutionStore(
+        store, run_id=record.run.run_id, run_store=orphan_run_store
+    )
+
+    with pytest.raises(RunIntegrityError, match="does not exist"):
+        await execution_store.transition_run(record.run.run_id, RunStatus.CANCELLED)
+
+
+async def test_a_node_run_transition_goes_to_the_canonical_store_and_mirrors_back() -> None:
+    _store, run_store, execution_store, _record, node_run_id = await _bound_store()
+
+    updated = await execution_store.transition_node_run(node_run_id, RunStatus.CANCELLED)
+
+    assert updated.status is RunStatus.CANCELLED
+    canonical = await run_store.get_node_run(node_run_id)
+    assert canonical is not None
+    assert canonical.status is RunStatus.CANCELLED
+    mirrored = await execution_store.get_node_run(node_run_id)
+    assert mirrored is not None
+    assert mirrored.status is RunStatus.CANCELLED
+
+
+async def test_a_node_run_transition_to_the_status_it_already_holds_is_idempotent() -> None:
+    _store, run_store, execution_store, _record, node_run_id = await _bound_store()
+
+    first = await execution_store.transition_node_run(node_run_id, RunStatus.CANCELLED)
+    second = await execution_store.transition_node_run(node_run_id, RunStatus.CANCELLED)
+
+    assert first.status is RunStatus.CANCELLED
+    assert second.status is RunStatus.CANCELLED
+    canonical = await run_store.get_node_run(node_run_id)
+    assert canonical is not None
+    assert canonical.status is RunStatus.CANCELLED
+
+
+async def test_a_node_run_the_canonical_store_never_saw_is_an_integrity_error() -> None:
+    _store, run_store, execution_store, record, _node_run_id = await _bound_store()
+    orphan = record.node_runs[0].model_copy(
+        update={"node_run_id": "node-run-never-in-store", "node_id": "node-2", "ordinal": 2}
+    )
+    orphan_store = InMemoryDurableRunStore()
+    await orphan_store.create(record.model_copy(update={"node_runs": (*record.node_runs, orphan)}))
+    execution_store = DurableRunExecutionStore(
+        orphan_store, run_id=record.run.run_id, run_store=run_store
+    )
+
+    with pytest.raises(RunIntegrityError, match="does not exist"):
+        await execution_store.transition_node_run("node-run-never-in-store", RunStatus.CANCELLED)
+
+
+async def test_a_record_that_loses_its_node_run_under_the_transition_is_an_error() -> None:
+    """A record rewritten underneath the transition is torn state, not a pass.
+
+    The canonical store transitioned the NodeRun, but by the time the record
+    mirror is written the aggregate no longer contains that NodeRun at all.
+    Silently inserting it would invent history, so the disagreement surfaces.
+    """
+    _store, run_store, _execution_store, record, node_run_id = await _bound_store()
+
+    class _LosingRecordStore(InMemoryDurableRunStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.drop_node_run_id: str | None = None
+
+        async def get(self, run_id: str) -> DurableRunRecord | None:
+            found = await super().get(run_id)
+            if found is None or self.drop_node_run_id is None:
+                return found
+            return found.model_copy(
+                update={
+                    "node_runs": tuple(
+                        item
+                        for item in found.node_runs
+                        if item.node_run_id != self.drop_node_run_id
+                    )
+                }
+            )
+
+    torn = _LosingRecordStore()
+    await torn.create(record)
+    execution_store = DurableRunExecutionStore(torn, run_id=record.run.run_id, run_store=run_store)
+    torn.drop_node_run_id = node_run_id
+
+    with pytest.raises(RunIntegrityError, match="does not exist"):
+        await execution_store.transition_node_run(node_run_id, RunStatus.CANCELLED)
