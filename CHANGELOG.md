@@ -23,22 +23,6 @@ or placeholder-only section.
 
 ## [Unreleased]
 
-### Changed
-
-- **The merge-queue bot quarantines a head that already failed inside the
-  queue (#1438 review follow-up).** `scripts/check-enqueue-merge-queue.py`
-  re-requested any policy-green PR head on every scan, including one the
-  queue had just ejected, so with batched groups a bad head dragged each new
-  group through a rebuild every 30 minutes. The controller now reads the
-  recent merge-group run history (the workflow gains `actions: read`),
-  attributes each failed entry to its own tree or to a failed entry ahead of
-  it via the `gh-readonly-queue/develop/pr-N-<sha>` chain, and holds any head
-  whose own entry failed after that head's `gates-ran` first went green. A
-  new push or a human enqueue lifts the hold; an unreadable history refuses
-  every admission. `scripts/check-required-checks.py` additionally pins
-  `grouping_strategy=ALLGREEN`, and `measure-merge-latency.py` reports how
-  many dequeued candidates were rebuilt behind another PR's failure.
-
 ### Security
 
 - **An identity-free chat turn is routed as the anonymous principal again
@@ -182,6 +166,20 @@ or placeholder-only section.
   assert scope or authorization.
 
 ### Changed
+
+- **The merge-queue bot quarantines a head that already failed inside the
+  queue (#1438 review follow-up).** `scripts/check-enqueue-merge-queue.py`
+  re-requested any policy-green PR head on every scan, including one the
+  queue had just ejected, so with batched groups a bad head dragged each new
+  group through a rebuild every 30 minutes. The controller now reads the
+  recent merge-group run history (the workflow gains `actions: read`),
+  attributes each failed entry to its own tree or to a failed entry ahead of
+  it via the `gh-readonly-queue/develop/pr-N-<sha>` chain, and holds any head
+  whose own entry failed after that head's `gates-ran` first went green. A
+  new push or a human enqueue lifts the hold; an unreadable history refuses
+  every admission. `scripts/check-required-checks.py` additionally pins
+  `grouping_strategy=ALLGREEN`, and `measure-merge-latency.py` reports how
+  many dequeued candidates were rebuilt behind another PR's failure.
 
 - **HALF_OPEN circuit-breaker success is now caller-bound (#828).** `record_success()`
   closes a HALF_OPEN circuit only when called by the thread or asyncio task
