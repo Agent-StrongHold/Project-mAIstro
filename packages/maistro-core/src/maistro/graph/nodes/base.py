@@ -13,8 +13,10 @@ human.ask_question, ...) live in sibling modules and self-register via
 
 from __future__ import annotations
 
+import contextlib
 import time
-from datetime import UTC, datetime
+from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Generic, Literal, Protocol, TypeVar, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, SerializeAsAny
@@ -332,7 +334,40 @@ def resumed_pause(ctx: NodeContext) -> dict[str, Any]:
     neither, which is what `wait_first_seen:` was.
     """
     carried = (ctx.metadata or {}).get(RESUMED_PAUSE_KEY)
-    return dict(carried) if isinstance(carried, dict) else {}
+    return dict(carried) if isinstance(carried, Mapping) else {}
+
+
+def hitl_resume_at(
+    ctx: NodeContext,
+    timeout_seconds: int,
+    *,
+    resumed: Mapping[str, Any] | None = None,
+) -> datetime | None:
+    """Return the authoritative HITL deadline for this reach.
+
+    A first reach admits a deadline from the node clock. A resumed reach must
+    reuse the deadline carried from the durable pause; it must never derive a
+    new one from wall-clock time after an answer arrives. The executor's
+    ``resumed_pause`` transport is authoritative when present; the canonical
+    answer record's ``_pause`` evidence is the fallback for resumed answers
+    produced by the durable stores.
+    """
+    metadata = ctx.metadata or {}
+    if RESUMED_PAUSE_KEY in metadata:
+        carried = resumed_pause(ctx)
+        raw = carried.get("resume_at")
+        if not isinstance(raw, str):
+            return None
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return None
+        return parsed.astimezone(UTC)
+    if resumed is not None:
+        return preserved_hitl_deadline(dict(resumed), timeout_seconds=timeout_seconds)
+    return now_utc() + timedelta(seconds=timeout_seconds)
 
 
 def pause_until(
@@ -353,3 +388,34 @@ def pause_until(
 def now_utc() -> datetime:
     """Single source of truth for "now" so tests can monkeypatch."""
     return datetime.now(UTC)
+
+
+def preserved_hitl_deadline(resumed: dict[str, Any] | None, *, timeout_seconds: int) -> datetime:
+    """The durable deadline a malformed HITL re-pause must not silently reset (#1097).
+
+    `DurableRunStore.answer_record` stamps a node's own previous pause
+    verbatim onto every resumed answer under ``_pause`` -- valid or not --
+    before the node ever runs again, because it is the only server-side
+    record of what that pause was actually waiting for (see
+    `graph/durable_runs/stores.py::answer_record`). A verdict node that falls
+    through to a fresh pause because the answer was missing, blank, or not a
+    string reads that stamped evidence back so its deadline stays the one
+    admitted at the *original* pause, not `now + timeout_seconds` recomputed
+    on every malformed answer -- which would let repeated bad answers extend
+    a canonical HITL window indefinitely.
+
+    Falls back to the caller's configured timeout only when no ``_pause``
+    evidence is present at all, which means there is no earlier admitted
+    deadline to preserve -- the node's very first pause.
+    """
+    pause = (resumed or {}).get("_pause")
+    # `Mapping`, not `dict`: `GraphExecutionState` freezes its metadata, so a
+    # value read back through `NodeContext.metadata` is an immutable mapping
+    # rather than the plain dict `answer_record` wrote it as.
+    if isinstance(pause, Mapping):
+        raw = pause.get("resume_at")
+        if isinstance(raw, str):
+            with contextlib.suppress(ValueError):
+                parsed = datetime.fromisoformat(raw)
+                return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    return now_utc() + timedelta(seconds=timeout_seconds)

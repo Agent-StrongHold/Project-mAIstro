@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from maistro.protocols.agents import AgentStore
-from maistro.protocols.auth import AuthProvider
+from maistro.protocols.auth import AuthError, AuthProvider, CredentialNotApplicable
 from maistro.protocols.classifier import IntentClassifier
 from maistro.protocols.codebase import CodeStructureIndex
 from maistro.protocols.embeddings import EmbeddingClient
@@ -35,8 +35,10 @@ from maistro.protocols.tracing import Span, Trace, TracingBackend
 __all__ = [
     "AgentStore",
     "AuditLog",
+    "AuthError",
     "AuthProvider",
     "CodeStructureIndex",
+    "CredentialNotApplicable",
     "DecayableEpisodicStore",
     "EmbeddingClient",
     "EpisodicStore",
