@@ -125,17 +125,46 @@ class TestTheRoutesPassItDown:
     ) -> None:
         """Rendering returns the project's content, so a render route that
         never asked whose it was is the same leak as the fetch route."""
-        import services.design_preview as preview_module
-
         store = _Store(project=None)
         monkeypatch.setattr(design_routes, "get_design_store", lambda: store)
-        # The route resolves the preview service before it reads the project,
-        # so it has to exist for the scope check to be reached at all.
-        monkeypatch.setattr(preview_module, "get_design_preview_service", lambda: object())
         with pytest.raises(HTTPException) as raised:
             await design_routes.create_render_job("p-1", _Request(org_id="org-7"))
         assert raised.value.status_code == 404
         assert store.calls == [{"project_id": "p-1", "org_id": "org-7"}]
+
+    @pytest.mark.ac("M1-465/AC-design-render-unavailable")
+    async def test_rendering_reports_unavailable_without_creating_a_pending_job(
+        self, ready: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The shipped route must not mint a job without a worker or artifact URL."""
+        import services.design_preview as preview_module
+
+        class _Project:
+            pass
+
+        store = _Store(project=_Project())
+        preview_calls: list[bool] = []
+        monkeypatch.setattr(design_routes, "get_design_store", lambda: store)
+        monkeypatch.setattr(
+            preview_module,
+            "get_design_preview_service",
+            lambda: preview_calls.append(True),
+        )
+
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.create_render_job("p-1", _Request(org_id="org-7"))
+
+        assert raised.value.status_code == 501
+        assert "durable artifact store" in str(raised.value.detail)
+        assert preview_calls == []
+        assert store.calls == [{"project_id": "p-1", "org_id": "org-7"}]
+
+    @pytest.mark.ac("M1-465/AC-design-render-unavailable")
+    async def test_polling_render_status_reports_unavailable(self) -> None:
+        """Polling cannot expose a made-up pending state or output URL."""
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.get_render_job_status("p-1", "job-1")
+        assert raised.value.status_code == 501
 
     @pytest.mark.ac("SPEC-083026-6bc5/AC-2")
     async def test_listing_projects_uses_the_resolved_scope(
