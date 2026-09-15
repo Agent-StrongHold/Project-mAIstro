@@ -116,6 +116,25 @@ def test_oauth_callback_filter_preserves_non_string_format_args() -> None:
     assert record.args == ("127.0.0.1:1", 303)
 
 
+def test_configure_logging_installs_execution_correlation(monkeypatch):
+    """#1063: binding request_id onto the execution context does nothing for
+    Hive's own log lines unless `install_log_correlation()` is actually
+    called -- `RequestLogMiddleware` and most Hive handlers log through
+    plain stdlib `logging`, not structlog, so the id was bound but never
+    reached a line here."""
+    from maistro.observability.correlation import bind_execution_context
+
+    stream = _reconfigure(monkeypatch)
+    root = logging.getLogger()
+    try:
+        with bind_execution_context(request_id="corr-test-123"):
+            logging.getLogger("hive.test").info("something happened")
+        out = stream.getvalue()
+        assert "corr-test-123" in out
+    finally:
+        root.handlers = getattr(logging, "_maistro_saved_handlers", [])
+
+
 def test_health_publishes_redaction_state(authed_client):
     """A degraded control has to be visible, not inferred from source (F3)."""
     body = authed_client.get("/health").json()
