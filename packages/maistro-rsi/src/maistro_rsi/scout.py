@@ -21,7 +21,9 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from maistro.security.warden.detector import Warden
 from maistro_evolve.improvement import ImprovementKind
+from maistro_rsi.harvest_boundary import WardenHarvestBoundary
 
 LlmCall = Callable[..., dict[str, Any]]
 
@@ -160,6 +162,15 @@ def scout_shortlist(
         {"role": "system", "content": _SCOUT_SYSTEM},
         {"role": "user", "content": _build_user_prompt(source, tests, uncovered, spec_gaps)},
     ]
+    if (
+        not WardenHarvestBoundary(Warden())
+        .scan_sync(
+            {"source": source, "tests": tests, "uncovered": uncovered, "spec_gaps": spec_gaps},
+            allow_thread=True,
+        )
+        .admitted
+    ):
+        return []
     try:
         result = llm_call(messages, max_tokens=800)
     except Exception:
@@ -181,6 +192,12 @@ def scout_objective(source: str, llm_call: LlmCall, *, fallback: str) -> str:
         {"role": "system", "content": _SCOUT_SYSTEM},
         {"role": "user", "content": _build_user_prompt(source, "", "")},
     ]
+    if (
+        not WardenHarvestBoundary(Warden())
+        .scan_sync({"source": source}, allow_thread=True)
+        .admitted
+    ):
+        return fallback
     try:
         result = llm_call(messages, max_tokens=400)
     except Exception:

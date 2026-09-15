@@ -78,14 +78,19 @@ def pr_body(file: str, patches: list[PromotedPatch]) -> str:
     return "\n".join(lines)
 
 
-def load_manifest(path: str | Path) -> list[PromotedPatch]:
-    """Read the export manifest.json into PromotedPatch records."""
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+def manifest_records(data: list[dict[str, object]]) -> list[PromotedPatch]:
+    """Project one already-read manifest into the typed harvest records."""
     return [
         PromotedPatch(
-            patch_file=entry["patch_file"],
-            file=entry["file"],
-            subject=entry.get("subject", ""),
+            patch_file=str(entry["patch_file"]),
+            file=str(entry["file"]),
+            subject=str(entry.get("subject", "")),
         )
         for entry in data
     ]
+
+
+def load_manifest(path: str | Path) -> list[PromotedPatch]:
+    """Read the export manifest.json into PromotedPatch records."""
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    return manifest_records(data)

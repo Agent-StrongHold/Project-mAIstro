@@ -28,6 +28,7 @@ from maistro_evolve.tournament import EloTournament, GenomeBattle
 from maistro_evolve.types import EvalResult, PipelineGenome
 from maistro_rsi.benchmarks import RSI_BENCHMARKS
 from maistro_rsi.gateway import LlmCall, make_gateway_llm_call
+from maistro_rsi.harvest_boundary import HarvestCorrelation
 from maistro_rsi.protocols import ApplyPatchFn, MicroVmSandbox, WorkspaceProbeFn
 from maistro_rsi.quota_burn import QuotaBurnScheduler
 from maistro_rsi.sandbox.microvm import create_rsi_sandbox
@@ -187,7 +188,14 @@ class RsiCycle:
         # heuristically (loudly non-real).
         llm_call = self._llm_call
         if llm_call is None and model:
-            llm_call = make_gateway_llm_call(model)
+            llm_call = make_gateway_llm_call(
+                model,
+                correlation=HarvestCorrelation(
+                    run_id=run_id,
+                    source_repository=self._config.repo_url,
+                    candidate_id=model,
+                ),
+            )
 
         sandbox = await create_rsi_sandbox(workspace)
         try:
