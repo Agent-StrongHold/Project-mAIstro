@@ -60,6 +60,11 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 _runner: TaskRunner | None = None
+_recovery_task: asyncio.Task[None] | None = None
+
+# The server owns the operator-scheduled recovery tick for its Container. The
+# Container deliberately does not start background work on import or creation.
+RECOVERY_INTERVAL_SECONDS = 5.0
 
 # Single source of truth for version — read from installed package metadata
 try:
@@ -236,10 +241,22 @@ async def _build_container(settings: Settings, pg_pool: Any) -> Any:
     return container
 
 
+async def _recover_runs(container: Any) -> None:
+    """Run the canonical Container recovery tick while the server is alive."""
+    while True:
+        try:
+            await container.recover_abandoned_attempts()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("canonical_run_recovery_tick_failed")
+        await asyncio.sleep(RECOVERY_INTERVAL_SECONDS)
+
+
 @asynccontextmanager
 async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Start/stop the background task runner with the app lifecycle."""
-    global _runner
+    """Start/stop the background task runner and recovery tick."""
+    global _runner, _recovery_task
 
     # Configure structured logging (JSON in production, console in debug)
     settings = get_settings()
@@ -336,12 +353,18 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
             lambda s=sig: asyncio.create_task(_graceful_shutdown(s)),  # type: ignore[misc]
         )
 
+    _recovery_task = asyncio.create_task(_recover_runs(container), name="canonical-run-recovery")
+
     try:
         yield
     finally:
-        # Graceful shutdown: drain tasks → cleanup containers → flush observability
+        # Graceful shutdown: drain tasks → stop recovery → cleanup containers.
         if _runner:
             await _runner.stop(drain_timeout=SHUTDOWN_DRAIN_TIMEOUT)
+        if _recovery_task is not None:
+            _recovery_task.cancel()
+            await asyncio.gather(_recovery_task, return_exceptions=True)
+            _recovery_task = None
 
         # Drop the queue singleton after draining, so a later lifespan in the same
         # interpreter can install a fresh one. Startup refuses to replace a queue

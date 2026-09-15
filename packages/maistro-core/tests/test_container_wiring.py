@@ -627,6 +627,8 @@ async def test_the_sweep_parks_the_reclaimed_attempts_logical_records() -> None:
     collected = metrics_registry.collect_all()
     (open_runs_sample,) = collected["maistro_non_terminal_runs"]
     assert open_runs_sample["value"] >= 1
+    (oldest_age_sample,) = collected["maistro_oldest_non_terminal_run_age_seconds"]
+    assert oldest_age_sample["value"] > 0
 
 
 async def test_the_sweep_survives_an_attempt_it_cannot_reconcile(

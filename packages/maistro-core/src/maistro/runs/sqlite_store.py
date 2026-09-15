@@ -44,8 +44,10 @@ from maistro.runs.store import (
     RunNotFound,
     StaleExecutionFence,
     admit_in_state,
+    chat_admission_receipt_is_live,
     is_purgeable,
     outcome_embeds_attempt,
+    renew_chat_admission_receipt,
     repaired_accepted_outcome,
     require_repairable_attempt,
     validate_accepted_outcome_against_attempt,
@@ -305,6 +307,94 @@ class SqliteRunStore:
             (run_id,),
         )
         return model_of_json(Run, row[0]) if row is not None else None
+
+    async def renew_chat_admission_receipt(
+        self,
+        run_id: str,
+        *,
+        holder: str,
+        ttl: timedelta,
+        at: datetime | None = None,
+    ) -> bool:
+        async with self._write_lock:
+            await self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = await self._fetchone(
+                    "SELECT payload FROM canonical_runs WHERE run_id = ?",
+                    (run_id,),
+                )
+                if row is None:
+                    await self._conn.rollback()
+                    return False
+                run = model_of_json(Run, row[0])
+                renewed = renew_chat_admission_receipt(run, holder=holder, ttl=ttl, at=at)
+                if renewed is None:
+                    await self._conn.rollback()
+                    return False
+                self._stage_payload(
+                    "canonical_runs", "run_id", run_id, renewed.status.value, json_of(renewed)
+                )
+                await self._flush()
+                return True
+            except BaseException:
+                self._pending.clear()
+                await self._conn.rollback()
+                raise
+
+    async def cancel_chat_admission_if_expired(
+        self,
+        run_id: str,
+        *,
+        now: datetime,
+        error: str,
+    ) -> bool:
+        async with self._write_lock:
+            await self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = await self._fetchone(
+                    "SELECT payload FROM canonical_runs WHERE run_id = ?",
+                    (run_id,),
+                )
+                if row is None:
+                    await self._conn.rollback()
+                    return False
+                run = model_of_json(Run, row[0])
+                if run.status in TERMINAL_RUN_STATUSES or chat_admission_receipt_is_live(
+                    run, now=now
+                ):
+                    await self._conn.rollback()
+                    return False
+                attempt = await self._fetchone(
+                    """SELECT 1 FROM canonical_attempts a
+                       JOIN canonical_node_runs n ON a.node_run_id = n.node_run_id
+                       WHERE n.run_id = ? LIMIT 1""",
+                    (run_id,),
+                )
+                if attempt is not None:
+                    await self._conn.rollback()
+                    return False
+                updated = transition_run(run, RunStatus.CANCELLED, at=now, error=error)
+                settled = [
+                    settle_open_node_run(node_run, RunStatus.CANCELLED, at=now)
+                    for node_run in await self._open_node_runs(run_id)
+                ]
+                self._stage_payload(
+                    "canonical_runs", "run_id", run_id, updated.status.value, json_of(updated)
+                )
+                for node_run in settled:
+                    self._stage_payload(
+                        "canonical_node_runs",
+                        "node_run_id",
+                        node_run.node_run_id,
+                        node_run.status.value,
+                        json_of(node_run),
+                    )
+                await self._flush()
+                return True
+            except BaseException:
+                self._pending.clear()
+                await self._conn.rollback()
+                raise
 
     async def list_by_status(
         self,

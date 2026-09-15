@@ -27,7 +27,7 @@ from fastapi.testclient import TestClient
 from maistro.agents.types import ConductorOutput, LLMProviderError
 from maistro.container import create_container
 from maistro.runs.admission import ADMISSION_SOURCE
-from maistro.runs.chat_admission import CHAT_SOURCE, UPSTREAM_FAILURE
+from maistro.runs.chat_admission import ADMISSION_INCOMPLETE, CHAT_SOURCE, UPSTREAM_FAILURE
 from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
 from maistro.runs.store import InMemoryRunStore
 from maistro.security._types import GateResult
@@ -112,6 +112,23 @@ class _BlockingGate:
 class _RaisingGate:
     async def process_input(self, content: str, **_kwargs: object) -> GateResult:
         raise RuntimeError("warden exploded")
+
+
+class _AdmissionTransitionFailureStore:
+    """Fail one admission transition to exercise the endpoint's real seam."""
+
+    def __init__(self, inner: object, failed_target: RunStatus) -> None:
+        self._inner = inner
+        self._failed_target: RunStatus | None = failed_target
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+    async def transition_run(self, run_id: str, target: RunStatus, **kwargs: object):
+        if target is self._failed_target:
+            self._failed_target = None
+            raise RuntimeError("admission transition failed")
+        return await self._inner.transition_run(run_id, target, **kwargs)  # type: ignore[attr-defined]
 
 
 def _output(answer: str = "the answer") -> ConductorOutput:
@@ -330,6 +347,31 @@ async def test_a_streamed_failure_leaves_no_running_run(wired, client: TestClien
     assert "internal_error" in response.text
     chat_runs = [r for r in wired._runs.values() if r.provenance[ADMISSION_SOURCE] == CHAT_SOURCE]
     assert chat_runs[0].status is RunStatus.FAILED
+
+
+@pytest.mark.parametrize("failed_target", [RunStatus.QUEUED, RunStatus.RUNNING])
+async def test_admission_transition_failures_are_compensated_at_the_http_boundary(
+    container: object, wired: InMemoryRunStore, client: TestClient, failed_target: RunStatus
+) -> None:
+    """The endpoint must use Container compensation, not retry admission itself."""
+    container.run_store = _AdmissionTransitionFailureStore(  # type: ignore[attr-defined]
+        container.run_store, failed_target
+    )
+    with patch(RUN_TASK, AsyncMock(return_value=_output("42"))):
+        response = client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["content"] == "42"
+    assert response.json()["run_id"] is None
+    chat_runs = [r for r in wired._runs.values() if r.provenance[ADMISSION_SOURCE] == CHAT_SOURCE]
+    assert len(chat_runs) == 1
+    assert chat_runs[0].status is RunStatus.CANCELLED
+    assert chat_runs[0].error == ADMISSION_INCOMPLETE
+    open_runs, _oldest = await wired.non_terminal_run_stats()
+    assert open_runs == 0
 
 
 async def test_no_chat_admitter_means_a_null_run_id_and_a_working_endpoint(

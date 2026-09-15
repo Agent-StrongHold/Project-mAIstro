@@ -33,16 +33,22 @@ the whole table; it is not a reason to leave the live process unbounded.
 from __future__ import annotations
 
 import asyncio
+import logging
+import uuid
 from collections import OrderedDict
 from collections.abc import Container
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from maistro.runs.admission import admit_direct_work
 from maistro.runs.archival import ArchivePolicy, RunArchiveSweeper
 from maistro.runs.model import TERMINAL_RUN_STATUSES
 from maistro.runs.retention import RetentionPolicy, RunRetentionSweeper
-from maistro.runs.sources import CHAT_SOURCE
+from maistro.runs.sources import CHAT_ADMISSION_RECEIPT_KEY, CHAT_SOURCE
+from maistro.runs.store import chat_admission_receipt_is_live
 from maistro.runs.task_kinds import resolve_direct_work
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from maistro.agents.intents import IntentRegistry
@@ -90,6 +96,11 @@ TIMEOUT_FAILURE = "timeout"
 #: above, and for the same reason: the exception that interrupted admission is
 #: for the log, not for anyone holding the run_id.
 ADMISSION_INCOMPLETE = "admission_incomplete"
+
+#: The durable receipt carried by a pre-dispatch chat Run. Recovery may cancel
+#: the row after this lease expires, but must not race an admission that still
+#: has a live receipt.
+CHAT_ADMISSION_LEASE_TTL = timedelta(seconds=30)
 
 
 def failure_category(exc: BaseException) -> str:
@@ -247,10 +258,29 @@ class ChatRunAdmitter:
             # Named, so a blank `to_agent` reads as "not chosen yet" rather
             # than as a resolution that happened to come out empty.
             provenance[AGENT_SELECTION_KEY] = DEFERRED_AGENT_SELECTION
+        provenance[CHAT_ADMISSION_RECEIPT_KEY] = {
+            "holder": uuid.uuid4().hex,
+            "expires_at": (datetime.now(UTC) + CHAT_ADMISSION_LEASE_TTL).isoformat(),
+        }
         if session_id:
             provenance[SESSION_ID_KEY] = session_id
         if request_id:
             provenance[REQUEST_ID_KEY] = request_id
+        # Housekeeping runs before the durable insert. Once create_run returns,
+        # the only work left is in-memory bookkeeping, so a cancellation or
+        # sweep failure cannot leave a persisted Run without a caller able to
+        # compensate it.
+        try:
+            await self._sweep()
+        except Exception:
+            logger.warning("chat Run window sweep failed", exc_info=True)
+        # This closes the restart gap -- the window this process holds says
+        # nothing about Runs a previous one left behind.
+        await self._sweeper.maybe_sweep()
+        # And the cold sweep, on the same tick. A chat Run carries a retention
+        # deadline, so this tick never archives the Run about to be admitted.
+        await self._archive_sweeper.maybe_sweep()
+
         run = await admit_direct_work(
             self._runs,
             workspace_id=self._workspace_id,
@@ -264,19 +294,10 @@ class ChatRunAdmitter:
             provenance=provenance,
             retention_expires_at=self._retention.deadline(),
         )
+        # No await follows the durable insert. This assignment and return are
+        # deliberately the final admission steps, leaving the container with
+        # the Run id even if later dispatch state transitions fail.
         self._window[run.run_id] = None
-        await self._sweep()
-        # Opportunistic, and deliberately after the Run is safely created: the
-        # sweep is bounded and rate-limited by the policy, it swallows its own
-        # errors, and a turn is never refused because retention could not run.
-        # This is what closes the restart gap — the window this process holds
-        # says nothing about the Runs a previous one left behind.
-        await self._sweeper.maybe_sweep()
-        # And the cold sweep, on the same tick. This turn's own Run is the
-        # one thing it will never touch -- a chat Run carries a retention
-        # deadline, which makes it purge-eligible and therefore never
-        # archive-eligible. Admission is the clock here, not the subject.
-        await self._archive_sweeper.maybe_sweep()
         return run
 
     async def _sweep(self) -> int:
@@ -293,7 +314,10 @@ class ChatRunAdmitter:
             for run_id in list(self._window):
                 # `len` is read fresh each pass: the deletions below shrink the
                 # window as they go, so a saved count would sweep too far.
-                if len(self._window) <= self._max_retained:
+                # Reserve one slot for the Run about to be admitted. The
+                # admitter sweeps before inserting, so equality is already
+                # full rather than within the bound.
+                if len(self._window) < self._max_retained:
                     break
                 run = await self._runs.get_run(run_id)
                 if run is None:
@@ -324,6 +348,8 @@ class ChatRunAdmitter:
 __all__ = [
     "ADMISSION_INCOMPLETE",
     "AGENT_SELECTION_KEY",
+    "CHAT_ADMISSION_LEASE_TTL",
+    "CHAT_ADMISSION_RECEIPT_KEY",
     "CHAT_SOURCE",
     "DEFAULT_TURN_NAME",
     "DEFERRED_AGENT_SELECTION",
@@ -332,6 +358,7 @@ __all__ = [
     "REQUEST_ID_KEY",
     "SESSION_ID_KEY",
     "ChatRunAdmitter",
+    "chat_admission_receipt_is_live",
     "chat_turn_outcome",
     "last_user_message",
 ]

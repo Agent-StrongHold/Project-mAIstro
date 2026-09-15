@@ -11,12 +11,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timedelta
 
 import pytest
 
 from maistro.container import Container, create_container
 from maistro.runs.admission import ADMISSION_SOURCE
-from maistro.runs.chat_admission import ADMISSION_INCOMPLETE, CHAT_SOURCE, SESSION_ID_KEY
+from maistro.runs.chat_admission import (
+    ADMISSION_INCOMPLETE,
+    CHAT_ADMISSION_LEASE_TTL,
+    CHAT_ADMISSION_RECEIPT_KEY,
+    CHAT_SOURCE,
+    SESSION_ID_KEY,
+)
 from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
 from maistro.types.config import AgentConfig
 
@@ -299,6 +306,31 @@ class _VetoStore:
         return await self._inner.transition_run(run_id, target, **kwargs)
 
 
+class _PostWriteVetoStore(_VetoStore):
+    """Commits one transition, then loses its response to model an uncertain write."""
+
+    async def transition_run(self, run_id, target, **kwargs):
+        if target is self._veto:
+            self._veto = None
+            await self._inner.transition_run(run_id, target, **kwargs)
+            raise RuntimeError("connection dropped after commit")
+        return await self._inner.transition_run(run_id, target, **kwargs)
+
+
+class _MultiVetoStore(_VetoStore):
+    """Refuses a prescribed set of transitions once each."""
+
+    def __init__(self, inner, vetoes: tuple[RunStatus, ...]) -> None:
+        self._inner = inner
+        self._vetoes = set(vetoes)
+
+    async def transition_run(self, run_id, target, **kwargs):
+        if target in self._vetoes:
+            self._vetoes.remove(target)
+            raise RuntimeError("store hiccup")
+        return await self._inner.transition_run(run_id, target, **kwargs)
+
+
 @pytest.mark.ac("ADR-082826-08f0/AC-6")
 async def test_a_failure_persisting_running_cancels_the_queued_run() -> None:
     """#338's exact reproduction: QUEUED persists, RUNNING raises.
@@ -333,6 +365,301 @@ async def test_a_failure_persisting_queued_cancels_the_created_run() -> None:
     (run,) = _chat_runs(container)
     assert run.status is RunStatus.CANCELLED
     assert run.error == ADMISSION_INCOMPLETE
+
+
+@pytest.mark.ac("ADR-082826-08f0/AC-6")
+async def test_recovery_does_not_cancel_an_admission_still_in_flight() -> None:
+    """A recovery tick must not win the CREATED/QUEUED admission race."""
+    container = await _container()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class _SlowQueued:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        async def transition_run(self, run_id, target, **kwargs):
+            if target is RunStatus.QUEUED:
+                entered.set()
+                await release.wait()
+            return await self._inner.transition_run(run_id, target, **kwargs)
+
+    container.run_store = _SlowQueued(container.run_store)  # type: ignore[assignment]
+    container.conduit = _Conduit()
+    turn = asyncio.create_task(container.route_request([{"role": "user", "content": "hi"}]))
+    await entered.wait()
+
+    assert await container.recover_abandoned_attempts() == 0
+    (during,) = _chat_runs(container)
+    assert during.status is RunStatus.CREATED
+
+    release.set()
+    result = await turn
+    assert result["run_id"] == during.run_id
+    finished = await container.run_store.get_run(during.run_id)
+    assert finished is not None
+    assert finished.status is RunStatus.COMPLETED
+
+
+@pytest.mark.ac("ADR-082826-08f0/AC-6")
+async def test_expired_chat_admission_receipt_is_recovery_owned() -> None:
+    """A row left after its admitter died is cancelled after its receipt expires."""
+    container = await _container()
+    run = await container.chat_admitter.admit([{"role": "user", "content": "hi"}])
+    receipt = run.provenance[CHAT_ADMISSION_RECEIPT_KEY]
+    expiry = datetime.fromisoformat(receipt["expires_at"])
+
+    assert await container.recover_abandoned_attempts(now=expiry + timedelta(microseconds=1)) == 0
+    recovered = await container.run_store.get_run(run.run_id)
+    assert recovered is not None
+    assert recovered.status is RunStatus.CANCELLED
+    assert recovered.error == ADMISSION_INCOMPLETE
+
+
+@pytest.mark.ac("ADR-082826-08f0/AC-6")
+async def test_recovery_paginates_past_live_chat_receipts() -> None:
+    """A live oldest prefix must not starve an expired admission behind it."""
+    container = await _container()
+    runs = [
+        await container.chat_admitter.admit([{"role": "user", "content": "hi"}]) for _ in range(101)
+    ]
+    for run in runs:
+        await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
+
+    expired_receipt = runs[-1].provenance[CHAT_ADMISSION_RECEIPT_KEY]
+    expiry = datetime.fromisoformat(expired_receipt["expires_at"])
+    for run in runs[:-1]:
+        receipt = run.provenance[CHAT_ADMISSION_RECEIPT_KEY]
+        live_expiry = datetime.fromisoformat(receipt["expires_at"])
+        assert await container.run_store.renew_chat_admission_receipt(
+            run.run_id,
+            holder=receipt["holder"],
+            ttl=CHAT_ADMISSION_LEASE_TTL,
+            at=live_expiry - timedelta(seconds=1),
+        )
+
+    await container.recover_abandoned_attempts(now=expiry + timedelta(microseconds=1), limit=100)
+
+    expired = await container.run_store.get_run(runs[-1].run_id)
+    assert expired is not None
+    assert expired.status is RunStatus.CANCELLED
+    assert expired.error == ADMISSION_INCOMPLETE
+    live = await container.run_store.get_run(runs[0].run_id)
+    assert live is not None
+    assert live.status is RunStatus.QUEUED
+
+
+@pytest.mark.ac("ADR-082826-08f0/AC-6")
+async def test_a_renewed_receipt_protects_an_admission_from_another_container() -> None:
+    """Recovery trusts the durable lease, not the owner's process-local set."""
+    owner = await _container()
+    recovery = await _container()
+    recovery.run_store = owner.run_store
+    run = await owner.chat_admitter.admit([{"role": "user", "content": "hi"}])
+    receipt = run.provenance[CHAT_ADMISSION_RECEIPT_KEY]
+    expiry = datetime.fromisoformat(receipt["expires_at"])
+    holder = receipt["holder"]
+
+    listed = asyncio.Event()
+    release = asyncio.Event()
+
+    class _StaleListing:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        async def list_by_status(self, status, **kwargs):
+            rows = await self._inner.list_by_status(status, **kwargs)
+            if status is RunStatus.CREATED:
+                listed.set()
+                await release.wait()
+            return rows
+
+    recovery.run_store = _StaleListing(owner.run_store)
+    tick = asyncio.create_task(
+        recovery.recover_abandoned_attempts(now=expiry + timedelta(microseconds=1))
+    )
+    await listed.wait()
+    assert await owner.run_store.renew_chat_admission_receipt(
+        run.run_id,
+        holder=holder,
+        ttl=CHAT_ADMISSION_LEASE_TTL,
+        at=expiry - timedelta(seconds=1),
+    )
+    release.set()
+    assert await tick == 0
+    still_live = await owner.run_store.get_run(run.run_id)
+    assert still_live is not None
+    assert still_live.status is RunStatus.CREATED
+
+
+@pytest.mark.ac("ADR-082826-08f0/AC-6")
+async def test_slow_admission_renews_its_receipt_for_a_remote_recovery_tick(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The container heartbeat keeps a slow durable transition owned."""
+    import maistro.container as container_module
+    import maistro.runs.chat_admission as chat_admission_module
+
+    ttl = timedelta(milliseconds=30)
+    monkeypatch.setattr(chat_admission_module, "CHAT_ADMISSION_LEASE_TTL", ttl)
+    monkeypatch.setattr(container_module, "CHAT_ADMISSION_LEASE_TTL", ttl)
+
+    owner = await _container()
+    recovery = await _container()
+    recovery.run_store = owner.run_store
+    entered = asyncio.Event()
+
+    class _SlowQueued:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        async def transition_run(self, run_id, target, **kwargs):
+            if target is RunStatus.QUEUED:
+                entered.set()
+                await asyncio.sleep(0.08)
+            return await self._inner.transition_run(run_id, target, **kwargs)
+
+    owner.run_store = _SlowQueued(owner.run_store)  # type: ignore[assignment]
+    recovery.run_store = owner.run_store
+    admission = asyncio.create_task(owner._admit_chat_turn([{"role": "user", "content": "hi"}]))
+    await entered.wait()
+    (started,) = _chat_runs(owner)
+    original_expiry = datetime.fromisoformat(
+        started.provenance[CHAT_ADMISSION_RECEIPT_KEY]["expires_at"]
+    )
+    await asyncio.sleep(0.05)
+    renewed = await owner.run_store.get_run(started.run_id)
+    assert renewed is not None
+    renewed_expiry = datetime.fromisoformat(
+        renewed.provenance[CHAT_ADMISSION_RECEIPT_KEY]["expires_at"]
+    )
+    assert renewed_expiry > original_expiry
+    assert (
+        await recovery.recover_abandoned_attempts(now=original_expiry + timedelta(microseconds=1))
+        == 0
+    )
+
+    admitted = await admission
+    assert admitted is not None
+    await owner.run_store.transition_run(admitted.run_id, RunStatus.CANCELLED)
+
+
+@pytest.mark.parametrize("failed_target", [RunStatus.QUEUED, RunStatus.RUNNING])
+@pytest.mark.ac("ADR-082826-08f0/AC-6")
+async def test_a_transition_that_commits_before_raising_is_compensated(
+    failed_target: RunStatus,
+) -> None:
+    """An uncertain write must not leave a pre-dispatch Run unowned.
+
+    A database can commit a transition and lose the response. The admission
+    code therefore compensates from durable state, including RUNNING: no
+    Attempt exists yet, so this Run has not been dispatched.
+    """
+    container = await _container()
+    container.run_store = _PostWriteVetoStore(  # type: ignore[assignment]
+        container.run_store, failed_target
+    )
+    container.conduit = _Conduit()
+
+    result = await container.route_request([{"role": "user", "content": "hi"}])
+
+    assert result["choices"][0]["message"]["content"] == "hi"
+    assert "run_id" not in result
+    (run,) = _chat_runs(container)
+    assert run.status is RunStatus.CANCELLED
+    assert run.error == ADMISSION_INCOMPLETE
+    open_runs, _oldest = await container.run_store.non_terminal_run_stats()
+    assert open_runs == 0
+
+
+@pytest.mark.ac("ADR-082826-08f0/AC-6")
+async def test_admission_receipt_remains_live_until_attempt_handoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recovery must not cancel RUNNING while the first Attempt is being created."""
+    import maistro.container as container_module
+    import maistro.runs.chat_admission as chat_admission_module
+
+    ttl = timedelta(milliseconds=30)
+    monkeypatch.setattr(chat_admission_module, "CHAT_ADMISSION_LEASE_TTL", ttl)
+    monkeypatch.setattr(container_module, "CHAT_ADMISSION_LEASE_TTL", ttl)
+
+    container = await _container()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class _SlowNodeRun:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        async def create_node_run(self, run_id, *, node_id):
+            entered.set()
+            await release.wait()
+            return await self._inner.create_node_run(run_id, node_id=node_id)
+
+    container.run_store = _SlowNodeRun(container.run_store)  # type: ignore[assignment]
+    container.conduit = _Conduit()
+    turn = asyncio.create_task(container.route_request([{"role": "user", "content": "hi"}]))
+    await entered.wait()
+
+    (run,) = [
+        candidate
+        for candidate in container.run_store._inner._runs.values()  # type: ignore[attr-defined]
+        if candidate.provenance[ADMISSION_SOURCE] == CHAT_SOURCE
+    ]
+    expiry = datetime.fromisoformat(run.provenance[CHAT_ADMISSION_RECEIPT_KEY]["expires_at"])
+    await asyncio.sleep(0.05)
+
+    # The admission heartbeat has renewed the receipt while no Attempt exists.
+    assert await container.recover_abandoned_attempts(now=expiry + timedelta(microseconds=1)) == 0
+    still_running = await container.run_store.get_run(run.run_id)
+    assert still_running is not None
+    assert still_running.status is RunStatus.RUNNING
+
+    release.set()
+    result = await turn
+    assert result["run_id"] == run.run_id
+    completed = await container.run_store.get_run(run.run_id)
+    assert completed is not None
+    assert completed.status is RunStatus.COMPLETED
+    node_runs = await container.run_store.list_node_runs(run.run_id)
+    assert len(node_runs) == 1
+    assert len(await container.run_store.list_attempts(node_runs[0].node_run_id)) == 1
+
+
+@pytest.mark.ac("ADR-082826-08f0/AC-6")
+async def test_recovery_tick_retries_a_failed_compensation() -> None:
+    """A store outage during compensation leaves a row the recovery tick owns."""
+    container = await _container()
+    container.run_store = _MultiVetoStore(  # type: ignore[assignment]
+        container.run_store, (RunStatus.RUNNING, RunStatus.CANCELLED)
+    )
+    container.conduit = _Conduit()
+
+    result = await container.route_request([{"role": "user", "content": "hi"}])
+
+    assert result["choices"][0]["message"]["content"] == "hi"
+    (run,) = _chat_runs(container)
+    assert run.status is RunStatus.QUEUED
+
+    assert await container.recover_abandoned_attempts() == 0
+    recovered = await container.run_store.get_run(run.run_id)
+    assert recovered is not None
+    assert recovered.status is RunStatus.CANCELLED
+    assert recovered.error == ADMISSION_INCOMPLETE
+    assert await container.recover_abandoned_attempts() == 0
 
 
 @pytest.mark.ac("ADR-082826-08f0/AC-6")

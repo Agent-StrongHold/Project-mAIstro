@@ -41,6 +41,8 @@ from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
 from maistro.runs.chat_admission import (
     ADMISSION_INCOMPLETE,
+    CHAT_ADMISSION_LEASE_TTL,
+    CHAT_ADMISSION_RECEIPT_KEY,
     ChatRunAdmitter,
     chat_turn_outcome,
     failure_category,
@@ -57,7 +59,8 @@ from maistro.runs.model import (
     Run,
     RunStatus,
 )
-from maistro.runs.store import RunIntegrityError, RunStore
+from maistro.runs.sources import ADMISSION_SOURCE, CHAT_SOURCE
+from maistro.runs.store import RunIntegrityError, RunStore, run_cursor_key
 from maistro.runs.wiring import (
     SPINE_PG_TABLES,
     wire_chat_admission,
@@ -187,6 +190,16 @@ class Container:
     #: admitter because the two have different retention: a task's Run is kept
     #: as long as its receipt, a chat turn's is swept behind a small window.
     chat_admitter: ChatRunAdmitter = None  # type: ignore[assignment]
+    #: Durable admission receipts protect pre-dispatch chat Runs from a
+    #: recovery tick in another coroutine/process. These local sets close the
+    #: same-process race and remember a compensation that needs retrying.
+    _active_chat_admissions: set[str] = field(default_factory=set, init=False, repr=False)
+    _failed_chat_admissions: set[str] = field(default_factory=set, init=False, repr=False)
+    # Keep the admission receipt alive across the handoff into the executor.
+    # The NodeRun/Attempt is not durable yet when `_admit_chat_turn` returns.
+    _chat_admission_renewals: dict[str, tuple[asyncio.Event, asyncio.Task[None]]] = field(
+        default_factory=dict, init=False, repr=False
+    )
     #: Where a Graph definition comes from when a Run is not trivial work — a
     #: schedule firing, or anything else that instantiates a drawn topology
     #: rather than a one-node stand-in (#132). Optional in the same way the rest
@@ -443,6 +456,7 @@ class Container:
         session_id: str | None = None,
         intent_hint: str = "",
         run: Run | None = None,
+        admit_run: bool = True,
     ) -> dict[str, Any]:
         """Route one chat turn, admitting and terminalizing its Run.
 
@@ -457,10 +471,14 @@ class Container:
         error; nothing here checks, because the check would be a store read on
         every turn to catch a mistake that is not reachable from within one
         process.
+
+        ``admit_run=False`` is for a boundary that had to attempt admission
+        before dispatch (for example, to put the Run id in response headers).
+        It prevents a failed pre-admission from being attempted a second time.
         """
         self._require_auth_while_armed(auth)
 
-        if run is None:
+        if run is None and admit_run:
             run = await self._admit_chat_turn(
                 messages,
                 auth=auth,
@@ -517,6 +535,13 @@ class Container:
             raise
         else:
             await self._close_chat_run(run, result=chat_turn_outcome(result))
+        finally:
+            if run is not None:
+                # Admission's receipt owns the gap until the executor has
+                # created a NodeRun/Attempt; after this point the Attempt lease
+                # is the canonical recovery proof. This also releases it when
+                # execution fails before physical evidence can be created.
+                await self._stop_chat_admission_renewal(run.run_id)
         if run is not None:
             # Additive. The OpenAI-compatible shape a caller parses is
             # untouched; `run_id` is the handle for anyone who wants to follow
@@ -613,6 +638,9 @@ class Container:
         if self.chat_admitter is None:
             return None
         run: Run | None = None
+        renewal_stop: asyncio.Event | None = None
+        renewal_task: asyncio.Task[None] | None = None
+        admission_succeeded = False
         try:
             run = await self.chat_admitter.admit(
                 messages,
@@ -621,40 +649,134 @@ class Container:
                 known_task_types=self.config.task_types,
                 actor_principal_id=getattr(auth, "user_id", None) or None,
             )
+            # The durable receipt covers the scheduling gap between create_run
+            # and this local marker being installed. Its lease is renewed while
+            # the admission writes are in flight, so another container cannot
+            # mistake a slow owner for a dead one.
+            self._active_chat_admissions.add(run.run_id)
+            renewal_stop = asyncio.Event()
+            renewal_task = asyncio.create_task(
+                self._renew_chat_admission(run, renewal_stop),
+                name=f"chat-admission-renewal:{run.run_id}",
+            )
+            self._chat_admission_renewals[run.run_id] = (renewal_stop, renewal_task)
             # Two hops: a Run is born CREATED and the lifecycle has no edge
             # from there to RUNNING. Queued is momentarily true here — the turn
             # is admitted and about to be dispatched — rather than a fiction
             # invented to satisfy the table.
             await self.run_store.transition_run(run.run_id, RunStatus.QUEUED)
-            return await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+            admitted = await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+            # Do not stop the receipt here. The next step creates the physical
+            # NodeRun/Attempt, and recovery must see either that evidence or a
+            # live owner while the handoff is in flight.
+            admission_succeeded = True
+            return admitted
         except asyncio.CancelledError:
+            if run is not None:
+                self._failed_chat_admissions.add(run.run_id)
             # The client disconnected mid-admission. Without the shield the
             # compensating write would be aborted by the same cancellation it
             # exists to clean up after — the `_close_chat_run` shield's reason,
             # one step earlier in the turn.
-            await asyncio.shield(self._cancel_incomplete_admission(run))
+            await asyncio.shield(self._cancel_incomplete_admission(run, admission_failed=True))
             raise
         except Exception:
+            if run is not None:
+                self._failed_chat_admissions.add(run.run_id)
             logger.warning("chat turn could not be admitted as a Run", exc_info=True)
-            await self._cancel_incomplete_admission(run)
+            await self._cancel_incomplete_admission(run, admission_failed=True)
             return None
+        finally:
+            if not admission_succeeded and run is not None:
+                await self._stop_chat_admission_renewal(run.run_id, renewal_stop, renewal_task)
+            if run is not None:
+                self._active_chat_admissions.discard(run.run_id)
 
-    async def _cancel_incomplete_admission(self, run: Run | None) -> None:
-        """Compensate a chat Run whose admission never reached RUNNING (#338).
+    async def admit_chat_turn(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        auth: Any = None,
+        session_id: str | None = None,
+        intent_hint: str = "",
+    ) -> Run | None:
+        """Admit a turn for a boundary that must name its Run before dispatch.
+
+        This is the same compensating admission seam used by
+        :meth:`route_request`; exposing it keeps HTTP adapters from reimplementing
+        the lifecycle transitions and bypassing admission recovery.
+        """
+        return await self._admit_chat_turn(
+            messages,
+            auth=auth,
+            session_id=session_id,
+            intent_hint=intent_hint,
+        )
+
+    async def _stop_chat_admission_renewal(
+        self,
+        run_id: str,
+        stop: asyncio.Event | None = None,
+        task: asyncio.Task[None] | None = None,
+    ) -> None:
+        """Stop the receipt owner after dispatch has a durable physical record."""
+        owned = self._chat_admission_renewals.pop(run_id, None)
+        if owned is not None:
+            stop, task = owned
+        if stop is not None:
+            stop.set()
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def _renew_chat_admission(self, run: Run, stop: asyncio.Event) -> None:
+        """Keep the durable admission receipt live through the dispatch handoff."""
+        receipt = run.provenance.get(CHAT_ADMISSION_RECEIPT_KEY)
+        holder = receipt.get("holder") if isinstance(receipt, dict) else None
+        if not isinstance(holder, str) or not holder:
+            return
+        interval = max(CHAT_ADMISSION_LEASE_TTL.total_seconds() / 3, 0.01)
+        while True:
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=interval)
+                return
+            except TimeoutError:
+                pass
+            try:
+                renewed = await self.run_store.renew_chat_admission_receipt(
+                    run.run_id,
+                    holder=holder,
+                    ttl=CHAT_ADMISSION_LEASE_TTL,
+                )
+            except Exception:
+                # A transient store failure is not proof that the owner died;
+                # keep trying until the lease itself stops proving ownership.
+                logger.warning("chat admission receipt renewal failed", exc_info=True)
+                continue
+            if not renewed:
+                return
+
+    async def _cancel_incomplete_admission(
+        self, run: Run | None, *, admission_failed: bool = False
+    ) -> None:
+        """Compensate a chat Run whose admission never reached dispatch (#338).
 
         Admission persists CREATED, then QUEUED, then RUNNING. An exception
         between any two of those writes used to strand the Run at the state it
         had reached: the caller got `None`, so `_close_chat_run` had nothing to
-        settle, and no sweeper owns a QUEUED chat Run — durable state claiming
-        work is waiting to run that nothing will ever run.
+        settle, and no sweeper owns a pre-dispatch chat Run — durable state
+        claiming work is waiting to run that nothing will ever run.
 
         CREATED and QUEUED both have a legal edge to CANCELLED, and CANCELLED
         is the honest word: the turn was never dispatched, so nothing failed
-        (ADR-082426-f170's distinction). A Run past QUEUED reached RUNNING and
-        returned from admission, making it `_close_chat_run`'s to settle — not
-        this method's. Idempotent by the terminal guard; a concurrent settle
-        loses the race harmlessly because the compensating write is logged,
-        never re-raised — compensation must not replace the turn's answer.
+        (ADR-082426-f170's distinction). The admission caller passes
+        ``admission_failed=True`` because a transition can persist RUNNING and
+        then raise (for example, after a connection drops its response); that
+        Run is still pre-dispatch and must be cancelled too. A direct call with
+        the default leaves an already-admitted RUNNING Run to `_close_chat_run`.
+        Idempotent by the terminal guard; a concurrent settle loses the race
+        harmlessly because compensation is logged, never re-raised — it must
+        not replace the turn's answer.
         """
         if run is None:
             return
@@ -662,7 +784,10 @@ class Container:
             current = await self.run_store.get_run(run.run_id)
             if current is None or current.status in TERMINAL_RUN_STATUSES:
                 return
-            if current.status not in (RunStatus.CREATED, RunStatus.QUEUED):
+            allowed_states: tuple[RunStatus, ...] = (RunStatus.CREATED, RunStatus.QUEUED)
+            if admission_failed:
+                allowed_states += (RunStatus.RUNNING,)
+            if current.status not in allowed_states:
                 return
             await self.run_store.transition_run(
                 run.run_id,
@@ -810,7 +935,13 @@ class Container:
         )
         from maistro.runs.reconciliation import AttemptLifecycleReconciler
 
-        reclaimed = await self.run_store.reclaim_expired_attempts(now=now, limit=limit)
+        moment = now if now is not None else datetime.now(UTC)
+        # A chat Run with no Attempt has never been dispatched. A live local or
+        # durable admission receipt is proof that its owner is still moving it
+        # through admission; an expired/missing receipt is recovery-owned.
+        await self._recover_incomplete_chat_admissions(limit=limit, now=moment)
+
+        reclaimed = await self.run_store.reclaim_expired_attempts(now=moment, limit=limit)
         if reclaimed:
             # The Container's bus, so the sweep's dispositions land on the
             # canonical Event stream rather than only in Run state (#462). A
@@ -837,10 +968,68 @@ class Container:
 
         open_runs, oldest_created_at = await self.run_store.non_terminal_run_stats()
         non_terminal_runs.set(open_runs)
-        moment = now if now is not None else datetime.now(UTC)
         age = (moment - oldest_created_at).total_seconds() if oldest_created_at else 0.0
         oldest_non_terminal_run_age_seconds.set(max(age, 0.0))
         return len(reclaimed)
+
+    async def _recover_incomplete_chat_admission(self, run: Run, *, now: datetime) -> bool:
+        """Try to cancel one expired, never-dispatched chat Run."""
+        if run.provenance.get(ADMISSION_SOURCE) != CHAT_SOURCE:
+            return False
+        if run.run_id in self._active_chat_admissions:
+            return False
+        if run.run_id in self._failed_chat_admissions:
+            # This process already owns a failed compensation. Its receipt is
+            # intentionally ignored, but other containers remain lease-conditional.
+            await self._cancel_incomplete_admission(run, admission_failed=True)
+            self._failed_chat_admissions.discard(run.run_id)
+            return False
+        # The store rechecks the receipt and the physical Attempt while holding
+        # its write/row lock. A read here followed by a plain transition would
+        # let a concurrent renewal or dispatch win between the two operations.
+        try:
+            cancelled = await self.run_store.cancel_chat_admission_if_expired(
+                run.run_id,
+                now=now,
+                error=ADMISSION_INCOMPLETE,
+            )
+        except Exception:
+            logger.warning(
+                "incomplete chat Run %s could not be recovered",
+                run.run_id,
+                exc_info=True,
+            )
+            return False
+        if cancelled:
+            self._failed_chat_admissions.discard(run.run_id)
+        return cancelled
+
+    async def _recover_incomplete_chat_admissions(self, *, limit: int, now: datetime) -> int:
+        """Cancel expired, never-dispatched chat Runs left by an interruption.
+
+        A local active admission or a durable receipt that has not expired is
+        live work and is left alone. Once the receipt expires, a pre-dispatch
+        Run is owned by this recovery tick. Runs with an Attempt are not
+        admission residue: the Attempt lease/retry recovery owns them instead.
+        """
+        recovered = 0
+        for status in (RunStatus.CREATED, RunStatus.QUEUED, RunStatus.RUNNING):
+            # `limit` is the page size, not the total scan budget. Filtering
+            # chat admissions happens after the status query, so a prefix of
+            # live non-chat or receipt-held rows must not hide an expired row
+            # forever. The stable cursor remains valid as rows are cancelled.
+            after = None
+            while True:
+                page = await self.run_store.list_by_status(status, limit=limit, after=after)
+                if not page:
+                    break
+                for run in page:
+                    after = run_cursor_key(run)
+                    if await self._recover_incomplete_chat_admission(run, now=now):
+                        recovered += 1
+                if len(page) < limit:
+                    break
+        return recovered
 
     async def execute_admitted_runs(self, *, limit: int = 100) -> int:
         """Tick the canonical consumer for admitted Runs (#251). Returns how many ran.
@@ -865,7 +1054,6 @@ class Container:
             executable_by_consumer,
             unresolvable_reason,
         )
-        from maistro.runs.store import run_cursor_key
 
         # `limit` bounds successful executions, not visibility into QUEUED.
         # Page by the stable oldest-first key so permanently ineligible rows
