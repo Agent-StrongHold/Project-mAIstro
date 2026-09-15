@@ -195,17 +195,49 @@ def test_seed_leaves_ambient_credentials_on_the_host(tmp_path: Path) -> None:
     secrets = tmp_path / "secrets"
     secrets.mkdir()
     (secrets / "production-token.txt").write_text("TOKEN=ambient-secret\n", encoding="utf-8")
-    with (tmp_path / ".git" / "config").open("a") as cfg:
-        cfg.write("\tcredential.helper = !leak-token\n")
-    (tmp_path / ".git" / "hooks" / "pre-commit").write_text(
-        "#!/bin/sh\ncurl evil\n", encoding="utf-8"
-    )
     fixtures = tmp_path / "tests" / "fixtures"
     fixtures.mkdir(parents=True)
     (fixtures / "fixture.pem").write_text("test fixture not a credential\n", encoding="utf-8")
     nested_git = fixtures / "nested-repo" / ".git"
     nested_git.mkdir(parents=True)
     (nested_git / "config").write_text("credential.helper=leak\n", encoding="utf-8")
+
+    # A Gitlink is an indexed directory entry, but its checked-out contents are
+    # not part of the parent repository's index. A blind tar of the gitlink
+    # recurses into this untracked host material (the reopened #80 regression).
+    child = tmp_path / "vendor" / "child"
+    child.mkdir(parents=True)
+    (child / "README").write_text("child checkout\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=child, check=True)
+    subprocess.run(["git", "add", "README"], cwd=child, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=child@test",
+            "-c",
+            "user.name=child",
+            "commit",
+            "-qm",
+            "child",
+        ],
+        cwd=child,
+        check=True,
+    )
+    (child / "unrelated-host-secret.txt").write_text(
+        "SUBMODULE_HOST_SECRET=leaked\n", encoding="utf-8"
+    )
+    child_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=child, text=True).strip()
+    subprocess.run(
+        ["git", "update-index", "--add", "--cacheinfo", f"160000,{child_sha},vendor/child"],
+        cwd=tmp_path,
+        check=True,
+    )
+    with (tmp_path / ".git" / "config").open("a") as cfg:
+        cfg.write("\tcredential.helper = !leak-token\n")
+    (tmp_path / ".git" / "hooks" / "pre-commit").write_text(
+        "#!/bin/sh\ncurl evil\n", encoding="utf-8"
+    )
 
     with ContainerBuilderSandbox(tmp_path) as sb:
         # Ambient credential surface: absent inside.
@@ -233,6 +265,8 @@ def test_seed_leaves_ambient_credentials_on_the_host(tmp_path: Path) -> None:
             sb.read_file("tests/fixtures/fixture.pem")
         with pytest.raises(FileNotFoundError):
             sb.read_file("tests/fixtures/nested-repo/.git/config")
+        with pytest.raises(FileNotFoundError):
+            sb.read_file("vendor/child/unrelated-host-secret.txt")
 
         # Builder git tools use an in-container baseline, not host metadata.
         sb.edit_file("hello.py", "original", "EDITED")

@@ -353,7 +353,12 @@ class ContainerBuilderSandbox:
         return index_path
 
     def _list_indexed_paths(self, index_path: Path) -> bytes:
-        """List the worktree index without allowing the host repo config to run.
+        """List staged index entries without allowing the host config to run.
+
+        The ``--stage`` metadata is needed to distinguish a tracked submodule
+        (mode 160000) from an ordinary directory. Passing a gitlink to tar as a
+        path makes tar recurse through the submodule checkout and defeats the
+        indexed-file allowlist.
 
         Use the index in its original Git directory rather than copying it into
         a temporary repository. Split indexes keep their shared index beside the
@@ -393,6 +398,7 @@ class ContainerBuilderSandbox:
                     "core.fsmonitor=false",
                     "ls-files",
                     "--cached",
+                    "--stage",
                     "-z",
                 ],
                 capture_output=True,
@@ -409,8 +415,18 @@ class ContainerBuilderSandbox:
         """Return a NUL-delimited allowlist of existing indexed paths."""
         listed = self._list_indexed_paths(self._git_index_path())
         existing: list[bytes] = []
-        for raw_path in listed.split(b"\0"):
-            if not raw_path:
+        for entry in listed.split(b"\0"):
+            if not entry:
+                continue
+            try:
+                metadata, raw_path = entry.split(b"\t", 1)
+                mode = metadata.split(b" ", 1)[0]
+            except ValueError as exc:
+                raise RuntimeError("git returned a malformed staged seed entry") from exc
+            # A gitlink names a checked-out directory but does not authorize its
+            # contents. Never hand that directory to tar; only seed its parent
+            # repository's ordinary indexed files.
+            if mode == b"160000":
                 continue
             path = PurePosixPath(os.fsdecode(raw_path))
             if path.is_absolute() or ".." in path.parts:

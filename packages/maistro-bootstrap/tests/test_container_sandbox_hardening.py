@@ -90,6 +90,35 @@ def test_seed_allowlist_reads_split_git_index(tmp_path: Path) -> None:
     (tmp_path / "added.py").write_text("added = True\n", encoding="utf-8")
     subprocess.run(["git", "add", "added.py"], cwd=tmp_path, check=True)
 
+    # A tracked submodule is a gitlink, not permission to archive the checked
+    # out directory. Keep one in the split-index fixture so the allowlist
+    # cannot regress into recursively seeding its untracked contents.
+    child = tmp_path / "vendor" / "child"
+    child.mkdir(parents=True)
+    (child / "README").write_text("child checkout\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=child, check=True)
+    subprocess.run(["git", "add", "README"], cwd=child, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=child@test",
+            "-c",
+            "user.name=child",
+            "commit",
+            "-qm",
+            "child",
+        ],
+        cwd=child,
+        check=True,
+    )
+    child_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=child, text=True).strip()
+    subprocess.run(
+        ["git", "update-index", "--add", "--cacheinfo", f"160000,{child_sha},vendor/child"],
+        cwd=tmp_path,
+        check=True,
+    )
+
     shared_indexes = list((tmp_path / ".git").glob("sharedindex.*"))
     assert shared_indexes, "fixture did not create a linked Git shared index"
     listed = ContainerBuilderSandbox(tmp_path)._tracked_seed_files()
