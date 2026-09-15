@@ -12,7 +12,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.runs.model import Run, RunStatus
@@ -291,6 +291,24 @@ async def _claim_initial_continuation(
     return current
 
 
+async def _candidate_disposition(
+    store: DurableRunStore, run_id: str
+) -> Literal["unclaimed", "moved_on", "gone"]:
+    """What the store says about a candidate after a resume attempt failed.
+
+    Both failure arms below ask the same question -- is this Run still exactly
+    as the scan found it? -- and only the answer to that decides whether the
+    failure is safe to isolate. `unclaimed` means nothing was taken and the
+    tick can carry on; `moved_on` means someone's disposition is committed, or
+    this call's own partial claim is; `gone` means the record the initial claim
+    just proved existed has vanished.
+    """
+    latest = await store.get(run_id)
+    if latest is None:
+        return "gone"
+    return "unclaimed" if latest.run.status is RunStatus.QUEUED else "moved_on"
+
+
 async def _resume_queued_candidate(
     run: Run,
     *,
@@ -318,36 +336,34 @@ async def _resume_queued_candidate(
     except asyncio.CancelledError:
         raise
     except (KeyError, ValueError) as exc:
-        latest = await store.get(run.run_id)
-        if latest is None:
+        disposition = await _candidate_disposition(store, run.run_id)
+        if disposition == "gone":
             # Not "someone else moved it on" -- the record is gone entirely,
             # which the initial claim above just proved existed. That is a
             # persistence-integrity failure, not a candidate-local resolver
             # bug, and stays raise-worthy rather than isolated.
             raise
-        if latest.run.status is not RunStatus.QUEUED:
+        if disposition == "moved_on":
             # Another actor already moved this Run on; its committed
             # disposition is the real outcome, not a failure to isolate.
             return False
         _record_candidate_failure(run.run_id, seam="recover_queued_graph_runs", error=exc)
         return False
     except Exception as exc:
-        latest = await store.get(run.run_id)
-        if latest is not None and latest.run.status is RunStatus.QUEUED:
-            # Still exactly as the scan found it, so nothing was claimed and
-            # the failure is candidate-local: isolate it and let the tick
-            # carry on to the next Run.
-            _record_candidate_failure(run.run_id, seam="recover_queued_graph_runs", error=exc)
-            return False
-        # The candidate is no longer QUEUED (or is gone). `resume_durable_graph`
-        # checkpoints the QUEUED continuation and moves the canonical Run to
-        # RUNNING before it does anything that can fail this way, so this is a
-        # partial claim *by this call*, not another actor's committed decision.
-        # Reporting it as a handled candidate failure would strand the Run: the
-        # QUEUED scan no longer returns it and the due index never held it, so
-        # nothing would ever look at it again. Raising is what surfaces the
-        # partially claimed state instead of silently losing the Run.
-        raise
+        if await _candidate_disposition(store, run.run_id) != "unclaimed":
+            # `resume_durable_graph` checkpoints the QUEUED continuation and
+            # moves the canonical Run to RUNNING before it does anything that
+            # can fail this way, so this is a partial claim *by this call*, not
+            # another actor's committed decision. Reporting it as a handled
+            # candidate failure would strand the Run: the QUEUED scan no longer
+            # returns it and the due index never held it, so nothing would ever
+            # look at it again. Raising surfaces the partially claimed state
+            # instead of silently losing the Run.
+            raise
+        # Still exactly as the scan found it, so nothing was claimed and the
+        # failure is candidate-local: isolate it and let the tick carry on.
+        _record_candidate_failure(run.run_id, seam="recover_queued_graph_runs", error=exc)
+        return False
     return True
 
 

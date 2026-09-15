@@ -33,6 +33,26 @@ _VERDICT_NODE_TYPES = frozenset(
 )
 
 
+def _in_scope(
+    record: DurableRunRecord,
+    *,
+    status: RunStatus,
+    project_id: str | None,
+    workspace_id: str | None,
+) -> bool:
+    """Whether one record satisfies the soft scope axes a listing was given."""
+    if record.run.status is not status:
+        return False
+    if project_id is not None and record.run.project_id != project_id:
+        return False
+    return workspace_id is None or record.run.workspace_id == workspace_id
+
+
+def _created_cursor(record: DurableRunRecord) -> tuple[str, str]:
+    """The ``(created_at, run_id)`` keyset position of one record."""
+    return (cursor_time(record.run.created_at), record.run_id)
+
+
 def _clone(record: DurableRunRecord) -> DurableRunRecord:
     return DurableRunRecord.model_validate_json(record.model_dump_json())
 
@@ -308,20 +328,18 @@ class InMemoryDurableRunStore:
         workspace_id: str | None = None,
         after: tuple[str, str] | None = None,
     ) -> list[DurableRunRecord]:
-        matching = [
-            record
-            for record in self._rows.values()
-            if record.run.status is status
-            and (project_id is None or record.run.project_id == project_id)
-            and (workspace_id is None or record.run.workspace_id == workspace_id)
-        ]
-        matching.sort(key=lambda record: (cursor_time(record.run.created_at), record.run_id))
-        if after is not None:
-            matching = [
+        matching = sorted(
+            (
                 record
-                for record in matching
-                if (cursor_time(record.run.created_at), record.run_id) > after
-            ]
+                for record in self._rows.values()
+                if _in_scope(
+                    record, status=status, project_id=project_id, workspace_id=workspace_id
+                )
+            ),
+            key=_created_cursor,
+        )
+        if after is not None:
+            matching = [record for record in matching if _created_cursor(record) > after]
         return [_clone(record) for record in matching[:limit]]
 
     async def list_hitl_due(self, *, now: datetime, limit: int = 100) -> list[DurableRunRecord]:
