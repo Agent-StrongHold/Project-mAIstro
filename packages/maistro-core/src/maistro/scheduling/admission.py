@@ -47,16 +47,32 @@ Run counts for itself.
 fires are recorded", which is only true if all of them were. Partial failure
 recomputes it from the count that survived, so a schedule is never disabled for
 reaching a limit it did not reach.
+
+**A manual fire is the same authority, one occurrence wide (#1119).**
+The `manual=True` variant of `admit_due` exists because a product "run this
+schedule now" request is not an occurrence the cron enumerated — `evaluate()`
+has nothing to say about it — but everything *after* that decision is the
+recurring path's: the durable template resolution, `_admit_one`'s Run with its
+provenance, the occurrence claim, and `record_fire`'s advance-and-disable. A manual fire counts against
+`max_runs` and names the schedule in Run provenance exactly as an enumerated
+one does, so the product cannot grow a second set of firing semantics by
+asking for a fire by hand.
 """
 
 from __future__ import annotations
 
 import logging
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Final
 
 from maistro.graph.templates import require_template
+from maistro.observability.correlation import (
+    bind_execution_context,
+    current_execution_context,
+    detached_execution_context,
+)
 from maistro.runs.model import RunStatus
 from maistro.runs.sources import (
     ADMISSION_SOURCE,
@@ -67,17 +83,25 @@ from maistro.runs.sources import (
     SCHEDULED_FOR_KEY,
 )
 from maistro.runs.store import DuplicateOccurrence, RunIntegrityError
-from maistro.scheduling.engine import SkipReason, evaluate
+from maistro.scheduling.engine import FireDecision, SkipReason, evaluate
+from maistro.scheduling.store import ScheduleExhausted
 
 if TYPE_CHECKING:
     from maistro.graph.definitions import GraphTemplate
     from maistro.graph.templates import GraphTemplateStore
     from maistro.runs.store import RunStore
-    from maistro.scheduling.engine import FireDecision, ScheduleEvaluation, SkippedFire
+    from maistro.scheduling.engine import ScheduleEvaluation, SkippedFire
     from maistro.scheduling.model import Schedule
     from maistro.scheduling.store import ScheduleStore
 
 logger = logging.getLogger("maistro.scheduling.admission")
+
+#: Provenance key recording a scheduled Run's own correlation root (#1063).
+#: `admit_due` runs on the background tick loop, never inside an incoming
+#: request, so each admitted occurrence mints its own rather than leaving the
+#: Run uncorrelated or risking a stray id from an unrelated Attempt left
+#: bound on the same event loop tick.
+REQUEST_ID_KEY = "request_id"
 
 #: Skip reasons whose occurrence is still owed, so the cursor must not pass it.
 #:
@@ -87,6 +111,24 @@ logger = logging.getLogger("maistro.scheduling.admission")
 #: on it "would otherwise lose the occurrence with no record of it". Every other
 #: reason is a decision not to run that occurrence at all.
 _UNCONSUMED_SKIPS: Final = frozenset({SkipReason.BUFFERED, SkipReason.TRUNCATED})
+
+
+class ManualFireRefused(Exception):
+    """A manually requested occurrence was refused before anything happened.
+
+    `admit_due` reports refusals in a `failures` tuple because one bad
+    occurrence must not discard the sibling occurrences sharing its batch. A
+    manual fire is one occurrence — there are no siblings, and the caller owes
+    whoever pressed "run now" a direct answer rather than a log line — so this
+    raises instead. Nothing has been created or recorded when it does: the
+    schedule's cursor, `runs_so_far`, and enabled flag are all exactly as they
+    were.
+    """
+
+
+def _owes(decision: ScheduleEvaluation) -> bool:
+    """Whether the evaluation left an occurrence that still has to run."""
+    return any(skip.reason in _UNCONSUMED_SKIPS for skip in decision.skipped)
 
 
 @dataclass(frozen=True)
@@ -150,13 +192,20 @@ class ScheduleRunAdmitter:
         *,
         now: datetime,
         active_run: bool = False,
+        manual: bool = False,
     ) -> ScheduleAdmission:
-        """Admit every occurrence `schedule` owes at `now`.
+        """Admit due occurrences, or one explicit manual occurrence.
 
         `active_run` is whether a Run this schedule started is still in flight.
         The caller answers it from Run state, which is the only place it lives —
-        the same contract `evaluate()` states.
+        the same contract `evaluate()` states. When `manual` is true, the
+        caller's `now` is the one occurrence to admit and cron overlap policy is
+        deliberately bypassed; the same template, Run, occurrence claim, and
+        cursor authority still handles the request.
         """
+        if manual:
+            return await self._admit_manual(schedule, now=now)
+
         decision = evaluate(schedule, now=now, active_run=active_run)
         if not decision.fires:
             return await self._consume_without_firing(schedule, decision)
@@ -201,9 +250,17 @@ class ScheduleRunAdmitter:
         failures: list[Exception] = []
         for fire in decision.fires:
             try:
-                run_id = await self._admit_one(schedule, template, fire)
-                run_ids.append(run_id)
-                consumed_run_ids.append(run_id)
+                # A clean slate, not just a fresh id: this loop runs on the
+                # background tick loop, sharing an event loop with whatever
+                # else happens to be running, so it must not risk inheriting
+                # a stray Attempt's ids still bound on this tick.
+                with (
+                    detached_execution_context(),
+                    bind_execution_context(request_id=uuid.uuid4().hex[:12]),
+                ):
+                    run_id = await self._admit_one(schedule, template, fire)
+                    run_ids.append(run_id)
+                    consumed_run_ids.append(run_id)
                 admitted.append(fire)
                 consumed.append(fire)
             except DuplicateOccurrence as exc:
@@ -269,10 +326,11 @@ class ScheduleRunAdmitter:
             )
 
         disable = self._exhausted_after(schedule, fires=len(admitted))
-        # `next_due_at` is recomputed only when the whole batch landed. A
-        # partial batch leaves occurrences owed, and `evaluate()`'s answer
-        # assumed all of them fired.
-        complete = len(consumed) == len(decision.fires)
+        # `next_due_at` is recomputed only when the whole batch landed and
+        # nothing was held back. A partial batch leaves occurrences owed, and
+        # `evaluate()`'s answer assumed all of them fired; a buffered
+        # occurrence is owed the same way (#1199).
+        complete = len(consumed) == len(decision.fires) and not _owes(decision)
         await self._schedules.record_fire(
             schedule.schedule_id,
             # The newest occurrence *admitted*, not `now`. This value becomes
@@ -303,6 +361,99 @@ class ScheduleRunAdmitter:
             failures=tuple(failures),
         )
 
+    async def _admit_manual(
+        self,
+        schedule: Schedule,
+        *,
+        now: datetime,
+    ) -> ScheduleAdmission:
+        """Admit the one occurrence the caller asked for *now*, off the cron.
+
+        The returned `ScheduleAdmission` holds exactly one entry: `run_ids` of
+        length one on success, or `already_fired` naming the moment when the
+        occurrence-claim found a Run already standing for it (#220).
+
+        Three things differ from `admit_due`, each because a manual fire is
+        not a cron occurrence:
+
+        * **The quota is claimed first, atomically.** `reserve_fire` counts
+          the run and disables on exhaustion under the store's own lock,
+          *before* the Run exists. Two callers racing on the last run cannot
+          both pass an exhaustion check read from the same snapshot; the
+          loser is refused. The order also fixes what a crash leaves behind:
+          a process that dies between the reservation and the Run loses one
+          slot (visible: `runs_so_far` moved, `last_run_id` did not), never
+          the reverse, where a Run exists that no count admits to and the
+          next request duplicates it.
+        * **The recurrence cursor does not move.** `last_fired_at` and
+          `next_due_at` describe the cron's occurrences; stamping *now* on
+          them would carry the cursor past an occurrence that was already due
+          but not yet ticked, and lose it. `last_run_id` is recorded, so the
+          product row still resolves to the Run.
+        * **Overlap policy is not consulted.** It keeps an automatic
+          recurrence from stacking on its own in-flight Run; a manual fire is
+          a person explicitly asking for another Run *now*.
+
+        Refusals raise rather than fill `failures`: `ManualFireRefused` for a
+        schedule at `max_runs`, the template store's own error for an
+        unresolvable target, and the run store's for a Run that could not be
+        created. A refusal before the reservation touches nothing; one after
+        it releases the reservation, so the schedule reads as it did before.
+        """
+        if schedule.exhausted:
+            raise ManualFireRefused(
+                f"schedule {schedule.schedule_id} has used all {schedule.max_runs} of its runs"
+            )
+        try:
+            template = await require_template(
+                self._templates,
+                schedule.graph_template_id,
+                version=schedule.template_version,
+            )
+        except Exception as exc:
+            logger.warning(
+                "schedule %s cannot resolve template %s for its manual fire: %s",
+                schedule.schedule_id,
+                schedule.graph_template_id,
+                exc,
+            )
+            raise
+
+        try:
+            reserved = await self._schedules.reserve_fire(schedule.schedule_id)
+        except ScheduleExhausted as exc:
+            raise ManualFireRefused(str(exc)) from exc
+        if reserved is None:
+            raise ManualFireRefused(f"schedule {schedule.schedule_id} no longer exists")
+        current, reservation = reserved
+
+        fire = FireDecision(scheduled_for=now, catchup=False)
+        try:
+            run_id = await self._admit_one(current, template, fire)
+        except DuplicateOccurrence:
+            logger.info(
+                "schedule %s manual occurrence %s was already admitted elsewhere",
+                schedule.schedule_id,
+                now.isoformat(),
+            )
+            # The firing happened — some other admitter claimed this exact
+            # moment — so there is nothing to create; the slot goes back.
+            await self._schedules.settle_fire(schedule.schedule_id, reservation, run_id=None)
+            return ScheduleAdmission(already_fired=(now,))
+        except BaseException:
+            await self._schedules.settle_fire(schedule.schedule_id, reservation, run_id=None)
+            raise
+
+        settled = await self._schedules.settle_fire(
+            schedule.schedule_id, reservation, run_id=run_id
+        )
+        recorded = settled if settled is not None else current
+        return ScheduleAdmission(
+            run_ids=(run_id,),
+            next_due_at=recorded.next_due_at,
+            disabled=reservation.disabled,
+        )
+
     async def _consume_without_firing(
         self, schedule: Schedule, decision: ScheduleEvaluation
     ) -> ScheduleAdmission:
@@ -323,6 +474,11 @@ class ScheduleRunAdmitter:
         decision not to run that occurrence at all.
         """
         consumable = [skip for skip in decision.skipped if skip.reason not in _UNCONSUMED_SKIPS]
+        # The due cursor moves only when nothing is owed (#1199). `due()`
+        # selects on `next_due_at`, so advancing it past a buffered occurrence
+        # would hide the schedule from the tick until the occurrence *after*
+        # the one it still has to run.
+        next_due_at = schedule.next_due_at if _owes(decision) else decision.next_due_at
         if consumable:
             newest = max(skip.scheduled_for for skip in consumable)
             await self._schedules.record_fire(
@@ -333,7 +489,22 @@ class ScheduleRunAdmitter:
                 # None, which is what makes "the last Run this schedule
                 # produced" survive an occurrence that produced none.
                 run_id=None,
-                next_due_at=decision.next_due_at,
+                next_due_at=next_due_at,
+                fires=0,
+            )
+        elif next_due_at is not None and next_due_at != schedule.next_due_at:
+            # Nothing fired and nothing was dropped, but the evaluation still
+            # learned when the next occurrence is — and a schedule that never
+            # records it stays selected by `due()` on every tick until its
+            # first occurrence, however far off that is (#1199). No occurrence
+            # was consumed, so `fired_at=None` leaves the enumeration cursor
+            # where it is; only the due cursor is written, and only when it
+            # changed, so an idle schedule costs no write per tick.
+            await self._schedules.record_fire(
+                schedule.schedule_id,
+                fired_at=None,
+                run_id=None,
+                next_due_at=next_due_at,
                 fires=0,
             )
         return ScheduleAdmission(
@@ -373,6 +544,9 @@ class ScheduleRunAdmitter:
             # runner, because a Run that cannot say what it was asked to do
             # cannot be audited or replayed.
             provenance[SCHEDULE_INPUTS_KEY] = schedule.inputs
+        request_id = current_execution_context().request_id
+        if request_id:
+            provenance[REQUEST_ID_KEY] = request_id
         run = await self._runs.create_run(
             graph,
             persona_id=schedule.persona_id,
@@ -388,4 +562,4 @@ class ScheduleRunAdmitter:
         return run.run_id
 
 
-__all__ = ["ScheduleAdmission", "ScheduleRunAdmitter"]
+__all__ = ["ManualFireRefused", "ScheduleAdmission", "ScheduleRunAdmitter"]
