@@ -108,6 +108,13 @@ class SafeHarnessRunner:
 
     # --- HarnessRunner ---
     async def start_session(self, agent_spec: AgentSpec, *, workdir: str) -> str:
+        # The session description and other AgentSpec fields become harness
+        # context before the first turn, so the startup envelope crosses the
+        # same inbound boundary as a message.
+        import json
+
+        spec_text = json.dumps(agent_spec.model_dump(mode="json"), sort_keys=True)
+        await self._scan_inbound([{"role": "user", "content": spec_text}])
         return await self._inner.start_session(agent_spec, workdir=workdir)
 
     async def send(self, session_id: str, messages: list[dict[str, Any]]) -> dict[str, Any]:

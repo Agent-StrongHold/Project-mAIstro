@@ -82,9 +82,15 @@ def _agent_spec(body: StartBody) -> AgentSpec:
 async def start_session(body: StartBody) -> dict[str, Any]:
     try:
         manager = _get_manager()
+        result = await manager.start(_agent_spec(body), workdir=body.workdir)
     except WardenCompositionUnavailable as exc:
         raise _warden_unavailable() from exc
-    result = await manager.start(_agent_spec(body), workdir=body.workdir)
+    except HarnessSecurityUnavailable as exc:
+        raise _warden_unavailable() from exc
+    except HarnessInputBlocked as exc:
+        raise HTTPException(
+            status_code=400, detail=f"blocked by warden: {', '.join(exc.flags)}"
+        ) from exc
     if isinstance(result, Unavailable):
         raise HTTPException(status_code=503, detail=result.reason)
     return {"session_id": result}
