@@ -1,17 +1,9 @@
 import { useEffect, useState } from "react";
 import { PageHeader } from "../components/shared";
 import { apiGet } from "../lib/api";
+import FixedPageArtifactEditor, { type FixedPageMode } from "./FixedPageArtifactEditor";
 
-type ArtifactModeId =
-  | "deck"
-  | "poster"
-  | "infographic"
-  | "flyer"
-  | "social"
-  | "card"
-  | "cover"
-  | "diagram"
-  | "custom";
+type ArtifactModeId = "deck" | FixedPageMode;
 
 type ArtifactMode = {
   id: ArtifactModeId;
@@ -268,6 +260,14 @@ export default function DesignStudio() {
             resize: "vertical",
           }}
         />
+        {selectedMode !== "deck" && (
+          <div style={{ marginTop: 16 }}>
+            <FixedPageArtifactEditor
+              key={selectedMode}
+              mode={selectedMode}
+            />
+          </div>
+        )}
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 10 }}>
           <button
             type="button"
