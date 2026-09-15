@@ -1,7 +1,7 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +2
-  packages/maistro-core/tests: +65
+  packages/hive-conductor/backend/tests: +4
+  packages/maistro-core/tests: +69
 ---
 # claude-m1-issues-merge-plan-l7g9xz-95af
 
@@ -132,3 +132,36 @@ The machine rows print at `+01:00` and are the earlier instants; the human
 pause prints UTC and is the later one. Normalized, it sorts after them and is
 found; compared raw, `12:30:00+00:00` sorts before `13:05:00+01:00` and it is
 excluded from every later page.
+
+A fifth round, from the diff-coverage gate rather than a reviewer. It named
+three files and every one of them was code this branch's own conflict
+resolution introduced -- the highest-risk code in the PR, and the part with no
+test behind it.
+
+`packages/maistro-core/tests` (+4):
+
+- **`test_stores_gaps.py` (+2)**: the `after` keyset parameter survived the
+  merge on `list_by_status` for both the in-memory and SQLite backends, and
+  nothing exercised it at the store level. The hive route uses it, but that is
+  a different coverage producer, so the parameter was effectively unproven
+  where it is implemented. One walk per backend, because the SQLite twin builds
+  `(created_at, run_id) > (?, ?)` in SQL and is a genuinely separate
+  implementation of the same contract rather than something to trust by
+  association.
+- **`test_hitl_settlement.py` (+2)**: the revalidation arms of
+  `_expired_hitl_node_id`, which is the helper kept deliberately when the
+  indexed `list_hitl_due` replaced the keyset walk. The index is a projection
+  written beside the record, so it can propose a Run whose durable pause
+  disagrees -- stale after a crash between the two writes, or naming a node
+  whose pause entry is not readable as HITL. Neither may settle a Run. A store
+  stub whose index returns everything makes both reachable.
+
+`packages/hive-conductor/backend/tests` (+2): the two bounds on the composed
+`list_pending_human_work` walk, each of which the gate found executing along
+only one outcome.
+
+- The inspection ceiling (`_MAX_PENDING_SCAN_RECORDS`) exit, patched to a small
+  value rather than seeding thousands of rows: the bound is the behaviour, not
+  its particular number.
+- The outer early break once `limit` items are found, which is what stops a
+  caller asking for one item from walking every Workspace it can see.

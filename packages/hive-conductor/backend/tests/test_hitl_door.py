@@ -215,6 +215,61 @@ async def test_pending_pages_by_instant_when_created_at_offsets_differ(seeded) -
             store._rows.pop(run_id, None)
 
 
+async def test_pending_stops_at_the_inspection_ceiling(seeded, monkeypatch) -> None:
+    """The walk is bounded, not unbounded: a long prefix costs one tick, not a scan.
+
+    `_MAX_PENDING_SCAN_RECORDS` is the stop condition that keeps a pathological
+    machine-only prefix from turning one request into a full table read. The
+    constant is patched rather than seeding thousands of rows -- the bound is
+    the behaviour under test, not its particular value.
+    """
+    import routes.hitl as hitl_routes
+
+    client, store, _seed = seeded
+    monkeypatch.setattr(hitl_routes, "_MAX_PENDING_SCAN_RECORDS", 3)
+    workspace = await create_workspace(
+        creator_user_id="admin",
+        name="Test Workspace-ceiling",
+        persona_template_id="default",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
+    )
+    run_ids = [f"hitl-ceiling-{index}" for index in range(5)]
+    try:
+        for index, run_id in enumerate(run_ids):
+            await store.create(
+                _paused_record(
+                    run_id,
+                    workspace_id=workspace.id,
+                    kind="timer",
+                    created_at=datetime(2026, 8, 30, 12, tzinfo=UTC) + timedelta(seconds=index),
+                )
+            )
+
+        body = client.get("/v1/hitl/pending", params={"limit": 5}).json()
+
+        assert [item for item in body if item["run_id"].startswith("hitl-ceiling-")] == []
+    finally:
+        for run_id in run_ids:
+            store._rows.pop(run_id, None)
+
+
+async def test_pending_stops_once_the_item_limit_is_met(seeded) -> None:
+    """`limit` bounds items across Workspaces, not per Workspace.
+
+    Without the outer break a caller asking for one item would keep walking
+    every Workspace it can see, paying for pages whose results are discarded.
+    """
+    client, _store, seed = seeded
+    await seed("hitl-limit-first")
+    await seed("hitl-limit-second")
+
+    body = client.get("/v1/hitl/pending", params={"limit": 1}).json()
+
+    assert len(body) == 1
+
+
 async def test_answering_resumes_the_run_and_the_answer_is_readable(seeded) -> None:
     """End to end against the real store: the Run leaves PAUSED and the node's
     answer is on the record the next execution reads."""

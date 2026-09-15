@@ -1018,3 +1018,59 @@ async def test_a_valid_answer_before_the_preserved_deadline_still_settles() -> N
         paused.run_id, store=store, node_resolver=_resolver, run_store=run_store
     )
     assert settled.status is RunStatus.COMPLETED
+
+
+class _OverEagerIndexStore(InMemoryDurableRunStore):
+    """A store whose deadline index offers a Run the durable pause disagrees with.
+
+    The index is a projection written beside the record, so it can be stale or
+    simply wrong after a crash between the two writes. Everything it returns is
+    therefore re-derived from the pause itself before anything is settled.
+    """
+
+    async def list_hitl_due(self, *, now: datetime, limit: int = 100) -> list[DurableRunRecord]:
+        del now, limit
+        return list(self._rows.values())
+
+
+@pytest.mark.asyncio
+async def test_an_index_hit_whose_pause_is_not_elapsed_is_not_timed_out() -> None:
+    """`list_hitl_due` proposes; the durable pause disposes.
+
+    A deadline index that says due while the pause says otherwise must not
+    settle the Run. Timing out on the projection alone would let a stale index
+    row cancel live human work.
+    """
+    store = _OverEagerIndexStore()
+    await store.create(_paused_record("hitl-index-not-elapsed"))
+
+    assert await expire_hitl_pauses(store, now=_BEFORE) == []
+
+    record = await store.get("hitl-index-not-elapsed")
+    assert record is not None
+    assert record.run.status is RunStatus.PAUSED
+
+
+@pytest.mark.asyncio
+async def test_an_index_hit_with_no_readable_pause_is_skipped_not_settled() -> None:
+    """A frontier node carrying no usable pause entry is passed over.
+
+    `hitl_pause` refuses the node rather than guessing, and the scan moves to
+    the next active node instead of settling a Run on a pause it cannot read.
+    """
+    store = _OverEagerIndexStore()
+    record = _paused_record("hitl-index-unreadable")
+    metadata = dict(record.graph_state.metadata)
+    metadata["pauses"] = {"ask": {"kind": "timer", "resume_at": _DEADLINE.isoformat()}}
+    metadata.pop("pause", None)
+    await store.create(
+        record.model_copy(
+            update={"graph_state": record.graph_state.model_copy(update={"metadata": metadata})}
+        )
+    )
+
+    assert await expire_hitl_pauses(store, now=_AFTER) == []
+
+    stored = await store.get("hitl-index-unreadable")
+    assert stored is not None
+    assert stored.run.status is RunStatus.PAUSED
