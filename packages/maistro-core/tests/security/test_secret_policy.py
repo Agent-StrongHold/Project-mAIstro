@@ -58,6 +58,12 @@ class TestIsSecretKeyName:
             "clientToken",
             "userPassword",
             "sshKey",
+            # An identifier prefix never outranks a strong family segment,
+            # and only softens a `key` it immediately precedes.
+            "effect_secret_key",
+            "effect_token_key",
+            "access_key",
+            "master_key",
         ],
     )
     def test_sensitive_names(self, name: str) -> None:
@@ -77,6 +83,19 @@ class TestIsSecretKeyName:
             "awsAccessKeyId",
             "keyArn",
             "tokenId",
+            # A `key` that names what it identifies is a lookup/correlation
+            # identifier, not credential material (#1164 review): the canonical
+            # capability events carry `effect_key` so audit and replay can join
+            # them, and redacting it destroyed the join while protecting nothing.
+            "effect_key",
+            "idempotency_key",
+            "cache_key",
+            "partition_key",
+            "primary_key",
+            "parent_key",
+            "issue_key",
+            "effectKey",
+            "idempotencyKey",
             "tokenizer",
             "secretary",
             "monkey",
