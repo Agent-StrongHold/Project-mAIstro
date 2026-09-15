@@ -16,34 +16,15 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 from maistro.security.normalize import normalize_for_detection
-from maistro.security.warden.patterns import ACTIVE_MARKUP_PATTERNS
+from maistro.security.warden.patterns import (
+    ACTIVE_MARKUP_PATTERNS,
+    REJECT_PATTERNS,
+    SCRIPT_PATTERNS,
+)
 
 if TYPE_CHECKING:
     from maistro_design.trust import InMemoryTrustBanishList
     from maistro_design.types import DesignOutput
-
-_SCRIPT_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"<script\b", re.IGNORECASE),
-    re.compile(r"<iframe\b", re.IGNORECASE),
-    re.compile(r"<object\b", re.IGNORECASE),
-    re.compile(r"<embed\b", re.IGNORECASE),
-    re.compile(r"\beval\s*\(", re.IGNORECASE),
-    re.compile(r"\bFunction\s*\(", re.IGNORECASE),
-    re.compile(r"\bXMLHttpRequest\b"),
-    re.compile(r"\bnew\s+WebSocket\s*\("),
-    re.compile(r"\bfetch\s*\("),
-    re.compile(r"javascript:", re.IGNORECASE),
-)
-
-_PROMPT_INJECTION_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"ignore\s+(all\s+|any\s+)?(previous|prior|above)\s+instructions", re.IGNORECASE),
-    re.compile(r"disregard\s+(all\s+|any\s+)?(previous|prior|above)", re.IGNORECASE),
-    re.compile(r"\bjailbreak\b", re.IGNORECASE),
-    re.compile(r"forget\s+(all\s+|your\s+)?(previous|prior)\s+instructions", re.IGNORECASE),
-    re.compile(r"\bdeveloper\s+mode\b", re.IGNORECASE),
-    re.compile(r"you\s+are\s+now\s+(in\s+)?(DAN|jailbroken)", re.IGNORECASE),
-    re.compile(r"reveal\s+(your\s+)?system\s+prompt", re.IGNORECASE),
-)
 
 _URL_RE = re.compile(r"https?://[^\s\"'<>)]+")
 _BASE64_RE = re.compile(r"[A-Za-z0-9+/]{200,}={0,2}")
@@ -145,16 +126,24 @@ def _css_network_or_code_is_blocking(content: str, url_allowlist: tuple[str, ...
     )
 
 
+def _pattern_matches(pattern: object, content: str) -> bool:
+    """Search a shared regex and fail closed if the regex engine fails."""
+    try:
+        return bool(pattern.search(content, timeout=0.5))  # type: ignore[attr-defined]
+    except Exception:
+        return True
+
+
 def _scan_active_markup_patterns(content: str, url_allowlist: tuple[str, ...]) -> list[str]:
     findings: list[str] = []
     normalized = normalize_for_detection(content)
     for pattern, description in ACTIVE_MARKUP_PATTERNS:
         if description == "CSS network/code primitive":
-            matched = bool(pattern.search(normalized)) and _css_network_or_code_is_blocking(
+            matched = _pattern_matches(pattern, normalized) and _css_network_or_code_is_blocking(
                 normalized, url_allowlist
             )
         else:
-            matched = bool(pattern.search(normalized))
+            matched = _pattern_matches(pattern, normalized)
         if matched:
             findings.append(description)
     return findings
@@ -174,13 +163,19 @@ def scan_blocking_patterns(
 
     normalized = normalize_for_detection(content)
 
-    for pattern in _SCRIPT_PATTERNS:
-        if pattern.search(normalized):
-            blocking.append(f"{label}: matched script pattern {pattern.pattern!r}")
-
-    for pattern in _PROMPT_INJECTION_PATTERNS:
-        if pattern.search(normalized):
-            blocking.append(f"{label}: matched prompt-injection pattern {pattern.pattern!r}")
+    active_descriptions = {description for _, description in ACTIVE_MARKUP_PATTERNS}
+    script_descriptions = {description for _, description in SCRIPT_PATTERNS}
+    for pattern, description in REJECT_PATTERNS:
+        # Active markup has Design's reviewed URL allowlist semantics; the
+        # pattern vocabulary remains shared with Warden/Sentinel.
+        if description in active_descriptions:
+            continue
+        if not _pattern_matches(pattern, normalized):
+            continue
+        category = (
+            "script pattern" if description in script_descriptions else "prompt-injection pattern"
+        )
+        blocking.append(f"{label}: matched {category} {description}")
 
     blocking.extend(
         f"{label}: matched {description}"

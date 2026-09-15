@@ -61,8 +61,63 @@ ACTIVE_MARKUP_PATTERNS: tuple[tuple[regex.Pattern[str], str], ...] = (
     ),
 )
 
+# Design output and trust pre-scans use this vocabulary directly. Keep the
+# descriptions stable: they are audit-facing classifications, not implementation
+# details of either consumer.
+SCRIPT_PATTERNS: tuple[tuple[regex.Pattern[str], str], ...] = (
+    (regex.compile(r"<script\b", regex.IGNORECASE), "script pattern: <script> tag"),
+    (regex.compile(r"<iframe\b", regex.IGNORECASE), "script pattern: <iframe> tag"),
+    (regex.compile(r"<object\b", regex.IGNORECASE), "script pattern: <object> tag"),
+    (regex.compile(r"<embed\b", regex.IGNORECASE), "script pattern: <embed> tag"),
+    (regex.compile(r"\beval\s*\(", regex.IGNORECASE), "script pattern: eval()"),
+    (regex.compile(r"\bFunction\s*\(", regex.IGNORECASE), "script pattern: Function()"),
+    (regex.compile(r"\bXMLHttpRequest\b", regex.IGNORECASE), "script pattern: XMLHttpRequest"),
+    (regex.compile(r"\bnew\s+WebSocket\s*\(", regex.IGNORECASE), "script pattern: WebSocket"),
+    (regex.compile(r"\bfetch\s*\(", regex.IGNORECASE), "script pattern: fetch()"),
+    (regex.compile(r"javascript:", regex.IGNORECASE), "script pattern: javascript URL"),
+)
+
+# These cover the older Design-specific prompt-injection phrases as well as the
+# broader Warden rules below. Keeping them here prevents a consumer from growing
+# a private vocabulary again.
+PROMPT_INJECTION_PATTERNS: tuple[tuple[regex.Pattern[str], str], ...] = (
+    (
+        regex.compile(
+            r"ignore\s+(all\s+|any\s+)?(previous|prior|above)\s+instructions",
+            regex.IGNORECASE,
+        ),
+        "prompt injection: instruction override",
+    ),
+    (
+        regex.compile(
+            r"disregard\s+(all\s+|any\s+)?(previous|prior|above)",
+            regex.IGNORECASE,
+        ),
+        "prompt injection: instruction disregard",
+    ),
+    (regex.compile(r"\bjailbreak\b", regex.IGNORECASE), "prompt injection: jailbreak keyword"),
+    (
+        regex.compile(
+            r"forget\s+(all\s+|your\s+)?(previous|prior)\s+instructions",
+            regex.IGNORECASE,
+        ),
+        "prompt injection: memory wipe",
+    ),
+    (regex.compile(r"\bdeveloper\s+mode\b", regex.IGNORECASE), "prompt injection: developer mode"),
+    (
+        regex.compile(r"you\s+are\s+now\s+(in\s+)?(DAN|jailbroken)", regex.IGNORECASE),
+        "prompt injection: DAN reassignment",
+    ),
+    (
+        regex.compile(r"reveal\s+(your\s+)?system\s+prompt", regex.IGNORECASE),
+        "prompt injection: system prompt extraction",
+    ),
+)
+
 REJECT_PATTERNS: list[tuple[regex.Pattern[str], str]] = [
     *ACTIVE_MARKUP_PATTERNS,
+    *SCRIPT_PATTERNS,
+    *PROMPT_INJECTION_PATTERNS,
     (
         regex.compile(
             r"ignore\s+(all\s+)?previous\s+(instructions|prompts|rules)",

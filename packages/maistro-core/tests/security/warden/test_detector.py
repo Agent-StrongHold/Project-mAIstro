@@ -95,6 +95,13 @@ async def test_scan_layer1_blocks_active_markup(payload: str, flag: str) -> None
     assert flag in verdict.flags
 
 
+async def test_scan_layer1_blocks_script_injection_from_shared_vocabulary() -> None:
+    verdict = await Warden().scan("<script>alert(1)</script>", "user_input")
+    assert verdict.clean is False
+    assert verdict.blocked is True
+    assert any("script pattern" in flag for flag in verdict.flags)
+
+
 async def test_scan_layer2_heuristic_density_flag_when_layer1_clean() -> None:
     warden = Warden()
     text = "instead actually really you must you should you are do not always never comply obey"

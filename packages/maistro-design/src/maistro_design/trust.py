@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
+from maistro.security.normalize import normalize_for_detection
 from maistro.security.warden.heuristics import heuristic_scan
 from maistro_design.scan import scan_blocking_patterns
 
@@ -167,7 +168,7 @@ def scan_and_record(
 
     blocking_flags = scan_blocking_patterns("content", content, None)
     flags.extend(blocking_flags)
-    suspicious, heuristic_flags = heuristic_scan(content)
+    suspicious, heuristic_flags = heuristic_scan(normalize_for_detection(content))
     if suspicious:
         flags.extend(f"content: matched heuristic pattern {flag}" for flag in heuristic_flags)
 

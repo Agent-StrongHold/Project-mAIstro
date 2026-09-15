@@ -1,7 +1,7 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +8
-  packages/maistro-design/tests: +25
+  packages/maistro-core/tests: +9
+  packages/maistro-design/tests: +27
 ---
 # Issue 817: Design trust active-markup corpus
 
@@ -16,4 +16,5 @@ hostile corpus also covers a lookalike subdomain of an allowlisted font origin,
 which verifies that CSS network checks compare parsed URL authorities rather than
 string prefixes. The repair adds link stylesheet and video poster fetch surfaces to
 the shared Warden vocabulary and verifies both pre-scan recommendations and final
-render rejection for each.
+render rejection for each. The repair regression also covers Warden's system-prompt
+query rule at both the pre-scan and returned-artifact boundaries.
