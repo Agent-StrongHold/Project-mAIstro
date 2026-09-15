@@ -33,6 +33,10 @@ os.environ.setdefault("TURING_ALLOW_INSECURE_TRANSPORT", "1")
 # real deployment has no universal known admin login; tests opt in explicitly.
 os.environ["TURING_ALLOW_DEV_AUTH"] = "1"
 
+# Production refuses to start without an explicitly configured service key. The
+# suite supplies a test-only value rather than relying on a production fallback.
+os.environ.setdefault("TURING_SERVICE_KEY", "test-turing-service-key")
+
 
 @pytest.fixture(autouse=True)
 def _reset_state():
