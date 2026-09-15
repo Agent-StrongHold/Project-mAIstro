@@ -21,6 +21,7 @@ from maistro.capabilities.credential_routing import (
 )
 from maistro.capabilities.effect_context import (
     CapabilityEffectContext,
+    binding_scope_policy,
     new_in_memory_effect_context,
 )
 from maistro.capabilities.invocation import (
@@ -82,7 +83,7 @@ def _binding(*, credential_refs: tuple[str, ...] = ("key-a", "key-b")) -> Bindin
 
 
 def _context_with_pool(*, keys: tuple[str, ...] = ("key-a", "key-b")) -> CapabilityEffectContext:
-    context = new_in_memory_effect_context()
+    context = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
     for key in keys:
         context.credentials.add(workspace_id=WS, project_id=PROJECT, record=_record(key))
     return context

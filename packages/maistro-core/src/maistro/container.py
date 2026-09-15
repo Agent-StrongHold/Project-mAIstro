@@ -24,7 +24,11 @@ from maistro.a2a.guest_peers import GuestPeerManager
 from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.intents import IntentRegistry, build_intent_registry
 from maistro.archive.wiring import build_archive_store
-from maistro.capabilities.effect_context import CapabilityEffectContext, new_effect_context
+from maistro.capabilities.effect_context import (
+    CapabilityEffectContext,
+    binding_scope_policy,
+    new_effect_context,
+)
 from maistro.capabilities.invocation import InvocationStore as CapabilityInvocationStore
 from maistro.classifier.engine import ClassifierEngine
 from maistro.events.consumer_cursor import (
@@ -1684,7 +1688,12 @@ async def create_container(
     capability_invocation_store = await _wire_capability_invocations(
         pg_pool=pg_pool, db_pool=db_pool
     )
-    capability_effects = new_effect_context(invocation_store=capability_invocation_store)
+    capability_effects = new_effect_context(
+        invocation_store=capability_invocation_store,
+        # The container is an explicit composition root. Bare contexts remain
+        # read-only until an application supplies policy authority.
+        policy_evaluator=binding_scope_policy,
+    )
     spawn_harness_node = AgentSpawnHarnessNode(
         adapters=wired_harness_adapters, effect_context=capability_effects
     )
