@@ -201,19 +201,16 @@ special-case the consumer.
 ### 5. Hierarchical orchestration mechanics
 
 **Outbound (maistro drives a foreign harness).** A graph node's turn is executed by a foreign
-harness instead of the LLM. This needs an *execution* seam, not a strategy: ADR-062's
-`NodeStrategy` is a prompt/output **shaper** (`build_user_prompt` / `score_output` /
-`update_blackboard`), so it cannot itself "run" a harness. The original sketch of a
-`HarnessNodeStrategy.execute()` did not match that interface and was **not** built as such. The
-as-built design instead adds a distinct seam:
+harness instead of the LLM. This needs an *execution* seam, not the retired pre-durable
+role-strategy layer: prompt/output shaping is a property of the durable node implementation and
+cannot itself "run" a harness. The original sketch of a `HarnessNodeStrategy.execute()` did not
+match the old interface and was **not** built as such. The as-built design instead adds a
+distinct seam:
 
 - **`NodeExecutor` protocol** (`graph/node.py`) — a provider-level seam for a typed capability
   result. It does not own a node lifecycle or dispatch a Graph by itself; when wired into a
   durable node, the canonical executor owns the surrounding Run/NodeRun/Attempt records and
   Attempt-scoped retry/failure evidence.
-- **`HarnessStrategy`** (`graph/strategy.py`) — the shaper half: role `AgentRole.HARNESS`, output
-  type `HarnessOutput`, registered in `STRATEGY_REGISTRY` so a DAG can schedule a harness node by
-  role.
 - **`HarnessOutput{summary, actions, raw}`** (`graph/types.py`) — the node output. `actions` stays
   untyped (`list[dict]`) because each foreign harness emits its own action shape.
 - **`HarnessNodeExecutor`** (`graph/harness_executor.py`) — the `NodeExecutor` implementation that
@@ -252,9 +249,8 @@ the existing middleware; a dedicated `harness:session` service-key scope can gat
 - [x] `export_agent()` produces an MCP server manifest + a `SKILL.md` whose frontmatter
       `skills/parser.py` can re-parse — proving the import→export round trip.
 - [x] A harness-backed graph node runs under the canonical durable Graph executor via the
-      `HarnessNodeExecutor` seam (`HarnessNodeExecutor` + `HarnessStrategy`), recording canonical
-      Run/NodeRun/Attempt evidence. *(Built as an executor seam, not a
-      `NodeStrategy.execute()` — see §5 rationale.)*
+      `HarnessNodeExecutor` seam, recording canonical Run/NodeRun/Attempt evidence. *(Built as
+      an executor seam, not a pre-durable role strategy — see §5 rationale.)*
 - [x] `POST /v1/harness/sessions` (+ send/stream/stop) is reachable through the Conductor auth
       middleware, backed by `HarnessSessionManager` (same Warden + policy gating), returning
       `503`/`400`/`404` for no-provider / Warden-blocked / unknown-session.

@@ -1,9 +1,9 @@
 """Outbound foreign-harness graph node (SPEC-208 §5).
 
-Covers three layers: the ``NodeExecutor`` seam in ``graph.node``, the
-``HarnessStrategy`` prompt/output shaper, and the ``HarnessNodeExecutor`` bridge
-onto ``HarnessSessionManager``. The helpers are exercised as algorithm-only
-fixtures; canonical physical Graph execution remains in ``durable_runs``.
+Covers the ``NodeExecutor`` seam in ``graph.node`` and the
+``HarnessNodeExecutor`` bridge onto ``HarnessSessionManager``. The helpers are
+exercised as algorithm-only fixtures; canonical physical Graph execution
+remains in ``durable_runs``.
 """
 
 from __future__ import annotations
@@ -20,52 +20,7 @@ from maistro.graph.harness_executor import (
     _extract_summary,
     _spec_role,
 )
-from maistro.graph.strategy import HarnessStrategy
-from maistro.graph.types import AgentRole, GraphBlackboard, HarnessOutput
-
-# --- HarnessStrategy ----------------------------------------------------------
-
-
-class TestHarnessStrategy:
-    def test_score_rewards_actions_and_summary(self) -> None:
-        s = HarnessStrategy()
-        assert s.score_output(HarnessOutput(summary="x", actions=[{"a": 1}, {"b": 2}])) == 3.0
-        assert s.score_output(HarnessOutput(summary="", actions=[])) == 0.0
-        assert s.score_output(HarnessOutput(summary="x", actions=[])) == 1.0
-
-    def test_score_ignores_wrong_type(self) -> None:
-        from maistro.graph.types import CodeOutput
-
-        assert HarnessStrategy().score_output(CodeOutput(description="x")) == 0.0
-
-    def test_update_blackboard_records_summary_annotation(self) -> None:
-        bb = GraphBlackboard(task_objective="obj", workspace="/w")
-        out = HarnessStrategy().update_blackboard(HarnessOutput(summary="ran tests"), bb)
-        assert out.node_annotations[AgentRole.HARNESS.value] == "ran tests"
-
-    def test_update_blackboard_noop_without_summary(self) -> None:
-        bb = GraphBlackboard(task_objective="obj", workspace="/w")
-        out = HarnessStrategy().update_blackboard(HarnessOutput(summary=""), bb)
-        assert out.node_annotations == bb.node_annotations
-
-    def test_build_user_prompt_with_and_without_constraints(self) -> None:
-        from maistro.graph.types import GraphTask
-
-        bb = GraphBlackboard(task_objective="obj", workspace="/w")
-        s = HarnessStrategy()
-        with_c = s.build_user_prompt(
-            GraphTask(description="d", workspace="/w", constraints=["no net"]),
-            bb,
-            None,
-            None,
-            None,
-        )
-        assert "no net" in with_c and "Task: d" in with_c
-        without_c = s.build_user_prompt(
-            GraphTask(description="d", workspace="/w"), bb, None, None, None
-        )
-        assert "Constraints:\nNone" in without_c
-
+from maistro.graph.types import AgentRole, HarnessOutput
 
 # --- HarnessNodeExecutor bridge ----------------------------------------------
 

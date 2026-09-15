@@ -21,3 +21,5 @@ def test_pre_durable_executor_is_not_a_graph_public_surface() -> None:
 
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("maistro.graph.run")
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("maistro.graph.strategy")

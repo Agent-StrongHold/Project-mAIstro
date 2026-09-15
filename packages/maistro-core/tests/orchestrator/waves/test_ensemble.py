@@ -7,7 +7,6 @@ from typing import Any
 
 import pytest
 
-from maistro.graph.strategy import NodeStrategy
 from maistro.graph.types import GraphBlackboard, GraphTask
 from maistro.orchestrator.planner import SuperPlanner
 from maistro.orchestrator.waves.ensemble import (
@@ -357,10 +356,12 @@ class TestWaveEnsembleStrategy:
     def _strategy(self) -> WaveEnsembleStrategy:
         return WaveEnsembleStrategy(WaveOrchestrator(echo_runner))
 
-    def test_satisfies_node_strategy_protocol(self) -> None:
+    def test_exposes_durable_node_strategy_shape(self) -> None:
         strategy = self._strategy()
-        assert isinstance(strategy, NodeStrategy)
         assert strategy.output_type is WaveEnsembleOutput
+        assert callable(strategy.build_user_prompt)
+        assert callable(strategy.score_output)
+        assert callable(strategy.update_blackboard)
 
     def test_build_user_prompt_and_scoring(self) -> None:
         strategy = self._strategy()
