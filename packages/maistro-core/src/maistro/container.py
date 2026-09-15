@@ -110,6 +110,7 @@ if TYPE_CHECKING:
     from maistro.personas.golden import GoldenRecordStore
     from maistro.projects.store import ProjectStore
     from maistro.protocols.embeddings import EmbeddingClient
+    from maistro.protocols.llm import LLMClient
     from maistro.protocols.memory import (
         ContextAssemblyPolicy,
         EpisodicStore,
@@ -458,7 +459,10 @@ class Container:
         every turn to catch a mistake that is not reachable from within one
         process.
         """
-        self._require_auth_while_armed(auth)
+        # Resolve identity once at the canonical chat boundary. Anonymous
+        # turns must still reach the same security strategies as authenticated
+        # turns; passing None would let identity-gated checks silently skip.
+        auth = self._resolve_chat_auth(auth)
 
         if run is None:
             run = await self._admit_chat_turn(
@@ -1253,6 +1257,14 @@ class Container:
         )
 
 
+def _wire_event_handlers(event_bus: EventBus, warden: Warden) -> None:
+    """Bind built-in event actions to this Container's security composition."""
+    from maistro.events.handlers import handlers_for_warden
+
+    for action_type, handler in handlers_for_warden(warden).items():
+        event_bus.register_handler(action_type, handler)
+
+
 def _wire_schedule_admission(
     run_store: RunStore,
     template_store: GraphTemplateStore | None,
@@ -1280,6 +1292,7 @@ async def create_container(
     harness_adapters: dict[str, HarnessAdapter] | None = None,
     embeddings: EmbeddingClient | None = None,
     pg_pool: Any = None,
+    warden_llm: LLMClient | None = None,
 ) -> Container:
     """Wire all dependencies and create the container.
 
@@ -1302,6 +1315,10 @@ async def create_container(
     stores — durable events included (#135). When it is not given and
     `config.database_url` names PostgreSQL, this container opens one itself
     (#122).
+
+    `warden_llm` is the application-composed client for Warden layer 3. It is
+    injected here rather than discovered by routes or handlers, so every
+    consumer receives this Container's single detector composition.
 
     Both paths exist, and the parameter is not vestigial now that the URL path
     works. #135 landed first and could only offer the parameter, because
@@ -1332,7 +1349,10 @@ async def create_container(
         *configured_endpoints(get_settings()),
     )
 
-    warden = Warden()
+    # The application composition root owns the LLM client. Passing it through
+    # the Container is the only way to enable Warden layer 3 without giving
+    # routes or event handlers a second detector composition.
+    warden = Warden(llm=warden_llm)
     learning_extractor = ToolCorrectionExtractor()
     # Two different handles, deliberately not one. `db_pool` is the SQLite
     # connection the durable-event stores are written against; `pg_pool` is an
@@ -1551,6 +1571,9 @@ async def create_container(
     handler_caller = HTTPHandlerCaller()
 
     event_bus = EventBus()
+    # A process-global Warden would make re-entry use whichever Container
+    # happened to be created last during replacement.
+    _wire_event_handlers(event_bus, warden)
 
     async def _persist_bus_event(event: Any) -> None:
         # Bridge: every in-memory bus event is appended to the durable log.

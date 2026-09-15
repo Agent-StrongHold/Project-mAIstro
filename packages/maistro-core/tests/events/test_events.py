@@ -409,9 +409,14 @@ class TestEmitRobustness:
             return _Resp()
 
         import maistro.events.handlers as handlers_mod
+        from maistro.security._types import WardenVerdict
 
         class _FakeClient:
             post = staticmethod(fake_post)
+
+        class _AllowingWarden:
+            async def scan(self, content: str, boundary: str) -> WardenVerdict:
+                return WardenVerdict(clean=True)
 
         handlers_mod.set_service_client(_FakeClient())  # type: ignore[arg-type]
         try:
@@ -425,7 +430,7 @@ class TestEmitRobustness:
             )
             # payload is missing 'agent_id' → naive .format(**payload) raises KeyError.
             event = Event(event_type="warden_block", payload={"severity": "high"})
-            await conductor_chat_action(trigger, event)
+            await conductor_chat_action(trigger, event, warden=_AllowingWarden())  # type: ignore[arg-type]
         finally:
             handlers_mod.set_service_client(None)
 

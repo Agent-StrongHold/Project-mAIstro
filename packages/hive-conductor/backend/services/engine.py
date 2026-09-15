@@ -26,7 +26,18 @@ DEFAULT_WORKSPACE_ID = "default"
 if TYPE_CHECKING:
     from config import Settings
 
-__all__ = ["EngineService", "TaskRecord", "get_engine", "start_engine", "stop_engine"]
+__all__ = [
+    "EngineService",
+    "TaskRecord",
+    "WardenCompositionUnavailable",
+    "get_engine",
+    "start_engine",
+    "stop_engine",
+]
+
+
+class WardenCompositionUnavailable(RuntimeError):
+    """The canonical Container security composition is not available."""
 
 
 class EngineService:
@@ -51,6 +62,23 @@ class EngineService:
         """The bound AgentPort, for boot seams that need the runtime itself
         (the roster materializer reads the bridge's container off it)."""
         return self._agent_port
+
+    @property
+    def warden(self) -> Any:
+        """Return the Warden owned by the canonical Container composition.
+
+        Routes must not construct a detector here: a bare instance would lose
+        configured layers such as the LLM judge. A missing Container is a
+        security wiring failure, not permission to fall back to regex-only
+        scanning.
+        """
+        container = getattr(self._agent_port, "container", None)
+        warden = getattr(container, "warden", None)
+        if warden is None:
+            raise WardenCompositionUnavailable(
+                "canonical Container Warden composition is unavailable"
+            )
+        return warden
 
     @property
     def capabilities(self) -> Any:
