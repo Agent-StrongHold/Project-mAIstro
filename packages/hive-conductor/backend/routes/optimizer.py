@@ -55,6 +55,8 @@ async def trigger_optimizer(
     against the actual DAG before being surfaced. Only strictly-improving
     mutations are proposed."""
     actor = _user_id(request)
+    org_id = str(getattr(request.state, "org_id", "") or "")
+    project_id = str(getattr(request.state, "project_id", "") or "")
     try:
         scope = await authorize_hive_dag_scope(workspace_id=workspace_id or "", user_id=actor)
     except DagWorkspaceSelectionError as exc:
@@ -62,7 +64,13 @@ async def trigger_optimizer(
             status_code=403, detail="DAG Workspace scope is not authorized"
         ) from exc
     try:
-        result = await run_optimizer(dag_id, actor=actor, apply_auto=apply_auto)
+        result = await run_optimizer(
+            dag_id,
+            actor=actor,
+            apply_auto=apply_auto,
+            org_id=org_id,
+            project_id=project_id,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
 

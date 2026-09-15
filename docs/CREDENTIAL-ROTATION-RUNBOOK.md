@@ -38,14 +38,18 @@ a substitute for revoking leaked upstream tokens.
 1. **Stop the Conductor.** Both procedures operate on files the running process
    holds open and caches in memory. A running Conductor will write stale state
    back over your work.
+
    ```bash
    docker compose stop hive-conductor      # or: systemctl stop hive-conductor
    ```
+
 2. **Back up the data directory** (encrypted, off-box). Rotation is atomic and
    verified, but a backup costs nothing:
+
    ```bash
    tar czf ~/conductor-backup-$(date -u +%Y%m%dT%H%M%SZ).tgz -C "$CONDUCTOR_DATA_DIR" .
    ```
+
    Treat that tarball as compromised material: it contains the *old* key. Delete
    it once rotation is confirmed.
 3. Know your data directory. It is `CONDUCTOR_DATA_DIR` from `backend/.env`
@@ -90,7 +94,7 @@ The previous master key is now useless. Restart the Conductor.
 Options:
 
 | Flag | Use |
-|------|-----|
+| ------ | ----- |
 | `--yes` | Actually perform the rotation. Without it, dry run. |
 | `--new-key <fernet-key>` | Rotate to a key you supply (e.g. one from your secret manager) instead of a generated one. |
 | `--show-key` | Print the new key to stdout. Needed when the key lives in an env var — see below. |
@@ -207,12 +211,90 @@ Check:
 
 ---
 
+## Standalone `users.toml` trust-root rotation and recovery
+
+Conductor production initialization does not use `UsersStore`; it initializes
+`PrivilegeGuard` directly. If another deployment still uses the deprecated standalone
+`maistro.privilege.UsersStore`, its `trusted_signing_key` must come from a
+host-owned secret source outside the data directory being verified.
+
+Rotate that trust root while the consumer is stopped. Fetch both secrets from
+the deployment's authenticated secret-management channel, then authenticate
+with the current key and re-sign before changing deployment configuration. The
+migration is built from the public API only — `users.toml` has no way to name,
+replace, or trigger a change of verification authority:
+
+```python
+import os
+import shutil
+
+from maistro.privilege import UsersStore, UsersTamperError
+
+# 1. Authenticate the current artifact under the CURRENT external secret.
+#    This constructor verifies the HMAC first; a tampered file or a wrong
+#    current secret raises UsersTamperError and the rotation must not proceed.
+verified = UsersStore(data_dir=data_dir, trusted_signing_key=current_key)
+verified_admin = verified.admin()
+# Derive the roster shape from the authenticated artifact, never from the
+# file's own metadata: a single-user roster (created with
+# allow_single_user=True) contains no secondary user, so a
+# user_by_public_key lookup for one would fail there.
+single_user_roster = len(verified.users()) == 1
+
+# 2. Move the authenticated artifact aside as a rollback backup, then
+#    re-sign the verified roster under the NEW external secret, preserving
+#    the derived roster shape. Constructing the new store while the old file
+#    is still in place would verify the stale artifact against the new key
+#    and fail closed with UsersTamperError.
+shutil.move(
+    os.path.join(data_dir, "users.toml"),
+    os.path.join(data_dir, "users.toml.pre-rotation"),
+)
+replacement = UsersStore(
+    data_dir=data_dir,
+    trusted_signing_key=new_key,
+    allow_single_user=single_user_roster,
+)
+if single_user_roster:
+    replacement.initialize(
+        admin_name=verified_admin.name,
+        admin_public_key=verified_admin.public_key,
+    )
+else:
+    # This expected identity is pinned in deployment inventory outside
+    # users.toml. Its absence from a two-user roster is a deployment
+    # mismatch, not a migration input: abort the rotation.
+    verified_user = verified.user_by_public_key(expected_user_public_key)
+    replacement.initialize(
+        admin_name=verified_admin.name,
+        admin_public_key=verified_admin.public_key,
+        user_name=verified_user.name,
+        user_public_key=verified_user.public_key,
+    )
+```
+
+After the re-signed file is in place, update the host secret file, keychain, or
+vault binding to inject `new_key`, restart, and confirm that constructing
+`UsersStore` with the new key succeeds. A wrong current secret raises
+`UsersTamperError` and leaves the file unchanged. The old key no longer
+verifies the re-signed file.
+
+If the current key is lost, stop and restore it from a trusted secret-manager
+version or offline backup, verify the existing file by constructing `UsersStore`
+with the restored key, and then perform the same authenticated rotation. There
+is no file-only recovery: changing the admin key, users, roles, permissions, or
+signature in `users.toml` cannot replace the external trust root.
+
+The HMAC trust root is distinct from the admin/user identity keys managed by
+`PrivilegeGuard.rotate_admin_key`; rotate both independently if both were
+compromised.
+
 ## What this does not cover
 
 - **Third-party tokens.** Revoke and reissue at the provider (see above).
-- **The admin/user privilege keys** (`maistro.privilege`, SPEC-012). Those are
+- **The admin/user identity keys** (`maistro.privilege`, SPEC-012). Those are
   separate; `rotate_admin_key` in `packages/maistro-core/src/maistro/privilege.py`
-  handles them.
+  handles them. The standalone `users.toml` HMAC trust root is covered above.
 - **The age-encrypted vault** (`maistro.vault`, SPEC-011). Separate key
   material; rotate per its own procedure.
 - **B2B service keys** (`maistro.auth`). Reissue from the auth store if the
@@ -223,7 +305,7 @@ Check:
 ## Where the code lives
 
 | Piece | Path |
-|-------|------|
+| ------- | ------ |
 | `rotate_master_key`, `repair_interrupted_rotation` | `packages/maistro-core/src/maistro/credentials/store.py` |
 | `maistro security` CLI | `packages/maistro-core/src/maistro/cli/_security.py` |
 | `purge_all_sessions` | `packages/hive-conductor/backend/stores.py` |
