@@ -35,6 +35,30 @@ _ALLOWED_FILTER_COLUMNS: frozenset[str] = frozenset(
 )
 
 
+def _build_filter_clause(
+    *, user_id: str | None, agent_id: str | None, org_id: str
+) -> tuple[str, list[Any]]:
+    """Build the exact-scope predicates and bound values for an audit read."""
+    filters = tuple(
+        (column, value)
+        for column, value in (
+            ("user_id", user_id),
+            ("agent_id", agent_id),
+            ("org_id", org_id),
+        )
+        if value is not None and (column == "org_id" or value)
+    )
+    invalid = next(
+        (column for column, _value in filters if column not in _ALLOWED_FILTER_COLUMNS), None
+    )
+    if invalid is not None:
+        raise ValueError(f"Invalid filter column: {invalid!r}")
+    return (
+        " AND ".join(f"{column} = ?" for column, _value in filters),
+        [value for _column, value in filters],
+    )
+
+
 class SqliteAuditLog:
     """SQLite-backed immutable audit log implementing the same protocol as PgAuditLog."""
 
@@ -101,23 +125,12 @@ class SqliteAuditLog:
         if org_id is None:
             raise ValueError("org_id cannot be None; pass '' for an unscoped read")
 
-        conditions: list[str] = []
-        params: list[Any] = []
-
-        filters: list[tuple[str, str]] = []
-        if user_id:
-            filters.append(("user_id", user_id))
-        if agent_id:
-            filters.append(("agent_id", agent_id))
-        filters.append(("org_id", org_id))
-
-        for col, value in filters:
-            if col not in _ALLOWED_FILTER_COLUMNS:
-                raise ValueError(f"Invalid filter column: {col!r}")
-            conditions.append(f"{col} = ?")  # nosec B608 - col is allowlist-validated
-            params.append(value)
-
-        where = " AND ".join(conditions) if conditions else "1=1"
+        where, params = _build_filter_clause(
+            user_id=user_id,
+            agent_id=agent_id,
+            org_id=org_id,
+        )
+        where = where or "1=1"
         params.append(limit)
         query = (
             f"SELECT timestamp, boundary, user_id, org_id, team_id, agent_id, tool_name, "
