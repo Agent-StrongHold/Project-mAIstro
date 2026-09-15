@@ -11,7 +11,7 @@ from maistro.graph.durable_runs.stores import (
 from maistro.runs.lifecycle import transition_node_run
 from maistro.runs.model import NodeRun, RunStatus
 
-from .._canonical_helpers import durable_record
+from .._canonical_helpers import durable_record, hitl_authorization
 
 
 def _record_for(run_id: str, **overrides: object):  # type: ignore[no-untyped-def]
@@ -71,21 +71,27 @@ async def test_list_for_project_respects_limit_and_ordering() -> None:
 async def test_submit_hitl_answer_missing_run_raises_keyerror() -> None:
     store = InMemoryDurableRunStore()
     with pytest.raises(KeyError, match="no such run"):
-        await store.submit_hitl_answer("missing", "n1", {"answer": "x"})
+        await store.submit_hitl_answer(
+            "missing", "n1", {"answer": "x"}, authorization=hitl_authorization()
+        )
 
 
 async def test_submit_hitl_answer_wrong_status_raises_valueerror() -> None:
     store = InMemoryDurableRunStore()
     await store.create(_record_for("r1", status=RunStatus.RUNNING))
     with pytest.raises(ValueError, match="not paused on HITL"):
-        await store.submit_hitl_answer("r1", "n1", {"answer": "x"})
+        await store.submit_hitl_answer(
+            "r1", "n1", {"answer": "x"}, authorization=hitl_authorization()
+        )
 
 
 async def test_submit_hitl_answer_wrong_node_raises_valueerror() -> None:
     store = InMemoryDurableRunStore()
     await store.create(_record_for("r1", status=RunStatus.PAUSED, active_node_id="ask"))
     with pytest.raises(ValueError, match="waiting on frontier"):
-        await store.submit_hitl_answer("r1", "wrong-node", {"answer": "x"})
+        await store.submit_hitl_answer(
+            "r1", "wrong-node", {"answer": "x"}, authorization=hitl_authorization()
+        )
 
 
 async def test_sqlite_create_collision_raises_valueerror(tmp_path) -> None:
@@ -135,27 +141,35 @@ async def test_sqlite_list_for_project_filters_and_limits(tmp_path) -> None:
 async def test_sqlite_submit_hitl_answer_missing_run_raises_keyerror(tmp_path) -> None:
     store = SqliteDurableRunStore(tmp_path / "durable.db")
     with pytest.raises(KeyError, match="no such run"):
-        await store.submit_hitl_answer("missing", "n1", {"answer": "x"})
+        await store.submit_hitl_answer(
+            "missing", "n1", {"answer": "x"}, authorization=hitl_authorization()
+        )
 
 
 async def test_sqlite_submit_hitl_answer_wrong_status_raises_valueerror(tmp_path) -> None:
     store = SqliteDurableRunStore(tmp_path / "durable.db")
     await store.create(_record_for("r1", status=RunStatus.RUNNING))
     with pytest.raises(ValueError, match="not paused on HITL"):
-        await store.submit_hitl_answer("r1", "n1", {"answer": "x"})
+        await store.submit_hitl_answer(
+            "r1", "n1", {"answer": "x"}, authorization=hitl_authorization()
+        )
 
 
 async def test_sqlite_submit_hitl_answer_wrong_node_raises_valueerror(tmp_path) -> None:
     store = SqliteDurableRunStore(tmp_path / "durable.db")
     await store.create(_record_for("r1", status=RunStatus.PAUSED, active_node_id="ask"))
     with pytest.raises(ValueError, match="waiting on frontier"):
-        await store.submit_hitl_answer("r1", "wrong-node", {"answer": "x"})
+        await store.submit_hitl_answer(
+            "r1", "wrong-node", {"answer": "x"}, authorization=hitl_authorization()
+        )
 
 
 async def test_sqlite_submit_hitl_answer_success_updates_record(tmp_path) -> None:
     store = SqliteDurableRunStore(tmp_path / "durable.db")
     await store.create(_record_for("r1", status=RunStatus.PAUSED, active_node_id="ask"))
-    updated = await store.submit_hitl_answer("r1", "ask", {"answer": "yes"})
+    updated = await store.submit_hitl_answer(
+        "r1", "ask", {"answer": "yes"}, authorization=hitl_authorization()
+    )
     assert updated.status is RunStatus.QUEUED
     assert updated.hitl_answers["ask"]["answer"] == "yes"
     assert updated.version == 2

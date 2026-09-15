@@ -29,9 +29,13 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from middleware.auth import resolve_principal
 from pydantic import BaseModel, ConfigDict, Field
-from services.workspace_authority import is_member, list_views_for_user
+from services.workspace_authority import is_member, list_workspace_ids_for_user
 
-from maistro.graph.durable_runs import expire_hitl_pauses
+from maistro.graph.durable_runs import (
+    HitlAuthenticatedSession,
+    HitlAuthorization,
+    expire_hitl_pauses,
+)
 from maistro.runs.model import RunStatus
 from routes.agents import ScanBudgetExceeded, scan_config
 from routes.audit import log_audit
@@ -93,6 +97,23 @@ async def _require_workspace_access(request: Request, workspace_id: str) -> None
         raise HTTPException(status_code=404, detail="run not found")
 
 
+async def _authorized_record(request: Request, run_id: str) -> Any:
+    """Resolve canonical execution state before authorizing or disclosing it."""
+    record = await _store().get(run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    await _require_workspace_access(request, record.run.workspace_id)
+    return record
+
+
+def _hitl_authorization(request: Request, workspace_ids: set[str]) -> HitlAuthorization:
+    """Carry live canonical membership into the durable mutation boundary."""
+    return HitlAuthorization.for_verified_session(
+        HitlAuthenticatedSession(_request_user_id(request), is_member),
+        workspace_ids,
+    )
+
+
 def _session_principal(request: Request) -> str:
     """The verified session principal behind this request, never "system".
 
@@ -119,7 +140,9 @@ def _pending_items(record: Any) -> list[PendingHumanWork]:
 
     A Run can be PAUSED with several nodes waiting independently, which the
     frontier tests already exercise, so this yields per node rather than per
-    Run — a queue keyed by Run would hide every pause after the first.
+    Run — a queue keyed by Run would hide every pause after the first. The
+    NodeRun check keeps a malformed continuation from exposing a pause that is
+    not present in canonical execution state.
     """
     pauses = record.graph_state.metadata.get("pauses")
     # `Mapping`, not `dict`: `GraphExecutionState` freezes its metadata, so the
@@ -127,8 +150,13 @@ def _pending_items(record: Any) -> list[PendingHumanWork]:
     # went in as. `_answer_record` in the store reads them the same way.
     if not isinstance(pauses, Mapping):
         return []
+    paused_nodes = {
+        node_run.node_id for node_run in record.node_runs if node_run.status is RunStatus.PAUSED
+    }
     items: list[PendingHumanWork] = []
     for node_id, pause in pauses.items():
+        if str(node_id) not in paused_nodes:
+            continue
         if not isinstance(pause, Mapping) or pause.get("kind") != _HUMAN_PAUSE_KIND:
             continue
         metadata = pause.get("metadata")
@@ -160,7 +188,7 @@ async def list_pending_human_work(
     # not the coarse `dags.write` route permission. Resolve every Workspace the
     # principal may see; selecting one default Workspace would hide legitimate
     # work, while omitting this filter leaks every tenant's paused payload.
-    allowed_workspace_ids = {workspace.id for workspace in await list_views_for_user(user_id)}
+    allowed_workspace_ids = set(await list_workspace_ids_for_user(user_id))
     if not allowed_workspace_ids:
         return []
 
@@ -185,13 +213,40 @@ async def list_pending_human_work(
     return [item for record in records for item in _pending_items(record)]
 
 
+@router.get("/{run_id}/{node_id}")
+async def inspect_human_work(run_id: str, node_id: str, request: Request) -> PendingHumanWork:
+    """Inspect one pending node only after canonical Workspace authorization."""
+    record = await _authorized_record(request, run_id)
+    for item in _pending_items(record):
+        if item.node_id == node_id:
+            return item
+    # Missing, foreign, terminal, and non-HITL nodes share one refusal so this
+    # detail door cannot become an existence oracle.
+    raise HTTPException(status_code=404, detail="run not found")
+
+
 @router.post("/expire")
-async def expire_human_work(limit: int = 100) -> dict[str, Any]:
-    """Run one bounded expiry tick against durable HITL deadlines."""
-    expired = await expire_hitl_pauses(_store(), limit=max(1, min(limit, 200)))
+async def expire_human_work(request: Request, limit: int = 100) -> dict[str, Any]:
+    """Run one bounded expiry tick against the caller's canonical Workspaces.
+
+    The expiry tick is still lifecycle work owned by the durable store, but an
+    HTTP caller is not a scheduler with global authority. Its effective
+    principal is resolved here and the canonical store filters the timeout
+    candidates before any settlement is requested.
+    """
+    user_id = _request_user_id(request)
+    authorization = _hitl_authorization(
+        request,
+        set(await list_workspace_ids_for_user(user_id)),
+    )
+    expired = await expire_hitl_pauses(
+        _store(),
+        limit=max(1, min(limit, 200)),
+        authorization=authorization,
+    )
     run_ids = [record.run_id for record in expired]
     if run_ids:
-        log_audit("hitl_expire", "system", detail={"run_ids": run_ids})
+        log_audit("hitl_expire", _session_principal(request), detail={"run_ids": run_ids})
     return {"expired": len(run_ids), "run_ids": run_ids}
 
 
@@ -199,12 +254,14 @@ async def expire_human_work(limit: int = 100) -> dict[str, Any]:
 async def cancel_human_work(run_id: str, node_id: str, request: Request) -> dict[str, Any]:
     """Request canonical cancellation of one durable human pause."""
     store = _store()
-    record = await store.get(run_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="run not found")
-    await _require_workspace_access(request, record.run.workspace_id)
+    record = await _authorized_record(request, run_id)
     try:
-        updated = await store.cancel_hitl(run_id, node_id)
+        updated = await store.cancel_hitl(
+            run_id,
+            node_id,
+            workspace_id=record.run.workspace_id,
+            authorization=_hitl_authorization(request, {record.run.workspace_id}),
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="run not found") from exc
     except ValueError as exc:
@@ -232,6 +289,11 @@ async def answer_human_work(
     is final, so a race between the read and the call surfaces as its error
     rather than as a wrong code.
     """
+    store = _store()
+    # Resolve and authorize the canonical target before validating or scanning
+    # answer content, so an unauthorized identifier cannot reach any answer
+    # handling branch.
+    record = await _authorized_record(request, run_id)
     answer = body.model_dump()
     if _RESERVED_ANSWER_KEY in answer:
         # Refused rather than silently overwritten: a responder naming the
@@ -241,11 +303,6 @@ async def answer_human_work(
             status_code=422, detail=f"{_RESERVED_ANSWER_KEY!r} is reserved for execution state"
         )
 
-    store = _store()
-    record = await store.get(run_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="run not found")
-    await _require_workspace_access(request, record.run.workspace_id)
     if record.run.status is not RunStatus.PAUSED:
         raise HTTPException(
             status_code=409, detail=f"run is {record.run.status.value}, not paused on human input"
@@ -273,7 +330,13 @@ async def answer_human_work(
         )
 
     try:
-        updated = await store.submit_hitl_answer(run_id, node_id, answer)
+        updated = await store.submit_hitl_answer(
+            run_id,
+            node_id,
+            answer,
+            workspace_id=record.run.workspace_id,
+            authorization=_hitl_authorization(request, {record.run.workspace_id}),
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="run not found") from exc
     except ValueError as exc:

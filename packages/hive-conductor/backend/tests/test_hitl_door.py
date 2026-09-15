@@ -183,6 +183,59 @@ def scoped_client():
         stores.users.pop("scope-user", None)
 
 
+async def test_hitl_membership_predicate_guards_mutation(seeded, monkeypatch) -> None:
+    """Removing the canonical membership predicate must kill this test."""
+    client, store, seed = seeded
+    await seed("hitl-membership-predicate")
+
+    import routes.hitl as hitl_routes
+
+    calls: list[tuple[str, str]] = []
+
+    async def deny_membership(user_id: str, workspace_id: str) -> bool:
+        calls.append((user_id, workspace_id))
+        return False
+
+    monkeypatch.setattr(hitl_routes, "is_member", deny_membership)
+    response = client.post(
+        "/v1/hitl/hitl-membership-predicate/ask/cancel",
+    )
+
+    assert response.status_code == 404
+    assert len(calls) == 1 and calls[0][0] and calls[0][1]
+    record = await store.get("hitl-membership-predicate")
+    assert record is not None and record.run.status is RunStatus.PAUSED
+
+
+async def test_hitl_mutation_rechecks_membership_at_the_store_boundary(seeded, monkeypatch) -> None:
+    """A revocation between target lookup and settlement must win."""
+    client, store, seed = seeded
+    import routes.hitl as hitl_routes
+
+    for run_id, action in (("hitl-answer-revoked", "answer"), ("hitl-cancel-revoked", "cancel")):
+        await seed(run_id)
+        checks: list[bool] = []
+
+        def membership_revoked_factory(checks: list[bool]):
+            async def membership_revoked(_user_id: str, _workspace_id: str) -> bool:
+                checks.append(True)
+                return len(checks) == 1
+
+            return membership_revoked
+
+        monkeypatch.setattr(hitl_routes, "is_member", membership_revoked_factory(checks))
+        if action == "answer":
+            response = client.post(f"/v1/hitl/{run_id}/ask/answer", json={"answer": "yes"})
+        else:
+            response = client.post(f"/v1/hitl/{run_id}/ask/cancel")
+        assert response.status_code == 404
+        assert len(checks) == 2
+        record = await store.get(run_id)
+        assert record is not None and record.run.status is RunStatus.PAUSED
+
+        monkeypatch.undo()
+
+
 async def test_hitl_routes_are_scoped_to_the_callers_workspaces(scoped_client) -> None:
     """A scoped writer cannot list, answer, or cancel another workspace's pause."""
     from services.dag_agents import get_run_store
@@ -228,12 +281,17 @@ async def test_hitl_routes_are_scoped_to_the_callers_workspaces(scoped_client) -
     try:
         pending = scoped_client.get("/v1/hitl/pending").json()
         assert {item["run_id"] for item in pending} == {mine_id, mine_second_id}
+        inspected = scoped_client.get(f"/v1/hitl/{mine_id}/ask")
+        assert inspected.status_code == 200
+        assert inspected.json()["project_id"] == "project-hitl"
+        assert scoped_client.get(f"/v1/hitl/{other_id}/ask").status_code == 404
 
         # A foreign id is indistinguishable from a missing id as well as being
         # unable to mutate it; otherwise this door leaks Run existence.
         assert (
             scoped_client.post(
-                f"/v1/hitl/{other_id}/ask/answer", json={"answer": "yes"}
+                f"/v1/hitl/{other_id}/ask/answer",
+                json={"answer": "yes", "_pause": {"forged": True}},
             ).status_code
             == 404
         )
@@ -320,9 +378,12 @@ async def test_an_unknown_run_is_404(seeded) -> None:
 async def test_a_run_that_is_not_paused_is_409(seeded) -> None:
     """Distinct from the unknown-run refusal, which is the point of mapping
     the store's three separately."""
-    client, store, seed = seeded
+    client, _store, seed = seeded
     await seed("hitl-not-paused")
-    await store.submit_hitl_answer("hitl-not-paused", "ask", {"answer": "first"})
+    assert (
+        client.post("/v1/hitl/hitl-not-paused/ask/answer", json={"answer": "first"}).status_code
+        == 200
+    )
 
     response = client.post("/v1/hitl/hitl-not-paused/ask/answer", json={"answer": "second"})
 
