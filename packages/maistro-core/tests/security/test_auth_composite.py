@@ -64,7 +64,7 @@ class TestCompositeAuthProvider:
         first = _FakeProvider("value_error")
         second = _FakeProvider("success", result="ctx3")
         composite = CompositeAuthProvider([first, second])
-        with pytest.raises(AuthError, match="infrastructure failure: ValueError"):
+        with pytest.raises(AuthError, match="Authentication infrastructure failure"):
             await composite.authenticate("token")
         assert second.calls == []
 
@@ -73,7 +73,7 @@ class TestCompositeAuthProvider:
         first = _FakeProvider("boom")
         second = _FakeProvider("success")
         composite = CompositeAuthProvider([first, second])
-        with pytest.raises(AuthError, match="Authentication infrastructure failure: RuntimeError"):
+        with pytest.raises(AuthError, match="Authentication infrastructure failure"):
             await composite.authenticate("token")
         assert second.calls == []
 
@@ -210,6 +210,32 @@ class TestCompositeAuthProvider:
             None, headers={"cookie": "maistro_session=valid-session-token"}
         )
         assert result.user_id == "cookie-user"
+
+    @pytest.mark.asyncio
+    async def test_rejection_audit_does_not_render_provider_exception_metadata(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        class CredentialLeakSentinel(AuthError):
+            pass
+
+        class _Provider:
+            async def authenticate(
+                self, authorization: str | None, headers: dict[str, str] | None = None
+            ) -> AuthContext:
+                raise CredentialLeakSentinel("provider detail")
+
+        composite = CompositeAuthProvider([_Provider()])
+        with (
+            caplog.at_level("INFO", logger="maistro.auth.composite"),
+            pytest.raises(CredentialLeakSentinel),
+        ):
+            await composite.authenticate("Bearer credential")
+        messages = [record.getMessage() for record in caplog.records]
+        assert any(
+            "auth_provider_rejected scheme=custom_provider" in message for message in messages
+        )
+        assert all("CredentialLeakSentinel" not in message for message in messages)
+        assert all("provider detail" not in message for message in messages)
 
     @pytest.mark.asyncio
     async def test_rejection_audit_names_scheme_without_credential(

@@ -73,24 +73,16 @@ class CompositeAuthProvider:
             except CredentialNotApplicable:
                 logger.info("auth_provider_not_applicable scheme=%s", scheme)
                 continue
-            except AuthError as error:
+            except AuthError:
                 # Recognition is terminal: an invalid credential must not be
-                # reinterpreted by a later provider.
-                logger.info(
-                    "auth_provider_rejected scheme=%s error_type=%s",
-                    scheme,
-                    type(error).__name__,
-                )
+                # reinterpreted by a later provider. Keep audit fields finite
+                # and credential-free; provider exception metadata is untrusted.
+                logger.info("auth_provider_rejected scheme=%s", scheme)
                 raise
             except Exception as error:
                 # Infrastructure failure (JWKS down, import error, etc.) — DO NOT fall through.
-                logger.error(
-                    "auth_provider_infrastructure_failure scheme=%s error_type=%s",
-                    scheme,
-                    type(error).__name__,
-                )
-                raise AuthError(
-                    f"Authentication infrastructure failure: {type(error).__name__}"
-                ) from error
+                # Do not expose arbitrary provider exception metadata in logs or errors.
+                logger.error("auth_provider_infrastructure_failure scheme=%s", scheme)
+                raise AuthError("Authentication infrastructure failure") from error
 
         raise AuthError("No authentication provider accepted the credentials")
