@@ -9,7 +9,7 @@ from maistro.graph.definitions import (
     TemplateProvenance,
 )
 from maistro.graph.execution_state import GraphEdgeDecision, GraphExecutionState
-from maistro.graph.executor import run_graph
+from maistro.graph.executor import execute_with_resilience
 from maistro.graph.harness_executor import HarnessExecutionError, HarnessNodeExecutor
 from maistro.graph.node import NodeExecutor
 from maistro.graph.node_types import (
@@ -98,7 +98,7 @@ __all__ = [
     "build_default_node_type_registry",
     "descriptor_to_template",
     "edge_decision_id",
+    "execute_with_resilience",
     "graph_state_hash",
-    "run_graph",
     "snapshot_to_template",
 ]

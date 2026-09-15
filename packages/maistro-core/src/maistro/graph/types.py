@@ -228,9 +228,8 @@ class GraphNodeResult(BaseModel):
     candidates: list[str] = Field(default_factory=list)
     selected_candidate: int = 0
     parallel_group: int | None = None
-    # Per-node telemetry — populated by run_graph when available; used by the
-    # optimizer for Phase 6 signal aggregation. Defaults keep existing tests
-    # untouched.
+    # Legacy optimizer telemetry retained as data fields; canonical durable
+    # execution records physical observations on Run/NodeRun/Attempt.
     latency_ms: int = 0
     error_code: str | None = None  # http_status / exception class / "timeout"
     model_used: str | None = None

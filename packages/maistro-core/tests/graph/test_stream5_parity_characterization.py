@@ -1,9 +1,8 @@
 """Characterization and migration-target tests for Stream 5 graph convergence.
 
-These tests deliberately separate behavior that is already authoritative in
-``GraphRun`` from known durable-executor gaps. Earlier revisions carried strict
-xfails for canonical behavior Stream 5 had not made real yet; every remaining
-case now passes, so this file records parity already won.
+These tests exercise traversal behavior on the canonical durable executor.
+They preserve graph-domain routing semantics without reviving the retired
+pre-durable lifecycle API.
 
 They must not be "fixed" by weakening the assertions or by teaching the tests
 about another temporary lifecycle model.
@@ -18,8 +17,6 @@ from pydantic import BaseModel
 from maistro.graph.durable_runs import InMemoryDurableRunStore, RunStatus
 from maistro.graph.durable_runs.executor import _next_node
 from maistro.graph.nodes.base import BaseNode, NodeContext, NodeResult
-from maistro.graph.run import _next_nodes
-from maistro.graph.types import AgentRole, GraphConfig, GraphEdge, ReviewOutput
 
 from ._canonical_helpers import graph_from_dag, run_legacy_dag_fixture
 
@@ -47,65 +44,8 @@ def _pass_resolver(node_id: str, dag: dict[str, object]) -> _PassNode:
     return _PassNode()
 
 
-def test_graphrun_conditional_routing_follows_matching_edge() -> None:
-    """GraphRun already provides the conditional semantics convergence keeps."""
-    config = GraphConfig(
-        nodes=[AgentRole.PLANNER, AgentRole.CODER, AgentRole.REVIEWER],
-        edges=[
-            GraphEdge(
-                from_role=AgentRole.PLANNER,
-                to_role=AgentRole.CODER,
-                condition="review.approved == False",
-            ),
-            GraphEdge(
-                from_role=AgentRole.PLANNER,
-                to_role=AgentRole.REVIEWER,
-                condition="review.approved == True",
-            ),
-        ],
-    )
-
-    next_nodes = _next_nodes(
-        config,
-        AgentRole.PLANNER,
-        plan=None,
-        code=None,
-        review=ReviewOutput(approved=True),
-    )
-
-    assert next_nodes == [AgentRole.REVIEWER]
-
-
-def test_graphrun_frontier_contains_sequential_and_parallel_targets() -> None:
-    """A canonical persisted frontier must be able to represent this shape."""
-    config = GraphConfig(
-        nodes=[AgentRole.PLANNER, AgentRole.CODER, AgentRole.REVIEWER],
-        edges=[
-            GraphEdge(
-                from_role=AgentRole.PLANNER,
-                to_role=AgentRole.CODER,
-            ),
-            GraphEdge(
-                from_role=AgentRole.PLANNER,
-                to_role=AgentRole.REVIEWER,
-                parallel=True,
-            ),
-        ],
-    )
-
-    next_nodes = _next_nodes(
-        config,
-        AgentRole.PLANNER,
-        plan=None,
-        code=None,
-        review=None,
-    )
-
-    assert next_nodes == [AgentRole.CODER, AgentRole.REVIEWER]
-
-
 def test_durable_routing_rejects_false_condition() -> None:
-    """Durable routing uses the same predicate dialect as GraphRun."""
+    """Durable routing uses the canonical graph predicate dialect."""
     graph = graph_from_dag(
         {
             "nodes": [{"id": "start"}, {"id": "wrong"}, {"id": "right"}],

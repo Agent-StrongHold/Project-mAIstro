@@ -110,8 +110,8 @@ orchestrator's graph**, and a foreign harness can be **a node inside maistro's o
 
 - **Outbound** — a `HarnessRunner` provider wraps Pi/OpenClaw/Claude Code/etc.; maistro's
   `MasterOrchestrator` (`packages/maistro-core/src/maistro/orchestrator/master.py`) or graph
-  executor (ADR-062's `GraphRun`/`NodeRun`) can place that provider as a graph node alongside
-  native `NodeStrategy` implementations (PlannerStrategy, CoderStrategy, ReviewerStrategy, etc.).
+  executor can place that provider as a durable Graph node alongside native node
+  implementations (Planner, Coder, Reviewer, etc.), with canonical Run/NodeRun/Attempt evidence.
 - **Inbound** — a maistro instance exposes a small adapter server implementing the *same*
   `HarnessRunner` session protocol (`start_session` / `send` / `stream` / `stop`) over HTTP. Any
   orchestrator that speaks `HarnessRunner` — another maistro's `MasterOrchestrator`, or an

@@ -26,6 +26,12 @@ history:
 
 # ADR-062: Graph Execution Protocol
 
+> **Retirement note (#1154):** The pre-durable `GraphRun`/`run_graph` API described
+> by this historical protocol is retired. Canonical physical Graph execution uses
+> `maistro.graph.durable_runs.run_durable_graph`, which records Run/NodeRun/Attempt
+> evidence. The sections below preserve the original decision and provenance; they
+> are not an import or execution example for current callers.
+
 **Status:** Accepted
 **Date:** 2026-05-19
 **Tranche:** T4

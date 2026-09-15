@@ -26,7 +26,11 @@ owners:
 
 ## Finding addressed
 
-`GraphRun._execute` runs active node executions with `asyncio.gather(..., return_exceptions=True)` and then infers graph success from `NodeRun.phase`. The returned exception objects are not explicitly inspected.
+The retired pre-durable Graph executor ran active node executions with
+`asyncio.gather(..., return_exceptions=True)` and inferred graph success from
+`NodeRun.phase`. That implementation is no longer a supported execution path;
+canonical durable execution records physical outcomes on Attempt and settles
+NodeRun/Run through the durable lifecycle.
 
 ## Design
 
@@ -34,7 +38,7 @@ owners:
 2. Assert or convert any unexpected exception result into a failed node state with classified error metadata.
 3. Emit an event or diagnostic entry for unexpected node exceptions.
 4. Add tests for successful parallel nodes, one node raising unexpectedly, cancellation, and retry exhaustion.
-5. Keep `NodeRun.execute` responsible for node-local retries, but make `GraphRun` responsible for orchestration-level accounting.
+5. Keep Attempt execution responsible for physical retries, while canonical Run lifecycle owns orchestration-level accounting.
 
 ## Acceptance criteria
 
