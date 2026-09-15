@@ -337,18 +337,29 @@ class SqliteRunStore:
             return updated
 
     async def claim_delegation_transport_attempt(self, run_id: str) -> bool:
-        """Persist the transport boundary claim before making the call."""
+        """Persist the transport boundary claim before making the call.
+
+        The claim is a compare-and-set, not a read followed by an update. The
+        per-connection write lock protects callers sharing this store instance,
+        while the conditional UPDATE is the inter-replica fence: two SQLite
+        connections can otherwise both read the unclaimed payload before either
+        commits.
+        """
         async with self._write_lock:
-            run = await self._require_run(run_id)
-            if run.provenance.get("transport_attempted"):
-                return False
-            provenance = dict(run.provenance)
-            provenance["transport_attempted"] = True
-            updated = run.model_copy(update={"provenance": provenance})
-            await self._update_payload(
-                "canonical_runs", "run_id", run_id, updated.status.value, json_of(updated)
+            await self._require_run(run_id)
+            cursor = await self._conn.execute(
+                """UPDATE canonical_runs
+                   SET payload = json_set(
+                       payload, '$.provenance.transport_attempted', json('true')
+                   )
+                   WHERE run_id = ?
+                     AND COALESCE(
+                         json_extract(payload, '$.provenance.transport_attempted'), 0
+                     ) <> 1""",
+                (run_id,),
             )
-            return True
+            await self._conn.commit()
+            return cursor.rowcount == 1
 
     async def list_by_status(
         self,
