@@ -57,7 +57,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          curl --fail --silent --show-error http://127.0.0.1:8000/health/live >/dev/null
+          # Readiness races boot-time migration and first-time dependency
+          # resolution inside install.sh's stack: a single immediate
+          # /health/ready call fails when the engine is still applying the
+          # alembic chain (observed 2026-09-14 under runner load). Poll with a
+          # bounded budget; the final assertions stay fail-closed.
+          wait_ready() {
+            local url="$1"
+            for _ in $(seq 1 60); do
+              if curl --fail --silent --show-error "$url" >/dev/null 2>&1; then
+                return 0
+              fi
+              sleep 2
+            done
+            return 1
+          }
+          wait_ready http://127.0.0.1:8000/health/live
+          wait_ready http://127.0.0.1:8000/health/ready
+          wait_ready http://127.0.0.1:8101/health/ready
           curl --fail --silent --show-error http://127.0.0.1:8000/health/ready >/dev/null
           curl --fail --silent --show-error http://127.0.0.1:8101/health/ready >/dev/null
           docker compose exec -T postgres psql -U maistro -d maistro -Atc \

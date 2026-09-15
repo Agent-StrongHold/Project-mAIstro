@@ -33,6 +33,8 @@ REQUIRED_CHECKS_SCRIPT = REPO_ROOT / "scripts" / "check-required-checks.py"
 NON_EXECUTED = frozenset({"action_required", "stale", "skipped", "cancelled"})
 PENDING_EXIT = 2
 INTEGRATION_SCOPE_CHECK = "integration-scope"
+# These checks are covered by the aggregate merge-group legs rather than by
+# independent jobs on the synthetic queue SHA.
 MERGE_GROUP_SPECIALIZED_CHECKS = frozenset(
     {
         "docker-build",
@@ -52,6 +54,11 @@ MERGE_GROUP_SPECIALIZED_CHECKS = frozenset(
 # second set of path globs.  Keeping the filtering generic means a future
 # non-specialized required check gets the same skip handling without changing
 # the evaluator's verdict rules.
+# This job validates pull-request base policy from pull_request-only payload
+# fields. It intentionally cannot run on merge_group and must not be requested
+# as evidence for a synthetic queue SHA.
+MERGE_GROUP_PR_ONLY_CHECKS = frozenset({"pr-base"})
+
 PATH_SCOPED_CHECKS = {
     "postgres (pg17)": "postgres",
     "postgres (pg18)": "postgres",
@@ -84,6 +91,7 @@ def required_check_names(
         names -= {name for _workflow, name in module.base_coupled(rows)}
     if event_name == "merge_group":
         names -= MERGE_GROUP_SPECIALIZED_CHECKS
+        names -= MERGE_GROUP_PR_ONLY_CHECKS
         names.add(INTEGRATION_SCOPE_CHECK)
     return sorted(names)
 
@@ -182,8 +190,15 @@ def evaluate(
     return verdict
 
 
+def _read_json(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{path}: unreadable JSON payload") from exc
+
+
 def _load(path: Path) -> list[dict[str, Any]]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = _read_json(path)
     runs: Any
     if isinstance(payload, list):
         runs = payload
@@ -208,8 +223,14 @@ def _load_scope_classifier() -> Any:
 
 
 def _pull_request_scope(path: Path) -> tuple[dict[str, bool] | None, bool]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict) or payload.get("measured") is not True:
+    try:
+        payload = _read_json(path)
+    except ValueError:
+        return None, False
+    if not isinstance(payload, dict):
+        return None, False
+    measured = payload.get("measured")
+    if type(measured) is not bool or not measured:
         return None, False
     changed_files = payload.get("files")
     if not isinstance(changed_files, list) or not all(
