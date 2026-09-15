@@ -2,7 +2,7 @@
 
 Issue: #752 (child of #311)
 
-This document records the implementation and evidence boundary for Deck Builder HTML/SVG sanitization.
+This document records the Deck-specific evidence for the shared Design Studio HTML/SVG rendering boundary. The shared contract is documented in `docs/security/design-studio-visual-artifact-rendering.md`.
 
 ## Security objective
 
@@ -18,7 +18,7 @@ The existing `/decks` route/navigation containment remains in place until parent
 
 ## Implemented boundary
 
-- `frontend/src/lib/deckSanitizer.ts` defines the single Deck HTML/SVG allowlist. It strips executable elements/attributes, active or remote URL schemes, and CSS network/code primitives while retaining the supported presentation subset.
+- `frontend/src/lib/visualArtifactRenderer.ts` defines the single Design Studio HTML/SVG allowlist. Deck imports it directly; `frontend/src/lib/deckSanitizer.ts` contains compatibility exports only. It strips executable elements/attributes, active or remote URL schemes, and CSS network/code primitives while retaining the supported presentation subset.
 - Sanitization is applied to model-authored slide markup, slide-state updates, editable preview state, presentation rendering, built-in templates, and HTML export.
 - Rich paste and drop prevent the browser's default insertion/navigation behavior and sanitize before any untrusted HTML reaches the live DOM.
 - Exported document titles are escaped as text before interpolation.
@@ -26,7 +26,7 @@ The existing `/decks` route/navigation containment remains in place until parent
 
 ## Adversarial browser evidence
 
-`packages/hive-conductor/tests/e2e/deck-sanitization.spec.ts` mounts the real Deck Builder component and sanitizer without exposing the still-contained `/decks` product route. The browser suite proves:
+`packages/hive-conductor/tests/e2e/deck-sanitization.spec.ts` mounts the real Deck Builder, fixed-page editor, and shared sanitizer without exposing the still-contained `/decks` product route. The browser suite proves:
 
 - hostile model-authored HTML/SVG cannot execute script, insert active elements, navigate, or emit attacker network requests in preview or presentation mode;
 - rich clipboard/drop HTML is sanitized before insertion and remains safe through export;
