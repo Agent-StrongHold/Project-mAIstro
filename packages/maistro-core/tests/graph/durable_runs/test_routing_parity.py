@@ -11,7 +11,7 @@ from maistro.graph.nodes.base import NodeResult
 from maistro.runs.lifecycle import transition_node_run
 from maistro.runs.model import NodeRun, RunStatus
 
-from .._canonical_helpers import durable_record, graph_from_dag
+from .._canonical_helpers import completed_node_run, durable_record, graph_from_dag
 
 
 class _Review(BaseModel):
@@ -144,16 +144,13 @@ def test_condition_can_read_prior_canonical_node_output() -> None:
     node_run = NodeRun(run_id="r-routing", node_id="planner", ordinal=1)
     node_run = transition_node_run(node_run, RunStatus.QUEUED)
     node_run = transition_node_run(node_run, RunStatus.RUNNING)
-    node_run = transition_node_run(
-        node_run,
-        RunStatus.COMPLETED,
-        result={"summary": "ready"},
-    )
+    node_run, attempt = completed_node_run(node_run, result={"summary": "ready"})
     record = durable_record(
         dag,
         run_id="r-routing",
         active_node_id="coder",
         node_runs=(node_run,),
+        attempts=(attempt,),
     )
     graph = graph_from_dag(dag)
 

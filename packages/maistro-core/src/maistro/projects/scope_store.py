@@ -86,7 +86,14 @@ class ProjectScopeStore(Protocol):
         ...
 
     async def set_membership(self, membership: ProjectMembership) -> ProjectMembership:
-        """Create or replace a Project-scoped membership."""
+        """Create or update the one canonical membership for this principal.
+
+        Keyed on `(project_id, principal_id)`, not on `membership_id`: a
+        second call for the same principal at the same Project replaces the
+        existing row -- carrying its original `membership_id` and
+        `created_at` forward -- rather than adding a second, independent
+        grant no later call can ever fully retract (#1148).
+        """
 
         ...
 
@@ -94,6 +101,15 @@ class ProjectScopeStore(Protocol):
         self, project_id: str, *, principal_id: str | None = None
     ) -> list[ProjectMembership]:
         """List memberships at one Project, optionally for one principal."""
+
+        ...
+
+    async def remove_membership(self, project_id: str, *, principal_id: str) -> None:
+        """Revoke a principal's membership at one Project.
+
+        A no-op when the principal has no membership there: revocation is
+        idempotent the same way `WorkspaceStore.remove_membership` is.
+        """
 
         ...
 
@@ -140,7 +156,9 @@ class InMemoryProjectScopeStore:
 
         self._projects: dict[str, Project] = {}
         self._root_by_workspace: dict[str, str] = {}
-        self._memberships: dict[str, ProjectMembership] = {}
+        # Keyed on (project_id, principal_id), not membership_id: see
+        # `set_membership`'s docstring (#1148).
+        self._memberships: dict[tuple[str, str], ProjectMembership] = {}
         self._resources: dict[str, ProjectScopedResource] = {}
         # Set by the wiring once a Run store exists, so `delete()` refuses a
         # Project that owns Runs. A callable rather than the store itself: this
@@ -320,13 +338,21 @@ class InMemoryProjectScopeStore:
         return resolved
 
     async def set_membership(self, membership: ProjectMembership) -> ProjectMembership:
-        """Create or replace a membership after validating Project ownership."""
+        """Create or update the one canonical membership per (project, principal)."""
 
         project = self._require(membership.project_id)
         if project.workspace_id != membership.workspace_id:
             raise ProjectIntegrityError("ProjectMembership Workspace does not match Project")
-        updated = membership.model_copy(update={"updated_at": datetime.now(UTC)})
-        self._memberships[membership.membership_id] = updated
+        key = (membership.project_id, membership.principal_id)
+        existing = self._memberships.get(key)
+        updated = membership.model_copy(
+            update={
+                "membership_id": existing.membership_id if existing else membership.membership_id,
+                "created_at": existing.created_at if existing else membership.created_at,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        self._memberships[key] = updated
         return updated.model_copy(deep=True)
 
     async def memberships_for(
@@ -346,6 +372,11 @@ class InMemoryProjectScopeStore:
         ]
         memberships.sort(key=lambda item: (item.created_at, item.membership_id))
         return memberships
+
+    async def remove_membership(self, project_id: str, *, principal_id: str) -> None:
+        """Revoke a principal's membership at one Project, if any exists."""
+
+        self._memberships.pop((project_id, principal_id), None)
 
     async def put_resource(self, resource: ProjectScopedResource) -> ProjectScopedResource:
         """Create or replace a Project resource without crossing Workspaces."""
@@ -403,12 +434,12 @@ class InMemoryProjectScopeStore:
             for project in self._projects.values()
             if project.workspace_id == workspace_id
         }
-        for membership_id in [
-            membership_id
-            for membership_id, membership in self._memberships.items()
+        for key in [
+            key
+            for key, membership in self._memberships.items()
             if membership.workspace_id == workspace_id
         ]:
-            del self._memberships[membership_id]
+            del self._memberships[key]
         for resource_id in [
             resource_id
             for resource_id, resource in self._resources.items()
