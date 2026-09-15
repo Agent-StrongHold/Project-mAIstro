@@ -350,7 +350,10 @@ class InMemoryDurableRunStore:
         for record in rows:
             if (
                 record.run.workspace_id in authorization.workspace_ids
-                and await authorization.permits(record.run.workspace_id)
+                and await authorization.permits(
+                    record.run.workspace_id,
+                    consume_evidence=False,
+                )
             ):
                 visible.append(_clone(record))
                 if len(visible) >= limit:
@@ -380,7 +383,10 @@ class InMemoryDurableRunStore:
                 raise KeyError(f"no such run: {run_id!r}")
             if workspace_id is not None and record.run.workspace_id != workspace_id:
                 raise KeyError(f"run {run_id!r} is outside the requested Workspace")
-            if not await authorization.permits(record.run.workspace_id):
+            if not await authorization.permits(
+                record.run.workspace_id,
+                consume_evidence=True,
+            ):
                 raise KeyError(f"run {run_id!r} is outside the authorized Workspace")
             updated = answer_record(record, node_id, answer, at=at)
             self._rows[run_id] = updated
@@ -403,7 +409,10 @@ class InMemoryDurableRunStore:
                 raise KeyError(f"no such run: {run_id!r}")
             if workspace_id is not None and record.run.workspace_id != workspace_id:
                 raise KeyError(f"run {run_id!r} is outside the requested Workspace")
-            if not await authorization.permits(record.run.workspace_id):
+            if not await authorization.permits(
+                record.run.workspace_id,
+                consume_evidence=True,
+            ):
                 raise KeyError(f"run {run_id!r} is outside the authorized Workspace")
             updated = settle_hitl_record(record, node_id, "timed_out", at=at)
             self._rows[run_id] = updated
@@ -426,7 +435,10 @@ class InMemoryDurableRunStore:
                 raise KeyError(f"no such run: {run_id!r}")
             if workspace_id is not None and record.run.workspace_id != workspace_id:
                 raise KeyError(f"run {run_id!r} is outside the requested Workspace")
-            if not await authorization.permits(record.run.workspace_id):
+            if not await authorization.permits(
+                record.run.workspace_id,
+                consume_evidence=True,
+            ):
                 raise KeyError(f"run {run_id!r} is outside the authorized Workspace")
             updated = settle_hitl_record(record, node_id, "cancelled", at=at)
             self._rows[run_id] = updated
@@ -600,7 +612,10 @@ class SqliteDurableRunStore:
                 seen.add(record.run_id)
                 if (
                     record.run.workspace_id in authorization.workspace_ids
-                    and await authorization.permits(record.run.workspace_id)
+                    and await authorization.permits(
+                        record.run.workspace_id,
+                        consume_evidence=False,
+                    )
                 ):
                     visible.append(record)
                     if len(visible) >= limit:
@@ -685,7 +700,10 @@ class SqliteDurableRunStore:
         record = await self.get(run_id)
         if record is None:
             raise KeyError(f"no such run: {run_id!r}")
-        if not await authorization.permits(record.run.workspace_id):
+        if not await authorization.permits(
+            record.run.workspace_id,
+            consume_evidence=True,
+        ):
             raise KeyError(f"run {run_id!r} is outside the authorized Workspace")
 
 

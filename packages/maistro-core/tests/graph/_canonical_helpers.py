@@ -8,6 +8,7 @@ from typing import Any
 
 from maistro.graph.definitions import Edge, Graph, Node
 from maistro.graph.durable_runs import (
+    HitlAuthenticatedSession,
     HitlAuthorization,
     resume_durable_graph,
     run_durable_graph,
@@ -37,8 +38,8 @@ async def _allow_test_hitl_membership(_principal: str, _workspace_id: str) -> bo
 
 def hitl_authorization() -> HitlAuthorization:
     """Explicit test principal covering the canonical fixture Workspaces."""
-    return HitlAuthorization.for_authenticated_principal(
-        "test-hitl-operator",
+    return HitlAuthorization.for_verified_session(
+        HitlAuthenticatedSession("test-hitl-operator", _allow_test_hitl_membership),
         {
             "test-workspace",
             "ws-canonical-store",
@@ -46,7 +47,6 @@ def hitl_authorization() -> HitlAuthorization:
             "ws-hitl-deadline",
             "ws-hitl-canonical-deadline",
         },
-        membership_check=_allow_test_hitl_membership,
     )
 
 

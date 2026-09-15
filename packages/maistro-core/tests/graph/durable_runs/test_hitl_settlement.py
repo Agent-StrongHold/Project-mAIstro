@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from maistro.graph import Graph, Node
 from maistro.graph.durable_runs import (
     CanonicalDurableRunStore,
+    HitlAuthenticatedSession,
     HitlAuthorization,
     HitlAuthorizationRequired,
     HitlDelegationEvidence,
@@ -56,8 +57,8 @@ async def _allow_test_membership(_principal: str, _workspace_id: str) -> bool:
 
 
 def _test_authorization() -> HitlAuthorization:
-    return HitlAuthorization.for_authenticated_principal(
-        "test-hitl-operator",
+    return HitlAuthorization.for_verified_session(
+        HitlAuthenticatedSession("test-hitl-operator", _allow_test_membership),
         {
             "test-workspace",
             "ws-hitl-reconcile",
@@ -66,7 +67,6 @@ def _test_authorization() -> HitlAuthorization:
             "owned-workspace",
             "foreign-workspace",
         },
-        membership_check=_allow_test_membership,
     )
 
 
@@ -556,10 +556,9 @@ async def test_two_workspace_late_race_cannot_settle_foreign_pause() -> None:
     store = InMemoryDurableRunStore()
     await store.create(_paused_record("owned-race", workspace_id="owned-workspace"))
     await store.create(_paused_record("foreign-race", workspace_id="foreign-workspace"))
-    authorization = HitlAuthorization.for_authenticated_principal(
-        "member-user",
+    authorization = HitlAuthorization.for_verified_session(
+        HitlAuthenticatedSession("member-user", _allow_test_membership),
         ["owned-workspace"],
-        membership_check=_allow_test_membership,
     )
 
     results = await asyncio.gather(
@@ -998,10 +997,9 @@ async def test_scoped_expiry_requires_effective_principal_and_keeps_foreign_run_
             authorization=_test_authorization(),
         )
 
-    authorization = HitlAuthorization.for_authenticated_principal(
-        "member-user",
+    authorization = HitlAuthorization.for_verified_session(
+        HitlAuthenticatedSession("member-user", _allow_test_membership),
         ["owned-workspace"],
-        membership_check=_allow_test_membership,
     )
     expired = await expire_hitl_pauses(store, now=_AFTER, authorization=authorization)
 
@@ -1022,6 +1020,14 @@ async def test_scoped_expiry_requires_effective_principal_and_keeps_foreign_run_
 def test_scoped_hitl_expiry_rejects_missing_principal(factory, expected):
     with pytest.raises(ValueError, match=expected):
         factory()
+
+
+def test_authenticated_hitl_requires_typed_session_evidence() -> None:
+    with pytest.raises(TypeError):
+        HitlAuthorization.for_verified_session(  # type: ignore[arg-type]
+            "service",
+            ["owned-workspace"],
+        )
 
 
 def test_delegated_hitl_requires_typed_evidence() -> None:
@@ -1081,6 +1087,45 @@ async def test_delegated_hitl_validates_and_consumes_bound_evidence() -> None:
     assert settled.status is RunStatus.CANCELLED
     assert validations == ["hitl-token-1"]
     assert consumed == ["hitl-token-1"]
+
+
+async def test_delegated_expiry_does_not_consume_evidence_during_discovery() -> None:
+    """Due-list visibility must leave one-use authority for timeout settlement."""
+    store = InMemoryDurableRunStore()
+    await store.create(_paused_record("delegated-expiry", workspace_id="owned-workspace"))
+    evidence = HitlDelegationEvidence(
+        issuer="did:key:issuer",
+        subject="service",
+        workspace_ids=frozenset({"owned-workspace"}),
+        actions=frozenset({"hitl.settle"}),
+        expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        token_id="hitl-expiry-token",
+    )
+    validations: list[str] = []
+    consumed: list[str] = []
+
+    async def validate(token: HitlDelegationEvidence) -> bool:
+        validations.append(token.token_id)
+        return True
+
+    async def consume(token: HitlDelegationEvidence) -> None:
+        consumed.append(token.token_id)
+
+    authorization = HitlAuthorization.for_delegated_service(
+        "service",
+        ["owned-workspace"],
+        delegation_evidence=evidence,
+        evidence_validator=validate,
+        evidence_consumer=consume,
+        membership_check=_allow_test_membership,
+    )
+
+    expired = await expire_hitl_pauses(store, now=_AFTER, authorization=authorization)
+
+    assert [record.run_id for record in expired] == ["delegated-expiry"]
+    assert (await store.get("delegated-expiry")).status is RunStatus.TIMED_OUT
+    assert validations == ["hitl-expiry-token", "hitl-expiry-token"]
+    assert consumed == ["hitl-expiry-token"]
 
 
 @pytest.mark.parametrize("backend", ["memory", "sqlite"])

@@ -399,12 +399,16 @@ class CanonicalDurableRunStore:
             run_ids = await self._continuations.list_hitl_due_run_ids(now=now, limit=requested)
             due = []
             for record in await self._assemble_all(run_ids):
-                candidate = await self._reconcile_hitl_due_candidate(record, now)
-                if (
-                    candidate is not None
-                    and candidate.run.workspace_id in authorization.workspace_ids
-                    and await authorization.permits(candidate.run.workspace_id)
+                workspace_id = record.run.workspace_id
+                if workspace_id not in authorization.workspace_ids:
+                    continue
+                if not await authorization.permits(
+                    workspace_id,
+                    consume_evidence=False,
                 ):
+                    continue
+                candidate = await self._reconcile_hitl_due_candidate(record, now)
+                if candidate is not None:
                     due.append(candidate)
             if len(due) >= limit or len(run_ids) < requested:
                 break
@@ -513,7 +517,10 @@ class CanonicalDurableRunStore:
                 raise KeyError(f"no such run: {run_id!r}")
             if workspace_id is not None and current.run.workspace_id != workspace_id:
                 raise KeyError(f"run {run_id!r} is outside the requested Workspace")
-            if not await authorization.permits(current.run.workspace_id):
+            if not await authorization.permits(
+                current.run.workspace_id,
+                consume_evidence=True,
+            ):
                 raise KeyError(f"run {run_id!r} is outside the authorized Workspace")
             updated = mutate(current)
             await self._continuations.update(GraphContinuation.of(updated))

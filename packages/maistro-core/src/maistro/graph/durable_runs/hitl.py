@@ -35,6 +35,23 @@ HitlEvidenceConsumer = Callable[["HitlDelegationEvidence"], Awaitable[None]]
 
 
 @dataclass(frozen=True)
+class HitlAuthenticatedSession:
+    """Verified session evidence supplied by an HTTP/authentication boundary.
+
+    Core cannot authenticate a cookie or bearer token itself. The boundary must
+    first resolve the session and then pass this typed effective-principal
+    evidence; service callers instead use :class:`HitlDelegationEvidence`.
+    """
+
+    effective_principal: str
+    membership_check: WorkspaceMembershipCheck
+
+    def __post_init__(self) -> None:
+        if not self.effective_principal.strip():
+            raise ValueError("HITL session evidence requires an effective principal")
+
+
+@dataclass(frozen=True)
 class HitlDelegationEvidence:
     """Validated shape of a service delegation capability.
 
@@ -115,15 +132,19 @@ class HitlAuthorization:
             raise ValueError("delegated HITL authorization requires validation and consumption")
 
     @classmethod
-    def for_authenticated_principal(
+    def for_verified_session(
         cls,
-        effective_principal: str,
+        session: HitlAuthenticatedSession,
         workspace_ids: Collection[str],
-        *,
-        membership_check: WorkspaceMembershipCheck,
     ) -> HitlAuthorization:
-        """Bind a live canonical membership predicate to a verified session."""
-        return cls(effective_principal, frozenset(workspace_ids), membership_check)
+        """Bind canonical Workspace scope to evidence from an auth boundary."""
+        if not isinstance(session, HitlAuthenticatedSession):
+            raise TypeError("HITL authorization requires typed session evidence")
+        return cls(
+            session.effective_principal,
+            frozenset(workspace_ids),
+            session.membership_check,
+        )
 
     @classmethod
     def for_delegated_service(
@@ -148,8 +169,13 @@ class HitlAuthorization:
             action,
         )
 
-    async def permits(self, workspace_id: str) -> bool:
-        """Revalidate membership and any delegated authority for one Workspace."""
+    async def permits(self, workspace_id: str, *, consume_evidence: bool = False) -> bool:
+        """Revalidate membership and delegated authority for one Workspace.
+
+        Discovery only validates delegated evidence. Settlement passes
+        ``consume_evidence=True`` so one-use authority is not spent while
+        paging candidates that may later be rejected by canonical state.
+        """
         if workspace_id not in self.workspace_ids:
             return False
         if not await self.membership_check(self.effective_principal, workspace_id):
@@ -172,7 +198,8 @@ class HitlAuthorization:
             async with self._evidence_lock:
                 if not await validator(evidence):
                     return False
-                await consumer(evidence)
+                if consume_evidence:
+                    await consumer(evidence)
         except Exception:
             # An unavailable or already-consumed delegation is a denial, never
             # a reason to let the canonical store proceed without evidence.
@@ -408,6 +435,7 @@ async def expire_hitl_pauses(
 
 
 __all__ = [
+    "HitlAuthenticatedSession",
     "HitlAuthorization",
     "HitlAuthorizationRequired",
     "HitlDeadlineElapsed",
