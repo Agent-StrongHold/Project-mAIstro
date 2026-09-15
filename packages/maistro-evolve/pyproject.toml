@@ -8,7 +8,7 @@ version = "0.9.0"
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-dependencies = ["pydantic>=2.0,<3", "pyyaml>=6.0,<7", "httpx>=0.27,<1"]
+dependencies = ["pydantic>=2.4.0,<3", "pyyaml>=6.0,<7", "httpx>=0.27,<1"]
 
 # Dependencies of the vendored official IFEval verifier
 # (src/maistro_evolve/benchmarks/third_party/ifeval — see its NOTICE). An extra
@@ -27,7 +27,7 @@ dependencies = ["pydantic>=2.0,<3", "pyyaml>=6.0,<7", "httpx>=0.27,<1"]
 # Pre-fetch it when building the image — the scoring container is
 # network-denied by design, so a download at score time will fail.
 [project.optional-dependencies]
-ifeval = ["absl-py>=1.4", "immutabledict>=4.0", "nltk>=3.9", "langdetect>=1.0.9"]
+ifeval = ["absl-py>=1.4", "immutabledict>=4.0", "nltk>=3.10.3", "langdetect>=1.0.9"]
 
 [tool.hatch.build.targets.wheel]
 # hatchling ships every file under `packages`, including the vendored IFEval

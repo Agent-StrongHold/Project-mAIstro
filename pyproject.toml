@@ -10,7 +10,7 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.34",
     # Tool Protocol
-    "fastmcp>=2.0",
+    "fastmcp>=3.2.0",
     # Observability — vendor-neutral OpenTelemetry (see maistro-core[observability])
     "opentelemetry-api>=1.30",
     # Database
@@ -44,7 +44,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.3",
+    "pytest>=9.0.3",
     "pytest-asyncio>=0.25",
     "pytest-cov>=6.0",
     "ruff>=0.9",
@@ -114,7 +114,7 @@ s3 = [
 
 [dependency-groups]
 dev = [
-    "pytest>=8.3",
+    "pytest>=9.0.3",
     "pytest-asyncio>=0.25",
     "pytest-cov>=6.0",
     "ruff>=0.9",
