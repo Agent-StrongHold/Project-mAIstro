@@ -24,7 +24,6 @@ from maistro.capabilities.self_repair_rules import diagnose
 from maistro.capabilities.slots.infra import (
     ActionResult,
     ActionTier,
-    InfraAction,
     InfraHealth,
     InfraMonitor,
     tier_for,
@@ -42,30 +41,26 @@ logger = logging.getLogger("maistro.capabilities.self_repair")
 Autonomy = Literal["approve_all", "auto_safe", "detect_only"]
 
 
-InfraActionResolver = Callable[[], InfraAction | Awaitable[InfraAction | None] | None]
 InfraEffectInvoker = Callable[[str, dict[str, Any], str], Awaitable[ActionResult]]
 
 
 class RuleBasedRepair:
     """Baseline self_repair provider — rule-table diagnosis + safety governor.
 
-    The action is obtained through a resolver at dispatch time. Production
-    wiring supplies an Invocation-backed invoker, so this actor never retains
-    a provider instance whose capability may later be disabled.
+    Production wiring supplies an Invocation-backed invoker. The actor retains
+    no infra_action provider and cannot dispatch an effect outside that seam.
     """
 
     def __init__(
         self,
         *,
         infra_monitor: InfraMonitor | None,
-        infra_action_resolver: InfraActionResolver | None,
         effect_invoker: InfraEffectInvoker | None = None,
         governor: SafetyGovernor | None = None,
         autonomy: Autonomy = "auto_safe",
         max_actions_per_cycle: int = 2,
     ) -> None:
         self._monitor = infra_monitor
-        self._action_resolver = infra_action_resolver
         self._effect_invoker = effect_invoker
         self._governor = governor or SafetyGovernor()
         self._autonomy = autonomy
@@ -140,11 +135,7 @@ class RuleBasedRepair:
             return RepairResult(
                 proposal, RepairDecision.PROPOSE_ONLY, "escalated for human review"
             ), False
-        if (
-            self._autonomy == "detect_only"
-            or self._action_resolver is None
-            or self._effect_invoker is None
-        ):
+        if self._autonomy == "detect_only" or self._effect_invoker is None:
             detail = (
                 "autonomy=detect_only"
                 if self._autonomy == "detect_only"

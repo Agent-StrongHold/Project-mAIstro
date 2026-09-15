@@ -62,7 +62,6 @@ async def test_remediation_blocks_until_approved_then_hits_host() -> None:
     action = HostHealthAction(http, autonomy="approve_all", approval=inbox)
     repair = RuleBasedRepair(
         infra_monitor=_Monitor(),
-        infra_action_resolver=lambda: action,
         effect_invoker=_effect_invoker(action),
         autonomy="approve_all",
     )
@@ -96,7 +95,6 @@ async def test_denied_remediation_never_hits_host() -> None:
     action = HostHealthAction(http, autonomy="approve_all", approval=inbox)
     repair = RuleBasedRepair(
         infra_monitor=_Monitor(),
-        infra_action_resolver=lambda: action,
         effect_invoker=_effect_invoker(action),
         autonomy="approve_all",
     )

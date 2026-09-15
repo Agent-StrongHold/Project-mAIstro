@@ -80,16 +80,14 @@ def _effect_invoker(action: _FakeAction):
 
 
 def test_provider_satisfies_protocols() -> None:
-    p = RuleBasedRepair(
-        infra_monitor=_FakeMonitor(None), infra_action_resolver=lambda: _FakeAction()
-    )
+    p = RuleBasedRepair(infra_monitor=_FakeMonitor(None))
     assert isinstance(p, SelfRepair)
     assert isinstance(p, CapabilityProvider)
     assert p.slot == "self_repair"
 
 
 async def test_no_monitor_returns_empty_cycle() -> None:
-    p = RuleBasedRepair(infra_monitor=None, infra_action_resolver=lambda: _FakeAction())
+    p = RuleBasedRepair(infra_monitor=None)
     result = await p.run_once()
     assert result.results == []
 
@@ -101,7 +99,6 @@ async def test_healthy_snapshot_acts_on_nothing() -> None:
     )
     result = await RuleBasedRepair(
         infra_monitor=mon,
-        infra_action_resolver=lambda: action,
         effect_invoker=_effect_invoker(action),
     ).run_once()
     assert result.results == []
@@ -112,7 +109,6 @@ async def test_missing_invocation_boundary_suppresses_action() -> None:
     action = _FakeAction()
     result = await RuleBasedRepair(
         infra_monitor=_FakeMonitor(_unhealthy_container()),
-        infra_action_resolver=lambda: action,
         autonomy="auto_safe",
     ).run_once()
 
@@ -126,7 +122,6 @@ async def test_auto_safe_reversible_is_acted_inline() -> None:
     action = _FakeAction()
     p = RuleBasedRepair(
         infra_monitor=_FakeMonitor(_unhealthy_container()),
-        infra_action_resolver=lambda: action,
         effect_invoker=_effect_invoker(action),
         autonomy="auto_safe",
     )
@@ -142,7 +137,6 @@ async def test_reversible_needs_approval_under_approve_all_not_blocking() -> Non
     action = _FakeAction()
     p = RuleBasedRepair(
         infra_monitor=_FakeMonitor(_unhealthy_container()),
-        infra_action_resolver=lambda: action,
         effect_invoker=_effect_invoker(action),
         autonomy="approve_all",
     )
@@ -157,7 +151,6 @@ async def test_detect_only_dispatches_nothing() -> None:
     action = _FakeAction()
     p = RuleBasedRepair(
         infra_monitor=_FakeMonitor(_unhealthy_container()),
-        infra_action_resolver=lambda: action,
         effect_invoker=_effect_invoker(action),
         autonomy="detect_only",
     )
@@ -175,7 +168,6 @@ async def test_storage_is_propose_only() -> None:
     )
     result = await RuleBasedRepair(
         infra_monitor=_FakeMonitor(health),
-        infra_action_resolver=lambda: action,
         effect_invoker=_effect_invoker(action),
     ).run_once()
     (r,) = result.results
@@ -188,7 +180,6 @@ async def test_undiagnosed_is_recorded_not_acted() -> None:
     health = _health(docker=ResourceHealth("down", {"mystery": 1}))
     result = await RuleBasedRepair(
         infra_monitor=_FakeMonitor(health),
-        infra_action_resolver=lambda: action,
         effect_invoker=_effect_invoker(action),
     ).run_once()
     (r,) = result.results
@@ -212,7 +203,6 @@ async def test_per_cycle_action_cap() -> None:
     )
     p = RuleBasedRepair(
         infra_monitor=_FakeMonitor(health),
-        infra_action_resolver=lambda: action,
         effect_invoker=_effect_invoker(action),
         autonomy="auto_safe",
         max_actions_per_cycle=2,
@@ -233,7 +223,6 @@ async def test_in_flight_guard_across_cycles() -> None:
     action = _FakeAction(block=block)  # restart parks until released (approval-gated)
     p = RuleBasedRepair(
         infra_monitor=_FakeMonitor(_unhealthy_container()),
-        infra_action_resolver=lambda: action,
         effect_invoker=_effect_invoker(action),
         autonomy="approve_all",
     )
@@ -251,7 +240,6 @@ async def test_last_cycle_is_exposed_for_the_api() -> None:
     action = _FakeAction()
     p = RuleBasedRepair(
         infra_monitor=_FakeMonitor(_unhealthy_container()),
-        infra_action_resolver=lambda: action,
         effect_invoker=_effect_invoker(action),
     )
     assert p.last_cycle is None

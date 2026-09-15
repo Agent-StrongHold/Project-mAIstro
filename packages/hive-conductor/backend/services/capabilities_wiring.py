@@ -105,11 +105,7 @@ def _build_self_repair_effect_invoker(
     registry: CapabilityRegistry,
     effect_context: CapabilityEffectContext,
     binding: Binding,
-) -> tuple[Callable[[], Any], Callable[[str, dict[str, Any], str], Any]]:
-    async def resolve_action() -> InfraAction | None:
-        provider = await registry.resolve("infra_action")
-        return provider if isinstance(provider, InfraAction) else None
-
+) -> Callable[[str, dict[str, Any], str], Any]:
     async def invoke_action(action: str, params: dict[str, Any], effect_key: str) -> ActionResult:
         async def resolver(candidate: Binding) -> InfraAction | Unavailable:
             try:
@@ -124,8 +120,10 @@ def _build_self_repair_effect_invoker(
                 return Unavailable(slot="infra_action", reason="self_repair binding unavailable")
             if authorized.binding_id != binding.binding_id:
                 return Unavailable(slot="infra_action", reason="invalid self_repair binding")
-            provider = await resolve_action()
-            return provider or Unavailable(slot="infra_action", reason="infra_action unavailable")
+            provider = await registry.resolve("infra_action")
+            if not isinstance(provider, InfraAction):
+                return Unavailable(slot="infra_action", reason="infra_action unavailable")
+            return provider
 
         async def executor(provider: Any, request: Any) -> dict[str, Any]:
             if not isinstance(provider, InfraAction):
@@ -156,7 +154,7 @@ def _build_self_repair_effect_invoker(
             blocked_pending_approval=bool(invocation.result.get("blocked_pending_approval")),
         )
 
-    return resolve_action, invoke_action
+    return invoke_action
 
 
 def _register_self_repair(
@@ -177,13 +175,10 @@ def _register_self_repair(
     except Exception:
         logger.exception("self_repair disabled: failed to register its Binding")
         return
-    resolve_action, invoke_action = _build_self_repair_effect_invoker(
-        registry, effect_context, binding
-    )
+    invoke_action = _build_self_repair_effect_invoker(registry, effect_context, binding)
     registry.register(
         RuleBasedRepair(
             infra_monitor=monitor,
-            infra_action_resolver=resolve_action,
             effect_invoker=invoke_action,
             autonomy=config.infra_autonomy,
         )
