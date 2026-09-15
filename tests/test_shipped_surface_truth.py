@@ -237,6 +237,35 @@ await fetch(CHAT_PATH, { method: "POST", body: JSON.stringify(payload) });
     )
 
 
+def test_discovers_frontend_fetch_with_hoisted_options(tmp_path: Path) -> None:
+    """A named RequestInit object must not hide a mutating fetch (#1144)."""
+    _write(
+        tmp_path / "frontend/client.js",
+        """
+const opts = {
+  headers: {"Content-Type": "application/json"},
+  method: "POST",
+  body: JSON.stringify(payload),
+};
+fetch("/v1/runs", opts);
+""",
+    )
+    [surface] = discover_frontend_surfaces(tmp_path, ["frontend"])
+    assert (surface.signal, surface.method, surface.route) == (
+        "mutating-api-call",
+        "POST",
+        "/v1/runs",
+    )
+
+
+def test_unresolved_frontend_fetch_options_are_matrix_required(tmp_path: Path) -> None:
+    """An unreadable named options object may select a mutating method."""
+    _write(tmp_path / "frontend/client.js", 'fetch("/v1/runs", requestOptions);\n')
+    [surface] = discover_frontend_surfaces(tmp_path, ["frontend"])
+    assert surface.method == DYNAMIC_METHODS
+    assert surface.route == "/v1/runs"
+
+
 def test_unresolved_frontend_fetch_target_is_matrix_required(tmp_path: Path) -> None:
     _write(
         tmp_path / "frontend/client.js",

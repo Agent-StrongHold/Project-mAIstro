@@ -81,9 +81,15 @@ _JS_STRING_ASSIGNMENT_RE = re.compile(
     r"(?P<quote>['\"`])(?P<value>[^'\"`]+)(?P=quote)"
 )
 _JS_VARIABLE_FETCH_RE = re.compile(
-    r"fetch\s*\(\s*(?P<target>[A-Za-z_$][\w$]*)\s*,\s*\{(?P<opts>.*?)\}\s*\)",
+    r"fetch\s*\(\s*(?P<target>[A-Za-z_$][\w$]*)\s*,\s*"
+    r"(?P<options>[A-Za-z_$][\w$]*|\{(?P<object_opts>.*?)\})\s*\)",
     re.DOTALL,
 )
+_JS_LITERAL_VARIABLE_FETCH_RE = re.compile(
+    r"fetch\s*\(\s*(?P<quote>['\"`])(?P<route>[^'\"`]+)(?P=quote)\s*,\s*"
+    r"(?P<options>[A-Za-z_$][\w$]*)\s*\)",
+)
+_JS_OBJECT_ASSIGNMENT_RE = re.compile(r"\b(?:const|let|var)\s+(?P<name>[A-Za-z_$][\w$]*)\s*=\s*\{")
 # Express and router registrations are shipped backend handlers even when the
 # file lives beside a frontend bundle. They need a matrix disposition just like
 # Python routes; a non-literal first argument gets a line/digest stand-in.
@@ -577,6 +583,41 @@ def _js_string_bindings(text: str) -> dict[str, str]:
     }
 
 
+def _balanced_js_object_body(text: str, start: int) -> str | None:
+    depth = 1
+    quote: str | None = None
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in {"'", '"', "`"}:
+            quote = char
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:index]
+    return None
+
+
+def _js_object_bindings(text: str) -> dict[str, str]:
+    """Return literal object options that can be inspected without execution."""
+    bindings: dict[str, str] = {}
+    for match in _JS_OBJECT_ASSIGNMENT_RE.finditer(text):
+        body = _balanced_js_object_body(text, match.end())
+        if body is not None:
+            bindings[match.group("name")] = body
+    return bindings
+
+
 def _js_route_path(target: str, *, bindings: dict[str, str], line: int) -> str:
     target = target.strip()
     if len(target) >= 2 and target[0] in "'\"`" and target[-1] == target[0]:
@@ -587,7 +628,14 @@ def _js_route_path(target: str, *, bindings: dict[str, str], line: int) -> str:
     return f"<dynamic-route:{line}:{digest}>"
 
 
-def _js_fetch_method(options: str) -> str | None:
+def _js_fetch_method(options: str, *, object_bindings: dict[str, str] | None = None) -> str | None:
+    if object_bindings is not None and re.fullmatch(r"[A-Za-z_$][\w$]*", options):
+        bound = object_bindings.get(options)
+        if bound is None:
+            # An unknown options object may select POST at runtime. Keep the
+            # fetch in the matrix instead of silently treating it as GET.
+            return DYNAMIC_METHODS
+        options = bound
     literal = _METHOD_RE.search(options)
     if literal:
         return literal.group("method").upper()
@@ -600,13 +648,24 @@ def _js_fetch_method(options: str) -> str | None:
 
 def _mutating_fetches(text: str) -> set[tuple[str, str]]:
     bindings = _js_string_bindings(text)
+    object_bindings = _js_object_bindings(text)
     found: set[tuple[str, str]] = set()
     for match in _FETCH_RE.finditer(text):
         method = _js_fetch_method(match.group("opts"))
         if method:
             found.add((method, match.group("route")))
+    for match in _JS_LITERAL_VARIABLE_FETCH_RE.finditer(text):
+        method = _js_fetch_method(
+            match.group("options"),
+            object_bindings=object_bindings,
+        )
+        if method:
+            found.add((method, match.group("route")))
     for match in _JS_VARIABLE_FETCH_RE.finditer(text):
-        method = _js_fetch_method(match.group("opts"))
+        method = _js_fetch_method(
+            match.group("options"),
+            object_bindings=object_bindings,
+        )
         route = bindings.get(match.group("target"))
         if route is None:
             route = _js_route_path(
