@@ -245,6 +245,17 @@ test("rich paste and drop are sanitized before browser insertion, then export st
   expect(attackerRequests).toEqual([]);
 
   await putCaretAtEnd(preview);
+  const dragOverPrevented = await preview.evaluate((element) => {
+    const transfer = new DataTransfer();
+    transfer.setData("text/uri-list", "http://attacker.invalid/dragover");
+    return !element.dispatchEvent(new DragEvent("dragover", {
+      bubbles: true,
+      cancelable: true,
+      dataTransfer: transfer,
+    }));
+  });
+  expect(dragOverPrevented).toBe(true);
+
   const dropHostile = `<strong>Dropped safely</strong><iframe src="http://${ATTACKER}/drop"></iframe><a href="javascript:window.__deckPwned=8">bad</a>`;
   const dropPrevented = await preview.evaluate((element, payload) => {
     const transfer = new DataTransfer();

@@ -255,6 +255,7 @@ ${slides.map(s => `<div class="slide">${sanitizeDeckMarkup(s.html)}</div>`).join
           </div>
           <div ref={previewRef} contentEditable suppressContentEditableWarning
             onPaste={handlePreviewPaste}
+            onDragOver={e => e.preventDefault()}
             onDrop={handlePreviewDrop}
             onBlur={handlePreviewBlur}
             dangerouslySetInnerHTML={{ __html: sanitizeDeckMarkup(slides[active]?.html || "") }}
