@@ -9,15 +9,14 @@ substrate:
   - maistro-engine#ADR-038
   - maistro-engine#ADR-062
   - maistro-engine#ADR-070
-  - maistro-engine#ADR-071
-  - maistro-engine#SPEC-184
-implements:
-  - maistro-engine#ADR-071
+implements: []
 related:
   - maistro-engine#ADR-052
   - maistro-engine#ADR-056
   - maistro-engine#ADR-066
   - maistro-engine#SPEC-070226-b624
+  - maistro-engine#ADR-071
+  - maistro-engine#SPEC-184
 supersedes: []
 blocks: []
 blocked-by: []

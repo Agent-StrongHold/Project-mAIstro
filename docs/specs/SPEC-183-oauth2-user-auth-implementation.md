@@ -7,14 +7,13 @@ status: In Progress
 created: 2026-05-29
 accepted: null
 implemented: null
-substrate:
-  - maistro-engine#ADR-059
-implements:
-  - maistro-engine#ADR-059
+substrate: []
+implements: []
 related:
   - maistro-engine#ADR-020
   - maistro-engine#ADR-024
   - maistro-engine#SPEC-014
+  - maistro-engine#ADR-059
 contracts:
   - boundary
   - behavioral
@@ -47,7 +46,7 @@ history:
 
 # SPEC-183: OAuth2 user authentication — implementation
 
-Implements [ADR-059](../adr/ADR-059-oauth2-user-authentication.md). Replaces the fabricating `security/oauth.py` stub with a real Authorization-Code-+-PKCE flow whose output is a standard Hive session.
+Relates to [ADR-059](../adr/ADR-059-oauth2-user-authentication.md), which remains Proposed; this spec does not treat that draft decision as shipped authority. Replaces the fabricating `security/oauth.py` stub with a real Authorization-Code-+-PKCE flow whose output is a standard Hive session.
 
 ## Context
 

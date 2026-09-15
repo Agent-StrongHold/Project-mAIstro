@@ -361,5 +361,11 @@ def test_tooling_entries_are_in_the_committed_baseline(check):
 def test_the_gate_scripts_themselves_are_reachable(check):
     """A gate CI runs must never read as dead — that would be the alarm failing."""
     unreachable, _ = check.unreachable_modules()
-    for gate in ("check-reachability", "check-ac-state", "check-wiring-reads"):
+    for gate in (
+        "check-reachability",
+        "check-ac-state",
+        "check-wiring-reads",
+        "check-citation-status",
+        "check_direct_effects",
+    ):
         assert f"@tool/{gate}" not in unreachable

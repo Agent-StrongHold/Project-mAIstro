@@ -27,12 +27,14 @@ sys.path.insert(0, str(ROOT / "packages" / "maistro-registry" / "src"))
 
 from maistro_registry.citations import (  # noqa: E402
     ACTIVE_AUTHORITY_STATUSES,
+    ACTIVE_SOURCE_STATUSES,
     GOVERNING_FIELDS,
     CitationBaseline,
     CitationProblem,
     check_citations,
 )
 from maistro_registry.schema import FrontMatter, Status  # noqa: E402
+from maistro_registry.validator import validate_file  # noqa: E402
 
 
 def _doc(
@@ -84,7 +86,10 @@ def test_active_authority_is_accepted(target_status: Status) -> None:
 
 @pytest.mark.parametrize(
     "target_status",
-    [Status.PROPOSED, Status.DEPRECATED, Status.DEFERRED, Status.DENIED],
+    sorted(
+        (status for status in Status if status not in ACTIVE_AUTHORITY_STATUSES),
+        key=str,
+    ),
 )
 def test_inactive_authority_is_refused(target_status: Status) -> None:
     target = _doc("ADR-002", target_status)
@@ -104,6 +109,18 @@ def test_a_proposed_source_may_rest_on_a_proposed_decision() -> None:
     source = _doc("ADR-001", Status.PROPOSED, substrate=[_ref("ADR-002")])
 
     assert check_citations([source, target]) == []
+
+
+@pytest.mark.parametrize("source_status", sorted(Status, key=str))
+def test_only_active_sources_claim_live_authority(source_status: Status) -> None:
+    assert {Status.AC_DEFINED, Status.IN_PROGRESS} <= ACTIVE_SOURCE_STATUSES
+
+    target = _doc("ADR-002", Status.PROPOSED)
+    source = _doc("ADR-001", source_status, substrate=[_ref("ADR-002")])
+
+    problems = check_citations([source, target])
+
+    assert bool(problems) is (source_status in ACTIVE_SOURCE_STATUSES)
 
 
 @pytest.mark.parametrize("field_name", GOVERNING_FIELDS)
@@ -196,9 +213,27 @@ def test_a_chain_ending_somewhere_inactive_is_reported_at_its_end() -> None:
     assert "Deprecated" in problems[0].reason
 
 
+@pytest.mark.parametrize("replacement_status", [Status.ACCEPTED, Status.IMPLEMENTED])
+def test_contradictory_active_replacements_with_same_status_are_refused(
+    replacement_status: Status,
+) -> None:
+    """Two live claimants remain contradictory even when their statuses match."""
+    forked = _doc(
+        "ADR-002",
+        Status.SUPERSEDED,
+        superseded_by=[_ref("ADR-003"), _ref("ADR-004")],
+    )
+    one = _doc("ADR-003", replacement_status)
+    two = _doc("ADR-004", replacement_status)
+    source = _doc("ADR-001", Status.ACCEPTED, substrate=[_ref("ADR-002")])
+
+    problems = check_citations([source, forked, one, two])
+
+    assert "more than one active replacement" in problems[0].reason
+
+
 def test_contradictory_active_replacements_are_refused() -> None:
-    """ "Fails contradictory active authority": two live claimants to the same
-    superseded decision is not a chain, it is a fork nobody can follow."""
+    """Two live claimants to the same superseded decision are a fork."""
     forked = _doc(
         "ADR-002",
         Status.SUPERSEDED,
@@ -211,6 +246,41 @@ def test_contradictory_active_replacements_are_refused() -> None:
     problems = check_citations([source, forked, one, two])
 
     assert "more than one active replacement" in problems[0].reason
+
+
+def test_all_supersession_branches_are_checked_for_contradictory_authority() -> None:
+    """An immediate active replacement must not hide an active grandchild."""
+    forked = _doc(
+        "ADR-002",
+        Status.SUPERSEDED,
+        superseded_by=[_ref("ADR-003"), _ref("ADR-004")],
+    )
+    direct = _doc("ADR-003", Status.ACCEPTED)
+    indirect = _doc("ADR-004", Status.SUPERSEDED, superseded_by=[_ref("ADR-005")])
+    grandchild = _doc("ADR-005", Status.ACCEPTED)
+    source = _doc("ADR-001", Status.ACCEPTED, substrate=[_ref("ADR-002")])
+
+    problems = check_citations([source, forked, direct, indirect, grandchild])
+
+    assert len(problems) == 1
+    assert "more than one active replacement" in problems[0].reason
+    assert "ADR-003" in problems[0].reason
+    assert "ADR-005" in problems[0].reason
+
+
+def test_supersession_transition_requires_the_new_active_replacement() -> None:
+    """A replacement is invalid while Proposed and valid once Accepted."""
+    superseded = _doc("ADR-002", Status.SUPERSEDED, superseded_by=[_ref("ADR-003")])
+    proposed = _doc("ADR-003", Status.PROPOSED)
+    source = _doc("ADR-001", Status.ACCEPTED, substrate=[_ref("ADR-002")])
+
+    before = check_citations([source, superseded, proposed])
+    after = check_citations([source, superseded, _doc("ADR-003", Status.ACCEPTED)])
+
+    assert len(before) == 1
+    assert "Proposed" in before[0].reason
+    assert after[0].target == _ref("ADR-002")
+    assert "ADR-003" in after[0].reason
 
 
 def test_a_citation_to_a_document_that_does_not_exist_is_left_to_the_linker() -> None:
@@ -297,6 +367,91 @@ def test_the_gate_passes_on_the_committed_baseline() -> None:
     assert _gate_module().main([]) == 0
 
 
+def test_the_matrix_governing_column_rejects_a_proposed_authority(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _gate_module()
+    matrix = tmp_path / "CONVERGENCE-MATRIX.md"
+    matrix.write_text(
+        "<!-- matrix:disposition -->\n"
+        "| Subsystem | Real entry point | Unreachable | Disposition | Governing ADR/spec | Acceptance evidence | Dependencies |\n"
+        "|---|---|---|---|---|---|---|\n"
+        "| Demo | entry | `none` | KEEP | ADR-002 | evidence | — |\n"
+    )
+    monkeypatch.setattr(module, "MATRIX", matrix)
+
+    problems = module._matrix_problems([_doc("ADR-002", Status.PROPOSED)])
+
+    assert len(problems) == 1
+    assert problems[0].source == "matrix#Demo"
+    assert problems[0].field_name == "governing"
+    assert "Proposed" in problems[0].reason
+
+
+def test_the_matrix_historical_supersession_note_is_not_governing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _gate_module()
+    matrix = tmp_path / "CONVERGENCE-MATRIX.md"
+    matrix.write_text(
+        "<!-- matrix:disposition -->\n"
+        "| Subsystem | Real entry point | Unreachable | Disposition | Governing ADR/spec | Acceptance evidence | Dependencies |\n"
+        "|---|---|---|---|---|---|---|\n"
+        "| Demo | entry | `none` | KEEP | ADR-003 (supersedes ADR-002) | evidence | — |\n"
+    )
+    monkeypatch.setattr(module, "MATRIX", matrix)
+
+    old = _doc("ADR-002", Status.SUPERSEDED)
+    new = _doc("ADR-003", Status.ACCEPTED)
+
+    assert module._matrix_problems([old, new]) == []
+
+
+def test_the_matrix_authority_after_historical_parenthetical_is_checked(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _gate_module()
+    matrix = tmp_path / "CONVERGENCE-MATRIX.md"
+    matrix.write_text(
+        "<!-- matrix:disposition -->\n"
+        "| Subsystem | Real entry point | Unreachable | Disposition | Governing ADR/spec | Acceptance evidence | Dependencies |\n"
+        "|---|---|---|---|---|---|---|\n"
+        "| Demo | entry | `none` | KEEP | ADR-002 (historical ADR-001), ADR-003 | evidence | — |\n"
+    )
+    monkeypatch.setattr(module, "MATRIX", matrix)
+
+    historical = _doc("ADR-002", Status.ACCEPTED)
+    proposed = _doc("ADR-003", Status.PROPOSED)
+
+    problems = module._matrix_problems([historical, proposed])
+
+    assert len(problems) == 1
+    assert problems[0].target == _ref("ADR-003")
+    assert "Proposed" in problems[0].reason
+
+
+def test_the_matrix_superseded_authority_names_the_active_replacement(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _gate_module()
+    matrix = tmp_path / "CONVERGENCE-MATRIX.md"
+    matrix.write_text(
+        "<!-- matrix:disposition -->\n"
+        "| Subsystem | Real entry point | Unreachable | Disposition | Governing ADR/spec | Acceptance evidence | Dependencies |\n"
+        "|---|---|---|---|---|---|---|\n"
+        "| Demo | entry | `none` | KEEP | ADR-002 | evidence | — |\n"
+    )
+    monkeypatch.setattr(module, "MATRIX", matrix)
+
+    old = _doc("ADR-002", Status.SUPERSEDED, superseded_by=[_ref("ADR-003")])
+    new = _doc("ADR-003", Status.ACCEPTED)
+
+    problems = module._matrix_problems([old, new])
+
+    assert len(problems) == 1
+    assert "ADR-003" in problems[0].reason
+
+
 def test_the_gate_runs_as_a_script_too() -> None:
     """The in-process tests above measure it; this one proves the entry point
     a workflow actually invokes still works."""
@@ -313,6 +468,7 @@ def test_the_gate_fails_when_a_new_citation_appears(
 ) -> None:
     module = _gate_module()
     monkeypatch.setattr(module, "_load_baseline", lambda: CitationBaseline(entries=frozenset()))
+    monkeypatch.setattr(module, "check_citations", lambda _corpus: [_problem()])
 
     assert module.main([]) != 0
     assert "do not resolve to active authority" in capsys.readouterr().out
@@ -341,10 +497,23 @@ def test_updating_the_ledger_rewrites_it(monkeypatch: pytest.MonkeyPatch, tmp_pa
     assert set(written["known"]) == set(written["reasons"])
 
 
+def test_proposed_related_design_is_marked_historical_not_governing() -> None:
+    """A related link cannot smuggle a Proposed decision into shipped prose."""
+    path = ROOT / "docs" / "specs" / "SPEC-070226-af02-p1-resilience-control.md"
+    result = validate_file(path)
+
+    assert result.front_matter is not None
+    assert _ref("ADR-066") not in result.front_matter.related
+
+    body = path.read_text().split("\n---", 2)[-1]
+    assert "ADR-066 remains Proposed" in body
+    assert "historical design context only" in body
+    assert "not shipped\nauthority" in body
+    assert "ADR-066 specifies" not in body
+
+
 def test_the_committed_baseline_records_a_reason_for_every_entry() -> None:
-    """A ledger of bare identities would say what is wrong without saying why,
-    and each of these is a governance judgement someone still has to make."""
+    """The ledger may be empty after cleanup, but its identity/reason maps stay aligned."""
     payload = json.loads(LEDGER.read_text())
 
-    assert payload["known"], "the baseline is expected to be non-empty until #374 is burned down"
     assert set(payload["known"]) == set(payload["reasons"])

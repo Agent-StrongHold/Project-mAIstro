@@ -40,6 +40,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The citation ratchet compares against the immutable target tree;
+          # shallow checkout would leave it no trusted baseline to read.
+          fetch-depth: 0
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v7
@@ -77,10 +81,17 @@ jobs:
         # `lint` checks that a cited document exists. This checks that an
         # *active* document does not rest its authority on something that is
         # not itself active -- a Superseded ADR, a Deprecated one, or a
-        # decision still merely Proposed. 47 such citations were already in the
-        # corpus when this was turned on; they are baselined per-identity, so
-        # no new one can land and each existing one stays visible.
-        run: python scripts/check-citation-status.py
+        # decision still merely Proposed. Existing reviewed exceptions remain
+        # visible, but the trusted-base adapter prevents a candidate from adding
+        # a citation to its own baseline to hide a new one.
+        env:
+          RATCHET_BASE_REV: >-
+            ${{ github.event_name == 'pull_request'
+                && format('origin/{0}', github.base_ref)
+                || github.event_name == 'merge_group'
+                && github.event.merge_group.base_sha
+                || github.event.before }}
+        run: python scripts/check-citation-status-provenance.py
 
       - name: ADR-INDEX agrees with ADR front matter (#379)
         # The index was outside registry validation entirely, and 32 of its 82
