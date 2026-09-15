@@ -82,7 +82,12 @@ def _matches_template(path: str, template: str) -> bool:
 def route_policy(
     entries: tuple[dict[str, Any], ...], method: str, path: str
 ) -> dict[str, Any] | None:
-    """Select the most-specific declaration, rejecting equally specific ties."""
+    """Select the most-specific declaration, rejecting equally specific ties.
+
+    FastAPI serves HEAD through a GET route, so a GET declaration also governs
+    its implicit HEAD dispatch without requiring a duplicate registry entry.
+    """
+    method = "GET" if method.upper() == "HEAD" else method.upper()
     matches = [
         entry
         for entry in entries

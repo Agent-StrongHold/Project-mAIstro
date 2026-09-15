@@ -55,7 +55,9 @@
       {"methods": ["*"], "path": "/v1/confirms", "kind": "prefix", "access": "permission", "permission": "dags.write", "reason": "Confirmation responses can resume execution."},
       {"methods": ["*"], "path": "/v1/canvas", "kind": "prefix", "access": "permission", "permission": "canvas.write", "reason": "Canvas operations mutate design execution state."},
       {"methods": ["*"], "path": "/v1/evolution", "kind": "prefix", "access": "permission", "permission": "rsi.execute", "reason": "Evolution routes control self-improvement work."},
-      {"methods": ["*"], "path": "/v1/rsi", "kind": "prefix", "access": "permission", "permission": "rsi.execute", "reason": "RSI routes execute repository-changing work."}
+      {"methods": ["*"], "path": "/v1/rsi", "kind": "prefix", "access": "permission", "permission": "rsi.execute", "reason": "RSI routes execute repository-changing work."},
+      {"methods": ["WEBSOCKET"], "path": "/v1/ws/tasks/{task_id}", "kind": "template", "access": "permission", "permission": "tasks.read", "reason": "Task event streams expose authenticated work progress."},
+      {"methods": ["WEBSOCKET"], "path": "/v1/ws/dags/{dag_id}/run", "kind": "template", "access": "permission", "permission": "dags.write", "reason": "DAG streams execute and expose graph work."}
     ],
     "turing": [
       {"methods": ["GET"], "path": "/docs", "kind": "prefix", "access": "public", "owner": "@BlakeMatthews-dev", "risk": "medium", "disposition": "permanent", "reason": "FastAPI documentation is public by reviewed declaration."},

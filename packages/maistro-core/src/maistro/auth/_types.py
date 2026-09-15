@@ -76,6 +76,7 @@ class Scope(StrEnum):
     TURING_CHAT = "turing:chat"
     TURING_VAULT_READ = "turing:vault_read"
     TURING_VAULT_WRITE = "turing:vault_write"
+    TURING_ADMIN = "turing:admin"
 
 
 CATEGORY_SCOPES: dict[ScopeCategory, frozenset[Scope]] = {
@@ -163,6 +164,7 @@ CATEGORY_SCOPES: dict[ScopeCategory, frozenset[Scope]] = {
             Scope.TURING_CHAT,
             Scope.TURING_VAULT_READ,
             Scope.TURING_VAULT_WRITE,
+            Scope.TURING_ADMIN,
         }
     ),
 }

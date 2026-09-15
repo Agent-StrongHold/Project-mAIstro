@@ -63,6 +63,10 @@ _ADMIN_CHAT_BLOCKED = ("/v1/chat/",)
 
 _PROTECTED_OPS: dict[str, dict[str, str]] = {
     "GET": {
+        # Task listings carry user work and are covered by the same declared
+        # route permission as task mutations; authentication alone is not an
+        # authorization decision for this surface.
+        "/v1/tasks": "tasks.write",
         # Reading another principal's harness/RSI session stream exposes
         # in-flight code, agent reasoning, and secrets in transit — the same
         # sensitivity as starting the run, so it takes the same scope. Plain

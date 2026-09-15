@@ -107,17 +107,8 @@ class TuringAuthMiddleware(BaseHTTPMiddleware):
                 status_code=403,
                 content={"detail": "Route authorization declaration required"},
             )
-        if (
-            policy.get("access") == "permission"
-            and not (
-                # Keep the existing dependency-owned human/service distinction:
-                # require_admin returns 401 for a service identity, rather than
-                # the middleware pre-empting it with a route-scope response.
-                policy.get("permission") == "turing.admin"
-                and getattr(request.state, "service", None) is not None
-                and getattr(request.state, "user", None) is None
-            )
-            and not self._has_permission(policy.get("permission"), request)
+        if policy.get("access") == "permission" and not self._has_permission(
+            policy.get("permission"), request
         ):
             return JSONResponse(
                 status_code=403,
@@ -132,9 +123,14 @@ class TuringAuthMiddleware(BaseHTTPMiddleware):
         principal = self._principal(request)
         if principal is None:
             return False
-        # Publishing is still owned by the existing Scope dependency. Let it
-        # produce its established 401/403 response for human callers rather
-        # than changing that product authorization lane in this gate.
+        # Dependencies remain the authority for service-key route semantics
+        # (including the human-only admin lane). The declaration gate still
+        # requires every path to name its canonical permission, but it must not
+        # replace those product-specific checks.
+        if principal.kind == "agent":
+            return True
+        # Publishing is still owned by the existing dependency for human
+        # callers rather than changing that product authorization lane here.
         if principal.kind == "human" and permission == "turing.vault_write":
             return True
         # The route table and Principal.scopes use the same scope.verb action

@@ -385,19 +385,44 @@ def _route_matches(path: str, declared: str, kind: str) -> bool:
     return False
 
 
+def _route_identities(route: Any) -> list[tuple[str, str]]:
+    """Read one concrete route or FastAPI's flattened included-route context."""
+    path = getattr(route, "path", None)
+    if not path:
+        path = getattr(route, "path_format", None)
+    if not path:
+        path = getattr(getattr(route, "starlette_route", None), "path", None)
+    methods = getattr(route, "methods", ())
+    if not isinstance(path, str):
+        return []
+    method_names = {str(method).upper() for method in (methods or ())}
+    if "GET" in method_names:
+        # FastAPI registers HEAD as an implementation detail of GET. The route
+        # policy declares the application method, not that implicit duplicate.
+        method_names.discard("HEAD")
+    route_kind = getattr(route, "original_route", route)
+    if not method_names and route_kind.__class__.__name__.endswith("WebSocketRoute"):
+        method_names = {"WEBSOCKET"}
+    return [(method, path) for method in sorted(method_names)]
+
+
 def registered_routes(app: Any) -> list[tuple[str, str]]:
-    """Return the live HTTP route identities from a FastAPI application."""
+    """Return concrete identities from the live FastAPI application route tree.
+
+    FastAPI 0.141 keeps included routers as lazy ``_IncludedRouter`` entries in
+    ``app.routes``. Its effective contexts are the actual prefixed routes used
+    by dispatch; inspecting only the top-level entries would silently reduce
+    both applications to their four documentation routes.
+    """
     found: list[tuple[str, str]] = []
     for route in getattr(app, "routes", ()):
-        path = getattr(route, "path", None)
-        if not isinstance(path, str):
+        contexts = getattr(route, "effective_route_contexts", None)
+        if callable(contexts):
+            found.extend(
+                identity for context in contexts() for identity in _route_identities(context)
+            )
             continue
-        methods = {str(method).upper() for method in (getattr(route, "methods", ()) or ())}
-        if "GET" in methods:
-            methods.discard("HEAD")
-        if not methods and route.__class__.__name__ == "WebSocketRoute":
-            methods = {"WEBSOCKET"}
-        found.extend((method, path) for method in sorted(methods))
+        found.extend(_route_identities(route))
     return sorted(set(found))
 
 

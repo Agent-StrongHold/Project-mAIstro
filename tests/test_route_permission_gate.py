@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -71,6 +72,27 @@ def test_conductor_and_turing_share_protected_and_public_classification(
     assert failures == []
 
 
+def test_live_backend_route_trees_are_classified(gate, application: str) -> None:
+    """Exercise the gate against each production FastAPI application, not tuples."""
+    app = gate._load_application(application)
+    discovered = gate.registered_routes(app)
+    assert discovered
+    registry = json.loads(gate.ROUTE_REGISTRY.read_text(encoding="utf-8"))
+    entries = registry["routes"][application]
+
+    assert gate._route_entry_failures(application, discovered, entries, gate.date(2026, 9, 8)) == []
+
+
+def test_live_backend_route_trees_include_protected_and_public_examples(
+    gate, application: str
+) -> None:
+    discovered = gate.registered_routes(gate._load_application(application))
+    assert ("GET", "/docs") in discovered
+    assert any(method == "GET" and path.startswith("/v1/") for method, path in discovered)
+    expected = ("GET", "/v1/tasks") if application == "conductor" else ("GET", "/v1/feed")
+    assert expected in discovered
+
+
 def test_both_apps_fail_when_a_new_route_has_no_declaration(gate, application: str) -> None:
     failures = gate._route_entry_failures(
         application,
@@ -130,6 +152,10 @@ def test_route_policy_ratchet_allows_an_already_landed_authorization(gate) -> No
     current = {key: ("public", "")}
 
     assert gate._route_policy_failures(base, current, {"turing:GET:/v1/state": "#1140"}) == []
+
+
+def test_shared_runtime_matcher_applies_get_policy_to_fastapi_head(gate) -> None:
+    assert route_policy((_public("/docs"),), "HEAD", "/docs") is not None
 
 
 def test_shared_runtime_matcher_rejects_ambiguous_declarations(gate) -> None:

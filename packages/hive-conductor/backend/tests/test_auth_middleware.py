@@ -317,8 +317,9 @@ class TestMalformedAuthHeaders:
     def test_cookie_session_overrides_absent_header(self) -> None:
         c = _login()
         r = c.get("/v1/tasks", headers={"Authorization": "Bearer not-a-real-session"})
-        # Cookie wins (checked first in _get_user); request still succeeds.
-        assert r.status_code == 200
+        # Cookie wins (checked first in _get_user), but authentication alone
+        # does not satisfy the route's declared tasks.write permission.
+        assert r.status_code == 403
 
     def test_unknown_session_id_in_cookie_is_401(self) -> None:
         c = TestClient(app)
