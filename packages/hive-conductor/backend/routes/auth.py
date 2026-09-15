@@ -18,7 +18,7 @@ from config import get_settings, is_valid_oauth_provider_name
 from fastapi import APIRouter, Cookie, HTTPException, Request, Response
 from models.schemas import HiveUser
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from services import registration_policy
+from services import registration_policy, username_registry
 from services.human_auth_mode import HumanAuthModePolicy
 from services.oauth_login import (
     OAUTH_MAX_PENDING_STATES,
@@ -281,7 +281,10 @@ def _users() -> list[HiveUser]:
 
 
 def _username_taken(username: str) -> bool:
-    return any(user.username.lower() == username.lower() for user in _users())
+    # This is an indexed lookup, retained as the policy-facing availability
+    # helper. It is only advisory: the atomic account allocation below is the
+    # authority under concurrency.
+    return username_registry.is_claimed(username)
 
 
 def _issue_session(user: Any, response: Response) -> dict[str, Any]:
@@ -726,7 +729,16 @@ def register(body: RegisterBody, request: Request, response: Response) -> dict[s
         did=None,
         created_at=now_ts,
     )
-    stores.users[user_id] = user
+    try:
+        username_registry.create_users([user])
+    except username_registry.UsernameTakenError as exc:
+        _REGISTER_THROTTLE.record_failure(client_key=_client_key(request), account=body.username)
+        raise HTTPException(status_code=409, detail="Username is already taken.") from exc
+    except username_registry.UsernameAllocationError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Account could not be durably allocated; please retry.",
+        ) from exc
     if decision.reason == "invitation":
         log_audit(
             "registration_invitation_redeemed",
@@ -762,7 +774,10 @@ def login(body: LoginBody, request: Request, response: Response) -> dict[str, An
     # and `and` short-circuits, so an unknown username never reached Argon2.
     # Measured: 87.6 ms for a known username with the wrong password, ~0 ms for
     # an unknown one. Four orders of magnitude, readable from one request.
-    match = next((user for user in _users() if user.username == body.username), None)
+    # Username identity is resolved through the canonical claim index. A
+    # quarantined historical duplicate therefore fails closed rather than
+    # selecting whichever user a storage iteration happens to return.
+    match = username_registry.resolve(body.username)
     verified = equal_cost_verify(body.password, match.password_hash if match else None)
 
     if match is not None and verified:
