@@ -195,6 +195,11 @@ class Container:
     #: same-process race and remember a compensation that needs retrying.
     _active_chat_admissions: set[str] = field(default_factory=set, init=False, repr=False)
     _failed_chat_admissions: set[str] = field(default_factory=set, init=False, repr=False)
+    # Keep the admission receipt alive across the handoff into the executor.
+    # The NodeRun/Attempt is not durable yet when `_admit_chat_turn` returns.
+    _chat_admission_renewals: dict[str, tuple[asyncio.Event, asyncio.Task[None]]] = field(
+        default_factory=dict, init=False, repr=False
+    )
     #: Where a Graph definition comes from when a Run is not trivial work — a
     #: schedule firing, or anything else that instantiates a drawn topology
     #: rather than a one-node stand-in (#132). Optional in the same way the rest
@@ -530,6 +535,13 @@ class Container:
             raise
         else:
             await self._close_chat_run(run, result=chat_turn_outcome(result))
+        finally:
+            if run is not None:
+                # Admission's receipt owns the gap until the executor has
+                # created a NodeRun/Attempt; after this point the Attempt lease
+                # is the canonical recovery proof. This also releases it when
+                # execution fails before physical evidence can be created.
+                await self._stop_chat_admission_renewal(run.run_id)
         if run is not None:
             # Additive. The OpenAI-compatible shape a caller parses is
             # untouched; `run_id` is the handle for anyone who wants to follow
@@ -628,6 +640,7 @@ class Container:
         run: Run | None = None
         renewal_stop: asyncio.Event | None = None
         renewal_task: asyncio.Task[None] | None = None
+        admission_succeeded = False
         try:
             run = await self.chat_admitter.admit(
                 messages,
@@ -646,12 +659,18 @@ class Container:
                 self._renew_chat_admission(run, renewal_stop),
                 name=f"chat-admission-renewal:{run.run_id}",
             )
+            self._chat_admission_renewals[run.run_id] = (renewal_stop, renewal_task)
             # Two hops: a Run is born CREATED and the lifecycle has no edge
             # from there to RUNNING. Queued is momentarily true here — the turn
             # is admitted and about to be dispatched — rather than a fiction
             # invented to satisfy the table.
             await self.run_store.transition_run(run.run_id, RunStatus.QUEUED)
-            return await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+            admitted = await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+            # Do not stop the receipt here. The next step creates the physical
+            # NodeRun/Attempt, and recovery must see either that evidence or a
+            # live owner while the handoff is in flight.
+            admission_succeeded = True
+            return admitted
         except asyncio.CancelledError:
             if run is not None:
                 self._failed_chat_admissions.add(run.run_id)
@@ -668,11 +687,8 @@ class Container:
             await self._cancel_incomplete_admission(run, admission_failed=True)
             return None
         finally:
-            if renewal_stop is not None:
-                renewal_stop.set()
-            if renewal_task is not None:
-                renewal_task.cancel()
-                await asyncio.gather(renewal_task, return_exceptions=True)
+            if not admission_succeeded and run is not None:
+                await self._stop_chat_admission_renewal(run.run_id, renewal_stop, renewal_task)
             if run is not None:
                 self._active_chat_admissions.discard(run.run_id)
 
@@ -697,8 +713,24 @@ class Container:
             intent_hint=intent_hint,
         )
 
+    async def _stop_chat_admission_renewal(
+        self,
+        run_id: str,
+        stop: asyncio.Event | None = None,
+        task: asyncio.Task[None] | None = None,
+    ) -> None:
+        """Stop the receipt owner after dispatch has a durable physical record."""
+        owned = self._chat_admission_renewals.pop(run_id, None)
+        if owned is not None:
+            stop, task = owned
+        if stop is not None:
+            stop.set()
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
     async def _renew_chat_admission(self, run: Run, stop: asyncio.Event) -> None:
-        """Keep the durable admission receipt live until dispatch is claimed."""
+        """Keep the durable admission receipt live through the dispatch handoff."""
         receipt = run.provenance.get(CHAT_ADMISSION_RECEIPT_KEY)
         holder = receipt.get("holder") if isinstance(receipt, dict) else None
         if not isinstance(holder, str) or not holder:

@@ -582,6 +582,64 @@ async def test_a_transition_that_commits_before_raising_is_compensated(
 
 
 @pytest.mark.ac("ADR-082826-08f0/AC-6")
+async def test_admission_receipt_remains_live_until_attempt_handoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recovery must not cancel RUNNING while the first Attempt is being created."""
+    import maistro.container as container_module
+    import maistro.runs.chat_admission as chat_admission_module
+
+    ttl = timedelta(milliseconds=30)
+    monkeypatch.setattr(chat_admission_module, "CHAT_ADMISSION_LEASE_TTL", ttl)
+    monkeypatch.setattr(container_module, "CHAT_ADMISSION_LEASE_TTL", ttl)
+
+    container = await _container()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class _SlowNodeRun:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        async def create_node_run(self, run_id, *, node_id):
+            entered.set()
+            await release.wait()
+            return await self._inner.create_node_run(run_id, node_id=node_id)
+
+    container.run_store = _SlowNodeRun(container.run_store)  # type: ignore[assignment]
+    container.conduit = _Conduit()
+    turn = asyncio.create_task(container.route_request([{"role": "user", "content": "hi"}]))
+    await entered.wait()
+
+    (run,) = [
+        candidate
+        for candidate in container.run_store._inner._runs.values()  # type: ignore[attr-defined]
+        if candidate.provenance[ADMISSION_SOURCE] == CHAT_SOURCE
+    ]
+    expiry = datetime.fromisoformat(run.provenance[CHAT_ADMISSION_RECEIPT_KEY]["expires_at"])
+    await asyncio.sleep(0.05)
+
+    # The admission heartbeat has renewed the receipt while no Attempt exists.
+    assert await container.recover_abandoned_attempts(now=expiry + timedelta(microseconds=1)) == 0
+    still_running = await container.run_store.get_run(run.run_id)
+    assert still_running is not None
+    assert still_running.status is RunStatus.RUNNING
+
+    release.set()
+    result = await turn
+    assert result["run_id"] == run.run_id
+    completed = await container.run_store.get_run(run.run_id)
+    assert completed is not None
+    assert completed.status is RunStatus.COMPLETED
+    node_runs = await container.run_store.list_node_runs(run.run_id)
+    assert len(node_runs) == 1
+    assert len(await container.run_store.list_attempts(node_runs[0].node_run_id)) == 1
+
+
+@pytest.mark.ac("ADR-082826-08f0/AC-6")
 async def test_recovery_tick_retries_a_failed_compensation() -> None:
     """A store outage during compensation leaves a row the recovery tick owns."""
     container = await _container()
