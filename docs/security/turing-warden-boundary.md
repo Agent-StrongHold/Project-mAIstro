@@ -7,7 +7,7 @@ service/runtime composition without enabling the product.
 | Path | Input crossing boundary | Warden | Trusted use | Correlation |
 | --- | --- | --- | --- | --- |
 | `TuringExecutionPlane.run_chat` | Direct service caller's consumed message | Yes, before Graph/Run persistence; model result remains protected by the runtime bridge | Canonical chat `Graph -> Run -> NodeRun -> Attempt`, session, classifier, memory, provider | Principal plus Workspace/Project/Run audit records after admission; pre-admission blocks are principal-correlated |
-| `TuringActor.handle_memory_event` | Internal/imported memory-event content and tier metadata | Yes, before `TuringMemoryBridge.store_episode`; missing audit/Run context fails closed | Durable trusted memory | Principal plus Workspace/Project/Run/Invocation when a canonical execution context exists; otherwise refusal |
+| `TuringActor.handle_memory_event` | Internal/imported memory-event content, tier metadata, nested fields, and mapping keys | Yes, before `TuringMemoryBridge.store_episode`; missing audit/Run context fails closed | Durable trusted memory | Principal plus Workspace/Project/Run/Invocation when a canonical execution context exists; otherwise refusal |
 | `TuringActor.handle_tool_result` | Internal tool/model result content | Yes, before the actor returns the result to a trusted caller | Tool-result handling and any subsequent effect selection | Principal plus Workspace/Project/Run/Invocation from the canonical execution context; unscoped calls are refused |
 | Turing producer classes (not backend-composed) | Provider/model output before producer memory writes | Yes, their canonical security bridge scans generated content; not a currently reachable backend path | Producer memory and published content when explicitly composed | No current backend correlation; future composition must supply canonical Run/Invocation context |
 | `POST /v1/chat` | Human JSON message, session id, nested/unknown JSON keys | Yes, raw parsed structure and consumed message | Classifier, prompt/history, canonical chat `Graph -> Run -> NodeRun -> Attempt`, memory, model result | Principal plus Workspace/Project/Run audit records |
@@ -19,6 +19,8 @@ service/runtime composition without enabling the product.
 
 The inbound middleware walks parsed mappings without serializing them, scans
 mapping keys and nested string values, and runs before FastAPI route consumption.
+The actor memory seam applies the same recursive, non-serialized scan to memory
+metadata before passing it to the canonical memory bridge.
 The direct `TuringExecutionPlane.run_chat` service seam scans the semantically
 consumed message before copying it into a Graph or persisting a Run; a blocked
 pre-admission verdict is recorded with the principal and cannot obtain a Run.

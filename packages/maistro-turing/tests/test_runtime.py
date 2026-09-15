@@ -177,7 +177,12 @@ class TestTuringActor:
         assert memory.calls == [
             {"content": "I learned something", "tier": "observation", "weight": 0.4}
         ]
-        assert security.self_write_calls == [("I learned something", "observation")]
+        assert security.self_write_calls == [
+            ("I learned something", "observation"),
+            ("tier", "observation"),
+            ("observation", "observation"),
+            ("weight", "observation"),
+        ]
 
     async def test_handle_memory_event_blocked_returns_empty_and_skips_store(self) -> None:
         memory = FakeMemoryBridge()
