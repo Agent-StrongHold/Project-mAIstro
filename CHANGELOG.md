@@ -231,6 +231,14 @@ or placeholder-only section.
   An Attempt still `CREATED` now settles as `CANCELLED` carrying the refusal
   as its error (nothing ran, so nothing failed), the refusal propagates, and
   the NodeRun parks for a retry decision exactly as a `FAILED` Attempt would.
+- **A task's worker executes under the request id that admitted it
+  (#1063).** `TaskRunAdmitter` recorded `X-Request-ID` on the Run's
+  provenance, but the worker that later picks the task up runs from the
+  dispatcher's own context, after the admitting request has ended, and
+  restored nothing — so the execution's ambient context and log lines carried
+  no request id at all. `TaskAttemptExecutor` now binds the Run's persisted
+  request id, Workspace and Project around the Attempt it runs, so one id
+  follows a task from the HTTP boundary through the Run into its execution.
 - **The migration chain has one head again, and the debt ledger matches the
   shipped tree (no linked issue: base-branch repair).** Merging #1263 carried
   a renumber made against an older base: it renamed

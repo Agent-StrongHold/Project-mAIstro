@@ -210,22 +210,25 @@ async def test_request_id_cannot_impersonate_the_workspace_scope_signature(
 ) -> None:
     """A request id shaped like a valid signature still proves nothing.
 
-    Even if a caller sets X-Request-ID to the exact HMAC that would authorize
-    "workspace-a", the Workspace-scope check reads only the dedicated signed
-    header -- never the correlation header -- so admission still falls
-    through to the default Workspace.
+    The Workspace is asserted, so the request reaches the scope check; the
+    only thing that could authorize it is the exact HMAC for "workspace-a",
+    and that HMAC is present -- in X-Request-ID. The check reads only the
+    dedicated signed header, never the correlation header, so the assertion
+    is refused and nothing is admitted.
     """
-    scope_store, run_store = durable_spine
+    del durable_spine
 
     response = await client.post(
         "/tasks",
-        headers={REQUEST_ID_HEADER: sign_workspace_scope("workspace-a", SCOPE_KEY)},
+        headers={
+            WORKSPACE_ID_HEADER: "workspace-a",
+            REQUEST_ID_HEADER: sign_workspace_scope("workspace-a", SCOPE_KEY),
+        },
         json={"description": "must not scope via request id", "workspace": TASK_WORKSPACE},
     )
 
-    assert response.status_code == 202
-    run = await run_store.get_run(response.json()["run_id"])
-    default_root = await scope_store.root_for_workspace("default")
-    assert run is not None
-    assert run.workspace_id == "default"
-    assert run.project_id == default_root.project_id
+    assert response.status_code == 403
+    assert response.json()["error"]["message"] == "Workspace scope assertion is not authorized"
+    assert queue_module._queue is not None
+    items, _ = queue_module._queue.list_tasks(limit=10)
+    assert items == []

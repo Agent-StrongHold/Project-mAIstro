@@ -33,6 +33,7 @@ from maistro.graph import Graph, Node
 from maistro.observability.correlation import (
     bind_execution_context,
     current_execution_context,
+    detached_execution_context,
     execution_context_processor,
 )
 from maistro.projects.scope_store import InMemoryProjectScopeStore
@@ -209,17 +210,20 @@ class TestOneTraceFollowsTheWork:
     async def test_a_task_admitted_through_the_http_boundary_carries_one_id_into_execution(
         self,
     ) -> None:
-        """#1063's remaining link: the id `RequestIDMiddleware` binds is not
-        only recorded on the Run's provenance by `TaskRunAdmitter` — it is the
-        same id the execution the Run causes sees in its own ambient context
-        and log lines. Two already-tested halves (admission's provenance
-        write in `tests/tasks/test_admission.py`, and direct-execution
-        propagation above) are exercised here as one chain: a task submitted
-        inside the exact binding `RequestIDMiddleware` establishes for an
-        HTTP-borne request, executed by the real spine."""
+        """#1063's remaining link, across the boundary that actually exists in
+        production: the request that admits a task ends before the worker
+        picks the task up (`TaskRunner._dispatcher_loop` creates the execution
+        task from its own context), so nothing the executor sees is inherited
+        from the admitting request. The id `RequestIDMiddleware` bound reaches
+        the execution only if the worker restores it from the Run's persisted
+        provenance -- which `TaskAttemptExecutor` now does. The task is
+        admitted inside the exact binding `RequestIDMiddleware` establishes,
+        then executed with no execution in scope at all."""
+        from maistro.agents.types import ConductorOutput
         from maistro.projects.scope_store import InMemoryProjectScopeStore
-        from maistro.runs import InMemoryRunStore, RunExecutionService
+        from maistro.runs import InMemoryRunStore, RunStatus
         from maistro.tasks.admission import REQUEST_ID_KEY, TaskRunAdmitter
+        from maistro.tasks.execution import TaskAttemptExecutor
         from maistro.tasks.models import TaskCreate
         from maistro.tasks.queue import TaskQueue
 
@@ -232,32 +236,65 @@ class TestOneTraceFollowsTheWork:
         queue = TaskQueue(
             admitter=TaskRunAdmitter(run_store, workspace_id="ws-1", project_id=project.project_id)
         )
-        service = RunExecutionService(store=run_store, runtime=PythonExecutionRuntime())
         seen = _Seen()
         conn = await aiosqlite.connect(":memory:")
         try:
             events = SqliteEventStore(conn)
             await events.ensure_schema()
 
+            async def worker(work_item: Any) -> ConductorOutput:
+                ambient = current_execution_context()
+                seen.contexts.append(ambient)
+                seen.log_fields.append(execution_context_processor(None, "info", {"event": "work"}))
+                stored = await events.append(
+                    EventEnvelope(
+                        type="task.executed",
+                        workspace_id=ambient.workspace_id,
+                        source="one-trace-test",
+                        payload={"work": str(work_item)},
+                    )
+                )
+                seen.emitted.append(stored.event_id)
+                return ConductorOutput(final_answer="done")
+
+            # The request seam: admission happens inside the binding
+            # RequestIDMiddleware establishes, and the binding ends with it.
             with bind_execution_context(
                 request_id="req-http-boundary", workspace_id="ws-1", project_id=project.project_id
             ):
                 task = await queue.submit(TaskCreate(description="admitted work"))
-                run = await run_store.get_run(task.run_id or "")
-                assert run is not None
-                node_id = run.graph.materialize().nodes[0].node_id
-                _node_run, attempt = await service.execute_node(
-                    run.run_id, node_id, "work", {}, executor=_executor(events, seen)
+            run = await run_store.get_run(task.run_id or "")
+            assert run is not None
+            assert run.provenance[REQUEST_ID_KEY] == "req-http-boundary"
+            await run_store.transition_run(run.run_id, RunStatus.RUNNING)
+
+            # The worker seam: no execution in scope, exactly as the
+            # dispatcher loop has none. Whatever the executor sees was
+            # restored from the Run, not inherited.
+            with detached_execution_context():
+                assert current_execution_context().request_id == ""
+                await TaskAttemptExecutor(run_store).execute(
+                    run.run_id, TaskCreate(description="admitted work"), worker
                 )
 
-            # The admission-time write and the execution-time context agree
-            # on the one id, without either reading it from the other.
-            assert run.provenance[REQUEST_ID_KEY] == "req-http-boundary"
+            [node_run] = await run_store.list_node_runs(run.run_id)
+            [attempt] = await run_store.list_attempts(node_run.node_run_id)
             [ambient] = seen.contexts
             assert ambient.request_id == "req-http-boundary"
+            assert ambient.workspace_id == "ws-1"
+            assert ambient.project_id == project.project_id
             assert ambient.run_id == run.run_id
+            assert ambient.node_run_id == node_run.node_run_id
             assert ambient.attempt_id == attempt.attempt_id
             [log_fields] = seen.log_fields
             assert log_fields["request_id"] == "req-http-boundary"
+            assert log_fields["run_id"] == run.run_id
+
+            # And the Event leg names the same Attempt the worker ran under.
+            [event_id] = seen.emitted
+            event = await events.get(event_id)
+            assert event is not None
+            assert event.run_id == run.run_id
+            assert event.attempt_id == attempt.attempt_id
         finally:
             await conn.close()
