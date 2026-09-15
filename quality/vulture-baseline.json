@@ -306,7 +306,6 @@
         "packages/maistro-core/src/maistro/security/_types.py::unused variable 'account_disabled'",
         "packages/maistro-core/src/maistro/security/_types.py::unused variable 'allow_freetext'",
         "packages/maistro-core/src/maistro/security/_types.py::unused variable 'reasoning_trace'",
-        "packages/maistro-core/src/maistro/security/_types.py::unused variable 'repair_action'",
         "packages/maistro-core/src/maistro/security/external_content.py::unused variable 'API'",
         "packages/maistro-core/src/maistro/security/external_content.py::unused variable 'BROWSER'",
         "packages/maistro-core/src/maistro/security/external_content.py::unused variable 'EMAIL'",
