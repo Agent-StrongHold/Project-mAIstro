@@ -14,6 +14,27 @@ def _login(username: str = "testuser", password: str = "testpass") -> TestClient
     return c
 
 
+def _seed_owned_task(client: TestClient, task_id: str, *, status: str = "pending") -> None:
+    from datetime import UTC, datetime
+
+    import stores
+
+    session_id = client.cookies.get("hive_session")
+    assert session_id
+    user_id = stores.sessions[session_id]["user_id"]
+    now = datetime.now(UTC)
+    stores.missions[task_id] = stores.missions._model_class(
+        id=task_id,
+        user_id=user_id,
+        name=task_id,
+        description=task_id,
+        status=status,
+        priority="medium",
+        created_at=now,
+        updated_at=now,
+    )
+
+
 @pytest.mark.ac("SPEC-176/AC-1")
 def test_health() -> None:
     r = client.get("/health")
@@ -319,7 +340,7 @@ def test_mission_create_dispatches_task() -> None:
     # (#158) -- the route passes it rather than omitting it, so the default is
     # named at every submission instead of being inferred downstream.
     mock_engine.submit_task.assert_called_once_with(
-        "Write hello world", "Write hello world", workspace_id=None
+        "Write hello world", "Write hello world", user_id="user", workspace_id=None
     )
 
 
@@ -358,6 +379,7 @@ def test_websocket_streams_task_events() -> None:
 
 def test_elevate_flow() -> None:
     c = _login()
+    _seed_owned_task(c, "t-1")
     r = c.post(
         "/v1/auth/elevate", json={"password": "testpass", "permissions": [], "task_id": "t-1"}
     )
@@ -365,6 +387,12 @@ def test_elevate_flow() -> None:
     data = r.json()
     assert data["task_id"] == "t-1"
     assert "elevated_permissions" in data
+    # Grants are time-boxed (#1239, ADR-028/068): the response records the
+    # bound the grant will die at.
+    assert data["expires_at"]
+    who = c.get("/v1/auth/whoami").json()["user"]
+    assert who["elevated_tasks"] == ["t-1"]
+    assert who["elevated_grants"]["t-1"]["expires_at"] == data["expires_at"]
 
 
 def test_elevate_wrong_password() -> None:
@@ -401,6 +429,7 @@ def test_elevation_only_activates_granted_permissions() -> None:
     )
     try:
         c = _login("frank", "frankpass")
+        _seed_owned_task(c, "frank-task-1")
 
         r = c.put("/v1/settings", json={"temperature": 0.5})
         assert r.status_code == 403, "should be blocked without elevation"
@@ -413,10 +442,22 @@ def test_elevation_only_activates_granted_permissions() -> None:
                 "task_id": "frank-task-1",
             },
         )
-        r2 = c.put("/v1/settings", json={"temperature": 0.5})
+        r2 = c.put(
+            "/v1/settings",
+            json={"temperature": 0.5},
+            headers={"X-Elevated-Task": "frank-task-1"},
+        )
         assert r2.status_code == 200, "should work after elevation for granted perm"
 
-        r3 = c.delete("/v1/settings")
+        # Without naming the task, the grant does not answer (#1239): the old
+        # session-wide union would have let this through.
+        r2_unnamed = c.put("/v1/settings", json={"temperature": 0.5})
+        assert r2_unnamed.status_code == 403, "elevated perm must not apply without task context"
+
+        r3 = c.delete(
+            "/v1/settings",
+            headers={"X-Elevated-Task": "frank-task-1"},
+        )
         assert r3.status_code == 403, (
             "should still be blocked for ungranted perm even with elevation"
         )
@@ -444,6 +485,7 @@ def test_elevate_rejects_unassigned_permissions() -> None:
     )
     try:
         c = _login("frank", "frankpass")
+        _seed_owned_task(c, "t-bad")
         r = c.post(
             "/v1/auth/elevate",
             json={
@@ -477,16 +519,25 @@ def test_elevation_revoked_on_task_completion() -> None:
     )
     try:
         c = _login("frank", "frankpass")
+        _seed_owned_task(c, "m-1")
 
         c.post(
             "/v1/auth/elevate",
             json={"password": "frankpass", "permissions": ["config.write"], "task_id": "m-1"},
         )
-        r = c.put("/v1/settings", json={"temperature": 0.5})
+        r = c.put(
+            "/v1/settings",
+            json={"temperature": 0.5},
+            headers={"X-Elevated-Task": "m-1"},
+        )
         assert r.status_code == 200, "should work with elevated perm"
 
         c.patch("/v1/tasks/m-1/status", json={"status": "completed"})
-        r2 = c.put("/v1/settings", json={"temperature": 0.5})
+        r2 = c.put(
+            "/v1/settings",
+            json={"temperature": 0.5},
+            headers={"X-Elevated-Task": "m-1"},
+        )
         assert r2.status_code == 403, "perm should die with the task"
     finally:
         stores.users.pop("frank", None)

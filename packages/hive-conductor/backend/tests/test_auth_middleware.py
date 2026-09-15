@@ -237,6 +237,17 @@ class TestProtectedOpsPermissionMatrix:
         c = TestClient(app)
         r = c.post("/v1/auth/login", json={"username": uid, "password": "pw"})
         assert r.status_code == 200, r.text
+        now = datetime.now(UTC)
+        stores.missions[task_id] = stores.missions._model_class(
+            id=task_id,
+            user_id=uid,
+            name=task_id,
+            description=task_id,
+            status="pending",
+            priority="medium",
+            created_at=now,
+            updated_at=now,
+        )
         return c
 
     def test_delete_agents_without_permission_is_403(self) -> None:
@@ -251,12 +262,29 @@ class TestProtectedOpsPermissionMatrix:
 
     def test_delete_agents_with_permission_and_elevation_passes_gate(self) -> None:
         c = self._writer("del-agents-3", perms=["agents.delete"])
+        from datetime import UTC, datetime
+
+        import stores
+
+        now = datetime.now(UTC)
+        stores.missions["t-del"] = stores.missions._model_class(
+            id="t-del",
+            user_id="opsmatrix-del-agents-3",
+            name="t-del",
+            description="t-del",
+            status="pending",
+            priority="medium",
+            created_at=now,
+            updated_at=now,
+        )
         e = c.post(
             "/v1/auth/elevate",
             json={"password": "pw", "permissions": ["agents.delete"], "task_id": "t-del"},
         )
         assert e.status_code == 200, e.text
-        r = c.delete("/v1/agents/foo")
+        # Elevation is task-scoped (#1239): the request must name the task the
+        # grant was issued for.
+        r = c.delete("/v1/agents/foo", headers={"X-Elevated-Task": "t-del"})
         assert r.status_code != 403
 
     def test_admin_bypasses_permission_gate_entirely(self) -> None:
