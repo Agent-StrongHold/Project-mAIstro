@@ -361,10 +361,15 @@ class TaskQueue:
     async def cancel(
         self, task_id: str, *, settle_timeout: float = CANCELLATION_SETTLE_TIMEOUT
     ) -> bool:
-        """Cancel a task: terminalize the receipt *and stop the running work*.
+        """Cancel a task: reach the Run, terminalize the receipt *and stop the
+        running work*.
 
-        Terminalizing the receipt alone answered a cancellation with success
-        while the runner's coroutine ran on — the executor kept consuming
+        The receipt is a projection. For admitted work, cancellation must
+        first reach the Run/Attempt service so an in-flight provider receives
+        the same signal as a queued task that has not started yet.
+
+        Terminalizing the receipt alone also answered a cancellation with
+        success while the runner's coroutine ran on — the executor kept consuming
         compute and writing into the workspace, and its result was then
         attached to a receipt that already said CANCELLED (#1242). The runner
         registers the asyncio.Task executing each claimed task, so a
@@ -377,6 +382,15 @@ class TaskQueue:
         settle within ``settle_timeout``. In every case the caller must not
         report a successful cancellation.
         """
+        task = self._tasks.get(task_id)
+        if task is None:
+            return False
+        if (
+            self._admitter is not None
+            and task.run_id
+            and not await self._admitter.cancel_run(task.run_id)
+        ):
+            return False
         if not await self.update_status(task_id, TaskStatus.CANCELLED):
             return False
         execution = self._executions.get(task_id)

@@ -8,12 +8,13 @@ import {
 } from "react";
 import { escapeDeckText, sanitizeDeckMarkup } from "../lib/deckSanitizer";
 import { DECK_TEMPLATES } from "../lib/deckTemplates";
+import { randomId } from "../lib/ids";
 
 const C = { bg: "#0a0914", card: "#11101e", border: "rgba(196,166,97,0.14)", gold: "#c4a661", ink: "#f3f0fb", muted: "#8b83a8", dim: "#5a5478", acc: "#a78bfa", danger: "#e87c7c" };
 
 interface Slide { id: string; html: string; notes: string; }
 
-function uid() { return Math.random().toString(36).slice(2, 10); }
+function uid() { return randomId(); }
 
 function safeSlide(slide: Slide): Slide {
   return { ...slide, html: sanitizeDeckMarkup(slide.html) };
