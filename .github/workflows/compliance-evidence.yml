@@ -1,9 +1,11 @@
 name: Compliance evidence
 
 on:
+  # Evidence must be produced by a branch run that can be reviewed before a
+  # release tag is created. A tag run starts too late: its artifact URL cannot
+  # already be committed in the tagged registry.
   push:
-    branches: [main, integration, develop]
-    tags: ["v*", "v*-rc*"]
+    branches: [main, develop]
   workflow_dispatch:
 
 permissions:

@@ -258,6 +258,45 @@ def test_release_mode_requires_exact_digest_and_evidence(
     assert any("registry has no release_digest" in error for error in errors)
 
 
+def test_release_mode_rejects_unverified_release_required_controls(
+    checker: ModuleType, registry: dict
+) -> None:
+    errors = checker.validate_registry(
+        registry,
+        root=ROOT,
+        release_digest="b" * 40,
+        require_release_evidence=True,
+        today=dt.date(2026, 8, 25),
+    )
+    assert any("EU-AI-ACT-ART-15 is unverified, not implemented" in error for error in errors)
+    assert any(
+        "release evidence is missing: EU-AI-ACT-ART-15 has no evidence" in error for error in errors
+    )
+
+
+def test_release_mode_requires_digest_without_green_claims(
+    checker: ModuleType, registry: dict
+) -> None:
+    errors = checker.validate_registry(
+        registry,
+        root=ROOT,
+        require_release_evidence=True,
+        today=dt.date(2026, 8, 25),
+    )
+    assert "--release-digest is required when release evidence is required" in errors
+
+
+def test_evidence_workflow_does_not_run_after_release_tags(checker: ModuleType) -> None:
+    workflow_path = ROOT / ".github" / "workflows" / "compliance-evidence.yml"
+    source = workflow_path.read_text(encoding="utf-8")
+    workflow = checker.yaml.safe_load(source)
+    trigger_config = workflow.get("on", workflow.get(True))
+    assert isinstance(trigger_config, dict)
+    push = trigger_config["push"]
+    assert isinstance(push, dict)
+    assert "tags" not in push
+
+
 def test_malformed_table_row_fails_closed(checker: ModuleType) -> None:
     document = (ROOT / "COMPLIANCE.md").read_text(encoding="utf-8")
     first_row = next(line for line in document.splitlines() if line.startswith("| OWASP-AT-01 |"))

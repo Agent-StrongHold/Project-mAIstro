@@ -618,7 +618,11 @@ def validate_registry(  # noqa: C901 - this is the single fail-closed schema/evi
                 errors.append(f"{ident} is implemented but has no executable test reference")
             if expires is not None and expires < today:
                 errors.append(f"{ident} is implemented but its evidence expiry has passed")
-        if require_release_evidence and control["release_required"] and status == "implemented":
+        if require_release_evidence and control["release_required"]:
+            if status != "implemented":
+                errors.append(
+                    f"release evidence is incomplete: {ident} is {status}, not implemented"
+                )
             if not registry_digest:
                 errors.append(
                     f"release evidence is missing: registry has no release_digest for {ident}"
@@ -627,17 +631,11 @@ def validate_registry(  # noqa: C901 - this is the single fail-closed schema/evi
                 errors.append(f"release evidence is missing: {ident} has no evidence")
 
     if require_release_evidence:
-        green_release_claim = any(
-            isinstance(control, dict)
-            and control.get("release_required") is True
-            and control.get("status") == "implemented"
-            for control in controls
-        )
-        if green_release_claim and not release_digest:
+        if not release_digest:
             errors.append("--release-digest is required when release evidence is required")
-        elif green_release_claim and release_digest and not HEX_DIGEST_RE.fullmatch(release_digest):
+        elif not HEX_DIGEST_RE.fullmatch(release_digest):
             errors.append("--release-digest must be a 40-64 character git digest")
-        elif green_release_claim and registry_digest != release_digest:
+        elif registry_digest != release_digest:
             errors.append("registry.release_digest does not match --release-digest")
     return errors
 

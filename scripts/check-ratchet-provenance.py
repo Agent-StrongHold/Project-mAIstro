@@ -30,6 +30,10 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
         "the compliance registry is the reviewed status and evidence specification; changing a "
         "claim or evidence record is the substantive compliance change"
     ),
+    ("produce-compliance-evidence.py", "quality/compliance-registry.json"): (
+        "the evidence producer executes the reviewed registry declarations; it does not compare "
+        "a candidate measurement against a mutable baseline"
+    ),
     ("check-retired-guidance.py", "quality/retired-guidance.json"): (
         "retirement guidance is the reviewed specification being changed"
     ),
