@@ -434,7 +434,16 @@ class Container:
             self.holds_db_pool = False
 
     def _resolve_chat_auth(self, auth: Any) -> Any:
-        """Require identity for armed controls and deny anonymous tool use."""
+        """Evaluate an identity-free turn as the role-less anonymous principal.
+
+        The fail-closed table (ADR-072726-0d6b, #1165) is armed even when it is
+        empty -- it denies -- but the strategies consult Sentinel only when
+        `auth is not None`, so `None` passed through here would let an
+        unauthenticated turn execute every tool the table denies. Such a turn
+        is routed as the anonymous principal instead. Armed-control enforcement
+        lives in one place: `_require_auth_while_armed`.
+        """
+        self._require_auth_while_armed(auth)
         if auth is not None:
             return auth
         self._require_auth_while_armed(auth)
