@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -26,7 +27,10 @@ from maistro.archive.wiring import build_archive_store
 from maistro.capabilities.effect_context import CapabilityEffectContext, new_effect_context
 from maistro.capabilities.invocation import InvocationStore as CapabilityInvocationStore
 from maistro.classifier.engine import ClassifierEngine
-from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
+from maistro.events.consumer_cursor import (
+    DEFAULT_HOLE_GRACE_SECONDS,
+    LEGACY_BRIDGE_CONSUMER_ID,
+)
 from maistro.graph.durable_runs.canonical_store import CanonicalDurableRunStore
 from maistro.graph.durable_runs.protocol import DurableRunStore
 from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
@@ -306,6 +310,13 @@ class Container:
     # a lease holder across repeated ticks/renewals.
     consumer_cursor_store: ConsumerCursorStore = None  # type: ignore[assignment]
     _durable_events_holder: str = field(default_factory=lambda: uuid.uuid4().hex)
+    # Ids the durable log skipped over below the settled cursor, keyed to
+    # when this holder first saw each missing. PostgreSQL allocates ids
+    # before commit, so a hole is an append that has not committed yet (or
+    # never will); the durable position stays below it for
+    # `durable_event_hole_grace_s` seconds, then treats it as aborted.
+    _durable_event_holes: dict[int, float] = field(default_factory=dict)
+    durable_event_hole_grace_s: float = DEFAULT_HOLE_GRACE_SECONDS
     # LLM provider registry + cost-aware router (SPEC-070226-cb8d).
     provider_registry: LLMProviderRegistry = None  # type: ignore[assignment]
     llm_router: LLMRouter = None  # type: ignore[assignment]
@@ -771,11 +782,12 @@ class Container:
         is: of several replicas that might tick this at once, only the lease
         holder re-scans/redispatches this round, so the rest do not redo
         (idempotent, but wasted) work. The durable position is written only
-        after `process_events` returns -- i.e. only once every event up to
-        it has a terminal invocation on every matching trigger -- so a crash
-        between "processed" and "cursor written" costs at most a replay of
-        already-settled, already-idempotent work; it never skips an event
-        still in flight.
+        after `process_events_batch` returns -- i.e. only once every event up
+        to it has a terminal invocation on every matching trigger -- so a
+        crash between "processed" and "cursor written" costs at most a replay
+        of already-settled, already-idempotent work; it never skips an event
+        still in flight. Nor does it skip an event whose id the log handed
+        out but has not committed yet: see `_gap_safe_position`.
         """
         lease = await self.consumer_cursor_store.claim(
             LEGACY_BRIDGE_CONSUMER_ID, holder=self._durable_events_holder
@@ -785,9 +797,9 @@ class Container:
             # would only repeat work its lease already covers this round.
             return self.durable_event_cursor
 
-        from maistro.events.processing import process_events
+        from maistro.events.processing import process_events_batch
 
-        new_cursor = await process_events(
+        batch = await process_events_batch(
             self.durable_event_log,
             self.trigger_store,
             self.invocation_store,
@@ -795,6 +807,7 @@ class Container:
             after_id=lease.position,
             limit=limit,
         )
+        new_cursor = self._gap_safe_position(batch.cursor, batch.holes, now=time.time())
         if new_cursor > lease.position:
             await self.consumer_cursor_store.advance(
                 LEGACY_BRIDGE_CONSUMER_ID,
@@ -803,6 +816,28 @@ class Container:
             )
         self.durable_event_cursor = new_cursor
         return new_cursor
+
+    def _gap_safe_position(self, cursor: int, holes: tuple[int, ...], *, now: float) -> int:
+        """The highest position this tick may persist without skipping an event.
+
+        `holes` are ids below `cursor` that the log did not return (see
+        `ProcessedBatch`). On PostgreSQL an id can be allocated by an append
+        that has not committed yet; persisting past it would drop that event
+        from every later ``id > position`` read. So the durable position is
+        capped just below the first hole this holder has known for less than
+        `durable_event_hole_grace_s`. A hole that outlives the grace is an
+        append that aborted (or is slower than any healthy one), and the
+        position moves past it. A hole that fills is simply not reported
+        next tick, so the event is read and dispatched then; every event
+        above the cap was already dispatched this tick and is redelivered
+        idempotently until the cap lifts.
+        """
+        seen = {hole: self._durable_event_holes.get(hole, now) for hole in holes}
+        self._durable_event_holes = seen
+        for hole in holes:
+            if now - seen[hole] < self.durable_event_hole_grace_s:
+                return hole - 1
+        return cursor
 
     async def recover_abandoned_attempts(
         self, *, now: datetime | None = None, limit: int = 100

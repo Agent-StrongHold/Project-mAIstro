@@ -223,6 +223,113 @@ async def test_a_tick_with_nothing_new_does_not_advance_the_stored_cursor() -> N
     assert lease.position == 0
 
 
+class _HidingLog:
+    """A durable log whose reads skip chosen ids -- PostgreSQL between a
+    `BIGSERIAL` allocation and that append's commit."""
+
+    def __init__(self, inner: Any, hidden: set[int]) -> None:
+        self._inner = inner
+        self.hidden = hidden
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def query(self, **kwargs: Any) -> Any:
+        return [e for e in await self._inner.query(**kwargs) if e.id not in self.hidden]
+
+
+async def _durable_position(container: Container) -> int:
+    from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
+
+    lease = await container.consumer_cursor_store.claim(
+        LEGACY_BRIDGE_CONSUMER_ID, holder=container._durable_events_holder
+    )
+    assert lease is not None
+    return lease.position
+
+
+async def test_the_durable_cursor_waits_below_an_id_the_log_has_not_committed() -> None:
+    """#1163 review: PostgreSQL allocates `BIGSERIAL` ids before commit, so id 3
+    can be readable while id 2 is still in an open transaction. Persisting 3
+    would exclude 2 from every later ``id > cursor`` read, restart included.
+    The durable position must stop at 1 until 2 appears, while the work on 3
+    itself is not delayed."""
+    from maistro.events.trigger_store import TriggerDefinition
+
+    container = await _container()
+    delivered: list[int] = []
+    container.handler_caller = _record_ids_caller(delivered)  # type: ignore[assignment]
+    await container.trigger_store.add(TriggerDefinition(trigger_id="t1", event_pattern="agent.*"))
+    log = _HidingLog(container.durable_event_log, hidden={2})
+    container.durable_event_log = log  # type: ignore[assignment]
+    for _ in range(3):
+        await log.append("agent.created")
+
+    cursor = await container.process_durable_events()
+
+    assert delivered == [1, 3]
+    assert cursor == container.durable_event_cursor == 1
+    assert await _durable_position(container) == 1
+
+    # The append commits: id 2 becomes readable. The next tick resumes from
+    # below it, delivers it, dedupes 3 (already settled), and only now persists 3.
+    log.hidden.clear()
+    cursor = await container.process_durable_events()
+
+    assert delivered == [1, 3, 2]
+    assert cursor == container.durable_event_cursor == 3
+    assert await _durable_position(container) == 3
+
+
+async def test_a_hole_that_outlives_the_grace_is_an_aborted_append() -> None:
+    """An id that never commits (the append rolled back) must not pin the
+    resume point forever: once the hole has been seen for longer than
+    `durable_event_hole_grace_s`, the position moves past it."""
+    from maistro.events.trigger_store import TriggerDefinition
+
+    container = await _container()
+    delivered: list[int] = []
+    container.handler_caller = _record_ids_caller(delivered)  # type: ignore[assignment]
+    await container.trigger_store.add(TriggerDefinition(trigger_id="t1", event_pattern="agent.*"))
+    log = _HidingLog(container.durable_event_log, hidden={2})
+    container.durable_event_log = log  # type: ignore[assignment]
+    for _ in range(3):
+        await log.append("agent.created")
+
+    assert await container.process_durable_events() == 1
+    assert await _durable_position(container) == 1
+
+    # Still within grace on the next tick: the position holds, and 3 is
+    # redelivered idempotently (deduped by the invocation store, so no call).
+    assert await container.process_durable_events() == 1
+    assert delivered == [1, 3]
+
+    # The grace lapses with the hole still open.
+    container.durable_event_hole_grace_s = 0.0
+    cursor = await container.process_durable_events()
+
+    assert cursor == container.durable_event_cursor == 3
+    assert await _durable_position(container) == 3
+    assert delivered == [1, 3]
+
+
+async def test_each_hole_gets_its_own_grace() -> None:
+    """Two open appends: the first lapsing must not let the position jump
+    past a second hole that was only just noticed."""
+    container = await _container()
+    container.durable_event_hole_grace_s = 10.0
+
+    # First tick: only hole 2 is visible below the cursor.
+    assert container._gap_safe_position(3, (2,), now=100.0) == 1
+    # Later tick: 2 is still open (past grace) and a fresh hole at 5 appeared.
+    assert container._gap_safe_position(6, (2, 5), now=111.0) == 4
+    # Later still: 5 also lapses; the position moves to the cursor.
+    assert container._gap_safe_position(6, (2, 5), now=122.0) == 6
+    # A hole that fills is forgotten, so a re-opened id restarts its grace.
+    assert container._gap_safe_position(6, (), now=123.0) == 6
+    assert container._gap_safe_position(6, (2,), now=124.0) == 1
+
+
 # --- LLM providers (SPEC-070226-cb8d) -----------------------------------------
 
 

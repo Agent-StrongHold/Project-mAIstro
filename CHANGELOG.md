@@ -406,7 +406,18 @@ or placeholder-only section.
   regress the recorded position. The durable position advances only after
   the tick's events are confirmed settled, so a crash between "processed"
   and "cursor written" costs at most a replay of already-idempotent work and
-  never skips an event still in flight.
+  never skips an event still in flight. Nor is it persisted past an id the
+  log handed out but has not committed: PostgreSQL allocates `BIGSERIAL`
+  ids before commit, so `process_events_batch` reports every id it skipped
+  over and the container holds its durable position below the first such
+  hole until the id appears or a grace window
+  (`Container.durable_event_hole_grace_s`, 60 s) lapses, after which the
+  hole is treated as an aborted append. Handler work is never delayed by a
+  hole, only the persisted resume point. The `consumer_cursors` table ships
+  as Alembic revision `036_consumer_cursors` for deployments whose
+  application role cannot create tables, and ADR-086 carries a dated
+  amendment recording the cursor's ownership, lease, fencing and gap
+  semantics.
 
 ## [1.0.0] - TBD
 
