@@ -16,8 +16,6 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
 CLAIM_STATUSES = {
     "implemented",
@@ -110,24 +108,10 @@ def _relative_artifact(root: Path, value: Any, subject: str) -> tuple[Path | Non
     return resolved, []
 
 
-def _fetch_github_run(run_id: int) -> dict[str, Any] | None:
-    """Fetch the canonical run object so a receipt cannot invent an execution."""
-    request = Request(
-        f"https://api.github.com/repos/Agent-StrongHold/Project-mAIstro/actions/runs/{run_id}",
-        headers={"Accept": "application/vnd.github+json"},
-    )
-    try:
-        with urlopen(request, timeout=10) as response:
-            payload = json.loads(response.read())
-    except (HTTPError, URLError, TimeoutError, OSError, UnicodeError, json.JSONDecodeError):
-        return None
-    return payload if isinstance(payload, dict) else None
-
-
 def _validate_execution_receipt(  # noqa: C901
     path: Path, record: dict[str, Any], subject: str
 ) -> list[Finding]:
-    """Require a typed GitHub receipt whose run also exists in the GitHub API."""
+    """Require a typed, locally inspectable receipt for an immutable execution."""
     try:
         receipt = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -192,35 +176,6 @@ def _validate_execution_receipt(  # noqa: C901
         findings.append(Finding(subject, "passed execution must have a success conclusion"))
     if result == "failed" and conclusion != "failure":
         findings.append(Finding(subject, "failed execution must have a failure conclusion"))
-    if match is not None and isinstance(run_id, int) and not isinstance(run_id, bool):
-        remote = _fetch_github_run(run_id)
-        if remote is None:
-            findings.append(
-                Finding(
-                    subject,
-                    "canonical GitHub Actions run could not be inspected; it may not exist",
-                )
-            )
-        else:
-            remote_repository = remote.get("repository")
-            if not isinstance(remote_repository, dict) or remote_repository.get("full_name") != (
-                "Agent-StrongHold/Project-mAIstro"
-            ):
-                findings.append(
-                    Finding(subject, "GitHub API run belongs to a different repository")
-                )
-            if remote.get("id") != run_id:
-                findings.append(Finding(subject, "GitHub API run ID does not match execution_id"))
-            if remote.get("html_url") != execution_id:
-                findings.append(Finding(subject, "GitHub API run URL does not match execution_id"))
-            if remote.get("head_sha") != head_sha:
-                findings.append(Finding(subject, "GitHub API head_sha does not match receipt"))
-            if remote.get("path") != workflow:
-                findings.append(Finding(subject, "GitHub API workflow path does not match receipt"))
-            if remote.get("conclusion") != conclusion:
-                findings.append(Finding(subject, "GitHub API conclusion does not match receipt"))
-            if result in {"passed", "failed"} and remote.get("status") != "completed":
-                findings.append(Finding(subject, "GitHub API run is not completed"))
     try:
         receipt_observed = _parse_datetime(
             receipt.get("observed_at"), "observed_at", f"{subject}.receipt"
@@ -573,7 +528,7 @@ def parse_compliance_document(path: Path) -> tuple[list[Finding], dict[str, str]
     return findings, statuses
 
 
-def validate(
+def validate(  # noqa: C901
     root: Path,
     *,
     document: Path | None = None,
@@ -583,7 +538,6 @@ def validate(
     root = root.resolve()
     document = document or root / "COMPLIANCE.md"
     registry = registry or root / "docs" / "compliance" / "claims.json"
-    as_of = as_of or datetime.now(UTC)
     findings: list[Finding] = []
     try:
         document_findings, document_statuses, cited_paths = _parse_compliance_document(document)
@@ -597,6 +551,20 @@ def validate(
         return findings
     if not isinstance(payload, dict) or payload.get("schema_version") != 1:
         findings.append(Finding(str(registry), "schema_version must be 1"))
+        return findings
+    try:
+        registry_as_of = _parse_datetime(payload.get("as_of"), "as_of", str(registry))
+    except ValueError as exc:
+        findings.append(Finding(str(registry), str(exc)))
+        registry_as_of = None
+    if as_of is None:
+        as_of = registry_as_of
+    elif as_of.tzinfo is None:
+        findings.append(Finding("as_of", "must include a timezone"))
+        return findings
+    else:
+        as_of = as_of.astimezone(UTC)
+    if as_of is None:
         return findings
     evidence_findings, evidence = _validate_evidence(root, payload.get("evidence"), as_of)
     findings.extend(evidence_findings)

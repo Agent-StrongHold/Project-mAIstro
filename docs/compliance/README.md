@@ -10,8 +10,13 @@ Run the deterministic local validator from the repository root:
 uv run python scripts/check_compliance.py
 ```
 
+The registry's top-level `as_of` timestamp is the validation snapshot used by this command, so
+repeated runs do not depend on the wall clock. Use `--as-of <ISO-8601 timestamp>` only when
+validating an explicitly chosen snapshot.
+
 ## Claim schema
 
+The registry has an `as_of` ISO-8601 timestamp that fixes the deterministic validation snapshot.
 Every claim has:
 
 - `control_id`: stable control identifier matching one status-bearing row in `COMPLIANCE.md`.
@@ -28,11 +33,11 @@ evidence references, and exact coverage between the document and registry. Every
 record must be referenced by the row's claim; an immutable execution record must carry the
 canonical GitHub Actions run URL for this repository plus a hashed, repository-owned JSON receipt.
 The receipt must repeat the run ID, repository, workflow path, head commit, result, conclusion, and
-observation time. The validator also inspects the canonical GitHub Actions API object and requires
-its immutable run ID, URL, repository, head commit, workflow path, and conclusion to match; a
-nonexistent run, matching arbitrary ID, or free-form receipt is not an execution record. Claim
-`last_verified` dates are checked against `stale_after_days`. A malformed Markdown table row or
-empty/invalid status is an error; it cannot silently disappear.
+observation time. The validator checks those fields, the canonical run URL, and the receipt digest
+locally; a matching arbitrary ID or free-form receipt is not an execution record. Existence in a
+remote provider is outside this deterministic local validator and must not be inferred from this
+technical evidence registry. Claim `last_verified` dates are checked against `stale_after_days`.
+A malformed Markdown table row or empty/invalid status is an error; it cannot silently disappear.
 
 ## Evidence vocabulary
 
@@ -40,9 +45,9 @@ Evidence records point to a repository-owned file and include its SHA-256 digest
 free-form path in a prose table from being treated as proof after the artifact changes. An
 `immutable_execution` record uses its path as a local execution receipt and must carry a canonical
 GitHub Actions run URL, repository, positive run ID, 40-character head SHA, workflow path, result,
-conclusion, and observation time. These typed fields, the receipt digest, and the live API lookup
-bind the record to an inspectable execution. An arbitrary or self-authored ID without that provenance
-is invalid; API lookup failure is reported as unusable evidence rather than treated as a pass.
+conclusion, and observation time. These typed fields and the receipt digest bind the record to a
+locally inspectable execution receipt. An arbitrary or self-authored ID without that provenance is
+invalid; this check does not claim that a remote provider still retains the run.
 
 `state` has these meanings:
 
@@ -61,4 +66,5 @@ Disabled, manual-only, never-run, stale, missing, and failing evidence can never
 The validator reports these states rather than collapsing them to a boolean.
 
 This validator is intentionally local and deterministic. It is not wired into required CI by this
-child issue; release-check and required-check topology remain parent-owned.
+child issue; release-check and required-check topology remain parent-owned. The registry snapshot is
+technical evidence, not a legal-sufficiency or remote-provider existence assertion.

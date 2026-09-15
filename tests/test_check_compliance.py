@@ -23,24 +23,6 @@ spec.loader.exec_module(check_compliance)
 AS_OF = datetime(2026, 9, 14, 12, tzinfo=UTC)
 
 
-@pytest.fixture(autouse=True)
-def _github_run_exists(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep fixture receipts local while exercising the API binding checks."""
-
-    def fetch(run_id: int) -> dict[str, object]:
-        return {
-            "id": run_id,
-            "html_url": f"https://github.com/Agent-StrongHold/Project-mAIstro/actions/runs/{run_id}",
-            "repository": {"full_name": "Agent-StrongHold/Project-mAIstro"},
-            "head_sha": "a" * 40,
-            "path": ".github/workflows/ci.yml",
-            "conclusion": "success",
-            "status": "completed",
-        }
-
-    monkeypatch.setattr(check_compliance, "_fetch_github_run", fetch)
-
-
 def _write_repository(
     tmp_path: Path,
     *,
@@ -57,6 +39,7 @@ def _write_repository(
     )
     payload = {
         "schema_version": 1,
+        "as_of": "2026-09-14T12:00:00Z",
         "claims": [
             {
                 "control_id": "X-1",
@@ -265,34 +248,44 @@ def test_cited_test_path_requires_a_typed_record_in_the_claim(tmp_path: Path) ->
     assert any("no typed repository evidence record" in str(finding) for finding in findings)
 
 
-def test_nonexistent_immutable_execution_fails_closed(
+def test_immutable_execution_receipt_must_be_self_consistent(tmp_path: Path) -> None:
+    _write_repository(tmp_path)
+    payload = json.loads((tmp_path / "registry.json").read_text())
+    record = payload["evidence"][1]
+    receipt_path = tmp_path / record["path"]
+    receipt = json.loads(receipt_path.read_text())
+    receipt["head_sha"] = "not-a-commit"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    record["sha256"] = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+    (tmp_path / "registry.json").write_text(json.dumps(payload))
+
+    assert any(
+        "head_sha must be a 40-character SHA" in str(finding) for finding in _findings(tmp_path)
+    )
+
+
+def test_default_validation_uses_registry_snapshot_without_wall_clock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _write_repository(tmp_path)
-    payload = json.loads((tmp_path / "registry.json").read_text())
-    record = payload["evidence"][0]
-    record["kind"] = "immutable_execution"
-    record["execution_id"] = (
-        "https://github.com/Agent-StrongHold/Project-mAIstro/actions/runs/123457"
-    )
-    receipt = {
-        "execution_id": record["execution_id"],
-        "repository": "Agent-StrongHold/Project-mAIstro",
-        "run_id": 123457,
-        "head_sha": "a" * 40,
-        "workflow": ".github/workflows/ci.yml",
-        "result": record["result"],
-        "conclusion": "success",
-        "observed_at": record["observed_at"],
-    }
-    receipt_path = tmp_path / "execution-receipt-2.json"
-    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
-    record["path"] = receipt_path.name
-    record["sha256"] = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
-    (tmp_path / "registry.json").write_text(json.dumps(payload))
-    monkeypatch.setattr(check_compliance, "_fetch_github_run", lambda run_id: None)
 
-    assert any("could not be inspected" in str(finding) for finding in _findings(tmp_path))
+    class NoWallClock:
+        @classmethod
+        def now(cls, *args: object, **kwargs: object) -> datetime:
+            raise AssertionError("compliance validation must not read the wall clock")
+
+        fromisoformat = staticmethod(datetime.fromisoformat)
+
+    monkeypatch.setattr(check_compliance, "datetime", NoWallClock)
+
+    assert (
+        check_compliance.validate(
+            tmp_path,
+            document=tmp_path / "COMPLIANCE.md",
+            registry=tmp_path / "registry.json",
+        )
+        == []
+    )
 
 
 def test_immutable_execution_id_without_a_receipt_fails_closed(tmp_path: Path) -> None:
