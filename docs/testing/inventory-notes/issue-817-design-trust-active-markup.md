@@ -23,4 +23,6 @@ classification remains fail-closed even for a URL that the prose/import allowlis
 would otherwise permit, matching the browser renderer's CSS boundary. Server-side
 PDF/PPTX/DOCX/PNG renderer entry points now call the same `scan_design_text` boundary
 before backend dispatch, so selecting a renderer cannot bypass returned-artifact
-enforcement.
+enforcement. The browser regression also proves ordinary `class` presentation
+markup has the same upgrade classification across the browser and Python trust
+paths.

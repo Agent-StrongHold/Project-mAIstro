@@ -66,7 +66,9 @@ const SVG_TAGS = new Set([
 const HTML_ATTRIBUTES = new Set([
   "aria-hidden",
   "aria-label",
+  "class",
   "dir",
+  "id",
   "role",
   "style",
   "title",
@@ -75,6 +77,7 @@ const HTML_ATTRIBUTES = new Set([
 const SVG_ATTRIBUTES = new Set([
   "aria-hidden",
   "aria-label",
+  "class",
   "cx",
   "cy",
   "d",
@@ -85,6 +88,7 @@ const SVG_ATTRIBUTES = new Set([
   "font-weight",
   "gradientunits",
   "height",
+  "id",
   "offset",
   "opacity",
   "points",
@@ -219,12 +223,12 @@ const STYLE_PROPERTIES = new Set([
 const NETWORK_OR_CODE_CSS = /(?:url\s*\(|image-set\s*\(|cross-fade\s*\(|element\s*\(|paint\s*\(|expression\s*\(|javascript\s*:|vbscript\s*:|data\s*:|@import|behavior\s*:|-moz-binding|var\s*\(|env\s*\()/i;
 const NETWORK_OR_CODE_ATTRIBUTE = /(?:url\s*\(|javascript\s*:|vbscript\s*:|data\s*:|https?\s*:|\/\/)/i;
 
+// Keep this list in lockstep with Warden's VISUAL_ARTIFACT_BLOCK_REASONS.
+// Unsupported inert markup is removed, but it is not a security block.
 export const VISUAL_ARTIFACT_BLOCK_REASONS = [
   "active-element",
   "event-handler",
   "dangerous-url",
-  "unsupported-attribute",
-  "unsupported-css-property",
   "css-network-or-code",
 ] as const;
 
@@ -248,15 +252,8 @@ function sanitizeStyle(styleText: string, context: SanitizationContext): string 
   for (const property of Array.from(source.style)) {
     const normalizedProperty = property.toLowerCase();
     if (!STYLE_PROPERTIES.has(normalizedProperty)) {
-      if (
-        normalizedProperty.includes("image") ||
-        normalizedProperty === "mask" ||
-        normalizedProperty === "content"
-      ) {
-        context.reasons.add("css-network-or-code");
-      } else {
-        context.reasons.add("unsupported-css-property");
-      }
+      // Unknown presentation properties are dropped safely. Network/code
+      // values are still blocked below when they appear in allowed properties.
       continue;
     }
 
@@ -283,17 +280,11 @@ function attributeAllowed(
     context.reasons.add("event-handler");
     return false;
   }
-  if (name.includes(":")) {
-    context.reasons.add("unsupported-attribute");
-    return false;
-  }
+  if (name.includes(":")) return false;
 
   const isSvg = element.namespaceURI === "http://www.w3.org/2000/svg";
   const allowed = isSvg ? SVG_ATTRIBUTES : HTML_ATTRIBUTES;
-  if (!allowed.has(name)) {
-    context.reasons.add("unsupported-attribute");
-    return false;
-  }
+  if (!allowed.has(name)) return false;
   if (name === "style") return true;
 
   // No href/src attributes are allowlisted. Keep this check as defense in

@@ -29,7 +29,9 @@ class _StubLLMClient:
 
 async def test_scan_returns_clean_for_benign_text() -> None:
     warden = Warden()
-    verdict = await warden.scan("The weather is nice today.", "user_input")
+    verdict = await warden.scan(
+        '<p class="marketing-copy">The weather is nice today.</p>', "user_input"
+    )
     assert verdict.clean is True
     assert verdict.blocked is False
     assert verdict.flags == ()

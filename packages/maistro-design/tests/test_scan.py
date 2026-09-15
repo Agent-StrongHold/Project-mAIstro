@@ -30,7 +30,7 @@ class TestScanDesignOutput:
     def test_clean_output_passes(self):
         from maistro_design.scan import scan_design_output
 
-        report = scan_design_output(_file_output("<h1>Hello</h1>"))
+        report = scan_design_output(_file_output('<h1 class="marketing-copy">Hello</h1>'))
         assert report.passed
         assert report.blocking_flags == ()
 

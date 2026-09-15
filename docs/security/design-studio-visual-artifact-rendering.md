@@ -19,13 +19,17 @@ DOM, presented, or exported. The boundary is
   `VISUAL_ARTIFACT_BLOCK_REASONS` vocabulary for trust/pre-scan consumers.
   `recommendVisualArtifactTrust` applies that result and returns `review` for
   blocked content, never `upgrade`; it is advisory and not an authorization
-  grant.
+  grant. Inert unsupported attributes/properties are dropped during
+  sanitization rather than treated as security blocks, so ordinary presentation
+  markup such as `class` remains eligible.
 
-The allowlist retains typography, layout, gradients, and inert SVG geometry.
-It rejects scripts, handlers, forms, links/navigation, images and other active
-HTML, `foreignObject`, external SVG references, dangerous URLs including
-`data:text/html`, and CSS/network/code primitives such as `url()`, `@import`,
-`var()`, `expression()`, and `image-set()`.
+The allowlist retains typography, layout, gradients, inert SVG geometry, and
+presentation attributes such as `class` and `id`. It rejects scripts, handlers,
+forms, links/navigation, images and other active HTML, `foreignObject`, external
+SVG references, dangerous URLs including `data:text/html`, and CSS/network/code
+primitives such as `url()`, `@import`, `var()`, `expression()`, and `image-set()`.
+Unknown inert attributes and unsupported presentation properties are removed
+without being added to the shared blocking vocabulary.
 
 ## Consumers
 

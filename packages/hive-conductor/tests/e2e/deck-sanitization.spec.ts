@@ -342,19 +342,21 @@ test("mutation, encoded, SVG, and CSS payload families fail closed while present
     return [
       recommend('<div onclick="alert(1)">handler</div>'),
       recommend('<p>safe presentation</p>'),
+      recommend('<p class="marketing-copy">Safe prose</p>'),
     ];
   });
-  expect(recommendations).toEqual(["review", "upgrade"]);
+  expect(recommendations).toEqual(["review", "upgrade", "upgrade"]);
 
   const safePresentation = await page.evaluate(() => {
     const sanitize = (
       window as Window & { __sanitizeDeckMarkup: (markup: string) => string }
     ).__sanitizeDeckMarkup;
     return sanitize(
-      '<div style="display:flex;background:linear-gradient(135deg,#0f0c29,#302b63);color:#fff"><strong>Portfolio</strong><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="#a78bfa" stroke="#fff" stroke-width="2"></circle></svg></div>',
+      '<div class="marketing-copy" style="display:flex;background:linear-gradient(135deg,#0f0c29,#302b63);color:#fff"><strong>Portfolio</strong><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="#a78bfa" stroke="#fff" stroke-width="2"></circle></svg></div>',
     );
   });
 
+  expect(safePresentation).toContain('class="marketing-copy"');
   expect(safePresentation).toContain("linear-gradient");
   expect(safePresentation).toContain("<strong>Portfolio</strong>");
   expect(safePresentation).toContain("<circle");
