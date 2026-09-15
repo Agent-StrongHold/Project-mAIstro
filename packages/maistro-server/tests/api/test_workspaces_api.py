@@ -11,6 +11,7 @@ from maistro.workspaces import InMemoryWorkspaceStore, WorkspaceOwnershipError
 from maistro_server.api import workspaces as workspace_api
 from maistro_server.api.auth import verify_api_key
 from maistro_server.api.principal import AuthenticatedPrincipal
+from maistro_server.api.route_table import iter_effective_routes
 from maistro_server.main import app as server_app
 
 
@@ -237,7 +238,7 @@ def test_unauthenticated_dev_principal_fallback_is_explicit() -> None:
 
 
 def test_production_app_mounts_workspace_routes_at_v1_and_legacy_paths() -> None:
-    paths = {route.path for route in server_app.routes}
+    paths = {route.path for route in iter_effective_routes(server_app.routes)}
     assert "/v1/workspaces" in paths
     assert "/workspaces" in paths
 
