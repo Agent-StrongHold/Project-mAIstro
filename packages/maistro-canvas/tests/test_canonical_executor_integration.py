@@ -432,5 +432,84 @@ async def test_runner_idle_and_reap_terminal_failure_paths() -> None:
     assert executor.failures == ["canvas worker lease expired"]
 
 
+async def test_whitespace_idempotency_key_starts_a_new_operation_each_time() -> None:
+    """A blank idempotency key is no operation identity, not the empty one."""
+    store = _CanvasStore()
+    executor = CanvasExecutor(
+        store=store,  # type: ignore[arg-type]
+        image_client=_ImageClient(),  # type: ignore[arg-type]
+        model_registry=_Registry(),
+        warden=_Warden(),
+    )
+
+    first = await executor.start_job(
+        org_id=_CanvasStore.ORG,
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action=JobAction.GENERATE,
+        prompt="safe",
+        idempotency_key="   ",
+    )
+    assert "canvas_operation_id" not in first.params
+
+    # Retire the first receipt so the layer accepts a second request; a blank
+    # key must not have made the two admissions the same operation.
+    first.status = JobStatus.DONE
+    second = await executor.start_job(
+        org_id=_CanvasStore.ORG,
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action=JobAction.GENERATE,
+        prompt="safe",
+        idempotency_key="   ",
+    )
+
+    assert second.id != first.id
+    assert "canvas_operation_id" not in second.params
+
+
+async def test_retry_of_active_operation_returns_the_active_receipt() -> None:
+    """An in-flight operation's retry rejoins its durable receipt."""
+    store = _CanvasStore()
+    executor = CanvasExecutor(
+        store=store,  # type: ignore[arg-type]
+        image_client=_ImageClient(),  # type: ignore[arg-type]
+        model_registry=_Registry(),
+        warden=_Warden(),
+    )
+
+    first = await executor.start_job(
+        org_id=_CanvasStore.ORG,
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action=JobAction.GENERATE,
+        prompt="safe",
+        idempotency_key="generation-1",
+    )
+    retried = await executor.start_job(
+        org_id=_CanvasStore.ORG,
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action=JobAction.GENERATE,
+        prompt="safe",
+        idempotency_key="generation-1",
+    )
+
+    assert retried.id == first.id
+    assert len(store.jobs) == 1
+
+
+async def test_reconcile_admissions_without_canonical_binding_is_empty() -> None:
+    store = _CanvasStore()
+    executor = CanvasExecutor(
+        store=store,  # type: ignore[arg-type]
+        image_client=_ImageClient(),  # type: ignore[arg-type]
+        model_registry=_Registry(),
+        warden=_Warden(),
+    )
+
+    assert await executor.reconcile_admissions() == []
+
+
 async def _async_value(value: list[str]) -> list[str]:
     return value
