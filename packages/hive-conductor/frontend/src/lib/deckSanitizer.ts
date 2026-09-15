@@ -204,7 +204,7 @@ const STYLE_PROPERTIES = new Set([
 ]);
 
 const NETWORK_OR_CODE_CSS = /(?:url\s*\(|image-set\s*\(|cross-fade\s*\(|element\s*\(|paint\s*\(|expression\s*\(|javascript\s*:|vbscript\s*:|data\s*:|@import|behavior\s*:|-moz-binding|var\s*\(|env\s*\()/i;
-const NETWORK_OR_CODE_ATTRIBUTE = /(?:url\s*\(|javascript\s*:|vbscript\s*:|data\s*:|https?\s*:|\/\/)/i;
+const NETWORK_OR_CODE_ATTRIBUTE = /(?:url\s*\(|(?:javascript|vbscript|data|blob|file|filesystem|ftp|http|https|ws|wss|about|mailto|tel|cid)\s*:|\/\/)/i;
 // CSS escapes/comments can hide a blocked function from a lexical check. They
 // are not needed by the supported templates, so reject them before CSSOM
 // normalization rather than trying to decode every browser CSS grammar.

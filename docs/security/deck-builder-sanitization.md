@@ -18,7 +18,7 @@ The existing `/decks` route/navigation containment remains in place until parent
 
 ## Implemented boundary
 
-- `frontend/src/lib/deckSanitizer.ts` defines the single Deck HTML/SVG allowlist. It strips executable elements/attributes, active or remote URL schemes, and CSS network/code primitives while retaining the supported presentation subset.
+- `frontend/src/lib/deckSanitizer.ts` defines the single Deck HTML/SVG allowlist. It strips executable elements/attributes, active or remote URL schemes (including blob/file/ftp/websocket and other known non-HTTP schemes), and CSS network/code primitives while retaining the supported presentation subset.
 - Sanitization is applied to model-authored slide markup, slide-state updates, editable preview state, presentation rendering, built-in templates, and HTML export.
 - Rich paste and drag/drop prevent the browser's default insertion/navigation behavior and sanitize before any untrusted HTML reaches the live DOM; dragover is canceled so URI drops cannot fall through to browser navigation.
 - Editable preview blur sanitizes the live DOM before copying it into React state, so an edit cannot leave an unsafe transient DOM behind while the state update commits.

@@ -156,7 +156,9 @@ function expectNoExecutableMarkup(html: string, allowTrustedDocumentMeta = false
     expect(html).not.toMatch(/<meta\b/i);
   }
   expect(html).not.toMatch(/\son[a-z]+\s*=/i);
-  expect(html).not.toMatch(/(?:javascript|vbscript|data)\s*:/i);
+  expect(html).not.toMatch(
+    /(?:javascript|vbscript|data|blob|file|filesystem|ftp|https?|wss?|ws|about|mailto|tel|cid)\s*:/i,
+  );
   expect(html).not.toMatch(/url\s*\(/i);
   expect(html).not.toContain(ATTACKER);
 }
@@ -340,7 +342,7 @@ test("mutation, encoded, SVG, and CSS payload families fail closed while present
     '<svg><g/onload=window.__deckPwned=10//<p>safe</p></svg>',
     '<math><mtext><img src=x onerror=window.__deckPwned=11></mtext></math><strong>safe</strong>',
     '<a href="jav&#x61;script:window.__deckPwned=12">bad</a><em>safe</em>',
-    '<svg><use href="http://attacker.invalid/icon#x"></use><circle cx="5" cy="5" r="4"></circle></svg>',
+    '<svg><use href="http://attacker.invalid/icon#x"></use><circle cx="5" cy="5" r="4" fill="blob:http://attacker.invalid/id" stroke="ftp://attacker.invalid/line"></circle></svg>',
     '<div style="background:url(\\6a avascript:alert(1));color:#fff">safe</div>',
     '<div style="background-image:image-set(url(http://attacker.invalid/a) 1x);font-size:20px">safe</div>',
     '<style>@import url(http://attacker.invalid/x);</style><p>safe</p>',
