@@ -96,11 +96,18 @@ class InMemoryOutcomeStore:
     ) -> dict[str, Any]:
         self._validate_scope(org_id, project_id)
         cutoff = datetime.now(UTC) - timedelta(days=days)
+
+        def _matches_task_type(record: str) -> bool:
+            # "" names "all types"; the same empty-on-either-side rule as
+            # _dag_matches, kept as a predicate so this read filter mirrors
+            # the org/project scope helpers one for one (#1310 scope split).
+            return not task_type or record == task_type
+
         filtered = [
             o
             for o in self._outcomes
             if o.created_at >= cutoff
-            and (not task_type or o.task_type == task_type)
+            and _matches_task_type(o.task_type)
             and self._org_matches(o.org_id, org_id)
             and self._project_matches(o.project_id, project_id)
         ]
