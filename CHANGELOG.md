@@ -206,8 +206,8 @@ or placeholder-only section.
 
 ### Fixed
 
-- **The Chat and Deck Builder pages render again over plain HTTP (regression
-  from #1344).** #1344 moved message, session and slide ids off `Math.random`
+- **The Chat and Deck Builder pages render again over plain HTTP (#1476;
+  regression from #1344).** #1344 moved message, session and slide ids off `Math.random`
   onto `crypto.randomUUID()`, which browsers expose only in a secure context
   (`https://`, or `http://localhost`). Agent Conductor's documented homelab
   deployment is reached over plain HTTP at a LAN hostname, and the browser
