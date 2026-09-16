@@ -17,7 +17,7 @@ contracts:
   - behavioral
 tests:
   - packages/maistro-core/tests/builders/test_pipeline_graph.py
-  - packages/maistro-core/tests/builders/test_graph_executor.py
+  - packages/maistro-core/tests/builders/test_canonical_execution.py
   - packages/maistro-core/tests/builders/test_builder_pipeline.py
 layer: Orchestration
 owners:

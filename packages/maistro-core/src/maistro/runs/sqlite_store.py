@@ -191,12 +191,6 @@ _PURGE_DEPENDENT_SQL = {
     ),
 }
 
-_RETAINED_REFERENCE_SQL = {
-    "canonical_event_log": (
-        "SELECT COUNT(*) FROM canonical_event_log WHERE run_id IN (SELECT value FROM json_each(?))"
-    ),
-}
-
 _SCHEMA = """
 PRAGMA foreign_keys = ON;
 
@@ -570,9 +564,9 @@ class SqliteRunStore:
         concurrent transition cannot land on a Run this sweep is removing,
         and two sweeps divide the candidates instead of double-counting.
         The dependent table with no foreign key — the Graph continuation —
-        is deleted in the same transaction, and the retained Event
-        references are counted into the outcome rather than silently left
-        behind (#1175).
+        is deleted in the same transaction. The append-only Event log and the
+        schedule provenance are left untouched: nothing reads a count of them,
+        so the outcome stopped carrying one.
         """
         if limit <= 0:
             raise ValueError("limit must be positive")
@@ -611,12 +605,6 @@ class SqliteRunStore:
                     continue
                 cursor = await self._conn.execute(sql, (run_id_param,))
                 continuations += max(cursor.rowcount, 0)
-            retained = 0
-            for table, sql in _RETAINED_REFERENCE_SQL.items():
-                if not await self._dependent_table_exists(table):
-                    continue
-                row = await (await self._conn.execute(sql, (run_id_param,))).fetchone()
-                retained += int(row[0]) if row is not None else 0
             await self._conn.execute(_DELETE_ATTEMPTS_SQL, (run_id_param,))
             await self._conn.execute(_DELETE_NODE_RUNS_SQL, (run_id_param,))
             await self._conn.execute(_DELETE_RUNS_SQL, (run_id_param,))
@@ -627,10 +615,6 @@ class SqliteRunStore:
                 node_runs=len(node_run_ids),
                 attempts=int(attempt_count),
                 continuations=continuations,
-                event_references_retained=retained,
-                schedule_claims_released=sum(
-                    1 for _run_id, run in purged if occurrence_key(run.provenance) is not None
-                ),
                 backlog_remaining=len(doomed) > limit,
             )
 

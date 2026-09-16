@@ -1,0 +1,58 @@
+---
+# Trunk exact-debt vulture sweep inventory note
+
+inventory-delta:
+  packages/maistro-core/tests: -16 +1 (net -15; 16 tests deleted, 1 relocated)
+---
+
+## Claim
+
+Removes four Vulture findings that exist on `develop` but are invisible to
+develop's own exact-debt-ledger gate (the trusted-base scan is
+self-reference-blind on trunk), which fail every candidate PR that merges
+develop. This is the checker's documented lane-legal path: delete the debt
+instead of editing the ledger.
+
+Symbols removed (each verified to have zero production readers — only write
+sites and test asserts on dead counters):
+
+- `PurgeOutcome.event_references_retained` (field, `maistro/runs/store.py`)
+- `PurgeOutcome.schedule_claims_released` (field, `maistro/runs/store.py`)
+- `_LegacyGraphPipelineExecutor` (class, `maistro/builders/graph_executor.py`,
+  with its private `_Outcome`/`_GateRoute` enums)
+- `RunRetentionSweeper.last_outcome` (property, `maistro/runs/retention.py`,
+  with the write-only `_last_outcome` bookkeeping)
+
+Orphans removed with them: sqlite `_RETAINED_REFERENCE_SQL`, the pg
+`schedule_id` projection in both purge-candidate SELECTs, the pg
+`events_retained` count block, and the in-memory/`sqlite` count wiring.
+
+## Test changes (all in `packages/maistro-core/tests`)
+
+- Deleted `tests/builders/test_graph_executor.py` — 14 async tests exercised
+  only `_LegacyGraphPipelineExecutor`. Its surviving-content test
+  (`_build_prompt` malformed-format fallback) was relocated unchanged into
+  `tests/builders/test_canonical_execution.py`.
+- `tests/builders/test_canonical_execution.py`: dropped the legacy-oracle half
+  of four parity tests and renamed them (`test_stage_wave_creates_...`,
+  `test_skip_and_unsupported_stage_domain_projection`,
+  `test_failure_and_timeout_terminal_behavior`,
+  `test_timeout_never_runs_the_on_complete_hook`,
+  `test_canonical_adapter_is_public_and_executor_names_are_not_exported`);
+  all canonical-evidence assertions (node runs, attempts, provenance,
+  frontier, concurrency) are preserved.
+- `tests/runs/test_retention_policy.py`: deleted
+  `test_the_outcome_names_the_authorized_workspace` (existed solely to read
+  the removed property); trimmed `last_outcome` assertions from five tests
+  whose gauge/scope/metric coverage is retained.
+- `tests/runs/test_retention_scope_conformance.py`: trimmed the removed
+  counter assertions from `test_events_survive_a_purge` (renamed from
+  `..._and_are_counted`) and the schedule-claim re-admission test; the
+  survival and re-admission behaviors remain asserted.
+
+## Evidence
+
+`uv run python scripts/check-vulture-baseline.py packages/*/src
+--min-confidence 60 --exclude '*/third_party/*'` reports none of the four
+identities after this change; scoped pytest suites for every touched module
+pass; ruff clean.
