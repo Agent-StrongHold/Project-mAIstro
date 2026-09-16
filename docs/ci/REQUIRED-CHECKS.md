@@ -60,8 +60,12 @@ merge_group:
 
 `scripts/check-required-checks.py` enforces this from the checked-in
 `.github/branch-protection.json` required set. It also reads
-`.github/merge-queue.json` and pins the initial queue to `SQUASH` with one PR per
-merge group. A future required check cannot silently become PR-only while the
+`.github/merge-queue.json` and pins the queue to `SQUASH` with batching of at
+most three PRs per merge group, a positive minimum group no larger than the
+maximum, and a group wait limited to reviewed values (0, 2, 3, or 5 minutes).
+Anything else — including non-integer or unreviewed values — fails closed, so
+widening the queue further means editing this gate in the same reviewed change
+that edits the queue file. A future required check cannot silently become PR-only while the
 queue waits forever for an `Expected` context.
 
 Synthetic aggregate contexts such as `gates-ran` are covered by their trusted
@@ -103,6 +107,7 @@ wait forever for an `Expected` result.
 | CodeQL Advanced | `Analyze (actions)` | base `main` |
 | CodeQL Advanced | `Analyze (javascript-typescript)` | base `main` |
 | CodeQL Advanced | `Analyze (python)` | base `main` |
+| DevSkim | `DevSkim` | base `develop` |
 | Formal Conformance | `formal-conformance` | every PR |
 | Gate C | `Gate C — canonical clean install` | every PR |
 | Integration Scope | `integration-scope` | every PR |
@@ -124,6 +129,11 @@ wait forever for an `Expected` result.
 `Analyze (actions)`, `Analyze (javascript-typescript)`, `Analyze (python)`, and
 `Container scan + SBOM + cosign` are required on `main` only. They do not report
 as real executed checks on a `develop`-based PR or develop merge group.
+
+`DevSkim` is a documented advisory check for `develop`-based PRs. It is
+intentionally excluded from both protected required-check sets until the owner
+promotes it into the merge contract; its base-coupled workflow scope remains
+listed in the generated table above.
 
 ## Draft pull requests
 

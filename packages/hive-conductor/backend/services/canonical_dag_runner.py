@@ -32,6 +32,7 @@ from services.dag_agents import (
 )
 from services.legacy_dag_node import LegacyConductorNode, OnResponseHook
 from services.node_metrics_store import record_run_completion
+from services.scan_continuations import scan_continuation
 
 logger = logging.getLogger(__name__)
 _SCOUT_NODE_ID = "__hive_legacy_scout__"
@@ -430,6 +431,10 @@ async def recover_stranded_dag_runs(*, limit: int = 100) -> int:
         eligible=lambda run: run.provenance.get("admission_source") == "hive_legacy_dag",
         events=container.event_bus,
         limit=limit,
+        # Held across ticks: the scan is bounded per call, and only a tick
+        # that resumes where the last stopped crosses a foreign-owned QUEUED
+        # prefix longer than that bound (#1127).
+        scan=scan_continuation("recover_queued_graph_runs", container.run_store),
     )
 
 
@@ -454,6 +459,7 @@ async def wake_due_dag_runs(*, limit: int = 100) -> int:
         eligible=lambda run: run.provenance.get("admission_source") == "hive_legacy_dag",
         events=container.event_bus,
         limit=limit,
+        scan=scan_continuation("resume_due_graph_runs", container.graph_run_store),
     )
 
 
