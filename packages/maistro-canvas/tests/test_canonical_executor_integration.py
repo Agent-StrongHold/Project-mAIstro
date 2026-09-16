@@ -214,7 +214,7 @@ async def test_generation_request_and_runner_are_visible_on_canonical_spine() ->
     assert completed.status is RunStatus.COMPLETED
 
 
-async def test_receipt_persistence_failure_compensates_admitted_run() -> None:
+async def test_receipt_persistence_failure_leaves_run_for_durable_reconciliation() -> None:
     store = _CanvasStore()
     store.fail_create = True
     canonical = _CanonicalStub()
@@ -235,7 +235,72 @@ async def test_receipt_persistence_failure_compensates_admitted_run() -> None:
             prompt="safe",
         )
 
-    assert canonical.cancelled == ["run-stub"]
+    # Receipt persistence failure is indistinguishable from process death to
+    # the admission protocol; cancelling here would strand the canonical fact.
+    assert canonical.cancelled == []
+
+
+async def test_restart_reconciles_admission_gap_and_idempotent_retry_reuses_run() -> None:
+    """A death between the two stores is repaired without a second Run."""
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("workspace-1")
+    runs = InMemoryRunStore(project_store=projects)
+    canonical = CanvasCanonicalExecution(
+        runs,
+        workspace_id="workspace-1",
+        project_id=root.project_id,
+    )
+    store = _CanvasStore()
+    store.fail_create = True
+    executor = CanvasExecutor(
+        store=store,
+        image_client=_ImageClient(),  # type: ignore[arg-type]
+        model_registry=_Registry(),
+        warden=_Warden(),
+        canonical_execution=canonical,
+    )
+
+    with pytest.raises(RuntimeError, match="receipt store unavailable"):
+        await executor.start_job(
+            org_id=_CanvasStore.ORG,
+            canvas_id="canvas-1",
+            layer_id="layer-1",
+            action=JobAction.GENERATE,
+            prompt="safe",
+            idempotency_key="generation-1",
+        )
+    queued = await runs.list_by_status(RunStatus.QUEUED, limit=10)
+    assert len(queued) == 1
+    run_id = queued[0].run_id
+
+    # A restarted process has no in-memory admission map. The runner scans the
+    # durable canonical source and recreates the receipt before claiming it.
+    store.fail_create = False
+    runner = CanvasJobRunner(store=store, executor=executor)
+    assert await runner.tick_once() is True
+    repaired = list(store.jobs.values())
+    assert len(repaired) == 1
+    assert canonical_run_id(repaired[0].params) == run_id
+    assert repaired[0].status == JobStatus.DONE
+
+    # Retrying the same logical operation returns its durable receipt and does
+    # not admit a second canonical identity.
+    retried = await executor.start_job(
+        org_id=_CanvasStore.ORG,
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action=JobAction.GENERATE,
+        prompt="safe",
+        idempotency_key="generation-1",
+    )
+    assert retried.id == repaired[0].id
+    all_runs = [
+        run
+        for status in RunStatus
+        for run in await runs.list_by_status(status, limit=10)
+        if run.provenance.get("admission_source") == "canvas_generation"
+    ]
+    assert [run.run_id for run in all_runs] == [run_id]
 
 
 async def test_claimed_job_rejects_missing_or_unbound_canonical_correlation() -> None:
@@ -365,6 +430,85 @@ async def test_runner_idle_and_reap_terminal_failure_paths() -> None:
     assert await runner.reap_once() == [failed]
     assert failed.error_message == "Generation failed: provider service temporarily unavailable."
     assert executor.failures == ["canvas worker lease expired"]
+
+
+async def test_whitespace_idempotency_key_starts_a_new_operation_each_time() -> None:
+    """A blank idempotency key is no operation identity, not the empty one."""
+    store = _CanvasStore()
+    executor = CanvasExecutor(
+        store=store,  # type: ignore[arg-type]
+        image_client=_ImageClient(),  # type: ignore[arg-type]
+        model_registry=_Registry(),
+        warden=_Warden(),
+    )
+
+    first = await executor.start_job(
+        org_id=_CanvasStore.ORG,
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action=JobAction.GENERATE,
+        prompt="safe",
+        idempotency_key="   ",
+    )
+    assert "canvas_operation_id" not in first.params
+
+    # Retire the first receipt so the layer accepts a second request; a blank
+    # key must not have made the two admissions the same operation.
+    first.status = JobStatus.DONE
+    second = await executor.start_job(
+        org_id=_CanvasStore.ORG,
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action=JobAction.GENERATE,
+        prompt="safe",
+        idempotency_key="   ",
+    )
+
+    assert second.id != first.id
+    assert "canvas_operation_id" not in second.params
+
+
+async def test_retry_of_active_operation_returns_the_active_receipt() -> None:
+    """An in-flight operation's retry rejoins its durable receipt."""
+    store = _CanvasStore()
+    executor = CanvasExecutor(
+        store=store,  # type: ignore[arg-type]
+        image_client=_ImageClient(),  # type: ignore[arg-type]
+        model_registry=_Registry(),
+        warden=_Warden(),
+    )
+
+    first = await executor.start_job(
+        org_id=_CanvasStore.ORG,
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action=JobAction.GENERATE,
+        prompt="safe",
+        idempotency_key="generation-1",
+    )
+    retried = await executor.start_job(
+        org_id=_CanvasStore.ORG,
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action=JobAction.GENERATE,
+        prompt="safe",
+        idempotency_key="generation-1",
+    )
+
+    assert retried.id == first.id
+    assert len(store.jobs) == 1
+
+
+async def test_reconcile_admissions_without_canonical_binding_is_empty() -> None:
+    store = _CanvasStore()
+    executor = CanvasExecutor(
+        store=store,  # type: ignore[arg-type]
+        image_client=_ImageClient(),  # type: ignore[arg-type]
+        model_registry=_Registry(),
+        warden=_Warden(),
+    )
+
+    assert await executor.reconcile_admissions() == []
 
 
 async def _async_value(value: list[str]) -> list[str]:

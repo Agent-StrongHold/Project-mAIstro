@@ -258,6 +258,52 @@ class PgRunStore:
                 raise conflict from exc
         return run
 
+    async def _fetch_purge_rows(
+        self,
+        conn: Any,
+        scope: RetentionScope,
+        cutoff: datetime,
+        limit: int,
+    ) -> list[Any]:
+        """Lock one extra candidate, using the scope predicate in SQL."""
+        if isinstance(scope, WorkspaceRetentionScope):
+            return list(
+                await conn.fetch(
+                    _PURGE_CANDIDATES_SQL_SCOPED,
+                    cutoff,
+                    _TERMINAL_RUN_STATUS_VALUES,
+                    scope.workspace_id,
+                    limit + 1,
+                )
+            )
+        return list(
+            await conn.fetch(
+                _PURGE_CANDIDATES_SQL_GLOBAL,
+                cutoff,
+                _TERMINAL_RUN_STATUS_VALUES,
+                limit + 1,
+            )
+        )
+
+    async def _purge_dependents(self, conn: Any, run_ids: list[str]) -> tuple[int, int]:
+        """Delete owned continuation state and count retained event references."""
+        continuations = 0
+        if await conn.fetchval("SELECT to_regclass('public.graph_continuations') IS NOT NULL"):
+            deleted_continuations = await conn.fetch(
+                "DELETE FROM graph_continuations WHERE run_id = ANY($1::text[]) RETURNING run_id",
+                run_ids,
+            )
+            continuations = len(deleted_continuations)
+        events_retained = 0
+        if await conn.fetchval("SELECT to_regclass('public.canonical_event_log') IS NOT NULL"):
+            events_retained = int(
+                await conn.fetchval(
+                    "SELECT COUNT(*) FROM canonical_event_log WHERE run_id = ANY($1::text[])",
+                    run_ids,
+                )
+            )
+        return continuations, events_retained
+
     async def purge_expired_runs(
         self,
         scope: RetentionScope,
@@ -298,27 +344,10 @@ class PgRunStore:
         if limit <= 0:
             raise ValueError("limit must be positive")
         cutoff = now if now is not None else datetime.now(UTC)
-        workspace_scoped = isinstance(scope, WorkspaceRetentionScope)
         async with self._pool.acquire() as conn, conn.transaction():
-            # Two literal statements, selected by branch: the scope variants'
-            # whole difference is the one Workspace predicate line, and each
-            # call site keeps its own parameter list.
-            if workspace_scoped:
-                assert isinstance(scope, WorkspaceRetentionScope)  # narrowed above
-                rows = await conn.fetch(
-                    _PURGE_CANDIDATES_SQL_SCOPED,
-                    cutoff,
-                    _TERMINAL_RUN_STATUS_VALUES,
-                    scope.workspace_id,
-                    limit + 1,
-                )
-            else:
-                rows = await conn.fetch(
-                    _PURGE_CANDIDATES_SQL_GLOBAL,
-                    cutoff,
-                    _TERMINAL_RUN_STATUS_VALUES,
-                    limit + 1,
-                )
+            # The scope predicate stays in the candidate SELECT, so rows
+            # outside a Workspace are never visible to this transaction.
+            rows = await self._fetch_purge_rows(conn, scope, cutoff, limit)
             backlog_remaining = len(rows) > limit
             selected = rows[:limit]
             run_ids = [row["run_id"] for row in selected]
@@ -339,21 +368,7 @@ class PgRunStore:
                 "DELETE FROM canonical_runs WHERE run_id = ANY($1::text[]) RETURNING run_id",
                 run_ids,
             )
-            continuations = 0
-            if await conn.fetchval("SELECT to_regclass('public.graph_continuations') IS NOT NULL"):
-                deleted_continuations = await conn.fetch(
-                    "DELETE FROM graph_continuations WHERE run_id = ANY($1::text[]) RETURNING run_id",
-                    run_ids,
-                )
-                continuations = len(deleted_continuations)
-            events_retained = 0
-            if await conn.fetchval("SELECT to_regclass('public.canonical_event_log') IS NOT NULL"):
-                events_retained = int(
-                    await conn.fetchval(
-                        "SELECT COUNT(*) FROM canonical_event_log WHERE run_id = ANY($1::text[])",
-                        run_ids,
-                    )
-                )
+            continuations, events_retained = await self._purge_dependents(conn, run_ids)
         return PurgeOutcome(
             scope=scope,
             runs=len(deleted_runs),

@@ -40,7 +40,7 @@ rather than silently destroyed.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeAlias
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from maistro.runs.model import Run
@@ -89,7 +89,7 @@ class GlobalRetentionScope:
             raise ValueError("authorized_by must name the principal that authorized a global purge")
 
 
-type RetentionScope = WorkspaceRetentionScope | GlobalRetentionScope
+RetentionScope: TypeAlias = WorkspaceRetentionScope | GlobalRetentionScope  # noqa: UP040
 
 
 def run_in_purge_scope(run: Run, scope: RetentionScope) -> bool:
