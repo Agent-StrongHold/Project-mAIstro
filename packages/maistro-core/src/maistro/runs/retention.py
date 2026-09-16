@@ -230,8 +230,13 @@ class RunRetentionSweeper:
         never a Workspace id, for the same #818 bound the purge counter
         carries.
         """
+        # Read through the public accessor as the single source of truth once
+        # the sweep has committed its outcome; the argument is retained for
+        # direct/internal callers and for the first successful sweep.
+        committed = self.last_outcome
+        reported = committed if committed is not None else outcome
         retention_backlog_remaining.set(
-            1.0 if outcome.backlog_remaining else 0.0, mode=outcome.mode
+            1.0 if reported.backlog_remaining else 0.0, mode=reported.mode
         )
 
     def _failure_mode(self) -> str:

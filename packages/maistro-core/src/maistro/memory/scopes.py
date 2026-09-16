@@ -55,9 +55,11 @@ def matches_scope(
             # An org-bound global is not public: an absent caller org must not
             # act as a wildcard. Only an unbound global (empty org_id) remains
             # visible without tenant context.
-            if mem.org_id and mem.org_id != caller_org:
-                continue
-            return True
+            if not mem.org_id:
+                return True
+            if caller_org and mem.org_id == caller_org:
+                return True
+            continue
         if mem.scope != scope:
             continue
         if scope == MemoryScope.ORGANIZATION and mem.org_id == value:

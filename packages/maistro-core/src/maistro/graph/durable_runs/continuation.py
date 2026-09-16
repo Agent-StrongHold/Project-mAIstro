@@ -147,6 +147,32 @@ def _created_cursor(row: GraphContinuation) -> tuple[str, str]:
     return (created, row.run_id)
 
 
+def _matches_status(
+    row: GraphContinuation,
+    status: RunStatus,
+    project_id: str | None,
+    admission_source: str | None,
+) -> bool:
+    return (
+        row.status is status
+        and (project_id is None or row.project_id == project_id)
+        and (admission_source is None or row.admission_source == admission_source)
+    )
+
+
+def _is_due(
+    row: GraphContinuation,
+    now: datetime,
+    admission_source: str | None,
+) -> bool:
+    return (
+        row.status in _RECOVERY_VISIBLE_STATUSES
+        and row.resume_at is not None
+        and row.resume_at <= now
+        and (admission_source is None or row.admission_source == admission_source)
+    )
+
+
 def _due_cursor(row: GraphContinuation) -> tuple[str, str]:
     """The ``(resume_at_iso, run_id)`` keyset position of one due row (#1098)."""
     assert row.resume_at is not None  # narrowed by the due-status/deadline filter above
@@ -199,9 +225,7 @@ class InMemoryGraphContinuationStore:
         rows = [
             row
             for row in self._rows.values()
-            if row.status is status
-            and (project_id is None or row.project_id == project_id)
-            and (admission_source is None or row.admission_source == admission_source)
+            if _matches_status(row, status, project_id, admission_source)
         ]
         rows.sort(key=lambda row: (row.created_at or datetime.min, row.run_id))
         if after is not None:
@@ -218,12 +242,7 @@ class InMemoryGraphContinuationStore:
         after: tuple[str, str] | None = None,
     ) -> list[str]:
         rows = [
-            row
-            for row in self._rows.values()
-            if row.status in _RECOVERY_VISIBLE_STATUSES
-            and row.resume_at is not None
-            and row.resume_at <= now
-            and (admission_source is None or row.admission_source == admission_source)
+            row for row in self._rows.values() if _is_due(row, now, admission_source)
         ]
         rows.sort(key=lambda row: (row.resume_at, row.run_id))
         if after is not None:
