@@ -103,7 +103,7 @@ class _GateRoute(enum.Enum):
     HALT = "halt"
 
 
-class _LegacyGraphPipelineExecutor:
+class _LegacyGraphPipelineExecutor:  # noqa: V102 — parity oracle imported by migration tests
     """Temporary parity oracle for the pre-convergence Builders executor.
 
     This is intentionally private. New Builders callers must use

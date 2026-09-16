@@ -300,8 +300,8 @@ class PurgeOutcome:
     node_runs: int = 0
     attempts: int = 0
     continuations: int = 0
-    event_references_retained: int = 0
-    schedule_claims_released: int = 0
+    event_references_retained: int = 0  # noqa: V107 — public purge accounting field
+    schedule_claims_released: int = 0  # noqa: V107 — public purge accounting field
     backlog_remaining: bool = False
 
     @property

@@ -135,7 +135,7 @@ class RunRetentionSweeper:
         """The scope every sweep carries unless the call names another."""
         return self._scope
 
-    @property
+    @property  # noqa: V106 — public sweep telemetry
     def last_outcome(self) -> PurgeOutcome | None:
         """What the last completed sweep deleted, by class of evidence.
 
