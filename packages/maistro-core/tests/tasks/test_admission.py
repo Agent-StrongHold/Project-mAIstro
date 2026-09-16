@@ -253,6 +253,40 @@ async def test_death_after_receipt_before_notification_is_recoverable(scoped) ->
     assert await restarted.next_task()
 
 
+async def test_recovered_task_runs_under_the_original_canonical_identity(scoped) -> None:
+    _projects, runs, _root, project = scoped
+    admitter = TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+    submitted = await TaskQueue(admitter=admitter).submit(
+        TaskCreate(description="execute after restart")
+    )
+
+    restarted = TaskQueue(admitter=admitter)
+    assert await restarted.recover(runs) == 1
+
+    from maistro.agents.types import ConductorOutput
+    from maistro.tasks.execution import TaskAttemptExecutor
+    from maistro.tasks.runner import TaskRunner
+
+    async def execute(request: TaskCreate) -> ConductorOutput:
+        return ConductorOutput(success=True, final_answer=request.description)
+
+    await TaskRunner(
+        restarted,
+        execute,
+        attempts=TaskAttemptExecutor(runs),
+    )._execute_task(submitted.task_id)
+
+    recovered = restarted.get(submitted.task_id)
+    assert recovered is not None and recovered.status is TaskStatus.COMPLETED
+    run = await runs.get_run(submitted.run_id or "")
+    assert run is not None and run.status is RunStatus.COMPLETED
+    node_runs = await runs.list_node_runs(submitted.run_id or "")
+    assert len(node_runs) == 1
+    attempts = await runs.list_attempts(node_runs[0].node_run_id)
+    assert len(attempts) == 1
+    assert attempts[0].status.value == "completed"
+
+
 async def test_two_recovery_receipts_have_one_canonical_transition_winner(scoped) -> None:
     _projects, runs, _root, project = scoped
     admitter = TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
