@@ -644,6 +644,30 @@ async def test_status_listing_decodes_the_same_evidence_as_get_run(spine: Any) -
     assert listed[0].result["nested"][0] == float("-inf")
 
 
+async def test_status_listing_can_filter_by_durable_admission_source(spine: Any) -> None:
+    """A consumer must spend its bounded page on owned Runs on every backend."""
+    store, workspace, project_id = spine
+    foreign = await store.create_run(
+        _graph(workspace, project_id),
+        provenance={ADMISSION_SOURCE: "foreign-consumer"},
+        initial_status=RunStatus.QUEUED,
+    )
+    owned = await store.create_run(
+        _graph(workspace, project_id),
+        provenance={ADMISSION_SOURCE: "owned-consumer"},
+        initial_status=RunStatus.QUEUED,
+    )
+
+    listed = await store.list_by_status(
+        RunStatus.QUEUED,
+        limit=1,
+        admission_source="owned-consumer",
+    )
+
+    assert [run.run_id for run in listed] == [owned.run_id]
+    assert foreign.run_id not in {run.run_id for run in listed}
+
+
 async def test_non_finite_evidence_survives_inside_a_container(spine: Any) -> None:
     """Results are `Any`: the non-finite value is as likely to be nested in the
     dict an executor returned as to be the whole result."""
