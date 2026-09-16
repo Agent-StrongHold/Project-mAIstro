@@ -29,6 +29,12 @@ import httpx
 from maistro.a2a.delegate import A2ADelegator
 from maistro.a2a.guest_peers import DelegationResult, GuestPeerManager, PeerTrust
 from maistro.graph import Graph, Node
+from maistro.graph.durable_runs import (
+    CanonicalDurableRunStore,
+    InMemoryGraphContinuationStore,
+    resume_durable_graph,
+    run_durable_graph,
+)
 from maistro.graph.nodes import NodeContext
 from maistro.graph.nodes.agent_delegate_remote import (
     AgentDelegateRemoteNode,
@@ -36,7 +42,7 @@ from maistro.graph.nodes.agent_delegate_remote import (
 )
 from maistro.http import set_test_transport
 from maistro.projects.scope_store import InMemoryProjectScopeStore
-from maistro.runs import InMemoryRunStore
+from maistro.runs import InMemoryRunStore, RunStatus
 
 
 async def _spine(
@@ -479,3 +485,91 @@ class TestCrossInstanceDelegationFilesAChildRun:
             if run.parent_run_id == parent.run_id
         ]
         assert children == []
+
+    async def test_durable_parent_resumes_from_the_answer_and_settles_child(self) -> None:
+        """The production checkpoint can accept the remote answer.
+
+        ``awaiting_remote_delegation`` is answer-gated, not a timer/poll. The
+        parent therefore parks PAUSED, allowing the canonical durable answer
+        path to stamp the server-owned child ``run_id`` and queue the parent.
+        """
+        run_store, _projects, project = await _spine()
+        graph = Graph(
+            workspace_id="workspace-1",
+            project_id=project.project_id,
+            name="Delegating pipeline",
+            nodes=[
+                Node(
+                    node_id="delegate-1",
+                    node_type="agent.delegate_remote",
+                    inputs={
+                        "from_agent": "planner",
+                        "task": "research X",
+                        "to_agent": "researcher",
+                    },
+                )
+            ],
+        )
+        parent = await run_store.create_run(graph)
+        await run_store.transition_run(parent.run_id, RunStatus.QUEUED)
+        durable = CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore())
+        node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=run_store)
+
+        def resolver(_node_id: str, _graph: Graph) -> AgentDelegateRemoteNode:
+            return node
+
+        started = await run_durable_graph(
+            graph,
+            store=durable,
+            node_resolver=resolver,
+            run_id=parent.run_id,
+            run_store=run_store,
+        )
+
+        assert started.status is RunStatus.PAUSED
+        pause = started.graph_state.metadata["pauses"]["delegate-1"]
+        child_run_id = pause["metadata"]["run_id"]
+        assert child_run_id
+        child = await run_store.get_run(child_run_id)
+        assert child is not None
+        assert child.parent_run_id == parent.run_id
+
+        answered = await durable.submit_hitl_answer(
+            parent.run_id,
+            "delegate-1",
+            {"status": "completed", "task_id": pause["metadata"]["task_id"], "result": "ok"},
+        )
+        assert answered.status is RunStatus.QUEUED
+        assert answered.hitl_answers["delegate-1"]["_pause"]["metadata"]["run_id"] == child_run_id
+        resumed = await resume_durable_graph(
+            parent.run_id,
+            store=durable,
+            node_resolver=resolver,
+            run_store=run_store,
+        )
+
+        assert resumed.status is RunStatus.COMPLETED
+        parent_nodes = await run_store.list_node_runs(parent.run_id)
+        parent_attempts = await run_store.list_attempts(parent_nodes[0].node_run_id)
+        settled_child = await run_store.get_run(child_run_id)
+        assert settled_child is not None
+        child_nodes = await run_store.list_node_runs(child_run_id)
+        child_attempts = await run_store.list_attempts(child_nodes[0].node_run_id)
+        assert len(parent_attempts) == 2, (
+            [(attempt.status, attempt.result) for attempt in parent_attempts],
+            resumed,
+        )
+        assert parent_nodes[0].result["run_id"] == child_run_id
+        assert len(child_attempts) == 2, (
+            [(attempt.status, attempt.result) for attempt in child_attempts],
+            [(node.status, node.result) for node in parent_nodes],
+            resumed,
+        )
+        assert settled_child.status is RunStatus.COMPLETED, (
+            settled_child.status,
+            [(node.node_run_id, node.status, node.accepted_outcome) for node in child_nodes],
+            [(attempt.status, attempt.result) for attempt in child_attempts],
+            [(node.status, node.result) for node in parent_nodes],
+            [(attempt.status, attempt.result) for attempt in parent_attempts],
+        )
+        assert settled_child.result == "ok"

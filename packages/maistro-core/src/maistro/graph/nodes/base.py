@@ -254,16 +254,18 @@ PAUSE_AWAITING_REMOTE_DELEGATION = "awaiting_remote_delegation"
 PAUSE_AWAITING_HARNESS = "awaiting_harness"
 PAUSE_WAITING_ON_JIRA_SUBTASKS = "waiting_on_jira_subtasks"
 
-#: Who each pause waits on. "human" means a person owes the next action and the
-#: NodeRun parks PAUSED; "system" means a retry decision is owed and it parks
-#: WAITING. Every reason states its own answer, so adding a pausing node is a
-#: question a reviewer sees rather than a default nobody chose.
+#: Who each pause waits on. "human" means an external answer is owed and the
+#: NodeRun parks PAUSED; "system" means a retry or poll is owed and it parks
+#: WAITING. A remote delegation is answer-gated too: its responder is another
+#: agent, but it must use the same durable answer/resume path as other
+#: externally answered nodes. Every reason states its own answer, so adding a
+#: pausing node is a question a reviewer sees rather than a default nobody chose.
 PAUSE_REASON_OWNERS: dict[str, str] = {
     PAUSE_AWAITING_HUMAN_ANSWER: "human",
     PAUSE_AWAITING_HUMAN_APPROVAL: "human",
     PAUSE_AWAITING_HUMAN_REVIEW: "human",
     PAUSE_AWAITING_ROLE_DELEGATE: "human",
-    PAUSE_AWAITING_REMOTE_DELEGATION: "system",
+    PAUSE_AWAITING_REMOTE_DELEGATION: "human",
     PAUSE_AWAITING_HARNESS: "system",
     PAUSE_WAITING_ON_JIRA_SUBTASKS: "system",
 }

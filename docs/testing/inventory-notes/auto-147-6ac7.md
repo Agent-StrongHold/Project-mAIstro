@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +10
+  packages/maistro-core/tests: +11
 ---
 # auto-147-6ac7
 

@@ -22,6 +22,7 @@ only path that already defines one) rather than a new one.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
@@ -211,7 +212,17 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         mismatch except a second way to be wrong.
         """
         pause = resumed.get("_pause")
-        run_id = str(pause.get("run_id") or "") if isinstance(pause, dict) else ""
+        run_id = ""
+        if isinstance(pause, Mapping):
+            # Durable answer submission stamps the complete server-authored
+            # pause entry, whose node metadata carries the child identity.
+            # Keep accepting the flat shape used by older callers/tests, but
+            # never source the identity from the answer's top-level fields.
+            pause_metadata = pause.get("metadata")
+            if isinstance(pause_metadata, Mapping):
+                run_id = str(pause_metadata.get("run_id") or "")
+            if not run_id:
+                run_id = str(pause.get("run_id") or "")
         raw_status = str(resumed.get("status", "completed"))
         status = _coerce_status(raw_status)
         error = resumed.get("error")
