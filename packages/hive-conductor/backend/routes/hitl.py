@@ -31,7 +31,7 @@ from middleware.auth import resolve_principal
 from pydantic import BaseModel, ConfigDict, Field
 from services.workspace_authority import is_member, list_views_for_user
 
-from maistro.graph.durable_runs import expire_hitl_pauses
+from maistro.graph.durable_runs import cursor_time, expire_hitl_pauses
 from maistro.runs.model import RunStatus
 from routes.agents import ScanBudgetExceeded, scan_config
 from routes.audit import log_audit
@@ -156,6 +156,18 @@ def _pending_items(record: Any) -> list[PendingHumanWork]:
     return items
 
 
+#: Ceiling on PAUSED records inspected by one `/pending` request, independent
+#: of how many turn out to carry human work. Bounds one request's cost against
+#: an arbitrarily large run of machine-only pauses (#1109); it is not the
+#: `limit` a caller sees, which bounds *pending items* returned.
+_MAX_PENDING_SCAN_RECORDS = 2000
+
+#: Minimum rows requested per page, regardless of how small the caller's
+#: `limit` is, so a small item target does not force one PAUSED row per
+#: round trip while paging past a long machine-only prefix.
+_PENDING_SCAN_PAGE_SIZE = 100
+
+
 @router.get("/pending")
 async def list_pending_human_work(
     request: Request, limit: int = 50, project_id: str | None = None
@@ -165,6 +177,16 @@ async def list_pending_human_work(
     That last clause is the point: `GET /v1/runs/{run_id}/node-runs` already
     answers "what is this Run doing", and answers nothing for a person who
     does not yet know which Run is blocked on them.
+
+    `limit` bounds *pending items* returned, not a fixed prefix of the
+    PAUSED Runs in the store (#1109). Machine-only pauses and pauses outside
+    `project_id` carry no items, so filtering a single fixed-size page after
+    the fact could return an empty answer forever even while real human work
+    sits durably PAUSED further back in the ordering. Instead this pages the
+    store's PAUSED listing with an advancing keyset cursor and keeps reading
+    until it has enough items, the store runs out of PAUSED Runs, or it has
+    inspected `_MAX_PENDING_SCAN_RECORDS` records — the same bounded-scan
+    contract `expire_hitl_pauses` uses (#1056).
     """
     user_id = _request_user_id(request)
 
@@ -176,31 +198,55 @@ async def list_pending_human_work(
     if not allowed_workspace_ids:
         return []
 
-    store = _store()
     bounded_limit = max(1, min(limit, 200))
-    records: list[Any] = []
-    # Ask the durable store to apply Workspace scope before its page limit.
-    # Filtering a globally limited page would let another tenant's backlog
-    # hide this caller's pending work indefinitely.
+    store = _store()
+    items: list[PendingHumanWork] = []
+    # Workspace scope is applied by the store, before its page limit, so another
+    # tenant's backlog cannot hide this caller's pending work (#1240); the
+    # keyset walk inside each Workspace is what stops a long machine-only
+    # prefix from hiding real human work within it (#1109). Both bounds are
+    # load-bearing: the outer one is a security boundary, the inner one a
+    # fairness one, and neither subsumes the other.
     for workspace_id in sorted(allowed_workspace_ids):
-        remaining = bounded_limit - len(records)
-        if remaining <= 0:
-            break
-        records.extend(
-            await store.list_by_status(
+        cursor: tuple[str, str] | None = None
+        inspected = 0
+        while len(items) < bounded_limit and inspected < _MAX_PENDING_SCAN_RECORDS:
+            # At least `_PENDING_SCAN_PAGE_SIZE` rows per page even when
+            # `bounded_limit` is small: a small item target must not force one
+            # row per round trip while paging past a long machine-only prefix.
+            page_size = min(
+                max(bounded_limit, _PENDING_SCAN_PAGE_SIZE), _MAX_PENDING_SCAN_RECORDS - inspected
+            )
+            records = await store.list_by_status(
                 RunStatus.PAUSED,
-                limit=remaining,
+                limit=page_size,
                 project_id=project_id,
                 workspace_id=workspace_id,
+                after=cursor,
             )
-        )
-    return [item for record in records for item in _pending_items(record)]
+            if not records:
+                break
+            inspected += len(records)
+            for record in records:
+                items.extend(_pending_items(record))
+            # Must be the store's own cursor spelling, not a bare isoformat:
+            # `list_by_status` compares the cursor against a UTC-normalized key,
+            # so a `created_at` printed at any other offset would order one way
+            # and filter the other, and this walk would silently stop advancing.
+            cursor = (cursor_time(records[-1].run.created_at), records[-1].run_id)
+        if len(items) >= bounded_limit:
+            break
+    return items[:bounded_limit]
 
 
 @router.post("/expire")
 async def expire_human_work(limit: int = 100) -> dict[str, Any]:
     """Run one bounded expiry tick against durable HITL deadlines."""
-    expired = await expire_hitl_pauses(_store(), limit=max(1, min(limit, 200)))
+    store = _store()
+    expired = await expire_hitl_pauses(
+        store,
+        limit=max(1, min(limit, 200)),
+    )
     run_ids = [record.run_id for record in expired]
     if run_ids:
         log_audit("hitl_expire", "system", detail={"run_ids": run_ids})

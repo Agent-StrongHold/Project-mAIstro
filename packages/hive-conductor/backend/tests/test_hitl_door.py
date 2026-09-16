@@ -7,6 +7,7 @@ store would prove only that the route calls the method the test told it to.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -26,7 +27,19 @@ def _paused_node_run(run_id: str, node_id: str, ordinal: int) -> NodeRun:
     return transition_node_run(node_run, RunStatus.PAUSED)
 
 
-def _paused_record(run_id: str, *, workspace_id: str = "ws-hitl", kind: str = "hitl") -> Any:
+# One more than the route's page size, so the HITL pause genuinely lands on
+# a second page and the cursor -- not the first read -- decides whether it is
+# ever seen.
+_MACHINE_PREFIX = 101
+
+
+def _paused_record(
+    run_id: str,
+    *,
+    workspace_id: str = "ws-hitl",
+    kind: str = "hitl",
+    created_at: datetime | None = None,
+) -> Any:
     """A Run paused on one node, the way the durable executor leaves one."""
     from maistro.graph.durable_runs.types import DurableRunRecord
 
@@ -42,6 +55,8 @@ def _paused_record(run_id: str, *, workspace_id: str = "ws-hitl", kind: str = "h
         project_id=graph.project_id,
         graph=GraphSnapshot.from_graph(graph),
     )
+    if created_at is not None:
+        run = run.model_copy(update={"created_at": created_at})
     run = transition_run(run, RunStatus.QUEUED)
     run = transition_run(run, RunStatus.RUNNING)
     run = transition_run(run, RunStatus.PAUSED)
@@ -120,6 +135,140 @@ async def test_a_machine_wait_is_not_offered_to_a_human(seeded) -> None:
     body = client.get("/v1/hitl/pending").json()
 
     assert [item for item in body if item["run_id"] == "hitl-machine-wait"] == []
+
+
+async def test_pending_reaches_a_hitl_pause_behind_a_long_machine_prefix(seeded) -> None:
+    """#1109: more machine-only PAUSED Runs than `limit` ahead of the one real
+    HITL pause must not make `/v1/hitl/pending` return an empty answer. Before
+    the fix, `list_by_status(PAUSED, limit=N)` was queried once and filtered
+    afterward, so a small `limit` could never see past a long enough
+    ineligible prefix -- the route has to actually page past it."""
+    client, _store, seed = seeded
+    base = datetime(2026, 8, 30, 12, tzinfo=UTC)
+    for i in range(120):
+        await seed(f"hitl-machine-{i}", kind="timer", created_at=base + timedelta(seconds=i))
+    await seed(
+        "hitl-behind-the-prefix",
+        kind="hitl",
+        created_at=base + timedelta(seconds=1000),
+    )
+
+    body = client.get("/v1/hitl/pending", params={"limit": 5}).json()
+
+    mine = [item for item in body if item["run_id"] == "hitl-behind-the-prefix"]
+    assert len(mine) == 1
+
+
+async def test_pending_pages_by_instant_when_created_at_offsets_differ(seeded) -> None:
+    """The route's cursor must be spelled the way the store compares it.
+
+    `list_by_status` orders by the instant and pages past it with a
+    UTC-normalized key. A cursor built from a bare `.isoformat()` agrees only
+    while every row prints the same offset: `13:0x+01:00` is an earlier instant
+    than `12:30+00:00` yet its string sorts after, so the walk filters one way
+    and orders the other and stops advancing -- hiding the HITL pause it was
+    paging toward.
+
+    The records must share one Workspace: the route loops Workspaces on the
+    outside and pages on the inside, so one record per Workspace never reaches
+    the cursor at all.
+    """
+    client, store, _seed = seeded
+    workspace = await create_workspace(
+        creator_user_id="admin",
+        name="Test Workspace-offset-cursor",
+        persona_template_id="default",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
+    )
+    machine_offset = timezone(timedelta(hours=1))
+    run_ids = [f"hitl-offset-machine-{index}" for index in range(_MACHINE_PREFIX)]
+    run_ids.append("hitl-offset-human")
+    try:
+        # Printed later than the human pause, but the earlier instant, so a
+        # raw-isoformat cursor taken here excludes everything after it.
+        for index in range(_MACHINE_PREFIX):
+            await store.create(
+                _paused_record(
+                    f"hitl-offset-machine-{index}",
+                    workspace_id=workspace.id,
+                    kind="timer",
+                    created_at=datetime(2026, 8, 30, 13, 0, tzinfo=machine_offset)
+                    + timedelta(seconds=index),
+                )
+            )
+        await store.create(
+            _paused_record(
+                "hitl-offset-human",
+                workspace_id=workspace.id,
+                created_at=datetime(2026, 8, 30, 12, 30, tzinfo=UTC),
+            )
+        )
+
+        body = client.get("/v1/hitl/pending", params={"limit": 2}).json()
+
+        assert [item["run_id"] for item in body if item["run_id"] == "hitl-offset-human"] == [
+            "hitl-offset-human"
+        ]
+    finally:
+        for run_id in run_ids:
+            store._rows.pop(run_id, None)
+
+
+async def test_pending_stops_at_the_inspection_ceiling(seeded, monkeypatch) -> None:
+    """The walk is bounded, not unbounded: a long prefix costs one tick, not a scan.
+
+    `_MAX_PENDING_SCAN_RECORDS` is the stop condition that keeps a pathological
+    machine-only prefix from turning one request into a full table read. The
+    constant is patched rather than seeding thousands of rows -- the bound is
+    the behaviour under test, not its particular value.
+    """
+    import routes.hitl as hitl_routes
+
+    client, store, _seed = seeded
+    monkeypatch.setattr(hitl_routes, "_MAX_PENDING_SCAN_RECORDS", 3)
+    workspace = await create_workspace(
+        creator_user_id="admin",
+        name="Test Workspace-ceiling",
+        persona_template_id="default",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
+    )
+    run_ids = [f"hitl-ceiling-{index}" for index in range(5)]
+    try:
+        for index, run_id in enumerate(run_ids):
+            await store.create(
+                _paused_record(
+                    run_id,
+                    workspace_id=workspace.id,
+                    kind="timer",
+                    created_at=datetime(2026, 8, 30, 12, tzinfo=UTC) + timedelta(seconds=index),
+                )
+            )
+
+        body = client.get("/v1/hitl/pending", params={"limit": 5}).json()
+
+        assert [item for item in body if item["run_id"].startswith("hitl-ceiling-")] == []
+    finally:
+        for run_id in run_ids:
+            store._rows.pop(run_id, None)
+
+
+async def test_pending_stops_once_the_item_limit_is_met(seeded) -> None:
+    """`limit` bounds items across Workspaces, not per Workspace.
+
+    Without the outer break a caller asking for one item would keep walking
+    every Workspace it can see, paying for pages whose results are discarded.
+    """
+    client, _store, seed = seeded
+    await seed("hitl-limit-first")
+    await seed("hitl-limit-second")
+
+    body = client.get("/v1/hitl/pending", params={"limit": 1}).json()
+
+    assert len(body) == 1
 
 
 async def test_answering_resumes_the_run_and_the_answer_is_readable(seeded) -> None:
