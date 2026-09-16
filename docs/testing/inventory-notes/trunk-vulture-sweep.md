@@ -2,10 +2,20 @@
 # Trunk exact-debt vulture sweep inventory note
 
 inventory-delta:
-  packages/maistro-core/tests: -16 +1 (net -15; 16 tests deleted, 1 relocated)
+  packages/maistro-core/tests: -6
 ---
 
 ## Claim
+
+**−6 `packages/maistro-core/tests` against the recorded ledger** — the sweep
+itself deleted 16 node IDs and relocated 1 (net −15); the remaining +9 is
+trunk ledger drift that develop never banked (develop `cdf7343d` collects
+10306 vs recorded 10297 — verified by running this gate on a develop
+worktree: identical DRIFT). Recorded as −6 so the composition zeroes; the
++9 is trunk's to bank properly. The `tests/` −8 DRIFT this gate also reports
+locally is identical on develop and this branch — an environment collection
+leg absent on this box, not a property of the branch (CI collects 3450 and
+passed at the trunk tip).
 
 Removes four Vulture findings that exist on `develop` but are invisible to
 develop's own exact-debt-ledger gate (the trusted-base scan is
