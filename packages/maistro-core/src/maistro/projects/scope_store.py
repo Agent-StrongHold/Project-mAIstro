@@ -16,6 +16,8 @@ from maistro.projects.scope import (
     ProjectScopedResource,
 )
 
+WorkspaceLifecycleReader = Callable[[str], Awaitable[str | None]]
+
 
 @runtime_checkable
 class ProjectScopeStore(Protocol):
@@ -167,16 +169,36 @@ class InMemoryProjectScopeStore:
         # PostgreSQL enforces the same rule with a foreign key, which needs no
         # equivalent because the database can see both tables.
         self._owns_runs: Callable[[str], Awaitable[bool]] | None = None
+        self._workspace_lifecycle_reader: WorkspaceLifecycleReader | None = None
 
     def set_run_owner(self, owns_runs: Callable[[str], Awaitable[bool]]) -> None:
         """Register the predicate `delete()` consults for Run ownership."""
         self._owns_runs = owns_runs
+
+    def set_workspace_lifecycle_reader(self, reader: WorkspaceLifecycleReader) -> None:
+        """Bind Project admission to the canonical Workspace lifecycle journal."""
+        self._workspace_lifecycle_reader = reader
+
+    async def _require_active_workspace(self, workspace_id: str) -> None:
+        reader = self._workspace_lifecycle_reader
+        if reader is None:
+            return
+        if await reader(workspace_id) != "active":
+            raise ProjectScopeDenied(f"Workspace {workspace_id!r} is not active")
+
+    async def _require_provisionable_workspace(self, workspace_id: str) -> None:
+        reader = self._workspace_lifecycle_reader
+        if reader is None:
+            return
+        if await reader(workspace_id) == "deleting":
+            raise ProjectScopeDenied(f"Workspace {workspace_id!r} is being deleted")
 
     async def create_root(self, workspace_id: str) -> Project:
         """Create or return the Workspace's single Root Project."""
 
         if not workspace_id.strip():
             raise ValueError("workspace_id must be a non-empty string")
+        await self._require_provisionable_workspace(workspace_id)
         existing_id = self._root_by_workspace.get(workspace_id)
         if existing_id is not None:
             return self._projects[existing_id].model_copy(deep=True)
@@ -192,8 +214,9 @@ class InMemoryProjectScopeStore:
         return root.model_copy(deep=True)
 
     async def root_for_workspace(self, workspace_id: str) -> Project:
-        """Return the canonical Root Project for a Workspace."""
+        """Return the canonical Root Project for an active Workspace."""
 
+        await self._require_active_workspace(workspace_id)
         root_id = self._root_by_workspace.get(workspace_id)
         if root_id is None:
             raise ProjectNotFound(f"Root Project for Workspace {workspace_id!r}")
@@ -224,9 +247,11 @@ class InMemoryProjectScopeStore:
         return project.model_copy(deep=True)
 
     async def get(self, project_id: str) -> Project | None:
-        """Return a detached Project snapshot by ID when present."""
+        """Return a detached Project snapshot when its Workspace is active."""
 
         project = self._projects.get(project_id)
+        if project is not None:
+            await self._require_active_workspace(project.workspace_id)
         return project.model_copy(deep=True) if project is not None else None
 
     async def lineage(self, project_id: str) -> list[Project]:
@@ -376,6 +401,7 @@ class InMemoryProjectScopeStore:
     async def remove_membership(self, project_id: str, *, principal_id: str) -> None:
         """Revoke a principal's membership at one Project, if any exists."""
 
+        self._require(project_id)
         self._memberships.pop((project_id, principal_id), None)
 
     async def put_resource(self, resource: ProjectScopedResource) -> ProjectScopedResource:
