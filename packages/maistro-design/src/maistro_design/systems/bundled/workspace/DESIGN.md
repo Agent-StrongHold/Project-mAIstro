@@ -38,16 +38,19 @@ decorative wears it.
 **Meaning — the room's.** Fixed across every persona and scheme, because a
 colour that means something cannot be a matter of taste:
 
-- **You** — blue `#2456C9` (dark `#8DB0FF`). A human acted.
-- **Agent** — lilac `#6B53A8` (dark `#C4B2EA`). An agent acted autonomously; always shown with "as <role>".
-- **Gate** — teal-green `#1D7A62` (dark `#6FD3B8`). A policy allowed or blocked something, with its reason.
-- **System** — grey `#5F6B7A` (dark `#B0B7C4`). Infrastructure acted on a schedule.
-- **Warn** `#8A5A12` (dark `#F2C46F`) — a stale wait, a blocked goal, a partial undo.
-- **Success** `#1D7A62` (dark `#6FD3B8`) — confirmed, logged, verified.
-- **Danger** `#B42318` (dark `#FF9D94`) — irreversible actions only.
+- **You** — blue `#1D49B0` (dark `#A3C0FF`). A human acted.
+- **Agent** — lilac `#5C4396` (dark `#C9B8EE`). An agent acted autonomously; always shown with "as <role>".
+- **Gate** — teal-green `#14604C` (dark `#6FD3B8`). A policy allowed or blocked something, with its reason.
+- **System** — grey `#4D5867` (dark `#B8BFCB`). Infrastructure acted on a schedule.
+- **Warn** `#784D0E` (dark `#F2C46F`) — a stale wait, a blocked goal, a partial undo.
+- **Success** `#14604C` (dark `#6FD3B8`) — confirmed, logged, verified.
+- **Danger** `#A41F15` (dark `#FF9D94`) — irreversible actions only.
 
-Ink is blue-black `#161B26`, never pure black. Secondary text is `#5A6376`.
-Every text pair passes 4.5:1 in light and 6:1 in dark. Purple and orange are
+Ink is blue-black `#161B26`, never pure black. Secondary text is `#5A6376`;
+the machine register is `#626C80` (dark `#98A0B3`). Text on the field and on
+panels passes 4.5:1 in light and 6:1 in dark. Badge text sits on a 16% tint of
+its own colour and is measured composited over the lightest surface: at least
+5:1 in light and 5.5:1 in dark, on every persona. The test suite computes this. Purple and orange are
 not in this system: the agent lilac is desaturated on purpose and there is no
 warm-orange accent in any template.
 
@@ -93,7 +96,7 @@ existing JetBrains Mono package).
   light it does not.
 - **Attention item.** A 3px colour bar on the left in the item's
   colour, an 18px sentence with the subject in bold and the wait's age in
-  warn colour when older than 8 hours, a 14px muted second line, a
+  warn colour when older than `--age-stale-after` (eight hours), a 14px muted second line, a
   chevron. The whole row is the target.
 - **Provenance entry.** A glass panel on a vertical spine; the node dot is
   the actor colour. Header: name, badge, "as <role>" and the delegation

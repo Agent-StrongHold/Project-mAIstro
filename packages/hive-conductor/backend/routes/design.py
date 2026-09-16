@@ -258,8 +258,8 @@ async def list_design_systems() -> dict[str, Any]:
 
     Returns:
       {systems: [{slug, name, description, origin, trust_tier, color_count,
-       spacing_count}], catalog: {available, cause, count}, ready, cause,
-       bundled_count}
+       spacing_count, personas}], catalog: {available, cause, count}, ready,
+       cause, bundled_count}
     """
     status = _require_ready()
     engine = get_design_engine()
@@ -272,6 +272,9 @@ async def list_design_systems() -> dict[str, Any]:
             "trust_tier": s.trust_tier.value,
             "color_count": len(s.colors),
             "spacing_count": len(s.spacing),
+            # The persona contract a first-party system advertises
+            # (ADR-091626-ba4f); None for the vendored brand systems.
+            "personas": s.metadata.get("personas"),
         }
         for s in sorted(engine.systems.list_all(), key=lambda s: s.slug)
     ]

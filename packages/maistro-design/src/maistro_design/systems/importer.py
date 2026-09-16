@@ -137,6 +137,12 @@ def import_open_design_system(
         "license": "Apache-2.0",
         "origin": origin,
     }
+    # A first-party system may advertise its persona contract (default
+    # template, templates, schemes, and which tokens a persona may and may
+    # not rebind). It is data the persona editor reads, so it survives the
+    # import rather than being reconstructed by every consumer.
+    if isinstance(manifest.get("personas"), dict):
+        metadata["personas"] = manifest["personas"]
 
     return DesignSystem(
         slug=slug,

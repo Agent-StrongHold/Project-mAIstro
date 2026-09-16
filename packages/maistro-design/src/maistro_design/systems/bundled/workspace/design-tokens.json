@@ -67,7 +67,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:45"
+        "tokens.css:46"
       ],
       "sourceName": "--fg"
     },
@@ -79,7 +79,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:46"
+        "tokens.css:47"
       ],
       "sourceName": "--fg-2"
     },
@@ -91,19 +91,19 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:47"
+        "tokens.css:48"
       ],
       "sourceName": "--muted"
     },
     {
       "name": "--meta",
-      "value": "#7c8597",
+      "value": "#626c80",
       "type": "color",
       "layer": "A2",
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:48"
+        "tokens.css:49"
       ],
       "sourceName": "--meta"
     },
@@ -115,7 +115,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:51"
+        "tokens.css:52"
       ],
       "sourceName": "--border"
     },
@@ -127,7 +127,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:52"
+        "tokens.css:53"
       ],
       "sourceName": "--border-soft"
     },
@@ -139,7 +139,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:56"
+        "tokens.css:57"
       ],
       "sourceName": "--accent"
     },
@@ -151,7 +151,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:57"
+        "tokens.css:58"
       ],
       "sourceName": "--accent-on"
     },
@@ -163,7 +163,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:58"
+        "tokens.css:59"
       ],
       "sourceName": "--accent-hover"
     },
@@ -175,7 +175,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:59"
+        "tokens.css:60"
       ],
       "sourceName": "--accent-active"
     },
@@ -187,25 +187,13 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:60"
+        "tokens.css:61"
       ],
       "sourceName": "--accent-soft"
     },
     {
       "name": "--success",
-      "value": "#1d7a62",
-      "type": "color",
-      "layer": "A2",
-      "confidence": "high",
-      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
-      "sources": [
-        "tokens.css:63"
-      ],
-      "sourceName": "--success"
-    },
-    {
-      "name": "--warn",
-      "value": "#8a5a12",
+      "value": "#14604c",
       "type": "color",
       "layer": "A2",
       "confidence": "high",
@@ -213,17 +201,29 @@
       "sources": [
         "tokens.css:64"
       ],
-      "sourceName": "--warn"
+      "sourceName": "--success"
     },
     {
-      "name": "--danger",
-      "value": "#b42318",
+      "name": "--warn",
+      "value": "#784d0e",
       "type": "color",
       "layer": "A2",
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
         "tokens.css:65"
+      ],
+      "sourceName": "--warn"
+    },
+    {
+      "name": "--danger",
+      "value": "#a41f15",
+      "type": "color",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:66"
       ],
       "sourceName": "--danger"
     },
@@ -235,7 +235,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:66"
+        "tokens.css:67"
       ],
       "sourceName": "--success-soft"
     },
@@ -247,7 +247,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:67"
+        "tokens.css:68"
       ],
       "sourceName": "--warn-soft"
     },
@@ -259,7 +259,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:68"
+        "tokens.css:69"
       ],
       "sourceName": "--danger-soft"
     },
@@ -271,7 +271,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:75"
+        "tokens.css:76"
       ],
       "sourceName": "--font-display"
     },
@@ -283,7 +283,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:76"
+        "tokens.css:77"
       ],
       "sourceName": "--font-body"
     },
@@ -295,7 +295,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:77"
+        "tokens.css:78"
       ],
       "sourceName": "--font-mono"
     },
@@ -307,7 +307,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:80"
+        "tokens.css:81"
       ],
       "sourceName": "--text-xs"
     },
@@ -319,7 +319,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:81"
+        "tokens.css:82"
       ],
       "sourceName": "--text-sm"
     },
@@ -331,7 +331,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:82"
+        "tokens.css:83"
       ],
       "sourceName": "--text-base"
     },
@@ -343,7 +343,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:83"
+        "tokens.css:84"
       ],
       "sourceName": "--text-lg"
     },
@@ -355,7 +355,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:84"
+        "tokens.css:85"
       ],
       "sourceName": "--text-xl"
     },
@@ -367,7 +367,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:85"
+        "tokens.css:86"
       ],
       "sourceName": "--text-2xl"
     },
@@ -379,7 +379,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:86"
+        "tokens.css:87"
       ],
       "sourceName": "--text-3xl"
     },
@@ -391,7 +391,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:87"
+        "tokens.css:88"
       ],
       "sourceName": "--text-4xl"
     },
@@ -403,7 +403,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:89"
+        "tokens.css:90"
       ],
       "sourceName": "--leading-body"
     },
@@ -415,7 +415,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:90"
+        "tokens.css:91"
       ],
       "sourceName": "--leading-tight"
     },
@@ -427,7 +427,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:91"
+        "tokens.css:92"
       ],
       "sourceName": "--tracking-display"
     },
@@ -439,7 +439,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:94"
+        "tokens.css:95"
       ],
       "sourceName": "--space-1"
     },
@@ -451,7 +451,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:95"
+        "tokens.css:96"
       ],
       "sourceName": "--space-2"
     },
@@ -463,7 +463,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:96"
+        "tokens.css:97"
       ],
       "sourceName": "--space-3"
     },
@@ -475,7 +475,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:97"
+        "tokens.css:98"
       ],
       "sourceName": "--space-4"
     },
@@ -487,7 +487,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:98"
+        "tokens.css:99"
       ],
       "sourceName": "--space-5"
     },
@@ -499,7 +499,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:99"
+        "tokens.css:100"
       ],
       "sourceName": "--space-6"
     },
@@ -511,7 +511,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:100"
+        "tokens.css:101"
       ],
       "sourceName": "--space-8"
     },
@@ -523,7 +523,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:101"
+        "tokens.css:102"
       ],
       "sourceName": "--space-12"
     },
@@ -535,7 +535,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:103"
+        "tokens.css:104"
       ],
       "sourceName": "--section-y-desktop"
     },
@@ -547,7 +547,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:104"
+        "tokens.css:105"
       ],
       "sourceName": "--section-y-tablet"
     },
@@ -559,7 +559,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:105"
+        "tokens.css:106"
       ],
       "sourceName": "--section-y-phone"
     },
@@ -571,7 +571,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:108"
+        "tokens.css:109"
       ],
       "sourceName": "--radius-sm"
     },
@@ -583,7 +583,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:109"
+        "tokens.css:110"
       ],
       "sourceName": "--radius-md"
     },
@@ -595,7 +595,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:110"
+        "tokens.css:111"
       ],
       "sourceName": "--radius-lg"
     },
@@ -607,7 +607,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:111"
+        "tokens.css:112"
       ],
       "sourceName": "--radius-pill"
     },
@@ -619,7 +619,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:115"
+        "tokens.css:116"
       ],
       "sourceName": "--elev-flat"
     },
@@ -631,7 +631,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:116"
+        "tokens.css:117"
       ],
       "sourceName": "--elev-ring"
     },
@@ -643,7 +643,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:117"
+        "tokens.css:118"
       ],
       "sourceName": "--elev-raised"
     },
@@ -655,7 +655,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:120"
+        "tokens.css:121"
       ],
       "sourceName": "--focus-ring"
     },
@@ -667,7 +667,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:123"
+        "tokens.css:124"
       ],
       "sourceName": "--motion-fast"
     },
@@ -679,7 +679,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:124"
+        "tokens.css:125"
       ],
       "sourceName": "--motion-base"
     },
@@ -691,7 +691,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:125"
+        "tokens.css:126"
       ],
       "sourceName": "--ease-standard"
     },
@@ -703,7 +703,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:128"
+        "tokens.css:129"
       ],
       "sourceName": "--container-max"
     },
@@ -715,7 +715,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:129"
+        "tokens.css:130"
       ],
       "sourceName": "--container-gutter-desktop"
     },
@@ -727,7 +727,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:130"
+        "tokens.css:131"
       ],
       "sourceName": "--container-gutter-tablet"
     },
@@ -739,7 +739,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:131"
+        "tokens.css:132"
       ],
       "sourceName": "--container-gutter-phone"
     },
@@ -751,7 +751,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:137"
+        "tokens.css:138"
       ],
       "sourceName": "--glass"
     },
@@ -763,7 +763,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:138"
+        "tokens.css:139"
       ],
       "sourceName": "--glass-2"
     },
@@ -775,7 +775,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:139"
+        "tokens.css:140"
       ],
       "sourceName": "--edge"
     },
@@ -787,7 +787,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:140"
+        "tokens.css:141"
       ],
       "sourceName": "--hair"
     },
@@ -799,7 +799,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:141"
+        "tokens.css:142"
       ],
       "sourceName": "--well"
     },
@@ -811,7 +811,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:142"
+        "tokens.css:143"
       ],
       "sourceName": "--bar"
     },
@@ -823,7 +823,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:143"
+        "tokens.css:144"
       ],
       "sourceName": "--blur"
     },
@@ -835,7 +835,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:144"
+        "tokens.css:145"
       ],
       "sourceName": "--glow"
     },
@@ -847,7 +847,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:148"
+        "tokens.css:149"
       ],
       "sourceName": "--field"
     },
@@ -859,55 +859,55 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:149"
+        "tokens.css:150"
       ],
       "sourceName": "--bloom"
     },
     {
       "name": "--actor-human",
-      "value": "#2456c9",
-      "type": "color",
-      "layer": "A1-identity",
-      "confidence": "high",
-      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
-      "sources": [
-        "tokens.css:160"
-      ],
-      "sourceName": "--actor-human"
-    },
-    {
-      "name": "--actor-agent",
-      "value": "#6b53a8",
-      "type": "color",
-      "layer": "A1-identity",
-      "confidence": "high",
-      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
-      "sources": [
-        "tokens.css:161"
-      ],
-      "sourceName": "--actor-agent"
-    },
-    {
-      "name": "--actor-gate",
-      "value": "#1d7a62",
-      "type": "color",
-      "layer": "A1-identity",
-      "confidence": "high",
-      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
-      "sources": [
-        "tokens.css:162"
-      ],
-      "sourceName": "--actor-gate"
-    },
-    {
-      "name": "--actor-system",
-      "value": "#5f6b7a",
+      "value": "#1d49b0",
       "type": "color",
       "layer": "A1-identity",
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
         "tokens.css:163"
+      ],
+      "sourceName": "--actor-human"
+    },
+    {
+      "name": "--actor-agent",
+      "value": "#5c4396",
+      "type": "color",
+      "layer": "A1-identity",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:164"
+      ],
+      "sourceName": "--actor-agent"
+    },
+    {
+      "name": "--actor-gate",
+      "value": "#14604c",
+      "type": "color",
+      "layer": "A1-identity",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:165"
+      ],
+      "sourceName": "--actor-gate"
+    },
+    {
+      "name": "--actor-system",
+      "value": "#4d5867",
+      "type": "color",
+      "layer": "A1-identity",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:166"
       ],
       "sourceName": "--actor-system"
     },
@@ -919,7 +919,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:164"
+        "tokens.css:167"
       ],
       "sourceName": "--actor-human-soft"
     },
@@ -931,7 +931,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:165"
+        "tokens.css:168"
       ],
       "sourceName": "--actor-agent-soft"
     },
@@ -943,7 +943,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:166"
+        "tokens.css:169"
       ],
       "sourceName": "--actor-gate-soft"
     },
@@ -955,7 +955,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:167"
+        "tokens.css:170"
       ],
       "sourceName": "--actor-system-soft"
     },
@@ -967,7 +967,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:171"
+        "tokens.css:174"
       ],
       "sourceName": "--face-loading"
     },
@@ -979,7 +979,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:172"
+        "tokens.css:175"
       ],
       "sourceName": "--face-empty-bg"
     },
@@ -991,7 +991,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:173"
+        "tokens.css:176"
       ],
       "sourceName": "--face-empty-fg"
     },
@@ -1003,7 +1003,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:174"
+        "tokens.css:177"
       ],
       "sourceName": "--face-error-bg"
     },
@@ -1015,7 +1015,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:175"
+        "tokens.css:178"
       ],
       "sourceName": "--face-error-fg"
     },
@@ -1027,7 +1027,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:176"
+        "tokens.css:179"
       ],
       "sourceName": "--face-error-border"
     },
@@ -1039,7 +1039,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:177"
+        "tokens.css:180"
       ],
       "sourceName": "--face-denied-bg"
     },
@@ -1051,7 +1051,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:178"
+        "tokens.css:181"
       ],
       "sourceName": "--face-denied-fg"
     },
@@ -1063,7 +1063,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:181"
+        "tokens.css:184"
       ],
       "sourceName": "--undo-ok-bg"
     },
@@ -1075,7 +1075,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:182"
+        "tokens.css:185"
       ],
       "sourceName": "--undo-ok-fg"
     },
@@ -1087,7 +1087,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:183"
+        "tokens.css:186"
       ],
       "sourceName": "--undo-partial-bg"
     },
@@ -1099,7 +1099,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:184"
+        "tokens.css:187"
       ],
       "sourceName": "--undo-partial-fg"
     },
@@ -1111,7 +1111,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:185"
+        "tokens.css:188"
       ],
       "sourceName": "--undo-logged-fg"
     },
@@ -1123,7 +1123,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:188"
+        "tokens.css:191"
       ],
       "sourceName": "--age-fresh"
     },
@@ -1135,19 +1135,19 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:189"
+        "tokens.css:192"
       ],
       "sourceName": "--age-stale"
     },
     {
       "name": "--age-stale-after",
-      "value": "8h",
-      "type": "dimension",
+      "value": "28800s",
+      "type": "duration",
       "layer": "A2",
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:190"
+        "tokens.css:193"
       ],
       "sourceName": "--age-stale-after"
     },
@@ -1159,7 +1159,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:193"
+        "tokens.css:196"
       ],
       "sourceName": "--ledger-ok"
     },
@@ -1171,7 +1171,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:194"
+        "tokens.css:197"
       ],
       "sourceName": "--ledger-ok-bg"
     },
@@ -1183,7 +1183,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:195"
+        "tokens.css:198"
       ],
       "sourceName": "--ledger-ok-border"
     },
@@ -1195,7 +1195,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:199"
+        "tokens.css:202"
       ],
       "sourceName": "--text-floor"
     },
@@ -1207,7 +1207,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:200"
+        "tokens.css:203"
       ],
       "sourceName": "--text-prose"
     },
@@ -1219,7 +1219,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:201"
+        "tokens.css:204"
       ],
       "sourceName": "--text-prose-2"
     },
@@ -1231,7 +1231,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:202"
+        "tokens.css:205"
       ],
       "sourceName": "--text-sentence"
     },
@@ -1243,7 +1243,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:203"
+        "tokens.css:206"
       ],
       "sourceName": "--text-attention"
     },
@@ -1255,7 +1255,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:204"
+        "tokens.css:207"
       ],
       "sourceName": "--text-machine"
     },
@@ -1267,7 +1267,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:205"
+        "tokens.css:208"
       ],
       "sourceName": "--opsz-display"
     },
@@ -1279,7 +1279,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:206"
+        "tokens.css:209"
       ],
       "sourceName": "--opsz-text"
     },
@@ -1291,7 +1291,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:209"
+        "tokens.css:212"
       ],
       "sourceName": "--control-min-height"
     },
@@ -1303,7 +1303,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:210"
+        "tokens.css:213"
       ],
       "sourceName": "--touch-min"
     },
@@ -1315,7 +1315,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:213"
+        "tokens.css:216"
       ],
       "sourceName": "--col-attention"
     },
@@ -1327,7 +1327,7 @@
       "confidence": "high",
       "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
       "sources": [
-        "tokens.css:214"
+        "tokens.css:217"
       ],
       "sourceName": "--col-timeline"
     }

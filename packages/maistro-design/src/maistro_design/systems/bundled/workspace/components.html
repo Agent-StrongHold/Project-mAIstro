@@ -50,11 +50,12 @@
   --surface-warm: #ffffff;
 
   /* Foreground ramp. Ink is blue-black, never pure black. `--muted`
-   * carries every secondary line; `--meta` is the machine register. */
+   * carries every secondary line; `--meta` is the machine register and
+   * sits at 12px, so it clears 4.5:1 on the field and on every panel. */
   --fg: #161b26;
   --fg-2: #333b4c;
   --muted: #5a6376;
-  --meta: #7c8597;
+  --meta: #626c80;
 
   /* Border. `--border` is a panel edge; `--border-soft` a row rule. */
   --border: rgba(255, 255, 255, 0.85);
@@ -69,9 +70,9 @@
   --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
 
   /* Semantic — state, never decoration. */
-  --success: #1d7a62;
-  --warn: #8a5a12;
-  --danger: #b42318;
+  --success: #14604c;
+  --warn: #784d0e;
+  --danger: #a41f15;
   --success-soft: color-mix(in srgb, var(--success) 14%, transparent);
   --warn-soft: color-mix(in srgb, var(--warn) 16%, transparent);
   --danger-soft: color-mix(in srgb, var(--danger) 14%, transparent);
@@ -165,11 +166,13 @@
   /* Actor quartet — "who decided this". FIXED across every persona and
    * scheme: blue is you, lilac is an agent, teal-green is a gate, grey is
    * the system. A persona may not rebind these; they carry meaning, not
-   * taste. Each passes AA for badge text on its soft tint. */
-  --actor-human: #2456c9;
-  --actor-agent: #6b53a8;
-  --actor-gate: #1d7a62;
-  --actor-system: #5f6b7a;
+   * taste. Badge text is 12px on a 16% tint of its own colour, so the
+   * pairs are checked composited over the lightest surface: every one is
+   * at least 5:1 in light and 5.5:1 in dark, on all three personas. */
+  --actor-human: #1d49b0;
+  --actor-agent: #5c4396;
+  --actor-gate: #14604c;
+  --actor-system: #4d5867;
   --actor-human-soft: color-mix(in srgb, var(--actor-human) 14%, transparent);
   --actor-agent-soft: color-mix(in srgb, var(--actor-agent) 16%, transparent);
   --actor-gate-soft: color-mix(in srgb, var(--actor-gate) 16%, transparent);
@@ -196,7 +199,7 @@
   /* Attention ages — a wait carries its age; a stale wait is warm. */
   --age-fresh: var(--muted);
   --age-stale: var(--warn);
-  --age-stale-after: 8h;
+  --age-stale-after: 28800s;   /* eight hours, as a CSS time */
 
   /* Ledger — chain status as ambient furniture. */
   --ledger-ok: var(--success);
@@ -224,8 +227,9 @@
 }
 
 /* ─── 3. Scheme: dark ───────────────────────────────────────────────────
- * Rebinds ink, glass and the actor colours' lightness. Contrast on every
- * text pair stays ≥ 6:1. Greenhouse-dark is the default dark. */
+ * Rebinds ink, glass and the actor colours' lightness. Text on the field
+ * and on panels stays ≥ 6:1; badge text on its tint ≥ 5.5:1. Greenhouse-
+ * dark is the default dark. */
 :root:has(#sc-dark:checked) {
   --bg: #121a16;
   --surface: #18221c;
@@ -233,7 +237,7 @@
   --fg: #eef0f6;
   --fg-2: #c9cdd8;
   --muted: #a3a9ba;
-  --meta: #7d8496;
+  --meta: #98a0b3;
   --border: rgba(255, 255, 255, 0.16);
   --border-soft: rgba(255, 255, 255, 0.10);
   --accent: #8fd5a3;
@@ -250,10 +254,10 @@
   --glow: 0 0 10px currentColor;
   --elev-raised: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 24px 60px rgba(4, 8, 20, 0.45);
   --face-loading: linear-gradient(90deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.08));
-  --actor-human: #8db0ff;
-  --actor-agent: #c4b2ea;
+  --actor-human: #a3c0ff;
+  --actor-agent: #c9b8ee;
   --actor-gate: #6fd3b8;
-  --actor-system: #b0b7c4;
+  --actor-system: #b8bfcb;
   --bloom:
     radial-gradient(1000px 700px at 8% 0%, rgba(70, 160, 105, 0.42), transparent 62%),
     radial-gradient(900px 700px at 96% 12%, rgba(150, 180, 80, 0.20), transparent 60%),
@@ -479,6 +483,7 @@ h2{font-size:var(--text-sm);font-weight:600;color:var(--muted);margin:0 0 12px 4
 .sw{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}
 .sw div{height:64px;border-radius:12px;border:1px solid var(--edge);display:flex;align-items:flex-end;padding:8px;font-size:12px;font-family:var(--mono)}
 .pg{display:inline-flex;gap:4px}.pg span{min-width:32px;height:32px;display:grid;place-items:center;border-radius:8px;font-size:13px;font-weight:600;color:var(--muted);background:var(--glass);border:1px solid var(--edge)}.pg .on{background:var(--fg);color:var(--bg)}
+@media (max-width:700px){.sheet{padding:24px var(--container-gutter-phone) 48px}.cols,.cols2{grid-template-columns:1fr}.cols[style]{grid-template-columns:1fr!important}.sw{grid-template-columns:repeat(3,1fr)}.tabs{flex-wrap:wrap}.tbl th,.tbl td{padding:10px 12px}}
 
 </style>
 </head>
