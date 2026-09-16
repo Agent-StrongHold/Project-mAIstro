@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  formal/: +1
+  formal/: +0
 ---
 
 The develop merge carried the org-bound-global memory visibility rule from #1258,
