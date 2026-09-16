@@ -24,14 +24,17 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock
 
+import httpx
+
 from maistro.a2a.delegate import A2ADelegator
-from maistro.a2a.guest_peers import DelegationResult, GuestPeerManager
+from maistro.a2a.guest_peers import DelegationResult, GuestPeerManager, PeerTrust
 from maistro.graph import Graph, Node
 from maistro.graph.nodes import NodeContext
 from maistro.graph.nodes.agent_delegate_remote import (
     AgentDelegateRemoteNode,
     DelegationNotConfiguredError,
 )
+from maistro.http import set_test_transport
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
 
@@ -323,6 +326,40 @@ class TestCrossInstanceDelegationFilesAChildRun:
         assert child.parent_node_run_id == parent_node_run.node_run_id
         assert child.workspace_id == parent.workspace_id
         assert child.project_id == parent.project_id
+
+    async def test_cross_instance_transport_and_child_admission_are_one_path(self) -> None:
+        """Exercise the node through GuestPeerManager's real HTTP seam."""
+        store, _projects, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+        seen: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["url"] = str(request.url)
+            seen["json"] = request.content
+            return httpx.Response(200, json={"task_id": "http-remote-1"})
+
+        set_test_transport(httpx.MockTransport(handler))
+        peers = GuestPeerManager()
+        peers.register_peer(PeerTrust(peer_url="http://hub", peer_name="hub"))
+        node = AgentDelegateRemoteNode(guest_peers=peers, run_store=store)
+
+        result = await node.run(
+            {"from_agent": "planner", "task": "research X", "peer_name": "hub"},
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+        )
+
+        assert result.status == "paused"
+        assert seen["url"] == "http://hub/a2a/tasks/create"
+        assert b'"agent_id":"planner"' in seen["json"]
+        assert b'"content":"research X"' in seen["json"]
+        child = await store.get_run(result.metadata["run_id"])
+        assert child is not None
+        assert child.parent_run_id == parent.run_id
+        assert child.parent_node_run_id == parent_node_run.node_run_id
+        assert child.provenance["a2a_task_id"] == "http-remote-1"
 
     async def test_the_cross_instance_answer_completes_the_child_attempt(self) -> None:
         """A peer answer settles canonical evidence, not the Run directly."""
