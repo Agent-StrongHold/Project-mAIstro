@@ -91,6 +91,30 @@ def _get_org_id(request: Request) -> str:
     return str(org_id)
 
 
+def _require_store() -> Any:
+    """Require persistence for a route that reports or uses project state.
+
+    Design resources can remain available without a database, but an empty
+    project list would turn missing persistence into a false durable fact. The
+    service returns ``None`` for a disabled store during startup and older
+    callers can still expose its initialization ``RuntimeError``; normalize
+    both forms to the same explicit unavailable response.
+    """
+    try:
+        store = get_design_store()
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Design persistence unavailable: {exc}",
+        ) from None
+    if store is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Design persistence unavailable (DATABASE_URL not set)",
+        )
+    return store
+
+
 @router.post("/projects")
 async def create_design_project(request: Request, discovery: DiscoveryResult) -> dict[str, Any]:
     """Generate a design project from discovery responses.
@@ -145,12 +169,7 @@ async def get_design_project(project_id: str, request: Request) -> dict[str, Any
     _require_ready()
     org_id = _get_org_id(request)
     try:
-        store = get_design_store()
-        if store is None:
-            raise HTTPException(
-                status_code=503,
-                detail="Design persistence not configured (DATABASE_URL not set)",
-            )
+        store = _require_store()
         project = await store.get(project_id, org_id=org_id)
         if not project:
             raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
@@ -180,9 +199,7 @@ async def list_design_projects(
     # Before the `try`, for the same reason as the create route above.
     org_id = _get_org_id(request)
     try:
-        store = get_design_store()
-        if store is None:
-            return []  # Graceful degradation: return empty list if persistence disabled
+        store = _require_store()
 
         if skill_slug:
             projects = await store.list_by_skill(skill_slug, org_id)
@@ -190,6 +207,8 @@ async def list_design_projects(
             projects = await store.list_by_org(org_id)
 
         return [p.to_dict() for p in projects]
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from None
 
@@ -302,51 +321,31 @@ async def get_skill_discovery_form(skill_slug: str) -> list[dict[str, Any]]:
 async def create_render_job(
     project_id: str, request: Request, format: str = "pdf"
 ) -> dict[str, Any]:
-    """Request server-side rendering of a project output.
+    """Report that project rendering is unavailable until its canonical seam exists.
 
-    Validates code (for T3 artifacts), creates async render job.
-    Returns immediately with job_id for polling.
+    The former facade created an in-memory pending job, but no worker advanced
+    it or persisted an output. Returning that job made an execution-looking
+    state out of a capability that is not connected to Canvas or a canonical
+    Run. Keep the scoped existence check, then fail explicitly instead.
 
     Query params:
-      format: output format (pdf, pptx, docx, png)
-
-    Returns:
-      {job_id, status, created_at}
+      format: reserved output format (pdf, pptx, docx, png)
     """
     _require_ready()
     org_id = _get_org_id(request)
     try:
-        from services.design_preview import get_design_preview_service
+        store = _require_store()
 
-        from maistro_design.types import OutputFormat
-
-        store = get_design_store()
-        preview_svc = get_design_preview_service()
-
-        # Fetch project, within the caller's scope: rendering another org's
-        # project would return its content through a route that never asked
-        # whose it was.
+        # Check the project within the caller's scope before reporting the
+        # unavailable capability; another scope must remain indistinguishable.
         project = await store.get(project_id, org_id=org_id)
         if not project:
             raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
 
-        # Validate format
-        try:
-            output_format = OutputFormat(format)
-        except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unsupported format: {format}. Allowed: pdf, pptx, docx, png",
-            ) from None
-
-        # Create render job
-        job = preview_svc.create_render_job(project_id, output_format)
-        return {
-            "job_id": job.job_id,
-            "status": job.status,
-            "format": output_format,
-            "created_at": job.created_at.isoformat(),
-        }
+        raise HTTPException(
+            status_code=501,
+            detail="Design rendering is unavailable until the canonical Canvas rendering seam is enabled",
+        )
     except HTTPException:
         raise
     except Exception as e:

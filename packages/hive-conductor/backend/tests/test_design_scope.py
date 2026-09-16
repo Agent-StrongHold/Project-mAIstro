@@ -120,21 +120,60 @@ class TestTheRoutesPassItDown:
         assert raised.value.status_code == 503
 
     @pytest.mark.ac("SPEC-083026-6bc5/AC-6")
+    async def test_listing_without_persistence_is_a_503_not_an_empty_project(
+        self, ready: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(design_routes, "get_design_store", lambda: None)
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.list_design_projects(_Request())
+        assert raised.value.status_code == 503
+        assert "persistence unavailable" in str(raised.value.detail).lower()
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-6")
+    async def test_listing_with_an_uninitialized_store_is_a_503_not_a_500(
+        self, ready: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def missing_store() -> Any:
+            raise RuntimeError("DesignProjectStore not initialized")
+
+        monkeypatch.setattr(design_routes, "get_design_store", missing_store)
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.list_design_projects(_Request())
+        assert raised.value.status_code == 503
+        assert "not initialized" in str(raised.value.detail)
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-6")
+    async def test_rendering_without_persistence_is_a_503_not_a_500(
+        self, ready: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(design_routes, "get_design_store", lambda: None)
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.create_render_job("p-1", _Request())
+        assert raised.value.status_code == 503
+        assert "persistence unavailable" in str(raised.value.detail).lower()
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-6")
     async def test_rendering_a_project_carries_the_scope(
         self, ready: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Rendering returns the project's content, so a render route that
-        never asked whose it was is the same leak as the fetch route."""
-        import services.design_preview as preview_module
-
+        """Rendering must not disclose a project outside the caller's scope."""
         store = _Store(project=None)
         monkeypatch.setattr(design_routes, "get_design_store", lambda: store)
-        # The route resolves the preview service before it reads the project,
-        # so it has to exist for the scope check to be reached at all.
-        monkeypatch.setattr(preview_module, "get_design_preview_service", lambda: object())
         with pytest.raises(HTTPException) as raised:
             await design_routes.create_render_job("p-1", _Request(org_id="org-7"))
         assert raised.value.status_code == 404
+        assert store.calls == [{"project_id": "p-1", "org_id": "org-7"}]
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-6")
+    async def test_rendering_an_in_scope_project_is_disabled_until_canvas_is_connected(
+        self, ready: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = _Store(project=object())
+        monkeypatch.setattr(design_routes, "get_design_store", lambda: store)
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.create_render_job("p-1", _Request(org_id="org-7"))
+        assert raised.value.status_code == 501
+        assert "canonical Canvas rendering seam" in str(raised.value.detail)
         assert store.calls == [{"project_id": "p-1", "org_id": "org-7"}]
 
     @pytest.mark.ac("SPEC-083026-6bc5/AC-2")

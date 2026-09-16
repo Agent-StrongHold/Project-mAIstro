@@ -224,6 +224,30 @@ test("Design Studio is the parent surface and never enables fake visual executio
   await expect(product).not.toContainText("M3 #");
 });
 
+test("Design Studio reports unavailable persistence instead of an empty durable state", async () => {
+  await page.unroute("**/v1/design/projects");
+  await page.route("**/v1/design/projects", async (route) => {
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "Design persistence unavailable (DATABASE_URL not set)" }),
+    });
+  });
+
+  await page.goto("/cli/canvas", { waitUntil: "domcontentloaded" });
+
+  const projectsHeader = page.getByText("Persisted Design projects", { exact: true }).locator("..");
+  await expect(projectsHeader.getByText("unavailable", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Persisted Design projects are unavailable:.*DATABASE_URL not set/)).toBeVisible();
+  await expect(page.getByText("No persisted Design projects in this scope.", { exact: true })).toHaveCount(0);
+
+  // Keep the shared serial browser state truthful for the following catalog test.
+  await page.unroute("**/v1/design/projects");
+  await page.route("**/v1/design/projects", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(designProjects) });
+  });
+});
+
 test("Deck is a contained Design Studio mode, not a route escape", async () => {
   await page.goto("/cli/canvas", { waitUntil: "domcontentloaded" });
   const artifactTypes = page.getByRole("group", { name: "Design artifact types" });
