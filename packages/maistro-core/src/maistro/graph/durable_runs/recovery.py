@@ -375,6 +375,7 @@ async def recover_queued_graph_runs(
     eligible: QueuedRunPredicate,
     runtime: ExecutionRuntime | None = None,
     limit: int = 100,
+    admission_source: str | None = None,
     events: RecoveryEventSink | None = None,
     scan: ScanContinuation[tuple[str, str]] | None = None,
 ) -> int:
@@ -385,6 +386,10 @@ async def recover_queued_graph_runs(
     the public admission helper before physical execution can start, so this
     recovery path never substitutes empty inputs for work the caller actually
     admitted.
+
+    ``admission_source`` is an optional durable ownership prefilter. The
+    callback remains a defense-in-depth policy check, while cursor paging makes
+    arbitrary additional predicates fair even when no source prefilter exists.
 
     ``limit`` bounds *eligible* QUEUED Runs recovered by this call, not a
     fixed prefix of every QUEUED Run in the store (#1127, #1098). Candidates
@@ -412,9 +417,15 @@ async def recover_queued_graph_runs(
         return 0
 
     await _reconcile_if_supported(store, limit=limit)
+    # Filter the ownership fact in the durable status query when the consumer
+    # has one. Cursor paging still makes an arbitrary callback fair when a
+    # caller needs additional policy beyond admission_source.
     candidates = await fair_page_scan(
         fetch_page=lambda cursor, page_size: run_store.list_by_status(
-            RunStatus.QUEUED, limit=page_size, after=cursor
+            RunStatus.QUEUED,
+            limit=page_size,
+            admission_source=admission_source,
+            after=cursor,
         ),
         cursor_of=run_cursor_key,
         eligible=eligible,

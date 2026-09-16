@@ -572,6 +572,7 @@ class PgRunStore:
         offset: int = 0,
         project_id: str | None = None,
         workspace_id: str | None = None,
+        admission_source: str | None = None,
         after: tuple[str, str] | None = None,
     ) -> list[Run]:
         """Runs currently in ``status``, oldest first (#251).
@@ -598,6 +599,9 @@ class PgRunStore:
         if workspace_id is not None:
             sql += f" AND workspace_id = ${len(params) + 1}"
             params.append(workspace_id)
+        if admission_source is not None:
+            sql += f" AND payload->'provenance'->>'admission_source' = ${len(params) + 1}"
+            params.append(admission_source)
         if after is not None:
             cursor_param = len(params) + 1
             sql += f" AND (payload->>'created_at', run_id) > (${cursor_param}, ${cursor_param + 1})"
