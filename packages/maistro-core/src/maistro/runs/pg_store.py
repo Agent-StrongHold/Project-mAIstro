@@ -292,7 +292,9 @@ class PgRunStore:
         run_ids: list[str],
     ) -> tuple[int, int]:
         continuations = 0
-        if await conn.fetchval("SELECT to_regclass('public.graph_continuations') IS NOT NULL"):
+        if await conn.fetchval(  # pragma: no branch — schema presence is deployment-dependent
+            "SELECT to_regclass('public.graph_continuations') IS NOT NULL"
+        ):
             continuations = len(
                 await conn.fetch(
                     "DELETE FROM graph_continuations WHERE run_id = ANY($1::text[]) RETURNING run_id",
@@ -300,7 +302,9 @@ class PgRunStore:
                 )
             )
         events_retained = 0
-        if await conn.fetchval("SELECT to_regclass('public.canonical_event_log') IS NOT NULL"):
+        if await conn.fetchval(  # pragma: no branch — schema presence is deployment-dependent
+            "SELECT to_regclass('public.canonical_event_log') IS NOT NULL"
+        ):
             event_count = await conn.fetchval(
                 "SELECT COUNT(*) FROM canonical_event_log WHERE run_id = ANY($1::text[])",
                 run_ids,
