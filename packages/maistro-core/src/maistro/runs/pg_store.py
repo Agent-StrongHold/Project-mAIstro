@@ -121,14 +121,12 @@ _TERMINAL_STATUS_VALUES = tuple(sorted(status.value for status in TERMINAL_RUN_S
 
 
 #: Retention candidate selection — the two scope variants' whole difference is
-#: one Workspace predicate line (#1175). The schedule id is projected so the
-#: outcome can count the occurrence claims that die with the selected rows.
+#: one Workspace predicate line (#1175).
 #: One more row than the batch is requested (the LIMIT parameter is sent as
 #: ``limit + 1``) so the outcome can say whether the scope drained or the
 #: batch ran out; the surplus row's lock lives only as long as the
 #: transaction.
-_PURGE_CANDIDATES_SQL_GLOBAL = """SELECT run_id,
-       (payload -> 'provenance' ->> 'schedule_id') AS schedule_id
+_PURGE_CANDIDATES_SQL_GLOBAL = """SELECT run_id
     FROM canonical_runs r
     WHERE r.retention_expires_at IS NOT NULL
       AND r.retention_expires_at <= $1
@@ -145,8 +143,7 @@ _PURGE_CANDIDATES_SQL_GLOBAL = """SELECT run_id,
     LIMIT $3
     FOR UPDATE SKIP LOCKED"""
 
-_PURGE_CANDIDATES_SQL_SCOPED = """SELECT run_id,
-       (payload -> 'provenance' ->> 'schedule_id') AS schedule_id
+_PURGE_CANDIDATES_SQL_SCOPED = """SELECT run_id
     FROM canonical_runs r
     WHERE r.retention_expires_at IS NOT NULL
       AND r.retention_expires_at <= $1
@@ -346,22 +343,12 @@ class PgRunStore:
                     run_ids,
                 )
                 continuations = len(deleted_continuations)
-            events_retained = 0
-            if await conn.fetchval("SELECT to_regclass('public.canonical_event_log') IS NOT NULL"):
-                events_retained = int(
-                    await conn.fetchval(
-                        "SELECT COUNT(*) FROM canonical_event_log WHERE run_id = ANY($1::text[])",
-                        run_ids,
-                    )
-                )
         return PurgeOutcome(
             scope=scope,
             runs=len(deleted_runs),
             node_runs=len(deleted_node_runs),
             attempts=len(deleted_attempts),
             continuations=continuations,
-            event_references_retained=events_retained,
-            schedule_claims_released=sum(1 for row in selected if row["schedule_id"] is not None),
             backlog_remaining=backlog_remaining,
         )
 

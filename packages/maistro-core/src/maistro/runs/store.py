@@ -279,18 +279,9 @@ class PurgeOutcome:
       durable-graph-run tables), deleted. The reference is logical — no foreign
       key — so nothing would notice it dangling, and a recovery scan would pick
       the orphan up and try to resume a Run whose identity no longer exists.
-    - ``event_references_retained`` — rows in the canonical Event log that name
-      a purged Run, kept. The Event log is append-only provenance: deleting it
-      would destroy the audit record of work whose deletion is itself an
-      auditable act, so retention's job here is to count what it leaves
-      behind, not to empty it. Other attribution history (task receipts,
-      session turns) is kept for the same reason; only what a store itself can
-      count gets a counter here.
-    - ``schedule_claims_released`` — `(schedule_id, scheduled_for)` occurrence
-      claims that died with their Run rows. Released deliberately: nothing is
-      duplicated by re-admitting a firing whose only record was deliberately
-      destroyed, which is the same coupling the in-memory store's eviction
-      already has.
+      The append-only Event log and the producer-provenance tables are kept
+      uncounted: nothing in retention reads those counts, so they stayed
+      write-only and were removed.
 
     ``backlog_remaining`` is the difference between "the scope is drained"
     and "the batch ran out" — the one bit a bare count could never carry, and
@@ -302,8 +293,6 @@ class PurgeOutcome:
     node_runs: int = 0
     attempts: int = 0
     continuations: int = 0
-    event_references_retained: int = 0
-    schedule_claims_released: int = 0
     backlog_remaining: bool = False
 
     @property
@@ -736,6 +725,39 @@ class InMemoryRunStore:
             if node_run.run_id == run_id
         )
 
+    def _purge_doomed(self, scope: RetentionScope, cutoff: datetime) -> list[Run]:
+        """Expired terminal Runs inside ``scope`` that no other Run descends from."""
+        parent_runs, parent_node_runs = self._referenced_by_children()
+        return [
+            run
+            for run in self._runs.values()
+            if run_in_purge_scope(run, scope)
+            and is_purgeable(run, cutoff)
+            and not self._has_child(run.run_id, parent_runs, parent_node_runs)
+        ]
+
+    def _spine_counts(self, selected_ids: set[str]) -> tuple[int, int]:
+        """NodeRuns and Attempts that die with the selected Runs."""
+        node_run_ids = {
+            node_run_id
+            for node_run_id, node_run in self._node_runs.items()
+            if node_run.run_id in selected_ids
+        }
+        attempts = sum(
+            1 for attempt in self._attempts.values() if attempt.node_run_id in node_run_ids
+        )
+        return len(node_run_ids), attempts
+
+    async def _delete_continuations(self, selected_ids: set[str]) -> int:
+        """Delete Graph continuations for the purged Runs; count what went."""
+        if self._continuation_store is None:
+            return 0
+        continuations = 0
+        for run_id in selected_ids:
+            if await self._continuation_store.delete(run_id):
+                continuations += 1
+        return continuations
+
     async def purge_expired_runs(
         self,
         scope: RetentionScope,
@@ -756,11 +778,6 @@ class InMemoryRunStore:
         predicate, because a parameter nobody can forget is the one thing that
         makes the default honest.
 
-        Orphan-safe: a Run some other Run descends from is skipped, however
-        expired. The durable backend enforces that with `ON DELETE RESTRICT`
-        and this one must agree, or the same retention policy would produce a
-        dangling parent pointer here and an integrity error there.
-
         The spine forgets run without an await between them, so the sweep is
         atomic with respect to this event loop: two concurrent sweeps divide
         a backlog, and neither can double-count a Run the other deleted.
@@ -773,44 +790,19 @@ class InMemoryRunStore:
         if limit <= 0:
             raise ValueError("limit must be positive")
         cutoff = now if now is not None else datetime.now(UTC)
-        parent_runs, parent_node_runs = self._referenced_by_children()
-        doomed = [
-            run
-            for run in self._runs.values()
-            if run_in_purge_scope(run, scope)
-            and is_purgeable(run, cutoff)
-            and not self._has_child(run.run_id, parent_runs, parent_node_runs)
-        ]
+        doomed = self._purge_doomed(scope, cutoff)
         selected = doomed[:limit]
         selected_ids = {run.run_id for run in selected}
-        node_runs_of_selected = {
-            node_run_id
-            for node_run_id, node_run in self._node_runs.items()
-            if node_run.run_id in selected_ids
-        }
-        attempts = sum(
-            1 for attempt in self._attempts.values() if attempt.node_run_id in node_runs_of_selected
-        )
+        node_runs, attempts = self._spine_counts(selected_ids)
         for run in selected:
             self._forget_run(run.run_id)
-        continuations = 0
-        if self._continuation_store is not None:
-            for run_id in selected_ids:
-                if await self._continuation_store.delete(run_id):
-                    continuations += 1
+        continuations = await self._delete_continuations(selected_ids)
         return PurgeOutcome(
             scope=scope,
             runs=len(selected),
-            node_runs=len(node_runs_of_selected),
+            node_runs=node_runs,
             attempts=attempts,
             continuations=continuations,
-            # This store owns no Event log — canonical Events live in their own
-            # store — so there is nothing here to count, and zero is the
-            # truthful report rather than a stub.
-            event_references_retained=0,
-            schedule_claims_released=sum(
-                1 for run in selected if occurrence_key(run.provenance) is not None
-            ),
             backlog_remaining=len(doomed) > limit,
         )
 
