@@ -22,6 +22,7 @@ from maistro.tasks.admission import (
     REQUEST_ID_KEY,
     SESSION_ID_KEY,
     TASK_ID_KEY,
+    TASK_PAYLOAD_KEY,
     TASK_QUEUE_SOURCE,
     TaskRunAdmitter,
 )
@@ -90,6 +91,27 @@ async def test_provenance_correlates_the_run_back_to_its_receipt(scoped) -> None
     assert run.provenance["user_id"] == "u1"
     assert run.actor_principal_id == "u1"
     assert task.session_id == "sess-9"
+
+
+async def test_the_run_contains_the_restart_payload(scoped) -> None:
+    _projects, runs, _root, project = scoped
+    queue = TaskQueue(
+        admitter=TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+    )
+    submitted = TaskCreate(
+        description="restart me",
+        workspace="/tmp/workspace",
+        branch="feature/restart",
+        constraints=["run tests"],
+        program_context={"ticket": "1114"},
+    )
+    task = await queue.submit(submitted)
+    run = await runs.get_run(task.run_id or "")
+    assert run is not None
+    assert run.status is RunStatus.QUEUED
+    assert run.provenance[TASK_PAYLOAD_KEY]["description"] == submitted.description
+    assert run.provenance[TASK_PAYLOAD_KEY]["branch"] == submitted.branch
+    assert run.provenance[TASK_PAYLOAD_KEY]["constraints"] == submitted.constraints
 
 
 async def test_absent_session_and_user_are_omitted_rather_than_blank(scoped) -> None:
@@ -164,6 +186,123 @@ async def test_the_queued_task_carries_its_run_id(scoped) -> None:
 
     assert queue.get(task.task_id) is not None
     assert queue.get(task.task_id).run_id == task.run_id  # type: ignore[union-attr]
+
+
+async def test_a_new_queue_rehydrates_a_queued_run(scoped) -> None:
+    _projects, runs, _root, project = scoped
+    admitter = TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+    original = TaskQueue(admitter=admitter)
+    submitted = await original.submit(
+        TaskCreate(description="recover me", branch="restart", constraints=["tests"])
+    )
+
+    restarted = TaskQueue()
+    assert await restarted.recover(runs) == 1
+    recovered = restarted.get(submitted.task_id)
+    assert recovered is not None
+    assert recovered.run_id == submitted.run_id
+    assert recovered.description == submitted.description
+    assert recovered.branch == "restart"
+    assert recovered.constraints == ["tests"]
+    assert await restarted.next_task() == submitted.task_id
+
+
+async def test_death_after_run_admission_is_recoverable(scoped) -> None:
+    _projects, runs, _root, project = scoped
+    delegate = TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+
+    class _ProcessDeath(BaseException):
+        pass
+
+    class _CrashAfterAdmission:
+        async def admit(self, task, *, workspace_id=None):
+            run_id = await delegate.admit(task, workspace_id=workspace_id)
+            raise _ProcessDeath(run_id)
+
+        async def record_transition(self, run_id, status, **kwargs):
+            return await delegate.record_transition(run_id, status, **kwargs)
+
+    with pytest.raises(_ProcessDeath):
+        await TaskQueue(admitter=_CrashAfterAdmission()).submit(
+            TaskCreate(description="death after admission")
+        )
+
+    restarted = TaskQueue(admitter=delegate)
+    assert await restarted.recover(runs) == 1
+    assert await restarted.next_task()
+
+
+async def test_death_after_receipt_before_notification_is_recoverable(scoped) -> None:
+    _projects, runs, _root, project = scoped
+    admitter = TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+
+    class _ProcessDeath(BaseException):
+        pass
+
+    class _CrashQueue:
+        async def put(self, _task_id):
+            raise _ProcessDeath
+
+    queue = TaskQueue(admitter=admitter)
+    queue._pending = _CrashQueue()  # type: ignore[assignment]
+    with pytest.raises(_ProcessDeath):
+        await queue.submit(TaskCreate(description="death before notification"))
+
+    restarted = TaskQueue(admitter=admitter)
+    assert await restarted.recover(runs) == 1
+    assert await restarted.next_task()
+
+
+async def test_two_recovery_receipts_have_one_canonical_transition_winner(scoped) -> None:
+    _projects, runs, _root, project = scoped
+    admitter = TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+    original = TaskQueue(admitter=admitter)
+    submitted = await original.submit(TaskCreate(description="race me"))
+    first, second = TaskQueue(admitter=admitter), TaskQueue(admitter=admitter)
+    assert await first.recover(runs) == 1
+    assert await second.recover(runs) == 1
+
+    assert await first.update_status(submitted.task_id, TaskStatus.PLANNING)
+    assert not await second.update_status(submitted.task_id, TaskStatus.PLANNING)
+    run = await runs.get_run(submitted.run_id or "")
+    assert run is not None and run.status is RunStatus.RUNNING
+
+
+async def test_malformed_recovery_payload_fails_the_canonical_run(scoped) -> None:
+    _projects, runs, _root, project = scoped
+    admitter = TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+    original = TaskQueue(admitter=admitter)
+    submitted = await original.submit(TaskCreate(description="malformed"))
+    stored = runs._runs[submitted.run_id or ""]  # type: ignore[attr-defined]
+    stored.provenance.pop(TASK_PAYLOAD_KEY)
+
+    restarted = TaskQueue()
+    assert await restarted.recover(runs) == 0
+    run = await runs.get_run(submitted.run_id or "")
+    assert run is not None
+    assert run.status is RunStatus.FAILED
+    assert run.error is not None and "missing durable task payload" in run.error
+
+
+async def test_postgres_queued_task_rehydrates_after_queue_restart(pg_pool) -> None:
+    if pg_pool is None:
+        pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+    from maistro.projects.pg_scope_store import PgProjectScopeStore
+    from maistro.runs.consumer_claim import ClaimingPgRunStore
+
+    projects = PgProjectScopeStore(pg_pool)
+    root = await projects.create_root("pg-recovery")
+    runs = ClaimingPgRunStore(pg_pool, project_store=projects)
+    admitter = TaskRunAdmitter(runs, workspace_id="pg-recovery", project_id=root.project_id)
+    submitted = await TaskQueue(admitter=admitter).submit(
+        TaskCreate(description="recover from PostgreSQL")
+    )
+
+    restarted = TaskQueue(admitter=admitter)
+    assert await restarted.recover(runs) == 1
+    recovered = restarted.get(submitted.task_id)
+    assert recovered is not None and recovered.run_id == submitted.run_id
+    assert await restarted.next_task() == submitted.task_id
 
 
 async def test_an_unwired_queue_admits_without_a_run() -> None:

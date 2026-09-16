@@ -6,7 +6,8 @@ Live task state is held in memory. When a database is configured
 — upserts a ``TaskRecord`` row, fire-and-forget, so task execution never
 fails because the database is unavailable. Writes for one task are chained so
 they land in the order the state changed. With no database the queue behaves
-exactly as before and a restart loses all tasks.
+exactly as before. Wired canonical Runs are the restart source; an unwired queue
+remains intentionally in-memory.
 """
 
 from __future__ import annotations
@@ -29,7 +30,14 @@ from maistro.observability.metrics import (
     tasks_failed_total,
     tasks_submitted_total,
 )
-from maistro.tasks.admission import TaskAdmitter
+from maistro.runs.model import RunStatus
+from maistro.runs.sources import ADMISSION_SOURCE
+from maistro.tasks.admission import (
+    TASK_ID_KEY,
+    TASK_PAYLOAD_KEY,
+    TASK_QUEUE_SOURCE,
+    TaskAdmitter,
+)
 from maistro.tasks.models import TaskCreate, TaskProgress, TaskResponse, TaskResult, TaskStatus
 from maistro.tasks.status import can_transition
 
@@ -45,6 +53,8 @@ def _record_values(task: TaskResponse) -> dict[str, Any]:
         "status": task.status.value,
         "description": task.description,
         "workspace": task.workspace,
+        "constraints": list(task.constraints),
+        "branch": task.branch,
         "tier": task.tier,
         "phase": task.phase,
         "progress": task.progress.model_dump(mode="json") if task.progress else None,
@@ -90,6 +100,22 @@ PRUNE_TARGET = 8_000
 
 # Terminal statuses that can be pruned
 _TERMINAL = frozenset({TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED})
+
+
+def _task_from_run(run: Any) -> tuple[TaskResponse | None, str | None]:
+    """Validate one canonical task payload, returning a visible failure reason."""
+    raw = run.provenance.get(TASK_PAYLOAD_KEY)
+    if raw is None:
+        return None, "missing durable task payload"
+    try:
+        task = TaskResponse.model_validate(raw)
+        if run.provenance.get(TASK_ID_KEY) != task.task_id:
+            raise ValueError("task payload task_id does not match Run provenance")
+        if task.status is not TaskStatus.QUEUED:
+            raise ValueError("task payload is not queued")
+    except Exception as exc:
+        return None, f"invalid durable task payload: {exc}"
+    return task.model_copy(update={"run_id": run.run_id, "status": TaskStatus.QUEUED}), None
 
 
 class TaskQueue:
@@ -201,6 +227,8 @@ class TaskQueue:
             agent_id=request.agent_id,
             capability=request.capability,
             program_context=request.program_context,
+            branch=request.branch,
+            constraints=list(request.constraints),
             tier=request.tier or 2,
             lane=request.lane,
             priority_tier=request.priority_tier,
@@ -229,6 +257,69 @@ class TaskQueue:
             description=request.description[:DESCRIPTION_LOG_PREVIEW_LEN],
         )
         return task
+
+    async def recover(self, run_store: Any, *, batch_size: int = 100) -> int:
+        """Rebuild task receipts from queued canonical Runs after a restart.
+
+        The Run contains the immutable task payload and is inserted as QUEUED in
+        the same durable write as admission. Rehydrating from that source closes
+        both process-death windows without adding a second queue lifecycle.
+        A malformed snapshot is claimed and failed on the canonical Run so it
+        cannot remain an invisible QUEUED row forever.
+        """
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        from maistro.runs.store import run_cursor_key
+
+        recovered = 0
+        after: tuple[str, str] | None = None
+        while True:
+            queued = await run_store.list_by_status(RunStatus.QUEUED, limit=batch_size, after=after)
+            if not queued:
+                break
+            for run in queued:
+                after = run_cursor_key(run)
+                if run.provenance.get(ADMISSION_SOURCE) != TASK_QUEUE_SOURCE:
+                    continue
+                task, reason = _task_from_run(run)
+                if reason is not None:
+                    await self._fail_unrecoverable_run(run_store, run.run_id, reason)
+                    continue
+                assert task is not None
+                async with self._lock:
+                    if task.task_id in self._tasks:
+                        continue
+                    self._tasks[task.task_id] = task
+                    self._maybe_prune()
+                await self._pending.put(task.task_id)
+                active_tasks.inc()
+                recovered += 1
+                await logger.ainfo(
+                    "task_recovered",
+                    task_id=task.task_id,
+                    run_id=task.run_id,
+                )
+            if len(queued) < batch_size:
+                break
+        return recovered
+
+    async def _fail_unrecoverable_run(self, run_store: Any, run_id: str, reason: str) -> None:
+        """Record malformed admitted work as a terminal canonical failure."""
+        try:
+            await run_store.transition_run(run_id, RunStatus.RUNNING)
+        except Exception:
+            # A concurrent worker owns the Run, so it is not safe for recovery
+            # to overwrite its outcome. The canonical claim remains the fence.
+            logger.warning("task recovery lost claim", run_id=run_id, reason=reason)
+            return
+        try:
+            await run_store.transition_run(
+                run_id,
+                RunStatus.FAILED,
+                error=f"task_recovery_failed: {reason}",
+            )
+        except Exception:
+            logger.warning("task recovery failure was not terminalized", run_id=run_id)
 
     def get(self, task_id: str, *, user_id: str | None = None) -> TaskResponse | None:
         task = self._tasks.get(task_id)
@@ -280,7 +371,11 @@ class TaskQueue:
                 self._admitter is not None
                 and task.run_id
                 and not await self._admitter.record_transition(
-                    task.run_id, status, result=result, error=error
+                    task.run_id,
+                    status,
+                    result=result,
+                    error=error,
+                    previous_status=task.status,
                 )
             ):
                 logger.warning(
