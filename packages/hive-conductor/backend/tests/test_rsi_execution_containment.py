@@ -134,6 +134,46 @@ class TestPathContainment:
         with pytest.raises(policy.RsiPolicyError, match="not beneath"):
             policy.resolve_repo(str(link))
 
+    def test_a_sibling_whose_name_merely_starts_with_the_root_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A prefix test without the separator would read `/srv/rsi-evil` as a
+        child of `/srv/rsi`."""
+        from services import rsi_execution_policy as policy
+
+        root = tmp_path / "root"
+        root.mkdir()
+        sibling = tmp_path / "root-evil"
+        (sibling / ".git").mkdir(parents=True)
+        monkeypatch.setattr(policy, "_authorized_roots", lambda: (root.resolve(),))
+
+        with pytest.raises(policy.RsiPolicyError, match="not beneath"):
+            policy.resolve_repo(str(sibling))
+
+    def test_a_root_that_is_itself_a_symlink_still_accepts_its_own_repos(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The other way this check can be wrong.
+
+        `_authorized_roots` resolves what the operator configured, so a root
+        spelled `/srv/rsi` when `/srv/rsi -> /data/rsi` is held as `/data/rsi`.
+        A containment test against the *requested string* then refuses every
+        legitimate repository under the spelling the operator actually set —
+        and the obvious way out of that refusal is to widen the root, which is
+        the opposite of what this module is for.
+        """
+        from services import rsi_execution_policy as policy
+
+        real = tmp_path / "real"
+        repo = real / "repo"
+        (repo / ".git").mkdir(parents=True)
+        link = tmp_path / "configured"
+        link.symlink_to(real, target_is_directory=True)
+        # Exactly what `_authorized_roots` would hold for RSI_REPO_ROOTS=<link>.
+        monkeypatch.setattr(policy, "_authorized_roots", lambda: (link.resolve(),))
+
+        assert policy.resolve_repo(str(link / "repo")) == repo.resolve()
+
     def test_a_repo_inside_the_root_is_accepted(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
