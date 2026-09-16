@@ -45,6 +45,8 @@ def matches_scope(
     TEAM scope requires BOTH team_id AND org_id to prevent cross-org leakage.
     GLOBAL memories with an org_id are only visible to the same org.
     """
+    if not filters:
+        return False
     caller_org = next(
         (value for scope, value in filters if scope == MemoryScope.ORGANIZATION and value),
         "",

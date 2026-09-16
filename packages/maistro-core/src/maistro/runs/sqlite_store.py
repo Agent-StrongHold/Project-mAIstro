@@ -519,7 +519,9 @@ class SqliteRunStore:
         oldest = datetime.fromisoformat(row[1]) if row[1] else None
         return count, oldest
 
-    async def _purge_candidates(self, scope: RetentionScope, limit: int) -> list[tuple[str, Run]]:
+    async def _purge_candidates(
+        self, scope: RetentionScope, limit: int, cutoff: datetime
+    ) -> list[tuple[str, Run]]:
         """Terminal Runs carrying a deadline, inside ``scope``, descended from by nobody.
 
         Ordered by deadline, so the caller can stop at the first unexpired one
@@ -541,7 +543,29 @@ class SqliteRunStore:
             ),
             (*params, limit),
         )
-        return [(row[0], Run.model_validate_json(row[1])) for row in await cursor.fetchall()]
+        candidates = [(row[0], Run.model_validate_json(row[1])) for row in await cursor.fetchall()]
+        doomed: list[tuple[str, Run]] = []
+        for run_id, run in candidates:
+            if not is_purgeable(run, cutoff):
+                break
+            doomed.append((run_id, run))
+        return doomed
+
+    async def _purge_dependent_counts(self, run_id_param: str) -> tuple[int, int]:
+        """Delete owned dependents and count retained provenance references."""
+        continuations = 0
+        for table, sql in _PURGE_DEPENDENT_SQL.items():
+            if not await self._dependent_table_exists(table):
+                continue
+            cursor = await self._conn.execute(sql, (run_id_param,))
+            continuations += max(cursor.rowcount, 0)
+        retained = 0
+        for table, sql in _RETAINED_REFERENCE_SQL.items():
+            if not await self._dependent_table_exists(table):
+                continue
+            row = await (await self._conn.execute(sql, (run_id_param,))).fetchone()
+            retained += int(row[0]) if row is not None else 0
+        return continuations, retained
 
     async def _dependent_table_exists(self, table: str) -> bool:
         """Whether a dependent-evidence table exists on this connection.
@@ -578,13 +602,9 @@ class SqliteRunStore:
             raise ValueError("limit must be positive")
         cutoff = now if now is not None else datetime.now(UTC)
         async with self._write_lock:
-            doomed: list[tuple[str, Run]] = []
             # One more candidate than the batch, so the outcome can say
             # whether the scope drained or the batch ran out.
-            for run_id, run in await self._purge_candidates(scope, limit + 1):
-                if not is_purgeable(run, cutoff):
-                    break
-                doomed.append((run_id, run))
+            doomed = await self._purge_candidates(scope, limit + 1, cutoff)
             if not doomed:
                 return PurgeOutcome(scope=scope)
             purged = doomed[:limit]
@@ -605,18 +625,7 @@ class SqliteRunStore:
             attempt_count = (await attempt_row.fetchone() or [0])[0]
             # Dependent evidence beyond the spine, in the same transaction:
             # owned resumable state deleted, retained provenance counted.
-            continuations = 0
-            for table, sql in _PURGE_DEPENDENT_SQL.items():
-                if not await self._dependent_table_exists(table):
-                    continue
-                cursor = await self._conn.execute(sql, (run_id_param,))
-                continuations += max(cursor.rowcount, 0)
-            retained = 0
-            for table, sql in _RETAINED_REFERENCE_SQL.items():
-                if not await self._dependent_table_exists(table):
-                    continue
-                row = await (await self._conn.execute(sql, (run_id_param,))).fetchone()
-                retained += int(row[0]) if row is not None else 0
+            continuations, retained = await self._purge_dependent_counts(run_id_param)
             await self._conn.execute(_DELETE_ATTEMPTS_SQL, (run_id_param,))
             await self._conn.execute(_DELETE_NODE_RUNS_SQL, (run_id_param,))
             await self._conn.execute(_DELETE_RUNS_SQL, (run_id_param,))

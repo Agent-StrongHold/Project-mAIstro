@@ -733,6 +733,40 @@ class InMemoryRunStore:
             if node_run.run_id == run_id
         )
 
+    def _purgeable_runs(self, scope: RetentionScope, cutoff: datetime) -> list[Run]:
+        """Return expired, unreferenced Runs within the requested scope."""
+        parent_runs, parent_node_runs = self._referenced_by_children()
+        return [
+            run
+            for run in self._runs.values()
+            if run_in_purge_scope(run, scope)
+            and is_purgeable(run, cutoff)
+            and not self._has_child(run.run_id, parent_runs, parent_node_runs)
+        ]
+
+    def _purge_tree_counts(self, selected: list[Run]) -> tuple[set[str], set[str], int]:
+        """Count the canonical spine rows attached to selected Runs."""
+        selected_ids = {run.run_id for run in selected}
+        node_run_ids = {
+            node_run_id
+            for node_run_id, node_run in self._node_runs.items()
+            if node_run.run_id in selected_ids
+        }
+        attempts = sum(
+            1 for attempt in self._attempts.values() if attempt.node_run_id in node_run_ids
+        )
+        return selected_ids, node_run_ids, attempts
+
+    async def _purge_continuations(self, selected_ids: set[str]) -> int:
+        """Delete continuation state after its owning Run leaves the spine."""
+        if self._continuation_store is None:
+            return 0
+        deleted = 0
+        for run_id in selected_ids:
+            if await self._continuation_store.delete(run_id):
+                deleted += 1
+        return deleted
+
     async def purge_expired_runs(
         self,
         scope: RetentionScope,
@@ -753,52 +787,23 @@ class InMemoryRunStore:
         predicate, because a parameter nobody can forget is the one thing that
         makes the default honest.
 
-        Orphan-safe: a Run some other Run descends from is skipped, however
-        expired. The durable backend enforces that with `ON DELETE RESTRICT`
-        and this one must agree, or the same retention policy would produce a
-        dangling parent pointer here and an integrity error there.
-
-        The spine forgets run without an await between them, so the sweep is
-        atomic with respect to this event loop: two concurrent sweeps divide
-        a backlog, and neither can double-count a Run the other deleted.
-        Continuations go after the spine — this store has no transaction to
-        offer a collaborator — so the window between "Run gone" and
-        "continuation gone" is closed by
-        `CanonicalDurableRunStore.reconcile_persistence`, the same backstop
-        the durable stores keep for a crash.
+        The spine forgets runs without an await between them, so the sweep is
+        atomic with respect to this event loop. Continuations are deleted after
+        the spine, with reconciliation remaining the crash backstop.
         """
         if limit <= 0:
             raise ValueError("limit must be positive")
         cutoff = now if now is not None else datetime.now(UTC)
-        parent_runs, parent_node_runs = self._referenced_by_children()
-        doomed = [
-            run
-            for run in self._runs.values()
-            if run_in_purge_scope(run, scope)
-            and is_purgeable(run, cutoff)
-            and not self._has_child(run.run_id, parent_runs, parent_node_runs)
-        ]
+        doomed = self._purgeable_runs(scope, cutoff)
         selected = doomed[:limit]
-        selected_ids = {run.run_id for run in selected}
-        node_runs_of_selected = {
-            node_run_id
-            for node_run_id, node_run in self._node_runs.items()
-            if node_run.run_id in selected_ids
-        }
-        attempts = sum(
-            1 for attempt in self._attempts.values() if attempt.node_run_id in node_runs_of_selected
-        )
+        selected_ids, node_run_ids, attempts = self._purge_tree_counts(selected)
         for run in selected:
             self._forget_run(run.run_id)
-        continuations = 0
-        if self._continuation_store is not None:
-            for run_id in selected_ids:
-                if await self._continuation_store.delete(run_id):
-                    continuations += 1
+        continuations = await self._purge_continuations(selected_ids)
         return PurgeOutcome(
             scope=scope,
             runs=len(selected),
-            node_runs=len(node_runs_of_selected),
+            node_runs=len(node_run_ids),
             attempts=attempts,
             continuations=continuations,
             # This store owns no Event log — canonical Events live in their own
