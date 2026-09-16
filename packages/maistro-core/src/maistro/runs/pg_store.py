@@ -259,7 +259,9 @@ class PgRunStore:
                 raise conflict from exc
         return run
 
-    async def _purge_rows(self, conn: Any, scope: RetentionScope, cutoff: datetime, limit: int):
+    async def _purge_rows(
+        self, conn: Any, scope: RetentionScope, cutoff: datetime, limit: int
+    ) -> Any:
         if isinstance(scope, WorkspaceRetentionScope):
             return await conn.fetch(
                 _PURGE_CANDIDATES_SQL_SCOPED,
