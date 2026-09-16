@@ -120,6 +120,29 @@ class _UnresolvableOccurrenceWinner:
         return await self._inner.get_run_for_occurrence(schedule_id, scheduled_for)
 
 
+class _FailingOccurrenceLookup:
+    """A run store whose occurrence index fails the store read, transiently.
+
+    The resolution inside the duplicate-claim path is a store read like any
+    other, and a store read can fail without lying: a connection drop, a
+    command timeout. Only that lookup is intercepted; everything else
+    delegates, so the `DuplicateOccurrence` is still raised by a genuine
+    insert against a genuine claim.
+    """
+
+    def __init__(self, inner: InMemoryRunStore, failing: tuple[str, str]) -> None:
+        self._inner = inner
+        self._failing = failing
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
+        if (schedule_id, scheduled_for) == self._failing:
+            raise RuntimeError("synthetic store outage resolving the occurrence")
+        return await self._inner.get_run_for_occurrence(schedule_id, scheduled_for)
+
+
 class TestProvenance:
     async def test_the_run_names_the_schedule_that_fired_it(self, harness) -> None:
         """#46's "provenance retained **on the Run**", which is the whole point.
@@ -283,6 +306,13 @@ class TestTheCursor:
 
         first = await admitter.admit_due(schedule, now=NOON)
         winning_run_id = first.run_ids[0]
+        # Reset the stored row to its pre-fire snapshot through the store API.
+        # A `put` of the stale definition would not do it: `_merged` keeps an
+        # existing row's cursors (#1199), so the reset was a no-op and the
+        # assertion below could not fail. Deleting and re-filing the
+        # definition is what models the process dying between the Run's
+        # creation and `record_fire`: the claim remains, the linkage is gone.
+        assert await schedules.delete(schedule.schedule_id) is True
         await schedules.put(schedule)
 
         recovered = await admitter.admit_due(schedule, now=NOON)
@@ -304,6 +334,10 @@ class TestTheCursor:
         first = await admitter.admit_due(schedule, now=NOON)
         winning_run_id = first.run_ids[0]
         await runs.transition_run(winning_run_id, RunStatus.CANCELLED)
+        # The same real reset as above: `put` alone would have kept the stored
+        # cursors, and `last_run_id == winning_run_id` would then pass without
+        # the recovered write ever being exercised.
+        assert await schedules.delete(schedule.schedule_id) is True
         await schedules.put(schedule)
 
         recovered = await admitter.admit_due(schedule, now=NOON)
@@ -362,6 +396,61 @@ class TestTheCursor:
         assert stored.last_run_id == before.last_run_id
         assert stored.last_fired_at == before.last_fired_at
         assert stored.runs_so_far == before.runs_so_far
+
+    async def test_a_transient_lookup_failure_stops_the_batch_but_still_records(
+        self, harness
+    ) -> None:
+        """Resolving a duplicate's winner is a store read, so it can fail
+        transiently — and that failure must not escape `admit_due`.
+
+        Escaping would skip `record_fire` for occurrences this batch already
+        admitted: their Runs exist, their claims are held, and the cursor
+        write that tells the next tick so would never land. The failure is
+        recorded and the batch stops like any other per-occurrence error,
+        while the advance that the admitted occurrences have earned still
+        happens.
+        """
+        admitter, runs, templates, schedules, project_id = harness
+        schedule = await _schedule(
+            schedules,
+            project_id,
+            last_fired_at=NOON - timedelta(hours=2),
+            catchup_window_seconds=6 * 3600.0,
+            overlap_policy=OverlapPolicy.ALLOW,
+        )
+        # A rival ticker claimed the 11:00 occurrence (the only one due at
+        # NOON-1h) and advanced the stored cursor over it. This batch's caller
+        # still holds a replica snapshot from before that advance, so it
+        # re-enumerates the unclaimed 10:00, the claimed 11:00, and 12:00 —
+        # the sequence a replica that missed the rival's write really sees.
+        rival = await admitter.admit_due(schedule, now=NOON - timedelta(hours=1))
+        assert len(rival.run_ids) == 1
+        replica = schedule.model_copy(update={"last_fired_at": NOON - timedelta(hours=3)})
+
+        reconciling = ScheduleRunAdmitter(
+            _FailingOccurrenceLookup(  # type: ignore[arg-type]
+                runs, failing=(schedule.schedule_id, (NOON - timedelta(hours=1)).isoformat())
+            ),
+            templates,
+            schedules,
+        )
+
+        result = await reconciling.admit_due(replica, now=NOON)
+
+        # The failure is reported, not raised.
+        assert len(result.failures) == 1
+        assert isinstance(result.failures[0], RuntimeError)
+        # The occurrence admitted before the failure reached `record_fire`.
+        assert len(result.run_ids) == 1
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        # The 10:00 fire really landed — and the linkage stays with the
+        # newest consumed occurrence (the rival's 11:00): `_advance` moves
+        # the counters for the stale occurrence while its older cursors
+        # cannot regress what the newer one recorded.
+        assert stored.runs_so_far == 2
+        assert stored.last_fired_at == NOON - timedelta(hours=1)
+        assert stored.last_run_id == rival.run_ids[0]
 
     async def test_the_cursor_does_not_move_when_no_run_was_created(self, harness) -> None:
         """The ordering the issue names: advancing first would skip an

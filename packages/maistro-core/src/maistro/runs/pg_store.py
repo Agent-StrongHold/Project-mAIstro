@@ -395,6 +395,7 @@ class PgRunStore:
                       AND finished_at IS NOT NULL
                       AND finished_at <= $1
                       AND status = ANY($2::text[])
+                      AND (payload -> 'provenance' ->> 'schedule_id') IS NULL
                     ORDER BY finished_at
                     LIMIT $3
                     FOR UPDATE SKIP LOCKED""",

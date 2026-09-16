@@ -89,6 +89,7 @@ from maistro.scheduling.store import ScheduleExhausted
 if TYPE_CHECKING:
     from maistro.graph.definitions import GraphTemplate
     from maistro.graph.templates import GraphTemplateStore
+    from maistro.runs.model import Run
     from maistro.runs.store import RunStore
     from maistro.scheduling.engine import ScheduleEvaluation, SkippedFire
     from maistro.scheduling.model import Schedule
@@ -269,18 +270,8 @@ class ScheduleRunAdmitter:
                 # RunStore's occurrence index before advancing the cursor; a
                 # provenance scan here would make recovery linear and would
                 # duplicate the store's execution authority.
-                winner = await self._runs.get_run_for_occurrence(exc.schedule_id, exc.scheduled_for)
+                winner = await self._resolve_duplicate_winner(exc, schedule, failures)
                 if winner is None:
-                    failure = RunIntegrityError(
-                        "duplicate occurrence claim has no resolvable canonical Run"
-                    )
-                    logger.warning(
-                        "schedule %s could not reconcile occurrence %s: %s",
-                        schedule.schedule_id,
-                        fire.scheduled_for.isoformat(),
-                        failure,
-                    )
-                    failures.append(failure)
                     break
                 # **Continue**, unlike every other failure below. The claim
                 # refusing this insert says the occurrence already has its Run
@@ -360,6 +351,48 @@ class ScheduleRunAdmitter:
             already_fired=tuple(already_fired),
             failures=tuple(failures),
         )
+
+    async def _resolve_duplicate_winner(
+        self,
+        exc: DuplicateOccurrence,
+        schedule: Schedule,
+        failures: list[Exception],
+    ) -> Run | None:
+        """The winning Run of an occurrence that was already claimed.
+
+        Two ways to come up empty, and both are recorded in `failures` rather
+        than raised, because the caller's batch loop turns an escape from
+        `admit_due` into a broken contract: occurrences the batch already
+        admitted would never reach `record_fire`, losing the cursor advance
+        they have earned (#1269). The first is torn state — the claim's
+        insert was refused but the occurrence index names no canonical Run.
+        The second is transient: the resolution is a store read like any
+        other, and a connection drop must not masquerade as an admission
+        bug. Both stop the batch; the caller breaks on the `None`.
+        """
+        try:
+            winner = await self._runs.get_run_for_occurrence(exc.schedule_id, exc.scheduled_for)
+        except Exception as lookup_failure:
+            logger.warning(
+                "schedule %s could not resolve occurrence %s: %s",
+                schedule.schedule_id,
+                exc.scheduled_for,
+                lookup_failure,
+            )
+            failures.append(lookup_failure)
+            return None
+        if winner is None:
+            failure = RunIntegrityError(
+                "duplicate occurrence claim has no resolvable canonical Run"
+            )
+            logger.warning(
+                "schedule %s could not reconcile occurrence %s: %s",
+                schedule.schedule_id,
+                exc.scheduled_for,
+                failure,
+            )
+            failures.append(failure)
+        return winner
 
     async def _admit_manual(
         self,
