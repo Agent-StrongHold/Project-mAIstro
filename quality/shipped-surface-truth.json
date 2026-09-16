@@ -493,19 +493,19 @@
       "method": "POST",
       "route": "/projects",
       "handler": "create_design_project",
-      "disposition": "canonical",
+      "disposition": "domain-state",
       "production_enabled": true,
-      "reason": "generates and persists a design project from discovery responses through the validated pipeline",
-      "effect_owner": "design pipeline: Warden scan, prompt stack, DB persist"
+      "reason": "prepares and persists a Design project/prompt stack; it does not claim visual generation",
+      "effect_owner": "DesignEngine preparation + DesignProjectStore persistence"
     },
     {
       "source": "packages/hive-conductor/backend/routes/design.py",
       "method": "POST",
       "route": "/projects/{project_id}/render",
       "handler": "create_render_job",
-      "disposition": "unresolved",
-      "production_enabled": true,
-      "reason": "creates a pending render job that no worker advances: no bytes are produced or served (D-14 facade, #286)",
+      "disposition": "disabled",
+      "production_enabled": false,
+      "reason": "compatibility endpoint fails explicitly until the canonical Canvas rendering seam exists; it creates no process-local job or output",
       "owner_issue": 286
     },
     {
