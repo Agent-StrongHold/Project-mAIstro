@@ -49,6 +49,7 @@ def tokens_css() -> str:
 class TestItIsBundledLikeTheOthers:
     @pytest.mark.contract("behavioral")
     @pytest.mark.scope("integration")
+    @pytest.mark.ac("ADR-091626-ba4f/AC-1")
     def test_workspace_is_a_bundled_slug_registered_at_t1(self):
         assert "workspace" in BUNDLED_SLUGS
         registry = InMemoryDesignSystemRegistry()
@@ -62,6 +63,7 @@ class TestItIsBundledLikeTheOthers:
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
+    @pytest.mark.ac("ADR-091626-ba4f/AC-2")
     def test_the_catalog_index_says_it_is_first_party(self):
         (entry,) = [e for e in load_catalog() if e["slug"] == "workspace"]
         assert entry["tier"] == ORIGIN_BUNDLED
@@ -73,6 +75,7 @@ class TestItIsBundledLikeTheOthers:
 
     @pytest.mark.contract("behavioral")
     @pytest.mark.scope("unit")
+    @pytest.mark.ac("ADR-091626-ba4f/AC-3")
     def test_its_essential_files_pass_the_import_scan(self):
         files = {
             name: (WORKSPACE / name).read_text(encoding="utf-8")
@@ -86,6 +89,7 @@ class TestItIsBundledLikeTheOthers:
 class TestTheGrammarIsInTheTokens:
     @pytest.mark.contract("behavioral")
     @pytest.mark.scope("unit")
+    @pytest.mark.ac("ADR-091626-ba4f/AC-4")
     def test_root_declares_the_actor_quartet_faces_undo_outcomes_and_floor(self, tokens_css):
         declared = _declared(_root_block(tokens_css))
         for name in ACTOR_TOKENS + FACE_TOKENS + UNDO_TOKENS:
@@ -95,12 +99,14 @@ class TestTheGrammarIsInTheTokens:
 
     @pytest.mark.contract("behavioral")
     @pytest.mark.scope("unit")
+    @pytest.mark.ac("ADR-091626-ba4f/AC-4")
     def test_no_type_size_token_is_under_the_floor(self, tokens_css):
         sizes = [int(px) for px in re.findall(r"--text-[a-z0-9-]+:\s*(\d+)px", tokens_css)]
         assert sizes and min(sizes) >= 12
 
     @pytest.mark.contract("behavioral")
     @pytest.mark.scope("unit")
+    @pytest.mark.ac("ADR-091626-ba4f/AC-5")
     def test_persona_templates_rebind_only_what_a_persona_may(self, tokens_css):
         """Slate and studio are the reference for a user-authored theme: if they
         touched an actor colour or a face, a custom theme could too."""
@@ -117,6 +123,7 @@ class TestTheGrammarIsInTheTokens:
 
     @pytest.mark.contract("behavioral")
     @pytest.mark.scope("unit")
+    @pytest.mark.ac("ADR-091626-ba4f/AC-5")
     def test_the_dark_scheme_keeps_the_quartet_but_may_change_its_lightness(self, tokens_css):
         dark = re.search(r'^:root\[data-scheme="dark"\] \{(.*?)^\}', tokens_css, re.S | re.M)
         assert dark is not None
@@ -126,6 +133,7 @@ class TestTheGrammarIsInTheTokens:
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
+    @pytest.mark.ac("ADR-091626-ba4f/AC-6")
     def test_design_tokens_json_mirrors_the_root_block(self, tokens_css):
         exported = {
             t["name"]
@@ -139,6 +147,7 @@ class TestTheGrammarIsInTheTokens:
 class TestThePreviewsAreStatic:
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
+    @pytest.mark.ac("ADR-091626-ba4f/AC-6")
     def test_previews_carry_no_script_and_reference_only_allowed_hosts(self):
         for page in (WORKSPACE / "components.html", WORKSPACE / "preview" / "home.html"):
             text = page.read_text(encoding="utf-8")

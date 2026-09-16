@@ -21,6 +21,13 @@ contracts:
   - behavioral
 tests:
   - packages/maistro-design/tests/test_workspace_system.py
+ac-modules:
+  AC-1: maistro_design.systems.importer
+  AC-2: maistro_design.systems.importer
+  AC-3: maistro_design.scan
+  AC-4: maistro_design.systems.importer
+  AC-5: maistro_design.systems.importer
+  AC-6: maistro_design.systems.importer
 layer: UserClient
 owners:
   - '@BlakeMatthews-dev'
@@ -104,38 +111,49 @@ the contract.
 Scenario: workspace is bundled at T1 like the other Tier-1 systems
   Given an empty DesignSystemRegistry
   When load_bundled(registry) is called
-  Then registry.get("workspace") is not None, trust_tier == T1, metadata.origin == "bundled"
-  And its design_md and tokens_css are non-empty and it exports more than 20 colour tokens
+  Then registry.get("workspace") is not None
+  And its trust_tier is T1 and metadata.origin is "bundled"
+  And its design_md and tokens_css are non-empty
+  And it exports more than 20 colour tokens
 
 @AC-2
 Scenario: the catalog index and manifest record first-party provenance
   Given catalog.json and bundled/workspace/manifest.json
-  Then the catalog entry has tier == "bundled", trust_tier == "t1", license == "Apache-2.0"
-  And source.repo == "Agent-StrongHold/Project-mAIstro" and manifest.source.type == "first-party"
+  When the workspace entry is read
+  Then the catalog entry has tier "bundled", trust_tier "t1" and license "Apache-2.0"
+  And its source.repo is "Agent-StrongHold/Project-mAIstro"
+  And manifest.source.type is "first-party"
 
 @AC-3
 Scenario: the essential files pass the import-time content scan
   Given manifest.json, DESIGN.md, tokens.css and design-tokens.json
   When scan_design_system_content(files) is called
-  Then report.passed is True and report.external_urls is empty
+  Then report.passed is True
+  And report.external_urls is empty
 
 @AC-4
 Scenario: the grammar is in the tokens
   Given tokens.css
-  Then :root declares --actor-human/agent/gate/system, the four --face-* tokens,
-       the three --undo-* tokens, --text-floor: 12px, and no --text-* size below 12px
+  When its :root block is read
+  Then it declares --actor-human, --actor-agent, --actor-gate and --actor-system
+  And it declares the four --face-* tokens and the three --undo-* tokens
+  And --text-floor is 12px and no --text-* size is below 12px
 
 @AC-5
 Scenario: a persona template rebinds only what a persona may
-  Given the slate and studio blocks (light and dark)
-  Then every token they declare is one of --bg, --surface, --bloom, --accent, --accent-on
-  And the dark scheme rebinds the actor quartet's lightness but not --text-floor or --focus-ring
+  Given the slate and studio blocks in light and dark
+  When the tokens each block declares are collected
+  Then every one of them is --bg, --surface, --bloom, --accent or --accent-on
+  And the dark scheme rebinds the actor quartet's lightness
+  And the dark scheme does not rebind --text-floor or --focus-ring
 
 @AC-6
 Scenario: design-tokens.json mirrors :root and the previews are static
   Given design-tokens.json, components.html and preview/home.html
+  When they are read
   Then the exported token names equal the names declared in :root
-  And neither preview contains a script element or a URL outside the font hosts
+  And neither preview contains a script element
+  And neither preview references a URL outside the font hosts
 ```
 
 ## Consequences
