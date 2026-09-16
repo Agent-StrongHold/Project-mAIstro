@@ -479,8 +479,8 @@
       "name": "matches_scope",
       "classname": null,
       "rank": "C",
-      "complexity": 20,
-      "rationale": "SPEC-262: see docs/specs/SPEC-262-memory-scope-policy-truth-table.md"
+      "complexity": 19,
+      "rationale": "SPEC-262: see docs/specs/SPEC-262-memory-scope-policy-truth-table.md; banked after develop composition repair"
     },
     {
       "key": "packages/maistro-core/src/maistro/orchestrator/master.py::MasterOrchestrator.load_plan",

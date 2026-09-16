@@ -1088,13 +1088,44 @@ def _occurrence(schedule_id: str = "sched-1", when: str = "2026-08-24T12:00:00+0
 
 async def test_a_second_run_for_one_occurrence_is_refused(spine: Any) -> None:
     store, workspace, project_id = spine
-    await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
+    first = await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
 
     with pytest.raises(DuplicateOccurrence) as caught:
         await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
 
     assert caught.value.schedule_id == "sched-1"
     assert caught.value.scheduled_for == "2026-08-24T12:00:00+00:00"
+    resolved = await store.get_run_for_occurrence(
+        caught.value.schedule_id, caught.value.scheduled_for
+    )
+    assert resolved is not None
+    assert resolved.run_id == first.run_id
+
+
+async def test_concurrent_occurrence_claims_converge_on_one_run(spine: Any) -> None:
+    """A replica race has one winner, and every loser can resolve that winner."""
+    store, workspace, project_id = spine
+    results = await asyncio.gather(
+        *(
+            store.create_run(_graph(workspace, project_id), provenance=_occurrence())
+            for _ in range(8)
+        ),
+        return_exceptions=True,
+    )
+
+    winners = [result for result in results if not isinstance(result, BaseException)]
+    duplicates = [result for result in results if isinstance(result, DuplicateOccurrence)]
+    unexpected = [
+        result
+        for result in results
+        if isinstance(result, BaseException) and not isinstance(result, DuplicateOccurrence)
+    ]
+    assert unexpected == []
+    assert len(winners) == 1
+    assert len(duplicates) == 7
+    resolved = await store.get_run_for_occurrence("sched-1", "2026-08-24T12:00:00+00:00")
+    assert resolved is not None
+    assert resolved.run_id == winners[0].run_id
 
 
 async def test_a_catch_up_fire_collides_with_the_on_time_one(spine: Any) -> None:

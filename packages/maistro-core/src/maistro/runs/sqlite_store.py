@@ -405,6 +405,17 @@ class SqliteRunStore:
         )
         return model_of_json(Run, row[0]) if row is not None else None
 
+    async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
+        """Resolve the unique occurrence claim without scanning Run payloads."""
+        row = await self._fetchone(
+            """SELECT payload FROM canonical_runs
+               WHERE json_extract(payload, '$.provenance.schedule_id') = ?
+                 AND json_extract(payload, '$.provenance.scheduled_for') = ?
+               LIMIT 1""",
+            (schedule_id, scheduled_for),
+        )
+        return model_of_json(Run, row[0]) if row is not None else None
+
     async def list_by_status(
         self,
         status: RunStatus,
@@ -556,6 +567,34 @@ class SqliteRunStore:
         )
         return await cursor.fetchone() is not None
 
+    async def _expired_purge_candidates(
+        self,
+        scope: RetentionScope,
+        cutoff: datetime,
+        limit: int,
+    ) -> list[tuple[str, Run]]:
+        doomed: list[tuple[str, Run]] = []
+        for run_id, run in await self._purge_candidates(scope, limit + 1):
+            if not is_purgeable(run, cutoff):
+                break
+            doomed.append((run_id, run))
+        return doomed
+
+    async def _purge_dependent_rows(self, run_id_param: str) -> tuple[int, int]:
+        continuations = 0
+        for table, sql in _PURGE_DEPENDENT_SQL.items():
+            if not await self._dependent_table_exists(table):
+                continue
+            cursor = await self._conn.execute(sql, (run_id_param,))
+            continuations += max(cursor.rowcount, 0)
+        retained = 0
+        for table, sql in _RETAINED_REFERENCE_SQL.items():
+            if not await self._dependent_table_exists(table):
+                continue
+            row = await (await self._conn.execute(sql, (run_id_param,))).fetchone()
+            retained += int(row[0]) if row is not None else 0
+        return continuations, retained
+
     async def purge_expired_runs(
         self,
         scope: RetentionScope,
@@ -578,18 +617,12 @@ class SqliteRunStore:
             raise ValueError("limit must be positive")
         cutoff = now if now is not None else datetime.now(UTC)
         async with self._write_lock:
-            doomed: list[tuple[str, Run]] = []
             # One more candidate than the batch, so the outcome can say
             # whether the scope drained or the batch ran out.
-            for run_id, run in await self._purge_candidates(scope, limit + 1):
-                if not is_purgeable(run, cutoff):
-                    break
-                doomed.append((run_id, run))
+            doomed = await self._expired_purge_candidates(scope, cutoff, limit)
             if not doomed:
                 return PurgeOutcome(scope=scope)
             purged = doomed[:limit]
-            if not purged:
-                return PurgeOutcome(scope=scope)
             # One json array parameter per statement: the id lists never
             # travel as interpolated SQL (see the statement constants above).
             run_id_param = json.dumps([run_id for run_id, _run in purged])
@@ -605,18 +638,7 @@ class SqliteRunStore:
             attempt_count = (await attempt_row.fetchone() or [0])[0]
             # Dependent evidence beyond the spine, in the same transaction:
             # owned resumable state deleted, retained provenance counted.
-            continuations = 0
-            for table, sql in _PURGE_DEPENDENT_SQL.items():
-                if not await self._dependent_table_exists(table):
-                    continue
-                cursor = await self._conn.execute(sql, (run_id_param,))
-                continuations += max(cursor.rowcount, 0)
-            retained = 0
-            for table, sql in _RETAINED_REFERENCE_SQL.items():
-                if not await self._dependent_table_exists(table):
-                    continue
-                row = await (await self._conn.execute(sql, (run_id_param,))).fetchone()
-                retained += int(row[0]) if row is not None else 0
+            continuations, retained = await self._purge_dependent_rows(run_id_param)
             await self._conn.execute(_DELETE_ATTEMPTS_SQL, (run_id_param,))
             await self._conn.execute(_DELETE_NODE_RUNS_SQL, (run_id_param,))
             await self._conn.execute(_DELETE_RUNS_SQL, (run_id_param,))
