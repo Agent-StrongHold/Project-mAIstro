@@ -7,13 +7,12 @@ status: Accepted
 created: 2026-05-29
 accepted: null
 implemented: null
-substrate:
-  - maistro-engine#ADR-058
-implements:
-  - maistro-engine#ADR-058
+substrate: []
+implements: []
 related:
   - maistro-engine#SPEC-008
   - maistro-engine#SPEC-181
+  - maistro-engine#ADR-058
 contracts:
   - boundary
   - behavioral
@@ -32,7 +31,7 @@ history:
 
 # SPEC-182: A2A delegation broker — implementation
 
-Implements [ADR-058](../adr/ADR-058-a2a-delegation-protocol.md). Builds on the delegation execution-bridge fix in PR #39 (`fix/agents-delegation`).
+Relates to [ADR-058](../adr/ADR-058-a2a-delegation-protocol.md), which remains Proposed; this spec does not treat that draft decision as shipped authority. Builds on the delegation execution-bridge fix in PR #39 (`fix/agents-delegation`).
 
 > **Implementation status (2026-07-02):** Phases 1-2 are implemented
 > (`a2a/__init__.py` export surface, lifecycle/log/metadata fixes,

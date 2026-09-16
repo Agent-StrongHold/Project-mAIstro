@@ -7,11 +7,11 @@ status: Accepted
 created: 2026-06-08
 accepted: 2026-06-08
 substrate:
-  - maistro-engine#ADR-079
   - maistro-engine#ADR-038
 implements: []
 related:
   - maistro-engine#SPEC-176
+  - maistro-engine#ADR-079
 contracts:
   - boundary
 tests:

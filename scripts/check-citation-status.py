@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -29,15 +30,45 @@ from maistro_registry.citations import (  # noqa: E402
     CitationBaseline,
     CitationProblem,
     check_citations,
+    check_governing_references,
 )
+from maistro_registry.schema import FrontMatter  # noqa: E402
 from maistro_registry.validator import validate_file  # noqa: E402
 
 LEDGER = ROOT / "quality" / "citation-baseline.json"
 DOC_ROOTS = (ROOT / "docs" / "adr", ROOT / "docs" / "specs")
+MATRIX = ROOT / "docs" / "architecture" / "CONVERGENCE-MATRIX.md"
+MATRIX_MARKER = "<!-- matrix:disposition -->"
+_DECISION_ID = re.compile(r"\b(?:ADR|SPEC)-[0-9][0-9A-Za-z-]*")
 
 
-def _corpus() -> list[object]:
-    front_matters = []
+def _without_parenthetical_text(text: str) -> str:
+    """Remove balanced historical notes without hiding later authorities."""
+    visible: list[str] = []
+    segment_start = 0
+    hidden_start: int | None = None
+    depth = 0
+    for index, character in enumerate(text):
+        if character == "(":
+            if depth == 0:
+                visible.append(text[segment_start:index])
+                hidden_start = index
+            depth += 1
+        elif character == ")" and depth:
+            depth -= 1
+            if depth == 0:
+                segment_start = index + 1
+    if depth:
+        # A malformed note is not allowed to hide a governing ID from the gate.
+        assert hidden_start is not None
+        visible.append(text[hidden_start:])
+    else:
+        visible.append(text[segment_start:])
+    return "".join(visible)
+
+
+def _corpus() -> list[FrontMatter]:
+    front_matters: list[FrontMatter] = []
     for root in DOC_ROOTS:
         for path in sorted(root.glob("*.md")):
             result = validate_file(path)
@@ -45,6 +76,58 @@ def _corpus() -> list[object]:
             if front_matter is not None:
                 front_matters.append(front_matter)
     return front_matters
+
+
+def _matrix_references(text: str) -> list[tuple[str, str, str]]:
+    """Read direct authorities from the matrix disposition table.
+
+    Parenthetical text is deliberately excluded: the matrix uses it for
+    historical notes such as ``(supersedes ADR-046)``, not for a live governing
+    relationship. The disposition gate owns table shape and existence; this
+    gate owns the status of each direct authority.
+    """
+    start = text.find(MATRIX_MARKER)
+    if start < 0:
+        return []
+
+    rows: list[list[str]] = []
+    in_table = False
+    for line in text[start:].splitlines():
+        if not line.lstrip().startswith("|"):
+            if in_table:
+                break
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if not cells:
+            continue
+        in_table = True
+        rows.append(cells)
+
+    if len(rows) < 3:
+        return []
+    try:
+        subsystem_column = rows[0].index("Subsystem")
+        governing_column = rows[0].index("Governing ADR/spec")
+    except ValueError:
+        return []
+
+    references: list[tuple[str, str, str]] = []
+    for row in rows[2:]:
+        if len(row) <= max(subsystem_column, governing_column):
+            continue
+        source = f"matrix#{row[subsystem_column]}"
+        direct_cell = _without_parenthetical_text(row[governing_column])
+        references.extend(
+            (source, "governing", f"maistro-engine#{identifier}")
+            for identifier in _DECISION_ID.findall(direct_cell)
+        )
+    return references
+
+
+def _matrix_problems(front_matters: list[FrontMatter]) -> list[CitationProblem]:
+    if not MATRIX.exists():
+        return []
+    return check_governing_references(_matrix_references(MATRIX.read_text()), front_matters)
 
 
 def _display(path: Path) -> str:
@@ -91,7 +174,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--update", action="store_true", help="bank the current state")
     args = parser.parse_args(argv)
 
-    problems = check_citations(_corpus())  # type: ignore[arg-type]
+    corpus = _corpus()
+    problems = [
+        *check_citations(corpus),
+        *_matrix_problems(corpus),
+    ]
 
     if args.update:
         _write_baseline(problems)

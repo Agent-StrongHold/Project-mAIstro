@@ -5,9 +5,8 @@ repo: maistro-engine
 kind: spec
 status: In Progress
 created: 2026-06-21
-substrate:
-  - maistro-engine#SPEC-205
-related: []
+substrate: []
+related: [maistro-engine#SPEC-205]
 implements: []
 supersedes:
   - maistro-engine#SPEC-070126-b2e4

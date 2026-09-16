@@ -8,15 +8,14 @@ created: 2026-06-15
 accepted: 2026-06-16
 implemented: 2026-07-04
 substrate:
-  - maistro-engine#ADR-061526-f383
-  - maistro-engine#SPEC-184
-  - maistro-engine#ADR-058
   - maistro-engine#ADR-062
-implements:
-  - maistro-engine#ADR-061526-f383
+implements: []
 related:
   - maistro-engine#ADR-083
   - maistro-engine#ADR-019
+  - maistro-engine#ADR-061526-f383
+  - maistro-engine#SPEC-184
+  - maistro-engine#ADR-058
 supersedes: []
 blocks: []
 blocked-by: []
@@ -53,11 +52,12 @@ history:
 
 # SPEC-208: Foreign harness adapter
 
-**Implements:** ADR-061526-f383. ADR-061526-f383 decides *that* maistro wraps foreign agent harnesses behind a
-`harness_runner` slot, can be wrapped the same way by other orchestrators, and adopts an
-import-wide/export-narrow posture for agent and skill formats. This spec defines *how*: the slot
-and protocol shapes, the safety wrapper, the import adapter catalog, the export artifact, and the
-hierarchical-orchestration wiring.
+**Decision context:** ADR-061526-f383 remains Proposed and is related context, not shipped authority.
+That draft decision describes *that* maistro wraps foreign agent harnesses behind a `harness_runner`
+slot, can be wrapped the same way by other orchestrators, and adopts an import-wide/export-narrow
+posture for agent and skill formats. This spec defines *how*: the slot and protocol shapes, the
+safety wrapper, the import adapter catalog, the export artifact, and the hierarchical-orchestration
+wiring.
 
 ---
 

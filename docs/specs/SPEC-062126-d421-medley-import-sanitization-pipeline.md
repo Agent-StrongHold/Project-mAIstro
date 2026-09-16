@@ -8,9 +8,7 @@ created: 2026-06-21
 substrate:
   - maistro-engine#ADR-072
   - maistro-engine#ADR-073
-  - maistro-engine#ADR-083
-implements:
-  - maistro-engine#ADR-083
+implements: []
 related:
   - maistro-engine#SPEC-005
   - maistro-engine#ADR-050
@@ -18,6 +16,7 @@ related:
   - maistro-engine#ADR-070
   - maistro-engine#ADR-074
   - maistro-engine#ADR-093
+  - maistro-engine#ADR-083
 supersedes: []
 blocks: []
 blocked-by: []
