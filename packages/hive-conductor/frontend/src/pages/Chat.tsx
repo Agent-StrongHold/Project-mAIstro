@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
+import { randomId } from "../lib/ids";
 
 type Role = "user" | "assistant";
 type StepStatus = "running" | "done" | "error";
@@ -39,7 +40,10 @@ const SUGGESTED_PROMPTS = [
 const HISTORY_LIMIT = 20;
 
 function generateId() {
-  return Math.random().toString(36).slice(2, 10);
+  // Ids name messages and sessions that later requests refer back to, so
+  // they come from the CSPRNG rather than Math.random -- via `randomId`,
+  // which works over plain HTTP too (see lib/ids.ts).
+  return randomId();
 }
 
 function formatTime(date: Date) {
