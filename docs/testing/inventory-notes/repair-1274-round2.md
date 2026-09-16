@@ -10,3 +10,7 @@ organization-bound. The production visibility rule intentionally refuses an
 organization-bound GLOBAL memory without tenant context; the old generator
 created one and then queried it without that context, making the property
 contradict its own isolation contract. No test surface was added or removed.
+
+The same repair also exposes `RetentionScope` as a module-level alias that the
+cross-package import gate can resolve. The Python 3.12 `type` statement created
+a valid typing alias but was invisible to the repository's AST inventory.
