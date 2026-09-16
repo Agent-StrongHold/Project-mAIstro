@@ -30,7 +30,15 @@ class DurableRunStore(Protocol):
         project_id: str | None = None,
         workspace_id: str | None = None,
         admission_source: str | None = None,
-    ) -> list[DurableRunRecord]: ...
+        after: tuple[str, str] | None = None,
+    ) -> list[DurableRunRecord]:
+        """Records in ``status``, oldest-created-first.
+
+        ``after`` is a ``(created_at_iso, run_id)`` keyset cursor. Bounded
+        fair scans (#1056, #1109) page through it instead of re-reading the
+        same fixed prefix every tick.
+        """
+        ...
 
     async def list_due(
         self,
@@ -38,9 +46,13 @@ class DurableRunStore(Protocol):
         now: datetime,
         limit: int = 100,
         admission_source: str | None = None,
-        after: tuple[datetime, str] | None = None,
+        after: tuple[str, str] | None = None,
     ) -> list[DurableRunRecord]:
-        """Return due continuations after applying indexed ownership filtering."""
+        """Return persisted graph continuations whose timed resume is due.
+
+        ``after`` is a ``(resume_at_iso, run_id)`` keyset cursor over the same
+        deadline-then-run_id order the due index uses (#1098).
+        """
         ...
 
     async def list_hitl_due(self, *, now: datetime, limit: int = 100) -> list[DurableRunRecord]:

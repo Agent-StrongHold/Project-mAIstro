@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +11
+  packages/maistro-core/tests: +13
 ---
 # 1098-recovery-ownership-fairness
 

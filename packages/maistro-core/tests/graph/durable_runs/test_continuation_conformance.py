@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 import aiosqlite
@@ -257,6 +257,71 @@ async def test_due_deadline_query_agrees_across_backends(store: GraphContinuatio
     ) == ["run-paused"]
 
 
+async def test_status_listing_pages_forward_with_an_advancing_cursor(
+    store: GraphContinuationStore,
+) -> None:
+    """The keyset cursor #1056/#1109 rely on: paging with ``after`` walks
+    strictly forward past what has already been read, on every backend, so a
+    bounded fair scan can advance past an ineligible prefix of any length
+    instead of re-reading the same fixed page forever."""
+    for i in range(5):
+        await store.create(_continuation(f"run-{i}", status=RunStatus.PAUSED, minutes=i))
+
+    first_page = await store.list_run_ids_by_status(RunStatus.PAUSED, limit=2)
+    assert first_page == ["run-0", "run-1"]
+
+    cursor = (
+        (await store.get("run-1")).created_at.isoformat(),  # type: ignore[union-attr]
+        "run-1",
+    )
+    second_page = await store.list_run_ids_by_status(RunStatus.PAUSED, limit=2, after=cursor)
+    assert second_page == ["run-2", "run-3"]
+
+    cursor = (
+        (await store.get("run-3")).created_at.isoformat(),  # type: ignore[union-attr]
+        "run-3",
+    )
+    third_page = await store.list_run_ids_by_status(RunStatus.PAUSED, limit=2, after=cursor)
+    assert third_page == ["run-4"]
+
+    # Past the end, the cursor returns nothing rather than wrapping around.
+    cursor = (
+        (await store.get("run-4")).created_at.isoformat(),  # type: ignore[union-attr]
+        "run-4",
+    )
+    assert await store.list_run_ids_by_status(RunStatus.PAUSED, limit=2, after=cursor) == []
+
+
+async def test_due_listing_pages_forward_with_an_advancing_cursor(
+    store: GraphContinuationStore,
+) -> None:
+    """The due-index twin of the status-listing cursor test, on the
+    ``resume_at``-then-``run_id`` order #1098's fair scan walks."""
+    now = datetime(2026, 8, 29, 12, tzinfo=UTC)
+    for i in range(5):
+        await store.create(
+            _continuation(
+                f"due-{i}",
+                status=RunStatus.WAITING,
+                resume_at=now - timedelta(seconds=5 - i),
+            )
+        )
+
+    first_page = await store.list_due_run_ids(now=now, limit=2)
+    assert first_page == ["due-0", "due-1"]
+
+    second_record = await store.get("due-1")
+    assert second_record is not None and second_record.resume_at is not None
+    cursor = (second_record.resume_at.isoformat(), "due-1")
+    second_page = await store.list_due_run_ids(now=now, limit=2, after=cursor)
+    assert second_page == ["due-2", "due-3"]
+
+    last_record = await store.get("due-4")
+    assert last_record is not None and last_record.resume_at is not None
+    cursor = (last_record.resume_at.isoformat(), "due-4")
+    assert await store.list_due_run_ids(now=now, limit=2, after=cursor) == []
+
+
 async def test_sqlite_pre_index_hitl_pause_is_backfilled(tmp_path: Any) -> None:
     now = datetime(2026, 8, 29, 12, tzinfo=UTC)
     deadline = now - timedelta(seconds=1)
@@ -357,3 +422,35 @@ async def test_a_delete_removes_the_continuation_and_reports_what_it_removed(
     assert await store.get("run-1") is None
     assert await store.delete("run-1") is False
     assert await store.delete("never-created") is False
+
+
+async def test_due_cursor_pages_by_instant_not_by_printed_offset(
+    store: GraphContinuationStore,
+) -> None:
+    """A cursor must order by the instant, whatever offset the row printed.
+
+    `resume_at` is whatever the pausing node computed, and nothing requires it
+    to be UTC. `01:00+01:00` is the *earlier* instant than `00:30+00:00` and
+    sorts before it as a datetime, but its ISO string sorts after -- so a
+    backend that orders by datetime and then pages by comparing strings
+    excludes the later row from every subsequent page, permanently. That is
+    the starvation the keyset cursor exists to remove, reintroduced by a
+    formatting detail.
+
+    PostgreSQL never had this: it parses the cursor back to a timestamptz and
+    compares instants. Memory and SQLite compare the strings, so this is the
+    case where the three backends silently disagreed.
+    """
+    earlier = datetime(2026, 8, 29, 1, 0, tzinfo=timezone(timedelta(hours=1)))
+    later = datetime(2026, 8, 29, 0, 30, tzinfo=UTC)
+    assert earlier < later
+    assert earlier.isoformat() > later.isoformat()  # the trap, stated outright
+
+    await store.create(_continuation("offset-earlier", status=RunStatus.WAITING, resume_at=earlier))
+    await store.create(_continuation("offset-later", status=RunStatus.WAITING, resume_at=later))
+
+    now = datetime(2026, 8, 29, 12, tzinfo=UTC)
+    assert await store.list_due_run_ids(now=now, limit=10) == ["offset-earlier", "offset-later"]
+
+    cursor = (earlier.astimezone(UTC).isoformat(), "offset-earlier")
+    assert await store.list_due_run_ids(now=now, limit=10, after=cursor) == ["offset-later"]
