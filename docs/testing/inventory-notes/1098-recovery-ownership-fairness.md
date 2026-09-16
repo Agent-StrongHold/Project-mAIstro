@@ -1,16 +1,21 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +11
+  packages/maistro-core/tests: 0
 ---
 # 1098-recovery-ownership-fairness
 
-Eight collected regression tests cover durable Graph queued and due recovery
-with a foreign prefix larger than `limit`, assert the owner/admission-source
-predicate reaches persistence before the bounded query limit, and exercise the
-owner-filtered due query across memory, SQLite, and PostgreSQL contracts.
-The repair also covers exclusive due cursors, upgrades a pre-ownership
-SQLite run schema while retaining its admission provenance, and exercises both
-optional PostgreSQL purge-evidence table branches.
+Rebased onto the develop tip's `#1275` keyset-cursor shape for the same issue:
+the owner/admission-source predicate reaches persistence as a provenance
+filter applied before the bounded query limit, and the regression coverage
+asserts an owner-scoped `list_by_status` returns only runs admitted by that
+owner — oldest-first, before `limit`, across store implementations.
 
-The `tests/` correction records the pre-existing eight-node drift present at
-this round's develop tip; no root tests were removed by this repair.
+Branch content implementing the superseded durable-column mechanism
+(`admission_source` columns, owner indexes, migration `033`, and the
+continuation-store owner filter) was dropped in favour of develop's
+payload-provenance filtering; the run-level owner filter this note records is
+the surviving, develop-compatible intent.
+
+The surviving change adds intra-test assertions only — no collected test
+identities are added or removed relative to the develop tip, so the recorded
+delta is zero. No root tests were removed by this repair.
