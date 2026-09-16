@@ -309,6 +309,25 @@ class TestScopeIsCheckedBeforeDispatch:
         assert result.status == "failed"
         assert delegator.dispatched == []
 
+    async def test_a_missing_parent_node_run_is_refused_before_dispatch(self) -> None:
+        """A child without its admitting NodeRun would lose physical provenance."""
+        store, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        delegator = _recording_delegator()
+        node = AgentDelegateRemoteNode(a2a_delegator=delegator, run_store=store)
+
+        result = await node.run(
+            {"from_agent": "planner", "task": "x", "to_agent": "researcher"},
+            _ctx(run_id=parent.run_id),
+        )
+
+        assert result.status == "failed"
+        assert result.error_code == RunIntegrityError.__name__
+        assert "node_run_id" in (result.error_message or "")
+        assert delegator.dispatched == []
+
     async def test_a_delegation_in_the_parents_own_scope_still_dispatches(self) -> None:
         """The pre-flight must not become a refusal of the ordinary case."""
         store, project = await _spine()
@@ -333,10 +352,11 @@ class TestWhatTheChildRecords:
             persona_id="persona-7",
             actor_principal_id="user-42",
         )
+        node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
         node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=store)
         result = await node.run(
             {"from_agent": "planner", "task": "x", "to_agent": "researcher"},
-            _ctx(run_id=parent.run_id),
+            _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id),
         )
 
         child = await store.get_run(result.metadata["run_id"])
@@ -353,11 +373,12 @@ class TestWhatTheChildRecords:
         parent = await store.create_run(
             _graph(workspace_id="workspace-1", project_id=project.project_id)
         )
+        node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
         node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=store)
 
         result = await node.run(
             {"from_agent": "planner", "task": "x"},
-            _ctx(run_id=parent.run_id),
+            _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id),
         )
 
         child = await store.get_run(result.metadata["run_id"])
@@ -384,6 +405,7 @@ class TestWhatTheChildRecords:
         parent = await store.create_run(
             _graph(workspace_id="workspace-1", project_id=project.project_id)
         )
+        node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
         node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=store)
 
         result = await node.run(
@@ -398,7 +420,7 @@ class TestWhatTheChildRecords:
                     "nodes": [{"node_id": "summarise", "node_type": "llm.summarize"}],
                 },
             },
-            _ctx(run_id=parent.run_id),
+            _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id),
         )
 
         child = await store.get_run(result.metadata["run_id"])

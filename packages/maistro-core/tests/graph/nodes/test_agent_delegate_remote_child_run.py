@@ -142,11 +142,12 @@ class TestDelegationFilesAChildRun:
         parent = await store.create_run(
             _graph(workspace_id="workspace-1", project_id=project.project_id)
         )
+        parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
 
         node = AgentDelegateRemoteNode(a2a_delegator=A2ADelegator(), run_store=store)
         result = await node.run(
             {"from_agent": "planner", "task": "x"},
-            _ctx(run_id=parent.run_id),
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
         )
 
         assert result.status == "completed"

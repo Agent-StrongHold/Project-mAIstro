@@ -444,7 +444,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         if self._run_store is None:
             return None
 
-        from maistro.runs.store import validate_child_scope
+        from maistro.runs.store import RunIntegrityError, validate_child_scope
 
         parent = await self._run_store.get_run(ctx.run_id)
         if parent is None:
@@ -460,6 +460,20 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             workspace_id=inputs.to_workspace_id or parent.workspace_id,
             project_id=inputs.to_project_id or parent.project_id,
         )
+
+        # A remote delegation is a child of the physical NodeRun that admitted
+        # it, not merely of the containing Run. Refuse an incomplete context
+        # before the A2A transport creates work we cannot correlate.
+        if not ctx.node_run_id:
+            raise RunIntegrityError(
+                "agent.delegate_remote requires node_run_id to create a correlated child Run"
+            )
+        parent_node_run = await self._run_store.get_node_run(ctx.node_run_id)
+        if parent_node_run is None or parent_node_run.run_id != parent.run_id:
+            raise RunIntegrityError(
+                f"parent_node_run_id {ctx.node_run_id!r} does not belong to parent_run_id "
+                f"{parent.run_id!r}"
+            )
         return parent
 
     async def _create_child_run(
@@ -506,7 +520,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         child = await self._run_store.create_run(
             graph,
             parent_run_id=ctx.run_id,
-            parent_node_run_id=ctx.node_run_id or None,
+            parent_node_run_id=ctx.node_run_id,
             persona_id=parent.persona_id,
             actor_principal_id=parent.actor_principal_id,
             provenance={
