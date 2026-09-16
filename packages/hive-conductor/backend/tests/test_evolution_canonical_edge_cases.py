@@ -7,13 +7,21 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 from routes.evolution import _actor_principal_id, trigger_cycle
-from services.evolution import _EvolutionService
+from services.evolution import (
+    CanonicalEvolutionRunError,
+    EvolutionUnavailableError,
+    _EvolutionService,
+)
 from services.evolution_graph import (
+    CanonicalExecutionUnavailable,
     _append_execution_ref,
     _BattleInput,
+    _engine_container,
     _published_evaluation_ref,
     _TournamentWork,
+    canonical_execution_owner,
 )
 
 from maistro.graph.nodes.base import NodeContext
@@ -54,13 +62,187 @@ def test_actor_provenance_and_cycle_run_id_projection(monkeypatch: pytest.Monkey
     assert captured["actor_principal_id"] == "user-1"
 
 
-def test_run_one_cycle_rejects_half_initialized_domain_state() -> None:
+def test_stub_engine_is_domain_state_only_and_bridge_degradation_is_not_executable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.engine as engine_module
+
+    degraded_engine = SimpleNamespace(agent_port=SimpleNamespace(container=None))
+    monkeypatch.setattr(engine_module, "get_engine", lambda: degraded_engine)
+    service = _EvolutionService()
+    out = service.status()
+    assert out["running"] is False
+    assert out["execution_available"] is False
+    assert out["availability"] == "degraded"
+    assert out["domain_state_only"] is True
+
+
+def test_run_one_cycle_rejects_half_initialized_domain_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.evolution_graph as evolution_graph
+
+    owner = SimpleNamespace(
+        run_store=object(), graph_run_store=object(), project_scope_store=object()
+    )
+    monkeypatch.setattr(
+        evolution_graph, "canonical_execution_owner", lambda *_args, **_kwargs: owner
+    )
     service = _EvolutionService()
     service._population = SimpleNamespace()
     service._tournament = None
 
     with pytest.raises(RuntimeError, match="population is not initialized"):
         asyncio.run(service._run_one_cycle())
+
+
+def test_cycle_route_when_service_is_not_started_is_explicitly_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.evolution as evolution_service
+
+    def _not_started() -> Any:
+        from services.evolution import EvolutionServiceNotStarted
+
+        raise EvolutionServiceNotStarted("EvolutionService not started")
+
+    monkeypatch.setattr(evolution_service, "get_evolution_service", _not_started)
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(trigger_cycle(SimpleNamespace(state=SimpleNamespace())))
+
+    assert caught.value.status_code == 503
+    assert caught.value.detail == {
+        "code": "evolution_unavailable",
+        "availability": "unavailable",
+        "message": "EvolutionService not started",
+    }
+
+
+def test_stub_cycle_route_returns_explicit_availability_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.engine as engine_module
+    import services.evolution as evolution_service
+    from adapters.maistro_core import StubAgentPort
+
+    degraded_engine = SimpleNamespace(agent_port=StubAgentPort())
+    monkeypatch.setattr(engine_module, "get_engine", lambda: degraded_engine)
+    service = _EvolutionService()
+    monkeypatch.setattr(evolution_service, "get_evolution_service", lambda: service)
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(trigger_cycle(SimpleNamespace(state=SimpleNamespace())))
+
+    assert caught.value.status_code == 503
+    assert caught.value.detail["code"] == "evolution_unavailable"
+    assert caught.value.detail["availability"] == "degraded"
+    assert "no Container" in caught.value.detail["message"]
+
+
+def test_unavailable_cycle_is_distinguishable_from_execution_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Unavailable:
+        async def _run_one_cycle(self, **_: Any) -> str:
+            raise EvolutionUnavailableError(
+                "canonical engine Container is unavailable", availability="degraded"
+            )
+
+    import services.evolution as evolution_service
+
+    monkeypatch.setattr(evolution_service, "get_evolution_service", lambda: _Unavailable())
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(trigger_cycle(SimpleNamespace(state=SimpleNamespace())))
+    assert caught.value.status_code == 503
+    assert caught.value.detail == {
+        "code": "evolution_unavailable",
+        "availability": "degraded",
+        "message": "canonical engine Container is unavailable",
+    }
+
+
+@pytest.mark.parametrize(
+    ("status", "diagnostic"),
+    [
+        ("failed", "evaluation failed"),
+        ("cancelled", "battle cancelled"),
+        ("timed_out", "finalization timed out"),
+    ],
+)
+def test_canonical_run_failure_projects_identity_status_and_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+    diagnostic: str,
+) -> None:
+    class _Failed:
+        cycle_count = 0
+
+        async def _run_one_cycle(self, **_: Any) -> str:
+            from maistro.runs.model import RunStatus
+
+            raise CanonicalEvolutionRunError(
+                run_id="canonical-failed-run",
+                status=RunStatus(status),
+                diagnostic=diagnostic,
+            )
+
+    import services.evolution as evolution_service
+
+    monkeypatch.setattr(evolution_service, "get_evolution_service", lambda: _Failed())
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(trigger_cycle(SimpleNamespace(state=SimpleNamespace())))
+    assert caught.value.status_code == 500
+    assert caught.value.detail == {
+        "code": "canonical_run_failed",
+        "run_id": "canonical-failed-run",
+        "status": status,
+        "diagnostic": diagnostic,
+        "message": f"Evolution cycle canonical Run canonical-failed-run did not complete: {diagnostic}",
+    }
+
+
+def test_canonical_owner_reports_engine_not_started(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.engine as engine_module
+
+    def _not_started() -> Any:
+        raise RuntimeError("EngineService not started")
+
+    monkeypatch.setattr(engine_module, "get_engine", _not_started)
+    with pytest.raises(CanonicalExecutionUnavailable, match="engine is not started"):
+        canonical_execution_owner()
+
+
+def test_canonical_owner_uses_legacy_engine_port_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner = SimpleNamespace(
+        run_store=object(), graph_run_store=object(), project_scope_store=object()
+    )
+    engine = SimpleNamespace(agent_port=None, _agent_port=SimpleNamespace(container=owner))
+
+    import services.engine as engine_module
+
+    monkeypatch.setattr(engine_module, "get_engine", lambda: engine)
+    assert canonical_execution_owner() is owner
+
+
+def test_canonical_owner_rejects_incomplete_execution_spine() -> None:
+    owner = SimpleNamespace(run_store=object(), graph_run_store=None, project_scope_store=object())
+
+    with pytest.raises(CanonicalExecutionUnavailable, match="missing graph_run_store"):
+        canonical_execution_owner(owner)
+
+
+def test_engine_container_wrapper_uses_canonical_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.evolution_graph as evolution_graph
+
+    owner = object()
+    monkeypatch.setattr(evolution_graph, "canonical_execution_owner", lambda: owner)
+    assert _engine_container() is owner
 
 
 def test_execution_refs_ignore_malformed_history_and_do_not_duplicate_attempts() -> None:
