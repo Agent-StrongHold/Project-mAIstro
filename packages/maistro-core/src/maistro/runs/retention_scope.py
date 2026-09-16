@@ -89,7 +89,10 @@ class GlobalRetentionScope:
             raise ValueError("authorized_by must name the principal that authorized a global purge")
 
 
-type RetentionScope = WorkspaceRetentionScope | GlobalRetentionScope
+# Plain assignment, not a PEP 695 `type` statement: the cross-package-imports
+# AST gate cannot see `type` aliases, and the durable backends import this
+# name across packages (#1489; same lesson as the #1274 lint-gate repair).
+RetentionScope = WorkspaceRetentionScope | GlobalRetentionScope
 
 
 def run_in_purge_scope(run: Run, scope: RetentionScope) -> bool:
