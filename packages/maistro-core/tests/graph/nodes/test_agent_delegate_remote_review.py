@@ -14,14 +14,16 @@ from __future__ import annotations
 
 from typing import Any
 
+import httpx
 import pytest
 
 from maistro.a2a.delegate import A2ADelegator
-from maistro.a2a.guest_peers import DelegationResult, GuestPeerManager
+from maistro.a2a.guest_peers import GuestPeerManager, PeerTrust
 from maistro.graph import Graph, Node
 from maistro.graph.nodes import NodeContext
 from maistro.graph.nodes import agent_delegate_remote as delegate_module
 from maistro.graph.nodes.agent_delegate_remote import AgentDelegateRemoteNode
+from maistro.http import set_test_transport
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore, RunIntegrityError, RunStatus
 
@@ -580,22 +582,26 @@ class TestWhatTheChildRecords:
         assert graph.project_id == parent.project_id
 
 
-class _RecoveringGuestPeers(GuestPeerManager):
-    def __init__(self) -> None:
-        super().__init__()
-        self.delegate_calls = 0
-        self.reconcile_calls = 0
-
-    async def delegate(self, *args: Any, **kwargs: Any) -> DelegationResult:
-        self.delegate_calls += 1
-        return DelegationResult("remote-1", "hub", "submitted")
-
-    async def reconcile(self, peer_name: str, idempotency_key: str) -> DelegationResult:
-        self.reconcile_calls += 1
-        return DelegationResult("remote-1", peer_name, "submitted")
-
-
 async def test_guest_peer_recovery_reconciles_without_a_second_post() -> None:
+    calls = {"post": 0, "get": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            calls["post"] += 1
+            assert request.headers["idempotency-key"]
+            return httpx.Response(200, json={"task_id": "remote-1"})
+        if request.method == "GET":
+            calls["get"] += 1
+            assert "/a2a/tasks/by-idempotency-key/" in str(request.url)
+            return httpx.Response(200, json={"task_id": "remote-1"})
+        return httpx.Response(405)
+
+    set_test_transport(httpx.MockTransport(handler))
+    peer = PeerTrust(
+        peer_url="http://hub",
+        peer_name="hub",
+        supports_idempotency=True,
+    )
     project_store = InMemoryProjectScopeStore()
     root = await project_store.create_root("workspace-1")
     project = await project_store.create(
@@ -606,15 +612,23 @@ async def test_guest_peer_recovery_reconciles_without_a_second_post() -> None:
         _graph(workspace_id="workspace-1", project_id=project.project_id)
     )
     node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
-    peers = _RecoveringGuestPeers()
-    node = AgentDelegateRemoteNode(guest_peers=peers, run_store=store)
+
+    first_peers = GuestPeerManager()
+    first_peers.register_peer(peer)
+    first_node = AgentDelegateRemoteNode(guest_peers=first_peers, run_store=store)
     inputs = {"from_agent": "planner", "task": "x", "peer_name": "hub"}
     ctx = _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id)
 
-    first = await node.run(inputs, ctx)
+    first = await first_node.run(inputs, ctx)
     assert first.status == "failed"
-    second = await node.run(inputs, ctx)
+
+    # A restarted replica has no process-local receipt cache. It must use the
+    # peer's reconciliation endpoint instead of issuing a second POST.
+    second_peers = GuestPeerManager()
+    second_peers.register_peer(peer)
+    second_node = AgentDelegateRemoteNode(guest_peers=second_peers, run_store=store)
+    second = await second_node.run(inputs, ctx)
+
     assert second.status == "paused"
-    assert peers.delegate_calls == 1
-    assert peers.reconcile_calls == 1
+    assert calls == {"post": 1, "get": 1}
     assert (await store.get_run(second.metadata["run_id"])).provenance["a2a_task_id"] == "remote-1"
