@@ -42,6 +42,7 @@ which requires an already-merged `quality/ratchet-authorizations.json` grant;
 #734 defers reachability bookkeeping to #49, so the adapter joins the module
 whose private dispatch helpers (`_build_prompt`,
 `_DEFAULT_EXECUTIONS_PER_NODE`) it already shares. The canonical adapter stays public as
-`maistro.builders.CanonicalGraphPipelineExecutor`; the old parity oracle is
-private (`_LegacyGraphPipelineExecutor`) and is not exported from
-`maistro.builders`. The cross-product parity probe tracks the new location.
+`maistro.builders.CanonicalGraphPipelineExecutor`. The pre-convergence
+private executor and its dedicated parity tests were removed by the trunk
+exact-debt sweep (see `trunk-vulture-sweep.md`); the behavioral coverage that
+mattered now lives in `test_canonical_execution.py` directly.
