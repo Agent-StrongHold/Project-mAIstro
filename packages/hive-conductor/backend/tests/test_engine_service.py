@@ -558,6 +558,30 @@ async def test_iter_task_events_returns_when_task_disappears() -> None:
     assert events == []
 
 
+def test_graph_execution_is_unavailable_without_both_canonical_stores() -> None:
+    from services.engine import EngineService
+
+    svc = EngineService()
+    assert svc.graph_execution_available is False
+
+    class _Container:
+        run_store = object()
+        graph_run_store = object()
+
+    class _Bridge:
+        container = _Container()
+
+    svc._agent_port = _Bridge()
+    assert svc.graph_execution_available is True
+
+    class _IncompleteContainer:
+        run_store = object()
+        graph_run_store = None
+
+    svc._agent_port = type("_IncompleteBridge", (), {"container": _IncompleteContainer()})()
+    assert svc.graph_execution_available is False
+
+
 async def test_schedule_admitter_is_none_without_a_bridge() -> None:
     """No `_agent_port` at all (unconfigured), like `episodic_store`'s stub case."""
     from services.engine import EngineService

@@ -545,12 +545,19 @@ class TestTheChatProducerDrivenEndToEnd:
 
     @staticmethod
     def _install(monkeypatch: Any, store: Any, *, events_fail: bool, exec_fails: bool) -> None:
+        import services.canonical_dag_runner as canonical_runner_module
         import services.dag_run_store as run_store_module
         import services.graph_runner as graph_runner_module
         import stores
 
         stores.dags["d-1"] = {"id": "d-1", "nodes": [], "edges": []}
         monkeypatch.setattr(run_store_module, "get_dag_run_store", lambda: store)
+
+        async def _scope(*args: Any, **kwargs: Any) -> tuple[str, str]:
+            del args, kwargs
+            return "workspace-test", "project-test"
+
+        monkeypatch.setattr(canonical_runner_module, "resolve_execution_scope", _scope)
 
         async def _execute(dag_data: Any, **kwargs: Any) -> dict[str, Any]:
             if exec_fails:
