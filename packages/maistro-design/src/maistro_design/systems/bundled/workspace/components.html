@@ -1,0 +1,572 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Workspace — kit</title>
+<!-- Generated from tokens.css. Every control the room is built from. The picker at bottom-right flips persona and scheme with CSS only. -->
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+/* ===== tokens.css, with persona/scheme selectors rewritten to the preview's radio picker (no scripts) ===== */
+/* ─────────────────────────────────────────────────────────────────────────
+ * design-systems/workspace/tokens.css
+ *
+ * Structured token bindings for "Workspace" — the first-party design
+ * system for the Workspace product surface (Home, Attention, the
+ * provenance timeline, session restore, sharing). This is the
+ * machine-readable form of DESIGN.md. Agents and the Conductor frontend
+ * paste the `:root { … }` block verbatim, then reference tokens via
+ * `var(--name)`.
+ *
+ * Four layers, top to bottom:
+ *   1. The shared Open Design schema (--bg / --surface / --fg / --muted /
+ *      --border / --accent / --success / --warn / --danger, fonts, type
+ *      scale, spacing, radius, elevation, focus, motion, layout). Same
+ *      names as every other bundled system, so a component written for
+ *      `default` resolves here unchanged.
+ *   2. Workspace extensions — the vocabulary the shared schema has no
+ *      word for: glass surfaces over a colour bloom, the four actor
+ *      colours ("who decided this"), the four state faces, the undo
+ *      outcomes, the two type registers and the 12px floor.
+ *   3. Scheme — light (the `:root` default) and dark. Rebinds ink, glass
+ *      and the actor colours' lightness. Meaning never changes.
+ *   4. Persona templates — greenhouse (the default), slate, studio. A
+ *      persona sets ONLY the field, the bloom, the accent and the accent's
+ *      text colour. A user-customised persona sets the same four; nothing
+ *      else is theirs to set (see §Customising below).
+ *
+ * `:root` alone is greenhouse-light. `data-scheme="dark"` and
+ * `data-theme="slate|studio"` on <html> rebind on top of it.
+ * ─────────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* ─── 1. Shared schema ──────────────────────────────────────────────── */
+
+  /* Surface. `--bg` is the field the bloom sits on; `--surface` is the
+   * opaque fallback for a glass panel (the value a renderer without
+   * backdrop-filter shows); `--surface-warm` is a well — the inset a
+   * why-panel or text field sits in. */
+  --bg: #eff4ec;
+  --surface: #f7faf5;
+  --surface-warm: #ffffff;
+
+  /* Foreground ramp. Ink is blue-black, never pure black. `--muted`
+   * carries every secondary line; `--meta` is the machine register. */
+  --fg: #161b26;
+  --fg-2: #333b4c;
+  --muted: #5a6376;
+  --meta: #7c8597;
+
+  /* Border. `--border` is a panel edge; `--border-soft` a row rule. */
+  --border: rgba(255, 255, 255, 0.85);
+  --border-soft: rgba(20, 30, 50, 0.08);
+
+  /* Accent — the persona's colour. Greenhouse is fern. One primary
+   * action per view wears it; links wear it; nothing decorative does. */
+  --accent: #2f7d4f;
+  --accent-on: #ffffff;
+  --accent-hover: color-mix(in oklab, var(--accent), black 8%);
+  --accent-active: color-mix(in oklab, var(--accent), black 14%);
+  --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+
+  /* Semantic — state, never decoration. */
+  --success: #1d7a62;
+  --warn: #8a5a12;
+  --danger: #b42318;
+  --success-soft: color-mix(in srgb, var(--success) 14%, transparent);
+  --warn-soft: color-mix(in srgb, var(--warn) 16%, transparent);
+  --danger-soft: color-mix(in srgb, var(--danger) 14%, transparent);
+
+  /* Typography. One reading face for everything from the greeting to a
+   * caption — Bricolage Grotesque's optical-size axis does the work
+   * (opsz 96 for the greeting, 14 for text). One mono face for the
+   * machine register only: ids, hashes, key=value, seq numbers. Never
+   * mono for labels, buttons, ages or kickers. */
+  --font-display: "Bricolage Grotesque", system-ui, sans-serif;
+  --font-body: "Bricolage Grotesque", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+
+  /* Type scale (px). `--text-xs` IS the floor: nothing renders smaller. */
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 15px;
+  --text-lg: 16px;
+  --text-xl: 18px;
+  --text-2xl: 24px;
+  --text-3xl: 38px;
+  --text-4xl: 38px;   /* schema slot; Workspace has no hero size beyond the greeting */
+
+  --leading-body: 1.5;
+  --leading-tight: 1.05;
+  --tracking-display: -0.02em;
+
+  /* Spacing — 4px base. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+
+  --section-y-desktop: 36px;
+  --section-y-tablet: 28px;
+  --section-y-phone: 20px;
+
+  /* Radius — controls 12, panels 20, pills for badges/filters/avatars. */
+  --radius-sm: 12px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-pill: 9999px;
+
+  /* Elevation — a glass panel is lifted by its blur and a long soft
+   * shadow, not by a hard drop. Ring is the no-blur fallback edge. */
+  --elev-flat: none;
+  --elev-ring: 0 0 0 1px var(--border);
+  --elev-raised: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 18px 50px rgba(40, 50, 80, 0.12);
+
+  /* Focus — one ring, everywhere, in the accent. */
+  --focus-ring: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
+
+  /* Motion — short and stable. Nothing bounces, pulses or breathes. */
+  --motion-fast: 150ms;
+  --motion-base: 200ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+
+  /* Layout — breathes at 1440, does not drown at 390. */
+  --container-max: 1280px;
+  --container-gutter-desktop: 40px;
+  --container-gutter-tablet: 20px;
+  --container-gutter-phone: 16px;
+
+  /* ─── 2. Workspace extensions ──────────────────────────────────────── */
+
+  /* Glass. Panels are translucent white over the bloom; the bar is the
+   * sticky header; a well is a dark or white inset for typing/reading. */
+  --glass: rgba(255, 255, 255, 0.58);
+  --glass-2: rgba(255, 255, 255, 0.82);
+  --edge: var(--border);
+  --hair: var(--border-soft);
+  --well: rgba(255, 255, 255, 0.70);
+  --bar: rgba(255, 255, 255, 0.55);
+  --blur: 18px;
+  --glow: none;
+
+  /* The bloom — the persona's atmosphere, painted on <body>. Greenhouse:
+   * fern, moss, a hint of rose. */
+  --field: var(--bg);
+  --bloom:
+    radial-gradient(1000px 700px at 8% 0%, rgba(140, 200, 150, 0.48), transparent 62%),
+    radial-gradient(900px 700px at 96% 12%, rgba(215, 225, 150, 0.40), transparent 60%),
+    radial-gradient(1100px 800px at 50% 65%, rgba(190, 220, 195, 0.35), transparent 65%),
+    radial-gradient(700px 500px at 90% 100%, rgba(240, 190, 205, 0.30), transparent 60%),
+    linear-gradient(180deg, #f3f7ee, #eff4ec 50%, #e9f0e6);
+
+  /* Actor quartet — "who decided this". FIXED across every persona and
+   * scheme: blue is you, lilac is an agent, teal-green is a gate, grey is
+   * the system. A persona may not rebind these; they carry meaning, not
+   * taste. Each passes AA for badge text on its soft tint. */
+  --actor-human: #2456c9;
+  --actor-agent: #6b53a8;
+  --actor-gate: #1d7a62;
+  --actor-system: #5f6b7a;
+  --actor-human-soft: color-mix(in srgb, var(--actor-human) 14%, transparent);
+  --actor-agent-soft: color-mix(in srgb, var(--actor-agent) 16%, transparent);
+  --actor-gate-soft: color-mix(in srgb, var(--actor-gate) 16%, transparent);
+  --actor-system-soft: color-mix(in srgb, var(--actor-system) 16%, transparent);
+
+  /* State faces — loading / empty / error / denied are four different
+   * faces and a surface never wears the wrong one. */
+  --face-loading: linear-gradient(90deg, rgba(20, 30, 50, 0.06), rgba(20, 30, 50, 0.12), rgba(20, 30, 50, 0.06));
+  --face-empty-bg: var(--glass);
+  --face-empty-fg: var(--muted);
+  --face-error-bg: var(--warn-soft);
+  --face-error-fg: var(--warn);
+  --face-error-border: color-mix(in srgb, var(--warn) 30%, transparent);
+  --face-denied-bg: var(--actor-system-soft);
+  --face-denied-fg: var(--actor-system);
+
+  /* Undo outcomes — three, and the third is a refusal, not a failure. */
+  --undo-ok-bg: var(--success-soft);
+  --undo-ok-fg: var(--success);
+  --undo-partial-bg: var(--warn-soft);
+  --undo-partial-fg: var(--warn);
+  --undo-logged-fg: var(--success);
+
+  /* Attention ages — a wait carries its age; a stale wait is warm. */
+  --age-fresh: var(--muted);
+  --age-stale: var(--warn);
+  --age-stale-after: 8h;
+
+  /* Ledger — chain status as ambient furniture. */
+  --ledger-ok: var(--success);
+  --ledger-ok-bg: var(--success-soft);
+  --ledger-ok-border: color-mix(in srgb, var(--success) 35%, transparent);
+
+  /* Type registers. Prose is the reading face at base; the greeting is
+   * the reading face at 3xl with opsz 96; machine is mono at the floor. */
+  --text-floor: 12px;
+  --text-prose: var(--text-base);
+  --text-prose-2: var(--text-sm);
+  --text-sentence: var(--text-lg);   /* the one human sentence on a card */
+  --text-attention: var(--text-xl);  /* an Attention line */
+  --text-machine: var(--text-xs);
+  --opsz-display: 96;
+  --opsz-text: 14;
+
+  /* Control minimums. */
+  --control-min-height: 36px;
+  --touch-min: 44px;
+
+  /* Home grid at desktop: attention 5 / timeline 7. */
+  --col-attention: 5fr;
+  --col-timeline: 7fr;
+}
+
+/* ─── 3. Scheme: dark ───────────────────────────────────────────────────
+ * Rebinds ink, glass and the actor colours' lightness. Contrast on every
+ * text pair stays ≥ 6:1. Greenhouse-dark is the default dark. */
+:root:has(#sc-dark:checked) {
+  --bg: #121a16;
+  --surface: #18221c;
+  --surface-warm: #0e1411;
+  --fg: #eef0f6;
+  --fg-2: #c9cdd8;
+  --muted: #a3a9ba;
+  --meta: #7d8496;
+  --border: rgba(255, 255, 255, 0.16);
+  --border-soft: rgba(255, 255, 255, 0.10);
+  --accent: #8fd5a3;
+  --accent-on: #0f1a13;
+  --accent-hover: color-mix(in oklab, var(--accent), white 8%);
+  --accent-active: color-mix(in oklab, var(--accent), white 14%);
+  --success: #6fd3b8;
+  --warn: #f2c46f;
+  --danger: #ff9d94;
+  --glass: rgba(255, 255, 255, 0.07);
+  --glass-2: rgba(255, 255, 255, 0.12);
+  --well: rgba(6, 10, 20, 0.35);
+  --bar: rgba(12, 16, 28, 0.45);
+  --glow: 0 0 10px currentColor;
+  --elev-raised: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 24px 60px rgba(4, 8, 20, 0.45);
+  --face-loading: linear-gradient(90deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.08));
+  --actor-human: #8db0ff;
+  --actor-agent: #c4b2ea;
+  --actor-gate: #6fd3b8;
+  --actor-system: #b0b7c4;
+  --bloom:
+    radial-gradient(1000px 700px at 8% 0%, rgba(70, 160, 105, 0.42), transparent 62%),
+    radial-gradient(900px 700px at 96% 12%, rgba(150, 180, 80, 0.20), transparent 60%),
+    radial-gradient(1100px 800px at 50% 65%, rgba(60, 120, 95, 0.25), transparent 65%),
+    radial-gradient(700px 500px at 90% 100%, rgba(225, 150, 175, 0.12), transparent 60%),
+    linear-gradient(180deg, #172219, #121a16 50%, #0f1612);
+}
+
+/* ─── 4. Persona templates ──────────────────────────────────────────────
+ * A Workspace has one live Persona (ADR-081226-e626). Its theme is
+ * configuration, not authority. Three templates ship; `greenhouse` is
+ * `:root` itself and is also addressable by name.
+ *
+ * Customising: a user-authored persona theme provides exactly these
+ * four values per scheme — `--bg` (the field), `--bloom`, `--accent`,
+ * `--accent-on` — and may optionally tighten or loosen `--radius-sm/md/lg`.
+ * It may NOT set the actor quartet, the state faces, the type floor, the
+ * focus ring or the fonts. Contrast gate: `--accent-on` on `--accent`
+ * ≥ 4.5:1, `--accent` on `--bg` ≥ 4.5:1. */
+
+:root:has(#th-greenhouse:checked) { /* alias of :root — nothing to rebind */ }
+
+/* Slate — steel blue. "Ship the programme." */
+:root:has(#th-slate:checked) {
+  --bg: #eef1f6;
+  --surface: #f5f7fb;
+  --accent: #2456c9;
+  --accent-on: #ffffff;
+  --bloom:
+    radial-gradient(1000px 700px at 10% 0%, rgba(130, 165, 235, 0.45), transparent 62%),
+    radial-gradient(900px 700px at 95% 15%, rgba(120, 205, 210, 0.30), transparent 60%),
+    radial-gradient(1200px 900px at 50% 60%, rgba(190, 205, 235, 0.35), transparent 65%),
+    linear-gradient(180deg, #f2f4fa, #eef1f6 50%, #e9edf4);
+}
+:root:has(#th-slate:checked):has(#sc-dark:checked) {
+  --bg: #161c2b;
+  --surface: #1b2232;
+  --accent: #7ea6ff;
+  --accent-on: #0f1526;
+  --bloom:
+    radial-gradient(1000px 700px at 10% 0%, rgba(90, 130, 200, 0.40), transparent 62%),
+    radial-gradient(900px 700px at 95% 15%, rgba(70, 160, 170, 0.22), transparent 60%),
+    radial-gradient(1200px 900px at 50% 60%, rgba(80, 110, 170, 0.22), transparent 65%),
+    linear-gradient(180deg, #1a2234, #161c2b 50%, #131826);
+}
+
+/* Studio — plum on oat paper. "Make the thing people remember." */
+:root:has(#th-studio:checked) {
+  --bg: #f4f0ea;
+  --surface: #f9f6f1;
+  --accent: #8a2f52;
+  --accent-on: #ffffff;
+  --bloom:
+    radial-gradient(1000px 700px at 8% 0%, rgba(225, 175, 195, 0.48), transparent 62%),
+    radial-gradient(900px 700px at 96% 12%, rgba(235, 205, 165, 0.40), transparent 60%),
+    radial-gradient(1100px 800px at 50% 65%, rgba(225, 205, 205, 0.35), transparent 65%),
+    linear-gradient(180deg, #f7f3ee, #f4f0ea 50%, #efe9e2);
+}
+:root:has(#th-studio:checked):has(#sc-dark:checked) {
+  --bg: #1b1719;
+  --surface: #221c20;
+  --accent: #e6a9bd;
+  --accent-on: #241419;
+  --bloom:
+    radial-gradient(1000px 700px at 8% 0%, rgba(150, 80, 120, 0.40), transparent 62%),
+    radial-gradient(900px 700px at 96% 12%, rgba(200, 160, 130, 0.18), transparent 60%),
+    radial-gradient(1100px 800px at 50% 65%, rgba(120, 80, 100, 0.22), transparent 65%),
+    linear-gradient(180deg, #221c20, #1b1719 50%, #171315);
+}
+
+/* ===== base ===== */
+
+*{box-sizing:border-box;margin:0;padding:0}
+html{background:var(--bg)}
+body{background:var(--bloom);color:var(--fg);font-family:var(--font-body);font-size:var(--text-base);line-height:var(--leading-body);font-variation-settings:"opsz" var(--opsz-text);-webkit-font-smoothing:antialiased;min-height:100vh;overflow-x:hidden}
+a{color:var(--accent);text-decoration:none;font-weight:600}a:hover{text-decoration:underline}
+.glass{background:var(--glass);border:1px solid var(--edge);border-radius:var(--radius-lg);backdrop-filter:blur(var(--blur));box-shadow:var(--elev-raised)}
+@supports not (backdrop-filter:blur(1px)){.glass{background:var(--surface)}}
+.btn{font:inherit;font-weight:600;font-size:var(--text-sm);border:1px solid var(--edge);border-radius:var(--radius-sm);padding:8px 14px;background:var(--glass-2);color:var(--fg);cursor:pointer;display:inline-flex;align-items:center;gap:6px;min-height:var(--control-min-height)}
+.btn.primary{background:var(--accent);border-color:transparent;color:var(--accent-on)}
+.btn.text{background:transparent;border-color:transparent;color:var(--accent);padding:6px 4px}
+.btn.quiet{background:transparent;border-color:transparent;color:var(--muted);padding:6px 4px}
+.btn.danger{background:var(--danger-soft);border-color:color-mix(in srgb,var(--danger) 35%,transparent);color:var(--danger)}
+.btn[disabled]{opacity:.4;cursor:not-allowed}
+.btn:focus-visible,.in.focus{outline:none;box-shadow:var(--focus-ring)}
+.mono{font-family:var(--font-mono);font-size:var(--text-machine);color:var(--meta);font-weight:500}
+.badge{display:inline-flex;align-items:center;gap:5px;font-size:var(--text-xs);font-weight:600;padding:2px 9px;border-radius:var(--radius-pill);line-height:1.5;vertical-align:middle}
+.badge::before{content:"";width:6px;height:6px;border-radius:3px;background:currentColor;box-shadow:var(--glow)}
+.b-human{background:var(--actor-human-soft);color:var(--actor-human)}.b-agent{background:var(--actor-agent-soft);color:var(--actor-agent)}.b-gate{background:var(--actor-gate-soft);color:var(--actor-gate)}.b-system{background:var(--actor-system-soft);color:var(--actor-system)}
+.result{margin-top:12px;display:flex;gap:10px;align-items:flex-start;padding:10px 14px;border-radius:var(--radius-sm);font-size:var(--text-sm);line-height:1.45;border:1px solid transparent}
+.result.ok{background:var(--undo-ok-bg);color:var(--undo-ok-fg);border-color:color-mix(in srgb,var(--success) 30%,transparent)}
+.result.partial{background:var(--undo-partial-bg);color:var(--undo-partial-fg);border-color:color-mix(in srgb,var(--warn) 30%,transparent)}
+.result.logged{background:transparent;color:var(--undo-logged-fg);padding:6px 0 0}
+.result .ic{font-weight:700}.result .v{color:inherit;font-weight:600;text-decoration:underline}
+.pick{position:fixed;right:16px;bottom:16px;z-index:9;display:flex;gap:4px;padding:6px;border-radius:14px}
+.pick input{position:absolute;opacity:0;pointer-events:none}
+.pick label{font-size:var(--text-xs);font-weight:600;border:1px solid var(--edge);background:var(--glass-2);color:var(--muted);border-radius:9px;padding:6px 10px;cursor:pointer}
+.pick input:checked+label{color:var(--fg);background:var(--accent-soft);border-color:color-mix(in srgb,var(--accent) 40%,transparent)}
+.pick .gap{width:8px}
+
+
+.top{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:20px;padding:0 var(--container-gutter-desktop);height:64px;background:var(--bar);backdrop-filter:blur(var(--blur));border-bottom:1px solid var(--hair)}
+.me{display:flex;align-items:center;gap:10px;font-weight:600}
+.avatar{width:32px;height:32px;border-radius:50%;background:var(--accent);color:var(--accent-on);font-weight:700;font-size:var(--text-sm);display:grid;place-items:center}
+.switch{display:flex;background:var(--glass);border:1px solid var(--edge);border-radius:14px;padding:3px;gap:2px}
+.switch a{display:flex;align-items:center;gap:8px;padding:6px 12px;border-radius:11px;color:var(--muted);font-weight:600;font-size:var(--text-sm)}
+.switch a:hover{text-decoration:none;color:var(--fg)}
+.switch a.on{background:var(--glass-2);color:var(--fg)}
+.switch .sw{width:8px;height:8px;border-radius:4px}
+.sp{flex:1}
+.ledger{display:inline-flex;align-items:center;gap:8px;font-size:var(--text-sm);color:var(--ledger-ok);font-weight:600;padding:7px 12px;border-radius:var(--radius-pill);background:var(--ledger-ok-bg);border:1px solid var(--ledger-ok-border)}
+.ledger::before{content:"";width:8px;height:8px;border-radius:4px;background:var(--ledger-ok);box-shadow:var(--glow)}
+.wrap{max-width:var(--container-max);margin:0 auto;padding:0 var(--container-gutter-desktop)}
+.cover{padding:44px 0 10px}
+h1{font-size:var(--text-3xl);line-height:var(--leading-tight);font-weight:600;letter-spacing:var(--tracking-display);font-variation-settings:"opsz" var(--opsz-display)}
+.voice{margin-top:8px;color:var(--muted);font-size:var(--text-lg);max-width:70ch}
+.resume{margin-top:24px;display:flex;align-items:center;gap:14px;padding:16px 20px;flex-wrap:wrap}
+.resume .t{font-weight:600}.resume .d{color:var(--muted);font-size:var(--text-sm)}
+.resume .acts{margin-left:auto;display:flex;gap:8px}
+.main{display:grid;grid-template-columns:var(--col-attention) var(--col-timeline);gap:36px;padding:28px 0 72px}
+h2{font-size:var(--text-sm);font-weight:600;color:var(--muted);margin:0 0 12px 4px}
+.need{display:flex;gap:16px;padding:18px 22px;align-items:flex-start;border-bottom:1px solid var(--hair);cursor:pointer}
+.need:last-child{border-bottom:0}
+.need .bar{width:3px;border-radius:2px;align-self:stretch;flex-shrink:0;margin-top:3px}
+.need .s{font-size:var(--text-attention);line-height:1.35;font-weight:500}
+.need .s b{font-weight:700}
+.need .age{color:var(--age-stale);font-weight:600}.need .age.calm{color:var(--age-fresh);font-weight:500}
+.need .sub{color:var(--muted);font-size:var(--text-sm);margin-top:4px}
+.need .go{margin-left:auto;align-self:center;color:var(--meta);font-size:20px}
+.goal{display:flex;justify-content:space-between;gap:10px;padding:12px 22px;border-bottom:1px solid var(--hair)}
+.goal:last-child{border-bottom:0}
+.st{font-size:var(--text-sm);font-weight:600}.st.block{color:var(--warn)}.st.run{color:var(--actor-agent)}.st.wait{color:var(--accent)}.st.done{color:var(--meta);font-weight:500}
+.sec{margin-top:26px}
+.person{display:flex;align-items:center;gap:10px;padding:10px 22px}
+.person .av{width:26px;height:26px;border-radius:50%;background:var(--glass-2);display:grid;place-items:center;font-size:var(--text-xs);font-weight:700;color:var(--fg-2)}
+.person .role{margin-left:auto;font-size:var(--text-sm);color:var(--muted)}
+.cap{padding:2px 22px 14px;color:var(--muted);font-size:var(--text-sm)}
+.quota{padding:14px 22px 18px}
+.quota .n{font-size:22px;font-weight:600;letter-spacing:-.01em}.quota .n span{color:var(--muted);font-size:var(--text-sm);font-weight:500;margin-left:6px}
+.bar-track{height:8px;border-radius:4px;background:var(--hair);margin:10px 0 8px;overflow:hidden}
+.bar-fill{height:100%;width:25%;border-radius:4px;background:var(--accent)}
+.hive{display:flex;align-items:center;gap:8px;padding:16px 4px 0;color:var(--muted);font-size:var(--text-sm)}
+.hive::before{content:"";width:8px;height:8px;border-radius:4px;background:var(--success);box-shadow:var(--glow)}
+.filters{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
+.f{font-size:var(--text-sm);font-weight:600;padding:6px 12px;border-radius:var(--radius-pill);background:var(--glass);border:1px solid var(--edge);color:var(--muted)}
+.f.on{background:var(--fg);color:var(--bg);border-color:transparent}
+.f i{font-style:normal;opacity:.6;margin-left:4px;font-weight:500}
+.day{font-size:var(--text-sm);font-weight:600;color:var(--muted);margin:22px 0 10px 36px}
+.tl{position:relative;padding-left:36px}
+.tl::before{content:"";position:absolute;left:11px;top:0;bottom:0;width:2px;background:var(--hair)}
+.ev{position:relative;padding:18px 22px;margin-bottom:12px}
+.ev::before{content:"";position:absolute;left:-31px;top:24px;width:12px;height:12px;border-radius:6px;background:var(--dot);box-shadow:0 0 0 3px var(--bg),var(--glow)}
+.ev.human{--dot:var(--actor-human)}.ev.agent{--dot:var(--actor-agent)}.ev.gate{--dot:var(--actor-gate)}.ev.system{--dot:var(--actor-system)}
+.ev .hd{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.ev .who{font-weight:700}
+.ev .as{color:var(--muted);font-size:var(--text-sm)}.ev .as b{color:var(--fg-2);font-weight:600}
+.ev .at{margin-left:auto;color:var(--meta);font-size:var(--text-sm);white-space:nowrap}
+.ev .s{font-size:var(--text-sentence);line-height:1.45;margin-top:8px;max-width:62ch}
+.ev .m{margin-top:8px}
+.ev .acts{display:flex;gap:14px;margin-top:12px;align-items:center;flex-wrap:wrap}
+.ev.quiet{padding:14px 22px}.ev.quiet .s{font-size:var(--text-base);color:var(--fg-2);margin-top:4px}
+.why{margin-top:12px;border-left:3px solid var(--dot);background:var(--well);border-radius:0 var(--radius-sm) var(--radius-sm) 0;padding:12px 16px}
+.why .t{font-weight:600;font-size:var(--text-sm);margin-bottom:6px}
+.why .k{display:grid;grid-template-columns:90px 1fr;gap:4px 12px;font-size:var(--text-sm)}
+.why .k span:nth-child(odd){color:var(--muted)}
+.why .path{font-family:var(--font-mono);font-size:var(--text-machine);color:var(--fg-2)}
+@media (max-width:980px){.main{grid-template-columns:1fr;gap:28px}.top,.wrap{padding-left:var(--container-gutter-tablet);padding-right:var(--container-gutter-tablet)}h1{font-size:30px}}
+@media (max-width:640px){.top{height:auto;flex-wrap:wrap;padding:10px var(--container-gutter-phone);gap:10px}.switch{order:3;width:100%}.sp{display:none}.ledger{margin-left:auto}.wrap{padding-left:var(--container-gutter-phone);padding-right:var(--container-gutter-phone)}.resume .acts{margin-left:0;width:100%}.need{padding:16px}.need .s{font-size:var(--text-lg)}.ev{padding:16px}.ev .at{margin-left:0;width:100%;order:-1}.tl{padding-left:26px}.ev::before{left:-21px}.day{margin-left:26px}.goal,.person,.cap,.quota{padding-left:16px;padding-right:16px}}
+.sheet{max-width:1320px;margin:0 auto;padding:40px 40px 80px}
+.sheet h1{font-size:34px;margin-bottom:6px}
+.lede{color:var(--muted);max-width:70ch;margin-bottom:34px}
+.sec{margin-top:34px}
+.sec h2{font-size:16px;color:var(--fg);margin:0 0 4px}
+.sec .d{color:var(--muted);font-size:14px;margin-bottom:14px}
+.row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+.cols{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.cols2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.pad{padding:18px 20px}
+.lbl{font-size:12px;color:var(--meta);margin-top:8px}
+.btn.icon{width:36px;padding:0;justify-content:center}
+.btn.danger{background:var(--danger-soft);border-color:color-mix(in srgb,var(--danger) 35%,transparent);color:var(--danger)}
+.btn.focus{box-shadow:var(--focus-ring)}
+.tg{width:44px;height:26px;border-radius:13px;background:var(--hair);border:1px solid var(--edge);position:relative;display:inline-block;vertical-align:middle}
+.tg::after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:9px;background:var(--surface-warm);box-shadow:0 1px 3px rgba(0,0,0,.3)}
+.tg.on{background:var(--accent);border-color:transparent}.tg.on::after{left:21px}
+.cb{width:20px;height:20px;border-radius:6px;border:1px solid var(--edge);background:var(--glass);display:inline-grid;place-items:center;vertical-align:middle;font-size:13px;font-weight:700}
+.cb.on{background:var(--accent);border-color:transparent;color:var(--accent-on)}
+.rd{width:20px;height:20px;border-radius:10px;border:1px solid var(--edge);background:var(--glass);display:inline-grid;place-items:center;vertical-align:middle}
+.rd.on{border-color:var(--accent)}.rd.on::after{content:"";width:10px;height:10px;border-radius:5px;background:var(--accent)}
+.opt{display:inline-flex;align-items:center;gap:8px;font-size:14px;margin-right:16px}
+.in{display:flex;align-items:center;gap:8px;font-size:14px;border:1px solid var(--edge);border-radius:var(--radius-sm);padding:9px 12px;background:var(--well);color:var(--fg);min-height:38px;width:100%}
+.in .ph{color:var(--meta)}.in.focus{border-color:var(--accent);box-shadow:var(--focus-ring)}
+.in.err{border-color:var(--danger)}.in .tail{margin-left:auto;color:var(--meta)}
+.help{font-size:12.5px;color:var(--meta);margin-top:6px}.help.err{color:var(--danger)}
+.menu{background:var(--surface);border:1px solid var(--edge);border-radius:var(--radius-sm);padding:6px;margin-top:8px;backdrop-filter:blur(18px);box-shadow:0 24px 60px rgba(6,10,30,.45)}
+.menu div{padding:8px 10px;border-radius:8px;font-size:14px}.menu .on{background:var(--glass-2)}.menu .k{color:var(--meta);font-size:12px}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--hair)}
+.tabs span{padding:10px 14px;font-size:14px;font-weight:600;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-1px}
+.tabs .on{color:var(--fg);border-color:var(--accent)}
+.seg{display:inline-flex;background:var(--glass);border:1px solid var(--edge);border-radius:12px;padding:3px}
+.seg span{padding:6px 12px;border-radius:9px;font-size:14px;font-weight:600;color:var(--muted)}.seg .on{background:var(--glass-2);color:var(--fg)}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600;padding:6px 12px;border-radius:999px;background:var(--glass);border:1px solid var(--edge);color:var(--fg-2)}
+.chip.on{background:var(--accent-soft);border-color:color-mix(in srgb,var(--accent) 40%,transparent);color:var(--accent)}
+.chip .x{color:var(--meta)}
+.slider{position:relative;height:6px;border-radius:3px;background:var(--hair);margin:18px 8px 6px}
+.slider .fill{position:absolute;left:20%;right:45%;top:0;bottom:0;background:var(--accent);border-radius:3px}
+.slider .h{position:absolute;top:-6px;width:18px;height:18px;border-radius:9px;background:var(--surface-warm);box-shadow:0 1px 4px rgba(0,0,0,.35)}
+.face{padding:16px 18px;min-height:120px;display:flex;flex-direction:column;gap:6px}
+.face .t{font-weight:600}.face .d{color:var(--muted);font-size:14px}
+.skel{height:10px;border-radius:5px;background:var(--face-loading)}
+.face.error{background:var(--face-error-bg);border-color:var(--face-error-border)}.face.error .t,.face.error .d{color:var(--warn)}
+.face.denied{background:var(--face-denied-bg)}.face.denied .t,.face.denied .d{color:var(--system)}
+.toast{display:flex;gap:12px;align-items:center;padding:12px 16px;border-radius:14px;background:var(--surface);border:1px solid var(--edge);backdrop-filter:blur(18px);box-shadow:0 24px 60px rgba(6,10,30,.5);font-size:14px}
+.toast .ic{width:26px;height:26px;border-radius:13px;display:grid;place-items:center;font-weight:700;font-size:13px}
+.toast .ic.ok{background:var(--success-soft);color:var(--success)}.toast .ic.warn{background:var(--warn-soft);color:var(--warn)}
+.toast .a{margin-left:auto;color:var(--accent);font-weight:600}
+.modal{padding:22px 24px}.modal h3{font-size:18px;margin-bottom:6px}.modal p{color:var(--muted);font-size:14px;margin-bottom:16px}
+.tbl{width:100%;border-collapse:collapse;font-size:14px}.tbl th{text-align:left;color:var(--muted);font-weight:600;font-size:13px;padding:10px 16px;border-bottom:1px solid var(--hair)}
+.tbl td{padding:12px 16px;border-bottom:1px solid var(--hair)}.tbl tr:last-child td{border-bottom:0}
+.avs{display:flex}.avs .avatar{margin-left:-8px;box-shadow:0 0 0 2px var(--bg)}
+.stat .n{font-size:26px;font-weight:600;letter-spacing:-.01em}.stat .l{color:var(--muted);font-size:13px}
+.spark{display:flex;align-items:flex-end;gap:4px;height:40px;margin-top:10px}.spark i{flex:1;border-radius:3px 3px 0 0;background:var(--accent)}
+.sw{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}
+.sw div{height:64px;border-radius:12px;border:1px solid var(--edge);display:flex;align-items:flex-end;padding:8px;font-size:12px;font-family:var(--mono)}
+.pg{display:inline-flex;gap:4px}.pg span{min-width:32px;height:32px;display:grid;place-items:center;border-radius:8px;font-size:13px;font-weight:600;color:var(--muted);background:var(--glass);border:1px solid var(--edge)}.pg .on{background:var(--fg);color:var(--bg)}
+
+</style>
+</head>
+<body>
+<div class="sheet">
+<h1>Workspace kit</h1>
+<div class="lede">Every control the room is built from. Same tokens, same four actor colours, same 12px floor. A persona changes the bloom behind the glass and the accent; it never changes what a colour means. Greenhouse is the default; use the picker to see slate and studio, light and dark.</div>
+
+<div class="sec"><h2>Buttons</h2><div class="d">One primary per view. Secondary is glass. Text buttons for in-card actions. Danger only on irreversible things, and it says what it does.</div>
+<div class="row"><span class="btn primary">Resume</span><span class="btn">Start fresh</span><span class="btn text">Why this decision</span><span class="btn quiet">Undo</span><span class="btn danger">Delete workspace</span><span class="btn" disabled>Undo</span><span class="btn focus">Approve</span><span class="btn icon">+</span><span class="btn icon">…</span></div></div>
+
+<div class="sec cols">
+  <div><h2>Switches and choices</h2><div class="d">Toggles glow only when on.</div>
+    <div class="glass pad"><div class="row" style="margin-bottom:14px"><span class="tg on"></span><span style="font-size:14px">Autosave to this workspace</span></div>
+    <div class="row" style="margin-bottom:14px"><span class="tg"></span><span style="font-size:14px;color:var(--muted)">Share overnight discoveries</span></div>
+    <div class="row" style="margin-bottom:10px"><span class="opt"><span class="cb on">✓</span>Approvals</span><span class="opt"><span class="cb"></span>Gates</span></div>
+    <div class="row"><span class="opt"><span class="rd on"></span>Owner</span><span class="opt"><span class="rd"></span>Editor</span><span class="opt"><span class="rd"></span>Viewer</span></div></div></div>
+  <div><h2>Inputs</h2><div class="d">Dark wells inside glass so the field reads as a place to type.</div>
+    <div class="glass pad"><div class="in"><span class="ph">Invite by user id</span></div>
+    <div class="in focus" style="margin-top:10px">sam<span class="tail">↵</span></div>
+    <div class="in err" style="margin-top:10px">sam@</div><div class="help err">That isn't a user id in this hive. Try the short name.</div>
+    <div class="in" style="margin-top:10px"><span>⌕</span><span class="ph">Search the ledger</span><span class="tail">⌘K</span></div></div></div>
+  <div><h2>Select</h2><div class="d">Menus are raised glass, one step above the page.</div>
+    <div class="glass pad"><div class="in">Viewer<span class="tail">▾</span></div>
+    <div class="menu"><div>Owner <span class="k">everything</span></div><div>Editor <span class="k">read, write, share</span></div><div class="on">Viewer <span class="k">read and comment</span></div></div></div></div>
+</div>
+
+<div class="sec"><h2>Tabs, segments, chips</h2><div class="d">Counts live inside the filter, lighter than the label.</div>
+<div class="row" style="gap:24px;align-items:flex-start">
+  <div class="tabs"><span class="on">Attention</span><span>Goals</span><span>Ledger</span><span>People</span></div>
+  <div class="seg"><span class="on">PM Fleet</span><span>Content Studio</span><span style="color:var(--faint);font-weight:500">+ New</span></div>
+  <div class="row" style="gap:6px"><span class="f on">Everything<i>41</i></span><span class="f">You<i>12</i></span><span class="f">Agents<i>6</i></span><span class="f">Gates<i>22</i></span><span class="f">System<i>1</i></span></div>
+  <div class="row" style="gap:6px"><span class="chip on">Jira <span class="x">✕</span></span><span class="chip">Airtable</span><span class="chip">GitHub</span></div>
+</div></div>
+
+<div class="sec cols2">
+  <div><h2>Who decided</h2><div class="d">Four colours, four verdicts. The dot glows so it reads on any bloom.</div>
+    <div class="glass pad"><div class="row" style="gap:10px"><span class="badge b-human">you</span><span class="badge b-agent">agent</span><span class="badge b-gate">gate</span><span class="badge b-system">system</span></div>
+    <div class="row" style="gap:10px;margin-top:12px"><span class="badge b-human">owner</span><span class="badge b-agent">as scanner</span><span class="badge b-gate">allowed</span><span class="badge" style="color:var(--danger);background:var(--danger-soft)">blocked</span><span class="badge b-system">scheduled</span></div>
+    <div class="row" style="margin-top:14px"><div class="avs"><span class="avatar">D</span><span class="avatar" style="background:var(--actor-gate);color:#fff">S</span><span class="avatar" style="background:var(--actor-agent);color:#fff">R</span></div><span style="font-size:14px;color:var(--muted)">dana, sam and RedTeam touched this goal</span></div></div></div>
+  <div><h2>Outcomes</h2><div class="d">Three undo truths. The third is a refusal, never a silent success.</div>
+    <div class="glass pad">
+      <div class="result logged" style="padding-top:0"><span class="ic">✓</span>Approved and logged as seq 41.</div>
+      <div class="result ok"><span class="ic">✓</span><span>Undone by a compensating action: closed REL-4412. <a class="v" href="#">Verify in Jira</a></span></div>
+      <div class="result partial"><span class="ic">!</span><span>Can't fully undo. The finding was already published, so it's marked <b>not fully undoable</b>.</span></div></div></div>
+</div>
+
+<div class="sec"><h2>Four faces</h2><div class="d">Loading, empty, error and no-permission never wear each other's face.</div>
+<div class="cols" style="grid-template-columns:repeat(4,1fr)">
+  <div class="glass face"><div class="t">Loading</div><div class="skel" style="width:80%"></div><div class="skel" style="width:55%"></div><div class="d">Recent artifacts, 0.4 s</div></div>
+  <div class="glass face"><div class="t">Nothing here yet</div><div class="d">No workspaces. Make one and give it a voice.</div><div><span class="btn primary">Create a workspace</span></div></div>
+  <div class="glass face error"><div class="t">Can't reach the hive</div><div class="d">Retrying. Last seen 10:58.</div><div><span class="btn">Retry now</span></div></div>
+  <div class="glass face denied"><div class="t">You can't open this yet</div><div class="d">The approval inbox needs dags.write. You have dags.read.</div><div><span class="btn text">Ask for access</span></div></div>
+</div></div>
+
+<div class="sec cols">
+  <div><h2>Progress and sliders</h2><div class="glass pad"><div class="stat"><div class="n">125K <span style="font-size:14px;color:var(--muted);font-weight:500">of 500K</span></div><div class="l">Anthropic tokens this cycle</div></div>
+    <div class="bar-track"><div class="bar-fill"></div></div><div class="lbl">Resets 1 October</div>
+    <div class="slider"><div class="fill"></div><span class="h" style="left:calc(20% - 9px)"></span><span class="h" style="left:calc(55% - 9px)"></span></div><div class="lbl">Weekly scan window, 02:00 to 05:00</div></div></div>
+  <div><h2>Stat and trend</h2><div class="glass pad stat"><div class="n">41</div><div class="l">Ledger records, all verified</div><div class="spark"><i style="height:30%"></i><i style="height:45%"></i><i style="height:38%"></i><i style="height:70%"></i><i style="height:55%"></i><i style="height:85%"></i><i style="height:100%"></i></div></div></div>
+  <div><h2>Toasts</h2><div class="toast"><span class="ic ok">✓</span>Approved. It's in the ledger.<span class="a">View</span></div>
+    <div class="toast" style="margin-top:10px"><span class="ic warn">!</span>Can't reach the hive. Retrying.<span class="a">Details</span></div></div>
+</div>
+
+<div class="sec cols2">
+  <div><h2>Table</h2><div class="glass"><table class="tbl"><tr><th>Goal</th><th>Owner</th><th>State</th></tr>
+    <tr><td>Q4 reliability push</td><td><span class="badge b-agent">delivery</span></td><td class="st block">Blocked</td></tr>
+    <tr><td>Migrate on-call runbooks</td><td><span class="badge b-agent">delivery</span></td><td class="st run">Running</td></tr>
+    <tr><td>Sprint 41 retro summary</td><td><span class="badge b-human">dana</span></td><td class="st wait">Waiting on you</td></tr></table></div>
+    <div class="row" style="margin-top:12px;justify-content:space-between"><span class="pg"><span>‹</span><span class="on">1</span><span>2</span><span>3</span><span>›</span></span><span class="lbl" style="margin:0">Showing 3 of 41</span></div></div>
+  <div><h2>Dialog</h2><div class="glass modal"><h3>Remove sam from PM Fleet?</h3><p>They'll lose read access to this workspace's goals and ledger. Their past actions stay in the record.</p><div class="row"><span class="btn danger">Remove sam</span><span class="btn">Keep</span></div></div></div>
+</div>
+
+<div class="sec"><h2>Palette</h2><div class="d">Meaning colours are fixed; the field and accent belong to the persona.</div>
+<div class="sw">
+  <div style="background:var(--bg)">--bg field</div><div style="background:var(--glass)">glass</div><div style="background:var(--glass-2)">glass-2</div>
+  <div style="background:var(--actor-human);color:#fff">you</div><div style="background:var(--actor-agent);color:#fff">agent</div><div style="background:var(--actor-gate);color:#fff">gate</div>
+  <div style="background:var(--actor-system);color:#fff">system</div><div style="background:var(--warn);color:#fff">warn</div><div style="background:var(--danger);color:#fff">danger</div>
+  <div style="background:var(--accent);color:var(--accent-on)">accent (persona)</div><div style="background:var(--success);color:#fff">success</div><div style="background:var(--well)">well</div>
+</div></div>
+</div>
+<div class="pick glass" aria-label="Persona and scheme (preview only)">
+  <input type="radio" name="th" id="th-greenhouse" checked><label for="th-greenhouse">Greenhouse</label>
+  <input type="radio" name="th" id="th-slate"><label for="th-slate">Slate</label>
+  <input type="radio" name="th" id="th-studio"><label for="th-studio">Studio</label>
+  <span class="gap"></span>
+  <input type="radio" name="sc" id="sc-light" checked><label for="sc-light">Light</label>
+  <input type="radio" name="sc" id="sc-dark"><label for="sc-dark">Dark</label>
+</div>
+</body>
+</html>

@@ -14,7 +14,9 @@ Two import paths:
   `TrustTier.T2` (community/unaudited) after re-running the scan.
 
 Both tiers are sourced from Open Design's Apache-2.0-licensed `design-systems/`
-corpus; see `THIRD_PARTY_NOTICES.md` for provenance and licensing.
+corpus, with one exception: `workspace` is first-party, authored in this repo for
+the Workspace product surface (ADR-091626-ba4f). See `THIRD_PARTY_NOTICES.md` for
+provenance and licensing.
 """
 
 from __future__ import annotations
@@ -50,7 +52,7 @@ CATALOG_INDEX = CATALOG_ROOT / "catalog.json"
 ESSENTIAL_FILES = ("manifest.json", "DESIGN.md", "tokens.css", "design-tokens.json")
 
 # Install-time "Tier-1" set, registered automatically by load_bundled().
-BUNDLED_SLUGS = ("default", "shadcn", "apple", "material", "editorial", "enterprise")
+BUNDLED_SLUGS = ("default", "shadcn", "apple", "material", "editorial", "enterprise", "workspace")
 
 # Where a registered DesignSystem came from, recorded in `metadata["origin"]`.
 #
