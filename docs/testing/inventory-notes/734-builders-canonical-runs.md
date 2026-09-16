@@ -13,11 +13,13 @@ inventory-delta:
 This branch owns only the Builders-local migration seam from the private pipeline lifecycle to the existing canonical Graph/Run/NodeRun/Attempt contracts.
 
 Allowed implementation surface:
+
 - `packages/maistro-core/src/maistro/builders/**`
 - Builders-focused tests
 - this branch-specific evidence note
 
 Explicitly excluded:
+
 - `maistro/container.py`
 - `maistro/runs/**`
 - `maistro/graph/durable_runs/**`
@@ -39,7 +41,7 @@ The adapter ships inside `maistro/builders/graph_executor.py` rather than a
 separate `canonical_execution` module. A new module identity would register
 as new unreachable-module debt against the trusted-base reachability ratchet,
 which requires an already-merged `quality/ratchet-authorizations.json` grant;
-#734 defers reachability bookkeeping to #49, so the adapter joins the module
+Issue #734 defers reachability bookkeeping to #49, so the adapter joins the module
 whose private dispatch helpers (`_build_prompt`,
 `_DEFAULT_EXECUTIONS_PER_NODE`) it already shares. The canonical adapter stays public as
 `maistro.builders.CanonicalGraphPipelineExecutor`. The pre-convergence

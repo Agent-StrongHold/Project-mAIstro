@@ -98,6 +98,7 @@ run-level workflow record; this ADR does not remove it.
 ## Consequences
 
 ### Positive
+
 - Multi-dependency stages and parallel execution of independent stages are
   now structurally possible in the builders pipeline.
 - The verify-and-revise loop gives builders a first-class, budget-bounded
@@ -109,6 +110,7 @@ run-level workflow record; this ADR does not remove it.
   encoded as tests.
 
 ### Negative / Trade-offs
+
 - Two builder execution models coexist (stage machine + graph) until a
   follow-up decides whether `BuildersOrchestrator` becomes a thin view over
   graph runs.
@@ -120,6 +122,7 @@ run-level workflow record; this ADR does not remove it.
   budget is the ADR-062 contract we want shared).
 
 ### Neutral
+
 - The default pipeline names agents (quartermaster, archie, mason, auditor,
   gatekeeper) mapped onto the three `WorkerName` runtime roles; products can
   supply their own node lists and worker maps.
