@@ -737,6 +737,39 @@ class InMemoryRunStore:
             if node_run.run_id == run_id
         )
 
+    def _purge_candidates(
+        self,
+        scope: RetentionScope,
+        cutoff: datetime,
+        parent_runs: set[str],
+        parent_node_runs: set[str],
+    ) -> list[Run]:
+        return [
+            run
+            for run in self._runs.values()
+            if run_in_purge_scope(run, scope)
+            and is_purgeable(run, cutoff)
+            and not self._has_child(run.run_id, parent_runs, parent_node_runs)
+        ]
+
+    def _selected_node_run_ids(self, selected_ids: set[str]) -> set[str]:
+        return {
+            node_run_id
+            for node_run_id, node_run in self._node_runs.items()
+            if node_run.run_id in selected_ids
+        }
+
+    def _selected_attempt_count(self, node_run_ids: set[str]) -> int:
+        return sum(1 for attempt in self._attempts.values() if attempt.node_run_id in node_run_ids)
+
+    async def _delete_selected_continuations(self, run_ids: set[str]) -> int:
+        if self._continuation_store is None:
+            return 0
+        deleted = 0
+        for run_id in run_ids:
+            deleted += await self._continuation_store.delete(run_id)
+        return deleted
+
     async def purge_expired_runs(
         self,
         scope: RetentionScope,
@@ -775,30 +808,14 @@ class InMemoryRunStore:
             raise ValueError("limit must be positive")
         cutoff = now if now is not None else datetime.now(UTC)
         parent_runs, parent_node_runs = self._referenced_by_children()
-        doomed = [
-            run
-            for run in self._runs.values()
-            if run_in_purge_scope(run, scope)
-            and is_purgeable(run, cutoff)
-            and not self._has_child(run.run_id, parent_runs, parent_node_runs)
-        ]
+        doomed = self._purge_candidates(scope, cutoff, parent_runs, parent_node_runs)
         selected = doomed[:limit]
         selected_ids = {run.run_id for run in selected}
-        node_runs_of_selected = {
-            node_run_id
-            for node_run_id, node_run in self._node_runs.items()
-            if node_run.run_id in selected_ids
-        }
-        attempts = sum(
-            1 for attempt in self._attempts.values() if attempt.node_run_id in node_runs_of_selected
-        )
+        node_runs_of_selected = self._selected_node_run_ids(selected_ids)
+        attempts = self._selected_attempt_count(node_runs_of_selected)
         for run in selected:
             self._forget_run(run.run_id)
-        continuations = 0
-        if self._continuation_store is not None:
-            for run_id in selected_ids:
-                if await self._continuation_store.delete(run_id):
-                    continuations += 1
+        continuations = await self._delete_selected_continuations(selected_ids)
         return PurgeOutcome(
             scope=scope,
             runs=len(selected),
