@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import pytest
 
+from maistro.observability.correlation import bind_execution_context
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.admission import ADMISSION_SOURCE
 from maistro.runs.model import RunStatus
 from maistro.runs.store import InMemoryRunStore, RunIntegrityError
 from maistro.runs.task_kinds import DELEGATE_NODE_KIND
 from maistro.tasks.admission import (
+    REQUEST_ID_KEY,
     SESSION_ID_KEY,
     TASK_ID_KEY,
     TASK_PAYLOAD_KEY,
@@ -126,6 +128,40 @@ async def test_absent_session_and_user_are_omitted_rather_than_blank(scoped) -> 
     assert SESSION_ID_KEY not in run.provenance
     assert "user_id" not in run.provenance
     assert run.actor_principal_id is None
+
+
+async def test_the_bound_request_id_lands_on_the_runs_provenance(scoped) -> None:
+    """#1063: the Conductor->maistro-server hop, the Task, and the Run must be
+    followable by one correlation id. `admit()` runs inside the same coroutine
+    chain RequestIDMiddleware bound the id in (or whatever a background
+    caller explicitly bound), so reading it off the ambient context — rather
+    than adding a `request_id` field to `TaskCreate` — is enough."""
+    _projects, runs, _root, project = scoped
+    queue = TaskQueue(
+        admitter=TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+    )
+
+    with bind_execution_context(request_id="req-xyz"):
+        task = await queue.submit(TaskCreate(description="Fix it"))
+
+    run = await runs.get_run(task.run_id or "")
+    assert run is not None
+    assert run.provenance[REQUEST_ID_KEY] == "req-xyz"
+
+
+async def test_no_bound_request_id_is_omitted_rather_than_blank(scoped) -> None:
+    """Same discipline as session/user: absence states the truth, an empty
+    string would claim a request correlation that was never established."""
+    _projects, runs, _root, project = scoped
+    queue = TaskQueue(
+        admitter=TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+    )
+
+    task = await queue.submit(TaskCreate(description="Fix it"))
+
+    run = await runs.get_run(task.run_id or "")
+    assert run is not None
+    assert REQUEST_ID_KEY not in run.provenance
 
 
 async def test_each_submission_gets_its_own_run(scoped) -> None:
