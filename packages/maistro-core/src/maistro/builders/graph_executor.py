@@ -60,6 +60,11 @@ logger = logging.getLogger("maistro.builders.graph_executor")
 
 _DEFAULT_EXECUTIONS_PER_NODE = 3
 
+# The private executor remains a supported parity-test seam until convergence;
+# listing it explicitly keeps static dead-code scanners from mistaking the
+# deliberate migration oracle for an abandoned implementation.
+__all__ = ["_LegacyGraphPipelineExecutor"]
+
 
 @dataclass(frozen=True)
 class DispatchResult:

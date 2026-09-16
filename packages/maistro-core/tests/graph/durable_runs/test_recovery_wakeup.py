@@ -27,10 +27,19 @@ class _Store:
         *,
         now: datetime,
         limit: int = 100,
+        admission_source: str | None = None,
         after: tuple[str, str] | None = None,
     ):
         del now
-        rows = sorted(self.records.values(), key=_due_cursor)
+        rows = sorted(
+            (
+                row
+                for row in self.records.values()
+                if admission_source is None
+                or getattr(row, "admission_source", admission_source) == admission_source
+            ),
+            key=_due_cursor,
+        )
         if after is not None:
             rows = [row for row in rows if _due_cursor(row) > after]
         return rows[:limit]
@@ -66,13 +75,19 @@ class _RunStore:
         offset: int = 0,
         project_id: str | None = None,
         after: tuple[str, str] | None = None,
+        admission_source: str | None = None,
     ) -> list[Run]:
         del offset
         rows = sorted(
             (
                 run
                 for run in self.runs.values()
-                if run.status is status and (project_id is None or run.project_id == project_id)
+                if run.status is status
+                and (project_id is None or run.project_id == project_id)
+                and (
+                    admission_source is None
+                    or run.provenance.get("admission_source") == admission_source
+                )
             ),
             key=lambda run: (run.created_at.isoformat(), run.run_id),
         )
@@ -340,6 +355,7 @@ async def test_queued_recovery_never_steals_an_unowned_admission_source(monkeypa
         run_store=_RunStore(run),
         eligible=lambda candidate: candidate.provenance.get("admission_source") == "owned",
         node_resolver_factory=lambda _run: lambda _node_id, _graph: None,
+        admission_source="owned",
     )
 
     assert recovered == 0
@@ -1000,7 +1016,7 @@ async def test_a_store_without_the_page_scanner_still_uses_the_plain_listing() -
 
     assert not isinstance(store, recovery.DuePageScanner)
 
-    fetch = recovery._due_page_fetcher(store, now)
+    fetch = recovery._due_page_fetcher(store, now, "owned")
     page = await fetch(None, 10)
 
     assert [record.run_id for record in page] == ["waiting"]

@@ -68,6 +68,7 @@ def _continuation(
     project_id: str = "proj-1",
     minutes: int = 0,
     resume_at: datetime | None = None,
+    admission_source: str | None = None,
 ) -> GraphContinuation:
     return GraphContinuation(
         run_id=run_id,
@@ -75,6 +76,7 @@ def _continuation(
         version=version,
         status=status,
         project_id=project_id,
+        admission_source=admission_source,
         created_at=datetime(2026, 8, 29, tzinfo=UTC) + timedelta(minutes=minutes),
         resume_at=resume_at,
     )
@@ -182,6 +184,32 @@ async def test_the_listings_agree_across_backends(store: GraphContinuationStore)
     assert await store.list_run_ids_for_project("proj-3") == []
 
 
+async def test_owner_filter_is_applied_before_due_limit(store: GraphContinuationStore) -> None:
+    now = datetime(2026, 8, 29, 12, tzinfo=UTC)
+    await store.create(
+        _continuation(
+            "foreign-due",
+            status=RunStatus.WAITING,
+            resume_at=now - timedelta(seconds=2),
+            admission_source="other",
+        )
+    )
+    await store.create(
+        _continuation(
+            "owned-due",
+            status=RunStatus.WAITING,
+            resume_at=now - timedelta(seconds=1),
+            admission_source="owned",
+        )
+    )
+
+    assert await store.list_due_run_ids(
+        now=now,
+        limit=1,
+        admission_source="owned",
+    ) == ["owned-due"]
+
+
 async def test_due_deadline_query_agrees_across_backends(store: GraphContinuationStore) -> None:
     """The restart wakeup path must be identical on memory, SQLite and PG.
 
@@ -222,6 +250,11 @@ async def test_due_deadline_query_agrees_across_backends(store: GraphContinuatio
 
     assert await store.list_due_run_ids(now=now, limit=10) == ["run-waiting", "run-paused"]
     assert await store.list_due_run_ids(now=now, limit=1) == ["run-waiting"]
+    assert await store.list_due_run_ids(
+        now=now,
+        limit=10,
+        after=(now - timedelta(seconds=2), "run-waiting"),
+    ) == ["run-paused"]
 
 
 async def test_status_listing_pages_forward_with_an_advancing_cursor(

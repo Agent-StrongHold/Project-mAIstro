@@ -37,7 +37,7 @@ from maistro.runs.retention_scope import (
     RetentionScope,
     WorkspaceRetentionScope,
 )
-from maistro.runs.sources import occurrence_key
+from maistro.runs.sources import ADMISSION_SOURCE, occurrence_key
 from maistro.runs.store import (
     DEFAULT_PURGE_BATCH,
     DEFAULT_RECLAIM_BATCH,
@@ -207,6 +207,7 @@ CREATE TABLE IF NOT EXISTS canonical_runs (
     parent_run_id TEXT,
     parent_node_run_id TEXT,
     status TEXT NOT NULL,
+    admission_source TEXT,
     payload TEXT NOT NULL,
     FOREIGN KEY (parent_run_id) REFERENCES canonical_runs(run_id),
     FOREIGN KEY (parent_node_run_id) REFERENCES canonical_node_runs(node_run_id)
@@ -216,6 +217,8 @@ CREATE INDEX IF NOT EXISTS idx_canonical_runs_workspace_project
     ON canonical_runs(workspace_id, project_id);
 CREATE INDEX IF NOT EXISTS idx_canonical_runs_parent
     ON canonical_runs(parent_run_id);
+CREATE INDEX IF NOT EXISTS idx_canonical_runs_status_owner
+    ON canonical_runs(status, admission_source, run_id);
 
 -- One Run per schedule firing (#220). The unique index *is* the claim: two
 -- tickers evaluating the same due window both reach the insert, and the
@@ -321,6 +324,15 @@ class SqliteRunStore:
         self._pending: list[tuple[tuple[str, str], str, str, str]] = []
 
     async def ensure_schema(self) -> None:
+        columns = await self._conn.execute("PRAGMA table_info(canonical_runs)")
+        names = {str(row[1]) for row in await columns.fetchall()}
+        if names and "admission_source" not in names:
+            await self._conn.execute("ALTER TABLE canonical_runs ADD COLUMN admission_source TEXT")
+            await self._conn.execute(
+                """UPDATE canonical_runs
+                   SET admission_source = json_extract(payload, '$.provenance.admission_source')
+                 WHERE json_type(payload, '$.provenance.admission_source') = 'text'"""
+            )
         await self._conn.executescript(_SCHEMA)
         await self._conn.commit()
 
@@ -374,8 +386,8 @@ class SqliteRunStore:
                 await self._conn.execute(
                     """INSERT INTO canonical_runs
                        (run_id, workspace_id, project_id, parent_run_id,
-                        parent_node_run_id, status, payload)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        parent_node_run_id, status, admission_source, payload)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         run.run_id,
                         run.workspace_id,
@@ -383,6 +395,7 @@ class SqliteRunStore:
                         run.parent_run_id,
                         run.parent_node_run_id,
                         run.status.value,
+                        run.provenance.get(ADMISSION_SOURCE),
                         json_of(run),
                     ),
                 )
@@ -414,6 +427,7 @@ class SqliteRunStore:
         project_id: str | None = None,
         workspace_id: str | None = None,
         after: tuple[str, str] | None = None,
+        admission_source: str | None = None,
     ) -> list[Run]:
         """Runs currently in ``status``, oldest first (#251).
 
@@ -435,6 +449,9 @@ class SqliteRunStore:
         if project_id is not None:
             sql += " AND project_id = ?"
             params.append(project_id)
+        if admission_source is not None:
+            sql += " AND admission_source = ?"
+            params.append(admission_source)
         if workspace_id is not None:
             sql += " AND workspace_id = ?"
             params.append(workspace_id)
@@ -556,6 +573,25 @@ class SqliteRunStore:
         )
         return await cursor.fetchone() is not None
 
+    async def _expired_purge_candidates(
+        self, scope: RetentionScope, cutoff: datetime, limit: int
+    ) -> list[tuple[str, Run]]:
+        candidates = await self._purge_candidates(scope, limit)
+        return [(run_id, run) for run_id, run in candidates if is_purgeable(run, cutoff)]
+
+    async def _purge_dependent_evidence(self, run_id_param: str) -> tuple[int, int]:
+        continuations = 0
+        for table, sql in _PURGE_DEPENDENT_SQL.items():
+            if await self._dependent_table_exists(table):
+                cursor = await self._conn.execute(sql, (run_id_param,))
+                continuations += max(cursor.rowcount, 0)
+        retained = 0
+        for table, sql in _RETAINED_REFERENCE_SQL.items():
+            if await self._dependent_table_exists(table):
+                row = await (await self._conn.execute(sql, (run_id_param,))).fetchone()
+                retained += int(row[0]) if row is not None else 0
+        return continuations, retained
+
     async def purge_expired_runs(
         self,
         scope: RetentionScope,
@@ -578,18 +614,12 @@ class SqliteRunStore:
             raise ValueError("limit must be positive")
         cutoff = now if now is not None else datetime.now(UTC)
         async with self._write_lock:
-            doomed: list[tuple[str, Run]] = []
             # One more candidate than the batch, so the outcome can say
             # whether the scope drained or the batch ran out.
-            for run_id, run in await self._purge_candidates(scope, limit + 1):
-                if not is_purgeable(run, cutoff):
-                    break
-                doomed.append((run_id, run))
+            doomed = await self._expired_purge_candidates(scope, cutoff, limit + 1)
             if not doomed:
                 return PurgeOutcome(scope=scope)
             purged = doomed[:limit]
-            if not purged:
-                return PurgeOutcome(scope=scope)
             # One json array parameter per statement: the id lists never
             # travel as interpolated SQL (see the statement constants above).
             run_id_param = json.dumps([run_id for run_id, _run in purged])
@@ -605,18 +635,7 @@ class SqliteRunStore:
             attempt_count = (await attempt_row.fetchone() or [0])[0]
             # Dependent evidence beyond the spine, in the same transaction:
             # owned resumable state deleted, retained provenance counted.
-            continuations = 0
-            for table, sql in _PURGE_DEPENDENT_SQL.items():
-                if not await self._dependent_table_exists(table):
-                    continue
-                cursor = await self._conn.execute(sql, (run_id_param,))
-                continuations += max(cursor.rowcount, 0)
-            retained = 0
-            for table, sql in _RETAINED_REFERENCE_SQL.items():
-                if not await self._dependent_table_exists(table):
-                    continue
-                row = await (await self._conn.execute(sql, (run_id_param,))).fetchone()
-                retained += int(row[0]) if row is not None else 0
+            continuations, retained = await self._purge_dependent_evidence(run_id_param)
             await self._conn.execute(_DELETE_ATTEMPTS_SQL, (run_id_param,))
             await self._conn.execute(_DELETE_NODE_RUNS_SQL, (run_id_param,))
             await self._conn.execute(_DELETE_RUNS_SQL, (run_id_param,))

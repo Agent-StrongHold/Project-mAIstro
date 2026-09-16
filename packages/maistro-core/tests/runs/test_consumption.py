@@ -13,6 +13,7 @@ import contextlib
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
+import aiosqlite
 import pytest
 from pydantic import BaseModel
 
@@ -20,8 +21,10 @@ from maistro.container import Container, create_container
 from maistro.graph import Graph, Node
 from maistro.graph.definitions import GraphTemplate
 from maistro.graph.nodes import BaseNode, NodeContext, register_node
+from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.model import RunStatus
 from maistro.runs.sources import ADMISSION_SOURCE, SCHEDULE_INPUTS_KEY, SCHEDULE_SOURCE
+from maistro.runs.sqlite_store import SqliteRunStore
 from maistro.runs.store import run_cursor_key
 from maistro.scheduling.model import Schedule
 from maistro.types.config import AgentConfig
@@ -299,6 +302,16 @@ async def test_list_by_status_returns_only_that_status_oldest_first(
     newer = await store.create_run(graph, initial_status=status)
     other_status = RunStatus.CREATED if status is RunStatus.QUEUED else RunStatus.QUEUED
     await store.create_run(graph, initial_status=other_status)
+    owned = await store.create_run(
+        graph,
+        initial_status=other_status,
+        provenance={ADMISSION_SOURCE: "owned"},
+    )
+    await store.create_run(
+        graph,
+        initial_status=other_status,
+        provenance={ADMISSION_SOURCE: "foreign"},
+    )
 
     listed = await store.list_by_status(status, limit=10)
 
@@ -312,9 +325,56 @@ async def test_list_by_status_returns_only_that_status_oldest_first(
 
     scoped = await store.list_by_status(status, limit=10, project_id=project_id)
     assert [run.run_id for run in scoped[:2]] == [older.run_id, newer.run_id]
+    assert [
+        run.run_id
+        for run in await store.list_by_status(
+            other_status,
+            limit=10,
+            admission_source="owned",
+        )
+    ] == [owned.run_id]
     assert await store.list_by_status(status, limit=10, project_id="project-elsewhere") == []
     with pytest.raises(ValueError):
         await store.list_by_status(status, limit=0)
+
+
+async def test_sqlite_run_schema_backfills_admission_source(tmp_path) -> None:
+    """A pre-ownership SQLite schema is upgraded without losing provenance."""
+    db_path = tmp_path / "legacy-runs.sqlite3"
+    async with aiosqlite.connect(db_path) as conn:
+        await conn.execute(
+            """CREATE TABLE canonical_runs (
+                run_id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                parent_run_id TEXT,
+                parent_node_run_id TEXT,
+                status TEXT NOT NULL,
+                payload TEXT NOT NULL
+            )"""
+        )
+        await conn.execute(
+            """INSERT INTO canonical_runs
+               (run_id, workspace_id, project_id, status, payload)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                "legacy-run",
+                "workspace-legacy",
+                "project-legacy",
+                RunStatus.QUEUED.value,
+                '{"provenance":{"admission_source":"legacy"}}',
+            ),
+        )
+        await conn.commit()
+        store = SqliteRunStore(conn, project_store=InMemoryProjectScopeStore())
+        await store.ensure_schema()
+        cursor = await conn.execute(
+            "SELECT admission_source FROM canonical_runs WHERE run_id = ?",
+            ("legacy-run",),
+        )
+        row = await cursor.fetchone()
+
+    assert row == ("legacy",)
 
 
 @pytest.mark.parametrize("status", [RunStatus.QUEUED, RunStatus.CREATED])
@@ -641,3 +701,35 @@ async def test_schedule_executor_requires_physical_claim_capability() -> None:
     store = InMemoryRunStore(project_store=InMemoryProjectScopeStore())
     with pytest.raises(RunIntegrityError, match="consumer claim capability"):
         ScheduleAttemptExecutor(store)
+
+
+@pytest.mark.asyncio
+async def test_postgres_purge_evidence_handles_optional_tables() -> None:
+    from maistro.runs.pg_store import PgRunStore
+
+    class _Connection:
+        def __init__(self, *, continuations: bool, events: bool) -> None:
+            self.continuations = continuations
+            self.events = events
+
+        async def fetchval(self, query: str, *args: object):
+            del args
+            if "graph_continuations" in query:
+                return self.continuations
+            if "canonical_event_log" in query:
+                return self.events
+            return 1
+
+        async def fetch(self, query: str, run_ids: list[str]):
+            del query, run_ids
+            return ["deleted"]
+
+    store = object.__new__(PgRunStore)
+    assert await store._purge_evidence(_Connection(continuations=False, events=False), ["run"]) == (
+        0,
+        0,
+    )
+    assert await store._purge_evidence(_Connection(continuations=True, events=True), ["run"]) == (
+        1,
+        1,
+    )

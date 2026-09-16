@@ -195,12 +195,14 @@ def _run_matches_status_scope(
     status: RunStatus,
     project_id: str | None,
     workspace_id: str | None,
+    admission_source: str | None = None,
 ) -> bool:
     """Whether one Run belongs in a status/scope listing."""
     return (
         run.status is status
         and (project_id is None or run.project_id == project_id)
         and (workspace_id is None or run.workspace_id == workspace_id)
+        and (admission_source is None or run.provenance.get(ADMISSION_SOURCE) == admission_source)
     )
 
 
@@ -303,6 +305,10 @@ class PurgeOutcome:
     event_references_retained: int = 0
     schedule_claims_released: int = 0
     backlog_remaining: bool = False
+
+    def __post_init__(self) -> None:
+        if self.event_references_retained < 0 or self.schedule_claims_released < 0:
+            raise ValueError("purge evidence counters cannot be negative")
 
     @property
     def workspace_id(self) -> str | None:
@@ -440,6 +446,7 @@ class RunStore(Protocol):
         project_id: str | None = None,
         workspace_id: str | None = None,
         after: RunCursor | None = None,
+        admission_source: str | None = None,
     ) -> list[Run]: ...
 
     async def non_terminal_run_stats(self) -> tuple[int, datetime | None]: ...
@@ -733,6 +740,38 @@ class InMemoryRunStore:
             if node_run.run_id == run_id
         )
 
+    def _purge_candidates(
+        self,
+        scope: RetentionScope,
+        cutoff: datetime,
+        parent_runs: set[str],
+        parent_node_runs: set[str],
+    ) -> list[Run]:
+        return [
+            run
+            for run in self._runs.values()
+            if run_in_purge_scope(run, scope)
+            and is_purgeable(run, cutoff)
+            and not self._has_child(run.run_id, parent_runs, parent_node_runs)
+        ]
+
+    def _selected_dependents(self, selected_ids: set[str]) -> tuple[set[str], int]:
+        node_runs = {
+            node_run_id
+            for node_run_id, node_run in self._node_runs.items()
+            if node_run.run_id in selected_ids
+        }
+        attempts = sum(attempt.node_run_id in node_runs for attempt in self._attempts.values())
+        return node_runs, attempts
+
+    async def _delete_selected_continuations(self, selected_ids: set[str]) -> int:
+        if self._continuation_store is None:
+            return 0
+        deleted = 0
+        for run_id in selected_ids:
+            deleted += await self._continuation_store.delete(run_id)
+        return deleted
+
     async def purge_expired_runs(
         self,
         scope: RetentionScope,
@@ -771,30 +810,13 @@ class InMemoryRunStore:
             raise ValueError("limit must be positive")
         cutoff = now if now is not None else datetime.now(UTC)
         parent_runs, parent_node_runs = self._referenced_by_children()
-        doomed = [
-            run
-            for run in self._runs.values()
-            if run_in_purge_scope(run, scope)
-            and is_purgeable(run, cutoff)
-            and not self._has_child(run.run_id, parent_runs, parent_node_runs)
-        ]
+        doomed = self._purge_candidates(scope, cutoff, parent_runs, parent_node_runs)
         selected = doomed[:limit]
         selected_ids = {run.run_id for run in selected}
-        node_runs_of_selected = {
-            node_run_id
-            for node_run_id, node_run in self._node_runs.items()
-            if node_run.run_id in selected_ids
-        }
-        attempts = sum(
-            1 for attempt in self._attempts.values() if attempt.node_run_id in node_runs_of_selected
-        )
+        node_runs_of_selected, attempts = self._selected_dependents(selected_ids)
         for run in selected:
             self._forget_run(run.run_id)
-        continuations = 0
-        if self._continuation_store is not None:
-            for run_id in selected_ids:
-                if await self._continuation_store.delete(run_id):
-                    continuations += 1
+        continuations = await self._delete_selected_continuations(selected_ids)
         return PurgeOutcome(
             scope=scope,
             runs=len(selected),
@@ -910,6 +932,7 @@ class InMemoryRunStore:
         project_id: str | None = None,
         workspace_id: str | None = None,
         after: RunCursor | None = None,
+        admission_source: str | None = None,
     ) -> list[Run]:
         """Runs currently in ``status``, oldest first.
 
@@ -918,10 +941,10 @@ class InMemoryRunStore:
         diverging on query surface. Oldest-first, so a bounded tick drains a
         backlog fairly instead of starving what arrived first.
 
-        A caller that needs to see *every* row eventually, rather than only the
-        oldest page, passes ``offset`` and walks it: the resume tick does, because
-        its filter is applied after the query and a standing prefix of ineligible
-        rows would otherwise hide everything behind it forever (#666 review).
+        ``admission_source`` is an indexed ownership filter applied before
+        ``limit``. A caller using a broader compatibility predicate can walk
+        every row with the exclusive ``after`` cursor, so an ineligible prefix
+        cannot hide eligible work forever (#666 review).
         """
         if limit <= 0:
             raise ValueError("limit must be positive")
@@ -936,6 +959,7 @@ class InMemoryRunStore:
                     status=status,
                     project_id=project_id,
                     workspace_id=workspace_id,
+                    admission_source=admission_source,
                 )
             ),
             key=run_cursor_key,

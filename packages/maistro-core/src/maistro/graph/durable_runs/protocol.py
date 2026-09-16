@@ -29,6 +29,7 @@ class DurableRunStore(Protocol):
         limit: int = 100,
         project_id: str | None = None,
         workspace_id: str | None = None,
+        admission_source: str | None = None,
         after: tuple[str, str] | None = None,
     ) -> list[DurableRunRecord]:
         """Records in ``status``, oldest-created-first.
@@ -44,6 +45,7 @@ class DurableRunStore(Protocol):
         *,
         now: datetime,
         limit: int = 100,
+        admission_source: str | None = None,
         after: tuple[str, str] | None = None,
     ) -> list[DurableRunRecord]:
         """Return persisted graph continuations whose timed resume is due.

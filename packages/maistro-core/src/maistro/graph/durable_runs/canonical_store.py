@@ -332,6 +332,7 @@ class CanonicalDurableRunStore:
         limit: int = 100,
         project_id: str | None = None,
         workspace_id: str | None = None,
+        admission_source: str | None = None,
         after: tuple[str, str] | None = None,
     ) -> list[DurableRunRecord]:
         if workspace_id is None:
@@ -339,6 +340,7 @@ class CanonicalDurableRunStore:
                 status,
                 limit=limit,
                 project_id=project_id,
+                admission_source=admission_source,
                 after=after,
             )
         else:
@@ -350,6 +352,7 @@ class CanonicalDurableRunStore:
                 limit=limit,
                 project_id=project_id,
                 workspace_id=workspace_id,
+                admission_source=admission_source,
                 after=after,
             )
             run_ids = [run.run_id for run in runs]
@@ -361,9 +364,12 @@ class CanonicalDurableRunStore:
         *,
         now: datetime,
         limit: int = 100,
+        admission_source: str | None = None,
         after: tuple[str, str] | None = None,
     ) -> list[DurableRunRecord]:
-        run_ids = await self._continuations.list_due_run_ids(now=now, limit=limit, after=after)
+        run_ids = await self._continuations.list_due_run_ids(
+            now=now, limit=limit, admission_source=admission_source, after=after
+        )
         records = await self._assemble_all(run_ids)
         return [
             record
@@ -378,6 +384,7 @@ class CanonicalDurableRunStore:
         *,
         now: datetime,
         limit: int = 100,
+        admission_source: str | None = None,
         after: tuple[str, str] | None = None,
         max_inspected: int = DEFAULT_MAX_INSPECTED,
     ) -> ScanPage[DurableRunRecord, tuple[str, str]]:
@@ -406,7 +413,10 @@ class CanonicalDurableRunStore:
         inspected = 0
         while len(due) < limit and inspected < max_inspected:
             run_ids = await self._continuations.list_due_run_ids(
-                now=now, limit=min(limit, max_inspected - inspected), after=cursor
+                now=now,
+                limit=min(limit, max_inspected - inspected),
+                admission_source=admission_source,
+                after=cursor,
             )
             if not run_ids:
                 return ScanPage(items=due, resume_after=cursor, inspected=inspected, exhausted=True)

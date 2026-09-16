@@ -114,6 +114,10 @@ EXEMPT: tuple[tuple[str, str], ...] = (
         "test code is the evidence, not the thing evidenced",
     ),
     (
+        "formal/models/test_memory_scopes.py",
+        "formal conformance model; the formal workflow measures it separately",
+    ),
+    (
         "/conftest.py",
         "fixtures are exercised by the tests that request them",
     ),

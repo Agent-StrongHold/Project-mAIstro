@@ -52,13 +52,14 @@ class DuePageScanner(Protocol):
         *,
         now: datetime,
         limit: int = 100,
+        admission_source: str | None = None,
         after: tuple[str, str] | None = None,
         max_inspected: int = DEFAULT_MAX_INSPECTED,
     ) -> ScanPage[DurableRunRecord, tuple[str, str]]: ...
 
 
 def _due_page_fetcher(
-    store: DurableRunStore, moment: datetime
+    store: DurableRunStore, moment: datetime, admission_source: str | None = None
 ) -> Callable[
     [tuple[str, str] | None, int],
     Awaitable[list[DurableRunRecord] | ScanPage[DurableRunRecord, tuple[str, str]]],
@@ -83,14 +84,26 @@ def _due_page_fetcher(
             # filtering page from overshooting the advertised ceiling: without
             # it the scanner would walk its own independent 2,000 rows on top
             # of whatever the walker had already spent.
+            if admission_source is None:
+                return await scanner.scan_due_page(
+                    now=moment, limit=page_size, after=cursor, max_inspected=page_size
+                )
             return await scanner.scan_due_page(
-                now=moment, limit=page_size, after=cursor, max_inspected=page_size
+                now=moment,
+                limit=page_size,
+                admission_source=admission_source,
+                after=cursor,
+                max_inspected=page_size,
             )
 
         return scan
 
     async def listing(cursor: tuple[str, str] | None, page_size: int) -> list[DurableRunRecord]:
-        return await store.list_due(now=moment, limit=page_size, after=cursor)
+        if admission_source is None:
+            return await store.list_due(now=moment, limit=page_size, after=cursor)
+        return await store.list_due(
+            now=moment, limit=page_size, admission_source=admission_source, after=cursor
+        )
 
     return listing
 
@@ -125,6 +138,7 @@ async def resume_due_graph_runs(
     now: datetime | None = None,
     limit: int = 100,
     eligible: QueuedRunPredicate | None = None,
+    admission_source: str | None = None,
     events: RecoveryEventSink | None = None,
     scan: ScanContinuation[tuple[str, str]] | None = None,
 ) -> int:
@@ -184,7 +198,7 @@ async def resume_due_graph_runs(
         return eligible is None or eligible(candidate.run)
 
     candidates = await fair_page_scan(
-        fetch_page=_due_page_fetcher(store, moment),
+        fetch_page=_due_page_fetcher(store, moment, admission_source),
         cursor_of=_due_cursor_key,
         eligible=_combined_eligible,
         limit=limit,
@@ -375,6 +389,7 @@ async def recover_queued_graph_runs(
     eligible: QueuedRunPredicate,
     runtime: ExecutionRuntime | None = None,
     limit: int = 100,
+    admission_source: str | None = None,
     events: RecoveryEventSink | None = None,
     scan: ScanContinuation[tuple[str, str]] | None = None,
 ) -> int:
@@ -413,8 +428,8 @@ async def recover_queued_graph_runs(
 
     await _reconcile_if_supported(store, limit=limit)
     candidates = await fair_page_scan(
-        fetch_page=lambda cursor, page_size: run_store.list_by_status(
-            RunStatus.QUEUED, limit=page_size, after=cursor
+        fetch_page=lambda cursor, page_size: _list_queued_page(
+            run_store, page_size=page_size, after=cursor, admission_source=admission_source
         ),
         cursor_of=run_cursor_key,
         eligible=eligible,
@@ -433,6 +448,23 @@ async def recover_queued_graph_runs(
         ):
             recovered += 1
     return recovered
+
+
+async def _list_queued_page(
+    run_store: RunStore,
+    *,
+    page_size: int,
+    after: tuple[str, str] | None,
+    admission_source: str | None,
+) -> list[Run]:
+    if admission_source is None:
+        return await run_store.list_by_status(RunStatus.QUEUED, limit=page_size, after=after)
+    return await run_store.list_by_status(
+        RunStatus.QUEUED,
+        limit=page_size,
+        admission_source=admission_source,
+        after=after,
+    )
 
 
 def _require_resolver_choice(

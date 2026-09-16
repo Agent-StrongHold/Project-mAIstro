@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 from maistro.runs.evidence_json import decode_payload
 from maistro.runs.model import RunStatus
 
-from .continuation import GraphContinuation
+from .continuation import GraphContinuation, _cursor_text
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import asyncpg
@@ -36,9 +36,9 @@ class PgGraphContinuationStore:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """INSERT INTO graph_continuations
-                       (run_id, status, project_id, created_at, resume_at,
+                       (run_id, status, project_id, admission_source, created_at, resume_at,
                         hitl_deadline_at, version, continuation)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text::jsonb)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::text::jsonb)
                    ON CONFLICT (run_id) DO NOTHING
                    RETURNING run_id""",
                 *_values(continuation),
@@ -62,9 +62,10 @@ class PgGraphContinuationStore:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """UPDATE graph_continuations
-                      SET status = $2, project_id = $3, created_at = $4, resume_at = $5,
-                          hitl_deadline_at = $6, version = $7, continuation = $8::text::jsonb
-                    WHERE run_id = $1 AND version < $7
+                      SET status = $2, project_id = $3, admission_source = $4, created_at = $5,
+                          resume_at = $6, hitl_deadline_at = $7, version = $8,
+                          continuation = $9::text::jsonb
+                    WHERE run_id = $1 AND version < $8
                 RETURNING run_id""",
                 *_values(continuation),
             )
@@ -92,18 +93,20 @@ class PgGraphContinuationStore:
         *,
         limit: int = 100,
         project_id: str | None = None,
+        admission_source: str | None = None,
         after: tuple[str, str] | None = None,
     ) -> list[str]:
         sql = (
             "SELECT run_id FROM graph_continuations "
-            "WHERE status = $1 AND ($2::text IS NULL OR project_id = $2)"
+            "WHERE status = $1 AND ($2::text IS NULL OR project_id = $2) "
+            "AND ($3::text IS NULL OR admission_source = $3)"
         )
-        params: list[Any] = [status.value, project_id]
+        params: list[Any] = [status.value, project_id, admission_source]
         if after is not None:
             after_created, after_run_id = after
             cursor_param = len(params) + 1
             sql += f" AND (created_at, run_id) > (${cursor_param}, ${cursor_param + 1})"
-            params.extend([datetime.fromisoformat(after_created), after_run_id])
+            params.extend([datetime.fromisoformat(_cursor_text(after_created)), after_run_id])
         sql += f" ORDER BY created_at ASC, run_id ASC LIMIT ${len(params) + 1}"
         params.append(limit)
         async with self._pool.acquire() as conn:
@@ -115,24 +118,27 @@ class PgGraphContinuationStore:
         *,
         now: datetime,
         limit: int = 100,
+        admission_source: str | None = None,
         after: tuple[str, str] | None = None,
     ) -> list[str]:
         """Use persisted wait/claim deadlines to find bounded recovery candidates."""
         sql = """SELECT run_id FROM graph_continuations
                     WHERE status IN ($1, $2, $3)
                       AND resume_at IS NOT NULL
-                      AND resume_at <= $4"""
+                      AND resume_at <= $4
+                      AND ($5::text IS NULL OR admission_source = $5)"""
         params: list[Any] = [
             RunStatus.WAITING.value,
             RunStatus.PAUSED.value,
             RunStatus.RUNNING.value,
             now,
+            admission_source,
         ]
         if after is not None:
             after_resume_at, after_run_id = after
             cursor_param = len(params) + 1
             sql += f" AND (resume_at, run_id) > (${cursor_param}, ${cursor_param + 1})"
-            params.extend([datetime.fromisoformat(after_resume_at), after_run_id])
+            params.extend([datetime.fromisoformat(_cursor_text(after_resume_at)), after_run_id])
         sql += f" ORDER BY resume_at ASC, run_id ASC LIMIT ${len(params) + 1}"
         params.append(limit)
         async with self._pool.acquire() as conn:
@@ -172,6 +178,7 @@ def _values(continuation: GraphContinuation) -> tuple[Any, ...]:
         continuation.run_id,
         continuation.status.value,
         continuation.project_id,
+        continuation.admission_source,
         continuation.created_at,
         continuation.resume_at,
         continuation.hitl_deadline_at,

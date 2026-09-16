@@ -178,6 +178,8 @@ def test_scope_filter_isolation_property(scope, agent_id, user_id, team_id, org_
         agent_id=agent_id if scope == MemoryScope.AGENT else None,
         user_id=user_id if scope == MemoryScope.USER else None,
         team_id=team_id if scope == MemoryScope.TEAM else None,
-        org_id=org_id if scope in (MemoryScope.ORGANIZATION, MemoryScope.TEAM) else None,
+        # A bound GLOBAL memory is visible only with its tenant context; an
+        # absent caller org is intentionally not a wildcard (ADR-083026-a322).
+        org_id=org_id if scope in (MemoryScope.GLOBAL, MemoryScope.ORGANIZATION, MemoryScope.TEAM) else None,
     )
     assert matches_scope(mem, filters)
