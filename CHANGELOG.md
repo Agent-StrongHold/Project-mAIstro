@@ -25,6 +25,28 @@ or placeholder-only section.
 
 ### Security
 
+- **Canonical Event payloads are scrubbed of credential material before any
+  backend can persist them (#1164).** `EventEnvelope` now redacts `payload`
+  and `provenance` in its constructor — the one seam the memory, SQLite,
+  PostgreSQL and outbox paths all already go through for their size bound — so
+  a token pasted into an event can no longer reach durable storage, a replay,
+  or an operator's inspection of the event log. Both halves of #1159's policy
+  apply: a field whose *name* classifies as credential material
+  (`api_key`, `private_key`, `ssh_key`, a bare `key`, …) loses its value, and
+  every surviving string is scanned for secret *shapes* (Slack and AWS
+  credentials, bearer assignments, PEM blocks, high-entropy runs). Identifiers
+  are preserved — `key_arn`, `token_id`, digests, uuid4 ids and ordinary prose
+  survive untouched — and the scrub is idempotent, so re-validating a staged
+  envelope does not rewrite already-recorded evidence. Rows written before this
+  change are read back exactly as they were recorded rather than re-scrubbed on
+  read. Mapping *keys* are scanned too, so a token-indexed object cannot carry
+  the credential past the scrub in its key, with two keys that redact to the
+  same label kept distinct rather than collapsed. A `key` that names what it
+  identifies (`effect_key`, `idempotency_key`, `partition_key`, `parent_key`,
+  …) now classifies as an identifier in `maistro.security.secret_policy`, so
+  the canonical capability events keep the `effect_key` that audit and replay
+  consumers join on. The byte ceiling is re-checked after the scrub, because
+  redaction can grow a field that passed the ceiling as submitted.
 - **An identity-free chat turn is routed as the anonymous principal again
   (#1165 regression, introduced by #1288).** `Container.route_request` had
   stopped substituting `ANONYMOUS_AUTH` for `auth=None`, so a turn that
@@ -205,6 +227,36 @@ or placeholder-only section.
   `TypeError` at the call site instead of a wrong terminal status at runtime.
 
 ### Fixed
+
+- **`/v1/hitl/pending` pages by instant, not by printed offset (#1109).** The
+  keyset cursor this scan walks was normalized to UTC in every store, so
+  `list_by_status` compares a normalized key -- but the route still built its
+  cursor with a bare `.isoformat()`. The two agree only while every
+  `created_at` prints the same offset, which is the assumption the
+  normalization exists to remove: a row printed at another offset orders one
+  way and filters the other, and the walk stops advancing, hiding the human
+  pause it was paging toward. The route now spells its cursor with the same
+  `cursor_time` helper the stores use.
+
+- **Bounded recovery scans page by instant, bound their own inspection, and no
+  longer strand a half-claimed Run (#1098, #1056, #1109, #1127).** Three
+  defects found reviewing the fair-scan work, each of which defeated the
+  starvation fix it was part of. Keyset cursors ordered rows as timestamps but
+  paged past them by comparing the printed ISO strings, which agree only while
+  every row prints the same offset -- `01:00+01:00` is the earlier instant than
+  `00:30+00:00` yet its string sorts after, so a cursor taken at the first row
+  excluded the second from every later page, permanently; cursor keys and the
+  index columns written beside them are now normalized to UTC (PostgreSQL was
+  already correct, so the three store backends had silently disagreed).
+  `CanonicalDurableRunStore.scan_due_page` kept an inspection ceiling
+  independent of the walker's, letting one nominally 2,000-row tick inspect
+  nearly twice that; the walker's remaining budget is now passed through.
+  And `recover_queued_graph_runs` reported *every* unexpected failure as
+  candidate-local, including one raised after the candidate was already
+  checkpointed and moved to RUNNING -- which stranded that Run permanently,
+  since the QUEUED scan no longer returns it and the due index never held it;
+  a partial claim now raises instead of being swallowed, while a candidate
+  left untouched is still isolated so the tick carries on.
 
 - **The Chat and Deck Builder pages render again over plain HTTP (#1476;
   regression from #1344).** #1344 moved message, session and slide ids off `Math.random`
@@ -392,6 +444,46 @@ or placeholder-only section.
   a convergence import) asked the process's local timezone to interpret it —
   the same stored row would decode to a different instant depending on which
   host read it.
+
+- **Bounded recovery and HITL scans can no longer be starved by an ineligible
+  prefix ahead of the eligible work behind it (#1098, #1056, #1109, #1127).**
+  `recover_queued_graph_runs`, `resume_due_graph_runs`, `expire_hitl_pauses`,
+  and `GET /v1/hitl/pending` previously queried a fixed-size page and filtered
+  eligibility afterward: if more rows than the tick's `limit`/the caller's
+  page ahead of the eligible ones belonged to another consumer, had no
+  deadline yet, or were machine-only pauses, every tick re-read the same
+  prefix and the eligible work behind it was never reached, even though it
+  was durably correct and its deadline had passed. All four now page the
+  underlying store with an advancing keyset cursor and filter as they walk,
+  bounded by a fixed inspection ceiling per call so one pathological prefix
+  cannot turn a single tick into an unbounded scan — and the three recovery
+  ticks (`recover_queued_graph_runs`, `resume_due_graph_runs`,
+  `expire_hitl_pauses`) take a `ScanContinuation` the caller holds across
+  ticks, so each tick resumes after the last row the previous one inspected
+  and restarts from the top only once it has walked off the end: a prefix
+  longer than the per-tick ceiling is crossed within a bounded number of
+  ticks instead of never. Hive's recovery runner and HITL expiry route hold
+  one per (seam, store). `DurableRunStore` and `GraphContinuationStore`
+  (memory, SQLite, PostgreSQL) gained an `after` keyset-cursor parameter on
+  their status/due listings to support this. A store that filters its own
+  page reports progress and results separately, so a page that yields nothing
+  is no longer mistaken for the end of the index: `CanonicalDurableRunStore`
+  drops due-index rows whose canonical Run has since gone terminal, and a
+  settled prefix longer than one page previously reset the scan to the top on
+  every tick and hid the live Run behind it.
+
+- **A candidate-local failure during Graph recovery no longer aborts the
+  whole tick (#1143).** `recover_queued_graph_runs` and
+  `resume_due_graph_runs` previously let any exception other than
+  `LiveAttemptOwned` (and a narrow already-settled `KeyError`/`ValueError`
+  recheck) escape the per-candidate loop, so one Run whose resume path
+  raised — a resolver bug, a downstream API error — silently abandoned every
+  other due/queued candidate in the same batch. An unexpected failure tied to
+  one candidate is now logged and isolated: the candidate's durable state is
+  left untouched for a later retry, and later independent candidates in the
+  same tick are still attempted. A failure raised while listing candidates
+  (the store/session itself) still aborts the tick, since that failure
+  invalidates the whole scan rather than one Run.
 
 - **A resumed scheduled Attempt now carries the same crash-recovery lease as
   its first physical try (#1112, #1124).** `ScheduleAttemptExecutor`'s resume
