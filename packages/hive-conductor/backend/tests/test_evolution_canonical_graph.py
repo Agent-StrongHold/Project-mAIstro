@@ -6,7 +6,12 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from services.evolution_graph import _evaluate_one, run_canonical_evolution_cycle
+from services.evolution_graph import (
+    _evaluate_one,
+    _finalize_cycle,
+    _recovery_resolver,
+    run_canonical_evolution_cycle,
+)
 
 import maistro_evolve.cycle as cycle_module
 from maistro.graph.durable_runs import (
@@ -361,6 +366,75 @@ async def test_failed_evaluation_attempt_does_not_publish_partial_scores(
     physical = NodeResult.model_validate(attempts[0].result)
     assert physical.success is False
     assert physical.error_code == "RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_finalization_publication_replays_without_breeding_twice() -> None:
+    population = _Population([_Genome("g1"), _Genome("g2")])
+    cycle = _Cycle(harness=_Harness(), tournament=_Tournament())
+    output = await _finalize_cycle(
+        cycle,
+        population,
+        _config(population_size=3, eval_batch_size=0),
+        None,
+        publication_id="run-1:finalize-node",
+    )
+    assert output.publication_id == "run-1:finalize-node"
+    first_ids = sorted(genome.id for genome in population.list_all())
+    first_cycle_count = cycle._cycle_count
+
+    replay = await _finalize_cycle(
+        cycle,
+        population,
+        _config(population_size=3, eval_batch_size=0),
+        None,
+        publication_id="run-1:finalize-node",
+    )
+    assert replay == output
+    assert sorted(genome.id for genome in population.list_all()) == first_ids
+    assert cycle._cycle_count == first_cycle_count
+
+
+@pytest.mark.asyncio
+async def test_recovery_resolver_reconstructs_durable_evolve_collaborators(tmp_path) -> None:
+    from maistro_evolve.cycle import EvolutionConfig
+    from maistro_evolve.population import PopulationStore
+    from maistro_evolve.tournament import EloTournament
+
+    population_path = tmp_path / "population.sqlite3"
+    tournament_path = tmp_path / "tournament.json"
+    PopulationStore(population_path)
+    EloTournament(state_path=str(tournament_path)).record_battle("proxy", "a", "b", 1.0, 0.0)
+    run = SimpleNamespace(
+        run_id="run-recovery",
+        provenance={
+            "evolve_domain": {
+                "population_ref": str(population_path),
+                "tournament_ref": str(tournament_path),
+                "config": EvolutionConfig(self_improve=False).model_dump(),
+                "cycle_number": 4,
+            }
+        },
+    )
+
+    resolver = _recovery_resolver(run)
+    assert resolver.__closure__ is not None
+
+    from services.evolution_graph import EvolveRecoveryBlocked
+
+    with pytest.raises(EvolveRecoveryBlocked, match="unavailable"):
+        _recovery_resolver(
+            SimpleNamespace(
+                run_id="missing",
+                provenance={
+                    "evolve_domain": {
+                        "population_ref": str(tmp_path / "gone.sqlite3"),
+                        "tournament_ref": str(tournament_path),
+                        "config": EvolutionConfig().model_dump(),
+                    }
+                },
+            )
+        )
 
 
 @pytest.mark.asyncio

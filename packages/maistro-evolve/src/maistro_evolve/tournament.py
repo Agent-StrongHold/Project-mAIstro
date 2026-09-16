@@ -53,14 +53,58 @@ class GenomeBattle:
     score_a: float = 0.0
     score_b: float = 0.0
     timestamp: float = field(default_factory=time.time)
+    # Canonical logical publication identity. It is empty for legacy/library
+    # callers that do not participate in Graph recovery.
+    publication_id: str = ""
 
 
 class EloTournament:
-    def __init__(self, k_factor: float = _K_FACTOR) -> None:
+    def __init__(self, k_factor: float = _K_FACTOR, state_path: str | None = None) -> None:
         self._ratings: dict[tuple[str, str], GenomeRating] = {}
         self._battles: list[GenomeBattle] = []
+        self._publications: dict[str, GenomeBattle] = {}
         self._next_id: int = 1
         self._k_factor = k_factor
+        self._state_path = state_path
+        if state_path is not None:
+            self._load_state()
+            if not self._battles:
+                self._persist_state()
+
+    def _load_state(self) -> None:
+        import json
+        from pathlib import Path
+
+        path = Path(self._state_path or "")
+        if not path.exists():
+            return
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        self._next_id = int(raw.get("next_id", 1))
+        for item in raw.get("battles", []):
+            battle = GenomeBattle(**item)
+            self._battles.append(battle)
+            if battle.publication_id:
+                self._publications[battle.publication_id] = battle
+        for item in raw.get("ratings", []):
+            rating = GenomeRating(**item)
+            self._ratings[(rating.genome_id, rating.benchmark)] = rating
+
+    def _persist_state(self) -> None:
+        if self._state_path is None:
+            return
+        import json
+        from pathlib import Path
+
+        path = Path(self._state_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        payload = {
+            "next_id": self._next_id,
+            "battles": [battle.__dict__ for battle in self._battles],
+            "ratings": [rating.__dict__ for rating in self._ratings.values()],
+        }
+        temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+        temporary.replace(path)
 
     def _get_rating(self, genome_id: str, benchmark: str) -> GenomeRating:
         key = (genome_id, benchmark)
@@ -75,7 +119,67 @@ class EloTournament:
         genome_b_id: str,
         score_a: float,
         score_b: float,
+        publication_id: str | None = None,
     ) -> GenomeBattle:
+        if self._state_path is None:
+            return self._record_battle(
+                benchmark,
+                genome_a_id,
+                genome_b_id,
+                score_a,
+                score_b,
+                publication_id,
+            )
+
+        import fcntl
+        from pathlib import Path
+
+        lock_path = Path(self._state_path).with_suffix(Path(self._state_path).suffix + ".lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                self._ratings.clear()
+                self._battles.clear()
+                self._publications.clear()
+                self._load_state()
+                return self._record_battle(
+                    benchmark,
+                    genome_a_id,
+                    genome_b_id,
+                    score_a,
+                    score_b,
+                    publication_id,
+                )
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+    def _record_battle(
+        self,
+        benchmark: str,
+        genome_a_id: str,
+        genome_b_id: str,
+        score_a: float,
+        score_b: float,
+        publication_id: str | None = None,
+    ) -> GenomeBattle:
+        if publication_id:
+            prior = self._publications.get(publication_id)
+            if prior is not None:
+                expected = (
+                    prior.benchmark,
+                    prior.genome_a_id,
+                    prior.genome_b_id,
+                    prior.score_a,
+                    prior.score_b,
+                )
+                actual = (benchmark, genome_a_id, genome_b_id, score_a, score_b)
+                if expected != actual:
+                    raise ValueError(
+                        f"battle publication {publication_id!r} was reused for different work"
+                    )
+                return prior
+
         if score_a > score_b:
             winner_id = genome_a_id
         elif score_b > score_a:
@@ -91,7 +195,13 @@ class EloTournament:
             winner_id=winner_id,
             score_a=score_a,
             score_b=score_b,
+            publication_id=publication_id or "",
         )
+        # Register the logical identity before changing ratings. A retry can
+        # therefore distinguish a committed publication even after the caller
+        # lost the Attempt completion race.
+        if publication_id:
+            self._publications[publication_id] = battle
         self._next_id += 1
         self._battles.append(battle)
 
@@ -116,6 +226,7 @@ class EloTournament:
 
         ra.elo += self._k_factor * (actual_a - expected_a)
         rb.elo += self._k_factor * (actual_b - expected_b)
+        self._persist_state()
 
         return battle
 

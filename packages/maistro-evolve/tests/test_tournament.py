@@ -140,3 +140,20 @@ class TestEloTournament:
         assert stats["total_battles"] == 2
         assert stats["total_genomes_rated"] == 2
         assert stats["benchmarks_tracked"] == 2
+
+    def test_logical_publication_is_idempotent_and_survives_reopen(self, tmp_path):
+        state_path = tmp_path / "tournament.json"
+        t = EloTournament(state_path=str(state_path))
+        first = t.record_battle("proxy_ifeval", "g1", "g2", 0.8, 0.4, "run:node:proxy_ifeval")
+        second = t.record_battle("proxy_ifeval", "g1", "g2", 0.8, 0.4, "run:node:proxy_ifeval")
+        assert second.id == first.id
+        assert t.get_stats()["total_battles"] == 1
+        assert t.get_elo("g1", "proxy_ifeval") == pytest.approx(1216.0)
+
+        reopened = EloTournament(state_path=str(state_path))
+        replay = reopened.record_battle(
+            "proxy_ifeval", "g1", "g2", 0.8, 0.4, "run:node:proxy_ifeval"
+        )
+        assert replay.id == first.id
+        assert reopened.get_stats()["total_battles"] == 1
+        assert reopened.get_elo("g1", "proxy_ifeval") == pytest.approx(1216.0)

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import copy
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 from .audit import GenomeAuditTrail
 from .types import PipelineGenome
@@ -24,6 +26,7 @@ def _fitness_key(genome: PipelineGenome) -> float:
 class PopulationStore:
     def __init__(self, db_path: str | Path | None = None) -> None:
         self._store: dict[str, PipelineGenome] = {}
+        self._publications: dict[str, dict[str, Any]] = {}
         self._db_path: str | None
         if db_path is not None:
             self._db_path = str(db_path)
@@ -42,6 +45,19 @@ class PopulationStore:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS evolve_publications (
+                publication_id TEXT PRIMARY KEY,
+                data TEXT NOT NULL
+            )
+            """
+        )
+        rows = conn.execute("SELECT publication_id, data FROM evolve_publications").fetchall()
+        for publication_id, data in rows:
+            import json
+
+            self._publications[publication_id] = json.loads(data)
         conn.commit()
         conn.close()
 
@@ -67,6 +83,73 @@ class PopulationStore:
     def add(self, genome: PipelineGenome) -> None:
         self._store[genome.id] = genome
         self._persist(genome)
+
+    def get_publication(self, publication_id: str) -> dict[str, Any] | None:
+        """Return the durable journal entry for one logical finalization."""
+        entry = self._publications.get(publication_id)
+        return copy.deepcopy(entry) if entry is not None else None
+
+    def latest_cycle_count(self) -> int:
+        """Return the highest durably committed logical cycle number."""
+        return max(
+            (
+                int(entry.get("metadata", {}).get("cycle_count", 0))
+                for entry in self._publications.values()
+            ),
+            default=0,
+        )
+
+    def commit_publication(
+        self,
+        publication_id: str,
+        genomes: list[PipelineGenome],
+        metadata: dict[str, Any],
+    ) -> None:
+        """Atomically publish staged genomes and their canonical journal entry."""
+        existing = self._publications.get(publication_id)
+        if existing is not None:
+            return
+        payload = {"metadata": copy.deepcopy(metadata)}
+        if self._db_path is None:
+            self._store = {genome.id: copy.deepcopy(genome) for genome in genomes}
+            self._publications[publication_id] = payload
+            return
+
+        import json
+
+        assert self._db_path is not None
+        conn = sqlite3.connect(self._db_path)
+        try:
+            conn.execute("BEGIN")
+            conn.execute("DELETE FROM genomes")
+            conn.executemany(
+                "INSERT INTO genomes (id, data) VALUES (?, ?)",
+                [(genome.id, genome.model_dump_json()) for genome in genomes],
+            )
+            conn.execute(
+                "INSERT INTO evolve_publications (publication_id, data) VALUES (?, ?)",
+                (publication_id, json.dumps(payload, sort_keys=True)),
+            )
+            conn.commit()
+        except sqlite3.IntegrityError:
+            conn.rollback()
+            row = conn.execute(
+                "SELECT data FROM evolve_publications WHERE publication_id = ?",
+                (publication_id,),
+            ).fetchone()
+            if row is None:
+                raise
+            import json
+
+            self._publications[publication_id] = json.loads(row[0])
+            return
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        self._store = {genome.id: copy.deepcopy(genome) for genome in genomes}
+        self._publications[publication_id] = payload
 
     def get(self, genome_id: str) -> PipelineGenome | None:
         if genome_id in self._store:
