@@ -152,16 +152,9 @@ async def seed_population(body: SeedPopulationBody) -> dict:
     try:
         from services.evolution import get_evolution_service
 
-        from maistro_evolve.diversity import emergency_spawn
-
         svc = get_evolution_service()
-        if svc.population is None:
-            raise HTTPException(status_code=503, detail="population not initialized")
-        existing = svc.population.list_all()
-        spawned = emergency_spawn(existing, body.count)
-        for g in spawned:
-            svc.population.add(g)
-        return {"seeded": len(spawned), "population_size": len(svc.population.list_all())}
+        seeded, population_size = await svc.seed_population(body.count)
+        return {"seeded": seeded, "population_size": population_size}
     except RuntimeError:
         raise HTTPException(status_code=503, detail="evolution service not started") from None
 
