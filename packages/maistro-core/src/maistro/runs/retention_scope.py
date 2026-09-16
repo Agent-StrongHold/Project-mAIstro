@@ -89,7 +89,7 @@ class GlobalRetentionScope:
             raise ValueError("authorized_by must name the principal that authorized a global purge")
 
 
-type RetentionScope = WorkspaceRetentionScope | GlobalRetentionScope
+RetentionScope = WorkspaceRetentionScope | GlobalRetentionScope
 
 
 def run_in_purge_scope(run: Run, scope: RetentionScope) -> bool:
