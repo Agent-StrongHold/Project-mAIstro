@@ -635,7 +635,10 @@ async def _non_canvas_run(
 
 
 async def _receiptless_canvas_run(
-    adapter: CanvasCanonicalExecution, project_id: str, job_id: str, *,
+    adapter: CanvasCanonicalExecution,
+    project_id: str,
+    job_id: str,
+    *,
     receipt: dict[str, Any] | None = None,
 ) -> str:
     """A canvas-source Run that carries a job claim and org, with no receipt
@@ -667,9 +670,7 @@ async def test_admission_retry_with_different_receipt_inputs_is_an_integrity_err
 
 async def test_admission_matches_operation_identity_across_job_ids() -> None:
     adapter, runs, _project = await _adapter()
-    first = await _admit_with_receipt(
-        adapter, "job-first-attempt", operation_id="operation-1"
-    )
+    first = await _admit_with_receipt(adapter, "job-first-attempt", operation_id="operation-1")
 
     # The durable operation identity, not the ephemeral receipt id, names the
     # admission: a retry presenting the same operation under a different
@@ -782,9 +783,7 @@ async def test_reconcile_missing_receipt_after_completion_projects_failed() -> N
     assert len(repaired) == 1
     recreated = repaired[0]
     assert recreated.status == JobStatus.FAILED
-    assert recreated.error_message == (
-        "Canvas receipt was missing after canonical completion"
-    )
+    assert recreated.error_message == ("Canvas receipt was missing after canonical completion")
     assert canonical_run_id(recreated.params) == run_id
 
 
@@ -808,9 +807,7 @@ async def test_reconcile_lost_insert_race_without_winner_reraises() -> None:
     adapter, _runs, project = await _adapter()
     # The receipt survived in provenance but the job insert never became
     # durable: the recreate insert raises and the re-read finds no winner.
-    await _receiptless_canvas_run(
-        adapter, project, "job-race-lost", receipt=_generation_receipt()
-    )
+    await _receiptless_canvas_run(adapter, project, "job-race-lost", receipt=_generation_receipt())
     store = _ReceiptStore()
     store.fail_next_create = True
 
