@@ -761,9 +761,7 @@ class InMemoryRunStore:
             for node_run_id, node_run in self._node_runs.items()
             if node_run.run_id in selected_ids
         }
-        attempts = sum(
-            attempt.node_run_id in node_runs for attempt in self._attempts.values()
-        )
+        attempts = sum(attempt.node_run_id in node_runs for attempt in self._attempts.values())
         return node_runs, attempts
 
     async def _delete_selected_continuations(self, selected_ids: set[str]) -> int:

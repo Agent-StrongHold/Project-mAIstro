@@ -701,3 +701,35 @@ async def test_schedule_executor_requires_physical_claim_capability() -> None:
     store = InMemoryRunStore(project_store=InMemoryProjectScopeStore())
     with pytest.raises(RunIntegrityError, match="consumer claim capability"):
         ScheduleAttemptExecutor(store)
+
+
+@pytest.mark.asyncio
+async def test_postgres_purge_evidence_handles_optional_tables() -> None:
+    from maistro.runs.pg_store import PgRunStore
+
+    class _Connection:
+        def __init__(self, *, continuations: bool, events: bool) -> None:
+            self.continuations = continuations
+            self.events = events
+
+        async def fetchval(self, query: str, *args: object):
+            del args
+            if "graph_continuations" in query:
+                return self.continuations
+            if "canonical_event_log" in query:
+                return self.events
+            return 1
+
+        async def fetch(self, query: str, run_ids: list[str]):
+            del query, run_ids
+            return ["deleted"]
+
+    store = object.__new__(PgRunStore)
+    assert await store._purge_evidence(_Connection(continuations=False, events=False), ["run"]) == (
+        0,
+        0,
+    )
+    assert await store._purge_evidence(_Connection(continuations=True, events=True), ["run"]) == (
+        1,
+        1,
+    )

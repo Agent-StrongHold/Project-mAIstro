@@ -577,11 +577,7 @@ class SqliteRunStore:
         self, scope: RetentionScope, cutoff: datetime, limit: int
     ) -> list[tuple[str, Run]]:
         candidates = await self._purge_candidates(scope, limit)
-        return [
-            (run_id, run)
-            for run_id, run in candidates
-            if is_purgeable(run, cutoff)
-        ]
+        return [(run_id, run) for run_id, run in candidates if is_purgeable(run, cutoff)]
 
     async def _purge_dependent_evidence(self, run_id_param: str) -> tuple[int, int]:
         continuations = 0

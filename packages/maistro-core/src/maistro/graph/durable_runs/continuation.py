@@ -241,9 +241,7 @@ class InMemoryGraphContinuationStore:
         admission_source: str | None = None,
         after: tuple[str, str] | None = None,
     ) -> list[str]:
-        rows = [
-            row for row in self._rows.values() if _is_due(row, now, admission_source)
-        ]
+        rows = [row for row in self._rows.values() if _is_due(row, now, admission_source)]
         rows.sort(key=lambda row: (row.resume_at, row.run_id))
         if after is not None:
             normalized_after = (_cursor_text(after[0]), after[1])
