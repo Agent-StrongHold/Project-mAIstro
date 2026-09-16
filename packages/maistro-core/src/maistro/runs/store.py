@@ -722,6 +722,39 @@ class InMemoryRunStore:
             if node_run.run_id == run_id
         )
 
+    def _purge_doomed(self, scope: RetentionScope, cutoff: datetime) -> list[Run]:
+        """Expired terminal Runs inside ``scope`` that no other Run descends from."""
+        parent_runs, parent_node_runs = self._referenced_by_children()
+        return [
+            run
+            for run in self._runs.values()
+            if run_in_purge_scope(run, scope)
+            and is_purgeable(run, cutoff)
+            and not self._has_child(run.run_id, parent_runs, parent_node_runs)
+        ]
+
+    def _spine_counts(self, selected_ids: set[str]) -> tuple[int, int]:
+        """NodeRuns and Attempts that die with the selected Runs."""
+        node_run_ids = {
+            node_run_id
+            for node_run_id, node_run in self._node_runs.items()
+            if node_run.run_id in selected_ids
+        }
+        attempts = sum(
+            1 for attempt in self._attempts.values() if attempt.node_run_id in node_run_ids
+        )
+        return len(node_run_ids), attempts
+
+    async def _delete_continuations(self, selected_ids: set[str]) -> int:
+        """Delete Graph continuations for the purged Runs; count what went."""
+        if self._continuation_store is None:
+            return 0
+        continuations = 0
+        for run_id in selected_ids:
+            if await self._continuation_store.delete(run_id):
+                continuations += 1
+        return continuations
+
     async def purge_expired_runs(
         self,
         scope: RetentionScope,
@@ -742,11 +775,6 @@ class InMemoryRunStore:
         predicate, because a parameter nobody can forget is the one thing that
         makes the default honest.
 
-        Orphan-safe: a Run some other Run descends from is skipped, however
-        expired. The durable backend enforces that with `ON DELETE RESTRICT`
-        and this one must agree, or the same retention policy would produce a
-        dangling parent pointer here and an integrity error there.
-
         The spine forgets run without an await between them, so the sweep is
         atomic with respect to this event loop: two concurrent sweeps divide
         a backlog, and neither can double-count a Run the other deleted.
@@ -759,35 +787,17 @@ class InMemoryRunStore:
         if limit <= 0:
             raise ValueError("limit must be positive")
         cutoff = now if now is not None else datetime.now(UTC)
-        parent_runs, parent_node_runs = self._referenced_by_children()
-        doomed = [
-            run
-            for run in self._runs.values()
-            if run_in_purge_scope(run, scope)
-            and is_purgeable(run, cutoff)
-            and not self._has_child(run.run_id, parent_runs, parent_node_runs)
-        ]
+        doomed = self._purge_doomed(scope, cutoff)
         selected = doomed[:limit]
         selected_ids = {run.run_id for run in selected}
-        node_runs_of_selected = {
-            node_run_id
-            for node_run_id, node_run in self._node_runs.items()
-            if node_run.run_id in selected_ids
-        }
-        attempts = sum(
-            1 for attempt in self._attempts.values() if attempt.node_run_id in node_runs_of_selected
-        )
+        node_runs, attempts = self._spine_counts(selected_ids)
         for run in selected:
             self._forget_run(run.run_id)
-        continuations = 0
-        if self._continuation_store is not None:
-            for run_id in selected_ids:
-                if await self._continuation_store.delete(run_id):
-                    continuations += 1
+        continuations = await self._delete_continuations(selected_ids)
         return PurgeOutcome(
             scope=scope,
             runs=len(selected),
-            node_runs=len(node_runs_of_selected),
+            node_runs=node_runs,
             attempts=attempts,
             continuations=continuations,
             backlog_remaining=len(doomed) > limit,

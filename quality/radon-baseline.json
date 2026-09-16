@@ -711,26 +711,6 @@
       "rank": "C",
       "complexity": 11,
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/runs/store.py::purge_expired_runs",
-      "path": "packages/maistro-core/src/maistro/runs/store.py",
-      "line": 725,
-      "name": "purge_expired_runs",
-      "classname": null,
-      "rank": "C",
-      "complexity": 16,
-      "rationale": "#1489 trunk vulture sweep: first baselined here after the PurgeOutcome bookkeeping deletion lowered it 18 -> 16 vs develop cdf7343d, where it was C-grade and unratcheted (self-reference-blind on trunk)."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/runs/sqlite_store.py::purge_expired_runs",
-      "path": "packages/maistro-core/src/maistro/runs/sqlite_store.py",
-      "line": 553,
-      "name": "purge_expired_runs",
-      "classname": null,
-      "rank": "C",
-      "complexity": 12,
-      "rationale": "#1489 trunk vulture sweep: the _RETAINED_REFERENCE_SQL orphan removal lowered it 17 -> 12 vs develop cdf7343d, where it was C-grade and unratcheted."
     }
   ]
 }
