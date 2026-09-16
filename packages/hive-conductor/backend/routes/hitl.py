@@ -319,15 +319,19 @@ async def answer_human_work(
     except ScanBudgetExceeded as exc:
         raise HTTPException(status_code=413, detail=str(exc)) from exc
     if verdict["status"] != "clean":
+        # Findings include scanner paths derived from attacker-controlled keys;
+        # retain only bounded metadata so a blocked answer cannot write secrets
+        # into the audit trail or echo them in the refusal response.
+        finding_count = len(verdict["findings"])
         log_audit(
             "hitl_answer_blocked",
-            "system",
+            _session_principal(request),
             target=run_id,
-            detail={"node_id": node_id, "findings": verdict["findings"]},
+            detail={"node_id": node_id, "finding_count": finding_count},
         )
         raise HTTPException(
             status_code=422,
-            detail={"error": "answer failed security scan", "findings": verdict["findings"]},
+            detail={"error": "answer failed security scan", "finding_count": finding_count},
         )
 
     try:

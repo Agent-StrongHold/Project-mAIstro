@@ -20,9 +20,15 @@ type Genome = {
 
 type EvoStatus = {
   running: boolean;
+  execution_available: boolean;
+  availability: "executable" | "degraded" | "unavailable";
+  availability_reason: string | null;
+  domain_state_only: boolean;
   cycle_count: number;
   population_size: number;
   last_error: string | null;
+  last_run_id: string | null;
+  last_run_status: string | null;
   tournament: { total_battles: number; total_genomes_rated: number; benchmarks_tracked: number };
 };
 
@@ -126,7 +132,12 @@ export default function Evolution() {
             min={1}
             max={50}
           />
-          <button onClick={triggerCycle} disabled={loading} className="btn" style={{ background: "var(--accent)", color: "var(--paper)" }}>
+          <button
+            onClick={triggerCycle}
+            disabled={loading || (status !== null && !status.execution_available)}
+            className="btn"
+            style={{ background: "var(--accent)", color: "var(--paper)" }}
+          >
             Run Cycle
           </button>
           <button onClick={refresh} disabled={loading} className="btn">
@@ -139,6 +150,11 @@ export default function Evolution() {
         <div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 16, marginBottom: 24 }}>
             <StatCard label="Running" value={status?.running ? "Yes" : "No"} color={status?.running ? "var(--success)" : "var(--danger)"} />
+            <StatCard
+              label="Execution"
+              value={status?.availability ?? "unknown"}
+              color={status?.execution_available ? "var(--success)" : "var(--danger)"}
+            />
             <StatCard label="Cycles" value={String(status?.cycle_count ?? 0)} />
             <StatCard label="Population" value={String(status?.population_size ?? 0)} />
             <StatCard label="Champion Fitness" value={fmt(champion?.fitness_score)} />
@@ -146,9 +162,15 @@ export default function Evolution() {
             <StatCard label="Benchmarks Tracked" value={String(status?.tournament?.benchmarks_tracked ?? 0)} />
           </div>
 
+          {status?.availability_reason && !status.execution_available && (
+            <div style={{ padding: 12, background: "var(--danger)", color: "var(--paper)", borderRadius: 8, marginBottom: 16, fontSize: 13 }}>
+              Execution unavailable: {status.availability_reason}
+            </div>
+          )}
+
           {status?.last_error && (
             <div style={{ padding: 12, background: "var(--danger)", color: "var(--paper)", borderRadius: 8, marginBottom: 16, fontSize: 13 }}>
-              Last error: {status.last_error}
+              Last cycle ({status.last_run_id ?? "no run"}, {status.last_run_status ?? "unknown"}): {status.last_error}
             </div>
           )}
 

@@ -183,6 +183,52 @@ async def test_start_with_no_router_key_uses_stub_agent_port(
     assert type(svc._backend).__name__ == "MaistroServerTaskBackend"
 
 
+async def test_bridge_start_degradation_keeps_evolve_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A configured bridge that fails must take the same truthful stub path."""
+    from adapters.maistro_core import MaistroCoreBridge
+    from services.engine import EngineService
+
+    class _Settings:
+        maistro_router_api_key = "router-key"
+        maistro_base_url = "http://localhost:8000"
+        hive_mode = "production"
+        hive_default_workspace_id = "default"
+
+    async def _fail_start(self: MaistroCoreBridge, settings: Any) -> None:
+        del self, settings
+        raise RuntimeError("synthetic bridge startup failure")
+
+    monkeypatch.setattr(MaistroCoreBridge, "start", _fail_start)
+    svc = EngineService()
+    await svc.start(_Settings())  # type: ignore[arg-type]
+    assert type(svc._agent_port).__name__ == "StubAgentPort"
+
+    import services.engine as engine_module
+    import services.evolution as evolution_module
+
+    monkeypatch.setattr(engine_module, "get_engine", lambda: svc)
+    scheduled: list[Any] = []
+
+    def _capture(coro: Any) -> None:
+        scheduled.append(coro)
+        coro.close()
+
+    monkeypatch.setattr(evolution_module.asyncio, "ensure_future", _capture)
+    await evolution_module.start_evolution()
+    try:
+        assert scheduled == []
+        assert evolution_module._service is not None
+        status = evolution_module._service.status()
+        assert status["running"] is False
+        assert status["execution_available"] is False
+        assert status["availability"] == "degraded"
+        assert status["domain_state_only"] is True
+    finally:
+        await evolution_module.stop_evolution()
+
+
 async def test_start_in_demo_mode_uses_local_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
