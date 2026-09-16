@@ -15,8 +15,9 @@ refuse, not merely to accept.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 import aiosqlite
@@ -114,6 +115,30 @@ async def test_a_newer_version_advances_the_continuation(store: GraphContinuatio
     assert read.status is RunStatus.PAUSED
 
 
+async def test_sqlite_concurrent_same_version_writes_have_one_winner(tmp_path: Any) -> None:
+    """A durable continuation fence serializes competing HITL decisions."""
+    async with aiosqlite.connect(tmp_path / "racing.db") as conn:
+        first = SqliteGraphContinuationStore(conn)
+        second = SqliteGraphContinuationStore(conn)
+        await first.ensure_schema()
+        await first.create(_continuation("run-1"))
+
+        incoming = _continuation("run-1", version=2, status=RunStatus.PAUSED)
+        results = await asyncio.gather(
+            first.update(incoming),
+            second.update(incoming),
+            return_exceptions=True,
+        )
+
+        assert sum(not isinstance(result, BaseException) for result in results) == 1
+        with pytest.raises(ValueError, match="version regression"):
+            await first.update(incoming)
+        stored = await first.get("run-1")
+        assert stored is not None
+        assert stored.version == 2
+        assert stored.status is RunStatus.PAUSED
+
+
 async def test_updating_a_run_that_was_never_created_is_a_key_error(
     store: GraphContinuationStore,
 ) -> None:
@@ -199,6 +224,154 @@ async def test_due_deadline_query_agrees_across_backends(store: GraphContinuatio
     assert await store.list_due_run_ids(now=now, limit=1) == ["run-waiting"]
 
 
+async def test_status_listing_pages_forward_with_an_advancing_cursor(
+    store: GraphContinuationStore,
+) -> None:
+    """The keyset cursor #1056/#1109 rely on: paging with ``after`` walks
+    strictly forward past what has already been read, on every backend, so a
+    bounded fair scan can advance past an ineligible prefix of any length
+    instead of re-reading the same fixed page forever."""
+    for i in range(5):
+        await store.create(_continuation(f"run-{i}", status=RunStatus.PAUSED, minutes=i))
+
+    first_page = await store.list_run_ids_by_status(RunStatus.PAUSED, limit=2)
+    assert first_page == ["run-0", "run-1"]
+
+    cursor = (
+        (await store.get("run-1")).created_at.isoformat(),  # type: ignore[union-attr]
+        "run-1",
+    )
+    second_page = await store.list_run_ids_by_status(RunStatus.PAUSED, limit=2, after=cursor)
+    assert second_page == ["run-2", "run-3"]
+
+    cursor = (
+        (await store.get("run-3")).created_at.isoformat(),  # type: ignore[union-attr]
+        "run-3",
+    )
+    third_page = await store.list_run_ids_by_status(RunStatus.PAUSED, limit=2, after=cursor)
+    assert third_page == ["run-4"]
+
+    # Past the end, the cursor returns nothing rather than wrapping around.
+    cursor = (
+        (await store.get("run-4")).created_at.isoformat(),  # type: ignore[union-attr]
+        "run-4",
+    )
+    assert await store.list_run_ids_by_status(RunStatus.PAUSED, limit=2, after=cursor) == []
+
+
+async def test_due_listing_pages_forward_with_an_advancing_cursor(
+    store: GraphContinuationStore,
+) -> None:
+    """The due-index twin of the status-listing cursor test, on the
+    ``resume_at``-then-``run_id`` order #1098's fair scan walks."""
+    now = datetime(2026, 8, 29, 12, tzinfo=UTC)
+    for i in range(5):
+        await store.create(
+            _continuation(
+                f"due-{i}",
+                status=RunStatus.WAITING,
+                resume_at=now - timedelta(seconds=5 - i),
+            )
+        )
+
+    first_page = await store.list_due_run_ids(now=now, limit=2)
+    assert first_page == ["due-0", "due-1"]
+
+    second_record = await store.get("due-1")
+    assert second_record is not None and second_record.resume_at is not None
+    cursor = (second_record.resume_at.isoformat(), "due-1")
+    second_page = await store.list_due_run_ids(now=now, limit=2, after=cursor)
+    assert second_page == ["due-2", "due-3"]
+
+    last_record = await store.get("due-4")
+    assert last_record is not None and last_record.resume_at is not None
+    cursor = (last_record.resume_at.isoformat(), "due-4")
+    assert await store.list_due_run_ids(now=now, limit=2, after=cursor) == []
+
+
+async def test_sqlite_pre_index_hitl_pause_is_backfilled(tmp_path: Any) -> None:
+    now = datetime(2026, 8, 29, 12, tzinfo=UTC)
+    deadline = now - timedelta(seconds=1)
+    continuation = _continuation("pre-index-hitl", status=RunStatus.PAUSED).model_copy(
+        update={
+            "graph_state": GraphExecutionState(
+                run_id="pre-index-hitl",
+                active_node_ids=("step",),
+                metadata={
+                    "pauses": {
+                        "step": {
+                            "kind": "hitl",
+                            "resume_at": deadline.isoformat(),
+                        }
+                    }
+                },
+            )
+        }
+    )
+    async with aiosqlite.connect(tmp_path / "pre-index.db") as conn:
+        await conn.execute(
+            """CREATE TABLE graph_continuations (
+                run_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                created_at TEXT,
+                resume_at TEXT,
+                version INTEGER NOT NULL DEFAULT 0,
+                continuation_json TEXT NOT NULL
+            )"""
+        )
+        await conn.execute(
+            """INSERT INTO graph_continuations
+               (run_id, status, project_id, created_at, resume_at, version, continuation_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                continuation.run_id,
+                continuation.status.value,
+                continuation.project_id,
+                continuation.created_at.isoformat(),
+                None,
+                continuation.version,
+                continuation.model_dump_json(),
+            ),
+        )
+        await conn.commit()
+
+        store = SqliteGraphContinuationStore(conn)
+        await store.ensure_schema()
+
+        assert await store.list_hitl_due_run_ids(now=now, limit=1) == ["pre-index-hitl"]
+
+
+async def test_hitl_due_query_is_deadline_ordered_and_status_selective(
+    store: GraphContinuationStore,
+) -> None:
+    now = datetime(2026, 8, 29, 12, tzinfo=UTC)
+    await store.create(
+        _continuation(
+            "hitl-due",
+            status=RunStatus.PAUSED,
+            resume_at=None,
+        ).model_copy(update={"hitl_deadline_at": now - timedelta(seconds=1)})
+    )
+    await store.create(
+        _continuation(
+            "hitl-future",
+            status=RunStatus.PAUSED,
+            resume_at=None,
+        ).model_copy(update={"hitl_deadline_at": now + timedelta(seconds=1)})
+    )
+    await store.create(
+        _continuation(
+            "wait-due",
+            status=RunStatus.WAITING,
+            resume_at=now - timedelta(seconds=2),
+        ).model_copy(update={"hitl_deadline_at": now - timedelta(seconds=2)})
+    )
+
+    assert await store.list_hitl_due_run_ids(now=now, limit=1) == ["hitl-due"]
+    assert await store.list_hitl_due_run_ids(now=now, limit=10) == ["hitl-due"]
+
+
 async def test_a_delete_removes_the_continuation_and_reports_what_it_removed(
     store: GraphContinuationStore,
 ) -> None:
@@ -216,3 +389,35 @@ async def test_a_delete_removes_the_continuation_and_reports_what_it_removed(
     assert await store.get("run-1") is None
     assert await store.delete("run-1") is False
     assert await store.delete("never-created") is False
+
+
+async def test_due_cursor_pages_by_instant_not_by_printed_offset(
+    store: GraphContinuationStore,
+) -> None:
+    """A cursor must order by the instant, whatever offset the row printed.
+
+    `resume_at` is whatever the pausing node computed, and nothing requires it
+    to be UTC. `01:00+01:00` is the *earlier* instant than `00:30+00:00` and
+    sorts before it as a datetime, but its ISO string sorts after -- so a
+    backend that orders by datetime and then pages by comparing strings
+    excludes the later row from every subsequent page, permanently. That is
+    the starvation the keyset cursor exists to remove, reintroduced by a
+    formatting detail.
+
+    PostgreSQL never had this: it parses the cursor back to a timestamptz and
+    compares instants. Memory and SQLite compare the strings, so this is the
+    case where the three backends silently disagreed.
+    """
+    earlier = datetime(2026, 8, 29, 1, 0, tzinfo=timezone(timedelta(hours=1)))
+    later = datetime(2026, 8, 29, 0, 30, tzinfo=UTC)
+    assert earlier < later
+    assert earlier.isoformat() > later.isoformat()  # the trap, stated outright
+
+    await store.create(_continuation("offset-earlier", status=RunStatus.WAITING, resume_at=earlier))
+    await store.create(_continuation("offset-later", status=RunStatus.WAITING, resume_at=later))
+
+    now = datetime(2026, 8, 29, 12, tzinfo=UTC)
+    assert await store.list_due_run_ids(now=now, limit=10) == ["offset-earlier", "offset-later"]
+
+    cursor = (earlier.astimezone(UTC).isoformat(), "offset-earlier")
+    assert await store.list_due_run_ids(now=now, limit=10, after=cursor) == ["offset-later"]
