@@ -544,6 +544,26 @@ async def test_delete_run_for_an_unknown_run_is_false(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_occurrence_claim_resolves_its_run_without_a_provenance_scan(tmp_path: Path) -> None:
+    store, project_id = await _durable_store(tmp_path)
+    scheduled_for = "2026-08-24T12:00:00+00:00"
+    run = await store.create_run(
+        _graph(project_id),
+        provenance={
+            ADMISSION_SOURCE: SCHEDULE_SOURCE,
+            SCHEDULE_ID_KEY: "sched-1",
+            SCHEDULED_FOR_KEY: scheduled_for,
+        },
+    )
+
+    resolved = await store.get_run_for_occurrence("sched-1", scheduled_for)
+
+    assert resolved is not None
+    assert resolved.run_id == run.run_id
+    assert await store.get_run_for_occurrence("sched-1", "other") is None
+
+
+@pytest.mark.asyncio
 async def test_an_integrity_error_on_another_constraint_is_re_raised(tmp_path: Path) -> None:
     """A duplicate firing is told apart from every other constraint by name.
 
