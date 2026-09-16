@@ -1,6 +1,6 @@
-"""Design skill routes — project creation, discovery, artifact retrieval.
+"""Design skill routes — project preparation, discovery, artifact retrieval.
 
-POST /design/projects — generate design project
+POST /design/projects — prepare and persist a design project/prompt stack
 GET /design/projects/{id} — fetch project + outputs
 GET /design/projects — list org projects
 GET /design/skills — list available skills
@@ -117,7 +117,11 @@ def _require_store() -> Any:
 
 @router.post("/projects")
 async def create_design_project(request: Request, discovery: DiscoveryResult) -> dict[str, Any]:
-    """Generate a design project from discovery responses.
+    """Prepare and persist a design project from discovery responses.
+
+    This is project/prompt preparation, not visual generation: the DesignEngine
+    does not call an LLM or a renderer. A later canonical Run may consume the
+    persisted prompt stack to produce visual artifacts.
 
     Pipeline:
     1. Validate skill + design system exist
@@ -136,13 +140,18 @@ async def create_design_project(request: Request, discovery: DiscoveryResult) ->
     # Before the `try`, for the reason `_require_ready`'s own docstring gives:
     # each route ends in a blanket `except Exception` that turns whatever it
     # catches into a 500. A refused scope resolved inside it came back as
-    # "Generation failed: 403: No design scope resolved", which is a 500 for an
-    # authorization decision.
+    # "Project preparation failed: 403: No design scope resolved", hiding an
+    # authorization decision behind a 500.
     org_id = _get_org_id(request)
     try:
+        # A project preparation response is durable state, never a successful
+        # in-memory substitute when persistence is not configured.
+        _require_store()
         engine = get_design_engine()
         project = await engine.generate(discovery, org_id=org_id, team_id=None)
         return project.to_dict()
+    except HTTPException:
+        raise
     except SkillNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from None
     except DesignSystemNotFoundError as e:
@@ -152,7 +161,7 @@ async def create_design_project(request: Request, discovery: DiscoveryResult) ->
     except DesignError as e:
         raise HTTPException(status_code=400, detail=str(e)) from None
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Generation failed: {e!s}") from None
+        raise HTTPException(status_code=500, detail=f"Project preparation failed: {e!s}") from None
 
 
 @router.get("/projects/{project_id}")

@@ -493,10 +493,10 @@
       "method": "POST",
       "route": "/projects",
       "handler": "create_design_project",
-      "disposition": "canonical",
+      "disposition": "domain-state",
       "production_enabled": true,
-      "reason": "generates and persists a design project from discovery responses through the validated pipeline",
-      "effect_owner": "design pipeline: Warden scan, prompt stack, DB persist"
+      "reason": "prepares and persists a Design project/prompt stack; it does not claim visual generation",
+      "effect_owner": "DesignEngine preparation + DesignProjectStore persistence"
     },
     {
       "source": "packages/hive-conductor/backend/routes/design.py",

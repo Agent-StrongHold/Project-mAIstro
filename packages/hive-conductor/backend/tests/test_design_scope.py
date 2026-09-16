@@ -23,6 +23,13 @@ if str(_BACKEND) not in sys.path:
 from fastapi import HTTPException  # noqa: E402
 from routes import design as design_routes  # noqa: E402
 
+from maistro_design.types import (  # noqa: E402
+    ArtifactKind,
+    ArtifactNode,
+    DesignOutput,
+    OutputFormat,
+)
+
 pytestmark = [pytest.mark.contract("boundary")]
 
 
@@ -97,6 +104,48 @@ class TestTheRoutesPassItDown:
         monkeypatch.setattr(design_routes, "get_design_store", lambda: store)
         await design_routes.get_design_project("p-1", _Request(org_id="org-7"))
         assert store.calls == [{"project_id": "p-1", "org_id": "org-7"}]
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-6")
+    async def test_fetching_a_persisted_output_returns_its_content_and_provenance(
+        self, ready: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        output = DesignOutput(
+            root=ArtifactNode(
+                key="prompt-stack",
+                kind=ArtifactKind.FILE,
+                format=OutputFormat.MARKDOWN,
+                value="prepared prompt",
+            ),
+            metadata={"production_stage": "prompt_preparation", "visual_generation": False},
+            run_id="run-1",
+            node_run_id="node-1",
+            attempt_id="attempt-1",
+        )
+
+        class _Project:
+            outputs: ClassVar[list[DesignOutput]] = [output]
+
+            @staticmethod
+            def to_dict() -> dict[str, Any]:
+                return {"id": "p-1"}
+
+        store = _Store(project=_Project())
+        monkeypatch.setattr(design_routes, "get_design_store", lambda: store)
+        answer = await design_routes.get_design_project("p-1", _Request(org_id="org-7"))
+
+        assert answer["outputs"] == [
+            {
+                "format": "markdown",
+                "content": "prepared prompt",
+                "url": None,
+                "trust_tier": "t3",
+                "metadata": {"production_stage": "prompt_preparation", "visual_generation": False},
+                "artifact_kind": "file",
+                "run_id": "run-1",
+                "node_run_id": "node-1",
+                "attempt_id": "attempt-1",
+            }
+        ]
 
     @pytest.mark.ac("SPEC-083026-6bc5/AC-3")
     async def test_a_project_outside_the_scope_is_a_404_not_a_403(
@@ -233,9 +282,31 @@ class TestTheRoutesPassItDown:
                 return _Project()
 
         monkeypatch.setattr(design_routes, "get_design_engine", lambda: _Engine())
+        monkeypatch.setattr(design_routes, "get_design_store", lambda: object())
         answer = await design_routes.create_design_project(_Request(org_id="org-7"), object())
         assert seen == {"org_id": "org-7", "team_id": None}
         assert answer["org_id"] == "org-7"
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-6")
+    async def test_creating_without_persistence_is_unavailable_before_engine_runs(
+        self, ready: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        called = False
+
+        class _Engine:
+            @staticmethod
+            async def generate(*a: Any, **k: Any) -> Any:
+                nonlocal called
+                called = True
+                raise AssertionError("must not prepare a project without persistence")
+
+        monkeypatch.setattr(design_routes, "get_design_store", lambda: None)
+        monkeypatch.setattr(design_routes, "get_design_engine", lambda: _Engine())
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.create_design_project(_Request(org_id="org-7"), object())
+        assert raised.value.status_code == 503
+        assert "persistence unavailable" in str(raised.value.detail).lower()
+        assert called is False
 
     @pytest.mark.ac("SPEC-083026-6bc5/AC-2")
     async def test_creating_a_project_with_a_blank_request_scope_is_refused(
