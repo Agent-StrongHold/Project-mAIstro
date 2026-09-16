@@ -1,7 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +4
-  packages/hive-conductor/tests/e2e: +2
+  packages/hive-conductor/backend/tests: +5
 ---
 # Design Studio persisted project readback
 
@@ -10,6 +9,8 @@ persisted-project response and verifies that durable project/output facts render
 without presenting them as visual generation, while the other verifies that a
 503 persistence response is shown as unavailable rather than as an empty
 project list. Backend route tests cover both disabled and uninitialized stores for project
-listing/rendering and prove the in-scope render facade fails with 501 rather
-than creating a pending job; the existing unavailable-generation and no-timer
-assertions remain in the same scenario.
+listing/rendering and prove both in-scope render creation and polling fail with
+501 rather than creating or reading process-local jobs; the existing
+unavailable-generation and no-timer assertions remain in the same scenario.
+The browser specs are Playwright files and do not change the pytest collection
+count recorded for this suite.

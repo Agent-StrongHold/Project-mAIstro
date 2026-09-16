@@ -353,30 +353,29 @@ async def create_render_job(
 
 
 @router.get("/projects/{project_id}/render/{job_id}")
-async def get_render_job_status(project_id: str, job_id: str) -> dict[str, Any]:
-    """Poll render job status and get download URL when ready.
+async def get_render_job_status(project_id: str, job_id: str, request: Request) -> dict[str, Any]:
+    """Report that render-job polling is unavailable until Canvas is connected.
 
-    Returns:
-      {job_id, status, url, error, created_at, updated_at}
-
-    Status: pending | rendering | completed | failed
+    The old implementation polled a process-local ``DesignPreviewService``.
+    That state was neither durable nor backed by a worker, so it could not
+    truthfully describe execution after a restart. Keep the compatibility
+    endpoint scoped, but never expose its fabricated pending/completed state.
     """
+    _require_ready()
+    org_id = _get_org_id(request)
     try:
-        from services.design_preview import get_design_preview_service
+        store = _require_store()
+        project = await store.get(project_id, org_id=org_id)
+        if not project:
+            raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
 
-        preview_svc = get_design_preview_service()
-        job = preview_svc.get_render_job(job_id)
-
-        if not job:
-            raise HTTPException(status_code=404, detail=f"Render job {job_id} not found")
-
-        if job.project_id != project_id:
-            raise HTTPException(
-                status_code=403, detail="Render job does not belong to this project"
-            )
-
-        return job.to_dict()
+        raise HTTPException(
+            status_code=501,
+            detail="Design render-job polling is unavailable until the canonical Canvas rendering seam is enabled",
+        )
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from None
+        raise HTTPException(
+            status_code=500, detail=f"Render job status unavailable: {e!s}"
+        ) from None

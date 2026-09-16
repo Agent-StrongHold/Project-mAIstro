@@ -176,6 +176,18 @@ class TestTheRoutesPassItDown:
         assert "canonical Canvas rendering seam" in str(raised.value.detail)
         assert store.calls == [{"project_id": "p-1", "org_id": "org-7"}]
 
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-6")
+    async def test_polling_a_render_job_is_disabled_until_canvas_is_connected(
+        self, ready: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = _Store(project=object())
+        monkeypatch.setattr(design_routes, "get_design_store", lambda: store)
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.get_render_job_status("p-1", "job-1", _Request(org_id="org-7"))
+        assert raised.value.status_code == 501
+        assert "canonical Canvas rendering seam" in str(raised.value.detail)
+        assert store.calls == [{"project_id": "p-1", "org_id": "org-7"}]
+
     @pytest.mark.ac("SPEC-083026-6bc5/AC-2")
     async def test_listing_projects_uses_the_resolved_scope(
         self, ready: None, monkeypatch: pytest.MonkeyPatch
