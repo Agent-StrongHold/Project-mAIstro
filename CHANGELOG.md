@@ -160,8 +160,8 @@ or placeholder-only section.
   explicitly does not claim.
 ### Added
 
-- **The Workspace has a first-party design system (ADR-091626-ba4f; #1046, #1048,
-  #65).** `maistro-design` now bundles `workspace` as a seventh Tier-1 system —
+- **The Workspace has a first-party design system (#1046, #1048, #65;
+  ADR-091626-ba4f).** `maistro-design` now bundles `workspace` as a seventh Tier-1 system —
   the first authored in this repo rather than vendored from open-design. It
   shares the Open Design token schema and adds the Workspace grammar as tokens:
   frosted glass over a persona bloom, a fixed four-colour actor quartet (you /
