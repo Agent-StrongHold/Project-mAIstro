@@ -237,6 +237,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_canonical_runs_occurrence
     WHERE json_extract(payload, '$.provenance.schedule_id') IS NOT NULL
       AND json_extract(payload, '$.provenance.scheduled_for') IS NOT NULL;
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_canonical_runs_delegation_key
+    ON canonical_runs(json_extract(payload, '$.provenance.delegation_key'))
+    WHERE json_extract(payload, '$.provenance.delegation_key') IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS canonical_node_runs (
     node_run_id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL,
@@ -404,6 +408,57 @@ class SqliteRunStore:
             (run_id,),
         )
         return model_of_json(Run, row[0]) if row is not None else None
+
+    async def find_delegation_run(self, delegation_key: str) -> Run | None:
+        row = await self._fetchone(
+            """SELECT payload FROM canonical_runs
+               WHERE json_extract(payload, '$.provenance.delegation_key') = ?""",
+            (delegation_key,),
+        )
+        return model_of_json(Run, row[0]) if row is not None else None
+
+    async def attach_delegation_receipt(
+        self, run_id: str, task_id: str, *, target_agent: str | None = None
+    ) -> Run:
+        async with self._write_lock:
+            run = await self._require_run(run_id)
+            existing = str(run.provenance.get("a2a_task_id") or "")
+            if existing and existing != task_id:
+                raise RunIntegrityError("delegation receipt conflicts with canonical receipt")
+            provenance = dict(run.provenance)
+            provenance["a2a_task_id"] = task_id
+            if target_agent:
+                provenance["target_agent"] = target_agent
+            updated = run.model_copy(update={"provenance": provenance})
+            await self._update_payload(
+                "canonical_runs", "run_id", run_id, updated.status.value, json_of(updated)
+            )
+            return updated
+
+    async def claim_delegation_transport_attempt(self, run_id: str) -> bool:
+        """Persist the transport boundary claim before making the call.
+
+        The claim is a compare-and-set, not a read followed by an update. The
+        per-connection write lock protects callers sharing this store instance,
+        while the conditional UPDATE is the inter-replica fence: two SQLite
+        connections can otherwise both read the unclaimed payload before either
+        commits.
+        """
+        async with self._write_lock:
+            await self._require_run(run_id)
+            cursor = await self._conn.execute(
+                """UPDATE canonical_runs
+                   SET payload = json_set(
+                       payload, '$.provenance.transport_attempted', json('true')
+                   )
+                   WHERE run_id = ?
+                     AND COALESCE(
+                         json_extract(payload, '$.provenance.transport_attempted'), 0
+                     ) <> 1""",
+                (run_id,),
+            )
+            await self._conn.commit()
+            return cursor.rowcount == 1
 
     async def list_by_status(
         self,

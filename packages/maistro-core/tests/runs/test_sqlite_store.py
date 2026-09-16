@@ -49,6 +49,60 @@ def _graph(project_id: str) -> Graph:
 
 
 @pytest.mark.asyncio
+async def test_delegation_transport_claim_is_durable_and_single_use(tmp_path: Path) -> None:
+    project_store, project_id = await _project_store()
+    db_path = tmp_path / "delegation.db"
+
+    first_conn = await aiosqlite.connect(db_path)
+    first_store = SqliteRunStore(first_conn, project_store=project_store)
+    await first_store.ensure_schema()
+    run = await first_store.create_run(_graph(project_id), provenance={"delegation_key": "key-1"})
+
+    assert await first_store.claim_delegation_transport_attempt(run.run_id) is True
+    assert await first_store.claim_delegation_transport_attempt(run.run_id) is False
+    await first_conn.close()
+
+    second_conn = await aiosqlite.connect(db_path)
+    second_store = SqliteRunStore(second_conn, project_store=project_store)
+    await second_store.ensure_schema()
+    assert await second_store.claim_delegation_transport_attempt(run.run_id) is False
+    recovered = await second_store.get_run(run.run_id)
+    assert recovered is not None
+    assert recovered.provenance["transport_attempted"] is True
+    await second_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_delegation_transport_claim_is_one_winner_across_store_instances(
+    tmp_path: Path,
+) -> None:
+    """Separate replicas cannot both cross the transport boundary."""
+    import asyncio
+
+    project_store, project_id = await _project_store()
+    db_path = tmp_path / "delegation-race.db"
+    first_conn = await aiosqlite.connect(db_path)
+    second_conn = await aiosqlite.connect(db_path)
+    first_store = SqliteRunStore(first_conn, project_store=project_store)
+    second_store = SqliteRunStore(second_conn, project_store=project_store)
+    await first_store.ensure_schema()
+    await second_store.ensure_schema()
+    run = await first_store.create_run(_graph(project_id), provenance={"delegation_key": "key-1"})
+
+    claims = await asyncio.gather(
+        first_store.claim_delegation_transport_attempt(run.run_id),
+        second_store.claim_delegation_transport_attempt(run.run_id),
+    )
+
+    assert sorted(claims) == [False, True]
+    recovered = await second_store.get_run(run.run_id)
+    assert recovered is not None
+    assert recovered.provenance["transport_attempted"] is True
+    await first_conn.close()
+    await second_conn.close()
+
+
+@pytest.mark.asyncio
 async def test_run_node_run_and_attempt_reload_with_identical_relationships(
     tmp_path: Path,
 ) -> None:
