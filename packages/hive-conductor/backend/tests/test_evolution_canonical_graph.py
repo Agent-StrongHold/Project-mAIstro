@@ -6,6 +6,9 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
+from routes.evolution import trigger_cycle
+from services.evolution import _EvolutionService
 from services.evolution_graph import _evaluate_one, run_canonical_evolution_cycle
 
 import maistro_evolve.cycle as cycle_module
@@ -223,6 +226,194 @@ async def test_cycle_is_one_run_with_evaluation_battle_finalization_attempts(
     assert {ref["run_id"] for ref in child.harness_params["source_evaluation_runs"]} == {
         record.run_id
     }
+
+
+@pytest.mark.parametrize("failure_stage", ["battle", "finalization"])
+@pytest.mark.asyncio
+async def test_battle_and_finalization_failures_are_canonical_run_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
+) -> None:
+    """Failures after evaluation still terminalize the canonical Run."""
+
+    class _BattleFailureTournament(_Tournament):
+        def record_battle(
+            self, *, benchmark: str, genome_a_id: str, genome_b_id: str, **_: Any
+        ) -> None:
+            raise RuntimeError("synthetic battle failure")
+
+    class _FinalizationFailureCycle(_Cycle):
+        def _compute_all_fitness(self, population: _Population) -> list[_Genome]:
+            raise RuntimeError("synthetic finalization failure")
+
+    monkeypatch.setattr(
+        cycle_module,
+        "EvolutionCycle",
+        _FinalizationFailureCycle if failure_stage == "finalization" else _Cycle,
+    )
+    population = _Population([_Genome("g1"), _Genome("g2")])
+    tournament = _BattleFailureTournament() if failure_stage == "battle" else _Tournament()
+    owner = await _container()
+
+    record = await run_canonical_evolution_cycle(
+        population=population,
+        tournament=tournament,
+        config=_config(population_size=2, eval_batch_size=2),
+        harness=_Harness(),
+        container=owner,
+    )
+
+    assert record.run.status is RunStatus.FAILED
+    assert failure_stage in {"battle", "finalization"}
+    assert failure_stage in (record.run.error or "")
+    node_runs = await owner.run_store.list_node_runs(record.run_id)
+    failed = [item for item in node_runs if item.status is RunStatus.FAILED]
+    assert len(failed) == 1
+    assert failed[0].node_id == (
+        "evolve-battle-1" if failure_stage == "battle" else "evolve-finalize"
+    )
+    attempts = await owner.run_store.list_attempts(failed[0].node_run_id)
+    assert len(attempts) == 1
+    assert attempts[0].status is AttemptStatus.COMPLETED
+    physical = NodeResult.model_validate(attempts[0].result)
+    assert physical.success is False
+    assert physical.error_code == "RuntimeError"
+
+
+@pytest.mark.parametrize("failure_stage", ["evaluation", "battle", "finalization"])
+@pytest.mark.asyncio
+async def test_cycle_route_projects_real_canonical_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
+) -> None:
+    """The public route preserves failures returned by the real graph runner."""
+    import maistro_evolve.harness as harness_module
+
+    class _RouteHarness(_Harness):
+        def __init__(self, benchmark_fidelity: str = "proxy") -> None:
+            self.fidelity = benchmark_fidelity
+
+    class _EvaluationFailureHarness(_RouteHarness):
+        async def evaluate_genome(
+            self,
+            genome: _Genome,
+            benchmarks: list[str],
+            llm_call: Any,
+        ):
+            del genome, benchmarks, llm_call
+            raise RuntimeError("synthetic evaluation failure")
+
+    class _BattleFailureTournament(_Tournament):
+        def record_battle(
+            self, *, benchmark: str, genome_a_id: str, genome_b_id: str, **_: Any
+        ) -> None:
+            del benchmark, genome_a_id, genome_b_id
+            raise RuntimeError("synthetic battle failure")
+
+    class _FinalizationFailureCycle(_Cycle):
+        def _compute_all_fitness(self, population: _Population) -> list[_Genome]:
+            del population
+            raise RuntimeError("synthetic finalization failure")
+
+    import services.engine as engine_module
+    import services.evolution as evolution_module
+
+    owner = await _container()
+    monkeypatch.setattr(
+        engine_module,
+        "get_engine",
+        lambda: SimpleNamespace(agent_port=SimpleNamespace(container=owner)),
+    )
+    monkeypatch.setattr(
+        harness_module,
+        "EvalHarness",
+        _EvaluationFailureHarness if failure_stage == "evaluation" else _RouteHarness,
+    )
+    monkeypatch.setattr(
+        cycle_module,
+        "EvolutionCycle",
+        _FinalizationFailureCycle if failure_stage == "finalization" else _Cycle,
+    )
+
+    population = _Population([_Genome("g1"), _Genome("g2")])
+    tournament = _BattleFailureTournament() if failure_stage == "battle" else _Tournament()
+    service = _EvolutionService()
+    service._population = population
+    service._tournament = tournament
+    monkeypatch.setattr(evolution_module, "get_evolution_service", lambda: service)
+
+    with pytest.raises(HTTPException) as caught:
+        await trigger_cycle(SimpleNamespace(state=SimpleNamespace(user_id="principal")))
+
+    assert caught.value.status_code == 500
+    detail = caught.value.detail
+    assert detail["code"] == "canonical_run_failed"
+    assert detail["status"] == "failed"
+    assert detail["run_id"] == service.last_run_id
+    assert failure_stage in detail["diagnostic"]
+    assert "evolution service not started" not in detail["message"]
+    assert service.cycle_count == 0
+    status = service.status()
+    assert status["running"] is True
+    assert status["execution_available"] is True
+    assert status["last_run_status"] == "failed"
+    assert failure_stage in status["last_error"]
+
+    stored = await owner.run_store.get_run(detail["run_id"])
+    assert stored is not None
+    assert stored.status is RunStatus.FAILED
+    failed_nodes = [
+        item
+        for item in await owner.run_store.list_node_runs(detail["run_id"])
+        if item.status is RunStatus.FAILED
+    ]
+    assert len(failed_nodes) == 1
+    assert (
+        failed_nodes[0].node_id
+        == {
+            "evaluation": "evolve-evaluate-1",
+            "battle": "evolve-battle-1",
+            "finalization": "evolve-finalize",
+        }[failure_stage]
+    )
+
+
+@pytest.mark.asyncio
+async def test_successful_cycle_route_projects_completed_canonical_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A completed canonical Run remains the only completed cycle projection."""
+    import services.engine as engine_module
+    import services.evolution as evolution_module
+
+    import maistro_evolve.harness as harness_module
+
+    class _RouteHarness(_Harness):
+        def __init__(self, benchmark_fidelity: str = "proxy") -> None:
+            self.fidelity = benchmark_fidelity
+
+    owner = await _container()
+    monkeypatch.setattr(
+        engine_module,
+        "get_engine",
+        lambda: SimpleNamespace(agent_port=SimpleNamespace(container=owner)),
+    )
+    monkeypatch.setattr(harness_module, "EvalHarness", _RouteHarness)
+    monkeypatch.setattr(cycle_module, "EvolutionCycle", _Cycle)
+
+    service = _EvolutionService()
+    service._population = _Population([_Genome("g1"), _Genome("g2")])
+    service._tournament = _Tournament()
+    monkeypatch.setattr(evolution_module, "get_evolution_service", lambda: service)
+
+    response = await trigger_cycle(SimpleNamespace(state=SimpleNamespace(user_id="principal")))
+
+    assert response["status"] == "completed"
+    assert response["cycle_count"] == 1
+    assert response["run_id"] == service.last_run_id
+    stored = await owner.run_store.get_run(response["run_id"])
+    assert stored is not None
+    assert stored.status is RunStatus.COMPLETED
 
 
 @pytest.mark.asyncio
