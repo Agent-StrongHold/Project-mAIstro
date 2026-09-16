@@ -3,6 +3,7 @@
 
 inventory-delta:
   packages/maistro-core/tests: -6
+  tests/: -8
 ---
 
 ## Claim
@@ -12,10 +13,11 @@ itself deleted 16 node IDs and relocated 1 (net −15); the remaining +9 is
 trunk ledger drift that develop never banked (develop `cdf7343d` collects
 10306 vs recorded 10297 — verified by running this gate on a develop
 worktree: identical DRIFT). Recorded as −6 so the composition zeroes; the
-+9 is trunk's to bank properly. The `tests/` −8 DRIFT this gate also reports
-locally is identical on develop and this branch — an environment collection
-leg absent on this box, not a property of the branch (CI collects 3450 and
-passed at the trunk tip).
++9 is trunk's to bank properly. The `tests/` −8 is likewise trunk ledger drift, not a branch property:
+collected 3442 identically on develop `cdf7343d` and this branch, locally
+AND on CI (the CI C1 gate reports the same DRIFT) — a recent trunk change
+removed 8 node IDs from `tests/` without banking. Banked here so the
+composition zeroes; trunk should reconcile the ledger bank properly.
 
 Removes four Vulture findings that exist on `develop` but are invisible to
 develop's own exact-debt-ledger gate (the trusted-base scan is
