@@ -493,6 +493,105 @@ class TestCatalog:
             importer.import_from_catalog("victim", registry)
         assert registry.get("victim") is None
 
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("integration")
+    def test_missing_required_payload_raises_file_not_found(self, monkeypatch, tmp_path):
+        """A required payload absent at read time propagates FileNotFoundError,
+        matching the plain path reads. Resolution passes a missing file (its
+        resolved path stays inside the root), so the verified read is what
+        reports it."""
+        from maistro_design.systems import importer
+        from maistro_design.systems.registry import InMemoryDesignSystemRegistry
+
+        root = tmp_path / "catalog"
+        root.mkdir()
+        _write_catalog_system(root / "incomplete")
+        (root / "incomplete" / "tokens.css").unlink()
+        monkeypatch.setattr(importer, "CATALOG_ROOT", root)
+        registry = InMemoryDesignSystemRegistry()
+
+        with pytest.raises(FileNotFoundError):
+            importer.import_from_catalog("incomplete", registry)
+        assert registry.get("incomplete") is None
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("integration")
+    def test_non_regular_payload_is_rejected(self, monkeypatch, tmp_path):
+        """A payload swapped for a directory opens read-only without complaint,
+        but the fstat regular-file check rejects it as a policy error instead
+        of reading it."""
+        from maistro_design.systems import importer
+        from maistro_design.systems.registry import InMemoryDesignSystemRegistry
+        from maistro_design.types import CatalogImportPolicyError
+
+        if not importer._FD_VERIFICATION:
+            pytest.skip("no-follow fd verification requires POSIX open flags")
+
+        root = tmp_path / "catalog"
+        root.mkdir()
+        _write_catalog_system(root / "hollow")
+        (root / "hollow" / "tokens.css").unlink()
+        (root / "hollow" / "tokens.css").mkdir()
+        monkeypatch.setattr(importer, "CATALOG_ROOT", root)
+        registry = InMemoryDesignSystemRegistry()
+
+        with pytest.raises(CatalogImportPolicyError, match="swapped after validation"):
+            importer.import_from_catalog("hollow", registry)
+        assert registry.get("hollow") is None
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("integration")
+    def test_catalog_system_without_optional_tokens_imports(self, monkeypatch, tmp_path):
+        """`design-tokens.json` is optional on the verified read path too: its
+        absence reads as None and the system imports with no colour or spacing
+        tokens."""
+        from maistro_design.systems import importer
+        from maistro_design.systems.registry import InMemoryDesignSystemRegistry
+
+        root = tmp_path / "catalog"
+        root.mkdir()
+        _write_catalog_system(root / "sparse-brand")
+        (root / "sparse-brand" / "design-tokens.json").unlink()
+        monkeypatch.setattr(importer, "CATALOG_ROOT", root)
+        registry = InMemoryDesignSystemRegistry()
+
+        system = importer.import_from_catalog("sparse-brand", registry)
+        assert system.slug == "sparse-brand"
+        assert system.colors == []
+        assert system.spacing == []
+        assert registry.get("sparse-brand") is system
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("integration")
+    def test_import_uses_the_legacy_reader_when_fd_verification_is_unavailable(
+        self, monkeypatch, tmp_path
+    ):
+        """Platforms without no-follow open flags take the plain path-read
+        fallback: the import still succeeds, through `_read_system_files`."""
+        from maistro_design.systems import importer
+        from maistro_design.systems.registry import InMemoryDesignSystemRegistry
+
+        root = tmp_path / "catalog"
+        root.mkdir()
+        _write_catalog_system(root / "portable")
+        monkeypatch.setattr(importer, "CATALOG_ROOT", root)
+
+        read_by: list[str] = []
+        original = importer._read_system_files
+
+        def spy(system_dir):
+            read_by.append(system_dir.name)
+            return original(system_dir)
+
+        monkeypatch.setattr(importer, "_read_system_files", spy)
+        monkeypatch.setattr(importer, "_FD_VERIFICATION", False)
+        registry = InMemoryDesignSystemRegistry()
+
+        system = importer.import_from_catalog("portable", registry)
+        assert system.slug == "portable"
+        assert read_by == ["portable"]
+        assert registry.get("portable") is system
+
     @pytest.mark.contract("behavioral")
     @pytest.mark.scope("integration")
     def test_valid_flat_catalog_slug_imports_from_the_canonical_root(self, monkeypatch, tmp_path):
