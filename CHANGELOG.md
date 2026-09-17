@@ -160,6 +160,21 @@ or placeholder-only section.
   explicitly does not claim.
 ### Added
 
+- **The Workspace has a first-party design system (#1046, #1048, #65;
+  ADR-091626-ba4f).** `maistro-design` now bundles `workspace` as a seventh Tier-1 system —
+  the first authored in this repo rather than vendored from open-design. It
+  shares the Open Design token schema and adds the Workspace grammar as tokens:
+  frosted glass over a persona bloom, a fixed four-colour actor quartet (you /
+  agent / gate / system), four honest state faces, three undo outcomes and a
+  12px type floor. Three persona templates ship (greenhouse — the default —
+  slate, studio) in light and dark; a user-authored theme supplies four values
+  and is contrast-gated. `components.html` and `preview/home.html` render the
+  kit and Workspace Home without scripts. The as-is Conductor stylesheet is
+  measured in `docs/product/CONDUCTOR-DESIGN-SYSTEM-AUDIT.md` (8px labels, four
+  accents, 56 `!important`, three hand-maintained theme files) as the baseline
+  this replaces. Binding the Conductor's `data-theme` to these tokens is a
+  separate Workspace-cutover change.
+
 - **Browser sessions are governed at the Playwright boundary (#855).** Every
   network request a `BrowserClient` browser makes — main-frame navigations,
   redirect hops, subresources, and the destinations the browser-use agent

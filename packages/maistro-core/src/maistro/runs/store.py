@@ -361,12 +361,23 @@ def is_archivable(run: Run, cutoff: datetime, *, archive_after: timedelta) -> bo
       `finished_at`, which a terminal Run always has (`_validate_finished_at`).
       A Run that somehow lacks one is not archived rather than being treated as
       infinitely old, because "no timestamp" is not evidence of coldness.
+    - **not carrying an occurrence claim** — `(schedule_id, scheduled_for)`
+      lives only in the payload (migration 015 made it an expression index
+      over `payload -> 'provenance'`, deliberately no columns), so nulling the
+      payload releases the claim: the row drops out of the unique index, a
+      stale ticker could re-admit the firing, and `get_run_for_occurrence`
+      could no longer name the winner. Archiving that row would trade storage
+      for exactly the duplicate-firing the claim exists to make impossible, so
+      a claiming Run stays where the claim can see it. The tier still moves
+      every task and chat Run — the population that has the bytes.
     """
     if run.retention_expires_at is not None:
         return False
     if run.status not in TERMINAL_RUN_STATUSES:
         return False
     if run.finished_at is None:
+        return False
+    if occurrence_key(run.provenance) is not None:
         return False
     return run.finished_at <= cutoff - archive_after
 
@@ -437,6 +448,10 @@ class RunStore(Protocol):
     async def non_terminal_run_stats(self) -> tuple[int, datetime | None]: ...
 
     async def get_run(self, run_id: str) -> Run | None: ...
+
+    async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
+        """Resolve the canonical Run claiming one scheduled occurrence."""
+        ...
 
     async def transition_run(
         self,
@@ -944,6 +959,11 @@ class InMemoryRunStore:
     async def get_run(self, run_id: str) -> Run | None:
         run = self._runs.get(run_id)
         return run.model_copy(deep=True) if run is not None else None
+
+    async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
+        """Resolve an occurrence through its claim index, never by scanning Runs."""
+        run_id = self._occurrences.get((schedule_id, scheduled_for))
+        return await self.get_run(run_id) if run_id is not None else None
 
     async def transition_run(
         self,
