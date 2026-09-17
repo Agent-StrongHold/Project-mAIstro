@@ -14,6 +14,7 @@ from maistro.agents.brief_interview import (
     VIDEO_BRIEF_SCRIPT,
     BriefIncompleteError,
     BriefInterview,
+    BriefScript,
     apply_brief_answer,
     brief_ready,
     brief_summary,
@@ -23,6 +24,8 @@ from maistro.agents.brief_interview import (
     next_brief_question,
     start_brief_interview,
 )
+
+pytestmark = [pytest.mark.contract("behavioral")]
 
 S = VIDEO_BRIEF_SCRIPT
 OPENING = "Let's make a new video, let's start drafting a storyboard"
@@ -133,7 +136,6 @@ def test_an_answer_that_fits_another_open_field_goes_there_and_the_question_stan
     reply = apply_brief_answer(S, state, "after the market")
     assert reply.event == "routed"
     assert reply.field == "deadline"
-    assert reply.still_open == "channel"
     assert reply.state.answers["deadline"].value == "After the market"
     assert "channel" not in reply.state.answers
     assert next_brief_question(S, reply.state).key == "channel"  # type: ignore[union-attr]
@@ -212,6 +214,7 @@ def test_commit_only_when_every_required_field_is_known_and_the_draft_says_what_
     assert draft["fields"]["channel"] == "a 30-second vertical reel"
     assert draft["fields"]["deadline"] == "No date; open until the Goal's stop"
     assert draft["fields"]["mode"].startswith("Collaborative")
+    assert draft["options"] == {"outcome": "teach", "channel": "reel"}
     assert draft["sources"]["subject"] == "verbatim"
     assert draft["sources"]["deadline"] == "assumed"
     assert draft["sources"]["voice"] == "assumed"
@@ -240,6 +243,16 @@ def test_once_required_fields_are_known_extra_turns_set_optional_fields_or_becom
     assert "mode" not in draft["assumed"]
 
 
+@pytest.mark.ac("SPEC-091726-7c2a/AC-1")
+def test_an_interview_answers_one_script_only() -> None:
+    other = BriefScript(id="other", fields=S.fields)
+    state = start_brief_interview(S, OPENING)
+    with pytest.raises(ValueError, match="video_brief"):
+        apply_brief_answer(other, state, "teach it")
+    with pytest.raises(ValueError, match="video_brief"):
+        commit_brief(other, state)
+
+
 @pytest.mark.ac("SPEC-091726-7c2a/AC-2")
 def test_the_brief_so_far_shows_known_open_and_assumed_fields() -> None:
     state = start_brief_interview(S, OPENING, record={"source": "tray B3 log"})
@@ -256,6 +269,7 @@ def test_the_brief_so_far_shows_known_open_and_assumed_fields() -> None:
         "label": "Source",
         "value": "tray B3 log",
         "source": "record",
+        "option": None,
     }
     assert by_key["outcome"] == {
         "key": "outcome",

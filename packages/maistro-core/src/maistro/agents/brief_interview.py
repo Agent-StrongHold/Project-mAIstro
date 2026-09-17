@@ -32,6 +32,28 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from maistro.agents.program_context import InterviewTurn
 
+__all__ = [
+    "VIDEO_BRIEF_ALIASES",
+    "VIDEO_BRIEF_SCRIPT",
+    "AnswerSource",
+    "BriefAnswer",
+    "BriefEvent",
+    "BriefField",
+    "BriefIncompleteError",
+    "BriefInterview",
+    "BriefOption",
+    "BriefReply",
+    "BriefScript",
+    "apply_brief_answer",
+    "brief_ready",
+    "brief_summary",
+    "commit_brief",
+    "fill_from_record",
+    "missing_fields",
+    "next_brief_question",
+    "start_brief_interview",
+]
+
 AnswerSource = Literal["user", "verbatim", "record", "assumed"]
 """Where a brief field's value came from.
 
@@ -140,8 +162,6 @@ class BriefReply(BaseModel):
     state: BriefInterview
     event: BriefEvent
     field: str | None = None
-    #: For ``routed``: the field the person was asked about and still owes.
-    still_open: str | None = None
 
 
 class BriefIncompleteError(ValueError):
@@ -167,6 +187,12 @@ _VERBATIM_LEAD = re.compile(r"^\s*(?:(?:it.s|it\s+is|about|the)\s+)+", re.IGNORE
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _require_script(script: BriefScript, state: BriefInterview) -> None:
+    """An interview answers one script; applying another's fields to it is a bug."""
+    if state.script_id != script.id:
+        raise ValueError(f"interview is for script {state.script_id!r}, not {script.id!r}")
 
 
 def _turn(state: BriefInterview, role: str, text: str) -> list[InterviewTurn]:
@@ -332,7 +358,7 @@ def _route_elsewhere(
             continue
         if other.parse(said) is not None:
             new, _ = _set_from_text(state, other, said, said=said)
-            return BriefReply(state=new, event="routed", field=other.key, still_open=current.key)
+            return BriefReply(state=new, event="routed", field=other.key)
     return None
 
 
@@ -353,6 +379,7 @@ def apply_brief_answer(
     the current question stands; anything else is carried verbatim. Once
     every required field is known, further turns are notes on the brief.
     """
+    _require_script(script, state)
     said = text.strip()
     if state.dropped:
         return BriefReply(state=state, event="already_dropped")
@@ -384,13 +411,20 @@ def brief_summary(script: BriefScript, state: BriefInterview) -> dict[str, Any]:
     their default as ``"assumed"`` so the person can see what will be taken
     for granted before they commit.
     """
+    _require_script(script, state)
     fields: list[dict[str, Any]] = []
     known = 0
     for f in script.fields:
         ans = state.answers.get(f.key)
         if ans is not None:
             fields.append(
-                {"key": f.key, "label": f.label, "value": ans.value, "source": ans.source}
+                {
+                    "key": f.key,
+                    "label": f.label,
+                    "value": ans.value,
+                    "source": ans.source,
+                    "option": ans.option,
+                }
             )
             if f.required:
                 known += 1
@@ -416,6 +450,7 @@ def commit_brief(script: BriefScript, state: BriefInterview) -> dict[str, Any]:
     known. This is the gate: nothing upstream should mint a Goal from an
     interview that this function would not commit.
     """
+    _require_script(script, state)
     if state.dropped:
         raise BriefIncompleteError(("dropped",))
     missing = missing_fields(script, state)
@@ -423,6 +458,7 @@ def commit_brief(script: BriefScript, state: BriefInterview) -> dict[str, Any]:
         raise BriefIncompleteError(missing)
     values: dict[str, str] = {}
     sources: dict[str, AnswerSource] = {}
+    options: dict[str, str] = {}
     assumed: list[str] = []
     for f in script.fields:
         ans = state.answers.get(f.key)
@@ -435,13 +471,16 @@ def commit_brief(script: BriefScript, state: BriefInterview) -> dict[str, Any]:
             continue
         values[f.key] = ans.value
         sources[f.key] = ans.source
+        if ans.option is not None:
+            options[f.key] = ans.option
         if ans.source == "assumed":
             assumed.append(f.key)
     return {
-        "script": script.id,
+        "script": state.script_id,
         "opening": state.opening,
         "fields": values,
         "sources": sources,
+        "options": options,
         "assumed": assumed,
         "notes": list(state.notes),
         "turns": len(state.transcript),

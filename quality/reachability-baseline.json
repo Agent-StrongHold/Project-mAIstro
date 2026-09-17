@@ -44,6 +44,7 @@
     "_vulture_whitelist",
     "maistro.agents.auditor",
     "maistro.agents.auditor.checks",
+    "maistro.agents.brief_interview",
     "maistro.agents.feedback",
     "maistro.agents.feedback.extractor",
     "maistro.agents.feedback.loop",
