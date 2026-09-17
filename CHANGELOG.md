@@ -160,6 +160,20 @@ or placeholder-only section.
   explicitly does not claim.
 ### Added
 
+- **The Workspace Agent interviews before it commits a Goal or CreativeBrief
+  (#774, #804, #53; SPEC-091726-7c2a).** `maistro.agents.brief_interview` is a
+  deterministic requirements conversation: one required question at a time in
+  plain words, free-text answers matched to options or carried verbatim, answers
+  the opening turn or the workspace record already holds never asked, "you
+  decide" taking a marked default only where one is defensible, "change *field*"
+  re-answering anything, and "never mind" dropping with nothing written.
+  `commit_brief` is the gate: it returns the draft a Goal revision and a
+  CreativeBrief version are written from, with the source of every field and
+  the list of assumed ones, and refuses while any required field is missing.
+  The first script is a video brief for creator workspaces. Hive hosts the
+  interview beside the onboarding one, at `/v1/program/brief` (`start`,
+  `answer`, `draft`, and delete), persisted per (user, workspace); the
+  Workspace Agent chat that will carry it as ordinary turns is a follow-up.
 - **The Workspace has a first-party design system (#1046, #1048, #65;
   ADR-091626-ba4f).** `maistro-design` now bundles `workspace` as a seventh Tier-1 system —
   the first authored in this repo rather than vendored from open-design. It
@@ -204,6 +218,20 @@ or placeholder-only section.
 
 ### Changed
 
+- **The merge-queue bot quarantines a head that already failed inside the
+  queue (#1438 review follow-up).** `scripts/check-enqueue-merge-queue.py`
+  re-requested any policy-green PR head on every scan, including one the
+  queue had just ejected, so with batched groups a bad head dragged each new
+  group through a rebuild every 30 minutes. The controller now reads the
+  recent merge-group run history (the workflow gains `actions: read`),
+  attributes each failed entry to its own tree or to a failed entry ahead of
+  it via the `gh-readonly-queue/develop/pr-N-<sha>` chain, and holds any head
+  whose own entry failed after that head's `gates-ran` first went green. A
+  new push or a human enqueue lifts the hold; an unreadable history refuses
+  every admission. `scripts/check-required-checks.py` additionally pins
+  `grouping_strategy=ALLGREEN`, and `measure-merge-latency.py` reports how
+  many dequeued candidates were rebuilt behind another PR's failure.
+
 - **HALF_OPEN circuit-breaker success is now caller-bound (#828).** `record_success()`
   closes a HALF_OPEN circuit only when called by the thread or asyncio task
   whose `allow_request()` call acquired the current exclusive probe lease;
@@ -242,6 +270,15 @@ or placeholder-only section.
   `TypeError` at the call site instead of a wrong terminal status at runtime.
 
 ### Fixed
+
+- **Merge-queue builds retain both required PostgreSQL checks (no linked issue:
+  observed queue timeout).** The PostgreSQL 17/18 matrix now runs after the
+  workflow scope check regardless of path scope. GitHub evaluates a job-level
+  condition before expanding its matrix, so skipping it produced one literal
+  matrix-name check instead of `postgres (pg17)` and `postgres (pg18)`; the queue
+  waited for those missing contexts even though reported checks were green.
+  Both real database suites, required check names, and merge rules are unchanged.
+  Queue builds for unrelated paths now also run the two PostgreSQL jobs.
 
 - **`/v1/hitl/pending` pages by instant, not by printed offset (#1109).** The
   keyset cursor this scan walks was normalized to UTC in every store, so

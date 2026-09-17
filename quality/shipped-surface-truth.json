@@ -891,6 +891,46 @@
     },
     {
       "source": "packages/hive-conductor/backend/routes/program.py",
+      "method": "DELETE",
+      "route": "/brief",
+      "handler": "drop_brief",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "forgets the caller's open brief interview in this workspace; nothing was committed from it",
+      "effect_owner": "services.brief_store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/program.py",
+      "method": "POST",
+      "route": "/brief/answer",
+      "handler": "answer_brief",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "applies one free-text turn to the open brief interview and persists it",
+      "effect_owner": "services.brief_store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/program.py",
+      "method": "POST",
+      "route": "/brief/draft",
+      "handler": "draft_brief",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "the commit gate: returns the Goal/CreativeBrief draft or 409 with the missing fields; writes nothing (no Goal store yet), audits the draft",
+      "effect_owner": "routes.audit.log_audit"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/program.py",
+      "method": "POST",
+      "route": "/brief/start",
+      "handler": "start_brief",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "opens a brief interview from the turn that asked for work and persists it per (user, workspace)",
+      "effect_owner": "services.brief_store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/program.py",
       "method": "POST",
       "route": "/guidance",
       "handler": "post_guidance",

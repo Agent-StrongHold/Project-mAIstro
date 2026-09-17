@@ -295,6 +295,12 @@ class DesignSystemNotFoundError(DesignError):
     code = "DESIGN_SYSTEM_NOT_FOUND"
 
 
+class CatalogImportPolicyError(DesignError, ValueError):
+    """Raised when a catalog slug or its resolved files violate the boundary."""
+
+    code = "CATALOG_IMPORT_POLICY"
+
+
 class DiscoveryIncompleteError(DesignError):
     code = "DISCOVERY_INCOMPLETE"
 
