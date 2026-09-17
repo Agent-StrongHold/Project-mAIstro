@@ -160,6 +160,18 @@ or placeholder-only section.
   explicitly does not claim.
 ### Added
 
+- **The Workspace Agent interviews before it commits a Goal or CreativeBrief
+  (#774, #804, #53; SPEC-091726-7c2a).** `maistro.agents.brief_interview` is a
+  deterministic requirements conversation: one required question at a time in
+  plain words, free-text answers matched to options or carried verbatim, answers
+  the opening turn or the workspace record already holds never asked, "you
+  decide" taking a marked default only where one is defensible, "change *field*"
+  re-answering anything, and "never mind" dropping with nothing written.
+  `commit_brief` is the gate: it returns the draft a Goal revision and a
+  CreativeBrief version are written from, with the source of every field and
+  the list of assumed ones, and refuses while any required field is missing.
+  The first script is a video brief for creator workspaces; the Workspace
+  Agent chat that hosts it is a follow-up.
 - **The Workspace has a first-party design system (#1046, #1048, #65;
   ADR-091626-ba4f).** `maistro-design` now bundles `workspace` as a seventh Tier-1 system —
   the first authored in this repo rather than vendored from open-design. It
