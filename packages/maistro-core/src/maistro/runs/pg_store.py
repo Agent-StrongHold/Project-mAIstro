@@ -395,6 +395,7 @@ class PgRunStore:
                       AND finished_at IS NOT NULL
                       AND finished_at <= $1
                       AND status = ANY($2::text[])
+                      AND (payload -> 'provenance' ->> 'schedule_id') IS NULL
                     ORDER BY finished_at
                     LIMIT $3
                     FOR UPDATE SKIP LOCKED""",
@@ -548,6 +549,18 @@ class PgRunStore:
     async def get_run(self, run_id: str) -> Run | None:
         payload = await self._payload(
             "SELECT run_id, payload, archive_key FROM canonical_runs WHERE run_id = $1", run_id
+        )
+        return Run.model_validate(payload) if payload is not None else None
+
+    async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
+        """Resolve the unique occurrence claim through its expression index."""
+        payload = await self._payload(
+            """SELECT run_id, payload, archive_key FROM canonical_runs
+               WHERE (payload -> 'provenance' ->> 'schedule_id') = $1
+                 AND (payload -> 'provenance' ->> 'scheduled_for') = $2
+               LIMIT 1""",
+            schedule_id,
+            scheduled_for,
         )
         return Run.model_validate(payload) if payload is not None else None
 

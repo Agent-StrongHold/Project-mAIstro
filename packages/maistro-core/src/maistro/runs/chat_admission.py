@@ -237,8 +237,10 @@ class ChatRunAdmitter:
         contradicting what happened, which is worse than one that says the
         agent was not yet chosen.
 
-        Binding the *actually dispatched* agent onto the Run needs the Conduit
-        to report its selection, which is #142's convergence.
+        The Run deliberately keeps this admission-time fact as `deferred`. The
+        Conduit reports the agent it actually dispatches, and #223 records that
+        execution-time identity on the Attempt rather than rewriting this
+        provenance after admission (ADR-082526-7f02).
         """
         description = last_user_message(messages) or DEFAULT_TURN_NAME
         hint = intent_hint.strip()
