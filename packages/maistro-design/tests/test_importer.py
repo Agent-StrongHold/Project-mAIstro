@@ -416,6 +416,83 @@ class TestCatalog:
         with pytest.raises(CatalogImportPolicyError, match="outside"):
             importer.import_from_catalog("safe", InMemoryDesignSystemRegistry())
 
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("integration")
+    def test_payload_swapped_after_validation_is_rejected(self, monkeypatch, tmp_path):
+        """A payload replaced by an out-of-root symlink between validation and
+        read is not followed: the read is bound to the validated directory
+        descriptor with no-follow semantics (closes the TOCTOU window)."""
+        from maistro_design.systems import importer
+        from maistro_design.systems.registry import InMemoryDesignSystemRegistry
+        from maistro_design.types import CatalogImportPolicyError
+
+        if not importer._FD_VERIFICATION:
+            pytest.skip("no-follow fd verification requires POSIX open flags")
+
+        root = tmp_path / "catalog"
+        root.mkdir()
+        _write_catalog_system(root / "victim")
+        outside = tmp_path / "outside-DESIGN.md"
+        outside.write_text("# leaked", encoding="utf-8")
+        try:
+            (tmp_path / "symlink-probe").symlink_to(outside)
+        except OSError as exc:
+            pytest.skip(f"symlinks unavailable: {exc}")
+
+        original_resolve = importer._resolve_catalog_system_dir
+
+        def resolve_then_swap(slug):
+            system_dir = original_resolve(slug)
+            (system_dir / "DESIGN.md").unlink()
+            (system_dir / "DESIGN.md").symlink_to(outside)
+            return system_dir
+
+        monkeypatch.setattr(importer, "CATALOG_ROOT", root)
+        monkeypatch.setattr(importer, "_resolve_catalog_system_dir", resolve_then_swap)
+        registry = InMemoryDesignSystemRegistry()
+
+        with pytest.raises(CatalogImportPolicyError, match="swapped after validation"):
+            importer.import_from_catalog("victim", registry)
+        assert registry.get("victim") is None
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("integration")
+    def test_catalog_directory_swapped_after_validation_is_rejected(self, monkeypatch, tmp_path):
+        """The validated directory itself being symlink-swapped before the read
+        is rejected: payload opens run against the retained directory fd, so the
+        swap cannot redirect the reads to an out-of-root payload set."""
+        from maistro_design.systems import importer
+        from maistro_design.systems.registry import InMemoryDesignSystemRegistry
+        from maistro_design.types import CatalogImportPolicyError
+
+        if not importer._FD_VERIFICATION:
+            pytest.skip("no-follow fd verification requires POSIX open flags")
+
+        root = tmp_path / "catalog"
+        root.mkdir()
+        _write_catalog_system(root / "victim")
+        outside = tmp_path / "outside"
+        _write_catalog_system(outside)
+
+        original_resolve = importer._resolve_catalog_system_dir
+
+        def resolve_then_swap_dir(slug):
+            system_dir = original_resolve(slug)
+            system_dir.rename(tmp_path / "victim-moved")
+            try:
+                system_dir.symlink_to(outside, target_is_directory=True)
+            except OSError as exc:
+                pytest.skip(f"symlinks unavailable: {exc}")
+            return system_dir
+
+        monkeypatch.setattr(importer, "CATALOG_ROOT", root)
+        monkeypatch.setattr(importer, "_resolve_catalog_system_dir", resolve_then_swap_dir)
+        registry = InMemoryDesignSystemRegistry()
+
+        with pytest.raises(CatalogImportPolicyError, match="swapped after validation"):
+            importer.import_from_catalog("victim", registry)
+        assert registry.get("victim") is None
+
     @pytest.mark.contract("behavioral")
     @pytest.mark.scope("integration")
     def test_valid_flat_catalog_slug_imports_from_the_canonical_root(self, monkeypatch, tmp_path):
