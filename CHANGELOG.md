@@ -243,6 +243,15 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Merge-queue builds retain both required PostgreSQL checks (no linked issue:
+  observed queue timeout).** The PostgreSQL 17/18 matrix now runs after the
+  workflow scope check regardless of path scope. GitHub evaluates a job-level
+  condition before expanding its matrix, so skipping it produced one literal
+  matrix-name check instead of `postgres (pg17)` and `postgres (pg18)`; the queue
+  waited for those missing contexts even though reported checks were green.
+  Both real database suites, required check names, and merge rules are unchanged.
+  Queue builds for unrelated paths now also run the two PostgreSQL jobs.
+
 - **`/v1/hitl/pending` pages by instant, not by printed offset (#1109).** The
   keyset cursor this scan walks was normalized to UTC in every store, so
   `list_by_status` compares a normalized key -- but the route still built its
