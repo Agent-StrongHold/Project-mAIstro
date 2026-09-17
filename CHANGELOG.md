@@ -170,8 +170,10 @@ or placeholder-only section.
   `commit_brief` is the gate: it returns the draft a Goal revision and a
   CreativeBrief version are written from, with the source of every field and
   the list of assumed ones, and refuses while any required field is missing.
-  The first script is a video brief for creator workspaces; the Workspace
-  Agent chat that hosts it is a follow-up.
+  The first script is a video brief for creator workspaces. Hive hosts the
+  interview beside the onboarding one, at `/v1/program/brief` (`start`,
+  `answer`, `draft`, and delete), persisted per (user, workspace); the
+  Workspace Agent chat that will carry it as ordinary turns is a follow-up.
 - **The Workspace has a first-party design system (#1046, #1048, #65;
   ADR-091626-ba4f).** `maistro-design` now bundles `workspace` as a seventh Tier-1 system —
   the first authored in this repo rather than vendored from open-design. It

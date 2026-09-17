@@ -630,16 +630,6 @@
       "modules": [
         "@tool/build-evidence"
       ]
-    },
-    {
-      "id": "workspace-agent-intake",
-      "subsystem": "Agents",
-      "disposition": "CONNECT",
-      "rationale": "The requirements interview a Goal or CreativeBrief is committed from (SPEC-091726-7c2a). A pure state machine with its tests; its caller is the Workspace Agent chat (#53) and the Goal/CreativeBrief writers (#458, #774), none of which exist yet. Listing it here says it is built ahead of its caller, not that it runs.",
-      "root": "the Workspace Agent chat route (#53), through maistro.agents.hyperagent",
-      "modules": [
-        "maistro.agents.brief_interview"
-      ]
     }
   ]
 }

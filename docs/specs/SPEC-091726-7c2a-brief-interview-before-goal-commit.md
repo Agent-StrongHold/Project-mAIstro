@@ -14,9 +14,10 @@ history:
   - status: AC Defined
     date: 2026-09-17
 substrate:
+  - maistro-engine#ADR-091726-7c2a
   - maistro-engine#ADR-061
-  - maistro-engine#ADR-060
-implements: []
+implements:
+  - maistro-engine#ADR-091726-7c2a
 related:
   - maistro-engine#SPEC-192
   - maistro-engine#SPEC-160
@@ -29,8 +30,11 @@ contracts:
   - behavioral
 tests:
   - packages/maistro-core/tests/agents/test_brief_interview.py
+  - packages/hive-conductor/backend/tests/test_program_brief_routes.py
 source:
   - packages/maistro-core/src/maistro/agents/brief_interview.py
+  - packages/hive-conductor/backend/routes/program.py
+  - packages/hive-conductor/backend/services/brief_store.py
 ac-modules:
   AC-1: maistro.agents.brief_interview
   AC-2: maistro.agents.brief_interview
@@ -50,6 +54,7 @@ owners:
 
 - **Status:** AC Defined
 - **Date:** 2026-09-17
+- **ADR:** `ADR-091726-7c2a`
 - **Issues:** #774 (CreativeBrief), #804 (persistent Workspace Agent), #53 (Workspace Agent chat), #458 (canonical Goal)
 - **Technical Area:** Workspace Agent intake, Design Studio briefs
 
@@ -146,9 +151,25 @@ may mint a Goal from an interview this function would not commit.
   `maistro.agents.program_context`. That one asks what a workspace is; this
   one asks what a piece of work is. They share `InterviewTurn` and nothing
   else.
-- It does not add a route. The Workspace Agent chat that would host it is
-  #53 / M3-D; the demo of the interaction lives in the Content Studio
-  artifact referenced from ADR-091626-ba4f.
+- It does not put the interview in the chat turn stream. The Workspace
+  Agent chat that will host it as ordinary turns is #53 / M3-D; until then
+  Hive's program API hosts it (below), and the Content Studio demo referenced
+  from ADR-091626-ba4f shows the intended shape.
+
+## Where it is hosted
+
+Hive's program hyperagent API, which already hosts the onboarding interview,
+hosts this one beside it under `/v1/program/brief`, scoped to a workspace
+the caller is a member of and persisted per (user, workspace) in the
+`brief_interviews` store:
+
+| Route | Does |
+|---|---|
+| `GET /brief` | the open interview, its brief-so-far summary and the next question, or nothing |
+| `POST /brief/start` | opens an interview from the turn that asked for work (replaces any open one; it was never committed) |
+| `POST /brief/answer` | one free-text turn; the reply names the event and the field it touched |
+| `POST /brief/draft` | the gate: the draft, or 409 naming the missing fields. `written` is empty until the Goal and CreativeBrief writers exist |
+| `DELETE /brief` | forgets the open interview |
 
 ## Acceptance Criteria
 
