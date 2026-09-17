@@ -182,7 +182,15 @@ PACKAGES = [
         # silent is the one that most needs declaring.
         data_files=[
             f"systems/bundled/{slug}/{name}"
-            for slug in ("default", "shadcn", "apple", "material", "editorial", "enterprise")
+            for slug in (
+                "default",
+                "shadcn",
+                "apple",
+                "material",
+                "editorial",
+                "enterprise",
+                "workspace",
+            )
             for name in ("manifest.json", "DESIGN.md", "tokens.css", "design-tokens.json")
         ]
         # The catalogue index AND a payload from it. The index alone would let

@@ -48,7 +48,7 @@ import json
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from maistro.scheduling.model import Schedule
 
@@ -233,16 +233,58 @@ def _advance(
     # store must enforce exhaustion from the serialized counter as well.
     exhausted = schedule.max_runs is not None and runs_so_far >= schedule.max_runs
     disabled = disable or exhausted
-    return schedule.model_copy(
-        update={
-            "last_fired_at": fired_at if fired_at is not None else schedule.last_fired_at,
-            "last_run_id": run_id if run_id is not None else schedule.last_run_id,
-            "runs_so_far": runs_so_far,
-            "next_due_at": None if disabled else next_due_at,
-            "enabled": False if disabled else schedule.enabled,
-            "updated_at": datetime.now(UTC),
-        }
+    newest = fired_at is not None and (
+        schedule.last_fired_at is None or fired_at >= schedule.last_fired_at
     )
+    update = _advanced_cursors(
+        schedule,
+        fired_at=fired_at,
+        run_id=run_id,
+        next_due_at=next_due_at,
+        newest=newest,
+        disabled=disabled,
+    )
+    update["runs_so_far"] = runs_so_far
+    update["updated_at"] = datetime.now(UTC)
+    return schedule.model_copy(update=update)
+
+
+def _advanced_cursors(
+    schedule: Schedule,
+    *,
+    fired_at: datetime | None,
+    run_id: str | None,
+    next_due_at: datetime | None,
+    newest: bool,
+    disabled: bool,
+) -> dict[str, Any]:
+    """The cursor fields one `record_fire` may write, per occurrence order.
+
+    The linkage follows the *newest* consumed occurrence. Serialization
+    orders concurrent writers, but order alone lets a replica holding a
+    stale snapshot land its older occurrence after another replica already
+    recorded a newer one — regressing `last_fired_at` and, worse, pointing
+    `last_run_id` at the older Run, which is the one overlap checks consult
+    (`_canonical_active_run`). A write naming an occurrence older than the
+    stored cursor therefore leaves the cursors alone; an equal or newer
+    occurrence advances them exactly as before. The counters — handled by
+    the caller — still move: the stale occurrence really was admitted, the
+    claim refused only its duplicate.
+
+    `next_due_at` is part of the same cursor pair and follows the same
+    occurrence, so the pair stays atomic — an older write's earlier due
+    stamp must not survive under a newer occurrence's link. A cursor-only
+    evaluation (`fired_at is None`) never links, so its due stamp always
+    applies. `disable` stays unconditional: a snapshot that saw exhaustion
+    must be able to stop the schedule whatever order the writes land in.
+    """
+    due_moves = newest or fired_at is None
+    return {
+        "last_fired_at": fired_at if newest else schedule.last_fired_at,
+        "last_run_id": run_id if (newest and run_id is not None) else schedule.last_run_id,
+        "next_due_at": None if disabled else (next_due_at if due_moves else schedule.next_due_at),
+        "enabled": False if disabled else schedule.enabled,
+    }
 
 
 def _merged(stored: Schedule | None, definition: Schedule) -> Schedule:

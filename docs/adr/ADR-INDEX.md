@@ -99,6 +99,7 @@ Turing / deferred-to-vN) and **`DECISION-BACKLOG.md`** (in-scope but not yet dec
 | ADR-070426-e9da | v1 | Proposed | 2026-07-04 | — | 2026-07-04 | Header-based CSRF defense (`X-Maistro-Request`) for hive-conductor's cookie-authenticated mutations; docs-only, flags the conftest fixture update as acceptance-blocking. |
 | ADR-070426-ac56 | v1 | Proposed | 2026-07-04 | — | 2026-07-04 | Wire `CostAwareRouter.fallback_chain()` into the conductor's retry loop for cross-model fallback; docs-only, DI change deferred to SPEC-280. |
 | ADR-091226-1341 | v1 | Accepted | 2026-09-12 | 2026-09-12 | 2026-09-12 12:11 CDT | Gates Ran evaluates path-scoped execution evidence from measured changed files; ambiguous scope fails closed. |
+| ADR-091626-ba4f | v1 | Accepted | 2026-09-16 | 2026-09-16 | 2026-09-16 | The Workspace design system is a first-party Tier-1 bundled Open Design system: shared token schema plus a fixed actor quartet, four state faces, honest undo outcomes and a 12px floor; personas rebind four values only. |
 
 *Turing-specific ADRs (autonoetic self-model) are tracked as a separate set — see `OUT-OF-SCOPE.md`
 §Turing and `DECISION-BACKLOG.md` §Turing. ADR-061 (maistro-design-package) and ADR-100 (its
