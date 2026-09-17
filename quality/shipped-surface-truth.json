@@ -525,8 +525,9 @@
       "handler": "trigger_cycle",
       "disposition": "canonical",
       "production_enabled": true,
-      "reason": "runs one real evolution cycle",
-      "effect_owner": "services.evolution run cycle"
+      "reason": "admits one canonical Graph -> Run -> NodeRun -> Attempt evolution cycle; unavailable canonical execution returns an explicit availability error and terminal Run failures preserve their identity",
+      "effect_owner": "services.evolution -> services.evolution_graph canonical Run spine",
+      "truth_contract": "POST /cycle is executable only when the engine exposes a canonical Container with Run, Graph continuation, and Project scope stores; canonical failed/cancelled/timed-out Runs are projected with run_id, status, and diagnostic rather than as service-unavailable"
     },
     {
       "source": "packages/hive-conductor/backend/routes/evolution.py",
@@ -887,6 +888,46 @@
       "production_enabled": true,
       "reason": "replaces the profile and returns the store's read-back",
       "effect_owner": "services.profile_store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/program.py",
+      "method": "DELETE",
+      "route": "/brief",
+      "handler": "drop_brief",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "forgets the caller's open brief interview in this workspace; nothing was committed from it",
+      "effect_owner": "services.brief_store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/program.py",
+      "method": "POST",
+      "route": "/brief/answer",
+      "handler": "answer_brief",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "applies one free-text turn to the open brief interview and persists it",
+      "effect_owner": "services.brief_store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/program.py",
+      "method": "POST",
+      "route": "/brief/draft",
+      "handler": "draft_brief",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "the commit gate: returns the Goal/CreativeBrief draft or 409 with the missing fields; writes nothing (no Goal store yet), audits the draft",
+      "effect_owner": "routes.audit.log_audit"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/program.py",
+      "method": "POST",
+      "route": "/brief/start",
+      "handler": "start_brief",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "opens a brief interview from the turn that asked for work and persists it per (user, workspace)",
+      "effect_owner": "services.brief_store"
     },
     {
       "source": "packages/hive-conductor/backend/routes/program.py",
@@ -2007,8 +2048,8 @@
       "route": "${API}/cycle",
       "disposition": "canonical",
       "production_enabled": true,
-      "reason": "triggers an evolution cycle through the real backend route",
-      "effect_owner": "routes/evolution.py trigger_cycle"
+      "reason": "requests a canonical evolution cycle when status reports executable; unavailable or terminal Run failure truth remains visible in the backend response",
+      "effect_owner": "routes/evolution.py trigger_cycle -> canonical Run response"
     },
     {
       "source": "packages/hive-conductor/frontend/src/pages/Evolution.tsx",

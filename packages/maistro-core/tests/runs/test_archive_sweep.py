@@ -25,6 +25,7 @@ from maistro.archive.filesystem import FilesystemArchiveStore
 from maistro.graph import Graph, Node
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.model import RunStatus
+from maistro.runs.sources import SCHEDULE_ID_KEY, SCHEDULED_FOR_KEY
 from maistro.runs.store import DEFAULT_ARCHIVE_AFTER, InMemoryRunStore
 
 NOW = datetime(2026, 8, 25, tzinfo=UTC)
@@ -106,6 +107,34 @@ async def test_a_recent_run_is_not_archived(spine: Any) -> None:
     store, _archive, _graph, _project_id = spine
     await _run(spine, status=RunStatus.COMPLETED, finished=RECENT, retention=None)
     assert await store.archive_cold_runs(now=NOW) == 0
+
+
+async def test_a_run_claiming_an_occurrence_is_never_archived(spine: Any) -> None:
+    """The other exclusion, beside the deletion date (#1269).
+
+    An occurrence claim is an expression index over the payload, so moving
+    the payload would release the claim: the row would drop out of the
+    unique index, `get_run_for_occurrence` would stop resolving the winner,
+    and a stale ticker re-enumerating the firing could admit it again. The
+    claiming Run stays where the claim can see it, however cold it is — and
+    the tier still moves the unclaimed Run beside it, so this is an
+    exclusion, not a shutoff.
+    """
+    store, archive, graph, project_id = spine
+    claiming = await store.create_run(
+        graph,
+        provenance={SCHEDULE_ID_KEY: "sched-1", SCHEDULED_FOR_KEY: NOW.isoformat()},
+    )
+    store._runs[claiming.run_id] = claiming.model_copy(
+        update={"status": RunStatus.COMPLETED, "finished_at": COLD, "retention_expires_at": None}
+    )
+    plain = await _run(spine, status=RunStatus.COMPLETED, finished=COLD, retention=None)
+
+    assert await store.archive_cold_runs(now=NOW) == 1
+    (key,) = await _keys(archive, project_id)
+    payload = json.loads(await archive.get(key))
+    assert payload["run_id"] == plain.run_id
+    assert await store.get_run(claiming.run_id) == store._runs[claiming.run_id]
 
 
 async def test_live_work_is_not_archived(spine: Any) -> None:
