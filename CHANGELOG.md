@@ -25,6 +25,28 @@ or placeholder-only section.
 
 ### Security
 
+- **Canonical Event payloads are scrubbed of credential material before any
+  backend can persist them (#1164).** `EventEnvelope` now redacts `payload`
+  and `provenance` in its constructor — the one seam the memory, SQLite,
+  PostgreSQL and outbox paths all already go through for their size bound — so
+  a token pasted into an event can no longer reach durable storage, a replay,
+  or an operator's inspection of the event log. Both halves of #1159's policy
+  apply: a field whose *name* classifies as credential material
+  (`api_key`, `private_key`, `ssh_key`, a bare `key`, …) loses its value, and
+  every surviving string is scanned for secret *shapes* (Slack and AWS
+  credentials, bearer assignments, PEM blocks, high-entropy runs). Identifiers
+  are preserved — `key_arn`, `token_id`, digests, uuid4 ids and ordinary prose
+  survive untouched — and the scrub is idempotent, so re-validating a staged
+  envelope does not rewrite already-recorded evidence. Rows written before this
+  change are read back exactly as they were recorded rather than re-scrubbed on
+  read. Mapping *keys* are scanned too, so a token-indexed object cannot carry
+  the credential past the scrub in its key, with two keys that redact to the
+  same label kept distinct rather than collapsed. A `key` that names what it
+  identifies (`effect_key`, `idempotency_key`, `partition_key`, `parent_key`,
+  …) now classifies as an identifier in `maistro.security.secret_policy`, so
+  the canonical capability events keep the `effect_key` that audit and replay
+  consumers join on. The byte ceiling is re-checked after the scrub, because
+  redaction can grow a field that passed the ceiling as submitted.
 - **An identity-free chat turn is routed as the anonymous principal again
   (#1165 regression, introduced by #1288).** `Container.route_request` had
   stopped substituting `ANONYMOUS_AUTH` for `auth=None`, so a turn that
@@ -138,6 +160,35 @@ or placeholder-only section.
   explicitly does not claim.
 ### Added
 
+- **The Workspace Agent interviews before it commits a Goal or CreativeBrief
+  (#774, #804, #53; SPEC-091726-7c2a).** `maistro.agents.brief_interview` is a
+  deterministic requirements conversation: one required question at a time in
+  plain words, free-text answers matched to options or carried verbatim, answers
+  the opening turn or the workspace record already holds never asked, "you
+  decide" taking a marked default only where one is defensible, "change *field*"
+  re-answering anything, and "never mind" dropping with nothing written.
+  `commit_brief` is the gate: it returns the draft a Goal revision and a
+  CreativeBrief version are written from, with the source of every field and
+  the list of assumed ones, and refuses while any required field is missing.
+  The first script is a video brief for creator workspaces. Hive hosts the
+  interview beside the onboarding one, at `/v1/program/brief` (`start`,
+  `answer`, `draft`, and delete), persisted per (user, workspace); the
+  Workspace Agent chat that will carry it as ordinary turns is a follow-up.
+- **The Workspace has a first-party design system (#1046, #1048, #65;
+  ADR-091626-ba4f).** `maistro-design` now bundles `workspace` as a seventh Tier-1 system —
+  the first authored in this repo rather than vendored from open-design. It
+  shares the Open Design token schema and adds the Workspace grammar as tokens:
+  frosted glass over a persona bloom, a fixed four-colour actor quartet (you /
+  agent / gate / system), four honest state faces, three undo outcomes and a
+  12px type floor. Three persona templates ship (greenhouse — the default —
+  slate, studio) in light and dark; a user-authored theme supplies four values
+  and is contrast-gated. `components.html` and `preview/home.html` render the
+  kit and Workspace Home without scripts. The as-is Conductor stylesheet is
+  measured in `docs/product/CONDUCTOR-DESIGN-SYSTEM-AUDIT.md` (8px labels, four
+  accents, 56 `!important`, three hand-maintained theme files) as the baseline
+  this replaces. Binding the Conductor's `data-theme` to these tokens is a
+  separate Workspace-cutover change.
+
 - **Browser sessions are governed at the Playwright boundary (#855).** Every
   network request a `BrowserClient` browser makes — main-frame navigations,
   redirect hops, subresources, and the destinations the browser-use agent
@@ -220,6 +271,59 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Merge-queue builds retain both required PostgreSQL checks (no linked issue:
+  observed queue timeout).** The PostgreSQL 17/18 matrix now runs after the
+  workflow scope check regardless of path scope. GitHub evaluates a job-level
+  condition before expanding its matrix, so skipping it produced one literal
+  matrix-name check instead of `postgres (pg17)` and `postgres (pg18)`; the queue
+  waited for those missing contexts even though reported checks were green.
+  Both real database suites, required check names, and merge rules are unchanged.
+  Queue builds for unrelated paths now also run the two PostgreSQL jobs.
+
+- **`/v1/hitl/pending` pages by instant, not by printed offset (#1109).** The
+  keyset cursor this scan walks was normalized to UTC in every store, so
+  `list_by_status` compares a normalized key -- but the route still built its
+  cursor with a bare `.isoformat()`. The two agree only while every
+  `created_at` prints the same offset, which is the assumption the
+  normalization exists to remove: a row printed at another offset orders one
+  way and filters the other, and the walk stops advancing, hiding the human
+  pause it was paging toward. The route now spells its cursor with the same
+  `cursor_time` helper the stores use.
+
+- **Bounded recovery scans page by instant, bound their own inspection, and no
+  longer strand a half-claimed Run (#1098, #1056, #1109, #1127).** Three
+  defects found reviewing the fair-scan work, each of which defeated the
+  starvation fix it was part of. Keyset cursors ordered rows as timestamps but
+  paged past them by comparing the printed ISO strings, which agree only while
+  every row prints the same offset -- `01:00+01:00` is the earlier instant than
+  `00:30+00:00` yet its string sorts after, so a cursor taken at the first row
+  excluded the second from every later page, permanently; cursor keys and the
+  index columns written beside them are now normalized to UTC (PostgreSQL was
+  already correct, so the three store backends had silently disagreed).
+  `CanonicalDurableRunStore.scan_due_page` kept an inspection ceiling
+  independent of the walker's, letting one nominally 2,000-row tick inspect
+  nearly twice that; the walker's remaining budget is now passed through.
+  And `recover_queued_graph_runs` reported *every* unexpected failure as
+  candidate-local, including one raised after the candidate was already
+  checkpointed and moved to RUNNING -- which stranded that Run permanently,
+  since the QUEUED scan no longer returns it and the due index never held it;
+  a partial claim now raises instead of being swallowed, while a candidate
+  left untouched is still isolated so the tick carries on.
+
+- **The Chat and Deck Builder pages render again over plain HTTP (#1476;
+  regression from #1344).** #1344 moved message, session and slide ids off `Math.random`
+  onto `crypto.randomUUID()`, which browsers expose only in a secure context
+  (`https://`, or `http://localhost`). Agent Conductor's documented homelab
+  deployment is reached over plain HTTP at a LAN hostname, and the browser
+  e2e harness serves it the same way, so the first render of either page
+  threw "crypto.randomUUID is not a function" into the error boundary; the
+  e2e walkthrough caught it only when the throw landed before its first
+  poll, which is why `hive-conductor-e2e-ui` flickered red. Ids now come from
+  `crypto.getRandomValues`, the same CSPRNG and available in every context,
+  through a shared `lib/ids.ts`, and the "navigate all key pages without
+  errors" e2e test now fails on the error boundary's fallback rather than
+  accepting any non-empty body.
+
 - **A chat turn whose canonical record fails *after* the model answered is no
   longer asked again (#1108).** `Container._execute_chat_turn` fell
   back to a fresh `dispatch()` on any `RunIntegrityError` without knowing
@@ -245,6 +349,14 @@ or placeholder-only section.
   An Attempt still `CREATED` now settles as `CANCELLED` carrying the refusal
   as its error (nothing ran, so nothing failed), the refusal propagates, and
   the NodeRun parks for a retry decision exactly as a `FAILED` Attempt would.
+- **A task's worker executes under the request id that admitted it
+  (#1063).** `TaskRunAdmitter` recorded `X-Request-ID` on the Run's
+  provenance, but the worker that later picks the task up runs from the
+  dispatcher's own context, after the admitting request has ended, and
+  restored nothing — so the execution's ambient context and log lines carried
+  no request id at all. `TaskAttemptExecutor` now binds the Run's persisted
+  request id, Workspace and Project around the Attempt it runs, so one id
+  follows a task from the HTTP boundary through the Run into its execution.
 - **The migration chain has one head again, and the debt ledger matches the
   shipped tree (no linked issue: base-branch repair).** Merging #1263 carried
   a renumber made against an older base: it renamed
@@ -385,6 +497,46 @@ or placeholder-only section.
   the same stored row would decode to a different instant depending on which
   host read it.
 
+- **Bounded recovery and HITL scans can no longer be starved by an ineligible
+  prefix ahead of the eligible work behind it (#1098, #1056, #1109, #1127).**
+  `recover_queued_graph_runs`, `resume_due_graph_runs`, `expire_hitl_pauses`,
+  and `GET /v1/hitl/pending` previously queried a fixed-size page and filtered
+  eligibility afterward: if more rows than the tick's `limit`/the caller's
+  page ahead of the eligible ones belonged to another consumer, had no
+  deadline yet, or were machine-only pauses, every tick re-read the same
+  prefix and the eligible work behind it was never reached, even though it
+  was durably correct and its deadline had passed. All four now page the
+  underlying store with an advancing keyset cursor and filter as they walk,
+  bounded by a fixed inspection ceiling per call so one pathological prefix
+  cannot turn a single tick into an unbounded scan — and the three recovery
+  ticks (`recover_queued_graph_runs`, `resume_due_graph_runs`,
+  `expire_hitl_pauses`) take a `ScanContinuation` the caller holds across
+  ticks, so each tick resumes after the last row the previous one inspected
+  and restarts from the top only once it has walked off the end: a prefix
+  longer than the per-tick ceiling is crossed within a bounded number of
+  ticks instead of never. Hive's recovery runner and HITL expiry route hold
+  one per (seam, store). `DurableRunStore` and `GraphContinuationStore`
+  (memory, SQLite, PostgreSQL) gained an `after` keyset-cursor parameter on
+  their status/due listings to support this. A store that filters its own
+  page reports progress and results separately, so a page that yields nothing
+  is no longer mistaken for the end of the index: `CanonicalDurableRunStore`
+  drops due-index rows whose canonical Run has since gone terminal, and a
+  settled prefix longer than one page previously reset the scan to the top on
+  every tick and hid the live Run behind it.
+
+- **A candidate-local failure during Graph recovery no longer aborts the
+  whole tick (#1143).** `recover_queued_graph_runs` and
+  `resume_due_graph_runs` previously let any exception other than
+  `LiveAttemptOwned` (and a narrow already-settled `KeyError`/`ValueError`
+  recheck) escape the per-candidate loop, so one Run whose resume path
+  raised — a resolver bug, a downstream API error — silently abandoned every
+  other due/queued candidate in the same batch. An unexpected failure tied to
+  one candidate is now logged and isolated: the candidate's durable state is
+  left untouched for a later retry, and later independent candidates in the
+  same tick are still attempted. A failure raised while listing candidates
+  (the store/session itself) still aborts the tick, since that failure
+  invalidates the whole scan rather than one Run.
+
 - **A resumed scheduled Attempt now carries the same crash-recovery lease as
   its first physical try (#1112, #1124).** `ScheduleAttemptExecutor`'s resume
   path built its `RunExecutionService` without `lease_ttl`, so a fresh Attempt
@@ -405,6 +557,33 @@ or placeholder-only section.
   already carries on every resumed answer, and fall back to a freshly
   computed deadline only on a node's very first pause, where no earlier
   deadline exists to preserve.
+
+- **The legacy-event replay bridge has a durable, crash-safe resume position
+  instead of restarting from cursor zero every time (#1163).**
+  `Container.durable_event_cursor` was a plain process-local `int`, so a
+  restart always replayed the entire retained `durable_event_log` regardless
+  of how much of it had already settled; correctness survived only on
+  `InvocationStore`'s per-`(trigger_id, event_id)` idempotency. A new
+  `ConsumerCursorStore` (in-memory, SQLite, and PostgreSQL implementations)
+  gives `process_durable_events` a durable position keyed to a fixed
+  consumer identity plus a claim lease with a fencing token, so of several
+  replicas that might tick the bridge at once, only the lease holder
+  re-scans/redispatches a given round, and a stale or reordered write cannot
+  regress the recorded position. The durable position advances only after
+  the tick's events are confirmed settled, so a crash between "processed"
+  and "cursor written" costs at most a replay of already-idempotent work and
+  never skips an event still in flight. Nor is it persisted past an id the
+  log handed out but has not committed: PostgreSQL allocates `BIGSERIAL`
+  ids before commit, so `process_events_batch` reports every id it skipped
+  over and the container holds its durable position below the first such
+  hole until the id appears or a grace window
+  (`Container.durable_event_hole_grace_s`, 60 s) lapses, after which the
+  hole is treated as an aborted append. Handler work is never delayed by a
+  hole, only the persisted resume point. The `consumer_cursors` table ships
+  as Alembic revision `036_consumer_cursors` for deployments whose
+  application role cannot create tables, and ADR-086 carries a dated
+  amendment recording the cursor's ownership, lease, fencing and gap
+  semantics.
 
 ## [1.0.0] - TBD
 

@@ -177,6 +177,12 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
       await page.waitForTimeout(1000);
       const body = await page.textContent("body");
       expect(body?.length).toBeGreaterThan(0);
+      // "Without errors" means the page itself rendered, not the error
+      // boundary's fallback in its place. A render-time throw (Chat and
+      // DeckBuilder over plain HTTP after #1344 called `crypto.randomUUID`,
+      // a secure-context-only API) still produces a non-empty body, and spec
+      // 02 only catches it when the throw lands before its first poll.
+      expect(body, `${p} rendered the error boundary fallback`).not.toMatch(/Something went wrong/);
     }
   });
 

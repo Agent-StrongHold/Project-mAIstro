@@ -201,6 +201,9 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "C90", "C4"]
 # side effect of a floor-alignment PR. Tracked as follow-up, not silently
 # dropped.
 ignore = ["E501", "UP046", "UP047"]
+# Vulture owns these suppression codes; Ruff must preserve the inline review
+# markers without treating its external analyzer's codes as malformed.
+external = ["V102", "V106", "V107"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 10
