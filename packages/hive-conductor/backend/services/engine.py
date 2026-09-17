@@ -96,6 +96,16 @@ class EngineService:
         return getattr(container, "run_store", None)
 
     @property
+    def graph_execution_available(self) -> bool:
+        """Whether shipped Graph work has both canonical persistence halves."""
+        container = getattr(self._agent_port, "container", None)
+        return bool(
+            container is not None
+            and getattr(container, "run_store", None) is not None
+            and getattr(container, "graph_run_store", None) is not None
+        )
+
+    @property
     def schedule_store(self) -> Any:
         """The core Container's canonical Schedule store, or None.
 
@@ -111,10 +121,10 @@ class EngineService:
         """The core Container's schedule admission seam, or None.
 
         None for the same reason as `schedule_store`: without the bridge there
-        is no canonical spine in this process, and the scheduler then keeps the
-        behavior it had — evaluate locally and run the registered DAG — rather
-        than failing every tick. With the bridge, this is what makes a firing
-        and its Run one act instead of two (#231).
+        is no canonical spine in this process, so Graph execution is explicitly
+        unavailable rather than evaluated against a private store. With the
+        bridge, this is what makes a firing and its Run one act instead of two
+        (#231).
         """
         container = getattr(getattr(self, "_agent_port", None), "container", None)
         return getattr(container, "schedule_admitter", None)

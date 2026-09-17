@@ -68,6 +68,22 @@ def _task_clear_supported() -> bool:
         return False
 
 
+def _graph_execution_available() -> bool:
+    """Whether shipped Graph work can execute here (#1113).
+
+    `Container.graph_run_store` is optional, so a bridged deployment can pass
+    every other probe while every DAG run, HITL answer, and schedule fire is
+    refused as unavailable. Same defensive contract as the probes above:
+    unreadable reports as unavailable, never as capable.
+    """
+    try:
+        from services.engine import get_engine
+
+        return bool(get_engine().graph_execution_available)
+    except Exception:
+        return False
+
+
 def _log_redaction_active() -> bool:
     """ADR-064 log-redaction state. Same defensive contract as the probes above:
     unreadable reports as inactive, because a false "secrets are scrubbed" is the
@@ -101,6 +117,7 @@ def health() -> dict:
     memory_decay = _memory_decay_state()
     memory_decay_enabled = _memory_decay_running(memory_decay)
     log_redaction = _log_redaction_active()
+    graph_execution = _graph_execution_available()
 
     return {
         "status": "ok",
@@ -126,7 +143,16 @@ def health() -> dict:
         # ADR-064: off means log lines carry API keys and connection strings
         # verbatim, which SECURITY.md says they do not. Degraded, never silent.
         "log_redaction_active": log_redaction,
-        "degraded": (not llm_configured) or (not memory_decay_enabled) or (not log_redaction),
+        # #1113: no canonical execution spine means every Graph surface
+        # answers 503. Degraded, never silent -- an operator reads it here
+        # before the first request fails.
+        "graph_execution_available": graph_execution,
+        "degraded": (
+            (not llm_configured)
+            or (not memory_decay_enabled)
+            or (not log_redaction)
+            or (not graph_execution)
+        ),
     }
 
 
@@ -150,4 +176,5 @@ def ready() -> ReadyResponse:
     checks["llm"] = _llm_state()[0]
     checks["memory_decay"] = _memory_decay_running(_memory_decay_state())
     checks["log_redaction"] = _log_redaction_active()
+    checks["graph_execution"] = _graph_execution_available()
     return ReadyResponse(ready=checks["api"], checks=checks)

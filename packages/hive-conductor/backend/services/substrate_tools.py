@@ -20,7 +20,7 @@ async def tool_run_workflow(
     """Execute a DAG by ID or name."""
     from stores import dags as dag_store
 
-    from services.graph_runner import execute_dag
+    from services.graph_runner import CanonicalDagExecutionError, execute_dag
 
     dag_id = args.get("dag_id") or args.get("id", "")
     name = args.get("name", "")
@@ -34,7 +34,15 @@ async def tool_run_workflow(
 
     dag_data = dag_store[dag_id]
     start = time.monotonic()
-    result = await execute_dag(dag_data, user_id=user_id)
+    try:
+        result = await execute_dag(dag_data, user_id=user_id)
+    except CanonicalDagExecutionError as exc:
+        return {
+            "status": exc.result.get("status", "failed"),
+            "dag_id": dag_id,
+            "error": str(exc),
+            "run_id": exc.result.get("run_id"),
+        }
     elapsed = int((time.monotonic() - start) * 1000)
     nr = result.get("node_results", {})
     return {
