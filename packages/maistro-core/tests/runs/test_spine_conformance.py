@@ -2022,3 +2022,26 @@ async def test_a_delegation_reservation_and_receipt_round_trip(spine: Any) -> No
     assert again.provenance["a2a_task_id"] == "task-1"
     with pytest.raises(RunIntegrityError):
         await store.attach_delegation_receipt(run.run_id, "task-2")
+
+
+async def test_the_transport_boundary_claim_is_one_winner(spine: Any) -> None:
+    """The CAS that keeps a lost receipt from becoming a second dispatch.
+
+    A replica adopts the reservation, then claims the one allowed transport
+    attempt before calling the peer. The claim must be a winner-take-all
+    transition that survives a reload — on every backend, because "the
+    boundary was already crossed" is exactly what a retry on another replica
+    (or another process against SQLite) must be able to observe.
+    """
+    store, workspace, project_id = spine
+    run = await store.create_run(
+        _graph(workspace, project_id),
+        provenance={"delegation_key": "key-claim"},
+    )
+
+    assert await store.claim_delegation_transport_attempt(run.run_id) is True
+    assert await store.claim_delegation_transport_attempt(run.run_id) is False
+
+    reloaded = await store.get_run(run.run_id)
+    assert reloaded is not None
+    assert reloaded.provenance["transport_attempted"] is True
