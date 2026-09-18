@@ -446,11 +446,6 @@ class Container:
         self._require_auth_while_armed(auth)
         if auth is not None:
             return auth
-        self._require_auth_while_armed(auth)
-        # The fail-closed table (ADR-072726-0d6b, #1165) is armed even when it
-        # is empty -- it denies -- but strategies only consult Sentinel when
-        # auth is not None. Evaluate an identity-free request as the role-less
-        # anonymous principal so it cannot walk past the table.
         return ANONYMOUS_AUTH
 
     async def route_request(
@@ -476,8 +471,6 @@ class Container:
         every turn to catch a mistake that is not reachable from within one
         process.
         """
-        # Refuse while armed, else route as the anonymous principal so the
-        # fail-closed table still sees the turn; the guard alone drops the latter.
         auth = self._resolve_chat_auth(auth)
 
         if run is None:
