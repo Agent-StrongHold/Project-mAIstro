@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { apiGet } from "../lib/api";
+import { useToast } from "./shared";
 import { useWorkspaces } from "../context/WorkspaceContext";
 
 type PersonaTemplateOption = {
@@ -14,9 +15,18 @@ type PersonaTemplateOption = {
  * GET /v1/workspaces/persona-templates -- "unlimited personas" means
  * whatever YAML files exist on disk, not a hardcoded list here. */
 export function WorkspaceTabs() {
-  const { workspaces, activeWorkspaceId, selectWorkspace, createWorkspace, ready } =
-    useWorkspaces();
+  const toast = useToast();
+  const {
+    workspaces,
+    activeWorkspaceId,
+    selectWorkspace,
+    createWorkspace,
+    archiveWorkspace,
+    ready,
+  } = useWorkspaces();
   const [creating, setCreating] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
+  const [restoring, setRestoring] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [personaTemplates, setPersonaTemplates] = useState<PersonaTemplateOption[]>([]);
   const [personaTemplateId, setPersonaTemplateId] = useState("");
@@ -51,13 +61,39 @@ export function WorkspaceTabs() {
     setBusy(true);
     setError(null);
     try {
-      await createWorkspace({ name: trimmed, persona_template_id: personaTemplateId });
+      const created = await createWorkspace({
+        name: trimmed,
+        persona_template_id: personaTemplateId,
+      });
       setName("");
       setCreating(false);
+      toast(`Created workspace "${created.name}"`, "ok");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create workspace");
     } finally {
       setBusy(false);
+    }
+  }
+
+  // Archiving is reversible (#1428): the backend has always accepted
+  // `PATCH {active: true}`, but nothing in the UI listed an archived workspace
+  // once its tab was gone. They live behind a disclosure so the strip stays
+  // about the live ones.
+  const archived = workspaces.filter((w) => w.active === false);
+
+  async function handleRestore(id: string, wsName: string) {
+    if (restoring) return;
+    setRestoring(id);
+    setError(null);
+    try {
+      await archiveWorkspace(id, true);
+      selectWorkspace(id);
+      toast(`Restored workspace "${wsName}"`, "ok");
+      if (archived.length === 1) setShowArchived(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to restore workspace");
+    } finally {
+      setRestoring(null);
     }
   }
 
@@ -127,6 +163,37 @@ export function WorkspaceTabs() {
         >
           +
         </button>
+      )}
+      {archived.length > 0 && (
+        <span className="workspace-tabs-archived">
+          <button
+            type="button"
+            className="workspace-tab workspace-tabs-archived-toggle"
+            onClick={() => setShowArchived((v) => !v)}
+            aria-expanded={showArchived}
+          >
+            Archived ({archived.length})
+          </button>
+          {showArchived && (
+            <ul className="workspace-tabs-archived-list" aria-label="Archived workspaces">
+              {archived.map((w) => (
+                <li key={w.id}>
+                  <span className="workspace-tabs-archived-name" title={w.name}>
+                    {w.name}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={restoring !== null}
+                    onClick={() => void handleRestore(w.id, w.name)}
+                    aria-label={`Restore ${w.name}`}
+                  >
+                    Restore
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </span>
       )}
       {error && (
         <span role="alert" className="workspace-tab-error">

@@ -290,6 +290,19 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Workspace mutations confirm, ask before they destroy, and cost one
+  request (#1407, #1429, #1428, #1430, #1434).** Creating, archiving,
+  deleting a workspace, inviting or removing a member and saving tool
+  bindings each raise a success toast. Archive takes the same two steps as
+  Delete instead of one unconfirmed click. Archived workspaces are listed
+  behind an "Archived (n)" disclosure at the end of the tab strip with a
+  Restore for each, since the backend has always accepted `PATCH {active:
+  true}`. The Tools panel tracks unsaved edits (a badge on the toggle and in
+  the panel, Save disabled when clean) and asks before a close would discard
+  them. The workspace provider patches the changed record into local state
+  after an archive or delete rather than refetching the whole list.
+  `tests/e2e/workspace-lifecycle.spec.ts` walks each as the admin account
+  and counts the requests.
 - **Workspace status messages announce, and wizard fields are named by their
   visible labels (#1405, #1416).** The Conductor's toast container is now a
   polite live region and the error regions of the workspace tab bar, Share

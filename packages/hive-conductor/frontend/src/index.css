@@ -737,6 +737,75 @@ input, select, textarea {
   font-family: var(--mono);
 }
 
+/* Archived workspaces stay reachable (#1428): a disclosure at the end of the
+   live strip, listing each with a Restore. */
+.workspace-tabs-archived {
+  position: relative;
+  display: inline-flex;
+}
+.workspace-tabs-archived-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 30;
+  min-width: 220px;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  box-shadow: var(--shadow-md);
+}
+.workspace-tabs-archived-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 6px;
+  font-size: 12px;
+}
+.workspace-tabs-archived-name {
+  color: var(--pencil);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 160px;
+}
+.workspace-tabs-archived-list button {
+  padding: 3px 8px !important;
+  font-size: var(--text-floor) !important;
+  border-radius: 6px !important;
+}
+
+/* The Tools panel says when it holds unsaved edits (#1430, #1407). */
+.workspace-toolbar .workspace-tool-bindings-toggle.dirty {
+  border-color: var(--accent) !important;
+  color: var(--ink) !important;
+}
+.workspace-tool-bindings-dirty {
+  margin-left: 8px;
+  font-size: var(--text-floor);
+  font-weight: 500;
+  color: var(--accent);
+}
+.workspace-tool-bindings-discard {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0 8px;
+  padding: 6px 8px;
+  font-size: var(--text-floor);
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  border-radius: 6px;
+}
+.workspace-tool-bindings-panel .workspace-tool-bindings-discard button {
+  padding: 3px 8px !important;
+  font-size: var(--text-floor) !important;
+}
+
 /* Every button inside these three workspace-toolbar dropdown panels
    (Share/Tools/PersonaWizard) falls back, by default, to whichever of this
    file's many auto-generated `button { ... }` rules happens to win the

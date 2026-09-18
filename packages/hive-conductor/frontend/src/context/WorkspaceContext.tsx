@@ -170,14 +170,27 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setActiveWorkspaceId(id);
   }
 
+  // One mutation, one request (#1434, #1422): the response is the changed
+  // record, so it is patched into local state rather than followed by a
+  // refetch of the whole list. The active tab is re-picked from the patched
+  // list, so archiving the active workspace moves the selection off it and
+  // restoring one leaves the selection where it was.
   async function archiveWorkspace(id: string, active: boolean): Promise<void> {
-    await apiPatch<Workspace>(`/v1/workspaces/${id}`, { active });
-    await refresh();
+    const updated = await apiPatch<Workspace>(`/v1/workspaces/${id}`, { active });
+    setWorkspaces((prev) => {
+      const next = prev.map((w) => (w.id === id ? updated : w));
+      setActiveWorkspaceId((current) => nextActiveId(current, next));
+      return next;
+    });
   }
 
   async function deleteWorkspace(id: string): Promise<void> {
     await apiDelete(`/v1/workspaces/${id}`);
-    await refresh();
+    setWorkspaces((prev) => {
+      const next = prev.filter((w) => w.id !== id);
+      setActiveWorkspaceId((current) => nextActiveId(current, next));
+      return next;
+    });
   }
 
   return (
