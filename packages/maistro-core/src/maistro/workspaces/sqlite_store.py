@@ -26,6 +26,7 @@ import asyncio
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, NotRequired, TypedDict
 
+from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 from maistro.workspaces.model import (
     Workspace,
     WorkspaceAccessDenied,
@@ -90,8 +91,9 @@ class SqliteWorkspaceStore:
 
     async def ensure_schema(self) -> None:
         """Create the Workspace tables and their indexes."""
-        await self._conn.executescript(_SCHEMA)
-        await self._conn.commit()
+        await self._conn.execute("PRAGMA foreign_keys = ON")
+        async with serialized_schema_upgrade(self._conn):
+            await execute_schema_script(self._conn, _SCHEMA)
 
     async def create(
         self,

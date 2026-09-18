@@ -57,6 +57,7 @@ from maistro.runs.store import (
     validate_accepted_outcome_against_attempt,
     validate_child_scope,
 )
+from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -319,8 +320,13 @@ class SqliteRunStore:
         self._pending: list[tuple[tuple[str, str], str, str, str]] = []
 
     async def ensure_schema(self) -> None:
-        await self._conn.executescript(_SCHEMA)
-        await self._conn.commit()
+        # Match the projects/workspaces stores: enable foreign keys before the
+        # serialized upgrade opens its transaction. SQLite ignores changes to
+        # the foreign_keys pragma inside an open transaction, so the copy in
+        # _SCHEMA would otherwise be a silent no-op on a fresh connection.
+        await self._conn.execute("PRAGMA foreign_keys = ON")
+        async with serialized_schema_upgrade(self._conn):
+            await execute_schema_script(self._conn, _SCHEMA)
 
     async def create_run(
         self,

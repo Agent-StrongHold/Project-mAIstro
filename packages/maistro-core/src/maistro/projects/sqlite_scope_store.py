@@ -17,6 +17,7 @@ from maistro.projects.scope import (
     ProjectScopeDenied,
     ProjectScopedResource,
 )
+from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -124,9 +125,10 @@ class SqliteProjectScopeStore:
     async def ensure_schema(self) -> None:
         """Create canonical Project tables and integrity indexes."""
 
-        await self._migrate_legacy_membership_primary_key()
-        await self._conn.executescript(_SCHEMA)
-        await self._conn.commit()
+        await self._conn.execute("PRAGMA foreign_keys = ON")
+        async with serialized_schema_upgrade(self._conn):
+            await self._migrate_legacy_membership_primary_key()
+            await execute_schema_script(self._conn, _SCHEMA)
 
     async def _migrate_legacy_membership_primary_key(self) -> None:
         """Upgrade a pre-#1148 `canonical_project_memberships` table in place.
@@ -150,7 +152,7 @@ class SqliteProjectScopeStore:
             "ALTER TABLE canonical_project_memberships "
             "RENAME TO canonical_project_memberships_legacy_pk"
         )
-        await self._conn.executescript(_SCHEMA)
+        await execute_schema_script(self._conn, _SCHEMA)
         await self._conn.execute(
             """INSERT INTO canonical_project_memberships
                    (project_id, principal_id, workspace_id, membership_id, payload)
@@ -167,7 +169,6 @@ class SqliteProjectScopeStore:
                 )"""
         )
         await self._conn.execute("DROP TABLE canonical_project_memberships_legacy_pk")
-        await self._conn.commit()
 
     async def purge_workspace(self, workspace_id: str) -> None:
         """Tear down every Project row this Workspace owns.

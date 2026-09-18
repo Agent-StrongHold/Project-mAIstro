@@ -51,6 +51,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from maistro.scheduling.model import Schedule
+from maistro.sqlite_schema import serialized_schema_upgrade
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -482,16 +483,16 @@ class SqliteScheduleStore:
             raise interrupted
 
     async def ensure_schema(self) -> None:
-        await self._conn.execute(_SCHEMA)
-        # The tick runs this query on every pass; without the index it is a
-        # full scan that grows with every schedule ever created.
-        await self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_schedules_due ON schedules (enabled, next_due_at)"
-        )
-        await self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_schedules_scope ON schedules (workspace_id, project_id)"
-        )
-        await self._conn.commit()
+        async with serialized_schema_upgrade(self._conn):
+            await self._conn.execute(_SCHEMA)
+            # The tick runs this query on every pass; without the index it is a
+            # full scan that grows with every schedule ever created.
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_schedules_due ON schedules (enabled, next_due_at)"
+            )
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_schedules_scope ON schedules (workspace_id, project_id)"
+            )
 
     @staticmethod
     def _row_to_schedule(definition: str) -> Schedule:
