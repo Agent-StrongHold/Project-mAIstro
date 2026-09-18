@@ -234,6 +234,13 @@ async def test_legacy_capability_invocation_schema_adds_revision(tmp_path: Path)
         assert columns["revision"] == "0"
 
 
+requires_fork = pytest.mark.skipif(
+    "fork" not in multiprocessing.get_all_start_methods(),
+    reason="platform does not provide the fork start method (e.g. native Windows)",
+)
+
+
+@requires_fork
 @pytest.mark.parametrize("kind", sorted(_LEGACY_SCHEMA))
 def test_two_processes_upgrade_each_legacy_sqlite_store(kind: str, tmp_path: Path) -> None:
     """Both first opens must succeed when they race on the same old file."""
@@ -263,6 +270,7 @@ def test_two_processes_upgrade_each_legacy_sqlite_store(kind: str, tmp_path: Pat
     assert observed == [("ok", kind), ("ok", kind)]
 
 
+@requires_fork
 def test_two_processes_upgrade_synchronous_durable_run_store(tmp_path: Path) -> None:
     """The synchronous canonical initializer also serializes legacy upgrades."""
     path = tmp_path / "durable_graph_runs.sqlite"

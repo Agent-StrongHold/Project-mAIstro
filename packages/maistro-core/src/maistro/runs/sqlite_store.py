@@ -316,6 +316,11 @@ class SqliteRunStore:
         self._pending: list[tuple[tuple[str, str], str, str, str]] = []
 
     async def ensure_schema(self) -> None:
+        # Match the projects/workspaces stores: enable foreign keys before the
+        # serialized upgrade opens its transaction. SQLite ignores changes to
+        # the foreign_keys pragma inside an open transaction, so the copy in
+        # _SCHEMA would otherwise be a silent no-op on a fresh connection.
+        await self._conn.execute("PRAGMA foreign_keys = ON")
         async with serialized_schema_upgrade(self._conn):
             await execute_schema_script(self._conn, _SCHEMA)
 

@@ -37,16 +37,39 @@ async def serialized_schema_upgrade(conn: Any) -> AsyncIterator[None]:
     """
     async with _connection_lock(conn):
         # Do not inherit a short driver default: a large legacy backfill may
-        # legitimately hold the schema lock longer than a normal write.
-        await conn.execute(f"PRAGMA busy_timeout = {_SCHEMA_BUSY_TIMEOUT_MS}")
-        await conn.execute("BEGIN IMMEDIATE")
+        # legitimately hold the schema lock longer than a normal write. The
+        # caller's previous timeout is restored when the upgrade finishes.
+        cursor = await conn.execute("PRAGMA busy_timeout")
+        row = await cursor.fetchone()
+        prior_timeout = int(row[0]) if row is not None else 0
         try:
-            yield
-        except BaseException:
-            await conn.rollback()
-            raise
-        else:
-            await conn.commit()
+            await conn.execute(f"PRAGMA busy_timeout = {_SCHEMA_BUSY_TIMEOUT_MS}")
+            try:
+                # Cancelling the await does not stop aiosqlite's worker
+                # thread: a cancelled BEGIN IMMEDIATE can still land and take
+                # the write lock afterwards, so the rollback guard must cover
+                # the BEGIN itself and not only the upgrade body.
+                await conn.execute("BEGIN IMMEDIATE")
+            except BaseException:
+                await conn.rollback()
+                raise
+            try:
+                yield
+            except BaseException:
+                await conn.rollback()
+                raise
+            else:
+                try:
+                    await conn.commit()
+                except BaseException:
+                    # A failed COMMIT (for example a reader in rollback-journal
+                    # mode outlasting the busy timeout) can leave the
+                    # transaction open; roll it back so the connection does
+                    # not keep holding the schema write lock.
+                    await conn.rollback()
+                    raise
+        finally:
+            await conn.execute(f"PRAGMA busy_timeout = {prior_timeout}")
 
 
 async def execute_schema_script(conn: Any, script: str) -> None:
@@ -64,15 +87,27 @@ async def execute_schema_script(conn: Any, script: str) -> None:
 @contextmanager
 def serialized_schema_upgrade_sync(conn: sqlite3.Connection) -> Iterator[None]:
     """Serialize a synchronous SQLite schema upgrade across processes."""
-    conn.execute(f"PRAGMA busy_timeout = {_SCHEMA_BUSY_TIMEOUT_MS}")
-    conn.execute("BEGIN IMMEDIATE")
+    cursor = conn.execute("PRAGMA busy_timeout")
+    row = cursor.fetchone()
+    prior_timeout = int(row[0]) if row is not None else 0
     try:
-        yield
-    except BaseException:
-        conn.rollback()
-        raise
-    else:
-        conn.commit()
+        conn.execute(f"PRAGMA busy_timeout = {_SCHEMA_BUSY_TIMEOUT_MS}")
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+        except BaseException:
+            conn.rollback()
+            raise
+        else:
+            try:
+                conn.commit()
+            except BaseException:
+                # Mirror the async path: a failed COMMIT can leave the
+                # transaction open, so release the schema write lock.
+                conn.rollback()
+                raise
+    finally:
+        conn.execute(f"PRAGMA busy_timeout = {prior_timeout}")
 
 
 def execute_schema_script_sync(conn: sqlite3.Connection, script: str) -> None:
