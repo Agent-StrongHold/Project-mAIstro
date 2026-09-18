@@ -249,8 +249,10 @@ def test_sync_upgrade_restores_timeout_and_rolls_back_failed_commit(tmp_path: Pa
             def commit(self) -> None:
                 raise sqlite3.OperationalError("locked during commit")
 
-        with pytest.raises(sqlite3.OperationalError, match="locked during commit"), \
-                serialized_schema_upgrade_sync(_FailingCommit(conn)):
+        with (
+            pytest.raises(sqlite3.OperationalError, match="locked during commit"),
+            serialized_schema_upgrade_sync(_FailingCommit(conn)),
+        ):
             conn.execute("CREATE TABLE sync_never (id INTEGER)")
         # Timeout restored despite the failure.
         assert int(conn.execute("PRAGMA busy_timeout").fetchone()[0]) == 2345
