@@ -137,6 +137,92 @@ class TestReusableWorkflowNames:
         monkeypatch.setattr(gate, "WORKFLOW_DIR", workflows)
         assert gate.collect() == [("Caller", "Quality / lint / Lint", "every PR")]
 
+    @staticmethod
+    def _write_caller(tmp_path: Path, uses: str, with_inputs: dict | None = None) -> Path:
+        """A one-job caller under a synthetic tree; returns the workflows dir."""
+        workflows = tmp_path / ".github" / "workflows"
+        workflows.mkdir(parents=True, exist_ok=True)
+        job: dict = {"name": "Quality / lint", "uses": uses}
+        if with_inputs is not None:
+            job["with"] = with_inputs
+        (workflows / "caller.yml").write_text(
+            yaml.safe_dump(
+                {
+                    "name": "Caller",
+                    "on": {"pull_request": None},
+                    "jobs": {"quality": job},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return workflows
+
+    # The five refusals below are the composed-name generator's fail-closed
+    # paths. Branch protection pins check names as strings, so a name this
+    # generator cannot produce must stop the contract loudly rather than emit
+    # a name GitHub will never report — the same property the class docstring
+    # states, aimed at the generator's own guards.
+
+    def test_an_unresolved_reusable_input_fails_the_contract(
+        self, gate, tmp_path, monkeypatch
+    ) -> None:
+        workflows = self._write_caller(tmp_path, "./reusable.yml")
+        (workflows / "reusable.yml").write_text(
+            yaml.safe_dump(
+                {
+                    "name": "Reusable",
+                    "on": {"workflow_call": None},
+                    "jobs": {"check": {"name": "${{ inputs.check_name }}"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gate, "WORKFLOW_DIR", workflows)
+        with pytest.raises(gate.ContractError, match="needs unresolved input 'check_name'"):
+            gate.collect()
+
+    def test_an_external_reusable_workflow_fails_the_contract(
+        self, gate, tmp_path, monkeypatch
+    ) -> None:
+        workflows = self._write_caller(tmp_path, "octo/repo/.github/workflows/x.yml@v1")
+        monkeypatch.setattr(gate, "WORKFLOW_DIR", workflows)
+        with pytest.raises(gate.ContractError, match="uses external reusable workflow"):
+            gate.collect()
+
+    def test_a_missing_callee_file_fails_the_contract(self, gate, tmp_path, monkeypatch) -> None:
+        workflows = self._write_caller(tmp_path, "./missing.yml")
+        monkeypatch.setattr(gate, "WORKFLOW_DIR", workflows)
+        with pytest.raises(gate.ContractError, match="references missing reusable workflow"):
+            gate.collect()
+
+    def test_a_callee_with_no_jobs_fails_the_contract(self, gate, tmp_path, monkeypatch) -> None:
+        workflows = self._write_caller(tmp_path, "./reusable.yml")
+        (workflows / "reusable.yml").write_text(
+            yaml.safe_dump({"name": "Reusable", "on": {"workflow_call": None}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gate, "WORKFLOW_DIR", workflows)
+        with pytest.raises(gate.ContractError, match="has no jobs"):
+            gate.collect()
+
+    def test_a_callee_name_the_generator_cannot_resolve_fails_the_contract(
+        self, gate, tmp_path, monkeypatch
+    ) -> None:
+        workflows = self._write_caller(tmp_path, "./reusable.yml", {"check_name": "Lint"})
+        (workflows / "reusable.yml").write_text(
+            yaml.safe_dump(
+                {
+                    "name": "Reusable",
+                    "on": {"workflow_call": None},
+                    "jobs": {"check": {"name": "${{ matrix.version }} / check"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gate, "WORKFLOW_DIR", workflows)
+        with pytest.raises(gate.ContractError, match="has an unsupported name"):
+            gate.collect()
+
 
 class TestMergeQueueRatchet:
     @staticmethod
