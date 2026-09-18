@@ -55,13 +55,23 @@ async function startHarness(browser: Browser): Promise<void> {
     `import React from "react";
 import { createRoot } from "react-dom/client";
 import DeckBuilder from "${SRC_ROOT}/frontend/src/pages/DeckBuilder.tsx";
+import FixedPageArtifactEditor from "${SRC_ROOT}/frontend/src/pages/FixedPageArtifactEditor.tsx";
 import { sanitizeDeckMarkup } from "${SRC_ROOT}/frontend/src/lib/deckSanitizer.ts";
+import { recommendVisualArtifactTrust, sanitizeVisualArtifactMarkup, scanVisualArtifactMarkup } from "${SRC_ROOT}/frontend/src/lib/visualArtifactRenderer.tsx";
 
 declare global {
-  interface Window { __sanitizeDeckMarkup: (markup: string) => string; __deckPwned?: number; }
+  interface Window { __sanitizeDeckMarkup: (markup: string) => string; __sanitizeVisualArtifactMarkup: (markup: string) => string; __scanVisualArtifactMarkup: (markup: string) => { blocked: boolean; reasons: string[]; sanitizedMarkup: string }; __recommendVisualArtifactTrust: (markup: string) => "upgrade" | "review"; __deckPwned?: number; }
 }
 window.__sanitizeDeckMarkup = sanitizeDeckMarkup;
-createRoot(document.getElementById("root")!).render(<DeckBuilder />);
+window.__sanitizeVisualArtifactMarkup = sanitizeVisualArtifactMarkup;
+window.__scanVisualArtifactMarkup = scanVisualArtifactMarkup;
+window.__recommendVisualArtifactTrust = recommendVisualArtifactTrust;
+const params = new URLSearchParams(window.location.search);
+const mode = params.get("mode");
+const hostile = "<h1>Safe fixed page</h1><script>window.__deckPwned=20</script><img src=\\\"http://${ATTACKER}/fixed\\\" onerror=\\\"window.__deckPwned=21\\\"><svg><foreignObject><iframe src=\\\"http://${ATTACKER}/fixed-frame\\\"></iframe></foreignObject><circle cx=\\\"10\\\" cy=\\\"10\\\" r=\\\"8\\\" fill=\\\"#b15b3e\\\" onload=\\\"window.__deckPwned=22\\\"></circle></svg><div style=\\\"background-image:url(http://${ATTACKER}/fixed-css);color:#17202a\\\">safe text</div>";
+createRoot(document.getElementById("root")!).render(
+  mode ? <FixedPageArtifactEditor mode={mode as "poster" | "infographic" | "flyer"} initialMarkup={params.has("hostile") ? hostile : undefined} /> : <DeckBuilder />,
+);
 `,
     "utf8",
   );
@@ -125,6 +135,12 @@ async function loadFresh(): Promise<void> {
   attackerRequests = [];
   await page.goto(harnessUrl, { waitUntil: "domcontentloaded" });
   await expect(page.getByPlaceholder(/Describe slides to generate/)).toBeVisible();
+}
+
+async function loadFixedFresh(mode: "poster" | "infographic" | "flyer", hostile = true): Promise<void> {
+  attackerRequests = [];
+  await page.goto(`${harnessUrl}?mode=${mode}${hostile ? "&hostile=1" : ""}`, { waitUntil: "domcontentloaded" });
+  await expect(page.getByTestId("fixed-page-editor")).toBeVisible();
 }
 
 async function generate(reply: string): Promise<void> {
@@ -286,7 +302,7 @@ test("mutation, encoded, SVG, and CSS payload families fail closed while present
     '<svg><g/onload=window.__deckPwned=10//<p>safe</p></svg>',
     '<math><mtext><img src=x onerror=window.__deckPwned=11></mtext></math><strong>safe</strong>',
     '<a href="jav&#x61;script:window.__deckPwned=12">bad</a><em>safe</em>',
-    '<svg><use href="http://attacker.invalid/icon#x"></use><circle cx="5" cy="5" r="4"></circle></svg>',
+    '<svg><use href="http://attacker.invalid/icon#x"></use><image href="data:text/html,<script>alert(1)</script>"></image><circle cx="5" cy="5" r="4"></circle></svg>',
     '<div style="background:url(\\6a avascript:alert(1));color:#fff">safe</div>',
     '<div style="background-image:image-set(url(http://attacker.invalid/a) 1x);font-size:20px">safe</div>',
     '<style>@import url(http://attacker.invalid/x);</style><p>safe</p>',
@@ -303,6 +319,32 @@ test("mutation, encoded, SVG, and CSS payload families fail closed while present
 
   for (const output of outputs) expectNoExecutableMarkup(output);
   expect(outputs.join(" ")).toContain("safe");
+
+  const scanResults = await page.evaluate((items) => {
+    const scan = (
+      window as Window & { __scanVisualArtifactMarkup: (markup: string) => { blocked: boolean; reasons: string[]; sanitizedMarkup: string } }
+    ).__scanVisualArtifactMarkup;
+    return items.slice(0, 3).map((item) => scan(item));
+  }, [
+    '<div onclick="alert(1)">handler</div>',
+    '<a href="data:text/html,<script>alert(1)</script>">navigation</a>',
+    '<div style="background-image:url(http://attacker.invalid/css)">network</div>',
+  ]);
+  expect(scanResults.every((result) => result.blocked)).toBe(true);
+  expect(scanResults[0].reasons).toContain("event-handler");
+  expect(scanResults[1].reasons.length).toBeGreaterThan(0);
+  expect(scanResults[2].reasons).toContain("css-network-or-code");
+
+  const recommendations = await page.evaluate(() => {
+    const recommend = (
+      window as Window & { __recommendVisualArtifactTrust: (markup: string) => "upgrade" | "review" }
+    ).__recommendVisualArtifactTrust;
+    return [
+      recommend('<div onclick="alert(1)">handler</div>'),
+      recommend('<p>safe presentation</p>'),
+    ];
+  });
+  expect(recommendations).toEqual(["review", "upgrade"]);
 
   const safePresentation = await page.evaluate(() => {
     const sanitize = (
@@ -332,4 +374,42 @@ test("built-in Deck templates remain renderable through the sanitizer", async ()
   const html = await preview.innerHTML();
   expect(html).toContain("linear-gradient");
   expectNoExecutableMarkup(html);
+});
+
+test("poster, infographic, and flyer use the shared boundary for preview, edit, and export", async () => {
+  for (const mode of ["poster", "infographic", "flyer"] as const) {
+    await loadFixedFresh(mode);
+    const preview = page.locator('[contenteditable="true"]');
+    await expect(preview).toContainText("Safe fixed page");
+    await expect(preview.locator("script, img, iframe, foreignObject")).toHaveCount(0);
+    expectNoExecutableMarkup(await preview.innerHTML());
+
+    await preview.focus();
+    await putCaretAtEnd(preview);
+    const pastePrevented = await preview.evaluate((element, currentMode) => {
+      const transfer = new DataTransfer();
+      transfer.setData("text/html", `<strong>Edited ${currentMode}</strong><img src="http://attacker.invalid/edit">`);
+      return !element.dispatchEvent(new ClipboardEvent("paste", {
+        bubbles: true,
+        cancelable: true,
+        clipboardData: transfer,
+      }));
+    }, mode);
+    expect(pastePrevented).toBe(true);
+    await expect(preview).toContainText(`Edited ${mode}`);
+    expectNoExecutableMarkup(await preview.innerHTML());
+
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("button", { name: "Export HTML" }).click();
+    const exported = await readDownload(await downloadPromise);
+    expect(exported).toContain(`Edited ${mode}`);
+    expectNoExecutableMarkup(exported, true);
+    expect(attackerRequests).toEqual([]);
+  }
+
+  await loadFixedFresh("infographic", false);
+  const safeTemplate = page.locator('[contenteditable="true"]');
+  await expect(safeTemplate).toContainText("One clear idea");
+  await expect(safeTemplate.locator("svg circle")).toHaveCount(2);
+  expectNoExecutableMarkup(await safeTemplate.innerHTML());
 });
