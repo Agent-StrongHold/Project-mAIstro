@@ -670,3 +670,47 @@ async def test_a_run_claiming_no_occurrence_re_raises_the_claim_violation(
             await store.create_run(_graph(project_id), provenance={ADMISSION_SOURCE: "task_queue"})
     finally:
         await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_a_raised_conflict_releases_the_loser_write_lock(tmp_path: Path) -> None:
+    """A delegation-key conflict re-raises into `_reserve_child`'s adopt-the-
+    winner recovery, which keeps using the same connection -- to find the
+    winner, adopt it, and continue the delegation. That continuation is a
+    write on this connection, so the failed INSERT's transaction must be
+    rolled back before raising: otherwise the recovery's next write inherits
+    the loser's open transaction and the database write lock is held until
+    someone else notices (review round, PR #1270)."""
+    project_store, project_id = await _project_store()
+    db_path = tmp_path / "delegation-conflict.db"
+    loser_conn = await aiosqlite.connect(db_path)
+    loser = SqliteRunStore(loser_conn, project_store=project_store)
+    await loser.ensure_schema()
+    winner_conn = await aiosqlite.connect(db_path)
+    winner = SqliteRunStore(winner_conn, project_store=project_store)
+    await winner.ensure_schema()
+    run = await winner.create_run(_graph(project_id), provenance={"delegation_key": "key-1"})
+
+    with pytest.raises(sqlite3.IntegrityError):
+        await loser.create_run(_graph(project_id), provenance={"delegation_key": "key-1"})
+
+    # The loser's connection keeps working: recovery (adopt the winner, then
+    # keep writing) runs on this same connection.
+    adopted = await loser.find_delegation_run("key-1")
+    assert adopted is not None
+    assert adopted.run_id == run.run_id
+    recovery_write = await loser.create_run(
+        _graph(project_id), parent_run_id=run.run_id, provenance={"delegation_key": "key-2"}
+    )
+    assert recovery_write.parent_run_id == run.run_id
+
+    # And an unrelated third connection can take the write lock immediately:
+    # the loser's failed INSERT left no inherited transaction behind it.
+    third_conn = await aiosqlite.connect(db_path)
+    third = SqliteRunStore(third_conn, project_store=project_store)
+    await third.ensure_schema()
+    unrelated = await third.create_run(_graph(project_id))
+    assert unrelated.run_id != run.run_id
+    await loser_conn.close()
+    await winner_conn.close()
+    await third_conn.close()

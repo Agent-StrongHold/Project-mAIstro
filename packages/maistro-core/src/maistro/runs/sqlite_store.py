@@ -385,13 +385,18 @@ class SqliteRunStore:
                     ),
                 )
             except sqlite3.IntegrityError as exc:
+                # Rolled back before raising, whatever the conflict: the failed
+                # INSERT opened a transaction, and leaving it for the next
+                # caller to inherit would make an unrelated write commit inside
+                # this one. A delegation-key conflict re-raises into
+                # `_reserve_child`'s adopt-the-winner recovery, which must not
+                # inherit the loser's open write transaction either -- the
+                # recovery's next write (or its uncertain-transport pause)
+                # would otherwise hold the database write lock indefinitely.
+                await self._conn.rollback()
                 occurrence = occurrence_key(run.provenance)
                 if occurrence is None or "idx_canonical_runs_occurrence" not in str(exc):
                     raise
-                # Rolled back before raising: the failed INSERT opened a
-                # transaction, and leaving it for the next caller to inherit
-                # would make an unrelated write commit inside this one.
-                await self._conn.rollback()
                 raise DuplicateOccurrence(*occurrence) from exc
             await self._conn.commit()
             return run

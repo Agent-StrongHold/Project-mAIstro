@@ -12,6 +12,7 @@ Each case here is one of those, and each fails on the code as it was.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 import httpx
@@ -406,7 +407,16 @@ class TestAdmissionAndTransportConverge:
         assert task is not None
         assert child.provenance["a2a_task_id"] == task.id
 
-    async def test_restart_after_boundary_claim_stays_uncertain_without_resubmitting(self) -> None:
+    async def test_restart_after_boundary_claim_parks_for_reconciliation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The cross-replica shape of a lost receipt: the first worker claimed
+        the boundary and died before the task became visible; the retry lands
+        where the task map is empty. The retry must not submit a second task
+        *and* must not complete: an `uncertain` output is wrapped as a
+        completed Attempt and the frontier advances, leaving the reserved child
+        `created` forever. It parks on the timer-resumable reconciliation
+        pause, which re-enters the node to look for the receipt again."""
         store, project = await _spine()
         parent = await store.create_run(
             _graph(workspace_id="workspace-1", project_id=project.project_id)
@@ -427,16 +437,236 @@ class TestAdmissionAndTransportConverge:
             inputs, ctx
         )
 
-        assert second.status == "completed"
-        assert second.output.status == "uncertain"
+        assert second.status == "paused"
+        assert second.metadata["paused_reason"] == "awaiting_delegation_reconciliation"
         assert second_delegator.dispatched == []
-        child = await store.find_delegation_run(
-            AgentDelegateRemoteNode(
-                a2a_delegator=second_delegator, run_store=store
-            )._delegation_key(AgentDelegateRemoteNode.input_schema.model_validate(inputs), ctx)
-        )
+        key = AgentDelegateRemoteNode(
+            a2a_delegator=second_delegator, run_store=store
+        )._delegation_key(AgentDelegateRemoteNode.input_schema.model_validate(inputs), ctx)
+        child = await store.find_delegation_run(key)
         assert child is not None
         assert child.provenance["transport_attempted"] is True
+
+        # The reconciliation pause is the system's retry, not a person's: the
+        # run it parks is WAITING and a clock alone may re-enter it.
+        from maistro.graph.nodes.base import (
+            PAUSE_AWAITING_DELEGATION_RECONCILIATION,
+            PAUSE_REASON_OWNERS,
+            PAUSE_RESUME_CONDITIONS,
+            RESUME_ON_ELAPSED,
+        )
+
+        assert PAUSE_REASON_OWNERS[PAUSE_AWAITING_DELEGATION_RECONCILIATION] == "system"
+        assert PAUSE_RESUME_CONDITIONS[PAUSE_AWAITING_DELEGATION_RECONCILIATION] == RESUME_ON_ELAPSED
+
+    async def test_a_reconciliation_poll_recovers_the_lost_receipt(self) -> None:
+        """The second invocation the recovery logic assumes. The first POST is
+        lost after the peer accepted (connection dropped), so the node parks on
+        reconciliation; when the tick re-enters, `reconcile` finds the receipt
+        and the node pauses on the *answer* gate -- without a second POST."""
+        calls = {"post": 0, "get": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "POST":
+                calls["post"] += 1
+                raise httpx.ConnectError("connection lost after accept")
+            if request.method == "GET":
+                calls["get"] += 1
+                return httpx.Response(200, json={"task_id": "remote-9"})
+            return httpx.Response(405)
+
+        set_test_transport(httpx.MockTransport(handler))
+        peer = PeerTrust(
+            peer_url="http://hub",
+            peer_name="hub",
+            supports_idempotency=True,
+        )
+        project_store = InMemoryProjectScopeStore()
+        root = await project_store.create_root("workspace-1")
+        project = await project_store.create(
+            workspace_id="workspace-1", parent_project_id=root.project_id, name="Project"
+        )
+        store = InMemoryRunStore(project_store=project_store)
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+        peers = GuestPeerManager()
+        peers.register_peer(peer)
+        node = AgentDelegateRemoteNode(guest_peers=peers, run_store=store)
+        inputs = {"from_agent": "planner", "task": "x", "peer_name": "hub"}
+        ctx = _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id)
+
+        first = await node.run(inputs, ctx)
+        assert first.status == "paused"
+        assert first.metadata["paused_reason"] == "awaiting_delegation_reconciliation"
+
+        # The resume tick re-enters the node (same process, no answer): this is
+        # a poll, not a dispatch.
+        second = await node.run(inputs, ctx)
+
+        assert second.status == "paused"
+        assert second.metadata["paused_reason"] == "awaiting_remote_delegation"
+        assert calls == {"post": 1, "get": 1}
+        child = await store.find_delegation_run(node._delegation_key(  # type: ignore[attr-defined]
+            node.input_schema.model_validate(inputs), ctx
+        ))
+        assert child is not None
+        assert child.provenance["a2a_task_id"] == "remote-9"
+
+    async def test_a_reconciliation_window_that_closes_fails_the_node_and_child(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A reservation nobody could reconcile is a failed delegation. The
+        window is the delegation's own timeout counted from the child's durable
+        creation, so once it closes without a receipt the node fails and the
+        child stops claiming `created` forever."""
+        store, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+        first_delegator = _FailingDelegator()
+        first_delegator.register_agent_capability("planner", ["researcher"])
+        inputs = {
+            "from_agent": "planner",
+            "task": "x",
+            "to_agent": "researcher",
+            "timeout_seconds": 3600,
+        }
+        ctx = _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id)
+
+        first = await AgentDelegateRemoteNode(a2a_delegator=first_delegator, run_store=store).run(
+            inputs, ctx
+        )
+        assert first.status == "failed"
+
+        second_delegator = _recording_delegator()
+        node = AgentDelegateRemoteNode(a2a_delegator=second_delegator, run_store=store)
+        child = await store.find_delegation_run(
+            node._delegation_key(node.input_schema.model_validate(inputs), ctx)  # type: ignore[attr-defined]
+        )
+        assert child is not None
+        # The reconciliation window has already closed: the clock reads past
+        # the child's creation plus the delegation's own timeout.
+        monkeypatch.setattr(
+            delegate_module,
+            "now_utc",
+            lambda: child.created_at + timedelta(seconds=inputs["timeout_seconds"]),
+        )
+
+        second = await node.run(inputs, ctx)
+
+        assert second.status == "failed"
+        assert second.error_code == "DelegationReconciliationExpired"
+        assert "reconciled" in (second.error_message or "")
+        settled = await store.get_run(child.run_id)
+        assert settled is not None
+        assert settled.status is RunStatus.FAILED
+        assert settled.error is not None
+        assert second_delegator.dispatched == []
+
+    async def test_a_peer_that_cannot_reconcile_parks_instead_of_completing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A peer without idempotent reconciliation cannot answer a receipt
+        query. The first dispatch loses the transport race (connection error);
+        the reservation stays and the node parks. On re-entry the receipt
+        query refuses the peer -- and that uncertainty parks the node again
+        rather than completing it with an `uncertain` output the executor
+        would record as a success."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            del request
+            raise httpx.ConnectError("connection lost")
+
+        set_test_transport(httpx.MockTransport(handler))
+        peer = PeerTrust(peer_url="http://hub", peer_name="hub")
+        project_store = InMemoryProjectScopeStore()
+        root = await project_store.create_root("workspace-1")
+        project = await project_store.create(
+            workspace_id="workspace-1", parent_project_id=root.project_id, name="Project"
+        )
+        store = InMemoryRunStore(project_store=project_store)
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+        peers = GuestPeerManager()
+        peers.register_peer(peer)
+        node = AgentDelegateRemoteNode(guest_peers=peers, run_store=store)
+        inputs = {"from_agent": "planner", "task": "x", "peer_name": "hub"}
+        ctx = _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id)
+
+        first = await node.run(inputs, ctx)
+
+        assert first.status == "paused"
+        assert first.metadata["paused_reason"] == "awaiting_delegation_reconciliation"
+
+        second = await node.run(inputs, ctx)
+
+        assert second.status == "paused"
+        assert second.metadata["paused_reason"] == "awaiting_delegation_reconciliation"
+        assert "does not support idempotent" in second.metadata["error"]
+
+    async def test_a_delegation_key_conflict_adopts_the_winner_child(self) -> None:
+        """Play the SQLite unique index: a concurrent replica won the
+        reservation key, this replica's INSERT bounces with the delegation-key
+        integrity error, and `_reserve_child` recovers by adopting the winner
+        instead of re-raising. The store in production must be left usable by
+        that recovery -- which is exactly what the loser-side rollback (see
+        `test_a_raised_conflict_releases_the_loser_write_lock`) provides."""
+        import sqlite3
+
+        class _DelegationKeyConflictStore(InMemoryRunStore):
+            """Refuse a second child Run for any claimed delegation key."""
+
+            def __init__(self, **kwargs: Any) -> None:
+                super().__init__(**kwargs)
+                self._seen_keys: set[str] = set()
+
+            async def create_run(self, graph: Any, **kwargs: Any) -> Any:
+                provenance = kwargs.get("provenance") or {}
+                key = provenance.get("delegation_key")
+                if key:
+                    if key in self._seen_keys:
+                        raise sqlite3.IntegrityError(
+                            "UNIQUE constraint failed: index 'idx_canonical_runs_delegation_key'"
+                        )
+                    self._seen_keys.add(key)
+                return await super().create_run(graph, **kwargs)
+
+        project_store = InMemoryProjectScopeStore()
+        root = await project_store.create_root("workspace-1")
+        project = await project_store.create(
+            workspace_id="workspace-1", parent_project_id=root.project_id, name="Project"
+        )
+        store = _DelegationKeyConflictStore(project_store=project_store)
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+        delegator = _recording_delegator()
+        node = AgentDelegateRemoteNode(a2a_delegator=delegator, run_store=store)
+        inputs = {"from_agent": "planner", "task": "x", "to_agent": "researcher"}
+        ctx = _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id)
+        key = node._delegation_key(node.input_schema.model_validate(inputs), ctx)
+        winner = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id),
+            parent_run_id=parent.run_id,
+            provenance={"delegation_key": key, "source": "winner-replica"},
+        )
+
+        child_id = await node._reserve_child(
+            node.input_schema.model_validate(inputs),
+            ctx,
+            parent=parent,
+            mode="in_process",
+            target="researcher",
+        )
+
+        assert child_id == winner.run_id
+        assert delegator.dispatched == []
 
 
 class TestScopeIsCheckedBeforeDispatch:

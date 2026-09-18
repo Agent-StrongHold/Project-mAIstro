@@ -97,6 +97,20 @@ class GuestPeerManager:
     def list_peers(self) -> list[PeerTrust]:
         return [p for p in self._peers.values() if p.active]
 
+    @staticmethod
+    def _peer_auth_headers(peer: PeerTrust) -> dict[str, str]:
+        """The authentication a request to this peer must carry.
+
+        `delegate` and `reconcile` authenticate identically. A reconciliation
+        GET sent without the peer's configured credential gets 401 from a
+        protected peer, which reads as an uncertain transport rather than a
+        refused request -- so a receipt the peer is holding becomes
+        unrecoverable and the delegated work can never resume.
+        """
+        if peer.auth_method == "api_token" and peer.auth_credential:
+            return {"Authorization": f"Bearer {peer.auth_credential}"}
+        return {}
+
     async def reconcile(self, peer_name: str, idempotency_key: str) -> DelegationResult:
         """Recover a receipt without re-submitting uncertain remote work."""
         cached = self._idempotent_receipts.get((peer_name, idempotency_key))
@@ -112,7 +126,8 @@ class GuestPeerManager:
         try:
             async with shared_client(timeout=30.0) as client:
                 response = await client.get(
-                    f"{peer.peer_url.rstrip('/')}/a2a/tasks/by-idempotency-key/{idempotency_key}"
+                    f"{peer.peer_url.rstrip('/')}/a2a/tasks/by-idempotency-key/{idempotency_key}",
+                    headers=self._peer_auth_headers(peer),
                 )
                 if response.status_code == 404:
                     return DelegationResult("", peer_name, "not_found")
@@ -167,11 +182,12 @@ class GuestPeerManager:
             )
         assert peer is not None  # an admitted peer exists by construction
 
-        headers: dict[str, str] = {"Content-Type": "application/json"}
+        headers: dict[str, str] = {
+            "Content-Type": "application/json",
+            **self._peer_auth_headers(peer),
+        }
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
-        if peer.auth_method == "api_token" and peer.auth_credential:
-            headers["Authorization"] = f"Bearer {peer.auth_credential}"
 
         try:
             async with shared_client(timeout=30.0) as client:

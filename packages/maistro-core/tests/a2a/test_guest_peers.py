@@ -204,6 +204,59 @@ async def test_delegate_request_exception_returns_failed_and_audited(
     assert audit.entries[-1]["detail"] == result.error
 
 
+async def test_reconcile_sends_the_peers_auth_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Recovery must authenticate exactly like dispatch.
+
+    A reconciliation GET without the peer's configured credential gets 401 from
+    a protected peer; `raise_for_status` turns that into an uncertain result,
+    so a receipt the peer is holding can never be recovered and the delegated
+    work can never resume (review round, PR #1270).
+    """
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["method"] = request.method
+        seen["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, json={"task_id": "remote-7"})
+
+    _patch_transport(monkeypatch, handler)
+    manager = GuestPeerManager()
+    manager.register_peer(
+        PeerTrust(
+            peer_url="http://hub.example/",
+            peer_name="hub",
+            auth_method="api_token",
+            auth_credential="secret-token",
+            supports_idempotency=True,
+        )
+    )
+    result = await manager.reconcile("hub", "key-1")
+    assert seen["url"] == "http://hub.example/a2a/tasks/by-idempotency-key/key-1"
+    assert seen["method"] == "GET"
+    assert seen["auth"] == "Bearer secret-token"
+    assert result == DelegationResult(task_id="remote-7", peer_name="hub", status="submitted")
+
+
+async def test_reconcile_skips_auth_header_when_credential_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["auth"] = request.headers.get("authorization")
+        return httpx.Response(404)
+
+    _patch_transport(monkeypatch, handler)
+    manager = GuestPeerManager()
+    manager.register_peer(
+        PeerTrust(peer_url="http://hub", peer_name="hub", supports_idempotency=True)
+    )
+    result = await manager.reconcile("hub", "key-1")
+    assert seen["auth"] is None
+    assert result == DelegationResult(task_id="", peer_name="hub", status="not_found")
+
+
 async def test_delegate_missing_task_id_in_response_defaults_to_empty_string(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
