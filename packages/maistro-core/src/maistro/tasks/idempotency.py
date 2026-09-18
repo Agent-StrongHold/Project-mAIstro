@@ -180,10 +180,6 @@ def _to_us(moment: datetime) -> int:
     return (moment - _EPOCH) // _MICROSECOND
 
 
-def _from_us(micros: int) -> datetime:
-    return _EPOCH + timedelta(microseconds=micros)
-
-
 def from_epoch_us(micros: int) -> datetime:
     """The inverse of :func:`_to_us`, public because replays need it: a stored
     claim's ``created_at`` is what a reconstructed receipt reports."""
