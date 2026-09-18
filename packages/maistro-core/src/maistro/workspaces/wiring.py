@@ -35,10 +35,12 @@ from maistro.workspaces.store import WorkspaceStore
 logger = logging.getLogger(__name__)
 
 #: Tables the PostgreSQL Workspace store needs before it may be selected.
-#: Migration `019_canonical_workspaces` owns them.
+#: Migrations `019_canonical_workspaces` and
+#: `034_workspace_lifecycle_reconciliation` own them.
 WORKSPACE_PG_TABLES: Final = (
     "canonical_workspaces",
     "canonical_workspace_memberships",
+    "canonical_workspace_lifecycle",
 )
 
 
@@ -106,13 +108,15 @@ async def wire_workspace_store(
                 "(#516)."
             )
             raise ConfigError(msg)
-        # No ensure_schema: these tables come from `alembic/versions/019`. A
+        # No ensure_schema: these tables come from Alembic migrations. A
         # store that quietly created its own would be a second schema owner and
         # a second thing to keep in step — the defect migration 003 left behind
         # and #178 had to undo.
         from maistro.workspaces.pg_store import PgWorkspaceStore
 
-        return PgWorkspaceStore(pg_pool, project_store=project_store)
+        store = PgWorkspaceStore(pg_pool, project_store=project_store)
+        await store.recover()
+        return store
 
     if backend == "sqlite":
         if conn is None:
