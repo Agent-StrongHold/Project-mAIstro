@@ -397,6 +397,12 @@ async def test_racing_manual_and_background_cycles_are_serialized(
         )
 
     monkeypatch.setattr(evolution_graph, "run_canonical_evolution_cycle", _canonical)
+    owner = SimpleNamespace(
+        run_store=object(), graph_run_store=object(), project_scope_store=object()
+    )
+    monkeypatch.setattr(
+        evolution_graph, "canonical_execution_owner", lambda *_args, **_kwargs: owner
+    )
     service = _EvolutionService()
     service._population = _StubPop()
     service._tournament = _StubTour()
@@ -447,6 +453,12 @@ async def test_seed_waits_for_active_cycle_and_joins_the_next_admission(
 
     monkeypatch.setattr(evolution_graph, "run_canonical_evolution_cycle", _canonical)
     monkeypatch.setattr(diversity, "emergency_spawn", lambda existing, count: [])
+    owner = SimpleNamespace(
+        run_store=object(), graph_run_store=object(), project_scope_store=object()
+    )
+    monkeypatch.setattr(
+        evolution_graph, "canonical_execution_owner", lambda *_args, **_kwargs: owner
+    )
     service = _EvolutionService()
     service._population = _StubPop()
     service._tournament = _StubTour()
@@ -460,6 +472,17 @@ async def test_seed_waits_for_active_cycle_and_joins_the_next_admission(
     release.set()
     assert await cycle == "canonical-evolve-run"
     assert await seed == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_seed_population_without_domain_state_is_rejected() -> None:
+    from services.evolution import _EvolutionService
+
+    service = _EvolutionService()
+    assert service._population is None
+
+    with pytest.raises(RuntimeError, match="population is not initialized"):
+        await service.seed_population(2)
 
 
 def test_run_one_cycle_does_not_count_failed_canonical_run(

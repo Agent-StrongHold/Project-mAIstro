@@ -471,7 +471,6 @@ async def test_post_seed_during_real_cycle_is_admitted_after_pair_plan(
 ) -> None:
     import httpx
     import services.evolution as evolution_service
-    import services.evolution_graph as evolution_graph
     from fastapi import FastAPI
     from routes import evolution as evolution_routes
 
@@ -503,7 +502,13 @@ async def test_post_seed_during_real_cycle_is_admitted_after_pair_plan(
     )
     monkeypatch.setattr(harness_module, "EvalHarness", _PausingHarness)
     owner = await _container()
-    monkeypatch.setattr(evolution_graph, "_engine_container", lambda: owner)
+    import services.engine as engine_module
+
+    monkeypatch.setattr(
+        engine_module,
+        "get_engine",
+        lambda: SimpleNamespace(agent_port=SimpleNamespace(container=owner)),
+    )
     monkeypatch.setattr(
         "maistro_evolve.diversity.emergency_spawn",
         lambda _existing, count: [_Genome(f"seed-{index}") for index in range(count)],
@@ -584,7 +589,13 @@ async def test_post_seed_during_battle_traversal_cannot_change_persisted_pairs(
 
     monkeypatch.setattr(harness_module, "EvalHarness", _RouteHarness)
     owner = await _container()
-    monkeypatch.setattr(evolution_graph, "_engine_container", lambda: owner)
+    import services.engine as engine_module
+
+    monkeypatch.setattr(
+        engine_module,
+        "get_engine",
+        lambda: SimpleNamespace(agent_port=SimpleNamespace(container=owner)),
+    )
     monkeypatch.setattr(
         "maistro_evolve.diversity.emergency_spawn",
         lambda _existing, count: [_Genome(f"seed-{index}") for index in range(count)],
@@ -646,7 +657,6 @@ async def test_racing_post_cycle_requests_persist_separate_canonical_plans(
 ) -> None:
     import httpx
     import services.evolution as evolution_service
-    import services.evolution_graph as evolution_graph
     from fastapi import FastAPI
     from routes import evolution as evolution_routes
 
@@ -678,7 +688,13 @@ async def test_racing_post_cycle_requests_persist_separate_canonical_plans(
 
     monkeypatch.setattr(harness_module, "EvalHarness", _PausingHarness)
     owner = await _container()
-    monkeypatch.setattr(evolution_graph, "_engine_container", lambda: owner)
+    import services.engine as engine_module
+
+    monkeypatch.setattr(
+        engine_module,
+        "get_engine",
+        lambda: SimpleNamespace(agent_port=SimpleNamespace(container=owner)),
+    )
 
     population = _Population([_Genome(f"g{index}") for index in range(1, 5)])
     service = evolution_service._EvolutionService()

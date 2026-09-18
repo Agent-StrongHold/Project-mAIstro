@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +9
+  packages/hive-conductor/backend/tests: +10
 ---
 
 # Evolve cycle membership fencing (#1065)
