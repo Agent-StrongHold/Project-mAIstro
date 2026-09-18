@@ -1530,8 +1530,7 @@
       "message_regex": "unused variable '[A-Z][A-Z0-9_]*'",
       "rationale": "Enum members are serialized values and may not appear as direct reads in package-local static analysis.",
       "findings": [
-        "packages/maistro-bootstrap/src/maistro_bootstrap/delivery.py::unused variable 'PINNED_IMAGES'",
-        "packages/maistro-design/src/maistro_design/systems/importer.py::unused variable 'ESSENTIAL_FILES'"
+        "packages/maistro-bootstrap/src/maistro_bootstrap/delivery.py::unused variable 'PINNED_IMAGES'"
       ]
     },
     {
