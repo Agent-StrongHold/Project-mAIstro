@@ -304,4 +304,19 @@ async def add_project_membership(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
+@router.delete("/{project_id}/memberships/{principal_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_project_membership(
+    workspace_id: str,
+    project_id: str,
+    principal_id: str,
+    auth: RequireAuth,
+    workspace_store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
+    project_store: Annotated[ProjectScopeStore, Depends(get_project_scope_store)],
+) -> None:
+    """Revoke one Project membership without leaving a stale grant row."""
+    await require_workspace_owner(workspace_store, workspace_id, user_id(auth))
+    await _require_project(project_store, workspace_id=workspace_id, project_id=project_id)
+    await project_store.remove_membership(project_id, principal_id=principal_id)
+
+
 __all__ = ["get_project_scope_store", "router"]
