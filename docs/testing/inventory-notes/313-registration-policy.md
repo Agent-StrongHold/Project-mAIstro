@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +44
+  packages/hive-conductor/backend/tests: +47
 ---
 # 313-registration-policy
 
@@ -28,7 +28,11 @@ cannot be taken over (1). The persisted one-shot case also opens a second
 SQLite reader before the original writer closes, proving the setup marker was
 flushed before success. One additional node pins the explicit persisted-state
 flush boundary used by that setup marker, and one pins refusal when the flushed
-marker cannot be read back.
+marker cannot be read back. The diff-coverage repair of the same gate then
+closed the last three uncovered changed lines: the in-lock re-check 409 (the
+deterministic shape of the guard flipping between the fast path and the claim
+insert), the marker helper's no-persisted-backend early return, and its
+refusal of a backend that offers no drain-and-read-back boundary (3).
 
 No suite lost nodes. The M0-era `test_public_registration_is_fail_closed`
 in `test_security_headers.py` was rewritten in place for the M2 contract
