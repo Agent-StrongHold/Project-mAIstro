@@ -12,6 +12,10 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
+from maistro.security.normalize import normalize_for_detection
+from maistro.security.warden.heuristics import heuristic_scan
+from maistro_design.scan import scan_blocking_patterns
+
 
 class TrustTier(StrEnum):
     T0 = "t0"  # built-in (engine-shipped, immutable)
@@ -147,28 +151,45 @@ def scan_and_record(
     banish_list: InMemoryTrustBanishList | None = None,
     review_queue: InMemoryTrustReviewQueue | None = None,
 ) -> TrustTier:
-    """Run a lightweight pre-scan (banish list + simple heuristics) and enqueue review.
+    """Scan content with the shared Design/Warden vocabulary and enqueue review.
 
-    Returns the assigned TrustTier (T3 or SKULL).
-    Full Warden integration (4-layer pipeline) is wired when Warden is injected into
-    DesignEngine; this function handles the pre-scan path.
+    The synchronous pre-scan intentionally runs the deterministic layers only;
+    those are the same blocking patterns used by the final output boundary plus
+    Warden's heuristic layer. A blocking match is SKULL/high-confidence, while a
+    heuristic-only match remains T3 but is explicitly kept for review. No clean
+    record is manufactured from content the renderer would later reject.
     """
-    if banish_list and banish_list.is_banned(content):
+    flags: list[str] = []
+    banished = banish_list is not None and banish_list.is_banned(content)
+    if banished:
+        # Preserve the stable RLPHD flag while avoiding a second banish-list
+        # lookup in the shared scanner.
+        flags.append("banish_list_match")
+
+    blocking_flags = scan_blocking_patterns("content", content, None, visual_artifact=True)
+    flags.extend(blocking_flags)
+    suspicious, heuristic_flags = heuristic_scan(normalize_for_detection(content))
+    if suspicious:
+        flags.extend(f"content: matched heuristic pattern {flag}" for flag in heuristic_flags)
+
+    if banished or blocking_flags:
         tier = TrustTier.SKULL
-        flags: tuple[str, ...] = ("banish_list_match",)
-        confidence = 1.0
+        confidence = 1.0 if banished else 0.9
+    elif suspicious:
+        tier = TrustTier.T3
+        confidence = 0.6
     else:
         tier = TrustTier.T3
-        flags = ()
         confidence = 0.0
 
+    flags_tuple = tuple(flags)
     if review_queue is not None:
         record = TrustReviewRecord(
             id=record_id,
             content_fingerprint=_fingerprint(content),
             assigned_tier=tier,
-            warden_recommendation=_warden_recommendation(flags, confidence),
-            warden_flags=flags,
+            warden_recommendation=_warden_recommendation(flags_tuple, confidence),
+            warden_flags=flags_tuple,
             warden_confidence=confidence,
             source=source,
             source_key=source_key,

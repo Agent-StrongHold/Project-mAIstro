@@ -66,6 +66,18 @@ async def test_registry_with_no_provider_hides_web_skills_from_listing() -> None
 # --- F3: unimplemented render backend is a clean 501, not a 500 -------------
 
 
+async def test_renderers_reject_hostile_markup_before_backend_dispatch() -> None:
+    """The server-side sink must use the same output scan as Design artifacts."""
+    from services.design_render import DesignRenderService
+
+    from maistro_design.types import TrustBannedError
+
+    svc = DesignRenderService()
+    hostile = '<svg><image href="data:text/html,<script>alert(1)</script>" /></svg>'
+    with pytest.raises(TrustBannedError):
+        await svc.render_to_pdf(hostile, {})
+
+
 async def test_render_to_png_raises_501_not_notimplementederror() -> None:
     """PNG rendering is not built yet — say so with 501, not a crash-shaped 500.
 

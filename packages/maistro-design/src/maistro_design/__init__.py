@@ -32,7 +32,7 @@ from maistro_design.renderers import (
     RenderSlotUnavailableError,
     available_skills,
 )
-from maistro_design.scan import ScanReport, scan_design_output
+from maistro_design.scan import ScanReport, scan_design_output, scan_design_text
 from maistro_design.skills.builtins import load_builtins
 from maistro_design.skills.registry import InMemoryDesignSkillRegistry
 from maistro_design.systems.importer import (
@@ -136,6 +136,7 @@ __all__ = [
     "load_catalog",
     "scan_design_output",
     "scan_design_system_content",
+    "scan_design_text",
 ]
 
 
