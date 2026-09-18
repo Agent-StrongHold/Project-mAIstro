@@ -31,6 +31,19 @@ already lives.
 Payloads are JSONB and come back as dicts, because the pool registers a JSON
 codec (`maistro.persistence._register_json_codecs`). That is why this reads
 `model_of` where the SQLite store parses text.
+
+**Crash consistency (#1121).** A Workspace is three writes across two stores:
+the Workspace row, the owner membership, and the Root Project. They used to be
+two transactions -- commit the first two, then `create_root` on a second
+pooled connection with an in-process compensator -- and `delete` was the same
+in reverse. A crash between the halves left a Workspace with no Root Project,
+which `root_for_workspace` treats as impossible, or a Project tree with no
+Workspace. When the paired Project store is a `TransactionalProjectScopeStore`
+(the PostgreSQL one on this same pool is), `create` and `delete` now run every
+statement on the one connection its `transaction()` yields, so all of it
+commits or none of it does. Only a Project store that cannot join a
+transaction gets the old compensating path, which is not crash-consistent by
+construction.
 """
 
 from __future__ import annotations
@@ -38,6 +51,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final, NotRequired, TypedDict
 
+from maistro.projects.scope_store import TransactionalProjectScopeStore
 from maistro.runs.evidence_json import json_of, model_of
 from maistro.workspaces.model import (
     Workspace,
@@ -98,19 +112,24 @@ class PgWorkspaceStore:
             role=WorkspaceRole.OWNER,
             added_at=workspace.created_at,
         )
-        async with self._pool.acquire() as conn, conn.transaction():
-            await conn.execute(
-                """INSERT INTO canonical_workspaces
-                       (workspace_id, name, created_at, updated_at, payload)
-                   VALUES ($1, $2, $3, $4, $5::text::jsonb)""",
-                workspace.workspace_id,
-                workspace.name,
-                workspace.created_at,
-                workspace.updated_at,
-                json_of(workspace),
-            )
-            await self._insert_membership(conn, owner)
+        if isinstance(self.project_store, TransactionalProjectScopeStore):
+            # One transaction for all three rows (#1121). The Root Project is
+            # written *last* and read back on the same connection, so a
+            # failure anywhere rolls the Workspace and membership back with
+            # it; there is nothing to compensate.
+            async with self.project_store.transaction() as conn:
+                await self._insert_workspace(conn, workspace)
+                await self._insert_membership(conn, owner)
+                await self.project_store.create_root_in(conn, workspace.workspace_id)
+            return workspace
 
+        # Not crash-consistent by construction: the Project store cannot join
+        # this transaction, so the Root Project is a second write and a crash
+        # between the two leaves a Workspace with no root. Compensation covers
+        # an exception, which is the most that can be done here.
+        async with self._pool.acquire() as conn, conn.transaction():
+            await self._insert_workspace(conn, workspace)
+            await self._insert_membership(conn, owner)
         try:
             await self.project_store.create_root(workspace.workspace_id)
         except BaseException:
@@ -146,13 +165,18 @@ class PgWorkspaceStore:
 
     async def delete(self, workspace_id: str) -> None:
         """Remove the Workspace, its memberships, and its Projects."""
+        if isinstance(self.project_store, TransactionalProjectScopeStore):
+            # Purge first, then the Workspace row, in one transaction (#1121).
+            # `WorkspaceNotFound` from the row delete rolls the purge back
+            # with it, so deleting an absent Workspace touches nothing.
+            async with self.project_store.transaction() as conn:
+                await self.project_store.purge_workspace_in(conn, workspace_id)
+                await self._delete_workspace_row(conn, workspace_id)
+            return
+
+        # Not crash-consistent by construction; see `create`.
         async with self._pool.acquire() as conn:
-            status = await conn.execute(
-                "DELETE FROM canonical_workspaces WHERE workspace_id = $1",
-                workspace_id,
-            )
-        if status.endswith(" 0"):
-            raise WorkspaceNotFound(workspace_id)
+            await self._delete_workspace_row(conn, workspace_id)
         await self.project_store.purge_workspace(workspace_id)
 
     async def list_for_user(self, user_id: str) -> list[Workspace]:
@@ -271,6 +295,27 @@ class PgWorkspaceStore:
                 payload = EXCLUDED.payload
     """
 
+    async def _insert_workspace(self, conn: Any, workspace: Workspace) -> None:
+        await conn.execute(
+            """INSERT INTO canonical_workspaces
+                   (workspace_id, name, created_at, updated_at, payload)
+               VALUES ($1, $2, $3, $4, $5::text::jsonb)""",
+            workspace.workspace_id,
+            workspace.name,
+            workspace.created_at,
+            workspace.updated_at,
+            json_of(workspace),
+        )
+
+    async def _delete_workspace_row(self, conn: Any, workspace_id: str) -> None:
+        """Delete the Workspace row (memberships cascade), or refuse."""
+        status = await conn.execute(
+            "DELETE FROM canonical_workspaces WHERE workspace_id = $1",
+            workspace_id,
+        )
+        if status.endswith(" 0"):
+            raise WorkspaceNotFound(workspace_id)
+
     async def _insert_membership(
         self,
         conn: Any,
@@ -319,7 +364,7 @@ class PgWorkspaceStore:
             raise WorkspaceAccessDenied("a Workspace must retain at least one owner")
 
     async def _purge(self, workspace_id: str) -> None:
-        """Undo `create`'s rows after the Root Project failed."""
+        """Undo `create`'s rows after a non-transactional Root Project failed."""
         async with self._pool.acquire() as conn:
             await conn.execute(
                 "DELETE FROM canonical_workspaces WHERE workspace_id = $1",
