@@ -41,14 +41,40 @@ class DetailedHealthResponse(BaseModel):
     checks: dict[str, ProbeResult]
     effective_resource_policy: dict[str, int | float | bool]
     strike_tracker: dict[str, str | bool]
+    persistence: dict[str, dict[str, str | bool]]
 
 
 def _strike_tracker_diagnostics(container: Any) -> dict[str, str | bool]:
     """Report the configured strike tracker without touching its state."""
     tracker = getattr(container, "strike_tracker", None)
     if tracker is None:
-        return {"enabled": False, "backend": "none"}
-    return {"enabled": True, "backend": type(tracker).__name__}
+        return {"enabled": False, "backend": "none", "durable": False}
+    durable = type(tracker).__name__.startswith("Pg")
+    return {"enabled": True, "backend": type(tracker).__name__, "durable": durable}
+
+
+def _persistence_diagnostics(container: Any) -> dict[str, dict[str, str | bool]]:
+    """Describe actual stores, including deliberate process-local fallbacks."""
+    stores = {
+        "audit": getattr(container, "audit_log", None),
+        "elevation": getattr(container, "elevation_store", None),
+        "sessions": getattr(container, "session_store", None),
+        "strikes": getattr(container, "strike_tracker", None),
+        "quota": getattr(container, "quota_tracker", None),
+        "learnings": getattr(container, "learning_store", None),
+        "usage_log": getattr(container, "usage_log", None),
+    }
+    result: dict[str, dict[str, str | bool]] = {}
+    for name, store in stores.items():
+        backend = type(store).__name__ if store is not None else "none"
+        durable = backend.startswith(("Pg", "Sqlite"))
+        result[name] = {"backend": backend, "durable": durable}
+    usage_persistence = getattr(container, "usage_log_persistence", None)
+    if usage_persistence is not None:
+        result["usage_log"]["persistence_backend"] = type(usage_persistence).__name__
+        result["usage_log"]["mode"] = "write-behind; flush_usage_log required"
+        result["usage_log"]["durable"] = True
+    return result
 
 
 async def _check_postgres(settings: Settings) -> ProbeResult:
@@ -185,6 +211,7 @@ async def readiness(
         checks=checks,
         effective_resource_policy=settings.effective_resource_policy().as_dict(),
         strike_tracker=_strike_tracker_diagnostics(container),
+        persistence=_persistence_diagnostics(container),
     )
 
     if not all_ok:

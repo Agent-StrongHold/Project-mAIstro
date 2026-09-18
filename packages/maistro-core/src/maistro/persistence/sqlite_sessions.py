@@ -7,6 +7,7 @@ import time
 from typing import TYPE_CHECKING
 
 from maistro.observability.correlation import observed_provenance
+from maistro.persistence.sqlite_schema import begin_schema_upgrade
 from maistro.sessions.turns import reject_blank_turn_id
 
 if TYPE_CHECKING:
@@ -65,6 +66,7 @@ class SqliteSessionStore:
 
     async def ensure_schema(self) -> None:
         """Create the sessions table if it doesn't exist."""
+        await begin_schema_upgrade(self._conn)
         await self._conn.execute(_SCHEMA)
         await self._conn.execute(_TURNS_SCHEMA)
         cursor = await self._conn.execute("PRAGMA table_info(session_turns)")
