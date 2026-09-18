@@ -28,8 +28,6 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from maistro.sqlite_schema import serialized_schema_upgrade
-
 if TYPE_CHECKING:
     import aiosqlite
 
@@ -188,8 +186,8 @@ class SqliteInvocationStore:
         self._conn = conn
 
     async def ensure_schema(self) -> None:
-        async with serialized_schema_upgrade(self._conn):
-            await self._conn.execute(_SCHEMA)
+        await self._conn.execute(_SCHEMA)
+        await self._conn.commit()
 
     async def get(self, trigger_id: str, event_id: int) -> HandlerInvocation | None:
         cursor = await self._conn.execute(

@@ -18,8 +18,6 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
-
 if TYPE_CHECKING:
     import aiosqlite
 
@@ -186,8 +184,8 @@ class SqliteEventLog:
         self._conn = conn
 
     async def ensure_schema(self) -> None:
-        async with serialized_schema_upgrade(self._conn):
-            await execute_schema_script(self._conn, _SCHEMA)
+        await self._conn.executescript(_SCHEMA)
+        await self._conn.commit()
 
     async def append(
         self,

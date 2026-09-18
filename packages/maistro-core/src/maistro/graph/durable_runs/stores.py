@@ -12,10 +12,6 @@ from typing import Any, Literal
 from maistro.graph.execution_state import GraphExecutionState, thaw_json_value
 from maistro.runs.lifecycle import settle_open_node_run, transition_node_run, transition_run
 from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
-from maistro.sqlite_schema import (
-    execute_schema_script_sync,
-    serialized_schema_upgrade_sync,
-)
 
 from .fair_scan import cursor_time
 from .hitl import (
@@ -492,9 +488,9 @@ class SqliteDurableRunStore:
     def __init__(self, db_path: str | Path) -> None:
         self._path = str(db_path)
         self._lock = asyncio.Lock()
-        with self._connect() as conn, serialized_schema_upgrade_sync(conn):
+        with self._connect() as conn:
             _reject_unmigrated_legacy_rows(conn)
-            execute_schema_script_sync(conn, _SCHEMA_SQL)
+            conn.executescript(_SCHEMA_SQL)
             columns = conn.execute("PRAGMA table_info(durable_graph_runs)").fetchall()
             if not any(row[1] == "hitl_deadline_at" for row in columns):
                 conn.execute("ALTER TABLE durable_graph_runs ADD COLUMN hitl_deadline_at TEXT")
@@ -503,6 +499,7 @@ class SqliteDurableRunStore:
                 "ON durable_graph_runs(status, hitl_deadline_at)"
             )
             _backfill_hitl_deadlines(conn)
+            conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._path)

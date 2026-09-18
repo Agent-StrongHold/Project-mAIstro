@@ -53,15 +53,13 @@ EXPECTED_HUMAN = {
     "awaiting_role_delegate",
 }
 
-#: Pauses that wait on a system -- a remote agent, a harness, a polled API,
-#: or the reconciliation poll for a delegation whose acceptance is unknown.
+#: Pauses that wait on a system -- a remote agent, a harness, a polled API.
 #: WAITING is the right record for these, and that is a decision the table
 #: states, not a default: the structural guard below is what makes it one.
 EXPECTED_SYSTEM = {
     "awaiting_remote_delegation",
     "awaiting_harness",
     "waiting_on_jira_subtasks",
-    "awaiting_delegation_reconciliation",
 }
 
 
