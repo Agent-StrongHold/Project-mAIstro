@@ -163,6 +163,103 @@ def _make_legacy_durable_run_database(path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_busy_timeout_restored_after_upgrade(tmp_path: Path) -> None:
+    """The schema upgrade must not leave its 60s timeout on the connection."""
+    import aiosqlite
+
+    path = tmp_path / "timeout.sqlite"
+    async with aiosqlite.connect(path) as conn:
+        await conn.execute("PRAGMA busy_timeout = 1234")
+        async with serialized_schema_upgrade(conn):
+            cursor = await conn.execute("PRAGMA busy_timeout")
+            row = await cursor.fetchone()
+            assert int(row[0]) >= 60_000  # upgrade-time timeout in force
+        cursor = await conn.execute("PRAGMA busy_timeout")
+        row = await cursor.fetchone()
+        assert int(row[0]) == 1234  # caller's timeout restored
+
+
+@pytest.mark.asyncio
+async def test_busy_timeout_restored_after_failed_upgrade(tmp_path: Path) -> None:
+    """The restore happens on the failure path too."""
+    import aiosqlite
+
+    path = tmp_path / "timeout-fail.sqlite"
+    async with aiosqlite.connect(path) as conn:
+        await conn.execute("PRAGMA busy_timeout = 4321")
+        with pytest.raises(sqlite3.OperationalError, match="boom"):
+            async with serialized_schema_upgrade(conn):
+                raise sqlite3.OperationalError("boom")
+        cursor = await conn.execute("PRAGMA busy_timeout")
+        row = await cursor.fetchone()
+        assert int(row[0]) == 4321
+
+
+@pytest.mark.asyncio
+async def test_commit_failure_rolls_back_and_propagates(tmp_path: Path) -> None:
+    """A failing COMMIT must roll back instead of leaking the write lock."""
+    import aiosqlite
+
+    path = tmp_path / "commit-fail.sqlite"
+    async with aiosqlite.connect(path) as conn:
+        original_commit = conn.commit
+        original_rollback = conn.rollback
+        rollback_calls: list[int] = []
+
+        async def failing_commit() -> None:
+            raise sqlite3.OperationalError("database is locked during commit")
+
+        async def tracking_rollback() -> None:
+            rollback_calls.append(1)
+            await original_rollback()
+
+        conn.commit = failing_commit  # type: ignore[method-assign]
+        conn.rollback = tracking_rollback  # type: ignore[method-assign]
+        with pytest.raises(sqlite3.OperationalError, match="locked during commit"):
+            async with serialized_schema_upgrade(conn):
+                await conn.execute("CREATE TABLE committed_never (id INTEGER)")
+        assert rollback_calls, "COMMIT failure must trigger rollback"
+        conn.commit = original_commit  # type: ignore[method-assign]
+        conn.rollback = original_rollback  # type: ignore[method-assign]
+        # The leaked transaction was rolled back, so a fresh upgrade works.
+        async with serialized_schema_upgrade(conn):
+            await conn.execute("CREATE TABLE committed_never (id INTEGER)")
+
+
+def test_sync_upgrade_restores_timeout_and_rolls_back_failed_commit(tmp_path: Path) -> None:
+    """Sync path mirrors the async guarantees."""
+    from maistro.persistence.sqlite_schema import serialized_schema_upgrade_sync
+
+    path = tmp_path / "sync.sqlite"
+    with sqlite3.connect(path) as conn:
+        conn.execute("PRAGMA busy_timeout = 2345")
+
+        class _FailingCommit:
+            """Delegates everything to the real connection but commit fails."""
+
+            def __init__(self, inner: sqlite3.Connection) -> None:
+                self._inner = inner
+
+            def execute(self, sql: str, *args: object) -> Any:
+                return self._inner.execute(sql, args)  # type: ignore[arg-type]
+
+            def rollback(self) -> None:
+                self._inner.rollback()
+
+            def commit(self) -> None:
+                raise sqlite3.OperationalError("locked during commit")
+
+        with pytest.raises(sqlite3.OperationalError, match="locked during commit"), \
+                serialized_schema_upgrade_sync(_FailingCommit(conn)):
+            conn.execute("CREATE TABLE sync_never (id INTEGER)")
+        # Timeout restored despite the failure.
+        assert int(conn.execute("PRAGMA busy_timeout").fetchone()[0]) == 2345
+        # Transaction was rolled back: a fresh upgrade succeeds.
+        with serialized_schema_upgrade_sync(conn):
+            conn.execute("CREATE TABLE sync_never (id INTEGER)")
+
+
+@pytest.mark.asyncio
 async def test_failed_upgrade_rolls_back_and_can_retry(tmp_path: Path) -> None:
     """A failed DDL step leaves no half-upgraded schema behind."""
     import aiosqlite
