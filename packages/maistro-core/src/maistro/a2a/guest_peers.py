@@ -133,7 +133,14 @@ class GuestPeerManager:
                     return DelegationResult("", peer_name, "not_found")
                 response.raise_for_status()
                 task_id = response.json().get("task_id", "")
-            return DelegationResult(task_id=task_id, peer_name=peer_name, status="submitted")
+            submitted = DelegationResult(
+                task_id=task_id, peer_name=peer_name, status="submitted"
+            )
+            # Memoize the recovery, not just the dispatch: the reconciliation
+            # poll re-enters on every tick, and a receipt for a delegation key
+            # is immutable, so re-asking the peer per tick buys nothing.
+            self._idempotent_receipts[(peer_name, idempotency_key)] = submitted
+            return submitted
         except Exception as exc:
             return DelegationResult("", peer_name, "uncertain", error=str(exc))
 

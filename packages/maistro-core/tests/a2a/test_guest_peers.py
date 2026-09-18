@@ -280,3 +280,72 @@ async def test_in_memory_audit_logger_records_entries() -> None:
     logger = InMemoryAuditLogger()
     await logger.log_delegation("hub", "agent1", "some detail")
     assert logger.entries == [{"peer_name": "hub", "agent_id": "agent1", "detail": "some detail"}]
+
+
+async def test_reconcile_returns_the_cached_receipt_without_a_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A receipt already recovered is served from the cache: the poll the
+    reconciliation pause owns re-enters every tick, and re-asking the peer
+    for an answer already in hand would be a request per tick."""
+    gets = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        gets["n"] += 1
+        return httpx.Response(200, json={"task_id": "remote-3"})
+
+    _patch_transport(monkeypatch, handler)
+    manager = GuestPeerManager()
+    manager.register_peer(PeerTrust(peer_url="http://hub", peer_name="hub", supports_idempotency=True))
+    first = await manager.reconcile("hub", "key-1")
+    second = await manager.reconcile("hub", "key-1")
+    assert gets["n"] == 1
+    assert second == first == DelegationResult(
+        task_id="remote-3", peer_name="hub", status="submitted"
+    )
+
+
+async def test_reconcile_an_unknown_peer_is_uncertain(monkeypatch: pytest.MonkeyPatch) -> None:
+    del monkeypatch  # no transport is reached
+    manager = GuestPeerManager()
+    result = await manager.reconcile("ghost", "key-1")
+    assert result == DelegationResult(
+        task_id="", peer_name="ghost", status="uncertain", error="peer cannot reconcile"
+    )
+
+
+async def test_reconcile_transport_error_is_uncertain(monkeypatch: pytest.MonkeyPatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        raise httpx.ConnectError("peer unreachable")
+
+    _patch_transport(monkeypatch, handler)
+    manager = GuestPeerManager()
+    manager.register_peer(PeerTrust(peer_url="http://hub", peer_name="hub", supports_idempotency=True))
+    result = await manager.reconcile("hub", "key-1")
+    assert result.status == "uncertain"
+    assert "peer unreachable" in (result.error or "")
+
+
+async def test_delegate_returns_the_cached_receipt_for_the_same_idempotency_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    posts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            posts["n"] += 1
+            return httpx.Response(200, json={"task_id": "remote-5"})
+        return httpx.Response(405)
+
+    _patch_transport(monkeypatch, handler)
+    manager = GuestPeerManager()
+    manager.register_peer(PeerTrust(peer_url="http://hub", peer_name="hub"))
+    first = await manager.delegate(
+        "hub", "planner", [{"role": "user", "content": "x"}], idempotency_key="key-1"
+    )
+    second = await manager.delegate(
+        "hub", "planner", [{"role": "user", "content": "x"}], idempotency_key="key-1"
+    )
+    assert posts["n"] == 1
+    assert second == first
