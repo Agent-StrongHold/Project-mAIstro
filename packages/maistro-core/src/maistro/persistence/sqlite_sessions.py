@@ -7,8 +7,8 @@ import time
 from typing import TYPE_CHECKING
 
 from maistro.observability.correlation import observed_provenance
-from maistro.persistence.sqlite_schema import serialized_schema_upgrade
 from maistro.sessions.turns import reject_blank_turn_id
+from maistro.sqlite_schema import serialized_schema_upgrade
 
 if TYPE_CHECKING:
     import aiosqlite

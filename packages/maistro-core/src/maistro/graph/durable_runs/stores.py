@@ -10,12 +10,12 @@ from pathlib import Path
 from typing import Any, Literal
 
 from maistro.graph.execution_state import GraphExecutionState, thaw_json_value
-from maistro.persistence.sqlite_schema import (
+from maistro.runs.lifecycle import settle_open_node_run, transition_node_run, transition_run
+from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
+from maistro.sqlite_schema import (
     execute_schema_script_sync,
     serialized_schema_upgrade_sync,
 )
-from maistro.runs.lifecycle import settle_open_node_run, transition_node_run, transition_run
-from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
 
 from .fair_scan import cursor_time
 from .hitl import (

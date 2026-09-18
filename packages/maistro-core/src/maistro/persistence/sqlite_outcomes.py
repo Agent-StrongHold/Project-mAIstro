@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 from maistro.constants import THUMB_LIMIT, THUMB_WINDOW_DAYS
 from maistro.observability.correlation import observed_provenance
 from maistro.persistence.outcome_scope import scope_predicates
-from maistro.persistence.sqlite_schema import serialized_schema_upgrade
+from maistro.sqlite_schema import serialized_schema_upgrade
 from maistro.types.memory import Outcome
 
 if TYPE_CHECKING:

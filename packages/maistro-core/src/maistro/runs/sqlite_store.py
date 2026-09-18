@@ -9,7 +9,6 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from maistro.graph.definitions import Graph
-from maistro.persistence.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.runs.evidence_json import json_of, model_of_json
 from maistro.runs.lifecycle import (
@@ -58,6 +57,7 @@ from maistro.runs.store import (
     validate_accepted_outcome_against_attempt,
     validate_child_scope,
 )
+from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
 if TYPE_CHECKING:
     import aiosqlite

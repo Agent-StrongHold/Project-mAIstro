@@ -50,8 +50,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from maistro.persistence.sqlite_schema import serialized_schema_upgrade
 from maistro.scheduling.model import Schedule
+from maistro.sqlite_schema import serialized_schema_upgrade
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator

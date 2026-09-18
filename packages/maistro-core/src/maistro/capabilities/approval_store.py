@@ -18,8 +18,8 @@ from typing import Any, Protocol, runtime_checkable
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from maistro.capabilities.slots.approval import ApprovalRequest
-from maistro.persistence.sqlite_schema import serialized_schema_upgrade
 from maistro.security.secret_policy import is_secret_key_name
+from maistro.sqlite_schema import serialized_schema_upgrade
 
 _REDACTED = "[REDACTED]"
 

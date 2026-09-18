@@ -25,7 +25,7 @@ from maistro.persistence.episodic_rows import (
     from_row,
     to_row,
 )
-from maistro.persistence.sqlite_schema import serialized_schema_upgrade
+from maistro.sqlite_schema import serialized_schema_upgrade
 from maistro.types.memory import REINFORCE_DELTA, DecaySweep, EpisodicMemory
 
 if TYPE_CHECKING:

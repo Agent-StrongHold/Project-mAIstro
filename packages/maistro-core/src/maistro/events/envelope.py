@@ -17,8 +17,8 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from uuid import uuid4
 
 from maistro.observability.correlation import current_execution_context
-from maistro.persistence.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 from maistro.security.redact import redact_structure
+from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
 if TYPE_CHECKING:
     import aiosqlite

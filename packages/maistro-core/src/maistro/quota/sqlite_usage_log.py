@@ -37,8 +37,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from maistro.persistence.sqlite_schema import serialized_schema_upgrade
 from maistro.quota.usage_log import InMemoryUsageLog
+from maistro.sqlite_schema import serialized_schema_upgrade
 
 if TYPE_CHECKING:
     import aiosqlite

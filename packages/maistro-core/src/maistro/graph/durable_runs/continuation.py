@@ -25,8 +25,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.graph.traversal_commit import TraversalCheckpoint, TraversalCommit
-from maistro.persistence.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 from maistro.runs.model import RunStatus
+from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
 from .fair_scan import cursor_time
 from .hitl import earliest_hitl_deadline, earliest_hitl_deadline_from_state

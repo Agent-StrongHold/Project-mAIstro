@@ -6,7 +6,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from maistro.observability.correlation import observed_provenance
-from maistro.persistence.sqlite_schema import serialized_schema_upgrade
+from maistro.sqlite_schema import serialized_schema_upgrade
 from maistro.types.memory import Learning, MemoryScope
 
 if TYPE_CHECKING:

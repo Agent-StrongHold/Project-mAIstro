@@ -8,7 +8,6 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from maistro.persistence.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 from maistro.projects.scope import (
     Project,
     ProjectIntegrityError,
@@ -18,6 +17,7 @@ from maistro.projects.scope import (
     ProjectScopeDenied,
     ProjectScopedResource,
 )
+from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
 if TYPE_CHECKING:
     import aiosqlite

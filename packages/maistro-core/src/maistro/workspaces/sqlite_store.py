@@ -26,7 +26,7 @@ import asyncio
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, NotRequired, TypedDict
 
-from maistro.persistence.sqlite_schema import execute_schema_script, serialized_schema_upgrade
+from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 from maistro.workspaces.model import (
     Workspace,
     WorkspaceAccessDenied,

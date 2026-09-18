@@ -19,7 +19,7 @@ from maistro.persistence.pg_prompts import (
     _PRODUCTION_LABEL,
     _parse_config,
 )
-from maistro.persistence.sqlite_schema import execute_schema_script, serialized_schema_upgrade
+from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
 if TYPE_CHECKING:
     import aiosqlite

@@ -24,7 +24,7 @@ from maistro.capabilities.invocation import (
     StaleInvocationUpdate,
     UnsafeEffectRetry,
 )
-from maistro.persistence.sqlite_schema import execute_schema_script, serialized_schema_upgrade
+from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
 if TYPE_CHECKING:
     import aiosqlite

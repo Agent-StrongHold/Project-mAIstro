@@ -18,7 +18,7 @@ from maistro.graph.templates import (
     NodeTemplateNotFound,
     revalidated,
 )
-from maistro.persistence.sqlite_schema import execute_schema_script, serialized_schema_upgrade
+from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import aiosqlite

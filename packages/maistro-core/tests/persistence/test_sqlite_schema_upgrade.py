@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from maistro.persistence.sqlite_schema import serialized_schema_upgrade
+from maistro.sqlite_schema import serialized_schema_upgrade
 
 _LEGACY_SCHEMA: dict[str, str] = {
     "learnings": """
@@ -228,7 +228,7 @@ async def test_commit_failure_rolls_back_and_propagates(tmp_path: Path) -> None:
 
 def test_sync_upgrade_restores_timeout_and_rolls_back_failed_commit(tmp_path: Path) -> None:
     """Sync path mirrors the async guarantees."""
-    from maistro.persistence.sqlite_schema import serialized_schema_upgrade_sync
+    from maistro.sqlite_schema import serialized_schema_upgrade_sync
 
     path = tmp_path / "sync.sqlite"
     with sqlite3.connect(path) as conn:
