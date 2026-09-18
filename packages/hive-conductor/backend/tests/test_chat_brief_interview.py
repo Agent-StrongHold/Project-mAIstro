@@ -205,3 +205,63 @@ def test_a_workspace_the_caller_is_not_a_member_of_is_the_models_turn(
     events = _stream(authed_client, "let's make a new video", ws)
     assert [e["type"] for e in events] == ["done"]
     assert llm.calls == 1
+
+
+@pytest.mark.ac("SPEC-091726-7c2a/AC-6")
+def test_you_decide_is_refused_where_nothing_is_defensible(
+    admin_client, authed_client, llm
+) -> None:
+    ws = _workspace(admin_client)
+    _stream(authed_client, "make a video", ws)
+    brief, done = _stream(authed_client, "you decide", ws)
+    assert brief["event"] == "cannot_assume"
+    assert brief["question"]["key"] == "subject", "the subject stays open"
+    assert "can't assume" in done["content"]
+    assert not done["content"].endswith(brief["question"]["question"]), (
+        "the refusal stands alone; the question is not repeated after it"
+    )
+    assert llm.calls == 0
+
+
+def test_once_ready_a_vague_change_asks_which_field(admin_client, authed_client, llm) -> None:
+    ws = _workspace(admin_client)
+    _stream(authed_client, "New reel about the grouting haze", ws)
+    for text in ("the grouting haze fix", "teach it", "the assembled cut", "you decide"):
+        _stream(authed_client, text, ws)
+    brief, done = _stream(authed_client, "something's wrong", ws)
+    assert brief["event"] == "noted"
+    assert done["content"].startswith("Which one?")
+
+    brief, done = _stream(authed_client, "change channel to youtube", ws)
+    assert brief["event"] == "changed"
+    assert "Channel:" in done["content"]
+    assert llm.calls == 0
+
+
+def test_an_interview_dropped_through_the_program_api_hands_chat_to_the_model(
+    admin_client, authed_client, llm
+) -> None:
+    """The program routes leave a dropped interview in the store; the chat
+    forgets it on the next turn and lets the model answer."""
+    ws = _workspace(admin_client)
+    r = authed_client.post(
+        f"/v1/program/brief/start?workspace_id={ws}", json={"opening": "a video"}
+    )
+    assert r.status_code == 201
+    r = authed_client.post(
+        f"/v1/program/brief/answer?workspace_id={ws}", json={"answer": "never mind"}
+    )
+    assert r.json()["event"] == "dropped"
+
+    events = _stream(authed_client, "what's on for saturday?", ws)
+    assert [e["type"] for e in events] == ["done"]
+    assert llm.calls == 1
+    assert authed_client.get(f"/v1/program/brief?workspace_id={ws}").json()["interview"] is None
+
+
+def test_a_blank_turn_in_a_workspace_is_the_models(admin_client, authed_client, llm) -> None:
+    ws = _workspace(admin_client)
+    _stream(authed_client, "make a video", ws)
+    events = _stream(authed_client, "   ", ws)
+    assert [e["type"] for e in events] == ["done"]
+    assert llm.calls == 1

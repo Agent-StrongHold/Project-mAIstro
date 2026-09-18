@@ -31,14 +31,14 @@ its commit or rollback -- and `create`/`delete` issue `create_root_in` /
 `purge_workspace_in` inside that same block. The lock has to be the scope
 store's rather than one of this store's own: two locks over one connection
 let two `BEGIN IMMEDIATE`s interleave, which SQLite reports as "cannot start a
-transaction within a transaction". Only a Project store that cannot join a
-transaction gets this store's private lock and the old compensating path,
-which is not crash-consistent by construction.
+transaction within a transaction". A Project store that cannot join a
+transaction is refused at construction: the wiring never pairs one with this
+store, and a compensating path that is not crash-consistent by construction
+would be dead code carrying a promise it cannot keep.
 """
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -103,11 +103,15 @@ class SqliteWorkspaceStore:
     """Durable Workspace identity and membership store for a single instance."""
 
     def __init__(self, conn: aiosqlite.Connection, *, project_store: ProjectScopeStore) -> None:
+        if not isinstance(project_store, TransactionalProjectScopeStore):
+            msg = (
+                "SqliteWorkspaceStore needs a Project store that can join its transaction "
+                f"(#1121); {type(project_store).__name__} cannot. Pair it with "
+                "SqliteProjectScopeStore on the same connection."
+            )
+            raise TypeError(msg)
         self._conn = conn
-        self.project_store: ProjectScopeStore = project_store
-        # Used only when `project_store` cannot share its critical section;
-        # see `_write_transaction`.
-        self._write_lock = asyncio.Lock()
+        self.project_store: TransactionalProjectScopeStore = project_store
 
     async def ensure_schema(self) -> None:
         """Create the Workspace tables and their indexes."""
@@ -116,27 +120,12 @@ class SqliteWorkspaceStore:
 
     @asynccontextmanager
     async def _write_transaction(self) -> AsyncIterator[aiosqlite.Connection]:
-        """The one write-critical section this connection has.
-
-        The Project store's when it can lend one, because the connection is
-        shared and a second lock over it is the "cannot start a transaction
-        within a transaction" failure (#1121). This store's own lock and
-        `BEGIN IMMEDIATE` only for a Project store that has no transaction to
-        join -- in which case the Root Project is a separate write anyway.
-        """
-        if isinstance(self.project_store, TransactionalProjectScopeStore):
-            async with self.project_store.transaction() as conn:
-                yield conn
-            return
-        async with self._write_lock:
-            await self._conn.execute("BEGIN IMMEDIATE")
-            try:
-                yield self._conn
-            except BaseException:
-                await self._conn.rollback()
-                raise
-            else:
-                await self._conn.commit()
+        """The one write-critical section this connection has: the Project
+        store's, because the connection is shared and a second lock over it
+        is the "cannot start a transaction within a transaction" failure
+        (#1121)."""
+        async with self.project_store.transaction() as conn:
+            yield conn
 
     async def create(
         self,
@@ -162,29 +151,13 @@ class SqliteWorkspaceStore:
             role=WorkspaceRole.OWNER,
             added_at=workspace.created_at,
         )
-        if isinstance(self.project_store, TransactionalProjectScopeStore):
-            # One `BEGIN IMMEDIATE` ... `COMMIT` for all three rows (#1121).
-            # The Root Project is written last, inside the block, so a failure
-            # anywhere rolls the Workspace and membership back with it.
-            async with self._write_transaction() as conn:
-                await self._insert_workspace(workspace)
-                await self._write_membership(owner)
-                await self.project_store.create_root_in(conn, workspace.workspace_id)
-            return workspace
-
-        # Not crash-consistent by construction: the Project store cannot join
-        # this transaction, so the Root Project is a second write and a crash
-        # between the two leaves a Workspace with no root. Compensation covers
-        # an exception, which is the most that can be done here.
-        async with self._write_transaction():
+        # One `BEGIN IMMEDIATE` ... `COMMIT` for all three rows (#1121). The
+        # Root Project is written last, inside the block, so a failure
+        # anywhere rolls the Workspace and membership back with it.
+        async with self._write_transaction() as conn:
             await self._insert_workspace(workspace)
             await self._write_membership(owner)
-        try:
-            await self.project_store.create_root(workspace.workspace_id)
-        except BaseException:
-            async with self._write_transaction() as conn:
-                await self._delete_workspace_row(conn, workspace.workspace_id)
-            raise
+            await self.project_store.create_root_in(conn, workspace.workspace_id)
         return workspace
 
     async def get(self, workspace_id: str) -> Workspace | None:
@@ -217,19 +190,12 @@ class SqliteWorkspaceStore:
 
     async def delete(self, workspace_id: str) -> None:
         """Remove the Workspace, its memberships, and its Projects."""
-        if isinstance(self.project_store, TransactionalProjectScopeStore):
-            # Purge first, then the Workspace row, in one transaction (#1121).
-            # `WorkspaceNotFound` from the row delete rolls the purge back
-            # with it, so deleting an absent Workspace touches nothing.
-            async with self._write_transaction() as conn:
-                await self.project_store.purge_workspace_in(conn, workspace_id)
-                await self._delete_workspace_row(conn, workspace_id)
-            return
-
-        # Not crash-consistent by construction; see `create`.
+        # Purge first, then the Workspace row, in one transaction (#1121).
+        # `WorkspaceNotFound` from the row delete rolls the purge back with
+        # it, so deleting an absent Workspace touches nothing.
         async with self._write_transaction() as conn:
+            await self.project_store.purge_workspace_in(conn, workspace_id)
             await self._delete_workspace_row(conn, workspace_id)
-        await self.project_store.purge_workspace(workspace_id)
 
     async def list_for_user(self, user_id: str) -> list[Workspace]:
         """Workspaces the user is a member of, newest first."""

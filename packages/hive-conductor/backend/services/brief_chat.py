@@ -25,7 +25,6 @@ from maistro.agents.brief_interview import (
     VIDEO_BRIEF_ALIASES,
     VIDEO_BRIEF_SCRIPT,
     BriefField,
-    BriefIncompleteError,
     BriefInterview,
     BriefReply,
     BriefScript,
@@ -119,12 +118,20 @@ def _summary_text(state: BriefInterview) -> str:
     known = [f for f in s["fields"] if f["source"] not in ("open", "assumed")]
     assumed = [f["label"].lower() for f in s["fields"] if f["source"] == "assumed"]
     lines = [f"{f['label']}: {f['value']}" for f in known]
-    text = (
-        "Here's what I'd commit, and nothing is written until you say so. " + "; ".join(lines) + "."
+    # The optional fields take their defaults marked assumed, so this list is
+    # empty only when every one of them was answered outright.
+    assumed_note = (
+        " I assumed " + ", ".join(assumed) + "; say 'change ...' to fix any of them."
+        if assumed
+        else ""
     )
-    if assumed:
-        text += " I assumed " + ", ".join(assumed) + "; say 'change ...' to fix any of them."
-    return text + " Say 'commit it' to commit, or tell me what to change."
+    return (
+        "Here's what I'd commit, and nothing is written until you say so. "
+        + "; ".join(lines)
+        + "."
+        + assumed_note
+        + " Say 'commit it' to commit, or tell me what to change."
+    )
 
 
 def _next_text(state: BriefInterview) -> str:
@@ -160,7 +167,9 @@ def _reflect(reply: BriefReply) -> str:
             )
         case "noted":
             return "I'll carry that as a note on the brief, not a change to the Goal."
-    return ""
+        case _:
+            # "dropped" and "started" never reach here; a new event would.
+            return ""
 
 
 def _draft_text(draft: dict[str, Any]) -> str:
@@ -191,11 +200,9 @@ def _start(user_id: str, workspace_id: str, text: str) -> BriefTurn:
     )
 
 
-def _drafted(user_id: str, workspace_id: str, state: BriefInterview) -> BriefTurn | None:
-    try:
-        draft = commit_brief(_SCRIPT, state)
-    except BriefIncompleteError:  # pragma: no cover - brief_ready() guards this
-        return None
+def _drafted(user_id: str, workspace_id: str, state: BriefInterview) -> BriefTurn:
+    # Only called once brief_ready() holds, so the gate cannot refuse here.
+    draft = commit_brief(_SCRIPT, state)
     brief_store.clear_interview(user_id, workspace_id)
     return BriefTurn(
         text=_draft_text(draft),
@@ -252,7 +259,5 @@ async def brief_turn(user_id: str, workspace_id: str | None, text: str) -> Brief
     if state is None:
         return _start(user_id, workspace_id, text) if _WORK_REQUEST.search(text) else None
     if brief_ready(_SCRIPT, state) and _COMMIT.match(text):
-        drafted = _drafted(user_id, workspace_id, state)
-        if drafted is not None:
-            return drafted
+        return _drafted(user_id, workspace_id, state)
     return _answered(user_id, workspace_id, state, text)

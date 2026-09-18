@@ -39,11 +39,12 @@ pooled connection with an in-process compensator -- and `delete` was the same
 in reverse. A crash between the halves left a Workspace with no Root Project,
 which `root_for_workspace` treats as impossible, or a Project tree with no
 Workspace. When the paired Project store is a `TransactionalProjectScopeStore`
-(the PostgreSQL one on this same pool is), `create` and `delete` now run every
+(the PostgreSQL one on this same pool is), `create` and `delete` run every
 statement on the one connection its `transaction()` yields, so all of it
-commits or none of it does. Only a Project store that cannot join a
-transaction gets the old compensating path, which is not crash-consistent by
-construction.
+commits or none of it does. A Project store that cannot join a transaction is
+refused at construction: the wiring never pairs one with this store, and a
+compensating path that is not crash-consistent by construction would be dead
+code carrying a promise it cannot keep.
 """
 
 from __future__ import annotations
@@ -79,8 +80,15 @@ class PgWorkspaceStore:
     """Durable Workspace identity and membership store."""
 
     def __init__(self, pool: asyncpg.Pool, *, project_store: ProjectScopeStore) -> None:
+        if not isinstance(project_store, TransactionalProjectScopeStore):
+            msg = (
+                "PgWorkspaceStore needs a Project store that can join its transaction "
+                f"(#1121); {type(project_store).__name__} cannot. Pair it with "
+                "PgProjectScopeStore on the same pool."
+            )
+            raise TypeError(msg)
         self._pool = pool
-        self.project_store: ProjectScopeStore = project_store
+        self.project_store: TransactionalProjectScopeStore = project_store
 
     async def create(
         self,
@@ -112,29 +120,14 @@ class PgWorkspaceStore:
             role=WorkspaceRole.OWNER,
             added_at=workspace.created_at,
         )
-        if isinstance(self.project_store, TransactionalProjectScopeStore):
-            # One transaction for all three rows (#1121). The Root Project is
-            # written *last* and read back on the same connection, so a
-            # failure anywhere rolls the Workspace and membership back with
-            # it; there is nothing to compensate.
-            async with self.project_store.transaction() as conn:
-                await self._insert_workspace(conn, workspace)
-                await self._insert_membership(conn, owner)
-                await self.project_store.create_root_in(conn, workspace.workspace_id)
-            return workspace
-
-        # Not crash-consistent by construction: the Project store cannot join
-        # this transaction, so the Root Project is a second write and a crash
-        # between the two leaves a Workspace with no root. Compensation covers
-        # an exception, which is the most that can be done here.
-        async with self._pool.acquire() as conn, conn.transaction():
+        # One transaction for all three rows (#1121). The Root Project is
+        # written *last* and read back on the same connection, so a failure
+        # anywhere rolls the Workspace and membership back with it; there is
+        # nothing to compensate.
+        async with self.project_store.transaction() as conn:
             await self._insert_workspace(conn, workspace)
             await self._insert_membership(conn, owner)
-        try:
-            await self.project_store.create_root(workspace.workspace_id)
-        except BaseException:
-            await self._purge(workspace.workspace_id)
-            raise
+            await self.project_store.create_root_in(conn, workspace.workspace_id)
         return workspace
 
     async def get(self, workspace_id: str) -> Workspace | None:
@@ -165,19 +158,12 @@ class PgWorkspaceStore:
 
     async def delete(self, workspace_id: str) -> None:
         """Remove the Workspace, its memberships, and its Projects."""
-        if isinstance(self.project_store, TransactionalProjectScopeStore):
-            # Purge first, then the Workspace row, in one transaction (#1121).
-            # `WorkspaceNotFound` from the row delete rolls the purge back
-            # with it, so deleting an absent Workspace touches nothing.
-            async with self.project_store.transaction() as conn:
-                await self.project_store.purge_workspace_in(conn, workspace_id)
-                await self._delete_workspace_row(conn, workspace_id)
-            return
-
-        # Not crash-consistent by construction; see `create`.
-        async with self._pool.acquire() as conn:
+        # Purge first, then the Workspace row, in one transaction (#1121).
+        # `WorkspaceNotFound` from the row delete rolls the purge back with
+        # it, so deleting an absent Workspace touches nothing.
+        async with self.project_store.transaction() as conn:
+            await self.project_store.purge_workspace_in(conn, workspace_id)
             await self._delete_workspace_row(conn, workspace_id)
-        await self.project_store.purge_workspace(workspace_id)
 
     async def list_for_user(self, user_id: str) -> list[Workspace]:
         """Workspaces the user is a member of, newest first."""
@@ -362,14 +348,6 @@ class PgWorkspaceStore:
         )
         if other_owner is None:
             raise WorkspaceAccessDenied("a Workspace must retain at least one owner")
-
-    async def _purge(self, workspace_id: str) -> None:
-        """Undo `create`'s rows after a non-transactional Root Project failed."""
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                "DELETE FROM canonical_workspaces WHERE workspace_id = $1",
-                workspace_id,
-            )
 
 
 __all__ = ["PgWorkspaceStore"]
