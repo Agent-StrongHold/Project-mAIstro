@@ -12,7 +12,11 @@ from typing import Any
 
 import pytest
 
-from maistro.persistence.pg_learnings import PgLearningStore
+from maistro.persistence.pg_learnings import (
+    _PG_INSERT_FIELDS,
+    PgLearningStore,
+    similarity_query,
+)
 from maistro.types.memory import Learning, MemoryScope
 
 
@@ -113,6 +117,21 @@ def make_learning(**overrides: Any) -> Learning:
 
 
 # --------------------------------------------------------------------------
+# scope query helpers
+# --------------------------------------------------------------------------
+
+
+def test_similarity_query_applies_all_learning_scope_axes() -> None:
+    query = similarity_query(scoped_to_team=True, scoped_to_user=True, scoped_to_agent=True)
+
+    assert "org_id = $2" in query
+    assert "team_id = $3" in query
+    assert "user_id = $4" in query
+    assert "agent_id = $5" in query
+    assert "LIMIT $6" in query
+
+
+# --------------------------------------------------------------------------
 # store()
 # --------------------------------------------------------------------------
 
@@ -131,12 +150,17 @@ async def test_store_inserts_new_learning_when_no_existing_match(
     assert dedup_call.method == "fetch"
     # H8: the dedup probe is scoped, so a store for one org cannot match,
     # bump and return another org's row.
-    assert "WHERE tool_name = $1 AND org_id = $2 AND status = 'active'" in dedup_call.query
-    assert dedup_call.args == ("bash", "")
+    assert "WHERE tool_name = $1 AND org_id = $2" in dedup_call.query
+    assert "team_id = $3" in dedup_call.query
+    assert "user_id IS NOT DISTINCT FROM $4" in dedup_call.query
+    assert "agent_id = $5" in dedup_call.query
+    assert dedup_call.args == ("bash", "", "team-a", "u1", "scribe")
 
     assert insert_call.method == "fetchrow"
     assert "INSERT INTO learnings" in insert_call.query
     assert "RETURNING id" in insert_call.query
+    columns = insert_call.query.split("(", 1)[1].split(")", 1)[0]
+    assert tuple(c.strip() for c in columns.split(",")) == _PG_INSERT_FIELDS
     # `trigger_keys` goes out as JSON text, not as a list: the column is JSONB
     # and asyncpg's codec for it is text in both directions, so a list raised.
     # `source_query`, `team_id` and `hit_count` are written rather than omitted
@@ -257,9 +281,9 @@ async def test_find_relevant_filters_by_agent_id_when_given(
     await store.find_relevant("hello", agent_id="scribe")
 
     call = conn.calls[0]
-    # $1 is now org_id (always bound); agent_id shifted to $2.
+    # $1 is org_id (always bound); agent_id follows the optional scope axes.
     assert "AND org_id = $1" in call.query
-    assert "AND (agent_id = $2 OR agent_id = '')" in call.query
+    assert "AND agent_id = $2" in call.query
     assert call.args == ("", "scribe")
 
 
