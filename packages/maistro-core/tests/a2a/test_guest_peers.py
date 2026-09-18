@@ -296,12 +296,14 @@ async def test_reconcile_returns_the_cached_receipt_without_a_request(
 
     _patch_transport(monkeypatch, handler)
     manager = GuestPeerManager()
-    manager.register_peer(PeerTrust(peer_url="http://hub", peer_name="hub", supports_idempotency=True))
+    manager.register_peer(
+        PeerTrust(peer_url="http://hub", peer_name="hub", supports_idempotency=True)
+    )
     first = await manager.reconcile("hub", "key-1")
     second = await manager.reconcile("hub", "key-1")
     assert gets["n"] == 1
-    assert second == first == DelegationResult(
-        task_id="remote-3", peer_name="hub", status="submitted"
+    assert (
+        second == first == DelegationResult(task_id="remote-3", peer_name="hub", status="submitted")
     )
 
 
@@ -321,7 +323,9 @@ async def test_reconcile_transport_error_is_uncertain(monkeypatch: pytest.Monkey
 
     _patch_transport(monkeypatch, handler)
     manager = GuestPeerManager()
-    manager.register_peer(PeerTrust(peer_url="http://hub", peer_name="hub", supports_idempotency=True))
+    manager.register_peer(
+        PeerTrust(peer_url="http://hub", peer_name="hub", supports_idempotency=True)
+    )
     result = await manager.reconcile("hub", "key-1")
     assert result.status == "uncertain"
     assert "peer unreachable" in (result.error or "")
