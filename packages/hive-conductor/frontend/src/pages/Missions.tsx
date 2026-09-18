@@ -288,13 +288,27 @@ export default function Missions() {
     const userMsg: ThreadMsg = { id: threadNextId.current++, role: "user", text, ts: Date.now() };
     setThread((prev) => [...prev, userMsg]);
     setThreadInput("");
+    if (!activeWorkspaceId) {
+      // Guidance is recorded within a workspace; with none selected the
+      // request would carry an empty id (#1427). Say so in the thread.
+      setThread((prev) => [
+        ...prev,
+        {
+          id: threadNextId.current++,
+          role: "agent",
+          text: "Select a workspace first: guidance is recorded within one.",
+          ts: Date.now(),
+        },
+      ]);
+      return;
+    }
     try {
       const res = await apiPost<{
         message?: string;
         queued_tasks?: { task_id: string }[];
         interview?: { complete?: boolean };
       }>(
-        `/v1/program/guidance?workspace_id=${encodeURIComponent(activeWorkspaceId ?? "")}`,
+        `/v1/program/guidance?workspace_id=${encodeURIComponent(activeWorkspaceId)}`,
         { text, task_id: active.id },
       );
       const n = res.queued_tasks?.length ?? 0;

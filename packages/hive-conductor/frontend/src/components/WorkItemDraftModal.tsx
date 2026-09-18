@@ -83,8 +83,13 @@ export function WorkItemDraftModal({
         } else if (workType) {
           // Same as the list: a draft is suggested *within* a workspace, so
           // the confirm has a roster to resolve its agent against later.
+          // Without one there is nothing to suggest against, so say so
+          // instead of sending an empty id (#1427).
+          if (!activeWorkspaceId) {
+            throw new Error("Select a workspace first: a draft is suggested within one.");
+          }
           const res = await apiPost<{ draft: WorkItemDraft }>(
-            `/v1/work-items/suggest?workspace_id=${encodeURIComponent(activeWorkspaceId ?? "")}`,
+            `/v1/work-items/suggest?workspace_id=${encodeURIComponent(activeWorkspaceId)}`,
             {
               work_type: workType,
               reason: reason ?? "",
@@ -108,7 +113,7 @@ export function WorkItemDraftModal({
     return () => {
       cancelled = true;
     };
-  }, [initialDraftId, workType, reason, hint, loadDraft, onClose, toast]);
+  }, [initialDraftId, workType, reason, hint, loadDraft, onClose, toast, activeWorkspaceId]);
 
   if (loading || !draft) {
     return (

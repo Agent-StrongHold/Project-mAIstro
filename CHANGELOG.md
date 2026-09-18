@@ -290,6 +290,16 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Workspace-scoped pages wait for the workspace to resolve (#1427).** On a
+  first-ever session the Conductor's Jira drafts, Agents and Missions pages
+  fired their workspace-scoped requests before `GET /v1/workspaces` had
+  returned, so `/v1/work-items?workspace_id=` went out with an empty id, was
+  refused, flashed an error, and was sent again a moment later. The pages now
+  wait for the workspace provider's `ready` flag and a resolved id; with no
+  workspace at all the drafts page says so instead of erroring, the draft
+  modal refuses to suggest, and the guidance thread asks for a workspace
+  first. `tests/e2e/workspace-scope.spec.ts` records every request the three
+  pages make and fails on one that names a workspace and leaves it blank.
 - **Merge-queue builds retain both required PostgreSQL checks (no linked issue:
   observed queue timeout).** The PostgreSQL 17/18 matrix now runs after the
   workflow scope check regardless of path scope. GitHub evaluates a job-level

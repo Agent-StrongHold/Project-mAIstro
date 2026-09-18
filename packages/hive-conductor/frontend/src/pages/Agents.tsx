@@ -152,7 +152,7 @@ function SBadge({ s }: { s: Strategy }) {
 
 export default function Agents() {
   const toast = useToast();
-  const { activeWorkspaceId } = useWorkspaces();
+  const { activeWorkspaceId, ready } = useWorkspaces();
   const [tab, setTab] = useState(0);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -197,6 +197,10 @@ export default function Agents() {
   const [cBusy, setCBusy] = useState(false);
 
   const load = useCallback(async () => {
+    // Not before the workspace list has resolved (#1427): until then the
+    // active id is null on a first session, and the roster would be fetched
+    // unscoped and then again scoped a moment later.
+    if (!ready) return;
     try {
       setLoading(true);
       // Persona/Workspace system: scope to the active workspace's own
@@ -211,7 +215,7 @@ export default function Agents() {
     } finally {
       setLoading(false);
     }
-  }, [toast, activeWorkspaceId]);
+  }, [toast, activeWorkspaceId, ready]);
 
   useEffect(() => { load(); }, [load]);
 
