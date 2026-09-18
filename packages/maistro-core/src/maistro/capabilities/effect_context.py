@@ -36,15 +36,23 @@ async def _m1_binding_authorized_policy(
     request: Any,
     context: InvocationPolicyContext,
 ) -> PolicyVerdict:
-    """M1 baseline after canonical Binding scope resolution has succeeded.
+    """M1 Binding policy plus the legacy-tool effect floor.
 
-    Binding authorization is evaluated by ``BindingStore.resolve`` before this
-    policy boundary. M2 may inject stronger policy semantics here; M1 does not
-    manufacture a second permission system just to make governed Invocation
-    reachable.
+    Legacy workflow tools are still compatibility providers, but their actual
+    calls must not inherit the workflow admission approval. A binding marked
+    destructive/mutating therefore gets its own governed decision.
     """
 
-    del binding, request, context
+    del request, context
+    if binding.capability.startswith("legacy_tool:") and binding.config.get("effect") in {
+        "mutate",
+        "destroy",
+    }:
+        return PolicyVerdict(
+            Decision.REQUIRE_APPROVAL,
+            reason="legacy workflow effect requires independent approval",
+            rule="m1.legacy-tool-effect",
+        )
     return PolicyVerdict(
         Decision.ALLOW,
         reason="canonical Binding scope resolved before provider invocation",
