@@ -31,7 +31,7 @@ export function ModeToggle() {
         borderRadius: 16,
         padding: "4px 12px",
         fontFamily: "var(--mono)",
-        fontSize: 10,
+        fontSize: 12,
         cursor: "pointer",
         transition: "all 0.2s",
       }}

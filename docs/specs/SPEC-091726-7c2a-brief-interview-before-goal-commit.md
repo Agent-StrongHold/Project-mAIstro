@@ -151,10 +151,10 @@ may mint a Goal from an interview this function would not commit.
   `maistro.agents.program_context`. That one asks what a workspace is; this
   one asks what a piece of work is. They share `InterviewTurn` and nothing
   else.
-- It does not put the interview in the chat turn stream. The Workspace
-  Agent chat that will host it as ordinary turns is #53 / M3-D; until then
-  Hive's program API hosts it (below), and the Content Studio demo referenced
-  from ADR-091626-ba4f shows the intended shape.
+- It does not make the interview a Run. Hive's chat hosts it as ordinary
+  turns (below); the Workspace Agent whose every turn is a Run is #53 / M3-D,
+  and the Content Studio demo referenced from ADR-091626-ba4f shows the
+  intended shape.
 
 ## Where it is hosted
 
@@ -170,6 +170,24 @@ the caller is a member of and persisted per (user, workspace) in the
 | `POST /brief/answer` | one free-text turn; the reply names the event and the field it touched |
 | `POST /brief/draft` | the gate: the draft, or 409 naming the missing fields. `written` is empty until the Goal and CreativeBrief writers exist |
 | `DELETE /brief` | forgets the open interview |
+
+### In chat
+
+`POST /v1/chat/stream` and `POST /v1/chat/complete` accept a `workspace_id`
+beside the messages. After the Warden input boundary every chat turn already
+crosses, and before any model is called, the route asks
+`services.brief_chat.brief_turn` whether the turn is the interview's: it is
+when an interview is open for this person in this workspace, or when the turn
+asks for work to be made (a verb such as make, start, draft or plan near a
+deliverable such as video, reel, storyboard, post or guide). Then the reply
+is the interview's, deterministic, and the stream carries a `brief` event
+(the summary, the next question, or the draft with `written: []`) before the
+`done` text. A turn that asks a question, or names no workspace, or comes
+from a non-member, reaches the model exactly as before. The Warden runs
+first, so a phrase its injection patterns refuse ("never mind") never reaches
+the interview; the chat's drop word is "cancel". The Chat page sends the
+active workspace with each turn and renders the `brief` event as the
+"brief so far" panel above the thread.
 
 ## Acceptance Criteria
 

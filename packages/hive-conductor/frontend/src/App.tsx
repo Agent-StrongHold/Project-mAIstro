@@ -5,6 +5,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ModeProvider } from "./components/ModeToggle";
 import { Onboarding } from "./components/Onboarding";
 import { ToastProvider } from "./components/shared";
+import { claimUiState } from "./lib/uiState";
 import { WorkspaceProvider } from "./context/WorkspaceContext";
 import Agents from "./pages/Agents";
 import AuditLog from "./pages/AuditLog";
@@ -57,7 +58,14 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
     const whoRes = await fetch("/v1/auth/whoami", { credentials: "same-origin" });
     const whoData = await whoRes.json();
     if (whoData.authenticated && whoData.user) {
-      return whoData.user as UserInfo;
+      const next = whoData.user as UserInfo;
+      // Before anything under the guard mounts and reads localStorage: a
+      // different account's remembered tab, scheme or tour state is cleared
+      // here, not inherited (#1418, #1433). ModeProvider sits above the guard
+      // and keeps its in-memory mode until the next load; that control has
+      // no observable effect today (#1409).
+      claimUiState(next.id);
+      return next;
     }
     return null;
   }
