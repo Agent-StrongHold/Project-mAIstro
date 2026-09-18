@@ -295,36 +295,20 @@ class TaskQueue:
         request_json = json.dumps(
             request.model_copy(update={"user_id": owner}).model_dump(mode="json")
         )
-        waited = 0
-        while True:
-            now = datetime.now(UTC)
-            outcome = await store.claim(
-                scope_key,
-                fingerprint=fingerprint,
-                request=request_json,
-                now=now,
-                replay_window=DEFAULT_REPLAY_WINDOW,
+        outcome = await self._claim_until_resolved(
+            store,
+            scope_key,
+            fingerprint=fingerprint,
+            request=request_json,
+        )
+        if isinstance(outcome, AdmissionRecord):
+            await logger.ainfo(
+                "task_admission_replayed",
+                task_id=outcome.task_id,
+                run_id=outcome.run_id,
+                explicit_key=key is not None,
             )
-            if isinstance(outcome, Replayed):
-                await logger.ainfo(
-                    "task_admission_replayed",
-                    task_id=outcome.record.task_id,
-                    run_id=outcome.record.run_id,
-                    explicit_key=key is not None,
-                )
-                return self._replay_receipt(outcome.record)
-            if isinstance(outcome, Claimed):
-                break
-            # Pending: a twin is mid-admission. Its lease lapses long before
-            # this loop's bound, so a dead twin's claim is taken over by the
-            # next iteration rather than waited on forever.
-            waited += 1
-            if waited > MAX_PENDING_POLLS:
-                raise IdempotencyPendingTimeout(
-                    "a concurrent submission under this idempotency key has not "
-                    "resolved within the bounded wait"
-                )
-            await asyncio.sleep(PENDING_POLL)
+            return self._replay_receipt(outcome)
         try:
             task = await self._submit_once(
                 request, user_id=user_id, workspace_id=workspace_id, idempotency_key=key
@@ -349,6 +333,44 @@ class TaskQueue:
                 error=str(exc),
             )
         return task
+
+    async def _claim_until_resolved(
+        self,
+        store: TaskIdempotencyStore,
+        scope_key: str,
+        *,
+        fingerprint: str,
+        request: str,
+    ) -> Claimed | AdmissionRecord:
+        """Claim once, waiting out a twin that is still mid-admission.
+
+        Resolves to the twin's recorded admission (a replayable record) or to
+        this call's own ``Claimed``. A pending twin's lease lapses long before
+        this loop's bound, so a dead twin's claim is taken over by a later
+        iteration rather than waited on forever; the bound itself is the
+        caller-visible backstop (#1176).
+        """
+        waited = 0
+        while True:
+            now = datetime.now(UTC)
+            outcome = await store.claim(
+                scope_key,
+                fingerprint=fingerprint,
+                request=request,
+                now=now,
+                replay_window=DEFAULT_REPLAY_WINDOW,
+            )
+            if isinstance(outcome, Replayed):
+                return outcome.record
+            if isinstance(outcome, Claimed):
+                return outcome
+            waited += 1
+            if waited > MAX_PENDING_POLLS:
+                raise IdempotencyPendingTimeout(
+                    "a concurrent submission under this idempotency key has not "
+                    "resolved within the bounded wait"
+                )
+            await asyncio.sleep(PENDING_POLL)
 
     def _replay_receipt(self, record: AdmissionRecord) -> TaskResponse:
         """The original submission's answer, without minting anything.
