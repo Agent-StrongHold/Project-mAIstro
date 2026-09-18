@@ -11,6 +11,7 @@ from scripts.ci_merge_group_scope import scope_for_event
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+SECURITY_WORKFLOW = ROOT / ".github" / "workflows" / "security.yml"
 CONTRACT_SCRIPT = ROOT / "scripts" / "check-required-checks.py"
 
 SPECIALIZED = {
@@ -145,6 +146,13 @@ def test_scope_producer_reuses_an_existing_required_check() -> None:
 
 def test_unconditional_core_jobs_do_not_depend_on_a_new_scope_check() -> None:
     jobs = _jobs()
-    core_jobs = ("test", "lint-and-type-check", "workflow-lint", "security")
+    core_jobs = ("test", "lint-and-type-check", "workflow-lint")
     for job_name in core_jobs:
         assert jobs[job_name].get("needs") != "specialized-scope", job_name
+
+    # `security` left ci.yml in #1357's granular split; the contract follows
+    # the jobs, not the file they sit in, so its new home is guarded the
+    # same way.
+    security_jobs = yaml.safe_load(SECURITY_WORKFLOW.read_text(encoding="utf-8"))["jobs"]
+    for job_name in security_jobs:
+        assert security_jobs[job_name].get("needs") != "specialized-scope", job_name

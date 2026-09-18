@@ -755,6 +755,12 @@ jobs:
     with:
       check_name: Quality / Hypothesis property tests
       command: |
+        # The lease-fence model writes the canonical tables (projects, runs,
+        # node_runs, attempts). The monolith applied the chain in a dedicated
+        # step before this pillar; the split carries it per-caller, exactly as
+        # the acceptance-ratchet caller below does — each required check stays
+        # self-contained rather than trusting another job's side effects.
+        uv run alembic upgrade head
         PYTHONPATH=packages/maistro-core/src uv run pytest formal/ --timeout=120 -q
   # The convergence spine's central claim is that Run/NodeRun/Attempt is the
   # one execution identity. A second one arrives as an Enum or status-shaped
