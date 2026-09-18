@@ -25,6 +25,13 @@ or placeholder-only section.
 
 ### Security
 
+- **gitpython bumped 3.1.59 → 3.1.62, clearing five untriaged advisories that
+  fail every fresh `pip-audit` run (#1493).** The lockfile carried
+  `gitpython 3.1.59` (transitive via `cosmic-ray`), which `pip-audit --strict`
+  now flags with PYSEC-2026-3982/-3983/-3984 and two companions, fix 3.1.60.
+  `Supply chain (pip-audit)` is a required check on every PR, so every
+  candidate entering the merge queue failed group validation within ~90
+  seconds of enqueueing. Lockfile-only change; no API or behavior delta.
 - **Canonical Event payloads are scrubbed of credential material before any
   backend can persist them (#1164).** `EventEnvelope` now redacts `payload`
   and `provenance` in its constructor — the one seam the memory, SQLite,
