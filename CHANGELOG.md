@@ -290,6 +290,16 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Workspace status messages announce, and wizard fields are named by their
+  visible labels (#1405, #1416).** The Conductor's toast container is now a
+  polite live region and the error regions of the workspace tab bar, Share
+  panel, Tools panel and persona wizard are alerts, so a refused invite or a
+  failed save is announced to a screen reader instead of appearing silently
+  (WCAG 4.1.3). The draft modal's loading text is a status message. The
+  persona wizard's "Persona id" and "Workspace nav sections" fields dropped
+  the shorter `aria-label` that overrode their visible labels, so a
+  voice-control user can target them by the words on screen (WCAG 2.5.3).
+  `tests/e2e/workspace-a11y.spec.ts` asks the accessibility tree for each.
 - **Workspace-scoped pages wait for the workspace to resolve (#1427).** On a
   first-ever session the Conductor's Jira drafts, Agents and Missions pages
   fired their workspace-scoped requests before `GET /v1/workspaces` had

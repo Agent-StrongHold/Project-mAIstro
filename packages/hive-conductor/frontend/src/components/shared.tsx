@@ -210,7 +210,15 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastCtx.Provider value={addToast}>
       {children}
-      <div style={{ position: "fixed", bottom: 16, right: 16, zIndex: 2000, display: "flex", flexDirection: "column", gap: 6 }}>
+      {/* A live region (WCAG 4.1.3, #1405): a toast is a status message, so
+          it is announced without taking focus. The region is always in the
+          DOM so assistive technology has registered it before the first
+          toast lands; only its contents change. */}
+      <div
+        role="status"
+        aria-live="polite"
+        style={{ position: "fixed", bottom: 16, right: 16, zIndex: 2000, display: "flex", flexDirection: "column", gap: 6 }}
+      >
         {toasts.map((t) => (
           <div key={t.id} style={{
             background: "var(--paper)", border: `1.3px solid ${colorMap[t.type] || colorMap.ok}`,

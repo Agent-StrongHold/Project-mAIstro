@@ -128,7 +128,11 @@ export function WorkspaceTabs() {
           +
         </button>
       )}
-      {error && <span className="workspace-tab-error">{error}</span>}
+      {error && (
+        <span role="alert" className="workspace-tab-error">
+          {error}
+        </span>
+      )}
     </div>
   );
 }

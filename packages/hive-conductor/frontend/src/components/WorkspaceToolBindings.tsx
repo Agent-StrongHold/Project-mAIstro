@@ -209,7 +209,11 @@ export function WorkspaceToolBindings() {
               </div>
             );
           })}
-          {error && <div className="workspace-tool-bindings-error">{error}</div>}
+          {error && (
+            <div role="alert" className="workspace-tool-bindings-error">
+              {error}
+            </div>
+          )}
           <button type="button" disabled={busy} onClick={() => void handleSave()}>
             Save
           </button>

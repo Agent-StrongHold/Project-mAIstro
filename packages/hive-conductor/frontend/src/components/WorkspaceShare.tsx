@@ -178,7 +178,11 @@ export function WorkspaceShare() {
               )}
             </div>
           )}
-          {error && <div className="workspace-share-error">{error}</div>}
+          {error && (
+            <div role="alert" className="workspace-share-error">
+              {error}
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -118,7 +118,9 @@ export function WorkItemDraftModal({
   if (loading || !draft) {
     return (
       <ModalShell title="Jira work item" onClose={onClose}>
-        <div style={{ fontFamily: "var(--mono)", fontSize: 12, padding: 24 }}>Loading draft…</div>
+        <div role="status" style={{ fontFamily: "var(--mono)", fontSize: 12, padding: 24 }}>
+          Loading draft…
+        </div>
       </ModalShell>
     );
   }
