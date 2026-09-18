@@ -54,6 +54,6 @@ jobs:
           ignore-globs: "**/.git/**,**/bin/**,**/node_modules/**,**/dist/**,**/build/**,**/third_party/**,**/tests/**,**/__tests__/**,**/*.test.js,**/*.test.jsx,**/*.test.ts,**/*.test.tsx,**/*.test.yml"
 
       - name: Upload DevSkim scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: devskim-results.sarif
