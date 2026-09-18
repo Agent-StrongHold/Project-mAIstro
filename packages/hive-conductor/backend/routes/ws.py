@@ -35,7 +35,13 @@ async def _authenticate(websocket: WebSocket, permission: str | None = None) -> 
     if not origin_allowed(websocket.headers.get("origin"), websocket.headers.get("host")):
         await websocket.close(code=_POLICY_VIOLATION, reason="Origin not allowed")
         return None
-    user = resolve_principal(websocket.cookies, websocket.headers.get("authorization"))
+    # A successful interactive handshake is authenticated activity; unlike
+    # HTTP health probes it may refresh the idle window.
+    user = resolve_principal(
+        websocket.cookies,
+        websocket.headers.get("authorization"),
+        refresh_activity=True,
+    )
     if user is None:
         await websocket.close(code=_POLICY_VIOLATION, reason="Authentication required")
         return None

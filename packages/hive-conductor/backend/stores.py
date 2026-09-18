@@ -184,7 +184,12 @@ def purge_all_sessions() -> int:
     Every user must log in again. Elevation grants live inside the session
     records, so they are revoked with them.
     """
-    revoked = sessions.clear()
+    # Share the auth boundary's lock so a purge cannot race a sliding idle
+    # update and leave one session valid after the operator revoked it.
+    from routes.auth import _SESSION_LOCK
+
+    with _SESSION_LOCK:
+        revoked = sessions.clear()
     logger.warning("sessions_purged count=%d", revoked)
     return revoked
 
