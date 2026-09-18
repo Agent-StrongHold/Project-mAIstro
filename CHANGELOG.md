@@ -290,6 +290,39 @@ or placeholder-only section.
 
 ### Fixed
 
+- **The workspace toolbar explains a first run, truncates long names, shows
+  personas by name and tagline, and forgets an account on sign-out (#1426,
+  #1431, #1424, #1437, #1418, #1433).** A zero-workspace account now sees a
+  one-line explanation of what a workspace is and a "Create workspace"
+  action instead of a bare "+". The tab strip holds only tabs and scrolls
+  sideways in one row; a long name truncates with an ellipsis and keeps its
+  full text in the tooltip, so the toolbar no longer stacks into a column at
+  phone width. The create form is a panel below the "+" whose persona picker
+  is a radio group showing each persona's name and tagline. The four
+  per-account localStorage keys (active workspace, appearance, UI mode,
+  onboarding) are stamped with the signed-in user, cleared when a different
+  account signs in, cleared on sign-out, and listed with their values on the
+  Profile page beside a "Clear browser state" button.
+  `tests/e2e/workspace-toolbar.spec.ts` covers each in a real browser.
+- **A Workspace and its Root Project are created and deleted in one
+  transaction (#1121).** The durable Workspace stores wrote the Workspace row
+  and its owner membership, committed, and only then asked the Project store
+  for the Root Project on a second connection, with an in-process compensator
+  covering an exception between the two and nothing covering a crash there;
+  `delete` was the same in reverse. A process that died between the halves
+  left a Workspace with no Root Project -- which `root_for_workspace()` treats
+  as impossible, so every Run filed to it failed -- or a Project tree with no
+  Workspace to reach it by. The PostgreSQL and SQLite Project scope stores now
+  expose `TransactionalProjectScopeStore` (`transaction()`, `create_root_in`,
+  `purge_workspace_in`), and the Workspace store on the same pool or
+  connection issues all of its rows and the Root Project inside that one
+  transaction, so either all of it commits or none of it does. On SQLite the
+  Workspace store also takes the scope store's write lock rather than one of
+  its own, since two locks over one connection is how "cannot start a
+  transaction within a transaction" arises. No root is invented lazily on
+  read: `root_for_workspace()` stays a true invariant because creation is
+  atomic. The conformance suite injects a failure at each seam and reads a
+  fresh store back on all three backends.
 - **Workspace mutations confirm, ask before they destroy, and cost one
   request (#1407, #1429, #1428, #1430, #1434).** Creating, archiving,
   deleting a workspace, inviting or removing a member and saving tool

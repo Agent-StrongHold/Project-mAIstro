@@ -40,7 +40,7 @@ test("creating a workspace confirms and selects it", async () => {
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.getByRole("button", { name: "New workspace", exact: true }).click();
   await page.getByLabel("New workspace name", { exact: true }).fill(wsName);
-  await page.getByLabel("Persona", { exact: true }).selectOption("pm_fleet");
+  await page.getByRole("group", { name: "Persona" }).locator('input[value="pm_fleet"]').check();
   await page.getByRole("button", { name: "Create", exact: true }).click();
 
   await expect(page.getByRole("status").filter({ hasText: `Created workspace "${wsName}"` }))

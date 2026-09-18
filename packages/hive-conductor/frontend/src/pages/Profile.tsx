@@ -1,4 +1,6 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
+import { useToast } from "../components/shared";
+import { claimUiState, clearUiState, storedUiState } from "../lib/uiState";
 
 export default function Profile() {
   const [user, setUser] = useState<any>(null);
@@ -6,6 +8,8 @@ export default function Profile() {
   const [summaryLoading, setSummaryLoading] = useState(true);
   const [activity, setActivity] = useState<any[]>([]);
   const [sessions, setSessions] = useState<any[]>([]);
+  const toast = useToast();
+  const [stored, setStored] = useState(() => storedUiState());
 
   useEffect(() => {
     fetch("/v1/auth/whoami", { credentials: "same-origin" })
@@ -82,6 +86,41 @@ export default function Profile() {
           <div style={{ fontFamily: "var(--hand)", fontSize: 24, fontWeight: 700 }}>{user.username}</div>
           <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)" }}>{user.role} · MyID authenticated</div>
         </div>
+      </div>
+
+      {/* What this browser keeps for this account (#1418, #1419): the four
+          conveniences, their current values, and a way to forget them. */}
+      <div className="card" style={{ marginBottom: 12 }}>
+        <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 8 }}>
+          STORED IN THIS BROWSER
+        </div>
+        <div style={{ fontFamily: "var(--hand)", fontSize: 13, color: "var(--pencil)", marginBottom: 8 }}>
+          Kept in this browser only, for this account, until you sign out or clear it here.
+          Nothing below leaves your device.
+        </div>
+        <dl style={{ margin: 0, display: "grid", gridTemplateColumns: "auto 1fr", gap: "4px 12px", fontFamily: "var(--mono)", fontSize: 12 }}>
+          {stored.map((row) => (
+            <Fragment key={row.key}>
+              <dt style={{ color: "var(--ink)" }}>{row.what}</dt>
+              <dd style={{ margin: 0, color: "var(--pencil)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {row.value ?? "not set"}
+              </dd>
+            </Fragment>
+          ))}
+        </dl>
+        <button
+          type="button"
+          className="btn"
+          style={{ marginTop: 10, fontSize: 12 }}
+          onClick={() => {
+            clearUiState();
+            claimUiState(user.id);
+            setStored(storedUiState());
+            toast("Browser state cleared", "ok");
+          }}
+        >
+          Clear browser state
+        </button>
       </div>
 
       {/* AI Summary */}

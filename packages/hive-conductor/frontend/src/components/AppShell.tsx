@@ -1,4 +1,5 @@
 import { type ReactNode, useState } from "react";
+import { clearUiState } from "../lib/uiState";
 import { NavLink, Outlet } from "react-router-dom";
 import { useUser } from "../App";
 import { ModeToggle } from "./ModeToggle";
@@ -52,6 +53,8 @@ async function logout() {
   } catch {
     // best effort — even if it fails, redirecting lets the user log in fresh.
   }
+  // Nothing of this account's stays behind for the next one (#1418).
+  clearUiState();
   // Stay inside the Hive app (which auto-shows Login when no session); going
   // to "/" dumps the user at the external catalog page with no obvious way back.
   window.location.href = import.meta.env.BASE_URL || "/";
