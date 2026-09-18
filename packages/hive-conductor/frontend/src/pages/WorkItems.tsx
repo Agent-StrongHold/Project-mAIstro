@@ -49,14 +49,14 @@ export default function WorkItems() {
         title="Jira drafts"
         subtitle="Gated Jira hierarchy — clarify, edit, then confirm to post (never auto-created)"
         actions={
-          <Link to="/agents" className="btn" style={{ fontSize: 9, padding: "2px 8px" }}>
+          <Link to="/agents" className="btn" style={{ fontSize: 12, padding: "2px 8px" }}>
             ← Program
           </Link>
         }
       />
 
       <div className="card" style={{ marginBottom: 14, padding: 12 }}>
-        <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginBottom: 8 }}>
+        <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 8 }}>
           CREATE NEW (requires your approval)
         </div>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -65,7 +65,7 @@ export default function WorkItems() {
               key={wt}
               type="button"
               className="btn btn-accent"
-              style={{ fontSize: 8 }}
+              style={{ fontSize: 12 }}
               onClick={() => setCreateType(wt)}
             >
               + {labelForWorkType(wt)}
@@ -95,13 +95,13 @@ export default function WorkItems() {
                   {labelForWorkType(d.work_type)}
                   {d.fields.summary ? `: ${d.fields.summary}` : ""}
                 </span>
-                <span style={{ fontFamily: "var(--mono)", fontSize: 9, color: statusColor(d.status) }}>
+                <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: statusColor(d.status) }}>
                   {d.status}
                   {d.posted_issue_key ? ` · ${d.posted_issue_key}` : ""}
                 </span>
               </div>
               {d.suggestion_reason && (
-                <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginTop: 4 }}>
+                <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginTop: 4 }}>
                   {d.suggestion_reason}
                 </div>
               )}

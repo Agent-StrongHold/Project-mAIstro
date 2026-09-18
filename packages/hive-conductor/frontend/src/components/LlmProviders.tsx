@@ -82,7 +82,7 @@ export function LlmProviders() {
 
   return (
     <div className="card" style={{ marginBottom: 14, padding: 12, borderLeft: "3px solid var(--accent)" }}>
-      <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginBottom: 6 }}>
+      <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 6 }}>
         LLM PROVIDERS
       </div>
       <div style={{ fontFamily: "var(--hand)", fontSize: 12, lineHeight: 1.4, marginBottom: 10 }}>
@@ -98,7 +98,7 @@ export function LlmProviders() {
         <div
           style={{
             fontFamily: "var(--mono)",
-            fontSize: 9,
+            fontSize: 12,
             marginBottom: 8,
             color: notice.kind === "ok" ? "var(--ok)" : "var(--danger)",
           }}
@@ -128,7 +128,7 @@ export function LlmProviders() {
               className="btn"
               onClick={() => saveKey(p.name)}
               disabled={!data.vault_available || !keys[p.name] || busy === p.name}
-              style={{ fontSize: 10, padding: "3px 10px" }}
+              style={{ fontSize: 12, padding: "3px 10px" }}
             >
               Save key
             </button>
@@ -136,12 +136,12 @@ export function LlmProviders() {
               className="btn-primary"
               onClick={() => activate(p.name)}
               disabled={!p.has_key || busy === p.name}
-              style={{ fontSize: 10, padding: "3px 10px" }}
+              style={{ fontSize: 12, padding: "3px 10px" }}
             >
               {busy === p.name ? "…" : p.activated ? "Re-test" : "Activate"}
             </button>
             {p.activated && (
-              <span style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--ok)" }}>● active</span>
+              <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--ok)" }}>● active</span>
             )}
           </div>
         ))}

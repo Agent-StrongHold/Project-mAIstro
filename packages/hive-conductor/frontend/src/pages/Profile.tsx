@@ -80,13 +80,13 @@ export default function Profile() {
         </div>
         <div>
           <div style={{ fontFamily: "var(--hand)", fontSize: 24, fontWeight: 700 }}>{user.username}</div>
-          <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--pencil)" }}>{user.role} · MyID authenticated</div>
+          <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)" }}>{user.role} · MyID authenticated</div>
         </div>
       </div>
 
       {/* AI Summary */}
       <div className="card" style={{ marginBottom: 12, borderLeft: "3px solid var(--accent)" }}>
-        <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--accent)", marginBottom: 8 }}>WHAT I KNOW ABOUT YOU</div>
+        <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--accent)", marginBottom: 8 }}>WHAT I KNOW ABOUT YOU</div>
         <div style={{ fontFamily: "var(--hand)", fontSize: 14, lineHeight: 1.6, color: "var(--ink)" }}>
           {summaryLoading ? <span style={{ color: "var(--pencil)" }}>Thinking...</span> : summary}
         </div>
@@ -95,11 +95,11 @@ export default function Profile() {
       {/* Recent Sessions */}
       {sessions.length > 0 && (
         <div className="card" style={{ marginBottom: 12 }}>
-          <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginBottom: 8 }}>RECENT CONVERSATIONS</div>
+          <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 8 }}>RECENT CONVERSATIONS</div>
           {sessions.map((s: any) => (
-            <div key={s.id} style={{ padding: "6px 0", borderBottom: "1px dotted var(--rule)", fontFamily: "var(--mono)", fontSize: 11, display: "flex", justifyContent: "space-between" }}>
+            <div key={s.id} style={{ padding: "6px 0", borderBottom: "1px dotted var(--rule)", fontFamily: "var(--mono)", fontSize: 12, display: "flex", justifyContent: "space-between" }}>
               <span>{s.title || "Untitled"}</span>
-              <span style={{ color: "var(--pencil)", fontSize: 9 }}>{s.message_count || 0} msgs</span>
+              <span style={{ color: "var(--pencil)", fontSize: 12 }}>{s.message_count || 0} msgs</span>
             </div>
           ))}
         </div>
@@ -108,12 +108,12 @@ export default function Profile() {
       {/* Recent Activity */}
       {activity.length > 0 && (
         <div className="card">
-          <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginBottom: 8 }}>RECENT ACTIVITY</div>
+          <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 8 }}>RECENT ACTIVITY</div>
           {activity.map((a: any, i: number) => (
-            <div key={i} style={{ padding: "4px 0", borderBottom: "1px dotted var(--rule)", fontFamily: "var(--mono)", fontSize: 10, display: "flex", gap: 8 }}>
+            <div key={i} style={{ padding: "4px 0", borderBottom: "1px dotted var(--rule)", fontFamily: "var(--mono)", fontSize: 12, display: "flex", gap: 8 }}>
               <span style={{ color: "var(--accent)", minWidth: 80 }}>{a.action}</span>
               <span style={{ color: "var(--pencil)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.target || ""}</span>
-              <span style={{ color: "var(--pencil)", fontSize: 9 }}>{a.actor}</span>
+              <span style={{ color: "var(--pencil)", fontSize: 12 }}>{a.actor}</span>
             </div>
           ))}
         </div>

@@ -113,7 +113,7 @@ export function WorkItemDraftModal({
   if (loading || !draft) {
     return (
       <ModalShell title="Jira work item" onClose={onClose}>
-        <div style={{ fontFamily: "var(--mono)", fontSize: 10, padding: 24 }}>Loading draft…</div>
+        <div style={{ fontFamily: "var(--mono)", fontSize: 12, padding: 24 }}>Loading draft…</div>
       </ModalShell>
     );
   }
@@ -174,10 +174,10 @@ export function WorkItemDraftModal({
 
   return (
     <ModalShell title={`${label} → Jira`} onClose={onClose}>
-      <p style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", margin: "0 0 12px" }}>
+      <p style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", margin: "0 0 12px" }}>
         {activeDraft.suggestion_reason}
       </p>
-      <div style={{ display: "flex", gap: 6, marginBottom: 14, fontFamily: "var(--mono)", fontSize: 8 }}>
+      <div style={{ display: "flex", gap: 6, marginBottom: 14, fontFamily: "var(--mono)", fontSize: 12 }}>
         {(["clarify", "edit", "review"] as const).map((s, i) => (
           <span
             key={s}
@@ -197,7 +197,7 @@ export function WorkItemDraftModal({
         <div>
           {activeDraft.clarifying_questions.map((q) => (
             <div key={q.id} style={{ marginBottom: 10 }}>
-              <label style={{ fontFamily: "var(--mono)", fontSize: 9, display: "block", marginBottom: 4 }}>
+              <label style={{ fontFamily: "var(--mono)", fontSize: 12, display: "block", marginBottom: 4 }}>
                 {q.question}
                 {q.required ? " *" : ""}
               </label>
@@ -258,7 +258,7 @@ export function WorkItemDraftModal({
           <pre
             style={{
               fontFamily: "var(--mono)",
-              fontSize: 8,
+              fontSize: 12,
               background: "var(--paper-2, #f5f5f0)",
               padding: 10,
               borderRadius: 4,
@@ -269,7 +269,7 @@ export function WorkItemDraftModal({
             {JSON.stringify(activeDraft.jira_preview, null, 2)}
           </pre>
           {activeDraft.status === "posted" ? (
-            <div style={{ fontFamily: "var(--mono)", fontSize: 10, marginTop: 8 }}>
+            <div style={{ fontFamily: "var(--mono)", fontSize: 12, marginTop: 8 }}>
               Posted: {activeDraft.posted_issue_key}
             </div>
           ) : (
@@ -288,7 +288,7 @@ export function WorkItemDraftModal({
             </div>
           )}
           {activeDraft.status !== "ready" && (
-            <div style={{ fontFamily: "var(--mono)", fontSize: 8, color: "var(--pencil)", marginTop: 8 }}>
+            <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginTop: 8 }}>
               Answer required clarifying questions before posting.
             </div>
           )}
@@ -346,7 +346,7 @@ function FieldRow({
   useEffect(() => setLocal(value), [value]);
   return (
     <div style={{ marginBottom: 10 }}>
-      <label style={{ fontFamily: "var(--mono)", fontSize: 9, display: "block", marginBottom: 4 }}>
+      <label style={{ fontFamily: "var(--mono)", fontSize: 12, display: "block", marginBottom: 4 }}>
         {label}
       </label>
       {multiline ? (

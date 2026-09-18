@@ -82,14 +82,14 @@ export function AppShell({ children }: { children?: ReactNode }) {
           <AppearanceToggle />
           <button className="drawer-close" onClick={() => setDrawerOpen(false)} aria-label="Close menu">&#x2715;</button>
         </div>
-        <div style={{ fontFamily: "var(--mono)", fontSize: 8, color: "var(--pencil)", padding: "0 12px 8px" }}>
+        <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", padding: "0 12px 8px" }}>
           Multi-agent · multi-MCP · Force Convergence sandbox
         </div>
         {user && (
           <div className="drawer-user">
             <span className="hex-badge" style={{ background: user.role === "admin" ? "var(--danger)" : "var(--accent)", color: "var(--paper)" }}>{user.role}</span>
-            <NavLink to="/profile" style={{ fontFamily: "var(--mono)", fontSize: 10, color: "inherit", textDecoration: "none" }}>{user.username}</NavLink>
-            {user.did && <span style={{ fontSize: 8, opacity: 0.6 }} title={user.did}>DID</span>}
+            <NavLink to="/profile" style={{ fontFamily: "var(--mono)", fontSize: 12, color: "inherit", textDecoration: "none" }}>{user.username}</NavLink>
+            {user.did && <span style={{ fontSize: 12, opacity: 0.6 }} title={user.did}>DID</span>}
           </div>
         )}
         <div className="drawer-nav">
@@ -133,7 +133,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
             className="nav-icon"
             style={{
               color: "var(--pencil)",
-              fontSize: 9,
+              fontSize: 12,
               fontFamily: "var(--mono)",
               lineHeight: 1.2,
               textAlign: "center",
@@ -151,13 +151,13 @@ export function AppShell({ children }: { children?: ReactNode }) {
                 background: user.role === "admin" ? "var(--danger)" : "var(--accent)",
                 color: "var(--paper)",
                 fontWeight: 700,
-                fontSize: 7,
+                fontSize: 12,
                 letterSpacing: 0.5,
               }}
             >
               {(user.role || "user").toUpperCase()}
             </span>
-            <div style={{ fontSize: 8, marginTop: 3, color: "var(--ink)" }}>
+            <div style={{ fontSize: 12, marginTop: 3, color: "var(--ink)" }}>
               {user.username}
             </div>
           </div>

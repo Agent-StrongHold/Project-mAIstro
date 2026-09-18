@@ -218,6 +218,22 @@ or placeholder-only section.
 
 ### Changed
 
+- **The Conductor frontend renders on the Workspace design system (#1046,
+  #1048, #65; ADR-091626-ba4f).** `frontend/src/themes/workspace-tokens.css`
+  is a byte-for-byte copy of the bundled `workspace` tokens, held identical by
+  a backend test; a bridge file binds the old Conductor variable names
+  (`--paper`, `--ink`, `--pencil`, `--rule`, `--honey`, `--purple`, the shadow
+  scale…) to them so every page keeps rendering while it moves over, with one
+  accent, no gradient and no hover glow. Light/dark is now `data-scheme` on
+  `<html>` (the user's choice or the OS preference) and a workspace's persona
+  template is `data-theme`, so a theme never forces a scheme; the hand-written
+  `dark` and `fantasia` stylesheets are gone. The theme catalog
+  (`GET /v1/workspaces/themes`) offers the design system's templates,
+  greenhouse (default), slate and studio; workspaces stored with `default`,
+  `dark` or `fantasia` stay valid and render as greenhouse, greenhouse and
+  slate. Bricolage Grotesque ships from the app's origin beside JetBrains
+  Mono, and every font size below the 12px floor (23 in the stylesheet, 524
+  inline) is raised to it.
 - **The merge-queue bot quarantines a head that already failed inside the
   queue (#1438 review follow-up).** `scripts/check-enqueue-merge-queue.py`
   re-requested any policy-green PR head on every scan, including one the
