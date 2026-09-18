@@ -53,7 +53,11 @@ def test_retired_ids_stay_valid_and_resolve_to_a_template() -> None:
     "fantasia"; they keep validating and render as the nearest template
     without a migration, but they are not in the catalog."""
     catalog = {t.id for t in THEME_CATALOG}
-    for legacy, template in (("default", "greenhouse"), ("dark", "greenhouse"), ("fantasia", "slate")):
+    for legacy, template in (
+        ("default", "greenhouse"),
+        ("dark", "greenhouse"),
+        ("fantasia", "slate"),
+    ):
         assert is_valid_theme_id(legacy) is True
         assert legacy not in catalog
         assert canonical_theme_id(legacy) == template

@@ -172,8 +172,11 @@ or placeholder-only section.
   the list of assumed ones, and refuses while any required field is missing.
   The first script is a video brief for creator workspaces. Hive hosts the
   interview beside the onboarding one, at `/v1/program/brief` (`start`,
-  `answer`, `draft`, and delete), persisted per (user, workspace); the
-  Workspace Agent chat that will carry it as ordinary turns is a follow-up.
+  `answer`, `draft`, and delete), persisted per (user, workspace), and as
+  ordinary chat turns: `POST /v1/chat/stream` and `/complete` take a
+  `workspace_id`, and a turn there that asks for work is answered by the
+  interview instead of the model, with a `brief` event the Chat page renders
+  as the "brief so far" panel. The Warden input boundary still runs first.
 - **The Workspace has a first-party design system (#1046, #1048, #65;
   ADR-091626-ba4f).** `maistro-design` now bundles `workspace` as a seventh Tier-1 system —
   the first authored in this repo rather than vendored from open-design. It
