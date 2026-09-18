@@ -39,8 +39,8 @@ otherwise. One row per admission claim:
 The upgrade needs no backfill: claims begin with this convergence, and every
 submission before it is defined to have no admission identity to migrate.
 
-Revision ID: 033
-Revises: 032
+Revision ID: 038
+Revises: 037
 Create Date: 2026-09-09
 """
 
@@ -49,8 +49,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "037"
-down_revision = "036_consumer_cursors"
+revision = "038"
+down_revision = "037"
 branch_labels = None
 depends_on = None
 
