@@ -17,6 +17,7 @@ from maistro.graph.nodes import get_node, list_kinds
 from maistro.runs.task_kinds import (
     DEFAULT_WORK_NAME,
     DELEGATE_NODE_KIND,
+    DIRECT_SUBMISSION_AGENT,
     resolve_direct_work,
 )
 
@@ -40,6 +41,12 @@ def test_task_type_resolves_through_the_intent_table(task_type: str, expected_ag
     assert work.node_type == DELEGATE_NODE_KIND
     assert work.agent_name == expected_agent
     assert work.parameters["to_agent"] == expected_agent
+
+
+def test_direct_admission_names_its_system_delegator() -> None:
+    work = resolve_direct_work(description="do the thing", task_type="code")
+
+    assert work.parameters["from_agent"] == DIRECT_SUBMISSION_AGENT
 
 
 def test_unknown_task_type_still_resolves() -> None:

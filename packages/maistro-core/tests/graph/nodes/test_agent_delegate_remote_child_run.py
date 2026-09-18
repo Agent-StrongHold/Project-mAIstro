@@ -24,16 +24,25 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock
 
+import httpx
+
 from maistro.a2a.delegate import A2ADelegator
-from maistro.a2a.guest_peers import DelegationResult, GuestPeerManager
+from maistro.a2a.guest_peers import DelegationResult, GuestPeerManager, PeerTrust
 from maistro.graph import Graph, Node
+from maistro.graph.durable_runs import (
+    CanonicalDurableRunStore,
+    InMemoryGraphContinuationStore,
+    resume_durable_graph,
+    run_durable_graph,
+)
 from maistro.graph.nodes import NodeContext
 from maistro.graph.nodes.agent_delegate_remote import (
     AgentDelegateRemoteNode,
     DelegationNotConfiguredError,
 )
+from maistro.http import set_test_transport
 from maistro.projects.scope_store import InMemoryProjectScopeStore
-from maistro.runs import InMemoryRunStore
+from maistro.runs import InMemoryRunStore, RunStatus
 
 
 async def _spine(
@@ -142,11 +151,12 @@ class TestDelegationFilesAChildRun:
         parent = await store.create_run(
             _graph(workspace_id="workspace-1", project_id=project.project_id)
         )
+        parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
 
         node = AgentDelegateRemoteNode(a2a_delegator=A2ADelegator(), run_store=store)
         result = await node.run(
             {"from_agent": "planner", "task": "x"},
-            _ctx(run_id=parent.run_id),
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
         )
 
         assert result.status == "completed"
@@ -284,11 +294,15 @@ class TestCrossInstanceDelegationFilesAChildRun:
     """
 
     @staticmethod
-    def _peers(status: str = "submitted", error: str | None = None) -> GuestPeerManager:
+    def _peers(
+        status: str = "submitted",
+        error: str | None = None,
+        task_id: str = "remote-1",
+    ) -> GuestPeerManager:
         guest_peers = GuestPeerManager()
         guest_peers.delegate = AsyncMock(  # type: ignore[method-assign]
             return_value=DelegationResult(
-                task_id="remote-1", peer_name="hub", status=status, error=error
+                task_id=task_id, peer_name="hub", status=status, error=error
             )
         )
         return guest_peers
@@ -318,6 +332,83 @@ class TestCrossInstanceDelegationFilesAChildRun:
         assert child.parent_node_run_id == parent_node_run.node_run_id
         assert child.workspace_id == parent.workspace_id
         assert child.project_id == parent.project_id
+
+    async def test_cross_instance_transport_and_child_admission_are_one_path(self) -> None:
+        """Exercise the node through GuestPeerManager's real HTTP seam."""
+        store, _projects, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+        seen: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["url"] = str(request.url)
+            seen["json"] = request.content
+            return httpx.Response(200, json={"task_id": "http-remote-1"})
+
+        set_test_transport(httpx.MockTransport(handler))
+        peers = GuestPeerManager()
+        peers.register_peer(PeerTrust(peer_url="http://hub", peer_name="hub"))
+        node = AgentDelegateRemoteNode(guest_peers=peers, run_store=store)
+
+        result = await node.run(
+            {"from_agent": "planner", "task": "research X", "peer_name": "hub"},
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+        )
+
+        assert result.status == "paused"
+        assert seen["url"] == "http://hub/a2a/tasks/create"
+        assert b'"agent_id":"planner"' in seen["json"]
+        assert b'"content":"research X"' in seen["json"]
+        child = await store.get_run(result.metadata["run_id"])
+        assert child is not None
+        assert child.parent_run_id == parent.run_id
+        assert child.parent_node_run_id == parent_node_run.node_run_id
+        assert child.provenance["a2a_task_id"] == "http-remote-1"
+
+    async def test_the_cross_instance_answer_completes_the_child_attempt(self) -> None:
+        """A peer answer settles canonical evidence, not the Run directly."""
+        store, _projects, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+        node = AgentDelegateRemoteNode(guest_peers=self._peers(), run_store=store)
+        first = await node.run(
+            {"from_agent": "planner", "task": "research X", "peer_name": "hub"},
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+        )
+        child_run_id = first.metadata["run_id"]
+
+        await node.run(
+            {"from_agent": "planner", "task": "research X", "peer_name": "hub"},
+            _ctx(
+                run_id=parent.run_id,
+                node_run_id=parent_node_run.node_run_id,
+            ).model_copy(
+                update={
+                    "metadata": {
+                        "hitl_answers": {
+                            "delegate-1": {
+                                "status": "completed",
+                                "task_id": "remote-1",
+                                "result": "ok",
+                                "_pause": {"run_id": child_run_id},
+                            }
+                        }
+                    }
+                }
+            ),
+        )
+
+        child = await store.get_run(child_run_id)
+        assert child is not None
+        assert child.status.value == "completed"
+        node_runs = await store.list_node_runs(child_run_id)
+        assert len(node_runs) == 1
+        attempts = await store.list_attempts(node_runs[0].node_run_id)
+        assert [attempt.status.value for attempt in attempts] == ["yielded", "completed"]
 
     async def test_the_cross_instance_child_names_the_peer_the_task_and_the_mode(self) -> None:
         """The receipt stays a receipt: the A2A task_id is provenance on the
@@ -369,3 +460,116 @@ class TestCrossInstanceDelegationFilesAChildRun:
             if run.parent_run_id == parent.run_id
         ]
         assert children == []
+
+    async def test_a_submitted_peer_response_without_a_receipt_does_not_pause(self) -> None:
+        """A child without the A2A receipt cannot be resumed or correlated."""
+        store, _projects, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+
+        node = AgentDelegateRemoteNode(guest_peers=self._peers(task_id=""), run_store=store)
+        result = await node.run(
+            {"from_agent": "planner", "task": "research X", "peer_name": "hub"},
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+        )
+
+        assert result.status == "completed"
+        assert result.output.status == "failed"
+        assert "invalid delegation receipt" in (result.output.error or "")
+        assert result.output.run_id == ""
+        children = [
+            run
+            for run in store._runs.values()  # type: ignore[attr-defined]
+            if run.parent_run_id == parent.run_id
+        ]
+        assert children == []
+
+    async def test_durable_parent_resumes_from_the_answer_and_settles_child(self) -> None:
+        """The production checkpoint can accept the remote answer.
+
+        ``awaiting_remote_delegation`` is answer-gated, not a timer/poll. The
+        parent therefore parks PAUSED, allowing the canonical durable answer
+        path to stamp the server-owned child ``run_id`` and queue the parent.
+        """
+        run_store, _projects, project = await _spine()
+        graph = Graph(
+            workspace_id="workspace-1",
+            project_id=project.project_id,
+            name="Delegating pipeline",
+            nodes=[
+                Node(
+                    node_id="delegate-1",
+                    node_type="agent.delegate_remote",
+                    inputs={
+                        "from_agent": "planner",
+                        "task": "research X",
+                        "to_agent": "researcher",
+                    },
+                )
+            ],
+        )
+        parent = await run_store.create_run(graph)
+        await run_store.transition_run(parent.run_id, RunStatus.QUEUED)
+        durable = CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore())
+        node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=run_store)
+
+        def resolver(_node_id: str, _graph: Graph) -> AgentDelegateRemoteNode:
+            return node
+
+        started = await run_durable_graph(
+            graph,
+            store=durable,
+            node_resolver=resolver,
+            run_id=parent.run_id,
+            run_store=run_store,
+        )
+
+        assert started.status is RunStatus.PAUSED
+        pause = started.graph_state.metadata["pauses"]["delegate-1"]
+        child_run_id = pause["metadata"]["run_id"]
+        assert child_run_id
+        child = await run_store.get_run(child_run_id)
+        assert child is not None
+        assert child.parent_run_id == parent.run_id
+
+        answered = await durable.submit_hitl_answer(
+            parent.run_id,
+            "delegate-1",
+            {"status": "completed", "task_id": pause["metadata"]["task_id"], "result": "ok"},
+        )
+        assert answered.status is RunStatus.QUEUED
+        assert answered.hitl_answers["delegate-1"]["_pause"]["metadata"]["run_id"] == child_run_id
+        resumed = await resume_durable_graph(
+            parent.run_id,
+            store=durable,
+            node_resolver=resolver,
+            run_store=run_store,
+        )
+
+        assert resumed.status is RunStatus.COMPLETED
+        parent_nodes = await run_store.list_node_runs(parent.run_id)
+        parent_attempts = await run_store.list_attempts(parent_nodes[0].node_run_id)
+        settled_child = await run_store.get_run(child_run_id)
+        assert settled_child is not None
+        child_nodes = await run_store.list_node_runs(child_run_id)
+        child_attempts = await run_store.list_attempts(child_nodes[0].node_run_id)
+        assert len(parent_attempts) == 2, (
+            [(attempt.status, attempt.result) for attempt in parent_attempts],
+            resumed,
+        )
+        assert parent_nodes[0].result["run_id"] == child_run_id
+        assert len(child_attempts) == 2, (
+            [(attempt.status, attempt.result) for attempt in child_attempts],
+            [(node.status, node.result) for node in parent_nodes],
+            resumed,
+        )
+        assert settled_child.status is RunStatus.COMPLETED, (
+            settled_child.status,
+            [(node.node_run_id, node.status, node.accepted_outcome) for node in child_nodes],
+            [(attempt.status, attempt.result) for attempt in child_attempts],
+            [(node.status, node.result) for node in parent_nodes],
+            [(attempt.status, attempt.result) for attempt in parent_attempts],
+        )
+        assert settled_child.result == "ok"

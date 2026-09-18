@@ -113,7 +113,9 @@ class TestTheChildRunIsSettled:
         [
             ("completed", RunStatus.COMPLETED),
             ("failed", RunStatus.FAILED),
-            ("timed_out", RunStatus.TIMED_OUT),
+            # The transport answered with a timeout; the physical Attempt
+            # completed and the child records the logical failure.
+            ("timed_out", RunStatus.FAILED),
             # Admitted and then declined: `cancelled` rather than `failed`,
             # which would read as attempted-and-gone-wrong.
             ("rejected", RunStatus.CANCELLED),
@@ -122,7 +124,15 @@ class TestTheChildRunIsSettled:
     async def test_the_answer_settles_the_child(self, answered: str, expected: RunStatus) -> None:
         store, project = await _spine()
         node, parent, child_run_id = await _dispatched(store, project.project_id)
-        assert (await store.get_run(child_run_id)).status is RunStatus.CREATED
+        child = await store.get_run(child_run_id)
+        assert child is not None
+        assert child.status is RunStatus.WAITING
+        node_runs = await store.list_node_runs(child_run_id)
+        assert len(node_runs) == 1
+        assert node_runs[0].status is RunStatus.WAITING
+        attempts = await store.list_attempts(node_runs[0].node_run_id)
+        assert len(attempts) == 1
+        assert attempts[0].status.value == "yielded"
 
         await node.run(
             {"from_agent": "planner", "task": "research X"},
@@ -136,6 +146,12 @@ class TestTheChildRunIsSettled:
         assert child is not None
         assert child.status is expected
         assert child.finished_at is not None
+        node_runs = await store.list_node_runs(child_run_id)
+        assert len(node_runs) == 1
+        assert node_runs[0].status is expected
+        attempts = await store.list_attempts(node_runs[0].node_run_id)
+        assert len(attempts) == 2
+        assert attempts[-1].status.value in {"completed", "cancelled"}
 
     async def test_the_delegates_result_lands_on_the_child(self) -> None:
         store, project = await _spine()
@@ -293,6 +309,25 @@ class TestScopeIsCheckedBeforeDispatch:
         assert result.status == "failed"
         assert delegator.dispatched == []
 
+    async def test_a_missing_parent_node_run_is_refused_before_dispatch(self) -> None:
+        """A child without its admitting NodeRun would lose physical provenance."""
+        store, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        delegator = _recording_delegator()
+        node = AgentDelegateRemoteNode(a2a_delegator=delegator, run_store=store)
+
+        result = await node.run(
+            {"from_agent": "planner", "task": "x", "to_agent": "researcher"},
+            _ctx(run_id=parent.run_id),
+        )
+
+        assert result.status == "failed"
+        assert result.error_code == RunIntegrityError.__name__
+        assert "node_run_id" in (result.error_message or "")
+        assert delegator.dispatched == []
+
     async def test_a_delegation_in_the_parents_own_scope_still_dispatches(self) -> None:
         """The pre-flight must not become a refusal of the ordinary case."""
         store, project = await _spine()
@@ -317,10 +352,11 @@ class TestWhatTheChildRecords:
             persona_id="persona-7",
             actor_principal_id="user-42",
         )
+        node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
         node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=store)
         result = await node.run(
             {"from_agent": "planner", "task": "x", "to_agent": "researcher"},
-            _ctx(run_id=parent.run_id),
+            _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id),
         )
 
         child = await store.get_run(result.metadata["run_id"])
@@ -337,11 +373,12 @@ class TestWhatTheChildRecords:
         parent = await store.create_run(
             _graph(workspace_id="workspace-1", project_id=project.project_id)
         )
+        node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
         node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=store)
 
         result = await node.run(
             {"from_agent": "planner", "task": "x"},
-            _ctx(run_id=parent.run_id),
+            _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id),
         )
 
         child = await store.get_run(result.metadata["run_id"])
@@ -362,14 +399,13 @@ class TestWhatTheChildRecords:
         assert "agent.delegate_remote" not in kinds
         assert kinds == ["agent.remote_work"]
 
-    async def test_an_inline_subgraph_is_snapshotted_as_the_work(self) -> None:
-        """When the delegation carries the work, that is what the child records
-        — rescoped into the child's Workspace and Project, because a Graph must
-        agree with the Run that holds it."""
+    async def test_an_inline_subgraph_is_recorded_as_untransmitted_request_context(self) -> None:
+        """The child must not claim work the A2A transport never received."""
         store, project = await _spine()
         parent = await store.create_run(
             _graph(workspace_id="workspace-1", project_id=project.project_id)
         )
+        node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
         node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=store)
 
         result = await node.run(
@@ -384,12 +420,18 @@ class TestWhatTheChildRecords:
                     "nodes": [{"node_id": "summarise", "node_type": "llm.summarize"}],
                 },
             },
-            _ctx(run_id=parent.run_id),
+            _ctx(run_id=parent.run_id, node_run_id=node_run.node_run_id),
         )
 
         child = await store.get_run(result.metadata["run_id"])
         assert child is not None
         graph = child.graph.materialize()
-        assert [node.node_type for node in graph.nodes] == ["llm.summarize"]
+        assert [node.node_type for node in graph.nodes] == ["agent.remote_work"]
         assert graph.workspace_id == parent.workspace_id
         assert graph.project_id == parent.project_id
+        assert graph.nodes[0].inputs["requested_subgraph"] == {
+            "workspace_id": "somewhere-else",
+            "project_id": "some-other-project",
+            "name": "Research pipeline",
+            "nodes": [{"node_id": "summarise", "node_type": "llm.summarize"}],
+        }

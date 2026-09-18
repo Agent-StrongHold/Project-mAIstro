@@ -51,13 +51,16 @@ EXPECTED_HUMAN = {
     "awaiting_human_approval",
     "awaiting_human_review",
     "awaiting_role_delegate",
+    # The responder is an agent, but this pause is answer-gated rather than a
+    # timer/poll. It must be persisted as PAUSED so the durable answer API can
+    # queue the parent for its resumed result.
+    "awaiting_remote_delegation",
 }
 
-#: Pauses that wait on a system -- a remote agent, a harness, a polled API.
-#: WAITING is the right record for these, and that is a decision the table
-#: states, not a default: the structural guard below is what makes it one.
+#: Pauses that wait on a system retry or poll. WAITING is the right record for
+#: these, and that is a decision the table states, not a default: the
+#: structural guard below is what makes it one.
 EXPECTED_SYSTEM = {
-    "awaiting_remote_delegation",
     "awaiting_harness",
     "waiting_on_jira_subtasks",
 }
