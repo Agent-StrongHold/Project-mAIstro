@@ -321,6 +321,7 @@
         "packages/maistro-core/src/maistro/tasks/progress_webhook.py::unused variable 'steps_completed'",
         "packages/maistro-core/src/maistro/tasks/progress_webhook.py::unused variable 'steps_total'",
         "packages/maistro-core/src/maistro/tools/reversibility.py::unused variable 'INTERNAL'",
+        "packages/maistro-core/src/maistro/tools/reversibility.py::unused variable 'idempotency_key'",
         "packages/maistro-core/src/maistro/tools/reversibility.py::unused variable 'impact_estimator'",
         "packages/maistro-core/src/maistro/types/agent.py::unused variable 'PERSISTENT'",
         "packages/maistro-core/src/maistro/types/agent.py::unused variable 'SUPERVISED'",

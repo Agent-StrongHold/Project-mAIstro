@@ -42,7 +42,6 @@ Usage
 
 from __future__ import annotations
 
-import functools
 import json
 import re
 import sys
@@ -179,18 +178,6 @@ def _matrix_rows(job: dict) -> list[dict]:
 
 
 _EXPRESSION_RE = re.compile(r"\$\{\{\s*matrix\.([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}")
-_INPUT_EXPRESSION_RE = re.compile(r"\$\{\{\s*inputs\.([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}")
-
-
-def _resolve_reusable_input(
-    match: re.Match[str], *, inputs: dict, uses: str, called_id: str
-) -> str:
-    key = match.group(1)
-    if key not in inputs:
-        raise ContractError(
-            f"reusable workflow {uses!r} job {called_id!r} needs unresolved input {key!r}"
-        )
-    return str(inputs[key])
 
 
 def _check_names(job_id: str, job: dict) -> list[str]:
@@ -220,56 +207,6 @@ def _workflow_files() -> list[Path]:
     return sorted([*WORKFLOW_DIR.glob("*.yml"), *WORKFLOW_DIR.glob("*.yaml")])
 
 
-def _reusable_check_names(caller_path: Path, job_id: str, job: dict) -> list[str]:
-    """Return GitHub's composed names for a local reusable-workflow caller.
-
-    A called workflow's job is not reported under its own ``name`` alone. GitHub
-    prefixes it with the caller job's display name, separated by `` / ``. The
-    branch-protection contract must pin that composed check-run name, otherwise
-    it waits forever for the bare callee name that never exists.
-    """
-    uses = str(job.get("uses", ""))
-    if not uses.startswith("./"):
-        raise ContractError(
-            f"job {job_id!r} uses external reusable workflow {uses!r}; "
-            "use a checked-in local workflow or teach this contract its names"
-        )
-    # GitHub resolves repository-root paths from the repository root. Keeping
-    # relative paths relative to the caller also makes the parser useful for
-    # hermetic synthetic workflow trees in its tests.
-    base = REPO_ROOT if uses.startswith("./.github/") else caller_path.parent
-    callee_path = (base / uses[2:]).resolve()
-    if not callee_path.is_file():
-        raise ContractError(f"job {job_id!r} references missing reusable workflow {uses!r}")
-    callee = yaml.safe_load(callee_path.read_text(encoding="utf-8")) or {}
-    called_jobs = callee.get("jobs") or {}
-    if not called_jobs:
-        raise ContractError(f"reusable workflow {uses!r} has no jobs")
-
-    caller_names = _check_names(job_id, job)
-    inputs = job.get("with") or {}
-    names: list[str] = []
-    for called_id, called_job in called_jobs.items():
-        template = str((called_job or {}).get("name", called_id))
-
-        callee_name = _INPUT_EXPRESSION_RE.sub(
-            functools.partial(
-                _resolve_reusable_input,
-                inputs=inputs,
-                uses=uses,
-                called_id=called_id,
-            ),
-            template,
-        )
-        if "${{" in callee_name:
-            raise ContractError(
-                f"reusable workflow {uses!r} job {called_id!r} has an unsupported name: "
-                f"{template!r}"
-            )
-        names.extend(f"{caller_name} / {callee_name}" for caller_name in caller_names)
-    return names
-
-
 def collect() -> list[tuple[str, str, str]]:
     """(workflow, check name, scope) for every job reachable from a PR."""
     rows: list[tuple[str, str, str]] = []
@@ -284,10 +221,7 @@ def collect() -> list[tuple[str, str, str]]:
             job = job or {}
             scope = _job_scope(job, trigger_scope)
             try:
-                if "uses" in job:
-                    names = _reusable_check_names(path, job_id, job)
-                else:
-                    names = _check_names(job_id, job)
+                names = _check_names(job_id, job)
             except ContractError as exc:
                 raise ContractError(f"{path.name}: {exc}") from exc
             rows.extend((workflow, name, scope) for name in names)

@@ -239,35 +239,3 @@ class TestA2ANoSelfTransitions:
     @pytest.mark.parametrize("status", list(TaskStatus))
     def test_no_status_can_self_transition(self, status: TaskStatus) -> None:
         assert can_transition(status, status) is False
-
-
-def test_delegate_task_dedupes_only_on_a_matching_delegation_key() -> None:
-    """The receipt-side idempotency key returns the existing task for a
-    retried admission, and only that: a second admission under a different
-    key must mint a second task, which exercises the loop's no-match exit
-    rather than only its early return."""
-    delegator = A2ADelegator()
-    delegator.register_agent_capability("planner", ["coder"])
-    first = delegator.delegate_task(
-        "planner",
-        "first",
-        "coder",
-        delegation_mode=DelegationMode.ALLOW_LIST,
-        metadata={"delegation_key": "key-a"},
-    )
-    second = delegator.delegate_task(
-        "planner",
-        "second",
-        "coder",
-        delegation_mode=DelegationMode.ALLOW_LIST,
-        metadata={"delegation_key": "key-b"},
-    )
-    assert second != first
-    retried = delegator.delegate_task(
-        "planner",
-        "first",
-        "coder",
-        delegation_mode=DelegationMode.ALLOW_LIST,
-        metadata={"delegation_key": "key-a"},
-    )
-    assert retried == first

@@ -203,9 +203,7 @@ class TestTheRequiredSet:
         honest against the workflows, and a name in two places drifts in one."""
         names = check.required_check_names()
         assert "workflow-lint" in names
-        # The quality family's composed names since #1357's split:
-        # `Quality / <pillar> / Quality / <pillar>`.
-        assert [n for n in names if n.startswith("Quality / ")]
+        assert [n for n in names if n.startswith("Quality gate")]
 
     def test_base_coupled_checks_are_excluded(self, check: ModuleType) -> None:
         """CodeQL runs only on PRs based on `main`, so on a develop PR it

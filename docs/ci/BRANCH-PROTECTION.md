@@ -37,8 +37,8 @@ is also required live on both branches; because it is produced by
 
 | Branch | PR | Approvals | Linear history | Force-push | Deletion | Required checks |
 |---|:--:|:--:|:--:|:--:|:--:|:--:|
-| `develop` | yes | **0** | yes | no | no | **45** |
-| `main` | yes | **1** | no | no | no | **57** |
+| `develop` | yes | **0** | yes | no | no | **17** |
+| `main` | yes | **1** | no | no | no | **29** |
 
 | Check | `develop` | `main` |
 |---|:--:|:--:|
@@ -49,37 +49,8 @@ is also required live on both branches; because it is produced by
 | `Coverage gate (publish-set floor + diff coverage)` | ● | ● |
 | `DevSkim` | adv | ○ |
 | `Gate C — canonical clean install` | ● | ● |
-| `Quality / BFCL provenance / Quality / BFCL provenance` | ● | ● |
-| `Quality / Hypothesis property tests / Quality / Hypothesis property tests` | ● | ● |
-| `Quality / IFEval provenance / Quality / IFEval provenance` | ● | ● |
-| `Quality / acceptance-state ratchet + mandate / Quality / acceptance-state ratchet + mandate` | ● | ● |
-| `Quality / agent store write path / Quality / agent store write path` | ● | ● |
-| `Quality / architecture fitness functions / Quality / architecture fitness functions` | ● | ● |
-| `Quality / backlog consistency / Quality / backlog consistency` | ● | ● |
-| `Quality / contract marker ledger / Quality / contract marker ledger` | ● | ● |
-| `Quality / convergence matrix / Quality / convergence matrix` | ● | ● |
-| `Quality / doc links / Quality / doc links` | ● | ● |
-| `Quality / enumeration coverage / Quality / enumeration coverage` | ● | ● |
-| `Quality / execution lifecycles / Quality / execution lifecycles` | ● | ● |
-| `Quality / image inventory / Quality / image inventory` | ● | ● |
-| `Quality / interrogate / Quality / interrogate` | ● | ● |
-| `Quality / model egress / Quality / model egress` | ● | ● |
-| `Quality / mypy strict / Quality / mypy strict` | ● | ● |
-| `Quality / pyright ratchet / Quality / pyright ratchet` | ● | ● |
-| `Quality / radon CC ratchet / Quality / radon CC ratchet` | ● | ● |
-| `Quality / radon CC report / Quality / radon CC report` | ● | ● |
-| `Quality / reachability dispositions / Quality / reachability dispositions` | ● | ● |
-| `Quality / reachability ratchet / Quality / reachability ratchet` | ● | ● |
-| `Quality / release consistency / Quality / release consistency` | ● | ● |
-| `Quality / ruff format / Quality / ruff format` | ● | ● |
-| `Quality / ruff lint / Quality / ruff lint` | ● | ● |
-| `Quality / security inventory / Quality / security inventory` | ● | ● |
-| `Quality / version consistency / Quality / version consistency` | ● | ● |
-| `Quality / wiring reads ratchet / Quality / wiring reads ratchet` | ● | ● |
-| `Quality / xenon ratchet / Quality / xenon ratchet` | ● | ● |
-| `SAST / bandit / SAST / bandit` | ● | ● |
-| `SAST / gitleaks / SAST / gitleaks` | ● | ● |
-| `SAST / semgrep / SAST / semgrep` | ● | ● |
+| `Quality gate (Pillars 1–4, 7, 8)` | ● | ● |
+| `SAST (bandit + semgrep + gitleaks)` | ● | ● |
 | `Supply chain (pip-audit)` | ● | ● |
 | `Validate ADR/spec front-matter` | ● | ● |
 | `block` | ● | ● |
@@ -98,6 +69,7 @@ is also required live on both branches; because it is produced by
 | `postgres (pg17)` | adv | ● |
 | `postgres (pg18)` | adv | ● |
 | `pr-base` | adv | adv |
+| `security` | ● | ● |
 | `strike-ladder` | adv | ● |
 | `test` | ● | ● |
 | `wheel-imports` | adv | ● |
