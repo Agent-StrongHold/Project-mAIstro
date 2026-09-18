@@ -457,7 +457,9 @@ class TestAdmissionAndTransportConverge:
         )
 
         assert PAUSE_REASON_OWNERS[PAUSE_AWAITING_DELEGATION_RECONCILIATION] == "system"
-        assert PAUSE_RESUME_CONDITIONS[PAUSE_AWAITING_DELEGATION_RECONCILIATION] == RESUME_ON_ELAPSED
+        assert (
+            PAUSE_RESUME_CONDITIONS[PAUSE_AWAITING_DELEGATION_RECONCILIATION] == RESUME_ON_ELAPSED
+        )
 
     async def test_a_reconciliation_poll_recovers_the_lost_receipt(self) -> None:
         """The second invocation the recovery logic assumes. The first POST is
@@ -508,9 +510,11 @@ class TestAdmissionAndTransportConverge:
         assert second.status == "paused"
         assert second.metadata["paused_reason"] == "awaiting_remote_delegation"
         assert calls == {"post": 1, "get": 1}
-        child = await store.find_delegation_run(node._delegation_key(  # type: ignore[attr-defined]
-            node.input_schema.model_validate(inputs), ctx
-        ))
+        child = await store.find_delegation_run(
+            node._delegation_key(  # type: ignore[attr-defined]
+                node.input_schema.model_validate(inputs), ctx
+            )
+        )
         assert child is not None
         assert child.provenance["a2a_task_id"] == "remote-9"
 

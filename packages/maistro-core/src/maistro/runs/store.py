@@ -452,6 +452,7 @@ class RunStore(Protocol):
     async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
         """Resolve the canonical Run claiming one scheduled occurrence."""
         ...
+
     async def find_delegation_run(self, delegation_key: str) -> Run | None: ...
 
     async def attach_delegation_receipt(
@@ -971,6 +972,7 @@ class InMemoryRunStore:
         """Resolve an occurrence through its claim index, never by scanning Runs."""
         run_id = self._occurrences.get((schedule_id, scheduled_for))
         return await self.get_run(run_id) if run_id is not None else None
+
     async def find_delegation_run(self, delegation_key: str) -> Run | None:
         for run in self._runs.values():
             if run.provenance.get("delegation_key") == delegation_key:
