@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +9
+  packages/maistro-core/tests: +10
 ---
 # Workspace and Root Project lifecycle is crash-consistent (#1121)
 
@@ -16,3 +16,8 @@ run against the memory, SQLite and PostgreSQL legs of
   now injects at the durable stores' `create_root_in` seam (after the
   workspace and membership rows, before the root) and also asserts the
   membership is gone and the root is absent.
+
+`tests/workspaces/test_wiring.py` gains one more (+1): a durable Workspace
+store (PostgreSQL or SQLite) refuses at construction a Project store that
+cannot join its transaction, so the compensating non-transactional path
+#1121 would otherwise have left dead and uncovered no longer exists.
