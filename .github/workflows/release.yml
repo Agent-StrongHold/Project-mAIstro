@@ -391,7 +391,7 @@ jobs:
 
       - name: Build + push maistro-engine
         id: engine
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile
@@ -402,7 +402,7 @@ jobs:
 
       - name: Build + push hive-conductor
         id: conductor
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: packages/hive-conductor/Dockerfile
