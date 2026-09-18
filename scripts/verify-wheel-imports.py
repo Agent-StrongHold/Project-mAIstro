@@ -90,6 +90,9 @@ CORE_PUBLIC_SURFACE = [
     "maistro.reactor",
     "maistro.state",
     "maistro.vault",
+    # Shared SQLite schema-upgrade transaction discipline (asyncpg-free by
+    # design, so sqlite-only environments never need the PG driver).
+    "maistro.sqlite_schema",
     # Added 2026-07: these were importable from a bare install all along but
     # were simply never listed, so the enumeration gate reported each as a gap
     # ("importable module absent from CORE_PUBLIC_SURFACE") and all 18 sat in

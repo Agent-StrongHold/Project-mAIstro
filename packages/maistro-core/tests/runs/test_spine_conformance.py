@@ -1980,3 +1980,68 @@ async def test_status_listing_honors_the_workspace_boundary(spine: Any) -> None:
     mine = await store.list_by_status(RunStatus.FAILED, workspace_id=workspace)
     assert [item.run_id for item in mine] == [run.run_id]
     assert await store.list_by_status(RunStatus.FAILED, workspace_id="workspace-nobody") == []
+
+
+# ── delegation reservation and receipt (#1090 review round) ──────────
+
+
+async def test_a_delegation_reservation_and_receipt_round_trip(spine: Any) -> None:
+    """The receipt-side identity the remote node leans on, on every backend.
+
+    `find_delegation_run` is how a retry adopts a concurrent replica's
+    reservation instead of minting a second child; `attach_delegation_receipt`
+    is how the transport's answer becomes durable evidence. Both must behave
+    identically where the run actually lives — memory in tests, SQLite or
+    PostgreSQL in production — including the refusal to overwrite an existing
+    receipt with a different task: two receipts for one logical hand-off is
+    the same "second lifecycle" the delegation node exists to prevent.
+    """
+    store, workspace, project_id = spine
+    run = await store.create_run(
+        _graph(workspace, project_id),
+        provenance={"delegation_key": "key-round-trip"},
+    )
+
+    found = await store.find_delegation_run("key-round-trip")
+    assert found is not None
+    assert found.run_id == run.run_id
+    assert await store.find_delegation_run("key-unknown") is None
+
+    attached = await store.attach_delegation_receipt(
+        run.run_id, "task-1", target_agent="researcher"
+    )
+    assert attached.provenance["a2a_task_id"] == "task-1"
+    assert attached.provenance["target_agent"] == "researcher"
+
+    reloaded = await store.get_run(run.run_id)
+    assert reloaded is not None
+    assert reloaded.provenance["a2a_task_id"] == "task-1"
+
+    # Re-attaching the same task is idempotent; a different task is a conflict.
+    again = await store.attach_delegation_receipt(run.run_id, "task-1")
+    assert again.provenance["a2a_task_id"] == "task-1"
+    with pytest.raises(RunIntegrityError):
+        await store.attach_delegation_receipt(run.run_id, "task-2")
+
+
+async def test_the_transport_boundary_claim_is_one_winner(spine: Any) -> None:
+    """The CAS that keeps a lost receipt from becoming a second dispatch.
+
+    A replica adopts the reservation, then claims the one allowed transport
+    attempt before calling the peer. The claim must be a winner-take-all
+    transition that survives a reload — on every backend, because "the
+    boundary was already crossed" is exactly what a retry on another replica
+    (or another process against SQLite) must be able to observe.
+    """
+    store, workspace, project_id = spine
+    run = await store.create_run(
+        _graph(workspace, project_id),
+        provenance={"delegation_key": "key-claim"},
+    )
+
+    assert await store.claim_delegation_transport_attempt(run.run_id) is True
+    assert await store.claim_delegation_transport_attempt(run.run_id) is False
+
+    reloaded = await store.get_run(run.run_id)
+    assert reloaded is not None
+    assert reloaded.provenance["transport_attempted"] is True
