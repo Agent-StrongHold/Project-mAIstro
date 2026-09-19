@@ -164,8 +164,8 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
 | Stronghold had | Engine has | Status |
 | --- | --- | --- |
 | Tool-argument size limit (100 KB, JSON-bomb protection) | No dedicated tool-arg size cap found in `security/sentinel/validator.py` or `tools/` | `gap-impl` |
-| SSRF blocklist (private networks, cloud metadata endpoints, loopback) for outbound tool/skill HTTP calls | **Present** — `security/ssrf.py::validate_outbound_url` refuses any URL that is not http(s) with a resolvable host on the public internet, checking every address the host resolves to (private, loopback, link-local, reserved, multicast, unspecified, and the RFC 6598 shared range `100.64.0.0/10`, which no stdlib predicate names) and refusing a name it cannot resolve at all. Applied at `maistro.http`'s pooled transport by `security/outbound.py` (ADR-082326-5386), and at the sync seam `maistro.http::sync_client` builds for the approvals CLI, so a module is covered by routing through the shared pool rather than by remembering to call the guard — redirect hops included, since httpx re-enters the transport for each one. Configured endpoints — the LiteLLM/Ollama gateway, ntfy, a Home Assistant URL — are allowed by exact origin, seeded from settings. The **filesystem** path blocklist (`security/patterns.py:BLOCKED_HOST_PATHS`) is separate and unrelated | `partial` — covered at both the async and sync seams, proxy mounts included; the measured reach is in Known Limitation 1, and the rebinding window between the guard's lookup and the client's remains open |
-| `hmac.compare_digest`-based constant-time comparison for API keys | Present: `security/secret_equal.py` | ✅ (engine has this) |
+| SSRF blocklist (private networks, cloud metadata endpoints, loopback) for outbound tool/skill HTTP calls | **Present for ordinary HTTP** — `security/ssrf.py::validate_outbound_url` refuses any URL that is not http(s) with a resolvable host on the public internet, checking every address the host resolves to (private, loopback, link-local, reserved, multicast, unspecified, and the RFC 6598 shared range `100.64.0.0/10`, which no stdlib predicate names) and refusing a name it cannot resolve at all. Applied at `maistro.http`'s pooled transport by `security/outbound.py` (ADR-082326-5386), and at the sync seam `maistro.http::sync_client` builds for the approvals CLI, so a module is covered by routing through the shared pool rather than by remembering to call the guard — redirect hops included, since httpx re-enters the transport for each one. Configured endpoints — the LiteLLM/Ollama gateway, ntfy, a Home Assistant URL — are allowed by exact origin, seeded from settings. The **filesystem** path blocklist (`security/patterns.py:BLOCKED_HOST_PATHS`) is separate and unrelated | `partial` — ordinary async and sync HTTP seams, including proxy mounts, are covered; Chromium is a separate transport listed below and is not covered by this client seam |
+| Browser/Chromium navigation SSRF protection | **Present at separate Playwright seams** — `maistro.tools.browser.guard::BrowserNetworkGuard` (async) and `SyncBrowserNetworkGuard` (sync) route every request and redirect hop through the same canonical policy. The browser-use provider (`maistro.tools.browser.client::BrowserClient`), Conductor UI hill-climber (`packages/hive-conductor/backend/services/ui_auto_climb.py::screenshot`), dashboard screenshot route (`packages/hive-conductor/backend/routes/widgets.py::capture_screenshot`), and the standalone hill-climb driver (`packages/hive-conductor/run_hill_climb.py`) attach the appropriate guard before navigation; service workers are blocked. Operator allowances are exact origins from `BROWSER_USE_ALLOWED_ORIGINS`, with the dashboard's fixed `http://localhost:5173` endpoint explicitly allowlisted. This is not shared-client coverage: Chromium does not traverse `maistro.http` | `partial` — supported Playwright transports are enumerated and guarded; a future browser integration must attach `BrowserNetworkGuard` or `SyncBrowserNetworkGuard` before it creates or receives a page |
 | PostgreSQL persistence with org-scoped queries by default | InMemory stores are the default; PostgreSQL implementations exist (`persistence/`) but require explicit configuration | Matches engine's own known limitation below, not a regression |
 
 ---
@@ -189,7 +189,8 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
 
 ## Known Limitations (honest assessment)
 
-1. **SSRF protection is applied at the shared-client transport, not at call sites.**
+1. **SSRF protection has two transport seams: ordinary HTTP and Chromium.**
+   Ordinary HTTP is applied at the shared-client transport, not at call sites.
    `validate_outbound_url` in `security/ssrf.py` refuses anything that is not http(s) with a
    resolvable host, and checks every address the host resolves to — which normalises the
    obfuscations (`2852039166`, `0x7f000001`, `127.1`, `[::ffff:169.254.169.254]`,
@@ -201,12 +202,13 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    measured (`measured-outbound-http`), of the **33** modules in `maistro-core` that can open an
    outbound connection, **5** call the guard directly. Read as a coverage figure that number is
    wrong now, and it was the honest figure before — which is the whole argument for moving the
-   control. The fifth call site is not a call site at all but a second enforcement seam:
+   control. Chromium is a separate transport seam, not a shared-client call site:
    `tools/browser/guard.py` applies this policy to every request a Playwright browser context
    makes (#855), because a browser is not an HTTP client and the httpx transport cannot see
-   where it navigates.
+   where it navigates. Both async and sync Playwright callers are listed in the browser
+   transport row above and must attach the corresponding guard before navigation.
 
-   What replaced it: `security/outbound.py` applies the policy at the transport `maistro.http`
+   What replaced it for ordinary HTTP: `security/outbound.py` applies the policy at the transport `maistro.http`
    hands to every pooled client (ADR-082326-5386), so a module is covered by routing through the
    shared pool. Measured (`measured-outbound-seam`) — **33** of the census route through the pool
    and **0** build their own client. Redirect hops are validated per hop, because httpx re-enters
