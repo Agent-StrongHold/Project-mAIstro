@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 
 import asyncpg
 from fastapi import APIRouter, Depends, Request, Response, status
@@ -14,12 +14,9 @@ from pydantic import BaseModel
 import maistro.agents.circuit_breaker as circuit_breaker
 from maistro.config.settings import Settings, get_settings
 from maistro.http import shared_client_stats
-from maistro_server.api.schemas import HealthResponse
 from maistro_server.startup import StartupPhase, get_startup_phase
 
 router = APIRouter(tags=["health"])
-
-_start_time = time.monotonic()
 
 
 class ProbeResult(BaseModel):
@@ -31,24 +28,6 @@ class ProbeResult(BaseModel):
 class StartupHealthResponse(BaseModel):
     status: Literal["ok", "starting", "failed"]
     startup_complete: bool
-
-
-class DetailedHealthResponse(BaseModel):
-    status: str  # "ok", "degraded", "unhealthy"
-    uptime_seconds: float
-    service: str
-    version: str
-    checks: dict[str, ProbeResult]
-    effective_resource_policy: dict[str, int | float | bool]
-    strike_tracker: dict[str, str | bool]
-
-
-def _strike_tracker_diagnostics(container: Any) -> dict[str, str | bool]:
-    """Report the configured strike tracker without touching its state."""
-    tracker = getattr(container, "strike_tracker", None)
-    if tracker is None:
-        return {"enabled": False, "backend": "none"}
-    return {"enabled": True, "backend": type(tracker).__name__}
 
 
 async def _check_postgres(settings: Settings) -> ProbeResult:
@@ -98,15 +77,9 @@ async def _check_docker() -> ProbeResult:
 
 
 @router.get("/health")
-async def health_check(request: Request) -> HealthResponse:
-    """Lightweight liveness probe."""
-    uptime = time.monotonic() - _start_time
-    return HealthResponse(
-        status="ok",
-        uptime_seconds=round(uptime, 1),
-        service="maistro-engine",
-        version=request.app.version,
-    )
+async def health_check() -> dict[str, str]:
+    """Minimal public liveness response; diagnostics stay off the public path."""
+    return {"status": "ok"}
 
 
 @router.get("/health/live")
@@ -135,12 +108,9 @@ async def startup(request: Request, response: Response) -> StartupHealthResponse
 
 @router.get("/health/ready", response_model=None)
 async def readiness(
-    request: Request,
     settings: Annotated[Settings, Depends(get_settings)],
-) -> DetailedHealthResponse | JSONResponse:
-    """Readiness probe — checks Docker, Postgres, LLM, and HTTP pool state."""
-    uptime = time.monotonic() - _start_time
-    container = getattr(request.app.state, "container", None)
+) -> dict[str, str] | JSONResponse:
+    """Minimal public readiness response after dependency checks."""
     docker_result = (
         await _check_docker()
         if settings.sandbox.readiness_required
@@ -156,8 +126,8 @@ async def readiness(
 
     # The outbound pool is a process resource rather than an external
     # dependency, so observing it cannot make readiness fail through a network
-    # probe. Surface its live occupancy and configured ceilings so operators can
-    # distinguish provider latency from local connection-pool pressure.
+    # probe. Include it in the aggregate readiness decision without returning
+    # its occupancy or configured ceilings to anonymous callers.
     http_stats = shared_client_stats()
     http_pool_result = ProbeResult(
         status="ok",
@@ -177,16 +147,8 @@ async def readiness(
     }
     all_ok = all(c.status == "ok" for c in checks.values())
 
-    result = DetailedHealthResponse(
-        status="ok" if all_ok else "degraded",
-        uptime_seconds=round(uptime, 1),
-        service="maistro-engine",
-        version=request.app.version,
-        checks=checks,
-        effective_resource_policy=settings.effective_resource_policy().as_dict(),
-        strike_tracker=_strike_tracker_diagnostics(container),
-    )
-
     if not all_ok:
-        return JSONResponse(content=result.model_dump(), status_code=503)
-    return result
+        # Do not disclose which dependency, policy, or backend failed to an
+        # anonymous probe; operators use the secured metrics path instead.
+        return JSONResponse(content={"status": "not_ready"}, status_code=503)
+    return {"status": "ok"}

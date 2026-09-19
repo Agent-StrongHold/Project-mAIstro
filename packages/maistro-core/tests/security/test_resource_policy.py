@@ -156,8 +156,8 @@ def test_the_suite_env_would_hide_these_refusals_without_the_fixture(
 def test_every_protected_field_has_a_declared_floor() -> None:
     """A limit is enforced because it appears in `_FLOORS`. A field added to
     `EffectiveResourcePolicy` and left out of that tuple would sit in the
-    readiness diagnostic and the settings table looking governed while being
-    freely weakenable — the exact shape of inert security configuration this
+    settings table looking governed while being freely weakenable — the exact
+    shape of inert security configuration this
     repository rejects."""
     from dataclasses import fields
 
