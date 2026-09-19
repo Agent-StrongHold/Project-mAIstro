@@ -529,6 +529,7 @@ export function Toggle({ checked, onChange, label }: { checked: boolean; onChang
       <button
         role="switch"
         aria-checked={checked}
+        aria-label={label}
         onClick={() => onChange(!checked)}
         style={{
           width: 28, height: 16, borderRadius: 8, border: "none", padding: 0,

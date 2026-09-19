@@ -363,6 +363,23 @@ or placeholder-only section.
   slows the fetch and asserts the skeleton has a non-zero bounding box;
   against the unfixed build it times out as hidden.
 
+- **Infinite pulse/spin/bounce animations respect
+  `prefers-reduced-motion`, and the shared switch control announces a name
+  (#1415, #1414).** Only the skeleton pulse (`#1408`) was guarded; the
+  dashboard status dot's `status-pulse` (2.2s), the chat typing
+  indicator's `bounce` (1.4s), and a running tool step's `loading-spin`
+  (1s) all looped forever regardless of the OS motion setting. All three
+  now sit in the same guarded block as the skeleton pulse.
+  `tests/e2e/dashboard-reduced-motion.spec.ts` asserts the status dot's
+  computed `animation-name` is `none` under a reduced-motion preference
+  and `status-pulse` without one; against the unfixed build the first
+  assertion fails. Also: `shared.tsx`'s `Toggle`'s `role="switch"` button
+  had no accessible name — its label text was a sibling, not associated —
+  so it now also carries `aria-label`; `Toggle` has no current consumer in
+  the frontend (confirmed via full git history search), so this is a
+  source-only fix with no reachable regression test, the same shape as
+  `#1413`.
+
 - **The workspace toolbar explains a first run, truncates long names, shows
   personas by name and tagline, and forgets an account on sign-out (#1426,
   #1431, #1424, #1437, #1418, #1433).** A zero-workspace account now sees a
