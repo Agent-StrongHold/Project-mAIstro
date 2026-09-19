@@ -30,7 +30,7 @@ export function RichTooltip({ children, content, side = "top", align = "center" 
             ...Object.fromEntries(ALIGN[align].split(";").filter(Boolean).map(s => { const [k, v] = s.split(":"); return [k.trim(), v.trim()]; })),
             background: "var(--ink, #1a1a1a)",
             color: "var(--paper, #fafafa)",
-            fontSize: "0.68rem",
+            fontSize: "var(--text-floor)",
             padding: "6px 10px",
             borderRadius: 6,
             boxShadow: "0 4px 12px rgba(0,0,0,0.2)",

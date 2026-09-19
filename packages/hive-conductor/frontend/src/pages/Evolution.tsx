@@ -194,7 +194,7 @@ export default function Evolution() {
                         color: "var(--paper)",
                         padding: "2px 8px",
                         borderRadius: 4,
-                        fontSize: 11,
+                        fontSize: 12,
                       }}
                     >
                       {bench}: {(score as number).toFixed(3)}
@@ -249,7 +249,7 @@ export default function Evolution() {
                 const passed = Object.values(g.eval_scores).filter((s) => s > 0.2).length;
                 return (
                   <tr key={g.id} style={{ borderBottom: "1px solid var(--border)" }}>
-                    <td style={{ padding: 8, fontFamily: "var(--mono)", fontSize: 11 }}>
+                    <td style={{ padding: 8, fontFamily: "var(--mono)", fontSize: 12 }}>
                       {g.name || g.id.slice(0, 12)}
                     </td>
                     <td style={{ padding: 8, fontWeight: g.id === champion?.id ? 700 : 400 }}>
@@ -292,7 +292,7 @@ export default function Evolution() {
                 {leaderboard.map((entry, i) => (
                   <tr key={entry.genome_id} style={{ borderBottom: "1px solid var(--border)" }}>
                     <td style={{ padding: 8 }}>{i + 1}</td>
-                    <td style={{ padding: 8, fontFamily: "var(--mono)", fontSize: 11 }}>
+                    <td style={{ padding: 8, fontFamily: "var(--mono)", fontSize: 12 }}>
                       {entry.genome_id.slice(0, 16)}
                     </td>
                     <td style={{ padding: 8, fontWeight: 600 }}>{entry.avg_elo.toFixed(0)}</td>
@@ -316,7 +316,7 @@ export default function Evolution() {
 function StatCard({ label, value, color }: { label: string; value: string; color?: string }) {
   return (
     <div style={{ background: "var(--card)", borderRadius: 8, padding: 16 }}>
-      <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4, textTransform: "uppercase" }}>{label}</div>
+      <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4, textTransform: "uppercase" }}>{label}</div>
       <div style={{ fontSize: 24, fontWeight: 700, color: color ?? "var(--ink)" }}>{value}</div>
     </div>
   );

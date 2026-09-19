@@ -195,18 +195,18 @@ export default function Setup() {
         <div style={{ width: "100%", maxWidth: 520, background: "var(--paper)", border: "2px solid var(--ink)", borderRadius: 8 }}>
           <div style={{ padding: "16px 20px", borderBottom: "2px solid var(--ink)", background: "rgba(196,69,42,0.08)" }}>
             <div style={{ fontFamily: "var(--hand)", fontSize: 22, fontWeight: 700, color: "var(--danger)" }}>Recovery Seed Phrase</div>
-            <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--danger)", marginTop: 4 }}>WRITE THESE DOWN. They will never be shown again. This is the root of trust for your hive.</div>
+            <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--danger)", marginTop: 4 }}>WRITE THESE DOWN. They will never be shown again. This is the root of trust for your hive.</div>
           </div>
           <div style={{ padding: 16 }}>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
               {mnemonic.map((word, i) => (
-                <div key={i} style={{ fontFamily: "var(--mono)", fontSize: 11, padding: "4px 6px", border: "1px solid var(--rule)", borderRadius: 3, display: "flex", gap: 4 }}>
-                  <span style={{ color: "var(--pencil)", fontSize: 9 }}>{i + 1}.</span> {word}
+                <div key={i} style={{ fontFamily: "var(--mono)", fontSize: 12, padding: "4px 6px", border: "1px solid var(--rule)", borderRadius: 3, display: "flex", gap: 4 }}>
+                  <span style={{ color: "var(--pencil)", fontSize: 12 }}>{i + 1}.</span> {word}
                 </div>
               ))}
             </div>
             {didKey && (
-              <div style={{ marginTop: 12, padding: "6px 8px", background: "var(--honey-light)", borderRadius: 4, fontFamily: "var(--mono)", fontSize: 8, wordBreak: "break-all" }}>
+              <div style={{ marginTop: 12, padding: "6px 8px", background: "var(--honey-light)", borderRadius: 4, fontFamily: "var(--mono)", fontSize: 12, wordBreak: "break-all" }}>
                 <span style={{ color: "var(--pencil)" }}>DID:</span> {didKey}
               </div>
             )}
@@ -237,8 +237,8 @@ export default function Setup() {
 
         <div style={{ display: "flex", borderBottom: "1px solid var(--rule)" }}>
           {steps.map((s, i) => (
-            <div key={s} style={{ flex: 1, padding: "8px 0", textAlign: "center", fontFamily: "var(--mono)", fontSize: 9, cursor: "pointer", borderBottom: step === i ? "2px solid var(--accent)" : "2px solid transparent", color: step === i ? "var(--ink)" : i < step ? "var(--ok)" : "var(--pencil)", fontWeight: step === i ? 700 : 400 }} onClick={() => { if (i < step) setStep(i); }}>
-              <div style={{ width: 18, height: 18, borderRadius: "50%", border: `1.3px solid ${i <= step ? "var(--accent)" : "var(--rule)"}`, background: i < step ? "var(--accent)" : "transparent", color: i < step ? "var(--paper)" : "var(--pencil)", margin: "0 auto 3px", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 8 }}>
+            <div key={s} style={{ flex: 1, padding: "8px 0", textAlign: "center", fontFamily: "var(--mono)", fontSize: 12, cursor: "pointer", borderBottom: step === i ? "2px solid var(--accent)" : "2px solid transparent", color: step === i ? "var(--ink)" : i < step ? "var(--ok)" : "var(--pencil)", fontWeight: step === i ? 700 : 400 }} onClick={() => { if (i < step) setStep(i); }}>
+              <div style={{ width: 18, height: 18, borderRadius: "50%", border: `1.3px solid ${i <= step ? "var(--accent)" : "var(--rule)"}`, background: i < step ? "var(--accent)" : "transparent", color: i < step ? "var(--paper)" : "var(--pencil)", margin: "0 auto 3px", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12 }}>
                 {i < step ? "\u2713" : i + 1}
               </div>
               {s}
@@ -247,7 +247,7 @@ export default function Setup() {
         </div>
 
         <div style={{ padding: "16px 20px", minHeight: 240 }}>
-          {error && <div style={{ padding: "6px 10px", background: "rgba(196,69,42,0.12)", border: "1px solid var(--danger)", borderRadius: 4, fontFamily: "var(--mono)", fontSize: 9, color: "var(--danger)", marginBottom: 10 }}>{error}</div>}
+          {error && <div style={{ padding: "6px 10px", background: "rgba(196,69,42,0.12)", border: "1px solid var(--danger)", borderRadius: 4, fontFamily: "var(--mono)", fontSize: 12, color: "var(--danger)", marginBottom: 10 }}>{error}</div>}
 
           {step === 0 && (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -259,7 +259,7 @@ export default function Setup() {
                 {/* One label for whichever control this branch renders, so the
                     field keeps its name when the models list arrives and the
                     <input> becomes a <select> (#375). */}
-                <label htmlFor="setup-router-model" style={{ display: "block", fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginBottom: 3 }}>Router model</label>
+                <label htmlFor="setup-router-model" style={{ display: "block", fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 3 }}>Router model</label>
                 {availableModels.length > 0 ? (
                   <select
                     id="setup-router-model"
@@ -284,7 +284,7 @@ export default function Setup() {
                     disabled={modelsLoading}
                   />
                 )}
-                <div style={{ fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)", marginTop: 4 }}>
+                <div style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", marginTop: 4 }}>
                   The queen bee's brain — classifies intent, complexity, and cost to route each request to the best worker model. Needs to be fast and cheap, not the strongest. <code>gemini-3.1-flash-lite</code> is a good default.{" "}
                   <a
                     href="https://latest.llm-gateway-admin.example.com/ui/?page=model-hub"
@@ -305,7 +305,7 @@ export default function Setup() {
               <div style={{ fontFamily: "var(--hand)", fontSize: 18, fontWeight: 600, marginBottom: 8 }}>Pick your hardware tier</div>
               {Object.keys(presets).length === 0 && (
                 <div className="card" style={{ marginBottom: 10, borderLeft: "3px solid var(--pencil)" }}>
-                  <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginBottom: 6 }}>
+                  <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 6 }}>
                     {presetsUnavailable ? "HARDWARE PROFILES UNAVAILABLE" : "LOADING HARDWARE PROFILES"}
                   </div>
                   <div style={{ fontFamily: "var(--hand)", fontSize: 12, lineHeight: 1.4 }}>
@@ -319,8 +319,8 @@ export default function Setup() {
                 {Object.values(presets).map((p) => (
                   <div key={p.name} onClick={() => setPreset(p.name)} style={{ padding: 10, border: `1.4px solid ${preset === p.name ? "var(--accent)" : "var(--ink)"}`, borderRadius: 6, cursor: "pointer", background: preset === p.name ? "var(--honey-light)" : "transparent" }}>
                     <div style={{ fontFamily: "var(--hand)", fontSize: 17, fontWeight: 600, color: preset === p.name ? "var(--accent)" : "var(--ink)" }}>{p.label}</div>
-                    <div style={{ fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)", margin: "3px 0" }}>{p.description}</div>
-                    <div style={{ fontFamily: "var(--mono)", fontSize: 8, color: "var(--pencil)" }}>{p.max_vcpu} vCPU · {p.max_memory_gb}GB · {p.db_backend} · {p.max_agents} agents{p.gpu_available ? " · GPU" : ""}</div>
+                    <div style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", margin: "3px 0" }}>{p.description}</div>
+                    <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)" }}>{p.max_vcpu} vCPU · {p.max_memory_gb}GB · {p.db_backend} · {p.max_agents} agents{p.gpu_available ? " · GPU" : ""}</div>
                   </div>
                 ))}
               </div>
@@ -336,7 +336,7 @@ export default function Setup() {
                 <strong style={{ color: "var(--accent)" }}>User</strong> = your daily driver. Full access to chat, agents, missions — everything you actually use.
               </div>
               <div className="card" style={{ borderLeft: "3px solid var(--danger)" }}>
-                <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--danger)", marginBottom: 6 }}>ADMIN (BREAK-GLASS)</div>
+                <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--danger)", marginBottom: 6 }}>ADMIN (BREAK-GLASS)</div>
                 {/* Both password fields on this step were named "password" and
                     nothing else, one for each account -- identical to anything
                     that cannot see which card they sit in (#375). */}
@@ -346,7 +346,7 @@ export default function Setup() {
                 </div>
               </div>
               <div className="card" style={{ borderLeft: "3px solid var(--accent)" }}>
-                <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--accent)", marginBottom: 6 }}>DAILY USER</div>
+                <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--accent)", marginBottom: 6 }}>DAILY USER</div>
                 <div style={{ display: "flex", gap: 8 }}>
                   <TextField label="Daily user username" value={userUsername} onChange={setUserUsername} autoComplete="username" required style={{ flex: 1 }} />
                   <SecretField label="Daily user password" value={userPassword} onChange={setUserPassword} autoComplete="new-password" required style={{ flex: 1 }} />
@@ -366,8 +366,8 @@ export default function Setup() {
                   <div key={m.id} className="card" style={{ display: "grid", gridTemplateColumns: "1fr 36px", gap: 8, alignItems: "center", opacity: depsMet || enabled ? 1 : 0.5 }}>
                     <div>
                       <div style={{ fontFamily: "var(--hand)", fontSize: 15, fontWeight: 600 }}>{m.name}</div>
-                      <div style={{ fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)" }}>{m.desc}</div>
-                      {m.requires.length > 0 && <div style={{ fontFamily: "var(--mono)", fontSize: 8, color: "var(--pencil)", marginTop: 2 }}>requires: {m.requires.join(", ")}</div>}
+                      <div style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)" }}>{m.desc}</div>
+                      {m.requires.length > 0 && <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginTop: 2 }}>requires: {m.requires.join(", ")}</div>}
                     </div>
                     <div className={`toggle${enabled ? " on" : ""}`} onClick={() => { if (depsMet || enabled) setModules(enabled ? modules.filter((x) => x !== m.id) : [...modules, m.id]); }} />
                   </div>
@@ -380,24 +380,24 @@ export default function Setup() {
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               <div style={{ fontFamily: "var(--hand)", fontSize: 18, fontWeight: 600 }}>Confirm configuration</div>
               <div className="card">
-                <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginBottom: 4 }}>HIVE</div>
+                <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 4 }}>HIVE</div>
                 <div style={{ fontFamily: "var(--hand)", fontSize: 16 }}>{conductorName}</div>
-                <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginTop: 2 }}>router: {routerModel}</div>
+                <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginTop: 2 }}>router: {routerModel}</div>
               </div>
               <div className="card">
-                <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginBottom: 4 }}>HARDWARE</div>
+                <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 4 }}>HARDWARE</div>
                 <div style={{ fontFamily: "var(--hand)", fontSize: 16 }}>{preset ?? "none selected"}</div>
               </div>
               <div className="card">
-                <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginBottom: 4 }}>ACCOUNTS</div>
+                <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 4 }}>ACCOUNTS</div>
                 <div style={{ display: "flex", gap: 12 }}>
-                  <div><span style={{ fontFamily: "var(--hand)", fontSize: 16 }}>{adminUsername}</span> <span className="hex-badge" style={{ background: "var(--danger)", color: "var(--paper)", fontSize: 8 }}>admin</span></div>
-                  <div><span style={{ fontFamily: "var(--hand)", fontSize: 16 }}>{userUsername || "(not set)"}</span> <span className="hex-badge" style={{ background: "var(--accent)", color: "var(--paper)", fontSize: 8 }}>user</span></div>
+                  <div><span style={{ fontFamily: "var(--hand)", fontSize: 16 }}>{adminUsername}</span> <span className="hex-badge" style={{ background: "var(--danger)", color: "var(--paper)", fontSize: 12 }}>admin</span></div>
+                  <div><span style={{ fontFamily: "var(--hand)", fontSize: 16 }}>{userUsername || "(not set)"}</span> <span className="hex-badge" style={{ background: "var(--accent)", color: "var(--paper)", fontSize: 12 }}>user</span></div>
                 </div>
               </div>
               {modules.length > 0 && (
                 <div className="card">
-                  <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginBottom: 4 }}>OPTIONAL MODULES</div>
+                  <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 4 }}>OPTIONAL MODULES</div>
                   <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                     {modules.map((m) => <span key={m} className="hex-badge">{m}</span>)}
                   </div>

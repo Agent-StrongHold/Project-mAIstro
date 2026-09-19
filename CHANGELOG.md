@@ -179,8 +179,11 @@ or placeholder-only section.
   the list of assumed ones, and refuses while any required field is missing.
   The first script is a video brief for creator workspaces. Hive hosts the
   interview beside the onboarding one, at `/v1/program/brief` (`start`,
-  `answer`, `draft`, and delete), persisted per (user, workspace); the
-  Workspace Agent chat that will carry it as ordinary turns is a follow-up.
+  `answer`, `draft`, and delete), persisted per (user, workspace), and as
+  ordinary chat turns: `POST /v1/chat/stream` and `/complete` take a
+  `workspace_id`, and a turn there that asks for work is answered by the
+  interview instead of the model, with a `brief` event the Chat page renders
+  as the "brief so far" panel. The Warden input boundary still runs first.
 - **The Workspace has a first-party design system (#1046, #1048, #65;
   ADR-091626-ba4f).** `maistro-design` now bundles `workspace` as a seventh Tier-1 system —
   the first authored in this repo rather than vendored from open-design. It
@@ -225,6 +228,22 @@ or placeholder-only section.
 
 ### Changed
 
+- **The Conductor frontend renders on the Workspace design system (#1046,
+  #1048, #65; ADR-091626-ba4f).** `frontend/src/themes/workspace-tokens.css`
+  is a byte-for-byte copy of the bundled `workspace` tokens, held identical by
+  a backend test; a bridge file binds the old Conductor variable names
+  (`--paper`, `--ink`, `--pencil`, `--rule`, `--honey`, `--purple`, the shadow
+  scale…) to them so every page keeps rendering while it moves over, with one
+  accent, no gradient and no hover glow. Light/dark is now `data-scheme` on
+  `<html>` (the user's choice or the OS preference) and a workspace's persona
+  template is `data-theme`, so a theme never forces a scheme; the hand-written
+  `dark` and `fantasia` stylesheets are gone. The theme catalog
+  (`GET /v1/workspaces/themes`) offers the design system's templates,
+  greenhouse (default), slate and studio; workspaces stored with `default`,
+  `dark` or `fantasia` stay valid and render as greenhouse, greenhouse and
+  slate. Bricolage Grotesque ships from the app's origin beside JetBrains
+  Mono, and every font size below the 12px floor (23 in the stylesheet, 524
+  inline) is raised to it.
 - **The merge-queue bot quarantines a head that already failed inside the
   queue (#1438 review follow-up).** `scripts/check-enqueue-merge-queue.py`
   re-requested any policy-green PR head on every scan, including one the
@@ -278,6 +297,72 @@ or placeholder-only section.
 
 ### Fixed
 
+- **The workspace toolbar explains a first run, truncates long names, shows
+  personas by name and tagline, and forgets an account on sign-out (#1426,
+  #1431, #1424, #1437, #1418, #1433).** A zero-workspace account now sees a
+  one-line explanation of what a workspace is and a "Create workspace"
+  action instead of a bare "+". The tab strip holds only tabs and scrolls
+  sideways in one row; a long name truncates with an ellipsis and keeps its
+  full text in the tooltip, so the toolbar no longer stacks into a column at
+  phone width. The create form is a panel below the "+" whose persona picker
+  is a radio group showing each persona's name and tagline. The four
+  per-account localStorage keys (active workspace, appearance, UI mode,
+  onboarding) are stamped with the signed-in user, cleared when a different
+  account signs in, cleared on sign-out, and listed with their values on the
+  Profile page beside a "Clear browser state" button.
+  `tests/e2e/workspace-toolbar.spec.ts` covers each in a real browser.
+- **A Workspace and its Root Project are created and deleted in one
+  transaction (#1121).** The durable Workspace stores wrote the Workspace row
+  and its owner membership, committed, and only then asked the Project store
+  for the Root Project on a second connection, with an in-process compensator
+  covering an exception between the two and nothing covering a crash there;
+  `delete` was the same in reverse. A process that died between the halves
+  left a Workspace with no Root Project -- which `root_for_workspace()` treats
+  as impossible, so every Run filed to it failed -- or a Project tree with no
+  Workspace to reach it by. The PostgreSQL and SQLite Project scope stores now
+  expose `TransactionalProjectScopeStore` (`transaction()`, `create_root_in`,
+  `purge_workspace_in`), and the Workspace store on the same pool or
+  connection issues all of its rows and the Root Project inside that one
+  transaction, so either all of it commits or none of it does. On SQLite the
+  Workspace store also takes the scope store's write lock rather than one of
+  its own, since two locks over one connection is how "cannot start a
+  transaction within a transaction" arises. No root is invented lazily on
+  read: `root_for_workspace()` stays a true invariant because creation is
+  atomic. The conformance suite injects a failure at each seam and reads a
+  fresh store back on all three backends.
+- **Workspace mutations confirm, ask before they destroy, and cost one
+  request (#1407, #1429, #1428, #1430, #1434).** Creating, archiving,
+  deleting a workspace, inviting or removing a member and saving tool
+  bindings each raise a success toast. Archive takes the same two steps as
+  Delete instead of one unconfirmed click. Archived workspaces are listed
+  behind an "Archived (n)" disclosure at the end of the tab strip with a
+  Restore for each, since the backend has always accepted `PATCH {active:
+  true}`. The Tools panel tracks unsaved edits (a badge on the toggle and in
+  the panel, Save disabled when clean) and asks before a close would discard
+  them. The workspace provider patches the changed record into local state
+  after an archive or delete rather than refetching the whole list.
+  `tests/e2e/workspace-lifecycle.spec.ts` walks each as the admin account
+  and counts the requests.
+- **Workspace status messages announce, and wizard fields are named by their
+  visible labels (#1405, #1416).** The Conductor's toast container is now a
+  polite live region and the error regions of the workspace tab bar, Share
+  panel, Tools panel and persona wizard are alerts, so a refused invite or a
+  failed save is announced to a screen reader instead of appearing silently
+  (WCAG 4.1.3). The draft modal's loading text is a status message. The
+  persona wizard's "Persona id" and "Workspace nav sections" fields dropped
+  the shorter `aria-label` that overrode their visible labels, so a
+  voice-control user can target them by the words on screen (WCAG 2.5.3).
+  `tests/e2e/workspace-a11y.spec.ts` asks the accessibility tree for each.
+- **Workspace-scoped pages wait for the workspace to resolve (#1427).** On a
+  first-ever session the Conductor's Jira drafts, Agents and Missions pages
+  fired their workspace-scoped requests before `GET /v1/workspaces` had
+  returned, so `/v1/work-items?workspace_id=` went out with an empty id, was
+  refused, flashed an error, and was sent again a moment later. The pages now
+  wait for the workspace provider's `ready` flag and a resolved id; with no
+  workspace at all the drafts page says so instead of erroring, the draft
+  modal refuses to suggest, and the guidance thread asks for a workspace
+  first. `tests/e2e/workspace-scope.spec.ts` records every request the three
+  pages make and fails on one that names a workspace and leaves it blank.
 - **Merge-queue builds retain both required PostgreSQL checks (no linked issue:
   observed queue timeout).** The PostgreSQL 17/18 matrix now runs after the
   workflow scope check regardless of path scope. GitHub evaluates a job-level

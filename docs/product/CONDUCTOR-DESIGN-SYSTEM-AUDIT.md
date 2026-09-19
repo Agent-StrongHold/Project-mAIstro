@@ -100,3 +100,17 @@ Dark and Fantasia both rebind these to deep indigo (`#0c0a1a`) with a violet acc
 - Mono for anything that is not an id, hash, key=value or seq number.
 - Uppercase tracked labels, hexagon badges, hover lifts.
 - Per-theme component overrides: a persona rebinds tokens and nothing else.
+
+## Switchover status
+
+The first switchover slice landed after this audit was written. What changed
+against the baseline above, and what did not:
+
+| Target | Status |
+|---|---|
+| 12px floor | Met. 23 stylesheet sizes and 524 inline sizes below 12px are `var(--text-floor)` or 12 |
+| One accent; blue means you | Met at the token level: `--accent-2`, `--accent-gradient`, `--honey*` and `--purple` are aliases of `--accent` in the bridge; pages still name the old variables |
+| Theme files | The three hand-written files are one token file (a copy of the bundle, test-held identical) plus a bridge; `data-scheme` and `data-theme` are separate axes |
+| Font stacks | Bricolage Grotesque and JetBrains Mono ship from the app's origin; Inter remains only for the three pages with inline stacks |
+| Four actor colours, ages, why-panels, undo, state faces, switcher, stillness | Not yet: these are component and page work, not token work, and belong to the Workspace pages themselves (#1046, #1048) |
+| `!important` rules, hover lifts, pulsing dot | Untouched in this slice; the bridge removes the accent glow and flattens the shadow scale, which quiets most lifts without editing them |
