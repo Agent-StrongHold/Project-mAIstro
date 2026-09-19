@@ -135,3 +135,27 @@ test("signing out clears this account's browser state", async () => {
   );
   expect(left).toEqual([]);
 });
+
+test("a different account's leftover browser state is cleared on sign-in, not inherited (#1418, #1433)", async () => {
+  // Simulates a browser that was signed in as a different account and never
+  // signed out cleanly (session cookie expired, browser closed) -- the state
+  // a sign-out would already have swept is still sitting in localStorage,
+  // stamped for someone else.
+  await page.addInitScript(() => {
+    window.localStorage.setItem("hive_ui_state_owner", "someone-else");
+    window.localStorage.setItem("hive_active_workspace_id", "not-this-accounts-workspace");
+    window.localStorage.setItem("hive_appearance", "dark");
+  });
+  await loginAsAdmin(page);
+  await expect(page.getByRole("tab").first()).toBeVisible({ timeout: 15000 });
+
+  // claimUiState runs as soon as whoami resolves this session's real user,
+  // sees the stamped owner does not match, and clears before anything under
+  // AuthGuard reads localStorage -- so the previous account's workspace tab
+  // and appearance never render for this one.
+  expect(await page.evaluate(() => window.localStorage.getItem("hive_active_workspace_id"))).not.toBe(
+    "not-this-accounts-workspace",
+  );
+  expect(await page.evaluate(() => window.localStorage.getItem("hive_appearance"))).toBeNull();
+  expect(await page.evaluate(() => window.localStorage.getItem("hive_ui_state_owner"))).toBe("admin");
+});
