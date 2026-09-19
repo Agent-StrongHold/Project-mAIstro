@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import Callable, Coroutine
+from functools import partial
 from typing import Any
 
 import structlog
@@ -15,7 +16,7 @@ from maistro.tasks.execution import TaskAttemptExecutor, TaskExecutionFailed
 from maistro.tasks.lanes import Lane, LaneGate
 from maistro.tasks.models import TaskCreate, TaskProgress, TaskResult, TaskStatus
 from maistro.tasks.progress_webhook import ProgressWebhookSink, payload_from_task
-from maistro.tasks.queue import TaskQueue
+from maistro.tasks.queue import CANCELLATION_SETTLE_TIMEOUT, TaskQueue
 
 logger = structlog.get_logger()
 
@@ -31,7 +32,9 @@ DEFAULT_BACKGROUND_SLOTS = 1
 #: How long shutdown waits for one cancelled worker to terminalize its Attempt
 #: before giving up on it. Short: this runs after the drain timeout has already
 #: expired, and the work itself is over — only its bookkeeping is outstanding.
-CANCELLED_SETTLE_TIMEOUT = 5.0
+#: The same policy bound is what `TaskQueue.cancel` waits when a *requested*
+#: cancellation settles the work it stopped.
+CANCELLED_SETTLE_TIMEOUT = CANCELLATION_SETTLE_TIMEOUT
 
 # Type for the injected executor — takes a TaskCreate, returns ConductorOutput
 TaskExecutor = Callable[[TaskCreate], Coroutine[Any, Any, ConductorOutput]]
@@ -184,6 +187,17 @@ class TaskRunner:
             t = asyncio.create_task(self._admit_and_run(task_id, lane, tier))
             self._active_tasks.add(t)
             t.add_done_callback(self._active_tasks.discard)
+            # A cancellation handed to the queue must reach the physical work
+            # (#1242). Registered the moment the work exists, unregistered from
+            # its own done callback, so `TaskQueue.cancel` never cancels a
+            # handle that has already finished and never misses one that has
+            # not.
+            self._queue.register_execution(task_id, t)
+            t.add_done_callback(partial(self._release_execution, task_id))
+
+    def _release_execution(self, task_id: str, done: asyncio.Task[None]) -> None:
+        """Done callback: drop the queue's handle to finished work (#1242)."""
+        self._queue.unregister_execution(task_id, done)
 
     async def _admit_and_run(self, task_id: str, lane: Lane, tier: str) -> None:
         """Wait for a permit in ``lane``, then execute.
@@ -222,16 +236,28 @@ class TaskRunner:
         try:
             await self._execute_task(task_id)
         except asyncio.CancelledError:
-            # Graceful shutdown — mark task as failed rather than leaving it stuck
-            await self._queue.update_status(
-                task_id, TaskStatus.FAILED, error="Task cancelled during shutdown"
-            )
-            self._queue.set_result(task_id, TaskResult(error="Task cancelled during shutdown"))
-            await self._emit_progress_webhook(task_id)
+            receipt = self._queue.get(task_id)
+            if receipt is not None and receipt.status is TaskStatus.CANCELLED:
+                # A requested cancellation (#1242), not a shutdown: the receipt
+                # already records the decision the caller made, and CANCELLED
+                # has no edge to FAILED. Rewriting it here would turn a
+                # deliberate stop into a failure report and attach an error
+                # result to a receipt that truthfully says "cancelled".
+                await self._emit_progress_webhook(task_id)
+            else:
+                # Graceful shutdown — mark task as failed rather than leaving it stuck
+                await self._queue.update_status(
+                    task_id, TaskStatus.FAILED, error="Task cancelled during shutdown"
+                )
+                self._queue.set_result(task_id, TaskResult(error="Task cancelled during shutdown"))
+                await self._emit_progress_webhook(task_id)
         except Exception as exc:
             await logger.aexception("task_execution_failed", task_id=task_id)
-            await self._queue.update_status(task_id, TaskStatus.FAILED, error=str(exc))
-            self._queue.set_result(task_id, TaskResult(error=str(exc)))
+            transitioned = await self._queue.update_status(
+                task_id, TaskStatus.FAILED, error=str(exc)
+            )
+            if transitioned:
+                self._queue.set_result(task_id, TaskResult(error=str(exc)))
             await self._emit_progress_webhook(task_id)
         finally:
             self._gate.release(lane)
@@ -344,22 +370,24 @@ class TaskRunner:
             # terminal Run reporting result=None and error=None.
             if result.success:
                 files_changed = result.code.files_changed if result.code else []
-                await self._queue.update_status(
+                transitioned = await self._queue.update_status(
                     task_id,
                     TaskStatus.COMPLETED,
                     result={"files_changed": files_changed},
                 )
-                self._queue.set_result(
-                    task_id,
-                    TaskResult(files_changed=files_changed),
-                )
+                if transitioned:
+                    self._queue.set_result(
+                        task_id,
+                        TaskResult(files_changed=files_changed),
+                    )
                 await self._emit_progress_webhook(task_id)
             else:
-                await self._queue.update_status(
+                transitioned = await self._queue.update_status(
                     task_id, TaskStatus.FAILED, error=result.final_answer
                 )
-                self._queue.set_result(
-                    task_id,
-                    TaskResult(error=result.final_answer),
-                )
+                if transitioned:
+                    self._queue.set_result(
+                        task_id,
+                        TaskResult(error=result.final_answer),
+                    )
                 await self._emit_progress_webhook(task_id)
