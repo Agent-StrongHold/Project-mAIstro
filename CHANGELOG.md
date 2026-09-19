@@ -393,6 +393,26 @@ or placeholder-only section.
   not an unvisited route's; against the unfixed build the first assertion
   fails, since no per-route chunk exists at all.
 
+- **API failures surface as human copy with a recovery hint, not raw
+  transport strings (#1436).** The shared request helper
+  (`lib/api.ts`) threw `` `${path}: ${detail}` ``, falling back to the
+  bare status code (e.g. `500`) when the backend gave no `detail` —
+  shown verbatim in toasts and inline errors across the app (an observed
+  case: `/v1/workspaces/…/members: Permission 'workspaces.write'
+  required...`). The thrown message is now the backend's `detail` alone
+  when present (already human copy in this API), or one of a small set
+  of status-family sentences with a recovery hint otherwise; the raw
+  path/status still travel on the new `ApiError`'s `.path`/`.status` for
+  developer diagnostics, not in the primary message. Three call sites
+  that bypass the shared helper with their own `fetch()` (`Setup.tsx`,
+  `Chat.tsx`'s stream, `LlmProviders.tsx`) reuse the same fallback
+  sentences; two others (`KnowledgeBase.tsx`, `Dashboard.tsx`'s
+  assistant) already discarded the raw error before display and needed
+  no change. `tests/e2e/api-error-copy.spec.ts` mocks a 500 with no
+  `detail` and asserts the toast contains neither the route nor a bare
+  status number; against the unfixed build it fails on exactly that
+  assertion.
+
 - **The workspace toolbar explains a first run, truncates long names, shows
   personas by name and tagline, and forgets an account on sign-out (#1426,
   #1431, #1424, #1437, #1418, #1433).** A zero-workspace account now sees a
