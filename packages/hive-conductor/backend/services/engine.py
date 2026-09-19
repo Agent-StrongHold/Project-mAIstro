@@ -193,6 +193,15 @@ class EngineService:
 
         start_dag_recovery()
 
+        # The consumer cadence for admitted schedule Runs (#1243). Same start
+        # point and rationale as recovery: only the bridge binds a canonical
+        # Run store, and without this cadence `ScheduleRunAdmitter` admitted
+        # QUEUED work that no shipped process ever executed
+        # (ADR-082826-b601 leaves the cadence to the product).
+        from services.schedule_consumer import start_schedule_consumer
+
+        await start_schedule_consumer()
+
         try:
             if settings.hive_mode == "demo":
                 from adapters.task_backend import LocalTaskBackend
@@ -286,7 +295,9 @@ class EngineService:
 
     async def stop(self) -> None:
         from services.dag_recovery import stop_dag_recovery
+        from services.schedule_consumer import stop_schedule_consumer
 
+        await stop_schedule_consumer()
         await stop_dag_recovery()
         if self._backend is not None:
             import contextlib
