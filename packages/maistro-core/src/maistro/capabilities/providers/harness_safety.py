@@ -39,11 +39,11 @@ class ActionGate(Protocol):
     async def allow(self, action: dict[str, Any]) -> bool: ...
 
 
-class AllowAllGate:
-    """Default gate used when no Sentinel/policy is wired: permits every action."""
+class DenyAllGate:
+    """Fail-closed gate used when no outbound policy is available."""
 
     async def allow(self, action: dict[str, Any]) -> bool:
-        return True
+        return False
 
 
 def _message_text(message: dict[str, Any]) -> str:
@@ -81,7 +81,9 @@ class SafeHarnessRunner:
     ) -> None:
         self._inner = inner
         self._warden = warden
-        self._gate: ActionGate = gate if gate is not None else AllowAllGate()
+        # A missing policy is a degraded, read-only harness, never an implicit
+        # permission grant. Production composition should still supply a gate.
+        self._gate: ActionGate = gate if gate is not None else DenyAllGate()
 
     # --- CapabilityProvider passthrough ---
     @property
@@ -116,7 +118,7 @@ class SafeHarnessRunner:
             if (
                 isinstance(event, dict)
                 and event.get("type") in ("action", "tool_call")
-                and not await self._gate.allow(event)
+                and not await self._allow_action(event)
             ):
                 continue
             yield event
@@ -134,10 +136,23 @@ class SafeHarnessRunner:
             if not verdict.clean:
                 raise HarnessInputBlocked(verdict.flags)
 
+    async def _allow_action(self, action: dict[str, Any]) -> bool:
+        try:
+            return await self._gate.allow(action)
+        except Exception:
+            # Policy dependencies are on the effect boundary. A broken policy
+            # must remove authority rather than turn the wrapper into allow-all.
+            import logging
+
+            logging.getLogger("maistro.capabilities.harness").warning(
+                "harness action policy failed; denying action", exc_info=True
+            )
+            return False
+
     async def _gate_list(self, items: list[Any]) -> list[Any]:
         allowed: list[Any] = []
         for item in items:
-            if isinstance(item, dict) and await self._gate.allow(item):
+            if isinstance(item, dict) and await self._allow_action(item):
                 allowed.append(item)
         return allowed
 

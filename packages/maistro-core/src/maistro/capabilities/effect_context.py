@@ -9,7 +9,7 @@ a provider merely because one happens to be registered elsewhere.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from typing import Any
 
@@ -31,17 +31,17 @@ from maistro.events.envelope import EventStore, InMemoryEventStore
 from maistro.policy.types import Decision, PolicyVerdict
 
 
-async def _m1_binding_authorized_policy(
+async def binding_scope_policy(
     binding: Binding,
     request: Any,
     context: InvocationPolicyContext,
 ) -> PolicyVerdict:
-    """M1 baseline after canonical Binding scope resolution has succeeded.
+    """Explicit M1 baseline after canonical Binding scope resolution.
 
     Binding authorization is evaluated by ``BindingStore.resolve`` before this
-    policy boundary. M2 may inject stronger policy semantics here; M1 does not
-    manufacture a second permission system just to make governed Invocation
-    reachable.
+    policy boundary. This evaluator is suitable only for a composition root
+    that deliberately chooses the M1 baseline; it is never installed by
+    ``new_effect_context`` implicitly.
     """
 
     del binding, request, context
@@ -49,6 +49,21 @@ async def _m1_binding_authorized_policy(
         Decision.ALLOW,
         reason="canonical Binding scope resolved before provider invocation",
         rule="m1.binding-scope",
+    )
+
+
+async def _unconfigured_policy(
+    binding: Binding,
+    request: Any,
+    context: InvocationPolicyContext,
+) -> PolicyVerdict:
+    """Deny contexts whose application has not supplied an effect policy."""
+
+    del binding, request, context
+    return PolicyVerdict(
+        Decision.DENY,
+        reason="capability invocation policy unavailable",
+        rule="invocation.unconfigured",
     )
 
 
@@ -61,6 +76,13 @@ class CapabilityEffectContext:
     invocation_store: InvocationStore
     event_store: EventStore
     credentials: CredentialRouter = field(default_factory=CredentialRouter)
+
+    def with_policy_evaluator(self, policy_evaluator: PolicyEvaluator) -> CapabilityEffectContext:
+        """Narrow policy without creating competing Binding or Invocation stores."""
+        return replace(
+            self,
+            invocations=self.invocations.with_policy_evaluator(policy_evaluator),
+        )
 
     def credential_routing(self) -> CredentialRouting:
         """Credential routing for this context's Provider selection seam (#58).
@@ -95,7 +117,9 @@ def new_effect_context(
     governed = GovernedInvocationExecutionService(
         invocation_service=invocation_service,
         event_store=event_store,
-        policy_evaluator=policy_evaluator or _m1_binding_authorized_policy,
+        # Omitted policy is an unavailable dependency, not an authorization
+        # decision. Application composition must opt into a real evaluator.
+        policy_evaluator=policy_evaluator or _unconfigured_policy,
     )
     return CapabilityEffectContext(
         bindings=binding_store,
@@ -115,7 +139,9 @@ def default_effect_context() -> CapabilityEffectContext:
     ledger. No default Binding is created here; absence remains a hard refusal.
     """
 
-    return new_effect_context()
+    # This named composition root deliberately selects the narrow M1 policy;
+    # unnamed contexts stay read-only until their application supplies one.
+    return new_effect_context(policy_evaluator=binding_scope_policy)
 
 
 new_in_memory_effect_context = new_effect_context
@@ -123,6 +149,7 @@ new_in_memory_effect_context = new_effect_context
 
 __all__ = [
     "CapabilityEffectContext",
+    "binding_scope_policy",
     "default_effect_context",
     "new_effect_context",
     "new_in_memory_effect_context",

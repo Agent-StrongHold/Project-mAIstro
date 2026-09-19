@@ -95,6 +95,17 @@ class GovernedInvocationExecutionService:
         self._policy = policy_evaluator
         self._approvals = approval_store
 
+    def with_policy_evaluator(
+        self, policy_evaluator: PolicyEvaluator
+    ) -> GovernedInvocationExecutionService:
+        """Share lifecycle/event authorities while narrowing policy for a consumer."""
+        return GovernedInvocationExecutionService(
+            invocation_service=self._invocations,
+            event_store=self._events,
+            policy_evaluator=policy_evaluator,
+            approval_store=self._approvals,
+        )
+
     async def latest_effect(
         self,
         *,
@@ -204,7 +215,17 @@ class GovernedInvocationExecutionService:
             attempt_id=attempt_id,
             effect_key=effect_key,
         )
-        verdict = await self._policy(binding, request, context)
+        try:
+            verdict = await self._policy(binding, request, context)
+        except Exception:
+            # A policy dependency outage removes authority. Record the refusal
+            # through the same audit stream instead of falling through to a
+            # provider call or leaking a permissive default.
+            verdict = PolicyVerdict(
+                Decision.DENY,
+                reason="capability invocation policy unavailable",
+                rule="invocation.fail-closed",
+            )
         policy_event = await self._append_policy_event(
             binding=binding,
             context=context,
