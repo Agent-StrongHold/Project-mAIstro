@@ -9,6 +9,7 @@ from maistro.auth._types import (
     Scope,
     ScopeCategory,
     ServiceIdentity,
+    canonical_permission,
     expand_scopes,
 )
 from maistro.auth.checker import ServiceKeyChecker
@@ -100,6 +101,7 @@ __all__ = [
     "ServiceKeyRegistry",
     "StateStore",
     "WorkspaceMembership",
+    "canonical_permission",
     "default_id_token_verifier",
     "expand_scopes",
     "extract_service_identity",

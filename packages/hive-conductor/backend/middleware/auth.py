@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from config import get_settings, is_valid_oauth_provider_name
@@ -20,26 +21,29 @@ from services import voice_identity
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import JSONResponse, Response
 
+from maistro.security.http_routes import load_route_policy, route_policy
+
 logger = logging.getLogger("hive.auth_middleware")
 
-_PUBLIC_PREFIXES = (
-    "/v1/setup/",
-    "/health",
-)
+_ROUTE_REGISTRY = Path(__file__).resolve().parents[4] / "quality" / "route-permissions.json"
 
 #: Authenticated like everything else, but by a device credential rather than a
 #: session — see `services/voice_identity.py`. This is not an exemption: with
 #: no credential configured the prefix answers 401 like any other `/v1/` path.
 _VOICE_PREFIX = "/v1/voice/"
 
-# FastAPI's default docs/openapi paths don't end in "/" (the real route is
-# /openapi.json), so they can't use the boundary-safe prefix check below —
-# keep them on a plain startswith() match.
-_PUBLIC_PREFIXES_LOOSE = (
+# Documentation families are boundary-safe prefixes. The schema itself is
+# one exact route so a future sibling such as /openapi-anything is protected.
+_PUBLIC_PREFIXES = (
+    "/v1/setup/",
+    "/health",
     "/docs",
-    "/openapi",
     "/redoc",
 )
+
+# Kept as an empty compatibility surface for route-gate fixtures; no loose
+# public matching is permitted.
+_PUBLIC_PREFIXES_LOOSE: tuple[str, ...] = ()
 _OAUTH_PUBLIC_GET_RE = re.compile(r"^/v1/auth/oauth/(?P<provider>[^/]{1,128})/(?:start|callback)$")
 
 _PUBLIC_EXACT = frozenset(
@@ -50,6 +54,7 @@ _PUBLIC_EXACT = frozenset(
         "/v1/auth/login",
         "/v1/auth/register",
         "/v1/auth/whoami",
+        "/openapi.json",
         "/favicon.ico",
     }
 )
@@ -58,6 +63,13 @@ _ADMIN_CHAT_BLOCKED = ("/v1/chat/",)
 
 _PROTECTED_OPS: dict[str, dict[str, str]] = {
     "GET": {
+        # Reading deployment settings is still a configuration authorization
+        # decision; authentication alone must not expose the operator overlay.
+        "/v1/settings": "config.write",
+        # Task listings carry user work and are covered by the same declared
+        # route permission as task mutations; authentication alone is not an
+        # authorization decision for this surface.
+        "/v1/tasks": "tasks.write",
         # Reading another principal's harness/RSI session stream exposes
         # in-flight code, agent reasoning, and secrets in transit — the same
         # sensitivity as starting the run, so it takes the same scope. Plain
@@ -264,15 +276,30 @@ def origin_allowed(origin: str | None, host: str | None = None) -> bool:
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+    def __init__(self, app: object) -> None:
+        super().__init__(app)  # type: ignore[arg-type]
+        self._route_policy = load_route_policy(_ROUTE_REGISTRY, "conductor")
+
+    async def dispatch(  # noqa: C901
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
         path = request.url.path
 
         if (
             path in _PUBLIC_EXACT
             or _is_public_oauth_get(request.method, path)
             or any(_matches_public_prefix(path, p) for p in _PUBLIC_PREFIXES)
-            or any(path.startswith(p) for p in _PUBLIC_PREFIXES_LOOSE)
         ):
+            if request.method != "OPTIONS":
+                policy = route_policy(self._route_policy, request.method, path)
+                if (policy is None or policy.get("access") != "public") and path not in {
+                    "/",
+                    "/favicon.ico",
+                }:
+                    return JSONResponse(
+                        status_code=403,
+                        content={"detail": "Route authorization declaration required"},
+                    )
             return await call_next(request)
 
         # The install wizard API is only useful before first-run provisioning,
@@ -294,6 +321,17 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 )
 
             request.state.user = user
+
+            # The shared declaration gate is deliberately separate from the
+            # Conductor's existing resource/elevation policy below. A route
+            # missing from the reviewed table is never an authenticated-only
+            # default, while this middleware does not create a second product
+            # authorization authority.
+            if route_policy(self._route_policy, request.method, path) is None:
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Route authorization declaration required"},
+                )
 
             if user["role"] == "admin" and self._is_chat(path):
                 return JSONResponse(
@@ -360,19 +398,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # route makes the caller its owner, so requiring task-scoped elevation
         # here made the first-run daily account's workspace UI unusable.
         if request.method == "POST" and path.rstrip("/") == "/v1/workspaces":
-            return None
-        # Agent invoke (POST /v1/agents/{id}/invoke) is autonomous read — don't
-        # gate behind elevation. Match the trailing segment, not a bare
-        # substring: "in path" would also exempt any future route that merely
-        # contains "/invoke" elsewhere (e.g. "/v1/agents/invoke-history").
-        if path.endswith("/invoke"):
-            return None
-        # Thumbs +/- feedback (POST /v1/dag-runs/{id}/feedback,
-        # POST /v1/workspaces/{id}/feedback) is a low-stakes reaction, not a
-        # mutating operation on the thing itself — any authenticated member
-        # can leave it, same posture as dag-runs' pre-existing unrestricted
-        # feedback route. The route itself still checks workspace membership.
-        if path.endswith("/feedback"):
             return None
         # DAG-Run inspection — GET /v1/dag-runs (list), GET /v1/dag-runs/{id}
         # (detail), GET /v1/dag-runs/{id}/events (SSE) — and the eval-judge
