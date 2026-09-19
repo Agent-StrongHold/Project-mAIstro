@@ -26,6 +26,14 @@ SCRIPTS = ROOT / "scripts"
 _ROOT_NAMES = frozenset({"ROOT", "REPO", "REPO_ROOT"})
 
 CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
+    ("check-compliance.py", "quality/compliance-registry.json"): (
+        "the compliance registry is the reviewed status and evidence specification; changing a "
+        "claim or evidence record is the substantive compliance change"
+    ),
+    ("produce-compliance-evidence.py", "quality/compliance-registry.json"): (
+        "the evidence producer executes the reviewed registry declarations; it does not compare "
+        "a candidate measurement against a mutable baseline"
+    ),
     ("check-retired-guidance.py", "quality/retired-guidance.json"): (
         "retirement guidance is the reviewed specification being changed"
     ),
@@ -328,11 +336,20 @@ def _load_module(path: Path, name: str) -> ModuleType:
         raise RuntimeError(f"cannot load {path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
+    # Direct ``import ratchet_provenance`` is valid when this checker is run as
+    # a script because Python puts scripts/ on sys.path. Preserve that contract
+    # for dynamically loaded adapters and for callers that import this checker.
+    search_paths = [str(path.parent), str(SCRIPTS)]
+    added_paths = [candidate for candidate in search_paths if candidate not in sys.path]
+    sys.path[0:0] = added_paths
     try:
         spec.loader.exec_module(module)
     except BaseException:
         del sys.modules[name]
         raise
+    finally:
+        for candidate in added_paths:
+            sys.path.remove(candidate)
     return module
 
 
