@@ -1320,9 +1320,23 @@ input, select, textarea {
   background: var(--rule);
   opacity: 0.35;
 }
+/* Generic skeleton placeholder (#1421): `.skeleton` alone is the pulse, a
+   shape modifier like `.skeleton-card` sizes it. `TemplatePicker.tsx` used
+   `.skeleton.skeleton-card` with no matching rule at all, so its loading
+   state rendered as an empty, invisible div. */
+.skeleton {
+  border-radius: var(--radius-sm, 8px);
+  background: var(--rule);
+  opacity: 0.35;
+}
+.skeleton-card {
+  height: 58px;
+  width: 100%;
+}
 @media (prefers-reduced-motion: no-preference) {
   .skeleton-nav-icon,
-  .skeleton-block {
+  .skeleton-block,
+  .skeleton {
     animation: hc-skeleton-pulse 1.4s ease-in-out infinite;
   }
 }

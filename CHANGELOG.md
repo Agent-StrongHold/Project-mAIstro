@@ -352,6 +352,17 @@ or placeholder-only section.
   covers both steps by accessible role and name; against the unfixed
   build the first assertion fails.
 
+- **The Dashboard's template picker shows a real loading skeleton, not an
+  invisible div (#1421).** `TemplatePicker.tsx` rendered
+  `<div className="skeleton skeleton-card" />` while its
+  `/v1/dashboard/demos` fetch was in flight, but neither `.skeleton` nor
+  `.skeleton-card` had a matching CSS rule anywhere in the stylesheet — the
+  element existed with no size and no background. Both classes now resolve
+  to real rules, reusing the pulse animation the app-shell skeleton
+  (`#1408`) already defined. `tests/e2e/template-picker-skeleton.spec.ts`
+  slows the fetch and asserts the skeleton has a non-zero bounding box;
+  against the unfixed build it times out as hidden.
+
 - **The workspace toolbar explains a first run, truncates long names, shows
   personas by name and tagline, and forgets an account on sign-out (#1426,
   #1431, #1424, #1437, #1418, #1433).** A zero-workspace account now sees a
