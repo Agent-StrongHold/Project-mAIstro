@@ -1,7 +1,11 @@
 """Auth routes — login, logout, whoami, elevate (2FA stub).
 
 Elevation is task-scoped: permissions are bound to a task_id and revoked
-when the task completes, fails, or is cancelled.
+when the task completes, fails, or is cancelled — or when the grant's TTL
+expires, whichever comes first (#1239; ADR-028 time-boxed delegation,
+ADR-068 §D short-TTL elevation grant). Requests exercising an elevated
+permission must name the task they act under (`X-Elevated-Task` header);
+the middleware grants only what THAT task's still-valid grant covers.
 """
 
 from __future__ import annotations
@@ -9,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time as _time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 from uuid import uuid4
 
@@ -123,6 +127,14 @@ def _enforce(throttle: AuthThrottle, request: Request, account: str, action: str
 _SESSION_COOKIE = "hive_session"
 _COOKIE_MAX_AGE = 60 * 60 * 24 * 7
 _USERNAME_RE = re.compile(r"^[a-zA-Z0-9_-]{3,32}$")
+_TASK_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+# ADR-028 names 15 minutes and one hour as the available time-boxes. Keep the
+# upper bound at the generous end of that range even if a deployment supplies
+# an otherwise-valid but unsafe setting (#1239).
+ELEVATION_GRANT_MAX_TTL_SECONDS = 60 * 60
+_ACTIVE_TASK_STATUSES = frozenset(
+    {"pending", "running", "planning", "coding", "reviewing", "testing"}
+)
 _OAUTH_CODE_MAX_LENGTH = 4096
 _OAUTH_FAILURE_DETAIL = "OAuth authentication failed"
 _OAUTH_LINK_COOKIE_PREFIX = "__Host-hive_oauth_link_"
@@ -179,12 +191,35 @@ class RegisterBody(BaseModel):
         return self
 
 
+def is_valid_task_id(value: str) -> bool:
+    """Return whether a task id is safe to use as a grant binding key."""
+    return bool(_TASK_ID_RE.fullmatch(value))
+
+
 class ElevateBody(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     password: str
     permissions: list[str] = Field(default_factory=list)
     task_id: str
+
+    @field_validator("task_id")
+    @classmethod
+    def validate_task_id(cls, value: str) -> str:
+        """A grant may only be bound to a well-formed task id (#1239).
+
+        Unvalidated ids let a client mint grants under strings no task will
+        ever complete, which used to mean the grant could never be revoked —
+        only the TTL below bounds it now. The charset also keeps the id safe
+        to carry in the `X-Elevated-Task` header and in audit `target` fields:
+        no whitespace or control characters, no header or log injection.
+        """
+        tid = value.strip()
+        if not is_valid_task_id(tid):
+            raise ValueError(
+                "task_id must be 1-128 characters of letters, digits, '.', '_', ':' or '-'"
+            )
+        return tid
 
 
 def _resolve_session(session_id: str) -> dict[str, Any] | None:
@@ -212,9 +247,149 @@ def _resolve_session(session_id: str) -> dict[str, Any] | None:
     return sess
 
 
-def _active_grants(sess: dict[str, Any]) -> dict[str, list[str]]:
+def _grant_expiry(grant: dict[str, Any]) -> datetime | None:
+    """Parse a grant's expiry, or None when it has none.
+
+    A grant without a parseable expiry is treated as already dead by
+    `_active_grants` — fail closed (#1239): the whole point of the TTL is
+    that no grant outlives a recorded bound.
+    """
+    raw = grant.get("expires_at") if isinstance(grant, dict) else None
+    if not isinstance(raw, str):
+        return None
+    try:
+        expires = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=UTC)
+    return expires
+
+
+def _normalize_grant(grant: Any) -> dict[str, Any] | None:
+    """Coerce a stored grant to the current shape, or None if unusable.
+
+    Legacy sessions stored bare permission lists with no expiry. There is no
+    durable session store to migrate, and a grant with no recorded bound is
+    exactly the indefinite privilege #1239 closed, so legacy entries read as
+    expired rather than being trusted.
+    """
+    if isinstance(grant, dict):
+        perms = grant.get("permissions")
+        if isinstance(perms, list) and _grant_expiry(grant) is not None:
+            return grant
+        return None
+    return None
+
+
+def _task_owner(task: Any) -> str | None:
+    """Return the owner recorded by the canonical task/mission record."""
+    owner = getattr(task, "user_id", None)
+    if owner is not None:
+        return str(owner)
+    raw = getattr(task, "raw", None)
+    raw_owner = getattr(raw, "user_id", None)
+    return str(raw_owner) if raw_owner is not None else None
+
+
+def _task_status(task: Any) -> str:
+    status = getattr(task, "mission_status", None)
+    if status is None:
+        status = getattr(task, "status", "")
+    return str(getattr(status, "value", status))
+
+
+def is_active_task_for_user(task_id: str, user_id: str) -> bool:
+    """Resolve a real, caller-owned, non-terminal task.
+
+    The task id is only an identifier supplied by the caller. Authority comes
+    from the canonical Engine task backend (or the existing Hive mission
+    projection when running without that backend), never from the header or
+    elevation payload itself. Unknown, foreign, paused, and terminal tasks all
+    fail closed as one indistinguishable answer.
+    """
+    if not user_id or not is_valid_task_id(task_id):
+        return False
+
+    try:
+        from services.engine import get_engine
+
+        engine = get_engine()
+        backend_available = bool(engine.is_configured or engine._backend is not None)
+        record = engine.get_task(task_id, user_id=user_id)
+    except Exception:
+        # A configured canonical backend failing is not permission to consult
+        # the legacy projection; fail closed rather than switching authorities.
+        return False
+    if backend_available:
+        return (
+            record is not None
+            and _task_owner(record) == user_id
+            and _task_status(record) in _ACTIVE_TASK_STATUSES
+        )
+
+    # Demo/stub mode retains Hive's task projection. It is still authoritative
+    # only when it has an explicit owner; ownerless historical rows are not
+    # silently adopted by the current caller.
+    mission = stores.missions.get(task_id)
+    if mission is None:
+        return False
+    return _task_owner(mission) == user_id and _task_status(mission) in _ACTIVE_TASK_STATUSES
+
+
+def _active_grants(
+    sess: dict[str, Any], *, user_id: str | None = None
+) -> dict[str, dict[str, Any]]:
+    """The session's still-valid grants: task id -> {permissions, expires_at}.
+
+    Expired (or malformed, or legacy unbounded) entries are dropped, so a
+    grant dies at its expiry even if nothing revokes it. When ``user_id`` is
+    supplied, the task is also resolved against the canonical task owner and
+    lifecycle; a completed or foreign task cannot remain an active grant.
+    """
     grants = sess.get("elevated_grants", {})
-    return {tid: perms for tid, perms in grants.items() if isinstance(perms, list)}
+    if not isinstance(grants, dict):
+        return {}
+    now = datetime.now(UTC)
+    active: dict[str, dict[str, Any]] = {}
+    for task_id, grant in grants.items():
+        # Validate persisted keys as well as new elevation requests. A
+        # malformed legacy/injected key must never become an addressable grant
+        # merely because a caller can repeat that string in a header.
+        if not isinstance(task_id, str) or not is_valid_task_id(task_id):
+            continue
+        if user_id is not None and not is_active_task_for_user(task_id, user_id):
+            continue
+        normalized = _normalize_grant(grant)
+        if normalized is None:
+            continue
+        expires = _grant_expiry(normalized)
+        assert expires is not None  # _normalize_grant guarantees a parseable bound
+        if expires <= now:
+            continue
+        active[str(task_id)] = normalized
+    return active
+
+
+def _prune_expired_grants(
+    session_id: str, sess: dict[str, Any], *, user_id: str | None = None
+) -> dict[str, Any]:
+    """Write back the session without its dead grants, and return it.
+
+    Pruning matters beyond hygiene: an expired grant left in the store is one
+    `revoke_task_elevation`-shaped bug away from resurrection. The caller
+    (`get_current_user`) runs on every authenticated request, so expiry is
+    enforced lazily but persistently.
+    """
+    grants = sess.get("elevated_grants", {})
+    if not isinstance(grants, dict):
+        return sess
+    active = _active_grants(sess, user_id=user_id)
+    if len(active) == len(grants):
+        return sess
+    pruned = {**sess, "elevated_grants": active}
+    stores.sessions[session_id] = pruned
+    return pruned
 
 
 def get_current_user(session_id: str | None) -> dict[str, Any] | None:
@@ -226,10 +401,12 @@ def get_current_user(session_id: str | None) -> dict[str, Any] | None:
     user = stores.users.get(sess["user_id"])
     if user is None or not user.is_active:
         return None
-    grants = _active_grants(sess)
+    grants = _active_grants(
+        _prune_expired_grants(session_id, sess, user_id=user.id), user_id=user.id
+    )
     all_elevated: list[str] = []
     for perms in grants.values():
-        for p in perms:
+        for p in perms.get("permissions", []):
             if p not in all_elevated:
                 all_elevated.append(p)
     return {
@@ -238,8 +415,13 @@ def get_current_user(session_id: str | None) -> dict[str, Any] | None:
         "role": user.role,
         "permissions": user.permissions,
         "did": user.did,
+        # Display-only union of ACTIVE grants: what the client may still
+        # act on somewhere. The authorization decision itself never consumes
+        # this field — `principal_has_permission` reads `elevated_grants`
+        # against the task the request names (#1239).
         "elevated_permissions": all_elevated,
         "elevated_tasks": list(grants.keys()),
+        "elevated_grants": grants,
     }
 
 
@@ -845,6 +1027,12 @@ def elevate(
         raise HTTPException(status_code=401, detail="Invalid password")
     _ELEVATE_THROTTLE.record_success(client_key=_client_key(request), account=hive_session)
 
+    # Syntax is not a binding. Require a live task owned by this principal
+    # before recording any grant; otherwise a caller can mint a grant under an
+    # id that no lifecycle event can ever revoke (#1239).
+    if not is_active_task_for_user(body.task_id, str(user.id)):
+        raise HTTPException(status_code=403, detail="Task is not available for elevation")
+
     requested = body.permissions if body.permissions else list(user.permissions)
     granted = [p for p in requested if user.has_permission(p)]
     if body.permissions and not granted:
@@ -853,21 +1041,38 @@ def elevate(
             detail="None of the requested permissions are assigned to your account",
         )
 
-    grants: dict[str, list[str]] = sess.get("elevated_grants", {})
-    grants[body.task_id] = granted
+    grants: dict[str, Any] = sess.get("elevated_grants", {})
+    if not isinstance(grants, dict):
+        grants = {}
+    # Task-scoped AND time-boxed (ADR-028 "15 min, 1 hour — auto-revokes";
+    # ADR-068 §D "short-TTL elevation grant"). Task completion revokes first;
+    # the TTL is the backstop for ids nothing will ever revoke (#1239).
+    ttl_seconds = min(
+        ELEVATION_GRANT_MAX_TTL_SECONDS,
+        max(1, int(get_settings().elevation_grant_ttl_seconds)),
+    )
+    expires_at = datetime.now(UTC) + timedelta(seconds=ttl_seconds)
+    grants[body.task_id] = {
+        "permissions": granted,
+        "expires_at": expires_at.isoformat(),
+    }
     stores.sessions[hive_session] = {**sess, "elevated_grants": grants}
     log_audit(
         "elevate",
         user.username,
         target=body.task_id,
-        detail={"permissions": granted},
+        detail={"permissions": granted, "expires_at": grants[body.task_id]["expires_at"]},
         severity="warning",
     )
     return {
         "ok": True,
         "task_id": body.task_id,
         "elevated_permissions": granted,
-        "message": "Permissions elevated for this task. They will be revoked when the task completes.",
+        "expires_at": grants[body.task_id]["expires_at"],
+        "message": (
+            "Permissions elevated for this task. They are revoked when the task "
+            "completes or the grant expires, whichever comes first."
+        ),
     }
 
 

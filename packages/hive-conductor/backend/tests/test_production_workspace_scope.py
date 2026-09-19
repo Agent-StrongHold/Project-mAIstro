@@ -12,8 +12,11 @@ import httpx
 import pytest
 
 from maistro.tasks.http_contract import (
+    TASK_OWNER_ID_HEADER,
+    TASK_OWNER_SIGNATURE_HEADER,
     WORKSPACE_ID_HEADER,
     WORKSPACE_SCOPE_SIGNATURE_HEADER,
+    sign_task_owner,
     sign_workspace_scope,
 )
 from maistro.tasks.models import TaskCreate
@@ -39,6 +42,7 @@ def _task_body() -> dict[str, Any]:
         "phase": "queued",
         "progress": {"subtasks": 0, "completed": 0, "current": ""},
         "result": None,
+        "user_id": "user-1",
         "created_at": "2026-08-30T00:00:00Z",
         "started_at": None,
         "completed_at": None,
@@ -87,11 +91,51 @@ async def test_named_workspace_crosses_the_production_http_boundary(
     )
 
     assert record.id == "srv-1"
+    assert seen_headers[TASK_OWNER_ID_HEADER] == "user-1"
+    assert seen_headers[TASK_OWNER_SIGNATURE_HEADER] == sign_task_owner("user-1", SCOPE_KEY)
     assert seen_headers[WORKSPACE_ID_HEADER] == "workspace-a"
     assert seen_headers[WORKSPACE_SCOPE_SIGNATURE_HEADER] == sign_workspace_scope(
         "workspace-a", SCOPE_KEY
     )
     assert seen_headers["Authorization"] == "Bearer secret"
+
+
+def test_production_lookup_proves_browser_owner(
+    monkeypatch,
+) -> None:
+    """A service API key must not collapse lookup ownership to the service account."""
+    task_backend_module = _backend_module()
+    backend_type = task_backend_module.MaistroServerTaskBackend
+    seen_headers: dict[str, str] = {}
+
+    class _Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def get(self, url: str, *, headers: dict[str, str]) -> httpx.Response:
+            seen_headers.update(headers)
+            return httpx.Response(
+                200,
+                request=httpx.Request("GET", url),
+                json=_task_body(),
+            )
+
+    monkeypatch.setattr(task_backend_module.httpx, "Client", lambda **_: _Client())
+    backend = backend_type(
+        base_url="http://maistro-server",
+        api_key="service-key",
+        workspace_scope_key=SCOPE_KEY,
+    )
+
+    record = backend.get("srv-1", user_id="user-1")
+
+    assert record is not None
+    assert record.user_id == "user-1"
+    assert seen_headers[TASK_OWNER_ID_HEADER] == "user-1"
+    assert seen_headers[TASK_OWNER_SIGNATURE_HEADER] == sign_task_owner("user-1", SCOPE_KEY)
 
 
 async def test_named_workspace_fails_closed_without_scope_proof_key() -> None:

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { apiGet, apiPatch } from "../lib/api";
+import { apiFetch, apiGet, apiPatch } from "../lib/api";
 import { PageHeader, SecretField } from "../components/shared";
 
 type Settings = Record<string, unknown>;
@@ -29,16 +29,45 @@ export default function Settings() {
   }
 
   async function elevateAndSave(key: string) {
+    // Elevation must name a real, caller-owned active task (#1239), not a
+    // caller-minted label. Create the operation task first, then carry its
+    // server-issued id through both the elevation and the protected write.
     try {
-      await fetch("/v1/auth/elevate", {
+      const taskRes = await fetch("/v1/tasks", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
-        body: JSON.stringify({ password: elevPassword, permissions: ["config.write"], task_id: `settings-edit-${key}-${Date.now()}` }),
+        body: JSON.stringify({ name: `Edit setting ${key}`, description: `Edit setting ${key}` }),
       });
+      if (!taskRes.ok) throw new Error("task creation failed");
+      const task = await taskRes.json() as { id: string };
+      if (!task.id) throw new Error("task creation returned no id");
+
+      const res = await fetch("/v1/auth/elevate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ password: elevPassword, permissions: ["config.write"], task_id: task.id }),
+      });
+      if (!res.ok) throw new Error("elevate failed");
       setElevating(false);
       setElevPassword("");
-      await saveSetting(key);
+      await apiFetch("/v1/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", "X-Elevated-Task": task.id },
+        body: JSON.stringify({ [key]: parseVal(editVal, settings?.[key]) }),
+      });
+      // Local mission tasks can be terminalized here, which immediately
+      // revokes the grant; canonical engine-backed tasks own their lifecycle
+      // and will revoke when their backend reports completion.
+      await fetch(`/v1/tasks/${encodeURIComponent(task.id)}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ status: "completed" }),
+      });
+      setEditing(null);
+      await load();
     } catch {
       setElevPassword("");
     }
