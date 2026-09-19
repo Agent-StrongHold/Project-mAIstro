@@ -214,9 +214,17 @@ class EngineService:
             else:
                 from adapters.task_backend import MaistroServerTaskBackend
 
+                configured_delegation_key = getattr(settings, "maistro_delegation_key", None)
+                delegation_key = (
+                    configured_delegation_key.get_secret_value()
+                    if configured_delegation_key is not None
+                    else None
+                )
                 self._backend = MaistroServerTaskBackend(
                     base_url=settings.maistro_base_url,
                     api_key=settings.maistro_router_api_key,
+                    delegation_key=delegation_key,
+                    service_principal=getattr(settings, "maistro_service_principal", "conductor"),
                 )
                 if settings.hive_default_workspace_id != DEFAULT_WORKSPACE_ID:
                     # This deployment's tasks are admitted by a separate
@@ -392,13 +400,22 @@ class EngineService:
             return []
         return self._backend.list_tasks(user_id=user_id)
 
-    def delete_task(self, task_id: str) -> bool:
+    def delete_task(self, task_id: str, *, user_id: str | None = None) -> bool:
+        """Remove a terminal local receipt; production cancellation is async."""
         if self._backend is None:
             return False
         remove = getattr(self._backend, "remove", None)
-        if remove is not None:
-            return bool(remove(task_id))
-        return False
+        if remove is None:
+            return False
+        if user_id is not None and self._backend.get(task_id, user_id=user_id) is None:
+            return False
+        return bool(remove(task_id))
+
+    async def cancel_task(self, task_id: str, *, user_id: str | None = None) -> bool:
+        """Cancel through the one backend, preserving its ownership check."""
+        if self._backend is None or self._backend.get(task_id, user_id=user_id) is None:
+            return False
+        return await self._backend.cancel(task_id, user_id=user_id)
 
     @property
     def supports_clear(self) -> bool:
@@ -437,7 +454,11 @@ class EngineService:
         # leaking another principal's in-flight events.
         if user_id is not None and self._backend.get(task_id, user_id=user_id) is None:
             return
-        async for event in self._backend.iter_events(task_id):
+        if user_id is None:
+            events = self._backend.iter_events(task_id)
+        else:
+            events = self._backend.iter_events(task_id, user_id=user_id)
+        async for event in events:
             yield event
 
 

@@ -46,7 +46,7 @@ class TaskCreate(BaseModel):
     capability: str | None = None
     program_context: dict[str, Any] | None = None
     session_id: str | None = None
-    # Set by API from auth — ignored if sent by client
+    # Set by API from authenticated/delegated context — ignored if sent by client.
     user_id: str | None = None
 
 
@@ -74,6 +74,10 @@ class TaskResponse(BaseModel):
     description: str
     workspace: str
     user_id: str = ""
+    # Service and delegation evidence remain separate from the effective actor.
+    service_principal_id: str | None = None
+    delegation_id: str | None = None
+    actor_kind: Literal["user", "system", "service"] = "user"
     task_type: str | None = None
     agent_id: str | None = None
     capability: str | None = None

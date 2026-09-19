@@ -37,6 +37,8 @@ services:
       # capability. Unconfigured deployments remain fail-closed for named scope
       # while unscoped submissions retain the existing default Workspace path.
       - WORKSPACE_SCOPE_KEY=${WORKSPACE_SCOPE_KEY:-}
+      # Separate HMAC capability for Conductor's authenticated user context.
+      - TASK_DELEGATION_KEY=${TASK_DELEGATION_KEY:?Run ./install.sh to generate TASK_DELEGATION_KEY}
       - MAISTRO_ACCESS_TOKEN=${MAISTRO_ACCESS_TOKEN:-}
       - REQUIRE_AUTH=${REQUIRE_AUTH:-true}
       - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET:-}
@@ -189,6 +191,9 @@ services:
       - MAISTRO_BASE_URL=http://maistro-engine:8000
       - MAISTRO_ROUTER_API_KEY=${MAISTRO_ACCESS_TOKEN:-}
       - WORKSPACE_SCOPE_KEY=${WORKSPACE_SCOPE_KEY:-}
+      # Must match the task server's TASK_DELEGATION_KEY; never reuse the API key.
+      - MAISTRO_DELEGATION_KEY=${TASK_DELEGATION_KEY:?Run ./install.sh to generate TASK_DELEGATION_KEY}
+      - MAISTRO_SERVICE_PRINCIPAL=${MAISTRO_SERVICE_PRINCIPAL:-conductor}
       # Langfuse credentials for the Langfuse service's own UI/API. These
       # do NOT enable trace export from this app: the conductor's spans go
       # out only over OTLP — a build with INSTALL_OBSERVABILITY=1 plus

@@ -332,7 +332,9 @@ async def test_maistro_server_task_backend_submit_get_list_cancel(
 
     transport = httpx.MockTransport(_handler)
 
-    backend = MaistroServerTaskBackend(base_url="http://maistro-server", api_key="k")
+    backend = MaistroServerTaskBackend(
+        base_url="http://maistro-server", api_key="k", delegation_key="test-delegation"
+    )
 
     _OrigAsyncClient = httpx.AsyncClient
     _OrigClient = httpx.Client
@@ -384,7 +386,9 @@ async def test_maistro_server_task_backend_get_missing_returns_none(
         ),
     )
 
-    backend = MaistroServerTaskBackend(base_url="http://maistro-server", api_key=None)
+    backend = MaistroServerTaskBackend(
+        base_url="http://maistro-server", api_key=None, delegation_key="test-delegation"
+    )
     assert backend.get("missing") is None
 
 
