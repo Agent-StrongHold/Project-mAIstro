@@ -294,7 +294,9 @@ def _provision_first_run(
     admin_hash = hash_password(admin_password)
     user_hash = hash_password(user_password)
 
-    stores.users["admin"] = stores.users._model_class(
+    from services import username_registry
+
+    admin = stores.users._model_class(
         id="admin",
         username=admin_username,
         password_hash=admin_hash,
@@ -303,7 +305,7 @@ def _provision_first_run(
         created_at=now_ts,
         did=None,
     )
-    stores.users["user"] = stores.users._model_class(
+    daily_user = stores.users._model_class(
         id="user",
         username=user_username,
         password_hash=user_hash,
@@ -313,6 +315,17 @@ def _provision_first_run(
         created_at=now_ts,
         did=user_did,
     )
+    try:
+        # Bootstrap uses the same canonical allocator as public registration;
+        # both identities and both username claims land as one unit.
+        username_registry.create_users([admin, daily_user])
+    except username_registry.UsernameTakenError as exc:
+        raise HTTPException(status_code=409, detail="Username is already taken.") from exc
+    except username_registry.UsernameAllocationError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Setup could not durably allocate its accounts; please retry.",
+        ) from exc
 
     # v0 fix: persist the Setup-chosen default_model so the Settings page
     # reflects what the user actually picked (was showing the hardcoded legacy
