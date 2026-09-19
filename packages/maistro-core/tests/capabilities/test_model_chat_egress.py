@@ -557,3 +557,104 @@ async def test_usage_from_without_tracked_provider_returns_none() -> None:
     assert usage is not None
     assert usage.input_units == 100
     assert usage.provider == "test-gw"
+
+
+async def test_setup_hook_runs_after_authorization_before_model_http(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Provider-internal setup executes inside the Invocation (#1088).
+
+    Ordering proof: policy authorization -> setup -> gateway HTTP. The setup
+    hook lets a Provider perform its own credential-bearing preparation
+    without turning that preparation into pre-authorization HTTP.
+    """
+
+    order: list[str] = []
+    effects = new_in_memory_effect_context()
+    registry = _registry()
+
+    async def _setup() -> None:
+        order.append("setup")
+
+    class _Resp:
+        status_code = 200
+
+        def json(self) -> Any:
+            return _OK_BODY
+
+    class _Client:
+        def __init__(self, *a: Any, **kw: Any) -> None: ...
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *a: Any) -> None: ...
+
+        async def post(self, *a: Any, **kw: Any) -> _Resp:
+            order.append("http")
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+
+    egress = ModelChatEgress(
+        effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+        endpoint=GatewayEndpoint(base_url="http://gw:4000"),
+    )
+    result = await egress.complete(
+        binding=_binding(),
+        run_id="r1",
+        node_run_id="nr1",
+        attempt_id="a1",
+        effect_key="test:setup",
+        request=ModelChatRequest(messages=[{"role": "user", "content": "hi"}]),
+        setup=_setup,
+    )
+
+    assert result.model == "fast-model"
+    assert order == ["setup", "http"]
+    stored = await effects.invocation_store.get(result.invocation_id)
+    assert stored is not None
+    assert stored.status is InvocationStatus.COMPLETED
+
+
+async def test_denied_policy_refuses_before_setup_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Authorization refusal means zero setup and zero HTTP (#1088)."""
+
+    from maistro.capabilities.governed_invocation import InvocationDenied
+    from maistro.policy.types import Decision, PolicyVerdict
+
+    async def _deny(*args: Any, **kwargs: Any) -> PolicyVerdict:
+        del args, kwargs
+        return PolicyVerdict(Decision.DENY, reason="denied", rule="test")
+
+    setup_ran = False
+    effects = new_in_memory_effect_context(policy_evaluator=_deny)
+    registry = _registry()
+    _patch_gateway(monkeypatch, _OK_BODY)
+    egress = ModelChatEgress(
+        effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+        endpoint=GatewayEndpoint(base_url="http://gw:4000"),
+    )
+
+    async def _setup() -> None:
+        nonlocal setup_ran
+        setup_ran = True
+
+    with pytest.raises(InvocationDenied):
+        await egress.complete(
+            binding=_binding(),
+            run_id="r1",
+            node_run_id="nr1",
+            attempt_id="a1",
+            effect_key="test:setup-denied",
+            request=ModelChatRequest(messages=[{"role": "user", "content": "hi"}]),
+            setup=_setup,
+        )
+
+    assert setup_ran is False
