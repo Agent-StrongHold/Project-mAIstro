@@ -30,7 +30,6 @@ worth being loud about.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 from typing import TYPE_CHECKING, Any, Protocol
 
 from maistro.observability.correlation import current_execution_context
@@ -70,6 +69,7 @@ TASK_QUEUE_SOURCE = "task_queue"
 
 #: Provenance keys correlating the Run back to the receipt that admitted it.
 TASK_ID_KEY = "task_id"
+TASK_PAYLOAD_KEY = "task_payload"
 SESSION_ID_KEY = "session_id"
 REQUEST_ID_KEY = "request_id"
 
@@ -98,6 +98,7 @@ class TaskAdmitter(Protocol):
         *,
         result: object | None = None,
         error: str | None = None,
+        previous_status: TaskStatus | None = None,
     ) -> bool:
         """Advance the Run to match a task transition. False if it refused."""
         ...
@@ -169,7 +170,12 @@ class TaskRunAdmitter:
             agent_id=task.agent_id,
             registry=self._intents,
         )
-        provenance: dict[str, Any] = {TASK_ID_KEY: task.task_id}
+        provenance: dict[str, Any] = {
+            TASK_ID_KEY: task.task_id,
+            # This snapshot is committed with the QUEUED Run. Recovery must not
+            # depend on the best-effort TaskRecord or process-local receipt.
+            TASK_PAYLOAD_KEY: task.model_dump(mode="json"),
+        }
         if task.session_id:
             provenance[SESSION_ID_KEY] = task.session_id
         if task.user_id:
@@ -194,24 +200,11 @@ class TaskRunAdmitter:
             description=task.description,
             actor_principal_id=task.user_id or None,
             provenance=provenance,
+            initial_status=RunStatus.QUEUED,
         )
-        # The receipt is born QUEUED, so the Run is too. Leaving it CREATED
-        # would mean the two disagreed from the first instant about a task that
-        # is, by then, genuinely queued.
-        #
-        # Two commits on a durable store, and a failure between them would leave
-        # a CREATED Run whose provenance names a task receipt that was never
-        # queued. Compensate rather than leak: a Run that could not be queued is
-        # cancelled, which is true and terminal. The remaining window — process
-        # death between the two commits — needs a create-in-queued-state
-        # operation on the RunStore protocol, which is #132's to add along with
-        # the durable backend.
-        try:
-            await self._runs.transition_run(run.run_id, RunStatus.QUEUED)
-        except BaseException:
-            with contextlib.suppress(Exception):
-                await self._runs.transition_run(run.run_id, RunStatus.CANCELLED)
-            raise
+        # The Run and its durable payload are now committed as QUEUED in one
+        # store operation. The queue receipt can therefore be rebuilt after a
+        # process death before either in-memory handoff step.
         return run.run_id
 
     async def cancel_run(self, run_id: str) -> bool:
@@ -235,6 +228,7 @@ class TaskRunAdmitter:
         *,
         result: object | None = None,
         error: str | None = None,
+        previous_status: TaskStatus | None = None,
     ) -> bool:
         """Advance the Run to match one task transition.
 
@@ -260,7 +254,10 @@ class TaskRunAdmitter:
         if run is None:
             return False
         if run.status is target:
-            return True
+            # QUEUED -> RUNNING is the physical dispatch fence. A second
+            # recovered receipt must not treat another worker's claim as its
+            # own merely because both task phase machines map to RUNNING.
+            return not (previous_status is TaskStatus.QUEUED and target is RunStatus.RUNNING)
         if (
             run.status is RunStatus.WAITING
             and target in TERMINAL_RUN_STATUSES
@@ -383,6 +380,7 @@ class WorkspaceRoutingAdmitter:
         *,
         result: object | None = None,
         error: str | None = None,
+        previous_status: TaskStatus | None = None,
     ) -> bool:
         """Advance the Run to match a task transition.
 
@@ -393,13 +391,20 @@ class WorkspaceRoutingAdmitter:
         one implementation of the refusal semantics rather than a second copy.
         """
         admitter = await self.admitter_for(None)
-        return await admitter.record_transition(run_id, status, result=result, error=error)
+        return await admitter.record_transition(
+            run_id,
+            status,
+            result=result,
+            error=error,
+            previous_status=previous_status,
+        )
 
 
 __all__ = [
     "RUN_STATUS_BY_TASK_STATUS",
     "SESSION_ID_KEY",
     "TASK_ID_KEY",
+    "TASK_PAYLOAD_KEY",
     "TASK_QUEUE_SOURCE",
     "TaskAdmitter",
     "TaskRunAdmitter",

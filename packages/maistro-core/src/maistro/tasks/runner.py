@@ -315,6 +315,8 @@ class TaskRunner:
                 agent_id=task.agent_id,
                 capability=task.capability,
                 program_context=task.program_context,
+                branch=task.branch,
+                constraints=list(task.constraints),
                 user_id=task.user_id or None,
                 lane=task.lane,
                 priority_tier=task.priority_tier,

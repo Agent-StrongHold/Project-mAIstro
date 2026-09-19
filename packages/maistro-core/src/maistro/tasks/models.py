@@ -78,6 +78,8 @@ class TaskResponse(BaseModel):
     agent_id: str | None = None
     capability: str | None = None
     program_context: dict[str, Any] | None = None
+    branch: str | None = None
+    constraints: list[str] = Field(default_factory=list)
     tier: int
     # Carried through from TaskCreate so the dispatcher can admit on them.
     # Without these on the stored task the lane/tier labels are accepted at
