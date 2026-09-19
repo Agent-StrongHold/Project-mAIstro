@@ -1,12 +1,16 @@
 /**
  * The workspace toolbar on a first run, with a long name, and across accounts
- * (#1426, #1431, #1424, #1437, #1418, #1433).
+ * (#1426, #1431, #1424, #1437, #1418, #1433, #1409, #1411).
  *
  * A zero-workspace account used to see a bare "+" and a "New persona"
  * button; a 100-character name stacked the toolbar into a 513px column at
  * phone width; the persona picker showed each persona's tagline only as a
  * title tooltip; and four localStorage keys outlived sign-out and carried to
- * the next account on the same browser profile. Runs as the admin account,
+ * the next account on the same browser profile. The drawer also carried a
+ * Simple/Power toggle that changed nothing observable anywhere in the
+ * product (#1409) and conflated "mode" with the unrelated Workspace concept
+ * (#1411); it is gone rather than wired, since persona-driven surface
+ * configuration is deferred (ADR-081226-e626). Runs as the admin account,
  * which can archive its own workspaces to reach the empty state.
  */
 
@@ -38,6 +42,23 @@ test.beforeAll(async ({ browser }) => {
 
 test.afterAll(async () => {
   await context.close();
+});
+
+test("the Simple/Power toggle is gone, not silently inert", async () => {
+  // The hamburger/drawer only render at narrow widths (index.css, 900px);
+  // at desktop width the button is display:none and never clickable.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Open menu", exact: true }).click();
+  const drawer = page.locator(".drawer.open");
+  await expect(drawer).toBeVisible({ timeout: 15000 });
+  // Narrowly the retired control's own markup, not the unrelated light/dark
+  // "Switch to dark mode" toggle that legitimately shares the word "mode".
+  await expect(page.locator(".mode-toggle")).toHaveCount(0);
+  await expect(drawer.getByRole("button", { name: /current mode:|switch to (simple|power) mode/i })).toHaveCount(0);
+  await expect(drawer.getByText(/simple mode \(chat|power mode \(dags/i)).toHaveCount(0);
+  await page.getByRole("button", { name: "Close menu", exact: true }).click();
+  await page.setViewportSize({ width: 1280, height: 800 });
 });
 
 test("with no workspace the toolbar explains one and offers to create it", async () => {
@@ -94,6 +115,9 @@ test("signing out clears this account's browser state", async () => {
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.evaluate(() => {
     window.localStorage.setItem("hive_appearance", "dark");
+    // The Simple/Power toggle is gone (#1409, #1411); this simulates a
+    // browser that stored its key before that shipped, to prove the sweep
+    // still forgets it rather than leaving an orphaned key forever.
     window.localStorage.setItem("hive_ui_mode", "power");
   });
   await expect(page.getByRole("tab").first()).toBeVisible({ timeout: 15000 });
