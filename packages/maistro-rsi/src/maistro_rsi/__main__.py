@@ -15,6 +15,7 @@ Example:
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -30,6 +31,7 @@ from maistro_rsi.export_policy import (
     validate_patch,
 )
 from maistro_rsi.free_router import FREE_ROUTER_ALIASES, expand_free_router, make_free_selector
+from maistro_rsi.harvest_boundary import WardenHarvestBoundary
 from maistro_rsi.local_loop import LocalRsiConfig, LocalRsiLoop
 from maistro_rsi.model_identifiers import (
     MAX_ROSTER_SIZE,
@@ -341,6 +343,7 @@ def _evolve(args: argparse.Namespace) -> int:
     import asyncio
     import tempfile
 
+    from maistro.security.warden.detector import Warden
     from maistro_evolve.cycle import EvolutionConfig
     from maistro_evolve.harness import EvalHarness
     from maistro_rsi.code_fixer import LiveCodeFixer
@@ -416,10 +419,22 @@ def _evolve(args: argparse.Namespace) -> int:
     mutator_model = args.mutator_model or (allowed[0] if allowed else None)
     if mutator_model:
         from maistro_bootstrap.builders.responses_callable import ResponsesAPICallable
+        from maistro_rsi.harvest_boundary import HarvestCorrelation, WardenHarvestBoundary
 
         callable_ = ResponsesAPICallable(model=mutator_model, timeout=300.0)
+        mutator_boundary = WardenHarvestBoundary(
+            Warden(),
+            correlation=HarvestCorrelation(candidate_id=mutator_model, source_repository=str(repo)),
+        )
 
         async def llm_call(prompt: str) -> str:
+            admission = await mutator_boundary.scan(
+                {"goal": args.goal, "target": args.target, "prompt": prompt}
+            )
+            if not admission.admitted:
+                raise RuntimeError(
+                    f"Warden did not admit RSI mutation context ({admission.outcome})"
+                )
             result = await asyncio.to_thread(callable_, [{"role": "user", "content": prompt}])
             content = result.get("content", "") if isinstance(result, dict) else result
             return content if isinstance(content, str) else str(content)
@@ -446,7 +461,11 @@ def _evolve(args: argparse.Namespace) -> int:
     return 0
 
 
-def _validated_export(export: Path, groups: dict[str, list[PromotedPatch]]) -> dict[str, Path]:
+def _validated_export(
+    export: Path,
+    groups: dict[str, list[PromotedPatch]],
+    boundary: WardenHarvestBoundary,
+) -> dict[str, Path]:
     """Resolve and check every patch the manifest names. Raises on the first
     artifact that may not become a pull request.
 
@@ -455,18 +474,46 @@ def _validated_export(export: Path, groups: dict[str, list[PromotedPatch]]) -> d
     a check and the thing it checked drift apart.
     """
     resolved: dict[str, Path] = {}
-    for declared_file, group in groups.items():
-        for patch in group:
-            entry = patch.patch_file
-            path = resolve_export_path(export, entry)
-            verdict = validate_patch(
-                path.read_text(encoding="utf-8", errors="replace"),
-                declared_file=declared_file,
-            )
-            if not verdict.ok:
-                reasons = "\n".join(f"  - {reason}" for reason in verdict.reasons)
-                raise ExportPolicyError(f"refusing {entry}:\n{reasons}")
-            resolved[entry] = path
+    snapshots: list[Path] = []
+    try:
+        for declared_file, group in groups.items():
+            for patch in group:
+                entry = patch.patch_file
+                path = resolve_export_path(export, entry)
+                raw_patch = path.read_bytes()
+                patch_text = raw_patch.decode("utf-8", errors="replace")
+                # Validate the exact artifact that will later be handed to git
+                # and include manifest-derived labels, not just its diff body.
+                # Keep a private snapshot for git-am so the checked bytes cannot
+                # be swapped after Warden admission.
+                admission = boundary.scan_sync(
+                    {
+                        "patch_file": patch.patch_file,
+                        "declared_file": declared_file,
+                        "subject": patch.subject,
+                        "patch": patch_text,
+                    }
+                )
+                if not admission.admitted:
+                    raise ExportPolicyError(
+                        f"refusing {entry}: Warden did not admit harvested content "
+                        f"({admission.outcome})"
+                    )
+                verdict = validate_patch(patch_text, declared_file=declared_file)
+                if not verdict.ok:
+                    reasons = "\n".join(f"  - {reason}" for reason in verdict.reasons)
+                    raise ExportPolicyError(f"refusing {entry}:\n{reasons}")
+                with tempfile.NamedTemporaryFile(
+                    mode="wb", prefix="maistro-rsi-admitted-", suffix=".patch", delete=False
+                ) as snapshot_file:
+                    snapshot_file.write(raw_patch)
+                    snapshot = Path(snapshot_file.name)
+                snapshots.append(snapshot)
+                resolved[entry] = snapshot
+    except Exception:
+        for snapshot in snapshots:
+            snapshot.unlink(missing_ok=True)
+        raise
     return resolved
 
 
@@ -476,22 +523,53 @@ def _harvest(args: argparse.Namespace) -> int:  # noqa: C901  clone/repo setup +
     from datetime import UTC, datetime
 
     from maistro_evolve.doc_regression import doc_regressions
-    from maistro_rsi.harvest import branch_slug, group_by_file, load_manifest, pr_body, pr_title
+    from maistro_rsi.harvest import (
+        branch_slug,
+        group_by_file,
+        manifest_records,
+        pr_body,
+        pr_title,
+    )
 
     export = Path(args.export_dir)
     manifest = export / "manifest.json"
     if not manifest.is_file():
         print(f"error: no manifest.json in {export}", file=sys.stderr)
         return 2
-    groups = group_by_file(load_manifest(manifest))
+    from maistro.security.warden.detector import Warden
+    from maistro_rsi.harvest_boundary import HarvestCorrelation
+
+    session = args.session or datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    boundary = WardenHarvestBoundary(
+        Warden(),
+        correlation=HarvestCorrelation(
+            campaign_id=session,
+            run_id=session,
+            source_repository=args.clone_url or args.repo_dir,
+        ),
+    )
+    try:
+        manifest_value = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        print(f"error: manifest.json in {export} is unreadable", file=sys.stderr)
+        return 2
+    manifest_admission = boundary.scan_sync({"manifest": manifest_value})
+    if not manifest_admission.admitted:
+        print(
+            "error: Warden did not admit harvested manifest content "
+            f"({manifest_admission.outcome})",
+            file=sys.stderr,
+        )
+        return 3
+    # Use the exact manifest value admitted above; rereading the file here
+    # would create a scan/use TOCTOU gap for attacker-controlled metadata.
+    groups = group_by_file(manifest_records(manifest_value))
     if not groups:
         print("no promotions to harvest")
         return 0
     if not (args.repo_dir or args.clone_url):
         print("error: pass --repo-dir (local) or --clone-url (cloud)", file=sys.stderr)
         return 2
-    session = args.session or datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-
     # The tier is policy, resolved before a single patch is read (#356). It used
     # to be `--pr-base` defaulting to "main", fed straight from a
     # `workflow_dispatch` input -- so the documented way to run a harvest opened
@@ -521,7 +599,7 @@ def _harvest(args: argparse.Namespace) -> int:  # noqa: C901  clone/repo setup +
     #   it inside the apply loop would leave the branches for whichever files
     #   happened to sort first.
     try:
-        patch_paths_by_entry = _validated_export(export, groups)
+        patch_paths_by_entry = _validated_export(export, groups, boundary)
     except ExportPolicyError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 3
@@ -590,16 +668,22 @@ def _harvest(args: argparse.Namespace) -> int:  # noqa: C901  clone/repo setup +
             # A patch from an older run may no longer apply once the base has
             # moved past it (even with --3way). Skip it and keep harvesting —
             # one stale patch must not sink the rest of the run's promotions.
-            am = git("am", "--3way", str(patch_paths_by_entry[patch.patch_file]), check=False)
-            if am.returncode != 0:
-                git("am", "--abort", check=False)
-                unappliable += 1
-                continue
-            if args.skip_doc_regressions and _regresses_docs(file):
-                git("reset", "--hard", "HEAD~1")  # drop the doc-specificity regression
-                skipped += 1
-                continue
-            kept_patches.append(patch)
+            admitted_patch = patch_paths_by_entry[patch.patch_file]
+            try:
+                am = git("am", "--3way", str(admitted_patch), check=False)
+                if am.returncode != 0:
+                    git("am", "--abort", check=False)
+                    unappliable += 1
+                    continue
+                if args.skip_doc_regressions and _regresses_docs(file):
+                    git("reset", "--hard", "HEAD~1")  # drop the doc-specificity regression
+                    skipped += 1
+                    continue
+                kept_patches.append(patch)
+            finally:
+                # The snapshot was the immutable input to git-am, not a
+                # second trust boundary. Remove it after this manifest entry.
+                admitted_patch.unlink(missing_ok=True)
         if not kept_patches:
             print(f"[skipped] {branch}  <- {file}  (0 of {len(group)} promotion(s) kept)")
             continue
