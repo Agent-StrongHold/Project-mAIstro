@@ -43,18 +43,23 @@ async function request<T>(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
   let r: Response;
+  let text: string;
   try {
     r = await fetch(`${API_BASE}${path}`, {
       credentials: "same-origin",
       ...init,
       signal: controller.signal,
     });
+    // The timer has to stay armed through reading the body, not just until
+    // headers arrive: a server that sends headers promptly and then stalls
+    // mid-body leaves fetch() resolved but r.text() still hanging, which
+    // the timeout is exactly meant to catch.
+    text = await r.text();
   } catch (err) {
-    // Anything fetch() itself throws (the timeout abort below, a dropped
-    // connection, offline, CORS) is a transport failure with no HTTP
-    // response to read a `detail` from -- so it gets the same human
-    // treatment as a bad status (#1436), not a raw `TypeError: Failed to
-    // fetch` or `AbortError`.
+    // Anything this try throws (the timeout abort, a dropped connection,
+    // offline, CORS) is a transport failure with no HTTP response to read a
+    // `detail` from -- so it gets the same human treatment as a bad status
+    // (#1436), not a raw `TypeError: Failed to fetch` or `AbortError`.
     const timedOut = err instanceof DOMException && err.name === "AbortError";
     debugApi(method, path, 0, performance.now() - started, timedOut ? "timed out" : err);
     throw new ApiError(
@@ -69,7 +74,6 @@ async function request<T>(
   }
   const ms = performance.now() - started;
   let parsed: unknown;
-  const text = await r.text();
   if (text && r.status !== 204) {
     try {
       parsed = JSON.parse(text) as T;

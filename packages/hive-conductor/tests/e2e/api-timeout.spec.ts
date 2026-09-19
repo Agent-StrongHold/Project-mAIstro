@@ -31,6 +31,19 @@ test("a request that fails at the transport level shows a human, retryable messa
   await loginAsAdmin(page);
   await page.addInitScript(() => window.localStorage.setItem("hive_onboarded", "1"));
 
+  // WorkItems only issues a request once a workspace is active -- with none
+  // selected it returns its empty state without ever calling /v1/work-items,
+  // so the mocked transport failure would never fire and the toast
+  // assertion below would time out waiting for nothing.
+  const created = await page.request.post("/v1/workspaces", {
+    data: { persona_template_id: "pm_fleet", name: `API timeout ${Date.now()}` },
+  });
+  expect(created.status()).toBe(201);
+  const wsId = (await created.json()).id as string;
+  await page.addInitScript((id: string) => {
+    window.localStorage.setItem("hive_active_workspace_id", id);
+  }, wsId);
+
   await page.route("**/v1/work-items*", (route) => {
     if (route.request().method() !== "GET") return route.continue();
     return route.abort("connectionfailed");
