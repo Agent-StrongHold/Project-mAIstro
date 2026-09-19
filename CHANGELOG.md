@@ -304,7 +304,7 @@ or placeholder-only section.
 ### Fixed
 
 - **The Simple/Power toggle is removed rather than left silently inert
-  (#1409, #1411).** It promised "Power Mode (DAGs, prompts, topology)" but
+  (#1409, #1411, #1410).** It promised "Power Mode (DAGs, prompts, topology)" but
   changed nothing observable: `AppShell.tsx`'s navigation never branched on
   it, only `localStorage` did. `ModeToggle`, `ModeProvider` and the
   `hive_ui_mode` key are gone; a browser that stored the key before this
@@ -320,12 +320,16 @@ or placeholder-only section.
   other (#1408).** The Conductor used to await `/v1/setup/status`, then
   `/v1/auth/whoami`, showing a plain "loading hive..." sentence for both
   round trips; whoami's answer never depended on setup's, so the second
-  wait bought nothing. Both now fire in one `Promise.all`, and the
+  wait bought nothing. Both requests now fire together, and the
   placeholder is the real shell's sidebar-plus-content grid rather than a
-  sentence. `tests/e2e/app-shell-loading.spec.ts` holds `setup/status`
-  open to prove whoami is requested while it is still pending, and that
-  the skeleton renders meanwhile; each assertion fails against the
-  unfixed build.
+  sentence. A fresh, unconfigured instance no longer waits on whoami at
+  all before showing the setup wizard — only setup-status's own response
+  gates it, so a whoami that is slow or never settles can't strand a new
+  operator on the skeleton (caught in review before merge). `tests/e2e/app-shell-loading.spec.ts`
+  holds `setup/status` open to prove whoami is requested while it is
+  still pending, that the skeleton renders meanwhile, and that a hung
+  whoami doesn't block the setup wizard on a fresh instance; each
+  assertion fails against the unfixed build.
 
 - **The workspace toolbar explains a first run, truncates long names, shows
   personas by name and tagline, and forgets an account on sign-out (#1426,

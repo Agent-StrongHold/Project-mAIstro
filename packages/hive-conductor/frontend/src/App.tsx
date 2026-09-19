@@ -99,17 +99,19 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
         // does not depend on setup being finished -- it reports
         // unauthenticated either way, since no session cookie exists before
         // setup runs -- so paying for the two round trips in series bought
-        // nothing but the wait. Both resolve before either result is used.
-        const [setupRes, whoRes] = await Promise.all([
-          fetch("/v1/setup/status", { credentials: "same-origin" }),
-          fetch("/v1/auth/whoami", { credentials: "same-origin" }),
-        ]);
-        const [setupData, whoData] = await Promise.all([setupRes.json(), whoRes.json()]);
+        // nothing but the wait. But only setup's own response gates the
+        // Setup wizard: on a fresh, unconfigured instance a slow or
+        // never-settling whoami must not hold up detecting that setup isn't
+        // done, so whoami is only awaited once setup is confirmed complete.
+        const setupPromise = fetch("/v1/setup/status", { credentials: "same-origin" });
+        const whoPromise = fetch("/v1/auth/whoami", { credentials: "same-origin" });
+        const setupData = await (await setupPromise).json();
         if (!setupData.setup_complete) {
           setSetupDone(false);
           setReady(true);
           return;
         }
+        const whoData = await (await whoPromise).json();
         setSetupDone(true);
         setUser(whoamiToUser(whoData));
       } catch {

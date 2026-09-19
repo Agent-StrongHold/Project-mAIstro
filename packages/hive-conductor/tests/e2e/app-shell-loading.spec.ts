@@ -103,3 +103,25 @@ test("the shell chrome appears before the auth chain finishes for a signed-in us
   });
   await page.unroute("**/v1/auth/whoami");
 });
+
+test("a hung whoami does not hold up the setup wizard on a fresh instance", async ({ page }) => {
+  // Firing both probes together must not mean waiting on both: a fresh,
+  // unconfigured instance only needs setup-status to know to show the
+  // wizard. Awaiting whoami's response body regardless -- the original form
+  // of the #1408 fix -- meant a whoami that never resolves left a new
+  // operator on the skeleton forever, with no way to reach Setup at all.
+  await page.route("**/v1/setup/status", async (route) => {
+    await route.fulfill({ json: { setup_complete: false } });
+  });
+  await page.route("**/v1/auth/whoami", () => {
+    // Never fulfilled or continued: this request hangs for the test's life.
+  });
+
+  await page.goto("/", { waitUntil: "commit" });
+  await expect(page.getByLabel("Conductor name", { exact: true })).toBeVisible({
+    timeout: 5000,
+  });
+
+  await page.unroute("**/v1/setup/status");
+  await page.unroute("**/v1/auth/whoami");
+});
