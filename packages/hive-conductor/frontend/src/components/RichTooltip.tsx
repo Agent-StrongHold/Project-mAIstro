@@ -13,12 +13,34 @@ const ALIGN: Record<string, string> = { left: "left: 0;", center: "left: 50%; tr
 export function RichTooltip({ children, content, side = "top", align = "center" }: Props) {
   const [show, setShow] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  // Escape dismisses without moving the pointer or losing focus (#1413,
+  // WCAG 1.4.13); it stays dismissed until the trigger is actually left
+  // (mouse leave or blur), so a re-hover or refocus shows it again normally.
+  const dismissed = useRef(false);
 
-  const enter = () => { clearTimeout(timer.current); timer.current = setTimeout(() => setShow(true), 120); };
-  const leave = () => { clearTimeout(timer.current); setShow(false); };
+  const enter = () => {
+    if (dismissed.current) return;
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => setShow(true), 120);
+  };
+  const leave = () => { clearTimeout(timer.current); dismissed.current = false; setShow(false); };
+  const onKeyDown = (e: { key: string }) => {
+    if (e.key === "Escape" && show) {
+      dismissed.current = true;
+      clearTimeout(timer.current);
+      setShow(false);
+    }
+  };
 
   return (
-    <span style={{ position: "relative", display: "inline-block" }} onMouseEnter={enter} onMouseLeave={leave} onFocus={enter} onBlur={leave}>
+    <span
+      style={{ position: "relative", display: "inline-block" }}
+      onMouseEnter={enter}
+      onMouseLeave={leave}
+      onFocus={enter}
+      onBlur={leave}
+      onKeyDown={onKeyDown}
+    >
       {children}
       {show && (
         <span

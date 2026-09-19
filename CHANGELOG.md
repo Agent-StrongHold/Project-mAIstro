@@ -25,6 +25,12 @@ or placeholder-only section.
 
 ### Security
 
+- **anyio bumped 4.13.0 → 4.14.2 (and the 4.15.1 leg some members resolve
+  separately), clearing CVE-2026-63374 and CVE-2026-64847 that fail every
+  fresh `pip-audit` run (no linked issue: caught by the required Supply
+  chain (pip-audit) check on #1502, the same class of reactive advisory fix
+  as the gitpython bump above).** Lockfile-only change; no API or behavior
+  delta.
 - **Due-recovery failures never persist or log credential text (#1143).** A
   node-resolver factory that fails while a due Run is being resumed now
   terminalizes the Run with a stable `NodeResolverUnavailable` message (Run id
@@ -304,6 +310,47 @@ or placeholder-only section.
   `TypeError` at the call site instead of a wrong terminal status at runtime.
 
 ### Fixed
+
+- **The Simple/Power toggle is removed rather than left silently inert
+  (#1409, #1411, #1410).** It promised "Power Mode (DAGs, prompts, topology)" but
+  changed nothing observable: `AppShell.tsx`'s navigation never branched on
+  it, only `localStorage` did. `ModeToggle`, `ModeProvider` and the
+  `hive_ui_mode` key are gone; a browser that stored the key before this
+  shipped still gets it swept on sign-out. Persona-driven surface
+  configuration — the feature the control was standing in for — is deferred,
+  not withdrawn: ADR-081226-e626 gains an amendment recording the removal
+  and why, and disambiguating "mode" from the two senses that remain
+  (light/dark appearance, `workspace_mode.py`'s authorization sense).
+  `tests/e2e/workspace-toolbar.spec.ts` covers it; against the unfixed
+  build the drawer still shows the retired control.
+- **The shell paints its chrome before the auth chain resolves, and the
+  setup-status and whoami probes fire together instead of one after the
+  other (#1408).** The Conductor used to await `/v1/setup/status`, then
+  `/v1/auth/whoami`, showing a plain "loading hive..." sentence for both
+  round trips; whoami's answer never depended on setup's, so the second
+  wait bought nothing. Both requests now fire together, and the
+  placeholder is the real shell's sidebar-plus-content grid rather than a
+  sentence. A fresh, unconfigured instance no longer waits on whoami at
+  all before showing the setup wizard — only setup-status's own response
+  gates it, so a whoami that is slow or never settles can't strand a new
+  operator on the skeleton (caught in review before merge). `tests/e2e/app-shell-loading.spec.ts`
+  holds `setup/status` open to prove whoami is requested while it is
+  still pending, that the skeleton renders meanwhile, and that a hung
+  whoami doesn't block the setup wizard on a fresh instance; each
+  assertion fails against the unfixed build.
+
+- **The Jira draft modal's fields answer to their visible labels, and a
+  required clarifying question announces as required (#1406).** Every
+  clarifying-question and edit-step field rendered its `<label>` as a
+  sibling of its `<input>`/`<textarea>`, with no `htmlFor`/`id` pairing, so
+  the computed accessible name was empty and a screen reader announced an
+  unlabelled textbox. A required clarifying question's `*` was a plain
+  visual character with no `aria-required`. The label now wraps its
+  control — the same implicit-association pattern `PersonaWizard.tsx`
+  already used — and a required clarifying question carries
+  `aria-required="true"`. `tests/e2e/work-item-draft-labels.spec.ts`
+  covers both steps by accessible role and name; against the unfixed
+  build the first assertion fails.
 
 - **The workspace toolbar explains a first run, truncates long names, shows
   personas by name and tagline, and forgets an account on sign-out (#1426,

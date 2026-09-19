@@ -206,14 +206,16 @@ export function WorkItemDraftModal({
             <div key={q.id} style={{ marginBottom: 10 }}>
               <label style={{ fontFamily: "var(--mono)", fontSize: 12, display: "block", marginBottom: 4 }}>
                 {q.question}
-                {q.required ? " *" : ""}
+                {q.required ? <span aria-hidden="true"> *</span> : null}
+                <input
+                  className="input-field"
+                  style={{ width: "100%", display: "block", marginTop: 4 }}
+                  value={answers[q.id] ?? q.answer}
+                  onChange={(e) => setAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))}
+                  required={q.required}
+                  aria-required={q.required}
+                />
               </label>
-              <input
-                className="input-field"
-                style={{ width: "100%" }}
-                value={answers[q.id] ?? q.answer}
-                onChange={(e) => setAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))}
-              />
             </div>
           ))}
           <button
@@ -355,27 +357,27 @@ function FieldRow({
     <div style={{ marginBottom: 10 }}>
       <label style={{ fontFamily: "var(--mono)", fontSize: 12, display: "block", marginBottom: 4 }}>
         {label}
+        {multiline ? (
+          <textarea
+            className="input-field"
+            rows={4}
+            style={{ width: "100%", display: "block", marginTop: 4 }}
+            value={local}
+            disabled={disabled}
+            onChange={(e) => setLocal(e.target.value)}
+            onBlur={() => onChange(local)}
+          />
+        ) : (
+          <input
+            className="input-field"
+            style={{ width: "100%", display: "block", marginTop: 4 }}
+            value={local}
+            disabled={disabled}
+            onChange={(e) => setLocal(e.target.value)}
+            onBlur={() => onChange(local)}
+          />
+        )}
       </label>
-      {multiline ? (
-        <textarea
-          className="input-field"
-          rows={4}
-          style={{ width: "100%" }}
-          value={local}
-          disabled={disabled}
-          onChange={(e) => setLocal(e.target.value)}
-          onBlur={() => onChange(local)}
-        />
-      ) : (
-        <input
-          className="input-field"
-          style={{ width: "100%" }}
-          value={local}
-          disabled={disabled}
-          onChange={(e) => setLocal(e.target.value)}
-          onBlur={() => onChange(local)}
-        />
-      )}
     </div>
   );
 }

@@ -1305,6 +1305,31 @@ input, select, textarea {
 
 @keyframes hc-pulse { 0%, 100% { opacity: 1 } 50% { opacity: .4 } }
 @keyframes hc-spin { to { transform: rotate(360deg) } }
+
+/* ── App shell skeleton (#1408) ─────────────────────────────── */
+.skeleton-nav-icon {
+  width: 36px;
+  height: 36px;
+  margin: 2px auto;
+  border-radius: 8px;
+  background: var(--rule);
+  opacity: 0.5;
+}
+.skeleton-block {
+  border-radius: var(--radius-sm, 8px);
+  background: var(--rule);
+  opacity: 0.35;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .skeleton-nav-icon,
+  .skeleton-block {
+    animation: hc-skeleton-pulse 1.4s ease-in-out infinite;
+  }
+}
+@keyframes hc-skeleton-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.6; }
+}
 @keyframes hc-mpulse { 0%, 100% { opacity: 1 } 50% { opacity: .35 } }
 
 /* Chat page — previously a <style> element rendered inside Chat.tsx. */

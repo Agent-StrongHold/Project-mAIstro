@@ -2,7 +2,6 @@ import { createContext, useContext, useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
 import { ErrorBoundary } from "./components/ErrorBoundary";
-import { ModeProvider } from "./components/ModeToggle";
 import { Onboarding } from "./components/Onboarding";
 import { ToastProvider } from "./components/shared";
 import { claimUiState } from "./lib/uiState";
@@ -49,6 +48,40 @@ type UserInfo = {
 const UserCtx = createContext<UserInfo | null>(null);
 export const useUser = () => useContext(UserCtx);
 
+/** Application chrome, painted before the setup/whoami round trip resolves
+ * (#1408): the same sidebar-plus-content grid the real shell uses, standing
+ * in for what is about to render rather than a sentence on a blank screen.
+ * Nothing here is interactive -- it carries no nav labels or real counts,
+ * so it never claims to be data the fetch hasn't answered yet. */
+function AppShellSkeleton() {
+  return (
+    <div className="app-shell" aria-busy="true" aria-label="Loading Hive Conductor">
+      <div className="icon-sidebar">
+        {Array.from({ length: 6 }, (_, i) => (
+          <div key={i} className="skeleton-nav-icon" />
+        ))}
+      </div>
+      <main className="main-content">
+        <div className="skeleton-block" style={{ width: "40%", height: 22, marginBottom: 18 }} />
+        <div className="skeleton-block" style={{ width: "100%", height: 120, marginBottom: 12 }} />
+        <div className="skeleton-block" style={{ width: "70%", height: 16 }} />
+      </main>
+    </div>
+  );
+}
+
+function whoamiToUser(whoData: { authenticated?: boolean; user?: UserInfo }): UserInfo | null {
+  if (whoData.authenticated && whoData.user) {
+    const next = whoData.user;
+    // Before anything under the guard mounts and reads localStorage: a
+    // different account's remembered tab, scheme or tour state is cleared
+    // here, not inherited (#1418, #1433).
+    claimUiState(next.id);
+    return next;
+  }
+  return null;
+}
+
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
   const [setupDone, setSetupDone] = useState(false);
@@ -56,32 +89,31 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 
   async function loadSession(): Promise<UserInfo | null> {
     const whoRes = await fetch("/v1/auth/whoami", { credentials: "same-origin" });
-    const whoData = await whoRes.json();
-    if (whoData.authenticated && whoData.user) {
-      const next = whoData.user as UserInfo;
-      // Before anything under the guard mounts and reads localStorage: a
-      // different account's remembered tab, scheme or tour state is cleared
-      // here, not inherited (#1418, #1433). ModeProvider sits above the guard
-      // and keeps its in-memory mode until the next load; that control has
-      // no observable effect today (#1409).
-      claimUiState(next.id);
-      return next;
-    }
-    return null;
+    return whoamiToUser(await whoRes.json());
   }
 
   useEffect(() => {
     (async () => {
       try {
-        const setupRes = await fetch("/v1/setup/status", { credentials: "same-origin" });
-        const setupData = await setupRes.json();
+        // Fired together, not one after another (#1408): whoami's answer
+        // does not depend on setup being finished -- it reports
+        // unauthenticated either way, since no session cookie exists before
+        // setup runs -- so paying for the two round trips in series bought
+        // nothing but the wait. But only setup's own response gates the
+        // Setup wizard: on a fresh, unconfigured instance a slow or
+        // never-settling whoami must not hold up detecting that setup isn't
+        // done, so whoami is only awaited once setup is confirmed complete.
+        const setupPromise = fetch("/v1/setup/status", { credentials: "same-origin" });
+        const whoPromise = fetch("/v1/auth/whoami", { credentials: "same-origin" });
+        const setupData = await (await setupPromise).json();
         if (!setupData.setup_complete) {
           setSetupDone(false);
           setReady(true);
           return;
         }
+        const whoData = await (await whoPromise).json();
         setSetupDone(true);
-        setUser(await loadSession());
+        setUser(whoamiToUser(whoData));
       } catch {
         setSetupDone(false);
       }
@@ -97,11 +129,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
   }
 
   if (!ready) {
-    return (
-      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#e9e3d3", fontFamily: "var(--hand)", fontSize: 24, color: "var(--pencil)" }}>
-        loading hive...
-      </div>
-    );
+    return <AppShellSkeleton />;
   }
 
   if (!setupDone) {
@@ -187,9 +215,7 @@ export default function App() {
   return (
     <ErrorBoundary>
       <ToastProvider>
-        <ModeProvider>
-          <AppRoutes />
-        </ModeProvider>
+        <AppRoutes />
       </ToastProvider>
     </ErrorBoundary>
   );
