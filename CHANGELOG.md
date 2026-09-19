@@ -339,6 +339,19 @@ or placeholder-only section.
   whoami doesn't block the setup wizard on a fresh instance; each
   assertion fails against the unfixed build.
 
+- **The Jira draft modal's fields answer to their visible labels, and a
+  required clarifying question announces as required (#1406).** Every
+  clarifying-question and edit-step field rendered its `<label>` as a
+  sibling of its `<input>`/`<textarea>`, with no `htmlFor`/`id` pairing, so
+  the computed accessible name was empty and a screen reader announced an
+  unlabelled textbox. A required clarifying question's `*` was a plain
+  visual character with no `aria-required`. The label now wraps its
+  control — the same implicit-association pattern `PersonaWizard.tsx`
+  already used — and a required clarifying question carries
+  `aria-required="true"`. `tests/e2e/work-item-draft-labels.spec.ts`
+  covers both steps by accessible role and name; against the unfixed
+  build the first assertion fails.
+
 - **The workspace toolbar explains a first run, truncates long names, shows
   personas by name and tagline, and forgets an account on sign-out (#1426,
   #1431, #1424, #1437, #1418, #1433).** A zero-workspace account now sees a
